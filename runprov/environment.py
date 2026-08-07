@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Taylor Nicole Thompson
+# Copyright (c) 2026 Taylor Thompson
 # Licensed under the CeCILL-B Free Software License Agreement — see LICENSE.
 # https://cecill.info/
 """The full installed package set, captured CONTENT-ADDRESSED rather than per run.

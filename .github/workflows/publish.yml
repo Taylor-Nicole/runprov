@@ -39,7 +39,7 @@ jobs:
         with:
           python-version: "${{ matrix.python }}"
       - run: python -m pip install -e ".[test]"
-      - run: python -m pytest -q
+      - run: python ci.py test -q
 
   publish:
     needs: [build, test]

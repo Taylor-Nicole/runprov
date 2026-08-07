@@ -29,14 +29,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade ruff mypy
-      # ruff IS black + isort: `ruff format` is byte-compatible with black, and the `I`
-      # rules are isort. One tool, one config, no chance of two formatters disagreeing.
-      - name: ruff format (black-compatible)
-        run: ruff format --check --diff .
-      - name: ruff check (pyflakes, isort, bugbear, pyupgrade, bandit, naming)
-        run: ruff check --output-format=github .
-      - name: mypy
-        run: mypy runprov/
+      # Calls ci.py, which is what a contributor runs locally. If this job restated the
+      # commands instead, the two would drift and "it passes locally" would stop meaning
+      # anything.
+      - run: python ci.py lint
 
   test:
     runs-on: ${{ matrix.os }}
@@ -72,12 +68,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade build twine
-      - run: python -m build
-      - run: python -m twine check --strict dist/*
-      # Install from the WHEEL, not the source tree: this is what catches a file that is
-      # in git and missing from the package.
-      - name: import from the built wheel
-        run: |
-          python -m venv /tmp/v
-          /tmp/v/bin/python -m pip install --quiet dist/*.whl
-          cd /tmp && /tmp/v/bin/python -c "import runprov; print(runprov.__version__)"
+      # Same script again — build, twine check --strict, then install the wheel into a
+      # clean venv and import it from elsewhere.
+      - run: python ci.py build
