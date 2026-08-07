@@ -19,6 +19,7 @@ a description and a fact.
 What is deliberately excluded from `header()` is documented on that method: no timestamp,
 no run id. Both were tried; both made every pinned artifact differ on every run.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -30,6 +31,8 @@ import platform
 import shlex
 import sys
 import traceback
+import types
+import typing
 
 from .environment import write_snapshot
 from .hashing import describe, sha256
@@ -62,10 +65,15 @@ class Run:
         script_path: override the auto-detected caller file (wrappers, notebooks).
     """
 
-    def __init__(self, script: str, params: dict | None = None, *,
-                 project: Project | None = None,
-                 script_path: pathlib.Path | None = None,
-                 provenance: pathlib.Path | None = None):
+    def __init__(
+        self,
+        script: str,
+        params: dict | None = None,
+        *,
+        project: Project | None = None,
+        script_path: pathlib.Path | None = None,
+        provenance: pathlib.Path | None = None,
+    ) -> None:
         self.project = project or active()
         root = self.project.root
         dirty = git(root, "status", "--porcelain", "--", *self.project.code_paths)
@@ -76,8 +84,7 @@ class Run:
             "script": script,
             "run_id": self.project.run_id(),
             "generation": self.project.generation(),
-            "started_utc": dt.datetime.now(dt.timezone.utc).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"),
+            "started_utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             # THE FULL INVOCATION, re-runnable as written. This recorded only the
             # basename -- `step_review.py` -- which says neither which interpreter ran it
             # nor from where, and the predecessor this package replaces did better:
@@ -117,13 +124,15 @@ class Run:
         self.provenance_path = pathlib.Path(provenance) if provenance else None
         self._written = False
         if dirty:
-            print("  PROVENANCE WARNING: CODE is modified relative to git_commit; the "
-                  "commit does not identify what ran:")
+            print(
+                "  PROVENANCE WARNING: CODE is modified relative to git_commit; the "
+                "commit does not identify what ran:"
+            )
             for line in dirty.splitlines():
                 print(f"    {line}")
 
     # ------------------------------------------------------------- failure recording
-    def __enter__(self) -> "Run":
+    def __enter__(self) -> Run:
         """Use `with Run(..., provenance=P) as run:` so a CRASH still leaves a record.
 
         Without this, `write()` is the last line of a script and a step that dies halfway
@@ -135,34 +144,41 @@ class Run:
         """
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: types.TracebackType | None,
+        # Literal[False], not bool, and mypy is right to insist. A `bool` return says
+        # "this context manager MAY swallow exceptions". It must never. The type says so
+        # now, so no caller has to read the body to find out.
+    ) -> typing.Literal[False]:
         if exc_type is not None:
             self.record["status"] = "failed"
             self.record["failure"] = {
                 "type": exc_type.__name__,
                 "message": str(exc)[:2000],
                 # Tail, not head: the frames nearest the failure are the informative ones.
-                "traceback": "".join(
-                    traceback.format_exception(exc_type, exc, tb))[-4000:],
+                "traceback": "".join(traceback.format_exception(exc_type, exc, tb))[-4000:],
             }
         if self.provenance_path is not None and not self._written:
             self.write(self.provenance_path)
-        return False      # NEVER swallow. A provenance module that hides an exception is
-                          # strictly worse than one that records nothing.
+        return False  # NEVER swallow. A provenance module that hides an exception is
+        # strictly worse than one that records nothing.
 
     def _versions(self) -> dict:
         out = {}
         for mod in self.project.tracked_packages:
             try:
                 out[mod] = __import__(mod).__version__
-            except Exception:   # guards-ok: None IS the record — "this package was not
+            except Exception:  # guards-ok: None IS the record — "this package was not
                 # importable in the run's environment" is a fact worth keeping, and a
                 # tracked package that is absent must not abort somebody's run
                 out[mod] = None
         return out
 
     # ---------------------------------------------------------------- registration
-    def input(self, path) -> pathlib.Path:
+    def input(self, path: str | pathlib.Path) -> pathlib.Path:
         """Hash and record a read. RETURNS the path, so registering is the easy path."""
         p = pathlib.Path(path)
         if not p.exists():
@@ -172,11 +188,12 @@ class Run:
             raise FileNotFoundError(
                 f"{self.record['script']}: cannot register input {p} — it does not exist. "
                 f"A registered input is hashed and pinned, so it must be present at "
-                f"registration time. Register it after producing it, or check the path.")
+                f"registration time. Register it after producing it, or check the path."
+            )
         self.record["inputs"].append(describe(p))
         return p
 
-    def output(self, path) -> pathlib.Path:
+    def output(self, path: str | pathlib.Path) -> pathlib.Path:
         """Register a write. Hashed in `write()`, not here.
 
         Callers do `df.to_csv(run.output(p))`, so the file does not exist yet at call
@@ -186,7 +203,7 @@ class Run:
         self._pending.append(p)
         return p
 
-    def environment_snapshot(self, directory=None) -> dict | None:
+    def environment_snapshot(self, directory: str | pathlib.Path | None = None) -> dict | None:
         """Capture the FULL installed package set, content-addressed.
 
         `environment.packages` records only the tracked subset -- enough to explain a
@@ -202,19 +219,20 @@ class Run:
             return None
         try:
             rec = write_snapshot(pathlib.Path(d))
-        except Exception as exc:      # never let provenance capture break a run
+        except Exception as exc:  # never let provenance capture break a run
             print(f"  WARNING: could not write environment snapshot: {exc}")
             rec = {"error": str(exc)}
         self.record["environment"]["snapshot"] = rec
         return rec
 
-    def seeds(self, seeds) -> None:
+    def seeds(self, seeds: typing.Iterable[int]) -> None:
         self.record["seeds"] = [int(s) for s in seeds]
 
-    def note(self, key: str, value) -> None:
+    def note(self, key: str, value: typing.Any) -> None:  # noqa: ANN401
+        """Any, deliberately: a note is whatever number or string the script wants recorded."""
         self.record.setdefault("notes", {})[key] = value
 
-    def module(self, module) -> None:
+    def module(self, module: types.ModuleType) -> None:
         """Record where an imported module actually RESOLVED from.
 
         A commit is not sufficient provenance when two installables share a name: a PEP 660
@@ -225,18 +243,19 @@ class Run:
         """
         f = getattr(module, "__file__", None)
         rec = {"module": getattr(module, "__name__", str(module)), "resolved_file": f}
-        if f:   # guards-ok: a module with no __file__ (builtin, namespace package) is
-                # recorded with resolved_file: null rather than skipped — the absence is
-                # the finding, since a builtin cannot be the vendored copy this guards against
+        if f:  # guards-ok: a module with no __file__ (builtin, namespace package) is
+            # recorded with resolved_file: null rather than skipped — the absence is
+            # the finding, since a builtin cannot be the vendored copy this guards against
             fp = pathlib.Path(f)
             rec["inside_project"] = str(self.project.root) in str(fp.resolve())
-            if fp.is_file():   # guards-ok: no sha256 key means the resolved path is not
+            if fp.is_file():  # guards-ok: no sha256 key means the resolved path is not
                 # a readable file, which resolved_file already states. Hashing a
                 # non-existent path would raise inside provenance capture instead.
                 rec["sha256"] = sha256(fp)
             if not rec["inside_project"]:
-                print(f"  PROVENANCE WARNING: {rec['module']} resolved OUTSIDE the "
-                      f"project root: {f}")
+                print(
+                    f"  PROVENANCE WARNING: {rec['module']} resolved OUTSIDE the project root: {f}"
+                )
         self.record.setdefault("modules", []).append(rec)
 
     # ---------------------------------------------------------------- the pin
@@ -270,19 +289,25 @@ class Run:
         # first commit, and a pin reading "commit: None" is a value a reader has to
         # interpret. Say what it means: there is no commit to name.
         commit = code["git_commit_short"] or "NONE — no commit to name (yet)"
-        lines = [f"{c}provenance — this artifact and what produced it",
-                 f"{c}  script     : {self.record['script']}",
-                 f"{c}  generation : {self.record['generation']}",
-                 f"{c}  commit     : {commit}"
-                 + ("  (CODE DIRTY — the commit does not identify what ran)"
-                    if code["git_code_dirty"] else "")]
+        lines = [
+            f"{c}provenance — this artifact and what produced it",
+            f"{c}  script     : {self.record['script']}",
+            f"{c}  generation : {self.record['generation']}",
+            f"{c}  commit     : {commit}"
+            + (
+                "  (CODE DIRTY — the commit does not identify what ran)"
+                if code["git_code_dirty"]
+                else ""
+            ),
+        ]
         ins = self.record["inputs"]
         if ins:
             lines.append(f"{c}  inputs ({len(ins)}), sha256:")
             for i in ins:
                 # Content digest FIRST: two runs over the same data must pin identically.
-                sha = str(i.get("content_sha256") or i.get("sha256")
-                          or i.get("sha256_tree") or "MISSING")[:16]
+                sha = str(
+                    i.get("content_sha256") or i.get("sha256") or i.get("sha256_tree") or "MISSING"
+                )[:16]
                 try:
                     name = str(pathlib.Path(i["path"]).relative_to(self.project.root))
                 except (ValueError, KeyError):
@@ -291,16 +316,20 @@ class Run:
         else:
             # NOT silence. "Derived from nothing" and "reads bypass run.input()" look
             # identical in an artifact unless one of them says so.
-            lines.append(f"{c}  inputs     : NONE REGISTERED. Either this artifact is "
-                         f"derived from nothing, or its reads bypass run.input().")
+            lines.append(
+                f"{c}  inputs     : NONE REGISTERED. Either this artifact is "
+                f"derived from nothing, or its reads bypass run.input()."
+            )
         return "\n".join(lines) + "\n"
 
     # ---------------------------------------------------------------- finish
-    def write(self, path) -> pathlib.Path:
+    def write(self, path: str | pathlib.Path) -> pathlib.Path:
         """Hash the registered outputs, write the record, append to the history."""
         p = pathlib.Path(path)
-        if self.project.env_snapshot_dir is not None \
-                and "snapshot" not in self.record["environment"]:
+        if (
+            self.project.env_snapshot_dir is not None
+            and "snapshot" not in self.record["environment"]
+        ):
             self.environment_snapshot()
         seen: set[pathlib.Path] = set()
         for q in self._pending:
@@ -313,25 +342,31 @@ class Run:
                 # A registered output that was never written is a FINDING, not an
                 # omission. Dropping it here is how a stage reports success having
                 # produced nothing.
-                self.record["outputs"].append({"path": str(q), "kind": "MISSING",
-                                               "note": "registered but never written"})
+                self.record["outputs"].append(
+                    {"path": str(q), "kind": "MISSING", "note": "registered but never written"}
+                )
         self.record.setdefault("status", "ok")
         self.record["finished_utc"] = dt.datetime.now(dt.timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ")
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
         self._written = True
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(self.record, indent=2, default=str))
         self._append_history(p)
 
         if self.record.get("status") == "failed":
-            print(f"  RUN FAILED — recorded: {self.record['failure']['type']}: "
-                  f"{self.record['failure']['message'][:120]}")
+            print(
+                f"  RUN FAILED — recorded: {self.record['failure']['type']}: "
+                f"{self.record['failure']['message'][:120]}"
+            )
         print(f"provenance -> {p}")
-        print(f"  code {self.record['code']['git_commit_short']}"
-              f"{' (CODE DIRTY)' if self.record['code']['git_code_dirty'] else ''}"
-              f"  inputs {len(self.record['inputs'])}"
-              f"  outputs {len(self.record['outputs'])}"
-              f"  seeds {self.record['seeds']}")
+        print(
+            f"  code {self.record['code']['git_commit_short']}"
+            f"{' (CODE DIRTY)' if self.record['code']['git_code_dirty'] else ''}"
+            f"  inputs {len(self.record['inputs'])}"
+            f"  outputs {len(self.record['outputs'])}"
+            f"  seeds {self.record['seeds']}"
+        )
         return p
 
     def _append_history(self, prov_path: pathlib.Path) -> None:
@@ -347,26 +382,31 @@ class Run:
             log.parent.mkdir(parents=True, exist_ok=True)
             r = self.record
             summary = {
-                "script": r["script"], "run_id": r["run_id"],
+                "script": r["script"],
+                "run_id": r["run_id"],
                 # So `grep '"status": "failed"' runs.jsonl` is the whole query. A history
                 # of successes only cannot tell you how often a step fails.
                 "status": r.get("status", "ok"),
                 "failure": r.get("failure"),
                 "generation": r["generation"],
-                "started_utc": r["started_utc"], "finished_utc": r["finished_utc"],
-                "command": r["command"], "cwd": r["cwd"],
+                "started_utc": r["started_utc"],
+                "finished_utc": r["finished_utc"],
+                "command": r["command"],
+                "cwd": r["cwd"],
                 "parameters": r["parameters"],
                 "seeds": r["seeds"],
                 "git_commit": r["code"]["git_commit_short"],
                 "git_code_dirty": r["code"]["git_code_dirty"],
                 "script_sha256": r["code"]["script_sha256"],
                 "packages": r["environment"]["packages"],
-                "inputs": [{"path": i["path"],
-                            "sha256": i.get("sha256") or i.get("sha256_tree")}
-                           for i in r["inputs"]],
-                "outputs": [{"path": o["path"],
-                             "sha256": o.get("sha256") or o.get("sha256_tree")}
-                            for o in r["outputs"]],
+                "inputs": [
+                    {"path": i["path"], "sha256": i.get("sha256") or i.get("sha256_tree")}
+                    for i in r["inputs"]
+                ],
+                "outputs": [
+                    {"path": o["path"], "sha256": o.get("sha256") or o.get("sha256_tree")}
+                    for o in r["outputs"]
+                ],
                 # Where the FULL record is. Without this an archiver reading the history
                 # can find every artifact a run produced except its own provenance.
                 "provenance_path": str(prov_path),
@@ -383,16 +423,19 @@ class Run:
                 # its stages in sequence; a parallel pipeline has no such protection.
                 try:
                     import fcntl
+
                     fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
                 except (ImportError, OSError):
                     # No flock (non-POSIX, some network filesystems). Degrade to the
                     # unlocked append rather than losing the record entirely -- and say so,
                     # because a silent downgrade of a durability guarantee is the kind of
                     # thing nobody discovers until the file is already broken.
-                    print("  NOTE: advisory locking unavailable; run history appended "
-                          "unlocked. Concurrent writers may interleave.")
+                    print(
+                        "  NOTE: advisory locking unavailable; run history appended "
+                        "unlocked. Concurrent writers may interleave."
+                    )
                 fh.write(line)
                 fh.flush()
                 os.fsync(fh.fileno())
-        except Exception as exc:      # never let logging break a run
+        except Exception as exc:  # never let logging break a run
             print(f"  WARNING: could not append to run history: {exc}")
