@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "runprov"
+version = "0.1.0"
+description = "Record what a script read, wrote and ran as — in a form a checker can verify"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Taylor Nicole Thompson", email = "taylor.nicole.thompson@gmail.com" }]
+keywords = ["provenance", "reproducibility", "research-software", "data-lineage",
+            "checksum", "audit"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+    "Topic :: System :: Archiving",
+    # Without this PyPI shows no licence at all: `license = {file = "LICENSE"}` fills
+    # License-File and leaves the License field EMPTY, which reads as unlicensed on the
+    # page most people will actually look at.
+    "License :: CeCILL-B Free Software License Agreement (CECILL-B)",
+]
+
+# NO RUNTIME DEPENDENCIES, and that is a feature, not an omission. A provenance module is
+# imported by every step of a pipeline; anything it depends on becomes a constraint on
+# every one of them, and a version conflict in a provenance tool is a spectacularly silly
+# reason to be unable to record a run. Verified: the package imports and runs on a system
+# interpreter with nothing installed.
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7", "pyyaml>=6"]   # pyyaml only to CHECK the rendered YAML parses
+
+[project.urls]
+Homepage = "https://github.com/Taylor-Nicole/runprov"
+Issues = "https://github.com/Taylor-Nicole/runprov/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["runprov"]
+
+[tool.hatch.build.targets.sdist]
+include = ["runprov", "tests", "README.md", "PUBLISHING.md", "WHY.md",
+           "LICENSING.md", "CONTRIBUTING.md", "DCO.txt", "LICENSE"]
