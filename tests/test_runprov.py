@@ -9,6 +9,7 @@ This file is deliberately free of anything HCV- or repository-specific, so it ca
 verbatim into a standalone runprov repository. The tests that check this repository's shim
 live next door in `test_provenance_shim.py`.
 """
+
 from __future__ import annotations
 
 import json
@@ -21,9 +22,9 @@ import pytest
 REPO = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-import runprov                                          # noqa: E402
-import runprov.environment                              # noqa: E402
-import runprov.__main__ as cli                          # noqa: E402
+import runprov  # noqa: E402
+import runprov.__main__ as cli  # noqa: E402
+import runprov.environment  # noqa: E402
 
 
 # --------------------------------------------------------------------- hashing
@@ -32,7 +33,7 @@ def test_content_digest_ignores_volatile_header_stamps(tmp_path):
     b = tmp_path / "b.tsv"
     a.write_text("# built_utc: 2026-01-01T00:00:00Z\nid\tvalue\nx\t1\n")
     b.write_text("# built_utc: 2099-12-31T23:59:59Z\nid\tvalue\nx\t1\n")
-    assert runprov.sha256(a) != runprov.sha256(b)          # raw hashes differ
+    assert runprov.sha256(a) != runprov.sha256(b)  # raw hashes differ
     assert runprov.content_digest(a) == runprov.content_digest(b)
 
 
@@ -61,6 +62,7 @@ def test_content_digest_of_gzip_ignores_the_compression_mtime(tmp_path):
     gzip header stores an mtime. One artifact was reported CHANGED on every run for this."""
     import gzip
     import time
+
     a, b = tmp_path / "a.gz", tmp_path / "b.gz"
     a.write_bytes(gzip.compress(b"same payload", mtime=1))
     time.sleep(0.01)
@@ -74,8 +76,9 @@ def test_describe_records_both_hashes(tmp_path):
     p.write_text("# built_utc: 2026-01-01T00:00:00Z\nid\n1\n")
     rec = runprov.describe(p)
     assert rec["kind"] == "file"
-    assert rec["sha256"] != rec["content_sha256"], \
+    assert rec["sha256"] != rec["content_sha256"], (
         "both hashes must be present and they answer different questions"
+    )
 
 
 def test_describe_hashes_a_directory_as_a_tree(tmp_path):
@@ -92,8 +95,12 @@ def test_describe_hashes_a_directory_as_a_tree(tmp_path):
 
 # --------------------------------------------------------------------- the project
 def _project(tmp_path) -> runprov.Project:
-    return runprov.Project(root=tmp_path, run_log=tmp_path / "runs.jsonl",
-                           run_id=lambda: "test_run", generation=lambda: "test_gen")
+    return runprov.Project(
+        root=tmp_path,
+        run_log=tmp_path / "runs.jsonl",
+        run_id=lambda: "test_run",
+        generation=lambda: "test_gen",
+    )
 
 
 def test_run_log_defaults_under_the_root_not_to_this_repository(tmp_path):
@@ -110,6 +117,7 @@ def test_detect_root_finds_the_git_toplevel(tmp_path):
     `git init` had not been run yet — a test that measures its surroundings rather than
     its subject. It builds its own repository instead."""
     import subprocess
+
     repo = tmp_path / "proj"
     (repo / "deep" / "nested").mkdir(parents=True)
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -134,7 +142,7 @@ def test_run_input_returns_the_path_so_registering_is_the_easy_path(tmp_path):
     src = tmp_path / "in.tsv"
     src.write_text("id\n1\n")
     run = runprov.Run("t", project=_project(tmp_path))
-    assert run.input(src) == src                      # usable as `open(run.input(p))`
+    assert run.input(src) == src  # usable as `open(run.input(p))`
     assert run.record["inputs"][0]["path"] == str(src)
     assert run.record["inputs"][0]["sha256"]
 
@@ -167,8 +175,9 @@ def test_run_appends_one_line_per_run_to_the_history(tmp_path):
     assert len(lines) == 3
     first = json.loads(lines[0])
     assert first["run_id"] == "test_run" and first["generation"] == "test_gen"
-    assert first["provenance_path"].endswith("t_provenance.json"), \
+    assert first["provenance_path"].endswith("t_provenance.json"), (
         "without this an archiver can find every artifact except the run's own provenance"
+    )
 
 
 def test_run_resolves_the_calling_script_not_the_package_file(tmp_path):
@@ -194,8 +203,7 @@ def test_a_crashed_run_still_leaves_a_record(tmp_path):
     runs with an unknown denominator. A `with` block closes it."""
     proj = _project(tmp_path)
     with pytest.raises(RuntimeError):
-        with runprov.Run("crashy", project=proj,
-                         provenance=tmp_path / "crashy.json") as run:
+        with runprov.Run("crashy", project=proj, provenance=tmp_path / "crashy.json") as run:
             run.output(tmp_path / "result.tsv")
             raise RuntimeError("the step failed halfway, as steps do")
     rec = json.loads((tmp_path / "crashy.json").read_text())
@@ -203,17 +211,17 @@ def test_a_crashed_run_still_leaves_a_record(tmp_path):
     assert rec["failure"]["type"] == "RuntimeError"
     assert "failed halfway" in rec["failure"]["message"]
     assert "Traceback" in rec["failure"]["traceback"]
-    assert rec["outputs"][0]["kind"] == "MISSING", \
+    assert rec["outputs"][0]["kind"] == "MISSING", (
         "what the step did NOT produce is the most useful thing in a failure record"
+    )
 
 
 def test_the_failure_is_re_raised_never_swallowed(tmp_path):
     """A provenance module that hides an exception is strictly worse than one that
     records nothing."""
     with pytest.raises(ZeroDivisionError):
-        with runprov.Run("t", project=_project(tmp_path),
-                         provenance=tmp_path / "t.json"):
-            1 / 0
+        with runprov.Run("t", project=_project(tmp_path), provenance=tmp_path / "t.json"):
+            _ = 1 / 0
 
 
 def test_a_failed_run_is_greppable_in_the_history(tmp_path):
@@ -222,8 +230,7 @@ def test_a_failed_run_is_greppable_in_the_history(tmp_path):
         with runprov.Run("bad", project=proj, provenance=tmp_path / "bad.json"):
             raise ValueError("nope")
     runprov.Run("good", project=proj).write(tmp_path / "good.json")
-    rows = [json.loads(x) for x in
-            (tmp_path / "runs.jsonl").read_text().strip().splitlines()]
+    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().strip().splitlines()]
     assert [r["status"] for r in rows] == ["failed", "ok"]
     assert rows[1]["failure"] is None
 
@@ -231,7 +238,7 @@ def test_a_failed_run_is_greppable_in_the_history(tmp_path):
 def test_a_successful_with_block_writes_once_not_twice(tmp_path):
     proj = _project(tmp_path)
     with runprov.Run("t", project=proj, provenance=tmp_path / "t.json") as run:
-        run.write(tmp_path / "t.json")          # explicit write, the historic style
+        run.write(tmp_path / "t.json")  # explicit write, the historic style
     assert len((tmp_path / "runs.jsonl").read_text().strip().splitlines()) == 1
 
 
@@ -255,9 +262,11 @@ def test_concurrent_appends_do_not_interleave(tmp_path):
     of 1,908 lines exceed the 4,096-byte POSIX atomic-append bound. Sequential chains hid
     this; a parallel pipeline would not."""
     import concurrent.futures as cf
-    proj = runprov.Project(root=tmp_path, run_log=tmp_path / "runs.jsonl",
-                           run_id=lambda: "r", generation=lambda: "g")
-    big = {"padding": "x" * 9000}          # forces a line well over the atomic bound
+
+    proj = runprov.Project(
+        root=tmp_path, run_log=tmp_path / "runs.jsonl", run_id=lambda: "r", generation=lambda: "g"
+    )
+    big = {"padding": "x" * 9000}  # forces a line well over the atomic bound
 
     def one(i):
         runprov.Run(f"s{i}", big, project=proj).write(tmp_path / f"p{i}.json")
@@ -267,24 +276,41 @@ def test_concurrent_appends_do_not_interleave(tmp_path):
     lines = (tmp_path / "runs.jsonl").read_text().strip().splitlines()
     assert len(lines) == 24
     for ln in lines:
-        json.loads(ln)                      # every line must still be valid JSON
+        json.loads(ln)  # every line must still be valid JSON
     assert len(lines[0]) > 4096
 
 
 # --------------------------------------------------------------------- the continuous log
 NASTY = [
-    {"script": "s1", "started_utc": "2026-01-01T00:00:00Z",
-     "command": "/usr/bin/python x.py --flag 'a: b' #hash", "cwd": None,
-     "run_id": "r", "generation": "g", "git_commit": "abc", "status": "ok",
-     "inputs": [{"path": "a: b/c#d.tsv", "sha256": "f" * 64}],
-     "outputs": [{"path": "- out.tsv", "sha256": None}]},
+    {
+        "script": "s1",
+        "started_utc": "2026-01-01T00:00:00Z",
+        "command": "/usr/bin/python x.py --flag 'a: b' #hash",
+        "cwd": None,
+        "run_id": "r",
+        "generation": "g",
+        "git_commit": "abc",
+        "status": "ok",
+        "inputs": [{"path": "a: b/c#d.tsv", "sha256": "f" * 64}],
+        "outputs": [{"path": "- out.tsv", "sha256": None}],
+    },
     # No cwd key at all — a record written before the field existed. THIS is what broke it:
     # the renderer emitted `cwd: ?`, a bare YAML complex-key indicator, and the whole file
     # stopped parsing at line 10.
-    {"script": "s2", "started_utc": "2026-01-02T00:00:00Z", "status": "failed",
-     "failure": {"type": "ValueError", "message": "on: colon\nand a newline"}},
-    {"script": "yes", "command": "true", "status": "ok", "generation": "2026-08-07",
-     "run_id": "0755", "cwd": "/tmp/dir with spaces/é"},
+    {
+        "script": "s2",
+        "started_utc": "2026-01-02T00:00:00Z",
+        "status": "failed",
+        "failure": {"type": "ValueError", "message": "on: colon\nand a newline"},
+    },
+    {
+        "script": "yes",
+        "command": "true",
+        "status": "ok",
+        "generation": "2026-08-07",
+        "run_id": "0755",
+        "cwd": "/tmp/dir with spaces/é",
+    },
 ]
 
 
@@ -307,8 +333,20 @@ def test_rendered_yaml_keeps_the_field_names_of_the_log_it_replaces():
     transformation log can read this one. What changed is where the values come from."""
     yaml = pytest.importorskip("yaml")
     d = yaml.safe_load(cli._yaml(NASTY))[0]
-    for k in ("step", "date", "input", "output", "run_command", "cwd", "run_id",
-              "generation", "git_commit", "status", "input_sha256", "output_sha256"):
+    for k in (
+        "step",
+        "date",
+        "input",
+        "output",
+        "run_command",
+        "cwd",
+        "run_id",
+        "generation",
+        "git_commit",
+        "status",
+        "input_sha256",
+        "output_sha256",
+    ):
         assert k in d, k
 
 
@@ -322,9 +360,13 @@ def test_an_unreadable_line_is_counted_not_dropped(tmp_path):
     """One corrupt line costs one record, never the file. That is the whole reason this is
     JSONL: the predecessor's writer could make the entire history unparseable."""
     p = tmp_path / "runs.jsonl"
-    p.write_text(json.dumps({"script": "a"}) + "\n"
-                 + "{not json at all\n"
-                 + json.dumps({"script": "b"}) + "\n")
+    p.write_text(
+        json.dumps({"script": "a"})
+        + "\n"
+        + "{not json at all\n"
+        + json.dumps({"script": "b"})
+        + "\n"
+    )
     rows, bad = cli._load(p)
     assert [r["script"] for r in rows] == ["a", "b"]
     assert bad == 1
@@ -366,14 +408,16 @@ def test_the_recorded_command_is_re_runnable(tmp_path):
     cmd = run.record["command"]
     assert sys.executable in cmd, "which interpreter ran it"
     assert run.record["argv"] == sys.argv
-    assert run.record["cwd"] == str(pathlib.Path.cwd()), \
+    assert run.record["cwd"] == str(pathlib.Path.cwd()), (
         "a relative script path in the command means nothing without this"
+    )
 
 
 def test_the_command_survives_arguments_that_need_quoting(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["s.py", "--x", "a b", "--y", "it's; rm -rf /"])
     run = runprov.Run("t", project=_project(tmp_path))
     import shlex
+
     assert shlex.split(run.record["command"])[1:] == sys.argv
 
 
@@ -436,7 +480,7 @@ def test_header_changes_when_an_input_changes(tmp_path):
 def test_header_names_the_absence_of_a_commit_rather_than_printing_none(tmp_path):
     """The first artifact of a new project is written before its first commit, so this is
     the pin a reader sees FIRST. `commit: None` is a value to interpret; say what it means."""
-    run = runprov.Run("t", project=_project(tmp_path))     # tmp_path is not a git repo
+    run = runprov.Run("t", project=_project(tmp_path))  # tmp_path is not a git repo
     assert run.record["code"]["git_commit_short"] is None
     assert "commit     : NONE — no commit to name (yet)" in run.header()
 
@@ -458,9 +502,13 @@ def test_environment_snapshot_is_content_addressed_not_per_run(tmp_path):
     """The measured failure it replaces: the old pipeline wrote one timestamped freeze per
     invocation — 87 files holding 8 distinct environments, 1.4 MB, and 'did the
     environment change?' answerable only by diffing across filenames."""
-    proj = runprov.Project(root=tmp_path, run_log=tmp_path / "runs.jsonl",
-                           env_snapshot_dir=tmp_path / "env",
-                           run_id=lambda: "r", generation=lambda: "g")
+    proj = runprov.Project(
+        root=tmp_path,
+        run_log=tmp_path / "runs.jsonl",
+        env_snapshot_dir=tmp_path / "env",
+        run_id=lambda: "r",
+        generation=lambda: "g",
+    )
     for i in range(5):
         runprov.Run("t", project=proj).write(tmp_path / f"t{i}.json")
     files = list((tmp_path / "env").iterdir())

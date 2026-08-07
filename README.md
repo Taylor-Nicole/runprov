@@ -8,9 +8,9 @@ from runprov import Run, configure
 configure(root=REPO, run_log=REPO / "reports" / "runs.jsonl")
 
 run = Run("build_labels", vars(args))
-df = pd.read_csv(run.input(INPUT))        # registering IS how you open it
+df = pd.read_csv(run.input(INPUT))  # registering IS how you open it
 with open(run.output(OUT), "w") as fh:
-    fh.write(run.header())                # the pin, inside the artifact
+    fh.write(run.header())  # the pin, inside the artifact
     df.to_csv(fh, sep="\t", index=False)
 run.note("n_rows", len(df))
 run.write(OUT.with_name("build_labels_provenance.json"))
@@ -31,10 +31,14 @@ it was meant to document.
 Distribution was never the problem. The interface was:
 
 ```python
-append_log({"step": "annotate_segmentation_status_advanced",
-            "input":  f"{args.fasta}, {args.metadata_csv}",     # a string
-            "output": f"{output_csv_path}, {segments_output_path}",
-            "script": "src/segmentation/annotate_segmentation_status.py"})
+append_log(
+    {
+        "step": "annotate_segmentation_status_advanced",
+        "input": f"{args.fasta}, {args.metadata_csv}",  # a string
+        "output": f"{output_csv_path}, {segments_output_path}",
+        "script": "src/segmentation/annotate_segmentation_status.py",
+    }
+)
 ```
 
 Every field is prose the author typed. It records what someone *believed* the step read,

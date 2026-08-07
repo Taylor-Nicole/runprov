@@ -1,0 +1,39 @@
+# Ruff config for the runprov package, kept beside the code so it travels with it into the
+# standalone repository. Ruff replaces black + isort + flake8: `ruff format` is
+# black-compatible byte for byte, and the `I` rules ARE isort.
+#
+# target-version is py310, NOT the repository's py311. Without it, UP017 rewrites
+# `dt.timezone.utc` to `dt.UTC` — an alias added in 3.11 — and the package silently stops
+# importing on the oldest interpreter it claims to support. A linter that breaks your
+# declared support floor is worse than no linter.
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "I", "N", "UP", "ANN", "S", "B", "C4", "PT", "RUF"]
+
+[lint.per-file-ignores]
+# project.py holds the ONE subprocess call in the package: `git`, resolved from PATH.
+#   S603  the argv is a literal program name plus the caller's own arguments, no shell.
+#   S607  `git` is deliberately taken from PATH. Pinning an absolute path would break
+#         every environment whose git is not where this machine's is, which is most.
+# Scoped to the file rather than inline because `ruff format` moves which physical line a
+# multi-line call reports on, and an inline noqa silently stops applying when it does.
+"project.py" = ["S603", "S607"]
+# argparse-driven entry point: `main` returns an int exit code and its locals are obvious.
+"__main__.py" = ["ANN401"]
+
+# Tests are not library code and linting them as if they were produces 198 findings that
+# all say the same thing. What is switched off and why:
+#   S101   `assert` IS the test. Flagging it is the rule misapplied.
+#   ANN    a test's arguments are fixtures and its return is None; annotating them adds
+#          nothing a reader did not already know.
+#   S108   /tmp paths in fixtures are the point.
+#   PT011  pytest.raises(Exception) is deliberate where the type IS the assertion.
+#   PT018  a compound assert is often the clearest statement of one fact.
+#   PT012  the crash tests need a `with Run(...)` INSIDE pytest.raises; that nesting is
+#          the behaviour under test, not sloppiness.
+#   S603/S607  the tests shell out to `git` to build a real repository to detect. That is
+#          the subject under test, not an injection risk.
+"tests/*" = ["S101", "S105", "S106", "S108", "ANN", "PT011", "PT012", "PT018", "S603", "S607",
+             "N802"]

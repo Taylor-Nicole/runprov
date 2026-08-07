@@ -15,6 +15,7 @@ The gzip case is separate and worse: the gzip header stores the compression mtim
 .gz rewritten from byte-identical data hashes differently every single time. Decompress
 first, or the file can never hash the same twice.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -32,7 +33,8 @@ VOLATILE = re.compile(r"^#\s*(built_utc|generated_utc|run_utc|built_at)\b")
 # could never reproduce.
 VOLATILE_JSON = re.compile(
     r'"(built_utc|generated_utc|run_utc|built_at|started_utc|finished_utc|drawn_utc'
-    r'|mtime_utc|acquired_utc)"\s*:\s*"[^"]*"')
+    r'|mtime_utc|acquired_utc)"\s*:\s*"[^"]*"'
+)
 
 
 def sha256(path: pathlib.Path, chunk: int = 1 << 20) -> str:
@@ -69,8 +71,9 @@ def describe(path: pathlib.Path) -> dict:
     rec = {
         "path": str(path),
         "size_bytes": st.st_size,
-        "mtime_utc": dt.datetime.fromtimestamp(
-            st.st_mtime, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "mtime_utc": dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
     }
     if path.is_dir():
         files = sorted(p for p in path.rglob("*") if p.is_file())
