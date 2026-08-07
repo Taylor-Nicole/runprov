@@ -9,7 +9,7 @@ description = "Record what a script read, wrote and ran as — in a form a check
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-authors = [{ name = "Taylor Nicole Thompson", email = "taylor.nicole.thompson@gmail.com" }]
+authors = [{ name = "Taylor Thompson", email = "taylor.nicole.thompson@gmail.com" }]
 keywords = ["provenance", "reproducibility", "research-software", "data-lineage",
             "checksum", "audit"]
 classifiers = [
@@ -64,6 +64,6 @@ exclude_also = ["if __name__ == .__main__.:", "raise SystemExit"]
 packages = ["runprov"]
 
 [tool.hatch.build.targets.sdist]
-include = ["runprov", "tests", "README.md", "PUBLISHING.md", "WHY.md",
+include = ["runprov", "tests", "ci.py", "README.md", "PUBLISHING.md", "WHY.md",
            "LICENSING.md", "CONTRIBUTING.md", "DCO.txt", "LICENSE",
            ".ruff.toml", ".pre-commit-config.yaml"]

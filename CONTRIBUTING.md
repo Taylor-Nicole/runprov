@@ -74,12 +74,21 @@ than provenance that changes loudly.
 decision, because that is what stops someone "simplifying" a safeguard whose reason is not
 visible. Keep that up.
 
-## Running the tests
+## Run the CI locally, before you push
 
 ```bash
-python -m pip install -e ".[test]"
-python -m pytest -q
+python ci.py setup     # dev extras + the pre-commit hooks, once
+python ci.py           # lint, test, build — exactly what CI runs
 ```
+
+**The workflow calls `ci.py`.** It does not restate the commands, because a copy of a
+command list is wrong within a month and then "it passes locally" stops meaning anything.
+There is one definition, and you can run it.
+
+Individually: `python ci.py lint` (ruff format --check, ruff check, mypy), `python ci.py
+test` (pytest with the coverage gate), `python ci.py build` (build, twine check --strict,
+then install the wheel into a clean venv and import it from elsewhere — which is what
+catches a file that is in git and missing from the package).
 
 They are fast (a few seconds) and hermetic: every test builds its own repository and its own
 temporary directories. If a test needs the ambient environment, it is testing the wrong

@@ -35,5 +35,10 @@ select = ["E", "F", "I", "N", "UP", "ANN", "S", "B", "C4", "PT", "RUF"]
 #          the behaviour under test, not sloppiness.
 #   S603/S607  the tests shell out to `git` to build a real repository to detect. That is
 #          the subject under test, not an injection risk.
+# ci.py exists to run other tools; S603 is the rule describing its entire job. Scoped to
+# the file, with the reason here, for the same reason as project.py: an inline directive
+# detaches the next time the formatter moves the line it sits on.
+"ci.py" = ["S603"]
+
 "tests/*" = ["S101", "S105", "S106", "S108", "ANN", "PT011", "PT012", "PT018", "S603", "S607",
              "N802"]

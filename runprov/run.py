@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Taylor Nicole Thompson
+# Copyright (c) 2026 Taylor Thompson
 # Licensed under the CeCILL-B Free Software License Agreement — see LICENSE.
 # https://cecill.info/
 """`Run` — one pass of one script, recorded so it can be reconstructed or invalidated.

@@ -9,7 +9,7 @@ status* — can only be answered by your institution.
 
 ## DECIDED, 2026-08-07
 
-**CeCILL-B**, copyright **Taylor Nicole Thompson**, sole author. `LICENSE` holds the text
+**CeCILL-B**, copyright **Taylor Thompson**, sole author. `LICENSE` holds the text
 verbatim (21,393 bytes, sha256 `ae13622d13fd432d…`); every module carries a three-line
 header. Taylor chose the French licence over MIT; the analysis below is kept because it is
 the record of why, not because the question is still open.
@@ -149,7 +149,7 @@ conversation answers all of it at once. Worth doing in one pass.
 | | |
 |---|---|
 | Licence | **CeCILL-B** — chosen 2026-08-07, verbatim in `LICENSE` |
-| Holder | **Taylor Nicole Thompson**, sole author — confirm spelling, and confirm with the DRCI that L113-9 does not put it with the CHU |
+| Holder | **Taylor Thompson**, sole author — confirm spelling, and confirm with the DRCI that L113-9 does not put it with the CHU |
 | Contributions | **DCO** (`Signed-off-by`) from the first commit |
 | Apache-2.0 | not now; revisit only if a company's counsel asks for the patent grant |
 | Status | **Publishable.** The extraction script's LICENSE blocker is cleared. |
