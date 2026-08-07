@@ -29,17 +29,39 @@ Promoted out of `scripts/audit/_provenance.py` (ADR-028). That module is now a s
 this package, so the audit and any new pipeline share one implementation rather than two
 copies that agree until they do not.
 """
+
 from .environment import installed_packages, write_snapshot
 from .hashing import VOLATILE, VOLATILE_JSON, content_digest, describe, sha256
-from .project import (DEFAULT_CODE_PATHS, DEFAULT_TRACKED, Project, active,
-                      configure, default_generation, default_run_id, detect_root, git)
+from .project import (
+    DEFAULT_CODE_PATHS,
+    DEFAULT_TRACKED,
+    Project,
+    active,
+    configure,
+    default_generation,
+    default_run_id,
+    detect_root,
+    git,
+)
 from .run import Run
 
 __all__ = [
-    "Run", "Project", "configure", "active", "detect_root", "git",
-    "default_run_id", "default_generation",
-    "sha256", "content_digest", "describe", "VOLATILE", "VOLATILE_JSON",
-    "installed_packages", "write_snapshot",
-    "DEFAULT_CODE_PATHS", "DEFAULT_TRACKED",
+    "DEFAULT_CODE_PATHS",
+    "DEFAULT_TRACKED",
+    "VOLATILE",
+    "VOLATILE_JSON",
+    "Project",
+    "Run",
+    "active",
+    "configure",
+    "content_digest",
+    "default_generation",
+    "default_run_id",
+    "describe",
+    "detect_root",
+    "git",
+    "installed_packages",
+    "sha256",
+    "write_snapshot",
 ]
 __version__ = "0.1.0"

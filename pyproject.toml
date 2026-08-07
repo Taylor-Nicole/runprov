@@ -32,15 +32,38 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-test = ["pytest>=7", "pyyaml>=6"]   # pyyaml only to CHECK the rendered YAML parses
+test = ["pytest>=7", "pytest-cov>=4", "pyyaml>=6"]  # pyyaml only to CHECK the rendered YAML
+dev = ["runprov[test]", "ruff>=0.6", "mypy>=1.10", "build", "twine", "pre-commit"]
 
 [project.urls]
 Homepage = "https://github.com/Taylor-Nicole/runprov"
 Issues = "https://github.com/Taylor-Nicole/runprov/issues"
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+# NOT `strict`. Strict adds disallow_any_explicit and friends, and this package
+# deliberately takes `Any` in two places -- `note(key, value)` records whatever number or
+# string a script wants, and `configure(**kwargs)` forwards Project's own fields. Turning
+# on a check you then have to suppress twice is theatre.
+
+[tool.pytest.ini_options]
+addopts = "-q --cov=runprov --cov-report=term-missing --cov-fail-under=80"
+testpaths = ["tests"]
+
+# 80, not the 85.68 the suite currently achieves. A threshold set at today's exact number
+# fails on the first line anyone adds, which trains people to lower it rather than to
+# write the test -- and a gate that gets edited to pass is not a gate.
+[tool.coverage.report]
+exclude_also = ["if __name__ == .__main__.:", "raise SystemExit"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["runprov"]
 
 [tool.hatch.build.targets.sdist]
 include = ["runprov", "tests", "README.md", "PUBLISHING.md", "WHY.md",
-           "LICENSING.md", "CONTRIBUTING.md", "DCO.txt", "LICENSE"]
+           "LICENSING.md", "CONTRIBUTING.md", "DCO.txt", "LICENSE",
+           ".ruff.toml", ".pre-commit-config.yaml"]

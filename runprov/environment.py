@@ -29,6 +29,7 @@ Two further differences from the original, both deliberate
 * **It records what it could not read.** A distribution with no version is reported, not
   skipped. A snapshot silently missing an entry is worse than one that says so.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -44,11 +45,12 @@ def installed_packages(unreadable: list | None = None) -> dict[str, str]:
     be written into the snapshot rather than vanishing.
     """
     import importlib.metadata as md
+
     out: dict[str, str] = {}
     for dist in md.distributions():
         try:
             name = (dist.metadata["Name"] or "").strip()
-        except Exception:   # guards-ok: a distribution with unreadable metadata has no
+        except Exception:  # guards-ok: a distribution with unreadable metadata has no
             # name to key on, so it cannot be recorded as an entry. It is counted instead
             # -- see `unreadable` in the snapshot header, which is what stops this from
             # being a silent omission.
@@ -70,8 +72,7 @@ def render(packages: dict[str, str], unreadable: int = 0) -> str:
     are a different environment, and the old per-run files did not say which they were.
     """
     head = [
-        "# environment snapshot — content-addressed; the filename IS the digest of this "
-        "body",
+        "# environment snapshot — content-addressed; the filename IS the digest of this body",
         f"# python   : {sys.version.split()[0]}",
         f"# platform : {platform.platform()}",
         f"# packages : {len(packages)}",

@@ -1,0 +1,21 @@
+# Same checks as CI, run locally. `pre-commit install` once, then a failing push is
+# something you find in a second rather than in a queue.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+      # This package has no data files. Anything large is a mistake, and a provenance
+      # tool that ships someone's parquet by accident would be a poor advertisement.
+        args: [--maxkb=200]
+      - id: check-merge-conflict

@@ -33,9 +33,13 @@ utility, `append_log(entry)`, imported by **248 files** — near-total adoption,
 reasonable measure. Its interface took a dictionary of strings:
 
 ```python
-append_log({"step": "annotate_segmentation_status_advanced",
-            "input":  f"{args.fasta}, {args.metadata_csv}",
-            "script": "src/segmentation/annotate_segmentation_status.py"})
+append_log(
+    {
+        "step": "annotate_segmentation_status_advanced",
+        "input": f"{args.fasta}, {args.metadata_csv}",
+        "script": "src/segmentation/annotate_segmentation_status.py",
+    }
+)
 ```
 
 Every field is prose typed by the author. So the record says what someone *believed* the
@@ -54,8 +58,8 @@ Distribution was never the problem; the interface was.
 path.** Registering is not an extra line you might forget — it is how you open the file:
 
 ```python
-df = pd.read_csv(run.input(path))     # registered, hashed, pinned
-df = pd.read_csv(path)                # not — and an AST check can see the difference
+df = pd.read_csv(run.input(path))  # registered, hashed, pinned
+df = pd.read_csv(path)  # not — and an AST check can see the difference
 ```
 
 That last clause matters more than it looks. Because registration is syntactically visible,

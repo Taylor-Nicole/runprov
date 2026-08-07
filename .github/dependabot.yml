@@ -1,0 +1,12 @@
+# Actions pinned by major tag are convenient and go stale; this is what keeps them fresh
+# without hand-watching a repository nobody looks at between releases.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly

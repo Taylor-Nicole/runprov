@@ -1,0 +1,83 @@
+# Runs on every push and pull request — NOT only at release time.
+#
+# The tests used to live inside publish.yml, which fires on a tag. Tests you discover are
+# broken while cutting a release are tests that failed at the worst possible moment; this
+# repository's whole subject is checks that only look green because they never ran.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: nothing here needs write access to anything.
+permissions:
+  contents: read
+
+# A new push supersedes the run in flight. Cancelling it saves minutes and stops two
+# results for the same branch arriving out of order.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade ruff mypy
+      # ruff IS black + isort: `ruff format` is byte-compatible with black, and the `I`
+      # rules are isort. One tool, one config, no chance of two formatters disagreeing.
+      - name: ruff format (black-compatible)
+        run: ruff format --check --diff .
+      - name: ruff check (pyflakes, isort, bugbear, pyupgrade, bandit, naming)
+        run: ruff check --output-format=github .
+      - name: mypy
+        run: mypy runprov/
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false        # one platform failing must not hide the others
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          # macOS and Windows on one version each. Windows earns its place: the run-history
+          # append takes an advisory flock, and fcntl does not exist there — this is the
+          # job that proves the documented fallback actually works rather than merely
+          # being written down.
+          - os: macos-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python }}"
+      - run: python -m pip install -e ".[test]"
+      - run: python -m pytest
+
+  build:
+    # On every push, not only on a tag. A README that PyPI refuses to render is unfixable
+    # after upload, because a version can never be re-uploaded.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade build twine
+      - run: python -m build
+      - run: python -m twine check --strict dist/*
+      # Install from the WHEEL, not the source tree: this is what catches a file that is
+      # in git and missing from the package.
+      - name: import from the built wheel
+        run: |
+          python -m venv /tmp/v
+          /tmp/v/bin/python -m pip install --quiet dist/*.whl
+          cd /tmp && /tmp/v/bin/python -c "import runprov; print(runprov.__version__)"
