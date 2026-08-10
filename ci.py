@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Hôpital Henri-Mondor and Taylor Thompson
+# Licensed under the CeCILL-B Free Software License Agreement — see LICENSE.
 """Run the CI locally — the SAME commands the workflow runs, because it runs these.
 
     python ci.py            everything, in the order CI runs it

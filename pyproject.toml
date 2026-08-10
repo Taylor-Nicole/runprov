@@ -65,5 +65,5 @@ packages = ["runprov"]
 
 [tool.hatch.build.targets.sdist]
 include = ["runprov", "tests", "ci.py", "README.md", "PUBLISHING.md", "WHY.md",
-           "LICENSING.md", "CONTRIBUTING.md", "DCO.txt", "LICENSE",
+           "LICENSING.md", "CONTRIBUTING.md", "DCO.txt", "LICENSE", "CITATION.cff",
            ".ruff.toml", ".pre-commit-config.yaml"]
