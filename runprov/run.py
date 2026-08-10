@@ -83,11 +83,17 @@ def _exclusive(fh: typing.IO[str]) -> typing.Iterator[None]:
         locked = "fcntl"
     except (ImportError, OSError):
         try:
-            import msvcrt
+            # `sys.platform == "win32"` is not decoration: mypy typechecks for the
+            # platform it runs on, so on Linux `msvcrt` resolves to a stub with no
+            # members and every attribute is an error. The guard is how the stubs expect
+            # platform-specific code to be written, and it is honest -- this branch only
+            # ever runs there.
+            if sys.platform == "win32":
+                import msvcrt
 
-            fh.seek(0)
-            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
-            locked = "msvcrt"
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+                locked = "msvcrt"
         except (ImportError, OSError):
             print(
                 "  NOTE: no file locking available; run history appended unlocked. "
@@ -100,7 +106,7 @@ def _exclusive(fh: typing.IO[str]) -> typing.Iterator[None]:
             import fcntl
 
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        elif locked == "msvcrt":
+        elif locked == "msvcrt" and sys.platform == "win32":
             import msvcrt
 
             fh.seek(0)
