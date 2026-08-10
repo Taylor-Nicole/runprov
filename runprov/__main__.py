@@ -28,11 +28,12 @@ import argparse
 import json
 import pathlib
 import sys
+import typing
 
 from .project import active
 
 
-def _load(path: pathlib.Path) -> tuple[list[dict], int]:
+def _load(path: pathlib.Path) -> tuple[list[dict[str, typing.Any]], int]:
     """Returns (records, unreadable_line_count). A bad line is COUNTED, never dropped."""
     rows, bad = [], 0
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -45,7 +46,7 @@ def _load(path: pathlib.Path) -> tuple[list[dict], int]:
     return rows, bad
 
 
-def _timeline(rows: list[dict]) -> str:
+def _timeline(rows: list[dict[str, typing.Any]]) -> str:
     out = []
     for r in rows:
         status = r.get("status", "ok")
@@ -75,7 +76,7 @@ def _timeline(rows: list[dict]) -> str:
     return "\n".join(out)
 
 
-def _yaml(rows: list[dict]) -> str:
+def _yaml(rows: list[dict[str, typing.Any]]) -> str:
     """The shape of the transformation log this replaces, generated from the real record.
 
     Deliberately the same field names — `step`, `input`, `output`, `script`, `run_command`,

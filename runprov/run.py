@@ -74,7 +74,7 @@ class Run:
     def __init__(
         self,
         script: str,
-        params: dict | None = None,
+        params: dict[str, typing.Any] | None = None,
         *,
         project: Project | None = None,
         script_path: pathlib.Path | None = None,
@@ -86,7 +86,7 @@ class Run:
         everything = git(root, "status", "--porcelain")
 
         sp = pathlib.Path(script_path) if script_path else _caller_file()
-        self.record: dict = {
+        self.record: dict[str, typing.Any] = {
             "schema": SCHEMA,
             "script": script,
             "run_id": self.project.run_id(),
@@ -130,6 +130,14 @@ class Run:
         self._pending: list[pathlib.Path] = []
         self.provenance_path = pathlib.Path(provenance) if provenance else None
         self._written = False
+        # Inside a `with` block the run is NOT over when write() is called -- the work can
+        # still fail afterwards. The sidecar is written eagerly (a caller may want it on
+        # disk), and the HISTORY line is deferred to __exit__, the only moment the final
+        # status is known. Without this, write() inside the block appended `status: ok`
+        # and __exit__ declined to correct it, so a script dying in teardown, in a final
+        # assertion or in a `finally` was greppable as a SUCCESS.
+        self._in_context = False
+        self._deferred_history: pathlib.Path | None = None
         if dirty:
             print(
                 "  PROVENANCE WARNING: CODE is modified relative to git_commit; the "
@@ -149,6 +157,7 @@ class Run:
         same hole and a better interface would have been the funnier version of the same
         mistake, and it shipped that way for one commit.
         """
+        self._in_context = True
         return self
 
     def __exit__(
@@ -168,12 +177,20 @@ class Run:
                 # Tail, not head: the frames nearest the failure are the informative ones.
                 "traceback": "".join(traceback.format_exception(exc_type, exc, tb))[-4000:],
             }
+        self._in_context = False
         if self.provenance_path is not None and not self._written:
             self.write(self.provenance_path)
+        elif self._written and self.provenance_path is not None:
+            # Already on disk, and the status may have just changed under it. Rewrite so
+            # the sidecar carries the truth rather than the optimistic snapshot.
+            self._persist(self.provenance_path)
+        if self._deferred_history is not None:
+            path, self._deferred_history = self._deferred_history, None
+            self._append_history(path)
         return False  # NEVER swallow. A provenance module that hides an exception is
         # strictly worse than one that records nothing.
 
-    def _versions(self) -> dict:
+    def _versions(self) -> dict[str, typing.Any]:
         out = {}
         for mod in self.project.tracked_packages:
             try:
@@ -210,7 +227,9 @@ class Run:
         self._pending.append(p)
         return p
 
-    def environment_snapshot(self, directory: str | pathlib.Path | None = None) -> dict | None:
+    def environment_snapshot(
+        self, directory: str | pathlib.Path | None = None
+    ) -> dict[str, typing.Any] | None:
         """Capture the FULL installed package set, content-addressed.
 
         `environment.packages` records only the tracked subset -- enough to explain a
@@ -249,7 +268,10 @@ class Run:
         what makes that case detectable at all.
         """
         f = getattr(module, "__file__", None)
-        rec = {"module": getattr(module, "__name__", str(module)), "resolved_file": f}
+        rec: dict[str, typing.Any] = {
+            "module": getattr(module, "__name__", str(module)),
+            "resolved_file": f,
+        }
         if f:  # guards-ok: a module with no __file__ (builtin, namespace package) is
             # recorded with resolved_file: null rather than skipped — the absence is
             # the finding, since a builtin cannot be the vendored copy this guards against
@@ -307,15 +329,27 @@ class Run:
                 else ""
             ),
         ]
-        ins = self.record["inputs"]
+        # SORTED AND DEDUPED, and that is the determinism guarantee rather than a tidy-up.
+        # This rendered inputs in REGISTRATION order, and `Path.glob()` returns filesystem
+        # order -- so the ordinary `for p in DIR.glob("*.tsv"): run.input(p)` produced a
+        # different pin on a different machine while the data was identical. That is the
+        # 80-artifacts-CHANGED regression this method exists to prevent, arriving through a
+        # different door. Duplicates collapse for the same reason: a data-dependent read
+        # loop must not move the pin.
+        #
+        # The SIDECAR still records every registration, in order. How many times a script
+        # opened a file is a fact about the run, and facts about the run live there.
+        pinned: dict[tuple[str, str], None] = {}
+        for i in self.record["inputs"]:
+            # Content digest FIRST: two runs over the same data must pin identically.
+            sha = str(
+                i.get("content_sha256") or i.get("sha256") or i.get("sha256_tree") or "MISSING"
+            )[:16]
+            pinned.setdefault((sha, self._pin_name(i.get("path", "?"))), None)
+        ins = sorted(pinned)
         if ins:
             lines.append(f"{c}  inputs ({len(ins)}), sha256:")
-            for i in ins:
-                # Content digest FIRST: two runs over the same data must pin identically.
-                sha = str(
-                    i.get("content_sha256") or i.get("sha256") or i.get("sha256_tree") or "MISSING"
-                )[:16]
-                name = self._pin_name(i.get("path", "?"))
+            for sha, name in ins:
                 lines.append(f"{c}    {sha}  {name}")
         else:
             # NOT silence. "Derived from nothing" and "reads bypass run.input()" look
@@ -370,9 +404,10 @@ class Run:
         )
         already = self._written
         self._written = True
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(self.record, indent=2, default=str), encoding="utf-8")
-        if already:
+        self._persist(p)
+        if self._in_context:
+            self._deferred_history = p  # see __init__; __exit__ appends it once
+        elif already:
             # A second write() rewrites the sidecar deliberately (a caller may want the
             # record at two paths) but must NOT append a second history line: one run is
             # one line, or every count taken from the history is wrong.
@@ -394,6 +429,12 @@ class Run:
             f"  seeds {self.record['seeds']}"
         )
         return p
+
+    def _persist(self, p: pathlib.Path) -> None:
+        """Write the sidecar. Split out of write() so __exit__ can correct a record that
+        has become false without appending a second history line for one run."""
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(self.record, indent=2, default=str), encoding="utf-8")
 
     def _append_history(self, prov_path: pathlib.Path) -> None:
         """Append the summary to the project's sink — one line per run, forever.

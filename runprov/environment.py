@@ -37,9 +37,10 @@ import hashlib
 import pathlib
 import platform
 import sys
+import typing
 
 
-def installed_packages(unreadable: list | None = None) -> dict[str, str]:
+def installed_packages(unreadable: list[str] | None = None) -> dict[str, str]:
     """`{name: version}` for the RUNNING interpreter. Never raises.
 
     `unreadable` collects distributions whose metadata could not be read, so the count can
@@ -63,7 +64,10 @@ def installed_packages(unreadable: list | None = None) -> dict[str, str]:
         # UNKNOWN rather than omitted: a package present but unreadable is a fact about
         # the environment, and dropping it makes the snapshot quietly wrong.
         out[name] = (dist.version or "UNKNOWN").strip()
-    return {k: out[k] for k in sorted(out, key=str.lower)}
+    # (lower, exact) so a case-variant pair cannot tie and be broken by sys.path scan
+    # order, which is unsorted. A tie here would change the rendered body, hence the
+    # digest, hence the env-<sha16> filename referenced from every provenance record.
+    return {k: out[k] for k in sorted(out, key=lambda s: (s.lower(), s))}
 
 
 def render(packages: dict[str, str], unreadable: int = 0) -> str:
@@ -89,14 +93,14 @@ def digest(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def write_snapshot(directory: pathlib.Path) -> dict:
+def write_snapshot(directory: pathlib.Path) -> dict[str, typing.Any]:
     """Write `env-<sha16>.txt` into `directory` if it is not already there.
 
     Returns the record embedded in the run: path, digest, package count, and whether this
     run created the file or found an identical one. `reused: true` is the useful signal —
     it means the environment has not moved since some earlier run.
     """
-    bad: list = []
+    bad: list[str] = []
     pkgs = installed_packages(bad)
     text = render(pkgs, len(bad))
     d = digest(text)
