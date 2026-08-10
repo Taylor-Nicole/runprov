@@ -183,9 +183,10 @@ Where records go is the one genuine variable — a git-tracked JSONL beside the 
 published project, a shared database for a lab running many pipelines. Both are right.
 
 ```python
-class SqliteSink:                          # no base class, no import of runprov
+class SqliteSink:  # no base class, no import of runprov
     def append(self, record: dict) -> None:
         self.conn.execute("INSERT INTO runs VALUES (?)", [json.dumps(record)])
+
 
 configure(root=ROOT, sink=SqliteSink(conn))
 ```
