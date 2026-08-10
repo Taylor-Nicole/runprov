@@ -937,6 +937,29 @@ def test_a_sink_that_cannot_write_warns_instead_of_raising(tmp_path, capsys):
     assert "could not append to run history" in capsys.readouterr().out
 
 
+def test_the_posix_lock_path_is_exercised(monkeypatch, tmp_path):
+    """The MIRROR of the Windows test, and it exists because 100% coverage turned out to
+    be platform-dependent: on Linux the fcntl branch runs and msvcrt is faked, and on
+    Windows exactly the reverse, so each platform missed the other's lines and the
+    Windows runner failed at 99.12%. Faking BOTH on BOTH makes the number mean the same
+    thing everywhere -- which is the only way a coverage gate is worth having."""
+    calls = []
+
+    class FakeFcntl:
+        LOCK_EX = 2
+        LOCK_UN = 8
+
+        @staticmethod
+        def flock(fd, op):
+            calls.append(op)
+
+    monkeypatch.setitem(sys.modules, "fcntl", FakeFcntl)
+    p = tmp_path / "runs.jsonl"
+    runprov.JsonlSink(p).append({"a": 1})
+    assert calls == [FakeFcntl.LOCK_EX, FakeFcntl.LOCK_UN]
+    assert json.loads(p.read_text(encoding="utf-8"))["a"] == 1
+
+
 def test_the_windows_lock_path_is_exercised(monkeypatch, tmp_path):
     """The msvcrt branch cannot run on this platform, so the BRANCH is tested with a stand
     -in module. That is not the same as testing Windows -- CI does that on a real runner --
