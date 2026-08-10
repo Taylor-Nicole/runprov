@@ -1146,3 +1146,131 @@ def test_an_append_that_is_not_callable_is_refused(tmp_path):
     with pytest.raises(TypeError, match="append"):
         runprov.configure(root=tmp_path, sink=NotCallable())
     runprov.configure(root=tmp_path)
+
+
+# ===================== provenance capture must never replace the failure it is recording
+def test_a_failing_sidecar_write_does_not_replace_the_users_exception(tmp_path, capsys):
+    """The worst failure available to this package. The run raised RuntimeError; __exit__
+    then tried to persist under an unwritable path, and NotADirectoryError propagated in
+    its place -- so the diagnostic the user needed was destroyed BY the thing recording it,
+    and nothing was recorded either. `sinks.py` already states the rule for sinks ("a sink
+    that can abort a run gets removed from the run"); the sidecar path never honoured it."""
+    blocker = tmp_path / "blocked"
+    blocker.write_text("a file, not a directory", encoding="utf-8")
+    sink = runprov.MemorySink()
+    proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
+    with pytest.raises(RuntimeError, match="THE REAL FAILURE"):
+        with runprov.Run("f", project=proj, provenance=blocker / "sub" / "p.json"):
+            raise RuntimeError("THE REAL FAILURE the user needs to see")
+    # and the failure must still reach the history, which does not need the filesystem
+    assert [r["status"] for r in sink.records] == ["failed"]
+    assert "could not write" in capsys.readouterr().err
+
+
+def test_an_unserialisable_note_does_not_lose_the_run(tmp_path, capsys):
+    """A tuple-keyed dict is what a per-class confusion matrix looks like, and
+    `default=str` does not apply to KEYS -- so json.dumps raised, the sidecar was never
+    written, and the run vanished. Serialise before touching the filesystem."""
+    sink = runprov.MemorySink()
+    proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
+    run = runprov.Run("g", project=proj)
+    run.note("confusion", {(1, "a"): 0.9})
+    run.write(tmp_path / "p.json")
+    assert len(sink.records) == 1, "the run must be recorded even if a note cannot encode"
+    assert "could not serialise" in capsys.readouterr().err
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["notes"]["confusion"].startswith("UNSERIALISABLE")
+
+
+# ================= regressions introduced by the deferred-history change, found by review
+def _sinked(tmp_path):
+    sink = runprov.MemorySink()
+    return sink, runprov.Project(
+        root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g"
+    )
+
+
+def test_the_sidecar_and_the_history_agree_without_a_provenance_kwarg(tmp_path):
+    """SPLIT BRAIN. The exit-time correction was gated on `provenance_path is not None`,
+    but the path actually written is known independently. Before: history `failed`,
+    sidecar `ok` -- and the sidecar is the file a human opens. Two contradictory answers
+    with no rule for which wins is worse than the single wrong answer it replaced."""
+    sink, proj = _sinked(tmp_path)
+    with pytest.raises(RuntimeError):
+        with runprov.Run("x", project=proj) as run:  # no provenance=
+            run.write(tmp_path / "p.json")
+            raise RuntimeError("boom")
+    assert [r["status"] for r in sink.records] == ["failed"]
+    assert json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["status"] == "failed"
+
+
+def test_one_run_is_one_history_line_even_across_write_then_with(tmp_path):
+    """`_written` means "a sidecar exists", which is not "the history has this run".
+    Conflating them appended twice, and both lines carry the same run_id -- so any tally
+    over runs.jsonl was silently inflated."""
+    sink, proj = _sinked(tmp_path)
+    run = runprov.Run("y", project=proj)
+    run.write(tmp_path / "p.json")
+    with run:
+        run.write(tmp_path / "p.json")
+    assert len(sink.records) == 1
+
+
+def test_one_run_is_one_history_line_across_two_with_blocks(tmp_path):
+    sink, proj = _sinked(tmp_path)
+    run = runprov.Run("z", project=proj, provenance=tmp_path / "p.json")
+    with run:
+        run.write(tmp_path / "p.json")
+    with run:
+        run.write(tmp_path / "p.json")
+    assert len(sink.records) == 1
+
+
+def test_a_clean_sys_exit_is_not_a_failure(tmp_path):
+    """`raise SystemExit(main())` is how a CLI ends. Treating any non-None exc_type as a
+    failure poisons the exact query the deferral was built to make trustworthy."""
+    sink, proj = _sinked(tmp_path)
+    with pytest.raises(SystemExit):
+        with runprov.Run("q", project=proj, provenance=tmp_path / "p.json") as run:
+            run.write(tmp_path / "p.json")
+            raise SystemExit(0)
+    assert [r["status"] for r in sink.records] == ["ok"]
+    assert json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["status"] == "ok"
+
+
+def test_a_nonzero_sys_exit_is_still_a_failure(tmp_path):
+    sink, proj = _sinked(tmp_path)
+    with pytest.raises(SystemExit):
+        with runprov.Run("q", project=proj, provenance=tmp_path / "p.json"):
+            raise SystemExit(2)
+    assert [r["status"] for r in sink.records] == ["failed"]
+
+
+def test_a_failure_inside_the_exit_capture_is_reported_not_raised(tmp_path, capsys):
+    """The last-resort net. `_persist` and the sink already swallow individually; this
+    covers anything else that could throw while an exception is in flight -- the one
+    moment when replacing the exception destroys the diagnostic AND the record."""
+    _, proj = _sinked(tmp_path)
+    run = runprov.Run("t", project=proj, provenance=tmp_path / "p.json")
+
+    def boom() -> None:
+        raise RuntimeError("capture itself broke")
+
+    run._finish = boom  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="the user's failure"):
+        with run:
+            raise ValueError("the user's failure")
+    assert "provenance capture failed during exit" in capsys.readouterr().err
+
+
+def test_encoding_skips_a_section_that_is_not_a_dict(tmp_path):
+    """`parameters` is recorded verbatim from the caller, so it is not guaranteed to be a
+    mapping. The degrade path must not assume it is."""
+    _, proj = _sinked(tmp_path)
+    run = runprov.Run("t", project=proj)
+    run.record["parameters"] = ["not", "a", "dict"]
+    run.note("bad", {(1, 2): "tuple key"})
+    run.write(tmp_path / "p.json")
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["parameters"] == ["not", "a", "dict"]
+    assert rec["notes"]["bad"].startswith("UNSERIALISABLE")
