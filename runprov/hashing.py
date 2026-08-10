@@ -56,7 +56,12 @@ def content_digest(path: pathlib.Path) -> str | None:
     except (OSError, EOFError, gzip.BadGzipFile):
         return sha256(path)
     try:
-        text = path.read_text()
+        # encoding="utf-8" EXPLICITLY. Without it Python uses the locale default, which is
+        # cp1252 on Windows, so a UTF-8 artifact is decoded wrongly and then re-encoded as
+        # UTF-8 below -- producing a DIFFERENT content digest for the same bytes depending
+        # on which machine ran. For a provenance tool that is not a portability nit: it
+        # means two honest runs disagree about whether a file changed. Windows CI caught it.
+        text = path.read_text(encoding="utf-8")
     except (UnicodeDecodeError, OSError):
         return sha256(path)
     body = "\n".join(ln for ln in text.splitlines() if not VOLATILE.match(ln))

@@ -9,7 +9,7 @@
 
     run = Run("build_labels", vars(args))
     df = pd.read_csv(run.input(INPUT))          # registering IS how you open it
-    with open(run.output(OUT), "w") as fh:
+    with open(run.output(OUT), "w", encoding="utf-8") as fh:
         fh.write(run.header())                  # the pin, inside the artifact
         df.to_csv(fh, sep="\t", index=False)
     run.note("n_rows", len(df))

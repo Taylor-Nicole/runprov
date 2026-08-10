@@ -34,7 +34,7 @@ from .project import active
 def _load(path: pathlib.Path) -> tuple[list[dict], int]:
     """Returns (records, unreadable_line_count). A bad line is COUNTED, never dropped."""
     rows, bad = [], 0
-    for line in path.read_text(errors="replace").splitlines():
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
             continue
         try:
