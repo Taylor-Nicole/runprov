@@ -553,3 +553,53 @@ def test_snapshot_body_records_the_interpreter_not_only_the_packages(tmp_path):
     """The same versions on a different Python are a different environment."""
     body = pathlib.Path(runprov.write_snapshot(tmp_path)["path"]).read_text()
     assert f"# python   : {sys.version.split()[0]}" in body
+
+
+# --------------------------------------------------------------------- licence notices
+# THESE TESTS WERE CLAIMED IN COMMIT deff1ae AND DID NOT EXIST. An edit silently failed to
+# apply, the suite still passed, and the pass count was read as confirmation. That is the
+# defect this repository is entirely about -- a check asserted in prose and absent in fact
+# -- committed by the person writing the checks. Added properly, and each one was made to
+# FAIL before being kept.
+def test_every_module_carries_the_copyright_header():
+    """CeCILL-B art. 5.3.4 CREDITS requires the intellectual-property notice to travel
+    with the software. A header on five files out of six is the same as no policy."""
+    mods = sorted(pathlib.Path(runprov.__file__).parent.glob("*.py"))
+    assert len(mods) >= 6, f"expected the whole package, found {[m.name for m in mods]}"
+    for m in mods:
+        head = m.read_text().split("\n", 3)[:3]
+        assert head[0].startswith("# Copyright (c)"), m.name
+        # BOTH holders. The institution holds the economic rights under CPI art. L113-9;
+        # the author holds the droit moral, which French law does not permit transferring.
+        # Naming one misstates the position, and a test for "some copyright line" would
+        # pass on a half-finished edit -- which is how this file lost these tests once.
+        assert "Hôpital Henri-Mondor" in head[0], m.name
+        assert "Taylor Thompson" in head[0], m.name
+        assert "CeCILL-B" in head[1], m.name
+
+
+def test_the_licence_text_ships_with_the_package():
+    """Not a link to it. A licence a user cannot read from the artifact they received is
+    not a licence they have been given."""
+    pkg = pathlib.Path(runprov.__file__).parent
+    lic = next((p for p in (pkg.parent / "LICENSE", pkg / "LICENSE") if p.is_file()), None)
+    if lic is None:
+        pytest.skip("installed wheel: LICENSE lives in dist-info, not beside the package")
+    text = lic.read_text()
+    assert "CeCILL-B FREE SOFTWARE LICENSE AGREEMENT" in text
+    assert "5.3.4 CREDITS" in text, "the attribution obligation must be present"
+
+
+def test_citation_metadata_exists_and_names_the_affiliation():
+    """A prior review named the absence of this as a reviewer's first question: how do I
+    cite this, and who are the authors with their affiliations."""
+    pkg = pathlib.Path(runprov.__file__).parent
+    cff = next(
+        (p for p in (pkg.parent / "CITATION.cff", pkg / "CITATION.cff") if p.is_file()), None
+    )
+    if cff is None:
+        pytest.skip("installed wheel: CITATION.cff is not packaged")
+    text = cff.read_text()
+    assert "cff-version:" in text and "license: CECILL-B" in text
+    assert "Hôpital Henri-Mondor" in text
+    assert "0000-0000-0000-0000" not in text, "never ship a placeholder ORCID"

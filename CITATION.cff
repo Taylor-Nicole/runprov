@@ -1,0 +1,34 @@
+# How to cite this software. Read by GitHub (the "Cite this repository" button) and by
+# Zenodo, so a reader does not have to guess at a citation and get it wrong.
+#
+# This file exists because a prior review named its absence as a reviewer's first
+# question: "How do I cite this software, and who are the authors with their ORCIDs and
+# affiliations?" It had no answer anywhere in the project.
+#
+# NO ORCID FIELD. Taylor's is not recorded here yet, and an invented or guessed identifier
+# is worse than a missing one — it resolves to a real person who is not the author. Add it
+# under `authors:` when you have it, as `orcid: "https://orcid.org/<your-id>"`.
+#
+# The example is written that way on purpose: a literal placeholder id in this comment
+# tripped the very test that forbids shipping one, which is the test working.
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: runprov
+abstract: >-
+  Records what a script read, wrote and ran as, in a form a checker can verify. Inputs are
+  hashed at the moment they are opened, the resulting pin is written into the artifact
+  itself rather than only into a sidecar, and the pin is deterministic so that a changed
+  header means changed inputs. Zero runtime dependencies.
+version: 0.1.0
+license: CECILL-B
+repository-code: "https://github.com/Taylor-Nicole/runprov"
+keywords:
+  - provenance
+  - reproducibility
+  - research software
+  - data lineage
+authors:
+  - family-names: Thompson
+    given-names: Taylor
+    affiliation: "Hôpital Henri-Mondor, Créteil, France"

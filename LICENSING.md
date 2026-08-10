@@ -9,7 +9,7 @@ status* — can only be answered by your institution.
 
 ## DECIDED, 2026-08-07
 
-**CeCILL-B**, copyright **Taylor Thompson**, sole author. `LICENSE` holds the text
+**CeCILL-B**, copyright **Hôpital Henri-Mondor and Taylor Thompson**. `LICENSE` holds the text
 verbatim (21,393 bytes, sha256 `ae13622d13fd432d…`); every module carries a three-line
 header. Taylor chose the French licence over MIT; the analysis below is kept because it is
 the record of why, not because the question is still open.
@@ -25,10 +25,19 @@ Anglo-American warranty disclaimer survives a French court — a sensible fit fo
 The price is recognition: outside France, `CECILL-B` is a less familiar line in a dependency
 audit than `MIT`. PyPI carries the trove classifier, so it is at least machine-readable.
 
-**One thing this does not settle.** Sole *authorship* is not sole *ownership*. CPI art.
-L113-9 vests the economic rights in the employer automatically, so if you are under contract
-with the CHU the holder line may need to name the institution instead. Changing it costs one
-commit today and is impossible after the first release. Still worth the DRCI's five minutes.
+**Both holders are named, 2026-08-10, on Taylor's instruction.** That is the right shape
+for the situation CPI art. L113-9 creates: the institution holds the economic rights in
+software written by an employee in the exercise of their duties, and Taylor holds the
+inalienable *droit moral* as sole author. Naming only one of them would misstate the
+position in one direction or the other.
+
+**Still worth confirming with the DRCI: the legal entity name.** `Hôpital Henri-Mondor` is a
+site — part of **AP-HP** (Assistance Publique – Hôpitaux de Paris), in Créteil. AP-HP is very
+likely the entity that actually holds rights; the hospital name identifies where the work was
+done rather than who owns it. Compare a paper's affiliation line, which names the site, with
+a copyright line, which names the holder. If the DRCI says AP-HP, the line becomes
+`Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris and Taylor Thompson`. One commit
+today; impossible after the first release.
 
 ### Superseded recommendation, kept for the record
 
@@ -149,7 +158,7 @@ conversation answers all of it at once. Worth doing in one pass.
 | | |
 |---|---|
 | Licence | **CeCILL-B** — chosen 2026-08-07, verbatim in `LICENSE` |
-| Holder | **Taylor Thompson**, sole author — confirm spelling, and confirm with the DRCI that L113-9 does not put it with the CHU |
+| Holder | **Hôpital Henri-Mondor and Taylor Thompson** — institution per L113-9, author per droit moral. Confirm with the DRCI whether the entity is AP-HP rather than the site |
 | Contributions | **DCO** (`Signed-off-by`) from the first commit |
 | Apache-2.0 | not now; revisit only if a company's counsel asks for the patent grant |
 | Status | **Publishable.** The extraction script's LICENSE blocker is cleared. |

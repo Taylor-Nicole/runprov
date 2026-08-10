@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Taylor Thompson
+# Copyright (c) 2026 Hôpital Henri-Mondor and Taylor Thompson
 # Licensed under the CeCILL-B Free Software License Agreement — see LICENSE.
 # https://cecill.info/
 """The full installed package set, captured CONTENT-ADDRESSED rather than per run.
