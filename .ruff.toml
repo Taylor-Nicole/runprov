@@ -27,8 +27,12 @@ ignore = ["RUF003"]
 # Scoped to the file rather than inline because `ruff format` moves which physical line a
 # multi-line call reports on, and an inline noqa silently stops applying when it does.
 "project.py" = ["S603", "S607"]
-# argparse-driven entry point: `main` returns an int exit code and its locals are obvious.
-"__main__.py" = ["ANN401"]
+# `"__main__.py" = ["ANN401"]` used to sit here and suppressed NOTHING: that file has
+# no `Any` annotation, and its stated reason ("main returns an int exit code and its
+# locals are obvious") describes ANN201/ANN001, a different rule family. A per-file
+# ignore that ignores nothing is the ADR-015 shape inside the linter's own config --
+# a rule declared and not in effect. Removed rather than corrected: there was nothing
+# to correct.
 
 # Tests are not library code and linting them as if they were produces 198 findings that
 # all say the same thing. What is switched off and why:

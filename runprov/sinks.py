@@ -24,7 +24,7 @@ so a question can be asked across all of them. Both are right, and neither shoul
 fork the package.
 
     class SqliteSink:
-        def append(self, record: dict) -> None:
+        def append(self, record: dict[str, typing.Any]) -> None:
             self.conn.execute("INSERT INTO runs VALUES (?)", [json.dumps(record)])
             self.conn.commit()
 
@@ -55,7 +55,7 @@ class RecordSink(typing.Protocol):
     and the work is already done.
     """
 
-    def append(self, record: dict) -> None:
+    def append(self, record: dict[str, typing.Any]) -> None:
         """Persist one record. MUST NOT raise: a sink that can abort a run gets removed
         from the run, and then nothing is recorded at all."""
         ...  # pragma: no cover
@@ -72,7 +72,7 @@ class JsonlSink:
     def __init__(self, path: pathlib.Path) -> None:
         self.path = pathlib.Path(path)
 
-    def append(self, record: dict) -> None:
+    def append(self, record: dict[str, typing.Any]) -> None:
         line = json.dumps(record, default=str) + "\n"
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,9 +93,9 @@ class MemorySink:
     """
 
     def __init__(self) -> None:
-        self.records: list[dict] = []
+        self.records: list[dict[str, typing.Any]] = []
 
-    def append(self, record: dict) -> None:
+    def append(self, record: dict[str, typing.Any]) -> None:
         self.records.append(record)
 
 
@@ -112,8 +112,16 @@ def _exclusive(fh: typing.IO[str]) -> typing.Iterator[None]:
     as having one that works.
 
     Measured on the project this came from: history lines median 2,032 bytes, max 7,274,
-    and 65 of 1,908 over 4,096 — the size below which POSIX guarantees an O_APPEND write is
-    atomic. Above it, concurrent writers interleave into a line that is not JSON.
+    and 65 of 1,908 over 4,096 -- the size below which POSIX *guarantees* an O_APPEND write
+    is atomic.
+
+    CORRECTION, because the first version of this comment overstated the case: on Linux
+    ext4 that bound is not what bites. With locking disabled entirely, 8 processes x 20
+    appends of 9 KB produced 160/160 intact records, because Linux holds the inode lock
+    across the whole write(). The lock is still right to have -- POSIX promises atomicity
+    only below PIPE_BUF, NFS and CIFS do not honour it at all, and Windows has no O_APPEND
+    semantics of this kind -- but it is a PORTABILITY property, not a Linux one, and the
+    mechanism originally cited here is not the one that fails.
     """
     locked: str | None = None
     try:

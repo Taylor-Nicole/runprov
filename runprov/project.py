@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import inspect
 import os
 import pathlib
 import subprocess
@@ -129,13 +130,25 @@ def configure(
     module — not inside each script, which is how three scripts end up disagreeing."""
     global _ACTIVE
     proj = project if project is not None else Project(**kwargs)
-    if proj.sink is not None and not isinstance(proj.sink, RecordSink):
-        # Fail HERE, at configuration, not at the end of a two-hour run when the record is
-        # about to be written and the work is already done.
-        raise TypeError(
-            f"sink {type(proj.sink).__name__} does not satisfy RecordSink: it needs "
-            f"`append(self, record: dict) -> None`."
-        )
+    if proj.sink is not None:
+        # `runtime_checkable` checks attribute PRESENCE, not signature. Before this,
+        # `isinstance([], RecordSink)` was True and `configure(sink=[])` was accepted --
+        # every record then vanished into a list nobody held, while the docstring below
+        # promised failure "at configuration". An unfalsifiable guard is worse than none:
+        # it is quoted as evidence. So bind the real signature against a specimen record.
+        fn = getattr(type(proj.sink), "append", None)
+        if not callable(fn):
+            raise TypeError(
+                f"sink {type(proj.sink).__name__} has no callable `append`; RecordSink "
+                f"needs `append(self, record: dict) -> None`."
+            )
+        try:
+            inspect.signature(fn).bind(proj.sink, {})
+        except TypeError as exc:
+            raise TypeError(
+                f"sink {type(proj.sink).__name__}.append does not accept one record "
+                f"({exc}); RecordSink needs `append(self, record: dict) -> None`."
+            ) from exc
     _ACTIVE = proj
     return _ACTIVE
 

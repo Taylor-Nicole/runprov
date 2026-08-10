@@ -1,5 +1,8 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]   # 1.26.3 SILENTLY emits Metadata-Version 2.3 and
+                                # a plain `License:` — it does not fail, it is just
+                                # wrong. 1.25.0 rejects the PEP 639 license-files
+                                # array outright. Both tested.
 build-backend = "hatchling.build"
 
 [project]
@@ -8,7 +11,8 @@ version = "0.1.0"
 description = "Record what a script read, wrote and ran as — in a form a checker can verify"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = "CECILL-B"          # PEP 639 SPDX expression
+license-files = ["LICENSE"]   # redundant (the default glob finds it) but pins intent
 authors = [{ name = "Taylor Thompson", email = "taylor.nicole.thompson@gmail.com" }]
 keywords = ["provenance", "reproducibility", "research-software", "data-lineage",
             "checksum", "audit"]
@@ -18,10 +22,21 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering",
     "Topic :: System :: Archiving",
-    # Without this PyPI shows no licence at all: `license = {file = "LICENSE"}` fills
-    # License-File and leaves the License field EMPTY, which reads as unlicensed on the
-    # page most people will actually look at.
-    "License :: CeCILL-B Free Software License Agreement (CECILL-B)",
+    # NO "License :: ..." CLASSIFIER, and this is deliberate rather than an omission.
+    #
+    # The comment that used to sit here claimed `license = {file = "LICENSE"}` "leaves the
+    # License field EMPTY". It does not: it inlines 21,392 bytes of the agreement into
+    # METADATA, which PyPI renders in the sidebar and which can never be edited after
+    # upload. It merely LOOKED empty because the LICENSE file's first line is blank, so the
+    # header renders as `License: ` followed by 514 indented continuation lines. The
+    # classifier was added to fix a misread of `head PKG-INFO`.
+    #
+    # PEP 639 forbids combining a License-Expression with a `License ::` classifier, but
+    # NOTHING IN THIS TOOLCHAIN ENFORCES IT — verified on hatchling 1.27.0, 1.30.1 and
+    # 1.31.0: all three build silently and emit both. `twine check --strict` passes the
+    # invalid artifact, and so does packaging's own validator. setuptools does refuse it;
+    # this backend does not. So if someone re-adds the classifier "for discoverability",
+    # the only thing that will stop them is this comment.
 ]
 
 # NO RUNTIME DEPENDENCIES, and that is a feature, not an omission. A provenance module is
@@ -44,11 +59,14 @@ python_version = "3.10"
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
-disallow_untyped_defs = true
-# NOT `strict`. Strict adds disallow_any_explicit and friends, and this package
-# deliberately takes `Any` in two places -- `note(key, value)` records whatever number or
-# string a script wants, and `configure(**kwargs)` forwards Project's own fields. Turning
-# on a check you then have to suppress twice is theatre.
+strict = true
+# STRICT, and the comment that used to sit here was wrong on its own terms. It refused
+# strict because "strict adds disallow_any_explicit and friends" -- it does not; that is a
+# separate flag, and the two deliberate `Any`s survive strict untouched. Measured: strict
+# reported 15 errors, ALL [type-arg], ALL bare `dict`/`list`, none about `Any`. Fifteen
+# one-token annotations and it passes with ZERO suppressions. The reason given for not
+# running a check was invented rather than measured, which is the failure this repository
+# is about, in the config of the tool meant to catch it.
 
 [tool.pytest.ini_options]
 addopts = "-q --cov=runprov --cov-report=term-missing --cov-fail-under=100"

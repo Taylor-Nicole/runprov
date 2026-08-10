@@ -25,6 +25,7 @@ import hashlib
 import itertools
 import pathlib
 import re
+import typing
 
 # Volatile stamps as HEADER COMMENTS.
 VOLATILE = re.compile(r"^#\s*(built_utc|generated_utc|run_utc|built_at)\b")
@@ -98,10 +99,10 @@ def _gzip_digest(path: pathlib.Path, chunk: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
-def describe(path: pathlib.Path) -> dict:
+def describe(path: pathlib.Path) -> dict[str, typing.Any]:
     """Everything recorded about one input or output. Directories are hashed as a tree."""
     st = path.stat()
-    rec = {
+    rec: dict[str, typing.Any] = {
         "path": str(path),
         "size_bytes": st.st_size,
         "mtime_utc": dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc).strftime(

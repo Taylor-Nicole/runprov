@@ -1026,3 +1026,123 @@ def test_git_returns_none_when_the_binary_is_absent(monkeypatch, tmp_path):
 
     monkeypatch.setattr(runprov.project.subprocess, "run", no_git)
     assert runprov.git(tmp_path, "rev-parse", "HEAD") is None
+
+
+# ============================================== C0a / C0b — the two wrong-record defects
+def test_a_failure_after_write_is_not_recorded_as_ok(tmp_path):
+    """WRONG RECORD, and the worst kind. `__exit__` set status=failed and then declined to
+    persist it because `_written` was already True, so a script that dies in teardown, a
+    final assertion, an atexit flush or a `finally` reported SUCCESS. The suite blessed the
+    exact shape: test_a_successful_with_block_writes_once_not_twice writes inside the
+    block. A record that has become false must be corrected, not skipped."""
+    sink = runprov.MemorySink()
+    proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
+    with pytest.raises(RuntimeError):
+        with runprov.Run("step", project=proj, provenance=tmp_path / "p.json") as run:
+            run.write(tmp_path / "p.json")
+            raise RuntimeError("the real work blew up after the record was written")
+
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["status"] == "failed"
+    assert rec["failure"]["type"] == "RuntimeError"
+    assert "blew up" in rec["failure"]["message"]
+    # The history must not claim success either, and must not double-count the run.
+    assert [r["status"] for r in sink.records] == ["failed"], sink.records
+
+
+def test_the_pin_does_not_depend_on_registration_order(tmp_path):
+    """THE determinism guarantee. `header()` rendered inputs in registration order and
+    `Path.glob()` is filesystem order, so `for p in DIR.glob("*.tsv"): run.input(p)` gave a
+    different pin on a different machine -- the 80-artifacts-CHANGED regression the
+    method's own docstring exists to prevent, through a different door. The guard test
+    registered in the same order both times and could not fail on this."""
+    for name in ("aa.tsv", "zz.tsv", "mm.tsv", "bb.tsv"):
+        (tmp_path / name).write_text(name, encoding="utf-8")
+    proj = runprov.Project(
+        root=tmp_path,
+        sink=runprov.MemorySink(),
+        run_id=lambda: "r",
+        generation=lambda: "g",
+    )
+
+    def pin(order: list[str]) -> str:
+        run = runprov.Run("t", project=proj)
+        for name in order:
+            run.input(tmp_path / name)
+        return run.header()
+
+    forward = ["aa.tsv", "bb.tsv", "mm.tsv", "zz.tsv"]
+    assert pin(forward) == pin(list(reversed(forward)))
+    assert pin(forward) == pin(["mm.tsv", "aa.tsv", "zz.tsv", "bb.tsv"])
+
+
+def test_the_pin_deduplicates_a_repeatedly_registered_input(tmp_path):
+    """Outputs were deduplicated and inputs were not, so a data-dependent read loop
+    produced a different pin from identical data."""
+    src = tmp_path / "x.tsv"
+    src.write_text("id\n1\n", encoding="utf-8")
+    proj = runprov.Project(
+        root=tmp_path,
+        sink=runprov.MemorySink(),
+        run_id=lambda: "r",
+        generation=lambda: "g",
+    )
+    once = runprov.Run("t", project=proj)
+    once.input(src)
+    thrice = runprov.Run("t", project=proj)
+    for _ in range(3):
+        thrice.input(src)
+    assert once.header() == thrice.header()
+    assert thrice.header().count("x.tsv") == 1
+
+
+def test_the_sidecar_still_records_every_registration(tmp_path):
+    """Deduplication belongs to the PIN, not to the record. How many times a script opened
+    a file is a fact about the run, and the sidecar is where facts about the run live."""
+    src = tmp_path / "x.tsv"
+    src.write_text("id\n1\n", encoding="utf-8")
+    run = runprov.Run("t", project=_project(tmp_path))
+    for _ in range(3):
+        run.input(src)
+    assert len(run.record["inputs"]) == 3
+
+
+# ===================================================== X3 — the sink guard, made real
+def test_a_sink_whose_append_takes_the_wrong_arguments_is_refused(tmp_path):
+    """`runtime_checkable` checks attribute PRESENCE, not signature -- so the guard whose
+    docstring promised failure "at configuration, not at the end of a two-hour run"
+    accepted anything with an `append` attribute, including a bare list. Verified before
+    the fix: isinstance([], RecordSink) is True."""
+
+    class WrongArity:
+        def append(self) -> None:  # no record parameter
+            pass
+
+    with pytest.raises(TypeError, match="append"):
+        runprov.configure(root=tmp_path, sink=WrongArity())
+    runprov.configure(root=tmp_path)
+
+
+def test_a_plain_list_IS_a_valid_sink(tmp_path):
+    """The council called `configure(sink=[])` a hole. It is not, and I wrote a test
+    demanding it be refused before checking: `list.append(record)` satisfies the protocol
+    honestly, and a caller who HOLDS the list gets every record -- that is exactly what
+    MemorySink is. Refusing it would reject a legitimate use to catch a typo.
+
+    What was genuinely broken is narrower: the guard's message promised a signature check
+    it never performed, so wrong-arity and non-callable `append` sailed through and blew up
+    at the end of the run instead. Those now raise at configuration."""
+    records: list[dict] = []
+    proj = runprov.configure(root=tmp_path, sink=records)
+    runprov.Run("t", project=proj).write(tmp_path / "p.json")
+    assert len(records) == 1 and records[0]["script"] == "t"
+    runprov.configure(root=tmp_path)
+
+
+def test_an_append_that_is_not_callable_is_refused(tmp_path):
+    class NotCallable:
+        append = 3
+
+    with pytest.raises(TypeError, match="append"):
+        runprov.configure(root=tmp_path, sink=NotCallable())
+    runprov.configure(root=tmp_path)
