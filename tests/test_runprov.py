@@ -12,6 +12,7 @@ live next door in `test_provenance_shim.py`.
 
 from __future__ import annotations
 
+import builtins
 import json
 import pathlib
 import re
@@ -573,15 +574,18 @@ def test_every_module_carries_the_copyright_header():
     mods = sorted(pathlib.Path(runprov.__file__).parent.glob("*.py"))
     assert len(mods) >= 6, f"expected the whole package, found {[m.name for m in mods]}"
     for m in mods:
-        head = m.read_text(encoding="utf-8").split("\n", 3)[:3]
-        assert head[0].startswith("# Copyright (c)"), m.name
+        # The notice spans two lines now, so join before looking. A test that reads only
+        # line 0 would silently stop checking the moment the line wrapped.
+        head = "\n".join(m.read_text(encoding="utf-8").split("\n", 5)[:4])
+        assert head.startswith("# Copyright (c)"), m.name
         # BOTH holders. The institution holds the economic rights under CPI art. L113-9;
         # the author holds the droit moral, which French law does not permit transferring.
         # Naming one misstates the position, and a test for "some copyright line" would
         # pass on a half-finished edit -- which is how this file lost these tests once.
-        assert "Hôpital Henri-Mondor" in head[0], m.name
-        assert "Taylor Thompson" in head[0], m.name
-        assert "CeCILL-B" in head[1], m.name
+        assert "AP-HP" in head, m.name
+        assert "Hôpital Henri-Mondor" in head, m.name
+        assert "Taylor Thompson" in head, m.name
+        assert "CeCILL-B" in head, m.name
 
 
 def test_the_licence_text_ships_with_the_package():
@@ -607,7 +611,7 @@ def test_citation_metadata_exists_and_names_the_affiliation():
         pytest.skip("installed wheel: CITATION.cff is not packaged")
     text = cff.read_text(encoding="utf-8")
     assert "cff-version:" in text and "license: CECILL-B" in text
-    assert "Hôpital Henri-Mondor" in text
+    assert "AP-HP" in text and "Hôpital Henri-Mondor" in text
     assert "0000-0000-0000-0000" not in text, "never ship a placeholder ORCID"
 
 
@@ -715,3 +719,287 @@ def test_content_digest_is_streamed_not_read_whole(tmp_path):
         ln for ln in p.read_text(encoding="utf-8").splitlines() if not runprov.VOLATILE.match(ln)
     )
     assert runprov.content_digest(p) == hashlib.sha256(body.encode()).hexdigest()
+
+
+# ===================================================================== coverage: the CLI
+def test_cli_skips_blank_lines_in_the_history(tmp_path):
+    p = tmp_path / "runs.jsonl"
+    p.write_text(json.dumps({"script": "a"}) + "\n\n   \n", encoding="utf-8")
+    rows, bad = cli._load(p)
+    assert [r["script"] for r in rows] == ["a"] and bad == 0
+
+
+def test_cli_timeline_shows_seeds_when_a_run_declared_them():
+    out = cli._timeline([{"script": "s", "seeds": [42, 43]}])
+    assert "seeds      [42, 43]" in out
+
+
+def test_cli_filters_by_run_id(tmp_path, capsys):
+    p = tmp_path / "runs.jsonl"
+    p.write_text(
+        "\n".join(
+            json.dumps(r) for r in [{"script": "a", "run_id": "x"}, {"script": "b", "run_id": "y"}]
+        ),
+        encoding="utf-8",
+    )
+    cli.main(["log", "--log", str(p), "--run-id", "y"])
+    out = capsys.readouterr()
+    assert "b" in out.out and "1 of 2" in out.err
+
+
+def test_cli_limit_takes_the_last_n(tmp_path, capsys):
+    p = tmp_path / "runs.jsonl"
+    p.write_text("\n".join(json.dumps({"script": f"s{i}"}) for i in range(5)), encoding="utf-8")
+    cli.main(["log", "--log", str(p), "--limit", "2"])
+    out = capsys.readouterr().out
+    assert "s4" in out and "s3" in out and "s0" not in out
+
+
+def test_cli_yaml_and_jsonl_formats(tmp_path, capsys):
+    p = tmp_path / "runs.jsonl"
+    p.write_text(json.dumps({"script": "a", "started_utc": "T"}) + "\n", encoding="utf-8")
+    cli.main(["log", "--log", str(p), "--format", "yaml"])
+    assert "- step:" in capsys.readouterr().out
+    cli.main(["log", "--log", str(p), "--format", "jsonl"])
+    assert json.loads(capsys.readouterr().out.strip())["script"] == "a"
+
+
+def test_cli_rejects_an_unknown_step():
+    with pytest.raises(SystemExit):
+        cli.main(["log", "--format", "nonsense"])
+
+
+# ============================================================ coverage: the environment
+def test_a_distribution_with_unreadable_metadata_is_counted_not_dropped(monkeypatch, tmp_path):
+    """A snapshot silently missing an entry reads as complete, which is the worst outcome
+    for a record whose only job is to be complete."""
+
+    class Broken:
+        _path = "/somewhere/broken.dist-info"
+
+        @property
+        def metadata(self):
+            raise RuntimeError("unreadable")
+
+    class Nameless:
+        _path = "/somewhere/nameless.dist-info"
+        metadata = {"Name": "   "}
+        version = "1.0"
+
+    import importlib.metadata as md
+
+    monkeypatch.setattr(md, "distributions", lambda: [Broken(), Nameless()])
+    bad = []
+    pkgs = runprov.installed_packages(bad)
+    assert pkgs == {} and len(bad) == 2
+    assert "UNREADABLE: 2" in runprov.environment.render(pkgs, len(bad))
+
+
+def test_a_version_that_cannot_be_read_is_recorded_as_unknown(monkeypatch):
+    class NoVersion:
+        metadata = {"Name": "thing"}
+        version = None
+
+    import importlib.metadata as md
+
+    monkeypatch.setattr(md, "distributions", lambda: [NoVersion()])
+    assert runprov.installed_packages() == {"thing": "UNKNOWN"}
+
+
+# ================================================================= coverage: the hashing
+def test_content_digest_of_a_missing_path_is_none(tmp_path):
+    assert runprov.content_digest(tmp_path / "nope") is None
+
+
+def test_a_corrupt_gzip_falls_back_to_the_raw_hash(tmp_path):
+    p = tmp_path / "broken.gz"
+    p.write_bytes(b"not actually gzip at all")
+    assert runprov.content_digest(p) == runprov.sha256(p)
+
+
+def test_a_file_of_only_volatile_lines_hashes_without_crashing(tmp_path):
+    p = tmp_path / "stamps.tsv"
+    p.write_text("# built_utc: A\n# generated_utc: B\n", encoding="utf-8")
+    q = tmp_path / "other.tsv"
+    q.write_text("# built_utc: C\n# generated_utc: D\n", encoding="utf-8")
+    assert runprov.content_digest(p) == runprov.content_digest(q)
+
+
+def test_binary_content_falls_back_to_the_raw_hash(tmp_path):
+    p = tmp_path / "blob.bin"
+    p.write_bytes(bytes(range(256)) * 4)
+    assert runprov.content_digest(p) == runprov.sha256(p)
+
+
+# ================================================================= coverage: the project
+def test_git_on_a_path_that_is_not_a_directory_returns_none(tmp_path):
+    f = tmp_path / "afile"
+    f.write_text("x", encoding="utf-8")
+    assert runprov.git(f, "rev-parse", "HEAD") is None
+
+
+def test_default_run_id_and_generation_read_the_environment(monkeypatch):
+    monkeypatch.setenv("RUNPROV_RUN_ID", "chain_123")
+    monkeypatch.setenv("RUNPROV_GENERATION", "gen_x")
+    assert runprov.default_run_id() == "chain_123"
+    assert runprov.default_generation() == "gen_x"
+    monkeypatch.delenv("RUNPROV_RUN_ID")
+    monkeypatch.delenv("RUNPROV_GENERATION")
+    # unset: labelled ad-hoc on purpose, so a hand-run script and a chain stage are not
+    # indistinguishable in the history
+    assert runprov.default_run_id().startswith("adhoc_")
+    assert runprov.default_generation() == "(default)"
+
+
+def test_active_builds_a_project_when_none_was_configured(monkeypatch):
+    monkeypatch.setattr(runprov.project, "_ACTIVE", None)
+    assert isinstance(runprov.active(), runprov.Project)
+
+
+# ===================================================================== coverage: the Run
+def test_seeds_and_notes_are_recorded(tmp_path):
+    run = runprov.Run("t", project=_project(tmp_path))
+    run.seeds([1, 2, 3])
+    run.note("n_rows", 5)
+    assert run.record["seeds"] == [1, 2, 3] and run.record["notes"] == {"n_rows": 5}
+
+
+def test_module_records_where_an_import_resolved_from(tmp_path, capsys):
+    """A commit is not sufficient provenance when two installables share a name."""
+    run = runprov.Run("t", project=_project(tmp_path))
+    run.module(json)
+    rec = run.record["modules"][0]
+    assert rec["module"] == "json" and rec["sha256"]
+    assert rec["inside_project"] is False
+    assert "resolved OUTSIDE" in capsys.readouterr().out
+
+
+def test_module_handles_something_without_a_file(tmp_path):
+    run = runprov.Run("t", project=_project(tmp_path))
+    run.module(sys)  # a built-in has no __file__
+    assert run.record["modules"][0]["resolved_file"] is None
+
+
+def test_the_same_output_registered_twice_is_recorded_once(tmp_path):
+    run = runprov.Run("t", project=_project(tmp_path))
+    p = run.output(tmp_path / "one.tsv")
+    run.output(tmp_path / "one.tsv")
+    p.write_text("x", encoding="utf-8")
+    rec = json.loads(run.write(tmp_path / "prov.json").read_text(encoding="utf-8"))
+    assert len(rec["outputs"]) == 1
+
+
+def test_an_unwritable_snapshot_directory_warns_and_does_not_break_the_run(tmp_path, capsys):
+    blocker = tmp_path / "blocked"
+    blocker.write_text("I am a file, not a directory", encoding="utf-8")
+    proj = runprov.Project(
+        root=tmp_path,
+        sink=runprov.MemorySink(),
+        env_snapshot_dir=blocker / "sub",
+        run_id=lambda: "r",
+        generation=lambda: "g",
+    )
+    run = runprov.Run("t", project=proj)
+    rec = run.environment_snapshot()
+    assert rec is not None and "error" in rec
+    assert "could not write environment snapshot" in capsys.readouterr().out
+
+
+def test_a_dirty_tree_is_announced(tmp_path, capsys):
+    """The warning is the point: a commit that does not identify what ran must say so."""
+    import subprocess
+
+    repo = tmp_path / "r"
+    (repo / "src").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@e.org"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
+    (repo / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "one"], check=True)
+    (repo / "src" / "a.py").write_text("x = 2\n", encoding="utf-8")
+    runprov.Run("t", project=runprov.Project(root=repo, sink=runprov.MemorySink()))
+    assert "CODE is modified relative to git_commit" in capsys.readouterr().out
+
+
+def test_the_caller_file_falls_back_to_none_when_every_frame_is_internal(monkeypatch):
+    monkeypatch.setattr(runprov.run.inspect, "stack", lambda: [])
+    assert runprov.run._caller_file() is None
+
+
+# =================================================================== coverage: the sinks
+def test_a_sink_that_cannot_write_warns_instead_of_raising(tmp_path, capsys):
+    """A sink that can abort a run gets removed from the run, and then nothing is
+    recorded at all."""
+    blocker = tmp_path / "afile"
+    blocker.write_text("not a directory", encoding="utf-8")
+    runprov.JsonlSink(blocker / "sub" / "runs.jsonl").append({"a": 1})
+    assert "could not append to run history" in capsys.readouterr().out
+
+
+def test_the_windows_lock_path_is_exercised(monkeypatch, tmp_path):
+    """The msvcrt branch cannot run on this platform, so the BRANCH is tested with a stand
+    -in module. That is not the same as testing Windows -- CI does that on a real runner --
+    but it does prove the code selects and releases the right lock, which is what failed
+    when 24 concurrent appends produced 23 lines."""
+    calls = []
+
+    class FakeMsvcrt:
+        LK_LOCK = 1
+        LK_UNLCK = 0
+
+        @staticmethod
+        def locking(fd, mode, nbytes):
+            calls.append(mode)
+
+    monkeypatch.setitem(sys.modules, "msvcrt", FakeMsvcrt)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    real_import = builtins.__import__
+
+    def no_fcntl(name, *a, **k):
+        if name == "fcntl":
+            raise ImportError("no fcntl on this pretend platform")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_fcntl)
+    p = tmp_path / "runs.jsonl"
+    runprov.JsonlSink(p).append({"a": 1})
+    assert calls == [FakeMsvcrt.LK_LOCK, FakeMsvcrt.LK_UNLCK]
+    assert json.loads(p.read_text(encoding="utf-8"))["a"] == 1
+
+
+def test_no_locking_available_says_so(monkeypatch, tmp_path, capsys):
+    real_import = builtins.__import__
+
+    def nothing(name, *a, **k):
+        if name in ("fcntl", "msvcrt"):
+            raise ImportError("neither")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", nothing)
+    monkeypatch.setattr(sys, "platform", "win32")
+    runprov.JsonlSink(tmp_path / "runs.jsonl").append({"a": 1})
+    assert "no file locking available" in capsys.readouterr().out
+
+
+def test_cli_filters_by_script(tmp_path, capsys):
+    p = tmp_path / "runs.jsonl"
+    p.write_text(
+        "\n".join(json.dumps({"script": n}) for n in ("build", "train", "build")),
+        encoding="utf-8",
+    )
+    cli.main(["log", "--log", str(p), "--script", "build"])
+    out = capsys.readouterr()
+    assert "train" not in out.out and "2 of 3" in out.err
+
+
+def test_git_returns_none_when_the_binary_is_absent(monkeypatch, tmp_path):
+    """`git` may simply not be installed. Provenance capture that raises there would
+    abort the run it is supposed to be describing."""
+
+    def no_git(*a, **k):
+        raise FileNotFoundError("git: command not found")
+
+    monkeypatch.setattr(runprov.project.subprocess, "run", no_git)
+    assert runprov.git(tmp_path, "rev-parse", "HEAD") is None

@@ -221,7 +221,7 @@ build when a script reads or writes something it never registered is a separate 
 (`scripts/audit/check_declared_writes.py` in this repository), and it is the half that
 makes the record trustworthy rather than merely present.
 
-Run everything CI runs with `python ci.py` — the workflow calls that same file, so local and CI cannot drift.
+Coverage is **100%** and the gate is set there. Run everything CI runs with `python ci.py` — the workflow calls that same file, so local and CI cannot drift.
 
 Tests: `tests/unit/test_runprov.py`. They import this package and assert that
 `scripts/audit/_provenance.py` re-exports these objects rather than reimplementing them —

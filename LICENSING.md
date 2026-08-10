@@ -9,7 +9,7 @@ status* — can only be answered by your institution.
 
 ## DECIDED, 2026-08-07
 
-**CeCILL-B**, copyright **Hôpital Henri-Mondor and Taylor Thompson**. `LICENSE` holds the text
+**CeCILL-B**, copyright **Assistance Publique – Hôpitaux de Paris (AP-HP), Hôpital Henri-Mondor, and Taylor Thompson**. `LICENSE` holds the text
 verbatim (21,393 bytes, sha256 `ae13622d13fd432d…`); every module carries a three-line
 header. Taylor chose the French licence over MIT; the analysis below is kept because it is
 the record of why, not because the question is still open.
@@ -31,13 +31,14 @@ software written by an employee in the exercise of their duties, and Taylor hold
 inalienable *droit moral* as sole author. Naming only one of them would misstate the
 position in one direction or the other.
 
-**Still worth confirming with the DRCI: the legal entity name.** `Hôpital Henri-Mondor` is a
-site — part of **AP-HP** (Assistance Publique – Hôpitaux de Paris), in Créteil. AP-HP is very
-likely the entity that actually holds rights; the hospital name identifies where the work was
-done rather than who owns it. Compare a paper's affiliation line, which names the site, with
-a copyright line, which names the holder. If the DRCI says AP-HP, the line becomes
-`Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris and Taylor Thompson`. One commit
-today; impossible after the first release.
+**Resolved 2026-08-10: both are named.** `Hôpital Henri-Mondor` is a site of **AP-HP**
+(Assistance Publique – Hôpitaux de Paris), in Créteil. AP-HP is the legal entity, and the
+entity is what a copyright line needs; the site is what an affiliation line needs. Naming
+both is not redundancy — it records *who holds the rights* and *where the work was done*,
+which are different facts and are usually wanted by different readers. Taylor asked for the
+addition rather than the substitution, and that is the more informative line.
+
+Order matters slightly: the legal entity first, then the site, then the author.
 
 ### Superseded recommendation, kept for the record
 
@@ -158,7 +159,7 @@ conversation answers all of it at once. Worth doing in one pass.
 | | |
 |---|---|
 | Licence | **CeCILL-B** — chosen 2026-08-07, verbatim in `LICENSE` |
-| Holder | **Hôpital Henri-Mondor and Taylor Thompson** — institution per L113-9, author per droit moral. Confirm with the DRCI whether the entity is AP-HP rather than the site |
+| Holder | **AP-HP, Hôpital Henri-Mondor, and Taylor Thompson** — legal entity, site, author. Institution per L113-9; author per droit moral |
 | Contributions | **DCO** (`Signed-off-by`) from the first commit |
 | Apache-2.0 | not now; revisit only if a company's counsel asks for the patent grant |
 | Status | **Publishable.** The extraction script's LICENSE blocker is cleared. |

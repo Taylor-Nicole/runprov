@@ -1,4 +1,5 @@
-# Copyright (c) 2026 Hôpital Henri-Mondor and Taylor Thompson
+# Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris (AP-HP),
+#                    Hôpital Henri-Mondor, and Taylor Thompson
 # Licensed under the CeCILL-B Free Software License Agreement — see LICENSE.
 # https://cecill.info/
 """Two hashes, because "did this change?" and "is this the file?" are different questions.
