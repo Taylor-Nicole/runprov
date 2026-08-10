@@ -43,14 +43,19 @@ from .project import (
     detect_root,
     git,
 )
-from .run import Run
+from .run import SCHEMA, Run
+from .sinks import JsonlSink, MemorySink, RecordSink
 
 __all__ = [
     "DEFAULT_CODE_PATHS",
     "DEFAULT_TRACKED",
+    "SCHEMA",
     "VOLATILE",
     "VOLATILE_JSON",
+    "JsonlSink",
+    "MemorySink",
     "Project",
+    "RecordSink",
     "Run",
     "active",
     "configure",

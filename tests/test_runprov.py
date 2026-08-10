@@ -16,6 +16,7 @@ import json
 import pathlib
 import re
 import sys
+import textwrap
 
 import pytest
 
@@ -608,3 +609,109 @@ def test_citation_metadata_exists_and_names_the_affiliation():
     assert "cff-version:" in text and "license: CECILL-B" in text
     assert "Hôpital Henri-Mondor" in text
     assert "0000-0000-0000-0000" not in text, "never ship a placeholder ORCID"
+
+
+# --------------------------------------------------------------------- robustness review
+def test_the_package_ships_pep561_type_information():
+    """Without `py.typed` every annotation in this package is INVISIBLE to a downstream
+    type checker. "Fully typed" then means typed for us and untyped for every user."""
+    marker = pathlib.Path(runprov.__file__).parent / "py.typed"
+    assert marker.is_file(), "PEP 561 marker missing; consumers get no types"
+
+
+def test_every_record_declares_its_schema(tmp_path):
+    """A provenance format with no version cannot be read defensively by anything -- a
+    script, a dashboard, or an agent reading the history has to guess from which keys
+    happen to be present."""
+    sink = runprov.MemorySink()
+    proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
+    run = runprov.Run("t", project=proj)
+    assert run.record["schema"] == runprov.SCHEMA == "runprov.run.v1"
+    run.write(tmp_path / "p.json")
+    assert sink.records[0]["schema"] == runprov.SCHEMA
+
+
+def test_the_pin_is_identical_on_two_machines_for_an_input_outside_the_root(tmp_path):
+    """The pin embedded an ABSOLUTE path for an out-of-root input, so the same data pinned
+    on two machines produced two different pins -- the machine-dependence class the
+    encoding defect belonged to. The hash identifies the input; the path is only a label."""
+    external = tmp_path / "elsewhere"
+    external.mkdir()
+    (external / "x.tsv").write_text("id\n1\n", encoding="utf-8")
+    header_a = _header_for(tmp_path / "proj_a", external / "x.tsv")
+    header_b = _header_for(tmp_path / "proj_b", external / "x.tsv")
+    assert header_a == header_b
+    assert str(external) not in header_a
+    assert "<external>/x.tsv" in header_a
+
+
+def _header_for(root: pathlib.Path, src: pathlib.Path) -> str:
+    root.mkdir(parents=True, exist_ok=True)
+    proj = runprov.Project(
+        root=root, sink=runprov.MemorySink(), run_id=lambda: "r", generation=lambda: "g"
+    )
+    run = runprov.Run("t", project=proj)
+    run.input(src)
+    return run.header()
+
+
+def test_a_second_write_does_not_double_count_the_run(tmp_path):
+    """One run is one history line, or every count taken from the history is wrong."""
+    sink = runprov.MemorySink()
+    proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
+    run = runprov.Run("t", project=proj)
+    run.write(tmp_path / "a.json")
+    run.write(tmp_path / "b.json")
+    assert len(sink.records) == 1
+    assert (tmp_path / "a.json").is_file() and (tmp_path / "b.json").is_file()
+
+
+def test_a_custom_sink_receives_the_records(tmp_path):
+    """The one extension point: where records go. A lab pointing many pipelines at one
+    store must not have to fork the package."""
+    sink = runprov.MemorySink()
+    proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
+    for i in range(3):
+        runprov.Run(f"s{i}", project=proj).write(tmp_path / f"p{i}.json")
+    assert [r["script"] for r in sink.records] == ["s0", "s1", "s2"]
+    assert not (tmp_path / "provenance" / "runs.jsonl").exists(), (
+        "a custom sink must REPLACE the default, not write to both"
+    )
+
+
+def test_a_sink_without_append_is_refused_at_configuration(tmp_path):
+    """At configure(), not at the end of a two-hour run when the work is already done."""
+
+    class NotASink:
+        pass
+
+    with pytest.raises(TypeError, match="RecordSink"):
+        runprov.configure(root=tmp_path, sink=NotASink())
+    runprov.configure(root=tmp_path)  # restore a sane active project
+
+
+def test_content_digest_is_streamed_not_read_whole(tmp_path):
+    """The module docstring promised streaming for multi-GB inputs. It was true of
+    `sha256` and false of `content_digest`, which is the one called on every input."""
+    import ast
+    import inspect
+
+    # Parse and drop the docstring before looking. The first version of this test matched
+    # the prose in the docstring -- which mentions `read_text()` precisely because it
+    # explains why the function no longer calls it -- and failed on a correct
+    # implementation. A test that reads comments is testing the comments.
+    tree = ast.parse(textwrap.dedent(inspect.getsource(runprov.content_digest)))
+    fn = tree.body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    body = fn.body[1:] if ast.get_docstring(fn) else fn.body
+    code = "\n".join(ast.unparse(node) for node in body)
+    assert "read_text()" not in code and "read_bytes()" not in code
+    # and it still agrees with the whole-file definition it replaced
+    p = tmp_path / "big.tsv"
+    p.write_text("# built_utc: X\n" + "".join(f"{i}\ta\n" for i in range(50000)), encoding="utf-8")
+    import hashlib
+
+    body = "\n".join(
+        ln for ln in p.read_text(encoding="utf-8").splitlines() if not runprov.VOLATILE.match(ln)
+    )
+    assert runprov.content_digest(p) == hashlib.sha256(body.encode()).hexdigest()

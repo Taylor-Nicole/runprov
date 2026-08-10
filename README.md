@@ -177,6 +177,37 @@ Above it, two concurrent runs can interleave into a line that is not JSON and si
 corrupt the one append-only record. Sequential chains hide this; a parallel pipeline will
 not. Where `flock` is unavailable the append still happens and the downgrade is printed.
 
+## Extending it: one protocol, no hierarchy
+
+Where records go is the one genuine variable — a git-tracked JSONL beside the code for a
+published project, a shared database for a lab running many pipelines. Both are right.
+
+```python
+class SqliteSink:                          # no base class, no import of runprov
+    def append(self, record: dict) -> None:
+        self.conn.execute("INSERT INTO runs VALUES (?)", [json.dumps(record)])
+
+configure(root=ROOT, sink=SqliteSink(conn))
+```
+
+`RecordSink` is a `typing.Protocol`, so anything with a matching `append` qualifies. It is
+`runtime_checkable`, and `configure()` refuses a sink that does not match — at
+configuration, not at the end of a two-hour run when the record is about to be written.
+
+**There is deliberately no abstract base class anywhere in this package.** An ABC would
+require implementers to subclass, dragging `runprov` into their type hierarchy while giving
+nothing back: there is no shared behaviour to inherit, only a shape to agree on. Everything
+else here has exactly one correct implementation — a SHA-256 is a SHA-256 — and inventing
+extension points for them would be decoration in a package whose entire claim is that it is
+the smallest thing that does the job.
+
+Records carry `"schema": "runprov.run.v1"`. A consumer — a script, a dashboard, an agent
+reading the history — branches on that instead of guessing from which keys are present.
+The marker is bumped when a field changes meaning, never when one is added.
+
+Types ship: the package includes a PEP 561 `py.typed` marker, so a downstream `mypy` sees
+every annotation. Without it they are invisible and "fully typed" means typed only for us.
+
 ## What it does not do
 
 The pin lists inputs in REGISTRATION order, not sorted, so a script whose read order
