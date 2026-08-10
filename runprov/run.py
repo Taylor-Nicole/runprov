@@ -138,6 +138,16 @@ class Run:
         # assertion or in a `finally` was greppable as a SUCCESS.
         self._in_context = False
         self._deferred_history: pathlib.Path | None = None
+        # `_written` means "a sidecar exists". `_history_appended` means "the history has
+        # this run". Conflating them appended TWICE for one run -- both lines carrying the
+        # same run_id, so any tally over runs.jsonl was silently inflated. They are
+        # different facts and they now have different flags.
+        self._history_appended = False
+        # WHERE the sidecar actually went. The exit-time correction used to be gated on
+        # `provenance_path is not None`, so a run that called write() without the kwarg
+        # left the history saying `failed` and the sidecar saying `ok` -- and the sidecar
+        # is the file a human opens.
+        self._last_written: pathlib.Path | None = None
         if dirty:
             print(
                 "  PROVENANCE WARNING: CODE is modified relative to git_commit; the "
@@ -169,7 +179,15 @@ class Run:
         # "this context manager MAY swallow exceptions". It must never. The type says so
         # now, so no caller has to read the body to find out.
     ) -> typing.Literal[False]:
-        if exc_type is not None:
+        # A clean SystemExit is not a failure. `raise SystemExit(main())` is how a CLI
+        # ends, and treating every non-None exc_type as failure poisoned the exact query
+        # the deferral was built to make trustworthy: grep '"status": "failed"'.
+        clean_exit = (
+            exc_type is not None
+            and issubclass(exc_type, SystemExit)
+            and (getattr(exc, "code", None) in (0, None))
+        )
+        if exc_type is not None and not clean_exit:
             self.record["status"] = "failed"
             self.record["failure"] = {
                 "type": exc_type.__name__,
@@ -178,17 +196,24 @@ class Run:
                 "traceback": "".join(traceback.format_exception(exc_type, exc, tb))[-4000:],
             }
         self._in_context = False
+        try:
+            self._finish()
+        except Exception as exc:  # never replace the exception being recorded
+            print(f"  WARNING: provenance capture failed during exit: {exc}", file=sys.stderr)
+        return False  # NEVER swallow the caller's exception.
+
+    def _finish(self) -> None:
+        """The exit-time capture, isolated so a failure in it cannot mask the run's."""
+        target = self._last_written or self.provenance_path
         if self.provenance_path is not None and not self._written:
             self.write(self.provenance_path)
-        elif self._written and self.provenance_path is not None:
+        elif self._written and target is not None:
             # Already on disk, and the status may have just changed under it. Rewrite so
             # the sidecar carries the truth rather than the optimistic snapshot.
-            self._persist(self.provenance_path)
-        if self._deferred_history is not None:
+            self._persist(target)
+        if self._deferred_history is not None and not self._history_appended:
             path, self._deferred_history = self._deferred_history, None
             self._append_history(path)
-        return False  # NEVER swallow. A provenance module that hides an exception is
-        # strictly worse than one that records nothing.
 
     def _versions(self) -> dict[str, typing.Any]:
         out = {}
@@ -402,10 +427,14 @@ class Run:
         self.record["finished_utc"] = dt.datetime.now(dt.timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
-        already = self._written
+        # `already` asks "does the history have this run?", NOT "does a sidecar exist?".
+        # Conflating the two appended twice for one run, both lines carrying the same
+        # run_id, so any tally over runs.jsonl was silently inflated.
+        already = self._history_appended
         self._written = True
-        self._persist(p)
-        if self._in_context:
+        self._last_written = p  # so __exit__ can correct THIS file, kwarg or not
+        self._persist(p)  # never raises; a sidecar failure must not lose the history
+        if self._in_context and not already:
             self._deferred_history = p  # see __init__; __exit__ appends it once
         elif already:
             # A second write() rewrites the sidecar deliberately (a caller may want the
@@ -430,11 +459,54 @@ class Run:
         )
         return p
 
-    def _persist(self, p: pathlib.Path) -> None:
-        """Write the sidecar. Split out of write() so __exit__ can correct a record that
-        has become false without appending a second history line for one run."""
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(self.record, indent=2, default=str), encoding="utf-8")
+    def _encode(self) -> str:
+        """Serialise the record, degrading a value that cannot encode rather than dying.
+
+        `default=str` handles unencodable VALUES and not KEYS, so `note("confusion",
+        {(1, "a"): 0.9})` -- what a per-class confusion matrix looks like -- raised
+        TypeError, the sidecar was never written, and the whole run vanished. A note that
+        cannot be encoded is worth less than the run it belongs to.
+        """
+        try:
+            return json.dumps(self.record, indent=2, default=str)
+        except (TypeError, ValueError) as exc:
+            print(
+                f"  WARNING: could not serialise part of the record ({exc}); "
+                f"degrading the offending entries",
+                file=sys.stderr,
+            )
+            for key in ("notes", "parameters"):
+                section = self.record.get(key)
+                if not isinstance(section, dict):
+                    continue
+                for k, v in list(section.items()):
+                    try:
+                        json.dumps({k: v}, default=str)
+                    except (TypeError, ValueError):
+                        section[k] = f"UNSERIALISABLE <{type(v).__name__}>"
+            return json.dumps(self.record, indent=2, default=str)
+
+    def _persist(self, p: pathlib.Path) -> bool:
+        """Write the sidecar. NEVER raises.
+
+        Split out of write() so __exit__ can correct a record that has become false
+        without appending a second history line. It swallows because of what it is: this
+        ran while an exception was already in flight, and a provenance module that
+        replaces the failure it is recording destroys the diagnostic AND the record. The
+        rule `sinks.py` states for sinks -- "a sink that can abort a run gets removed from
+        the run" -- was never applied to the sidecar path. Measured before this: a
+        RuntimeError from the user's code was replaced by NotADirectoryError from here.
+        """
+        text = self._encode()
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+            return True
+        except OSError as exc:
+            print(
+                f"  WARNING: could not write the provenance sidecar to {p}: {exc}", file=sys.stderr
+            )
+            return False
 
     def _append_history(self, prov_path: pathlib.Path) -> None:
         """Append the summary to the project's sink — one line per run, forever.
@@ -479,4 +551,5 @@ class Run:
             "provenance_path": str(prov_path),
             "notes": r.get("notes", {}),
         }
+        self._history_appended = True
         self.project.resolved_sink().append(summary)
