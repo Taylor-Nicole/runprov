@@ -62,6 +62,9 @@ exclude_also = ["if __name__ == .__main__.:", "raise SystemExit"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["runprov"]
+# py.typed must reach the wheel or PEP 561 does not apply and the annotations are
+# invisible to every consumer's type checker.
+artifacts = ["runprov/py.typed"]
 
 [tool.hatch.build.targets.sdist]
 include = ["runprov", "tests", "ci.py", "README.md", "PUBLISHING.md", "WHY.md",

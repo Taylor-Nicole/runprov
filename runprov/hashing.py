@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime as dt
 import gzip
 import hashlib
+import itertools
 import pathlib
 import re
 
@@ -46,28 +47,54 @@ def sha256(path: pathlib.Path, chunk: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
-def content_digest(path: pathlib.Path) -> str | None:
-    """SHA-256 with volatile stamps removed. Binary falls back to the raw hash."""
+def content_digest(path: pathlib.Path, chunk_lines: int = 8192) -> str | None:
+    """SHA-256 with volatile stamps removed. Binary falls back to the raw hash.
+
+    STREAMED, line by line. The first version did `path.read_text()` and hashed the
+    result, while the module docstring promised that "hashing is streamed, so multi-GB
+    inputs are fine" -- true of `sha256`, false here, and this is the function called on
+    every registered input. A 4 GB TSV would have taken 4 GB of memory to decide whether
+    it had changed.
+    """
     if not path.is_file():
         return None
     try:
         if path.suffix == ".gz":
-            return hashlib.sha256(gzip.decompress(path.read_bytes())).hexdigest()
+            return _gzip_digest(path)
     except (OSError, EOFError, gzip.BadGzipFile):
         return sha256(path)
+
+    h = hashlib.sha256()
+    is_json = path.suffix == ".json"
+    first = True
     try:
-        # encoding="utf-8" EXPLICITLY. Without it Python uses the locale default, which is
-        # cp1252 on Windows, so a UTF-8 artifact is decoded wrongly and then re-encoded as
-        # UTF-8 below -- producing a DIFFERENT content digest for the same bytes depending
-        # on which machine ran. For a provenance tool that is not a portability nit: it
-        # means two honest runs disagree about whether a file changed. Windows CI caught it.
-        text = path.read_text(encoding="utf-8")
+        with open(path, encoding="utf-8") as fh:
+            while True:
+                block = list(itertools.islice(fh, chunk_lines))
+                if not block:
+                    break
+                kept = [ln.rstrip("\n") for ln in block if not VOLATILE.match(ln)]
+                if not kept:
+                    continue
+                body = "\n".join(kept)
+                if is_json:
+                    body = VOLATILE_JSON.sub('""', body)
+                h.update((("" if first else "\n") + body).encode())
+                first = False
     except (UnicodeDecodeError, OSError):
         return sha256(path)
-    body = "\n".join(ln for ln in text.splitlines() if not VOLATILE.match(ln))
-    if path.suffix == ".json":
-        body = VOLATILE_JSON.sub('""', body)
-    return hashlib.sha256(body.encode()).hexdigest()
+    return h.hexdigest()
+
+
+def _gzip_digest(path: pathlib.Path, chunk: int = 1 << 20) -> str:
+    """Decompress in fixed blocks -- the gzip header stores a compression mtime, so a .gz
+    rewritten from identical bytes never hashes the same twice, and reading it whole to
+    work around that would defeat the streaming above."""
+    h = hashlib.sha256()
+    with gzip.open(path, "rb") as fh:
+        while blk := fh.read(chunk):
+            h.update(blk)
+    return h.hexdigest()
 
 
 def describe(path: pathlib.Path) -> dict:

@@ -23,6 +23,8 @@ import pathlib
 import subprocess
 import typing
 
+from .sinks import JsonlSink, RecordSink
+
 # Packages whose version is recorded with every run. The audit's list is an ML stack;
 # yours will differ, which is why it is a field and not a constant.
 DEFAULT_TRACKED = ("numpy", "pandas", "scipy", "sklearn")
@@ -100,6 +102,9 @@ class Project:
     # worth writing where someone will look for it, and content-addressed so enabling it
     # costs one file per DISTINCT environment rather than one per run.
     env_snapshot_dir: pathlib.Path | None = None
+    # WHERE records go. None means "a JsonlSink at resolved_run_log()". Supplying one is
+    # how a lab points many pipelines at a shared store without forking the package.
+    sink: RecordSink | None = None
     code_paths: tuple[str, ...] = DEFAULT_CODE_PATHS
     tracked_packages: tuple[str, ...] = DEFAULT_TRACKED
     run_id: typing.Callable[[], str] = default_run_id
@@ -107,6 +112,9 @@ class Project:
 
     def resolved_run_log(self) -> pathlib.Path:
         return self.run_log or (self.root / "provenance" / "runs.jsonl")
+
+    def resolved_sink(self) -> RecordSink:
+        return self.sink if self.sink is not None else JsonlSink(self.resolved_run_log())
 
 
 _ACTIVE: Project | None = None
@@ -119,7 +127,15 @@ def configure(
     """Install the project every later `Run()` uses. Call once, at import of your paths
     module — not inside each script, which is how three scripts end up disagreeing."""
     global _ACTIVE
-    _ACTIVE = project if project is not None else Project(**kwargs)
+    proj = project if project is not None else Project(**kwargs)
+    if proj.sink is not None and not isinstance(proj.sink, RecordSink):
+        # Fail HERE, at configuration, not at the end of a two-hour run when the record is
+        # about to be written and the work is already done.
+        raise TypeError(
+            f"sink {type(proj.sink).__name__} does not satisfy RecordSink: it needs "
+            f"`append(self, record: dict) -> None`."
+        )
+    _ACTIVE = proj
     return _ACTIVE
 
 

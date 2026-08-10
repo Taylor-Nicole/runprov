@@ -22,7 +22,6 @@ no run id. Both were tried; both made every pinned artifact differ on every run.
 
 from __future__ import annotations
 
-import contextlib
 import datetime as dt
 import inspect
 import json
@@ -39,6 +38,11 @@ from .environment import write_snapshot
 from .hashing import describe, sha256
 from .project import Project, active, git
 
+# The record format, named and versioned. A consumer -- a script, a dashboard, an agent
+# reading the history -- can branch on this instead of guessing from which keys happen to
+# be present. Bump it when a field changes meaning, never when one is added.
+SCHEMA = "runprov.run.v1"
+
 
 def _caller_file() -> pathlib.Path | None:
     """The script that constructed the Run — not this package's own file.
@@ -54,63 +58,6 @@ def _caller_file() -> pathlib.Path | None:
         if here not in f.parents and f.is_file():
             return f
     return None
-
-
-@contextlib.contextmanager
-def _exclusive(fh: typing.IO[str]) -> typing.Iterator[None]:
-    """Hold an exclusive lock on `fh` for the duration of the block.
-
-    Two implementations because there is no one call that works everywhere, and the
-    Windows half was written only after Windows CI FAILED: 24 concurrent appends produced
-    23 lines. The `fcntl` import simply raises there, the code fell through to an unlocked
-    append, and a record was lost -- silently, which is the worst way for a provenance
-    tool to fail. Documenting a fallback is not the same as having one that works.
-
-    * POSIX: `fcntl.flock`, whole file.
-    * Windows: `msvcrt.locking` on byte 0. The file is open in append mode, so writes go
-      to the end regardless of where the pointer sits; every writer contends for the same
-      single byte, which is exactly the mutual exclusion wanted. LK_LOCK retries for ~10
-      seconds before raising.
-
-    If neither is available the append still happens and the downgrade is PRINTED, because
-    a silent weakening of a durability guarantee is discovered only once the file is broken.
-    """
-    locked = None
-    try:
-        import fcntl
-
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        locked = "fcntl"
-    except (ImportError, OSError):
-        try:
-            # `sys.platform == "win32"` is not decoration: mypy typechecks for the
-            # platform it runs on, so on Linux `msvcrt` resolves to a stub with no
-            # members and every attribute is an error. The guard is how the stubs expect
-            # platform-specific code to be written, and it is honest -- this branch only
-            # ever runs there.
-            if sys.platform == "win32":
-                import msvcrt
-
-                fh.seek(0)
-                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
-                locked = "msvcrt"
-        except (ImportError, OSError):
-            print(
-                "  NOTE: no file locking available; run history appended unlocked. "
-                "Concurrent writers may interleave."
-            )
-    try:
-        yield
-    finally:
-        if locked == "fcntl":
-            import fcntl
-
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        elif locked == "msvcrt" and sys.platform == "win32":
-            import msvcrt
-
-            fh.seek(0)
-            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 class Run:
@@ -139,6 +86,7 @@ class Run:
 
         sp = pathlib.Path(script_path) if script_path else _caller_file()
         self.record: dict = {
+            "schema": SCHEMA,
             "script": script,
             "run_id": self.project.run_id(),
             "generation": self.project.generation(),
@@ -366,10 +314,7 @@ class Run:
                 sha = str(
                     i.get("content_sha256") or i.get("sha256") or i.get("sha256_tree") or "MISSING"
                 )[:16]
-                try:
-                    name = str(pathlib.Path(i["path"]).relative_to(self.project.root))
-                except (ValueError, KeyError):
-                    name = str(i.get("path", "?"))
+                name = self._pin_name(i.get("path", "?"))
                 lines.append(f"{c}    {sha}  {name}")
         else:
             # NOT silence. "Derived from nothing" and "reads bypass run.input()" look
@@ -379,6 +324,21 @@ class Run:
                 f"derived from nothing, or its reads bypass run.input()."
             )
         return "\n".join(lines) + "\n"
+
+    def _pin_name(self, raw: str) -> str:
+        """The label a pinned input carries INSIDE an artifact.
+
+        Relative to the project root where possible; otherwise `<external>/<name>` rather
+        than the absolute path. An absolute path embeds this machine's directory layout in
+        a committed artifact, so the same data pinned on two machines produced two
+        different pins -- the same machine-dependence class as the encoding defect. The
+        full path stays in the sidecar, where it is information rather than a comparison
+        key.
+        """
+        try:
+            return str(pathlib.Path(raw).relative_to(self.project.root))
+        except (ValueError, TypeError):
+            return f"<external>/{pathlib.Path(raw).name}"
 
     # ---------------------------------------------------------------- finish
     def write(self, path: str | pathlib.Path) -> pathlib.Path:
@@ -407,10 +367,17 @@ class Run:
         self.record["finished_utc"] = dt.datetime.now(dt.timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
+        already = self._written
         self._written = True
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(self.record, indent=2, default=str), encoding="utf-8")
-        self._append_history(p)
+        if already:
+            # A second write() rewrites the sidecar deliberately (a caller may want the
+            # record at two paths) but must NOT append a second history line: one run is
+            # one line, or every count taken from the history is wrong.
+            print("  (history already recorded for this run; sidecar rewritten only)")
+        else:
+            self._append_history(p)
 
         if self.record.get("status") == "failed":
             print(
@@ -428,57 +395,46 @@ class Run:
         return p
 
     def _append_history(self, prov_path: pathlib.Path) -> None:
-        """Append-only run history, one JSON object per line.
+        """Append the summary to the project's sink — one line per run, forever.
 
-        Each sidecar holds only the LATEST run of a script; this holds every run ever. It
-        is the one thing an experiment tracker gives you that per-run files do not, and
-        keeping it as a git-tracked JSONL rather than a service means it is diffable,
-        travels with the repository, and needs nothing a reviewer cannot run.
+        Each sidecar holds only the LATEST run of a script; the history holds every run
+        ever. It is the one thing an experiment tracker gives you that per-run files do
+        not, and keeping it as a git-tracked JSONL rather than a service means it is
+        diffable, travels with the repository, and needs nothing a reviewer cannot run.
+
+        Where it goes is the project's business (`Project.sink`), not this method's.
         """
-        log = self.project.resolved_run_log()
-        try:
-            log.parent.mkdir(parents=True, exist_ok=True)
-            r = self.record
-            summary = {
-                "script": r["script"],
-                "run_id": r["run_id"],
-                # So `grep '"status": "failed"' runs.jsonl` is the whole query. A history
-                # of successes only cannot tell you how often a step fails.
-                "status": r.get("status", "ok"),
-                "failure": r.get("failure"),
-                "generation": r["generation"],
-                "started_utc": r["started_utc"],
-                "finished_utc": r["finished_utc"],
-                "command": r["command"],
-                "cwd": r["cwd"],
-                "parameters": r["parameters"],
-                "seeds": r["seeds"],
-                "git_commit": r["code"]["git_commit_short"],
-                "git_code_dirty": r["code"]["git_code_dirty"],
-                "script_sha256": r["code"]["script_sha256"],
-                "packages": r["environment"]["packages"],
-                "inputs": [
-                    {"path": i["path"], "sha256": i.get("sha256") or i.get("sha256_tree")}
-                    for i in r["inputs"]
-                ],
-                "outputs": [
-                    {"path": o["path"], "sha256": o.get("sha256") or o.get("sha256_tree")}
-                    for o in r["outputs"]
-                ],
-                # Where the FULL record is. Without this an archiver reading the history
-                # can find every artifact a run produced except its own provenance.
-                "provenance_path": str(prov_path),
-                "notes": r.get("notes", {}),
-            }
-            line = json.dumps(summary, default=str) + "\n"
-            with open(log, "a", encoding="utf-8") as fh:
-                # LOCKED, because these lines are long. Measured on the project this came
-                # from: median 2,032 bytes, max 7,274, and 65 of 1,908 lines exceed 4,096
-                # -- the size below which POSIX guarantees an O_APPEND write is atomic.
-                # Above it, two concurrent runs interleave into a line that is not JSON.
-                with _exclusive(fh):
-                    fh.write(line)
-                    fh.flush()
-                    os.fsync(fh.fileno())
-        except Exception as exc:  # never let logging break a run
-            print(f"  WARNING: could not append to run history: {exc}")
+        r = self.record
+        summary = {
+            "schema": SCHEMA,
+            "script": r["script"],
+            "run_id": r["run_id"],
+            "generation": r["generation"],
+            # So `grep '"status": "failed"' runs.jsonl` is the whole query. A history of
+            # successes only cannot tell you how often a step fails.
+            "status": r.get("status", "ok"),
+            "failure": r.get("failure"),
+            "started_utc": r["started_utc"],
+            "finished_utc": r["finished_utc"],
+            "command": r["command"],
+            "cwd": r["cwd"],
+            "parameters": r["parameters"],
+            "seeds": r["seeds"],
+            "git_commit": r["code"]["git_commit_short"],
+            "git_code_dirty": r["code"]["git_code_dirty"],
+            "script_sha256": r["code"]["script_sha256"],
+            "packages": r["environment"]["packages"],
+            "inputs": [
+                {"path": i["path"], "sha256": i.get("sha256") or i.get("sha256_tree")}
+                for i in r["inputs"]
+            ],
+            "outputs": [
+                {"path": o["path"], "sha256": o.get("sha256") or o.get("sha256_tree")}
+                for o in r["outputs"]
+            ],
+            # Where the FULL record is. Without this an archiver reading the history can
+            # find every artifact a run produced EXCEPT its own provenance.
+            "provenance_path": str(prov_path),
+            "notes": r.get("notes", {}),
+        }
+        self.project.resolved_sink().append(summary)
