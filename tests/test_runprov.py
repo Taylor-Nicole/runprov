@@ -153,7 +153,7 @@ def test_run_records_a_registered_output_that_was_never_written(tmp_path):
     run = runprov.Run("t", project=_project(tmp_path))
     run.output(tmp_path / "never.tsv")
     prov = run.write(tmp_path / "t_provenance.json")
-    rec = json.loads(prov.read_text())
+    rec = json.loads(prov.read_text(encoding="utf-8"))
     assert rec["outputs"][0]["kind"] == "MISSING"
 
 
@@ -163,7 +163,7 @@ def test_run_hashes_outputs_at_write_time_not_at_registration(tmp_path):
     run = runprov.Run("t", project=_project(tmp_path))
     out = run.output(tmp_path / "late.tsv")
     out.write_text("id\n1\n")
-    rec = json.loads(run.write(tmp_path / "t_provenance.json").read_text())
+    rec = json.loads(run.write(tmp_path / "t_provenance.json").read_text(encoding="utf-8"))
     assert rec["outputs"][0]["kind"] == "file" and rec["outputs"][0]["sha256"]
 
 
@@ -171,7 +171,7 @@ def test_run_appends_one_line_per_run_to_the_history(tmp_path):
     proj = _project(tmp_path)
     for _ in range(3):
         runprov.Run("t", project=proj).write(tmp_path / "t_provenance.json")
-    lines = (tmp_path / "runs.jsonl").read_text().strip().splitlines()
+    lines = (tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 3
     first = json.loads(lines[0])
     assert first["run_id"] == "test_run" and first["generation"] == "test_gen"
@@ -206,7 +206,7 @@ def test_a_crashed_run_still_leaves_a_record(tmp_path):
         with runprov.Run("crashy", project=proj, provenance=tmp_path / "crashy.json") as run:
             run.output(tmp_path / "result.tsv")
             raise RuntimeError("the step failed halfway, as steps do")
-    rec = json.loads((tmp_path / "crashy.json").read_text())
+    rec = json.loads((tmp_path / "crashy.json").read_text(encoding="utf-8"))
     assert rec["status"] == "failed"
     assert rec["failure"]["type"] == "RuntimeError"
     assert "failed halfway" in rec["failure"]["message"]
@@ -230,7 +230,10 @@ def test_a_failed_run_is_greppable_in_the_history(tmp_path):
         with runprov.Run("bad", project=proj, provenance=tmp_path / "bad.json"):
             raise ValueError("nope")
     runprov.Run("good", project=proj).write(tmp_path / "good.json")
-    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().strip().splitlines()]
+    rows = [
+        json.loads(x)
+        for x in (tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    ]
     assert [r["status"] for r in rows] == ["failed", "ok"]
     assert rows[1]["failure"] is None
 
@@ -239,12 +242,12 @@ def test_a_successful_with_block_writes_once_not_twice(tmp_path):
     proj = _project(tmp_path)
     with runprov.Run("t", project=proj, provenance=tmp_path / "t.json") as run:
         run.write(tmp_path / "t.json")  # explicit write, the historic style
-    assert len((tmp_path / "runs.jsonl").read_text().strip().splitlines()) == 1
+    assert len((tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip().splitlines()) == 1
 
 
 def test_status_defaults_to_ok_on_the_plain_write_path(tmp_path):
     run = runprov.Run("t", project=_project(tmp_path))
-    rec = json.loads(run.write(tmp_path / "t.json").read_text())
+    rec = json.loads(run.write(tmp_path / "t.json").read_text(encoding="utf-8"))
     assert rec["status"] == "ok"
 
 
@@ -273,8 +276,10 @@ def test_concurrent_appends_do_not_interleave(tmp_path):
 
     with cf.ThreadPoolExecutor(max_workers=8) as ex:
         list(ex.map(one, range(24)))
-    lines = (tmp_path / "runs.jsonl").read_text().strip().splitlines()
-    assert len(lines) == 24
+    lines = (tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    # The count first, and with the number in the message: Windows CI failed here with
+    # 23 == 24 and the interesting fact was the missing ONE, not the assertion text.
+    assert len(lines) == 24, f"{24 - len(lines)} record(s) lost to interleaving"
     for ln in lines:
         json.loads(ln)  # every line must still be valid JSON
     assert len(lines[0]) > 4096
@@ -379,8 +384,8 @@ def test_the_history_is_one_file_appended_forever(tmp_path):
     log = tmp_path / "runs.jsonl"
     for i in range(4):
         runprov.Run(f"s{i}", project=proj).write(tmp_path / f"p{i}.json")
-        assert len(log.read_text().strip().splitlines()) == i + 1
-    first = json.loads(log.read_text().splitlines()[0])
+        assert len(log.read_text(encoding="utf-8").strip().splitlines()) == i + 1
+    first = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
     assert first["script"] == "s0", "the first record must survive every later append"
 
 
@@ -424,7 +429,7 @@ def test_the_command_survives_arguments_that_need_quoting(tmp_path, monkeypatch)
 def test_the_invocation_reaches_the_history(tmp_path):
     proj = _project(tmp_path)
     runprov.Run("t", project=proj).write(tmp_path / "p.json")
-    rec = json.loads((tmp_path / "runs.jsonl").read_text())
+    rec = json.loads((tmp_path / "runs.jsonl").read_text(encoding="utf-8"))
     assert sys.executable in rec["command"] and rec["cwd"]
 
 
@@ -518,7 +523,7 @@ def test_environment_snapshot_is_content_addressed_not_per_run(tmp_path):
 
 def test_environment_snapshot_filename_is_the_digest_of_its_body(tmp_path):
     rec = runprov.write_snapshot(tmp_path)
-    body = pathlib.Path(rec["path"]).read_text()
+    body = pathlib.Path(rec["path"]).read_text(encoding="utf-8")
     assert pathlib.Path(rec["path"]).name == f"env-{runprov.environment.digest(body)[:16]}.txt"
     assert rec["sha256"] == runprov.environment.digest(body)
 
@@ -551,7 +556,7 @@ def test_installed_packages_reads_the_running_interpreter(tmp_path):
 
 def test_snapshot_body_records_the_interpreter_not_only_the_packages(tmp_path):
     """The same versions on a different Python are a different environment."""
-    body = pathlib.Path(runprov.write_snapshot(tmp_path)["path"]).read_text()
+    body = pathlib.Path(runprov.write_snapshot(tmp_path)["path"]).read_text(encoding="utf-8")
     assert f"# python   : {sys.version.split()[0]}" in body
 
 
@@ -567,7 +572,7 @@ def test_every_module_carries_the_copyright_header():
     mods = sorted(pathlib.Path(runprov.__file__).parent.glob("*.py"))
     assert len(mods) >= 6, f"expected the whole package, found {[m.name for m in mods]}"
     for m in mods:
-        head = m.read_text().split("\n", 3)[:3]
+        head = m.read_text(encoding="utf-8").split("\n", 3)[:3]
         assert head[0].startswith("# Copyright (c)"), m.name
         # BOTH holders. The institution holds the economic rights under CPI art. L113-9;
         # the author holds the droit moral, which French law does not permit transferring.
@@ -585,7 +590,7 @@ def test_the_licence_text_ships_with_the_package():
     lic = next((p for p in (pkg.parent / "LICENSE", pkg / "LICENSE") if p.is_file()), None)
     if lic is None:
         pytest.skip("installed wheel: LICENSE lives in dist-info, not beside the package")
-    text = lic.read_text()
+    text = lic.read_text(encoding="utf-8")
     assert "CeCILL-B FREE SOFTWARE LICENSE AGREEMENT" in text
     assert "5.3.4 CREDITS" in text, "the attribution obligation must be present"
 
@@ -599,7 +604,7 @@ def test_citation_metadata_exists_and_names_the_affiliation():
     )
     if cff is None:
         pytest.skip("installed wheel: CITATION.cff is not packaged")
-    text = cff.read_text()
+    text = cff.read_text(encoding="utf-8")
     assert "cff-version:" in text and "license: CECILL-B" in text
     assert "Hôpital Henri-Mondor" in text
     assert "0000-0000-0000-0000" not in text, "never ship a placeholder ORCID"

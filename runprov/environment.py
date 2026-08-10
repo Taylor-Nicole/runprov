@@ -104,7 +104,7 @@ def write_snapshot(directory: pathlib.Path) -> dict:
     path = directory / f"env-{d[:16]}.txt"
     existed = path.is_file()
     if not existed:
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
     return {
         "path": str(path),
         "sha256": d,

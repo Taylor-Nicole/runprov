@@ -22,6 +22,7 @@ no run id. Both were tried; both made every pinned artifact differ on every run.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import inspect
 import json
@@ -53,6 +54,57 @@ def _caller_file() -> pathlib.Path | None:
         if here not in f.parents and f.is_file():
             return f
     return None
+
+
+@contextlib.contextmanager
+def _exclusive(fh: typing.IO[str]) -> typing.Iterator[None]:
+    """Hold an exclusive lock on `fh` for the duration of the block.
+
+    Two implementations because there is no one call that works everywhere, and the
+    Windows half was written only after Windows CI FAILED: 24 concurrent appends produced
+    23 lines. The `fcntl` import simply raises there, the code fell through to an unlocked
+    append, and a record was lost -- silently, which is the worst way for a provenance
+    tool to fail. Documenting a fallback is not the same as having one that works.
+
+    * POSIX: `fcntl.flock`, whole file.
+    * Windows: `msvcrt.locking` on byte 0. The file is open in append mode, so writes go
+      to the end regardless of where the pointer sits; every writer contends for the same
+      single byte, which is exactly the mutual exclusion wanted. LK_LOCK retries for ~10
+      seconds before raising.
+
+    If neither is available the append still happens and the downgrade is PRINTED, because
+    a silent weakening of a durability guarantee is discovered only once the file is broken.
+    """
+    locked = None
+    try:
+        import fcntl
+
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        locked = "fcntl"
+    except (ImportError, OSError):
+        try:
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            locked = "msvcrt"
+        except (ImportError, OSError):
+            print(
+                "  NOTE: no file locking available; run history appended unlocked. "
+                "Concurrent writers may interleave."
+            )
+    try:
+        yield
+    finally:
+        if locked == "fcntl":
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        elif locked == "msvcrt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 class Run:
@@ -351,7 +403,7 @@ class Run:
         )
         self._written = True
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(self.record, indent=2, default=str))
+        p.write_text(json.dumps(self.record, indent=2, default=str), encoding="utf-8")
         self._append_history(p)
 
         if self.record.get("status") == "failed":
@@ -413,29 +465,14 @@ class Run:
                 "notes": r.get("notes", {}),
             }
             line = json.dumps(summary, default=str) + "\n"
-            with open(log, "a") as fh:
-                # LOCKED, because these lines are long. Measured on this repository's own
-                # history: median 2,032 bytes, max 7,274, and 65 of 1,908 lines exceed
-                # 4,096 -- the size below which POSIX guarantees an O_APPEND write is
-                # atomic. Above it, two concurrent runs can interleave and produce a line
-                # that is not JSON, silently corrupting the one append-only record.
-                # It has not happened here only because the chain holds a lock and runs
-                # its stages in sequence; a parallel pipeline has no such protection.
-                try:
-                    import fcntl
-
-                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-                except (ImportError, OSError):
-                    # No flock (non-POSIX, some network filesystems). Degrade to the
-                    # unlocked append rather than losing the record entirely -- and say so,
-                    # because a silent downgrade of a durability guarantee is the kind of
-                    # thing nobody discovers until the file is already broken.
-                    print(
-                        "  NOTE: advisory locking unavailable; run history appended "
-                        "unlocked. Concurrent writers may interleave."
-                    )
-                fh.write(line)
-                fh.flush()
-                os.fsync(fh.fileno())
+            with open(log, "a", encoding="utf-8") as fh:
+                # LOCKED, because these lines are long. Measured on the project this came
+                # from: median 2,032 bytes, max 7,274, and 65 of 1,908 lines exceed 4,096
+                # -- the size below which POSIX guarantees an O_APPEND write is atomic.
+                # Above it, two concurrent runs interleave into a line that is not JSON.
+                with _exclusive(fh):
+                    fh.write(line)
+                    fh.flush()
+                    os.fsync(fh.fileno())
         except Exception as exc:  # never let logging break a run
             print(f"  WARNING: could not append to run history: {exc}")
