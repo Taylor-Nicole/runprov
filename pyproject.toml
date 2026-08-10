@@ -51,12 +51,14 @@ disallow_untyped_defs = true
 # on a check you then have to suppress twice is theatre.
 
 [tool.pytest.ini_options]
-addopts = "-q --cov=runprov --cov-report=term-missing --cov-fail-under=80"
+addopts = "-q --cov=runprov --cov-report=term-missing --cov-fail-under=100"
 testpaths = ["tests"]
 
-# 80, not the 85.68 the suite currently achieves. A threshold set at today's exact number
-# fails on the first line anyone adds, which trains people to lower it rather than to
-# write the test -- and a gate that gets edited to pass is not a gate.
+# 100, and it is reachable here: the package is 457 statements with no I/O it cannot fake.
+# 100 is the only threshold that does not need defending -- any other number is an
+# argument about which lines deserve a test, held once and then never revisited. The
+# earlier 80 was set because the suite achieved 85.68; that is the wrong direction of
+# reasoning, and the tests were written to close the gap instead.
 [tool.coverage.report]
 exclude_also = ["if __name__ == .__main__.:", "raise SystemExit"]
 

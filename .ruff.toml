@@ -12,6 +12,13 @@ target-version = "py310"
 [lint]
 select = ["E", "F", "I", "N", "UP", "ANN", "S", "B", "C4", "PT", "RUF"]
 
+# RUF003 flags an "ambiguous" EN DASH in a comment and suggests a hyphen. The comment is
+# the copyright notice, and the en dash is part of "Assistance Publique – Hôpitaux de
+# Paris" -- the institution's registered name. A linter does not get to respell a legal
+# entity, and a copyright line that names the holder inexactly is worse than a lint
+# warning. Ignored deliberately, everywhere, for that reason.
+ignore = ["RUF003"]
+
 [lint.per-file-ignores]
 # project.py holds the ONE subprocess call in the package: `git`, resolved from PATH.
 #   S603  the argv is a literal program name plus the caller's own arguments, no shell.
@@ -33,6 +40,9 @@ select = ["E", "F", "I", "N", "UP", "ANN", "S", "B", "C4", "PT", "RUF"]
 #   PT018  a compound assert is often the clearest statement of one fact.
 #   PT012  the crash tests need a `with Run(...)` INSIDE pytest.raises; that nesting is
 #          the behaviour under test, not sloppiness.
+#   RUF012 test doubles declare class attributes to imitate a real object's shape. The
+#          rule guards against shared mutable state across instances; a stub built and
+#          discarded inside one test has no instances to share anything with.
 #   S603/S607  the tests shell out to `git` to build a real repository to detect. That is
 #          the subject under test, not an injection risk.
 # ci.py exists to run other tools; S603 is the rule describing its entire job. Scoped to
@@ -40,5 +50,5 @@ select = ["E", "F", "I", "N", "UP", "ANN", "S", "B", "C4", "PT", "RUF"]
 # detaches the next time the formatter moves the line it sits on.
 "ci.py" = ["S603"]
 
-"tests/*" = ["S101", "S105", "S106", "S108", "ANN", "PT011", "PT012", "PT018", "S603", "S607",
+"tests/*" = ["S101", "S105", "S106", "S108", "ANN", "PT011", "PT012", "PT018", "RUF012", "S603", "S607",
              "N802"]
