@@ -19,6 +19,7 @@ import hashlib
 import importlib
 import inspect
 import io
+import itertools
 import json
 import os
 import pathlib
@@ -3533,3 +3534,347 @@ def test_a_filename_that_is_not_utf8_cannot_break_the_callers_write(tmp_path, mo
     assert "bad" in body and "name.tsv" in body, "the name is recorded, not dropped"
     assert "\\xff" in body, "the undecodable byte is shown as an escape"
     assert out.stat().st_size > 0
+
+
+# ---------------------------------------------------------------- CALLING SHAPES
+# Ten shapes the package had never been called in. Eight were already correct — a Run in a
+# thread, eight concurrent Runs in threads, Runs in fork- and spawn-started children, a
+# forked child capturing inside a capturing parent, a subprocess's output, `python -O`, and
+# LIFO-nested captures. The two below were not.
+
+
+def _out_of_order_captures(tmp_path, sink):
+    """Start A, start B, stop A, stop B — with every write going through fd 1.
+
+    Returns what reached the real stdout. `sink` stands in for the terminal: under pytest
+    `sys.stdout` is pytest's buffer and never reaches fd 1, so a `print()` here would
+    prove nothing about descriptors either way.
+
+    Both Runs are CONSTRUCTED inside the redirect, because capture starts in
+    `Run.__init__` and not in `__enter__`. Building them outside leaves their saved
+    descriptors pointing at pytest's stdout, and the redirect then clobbers a live pipe —
+    an earlier draft of this helper did exactly that and produced three failures that
+    looked convincingly like the defect under test.
+    """
+    with open(sink, "w", encoding="utf-8") as fh:
+        saved1, saved2 = os.dup(1), os.dup(2)
+        os.dup2(fh.fileno(), 1)
+        os.dup2(fh.fileno(), 2)
+        try:
+            a = runprov.Run("A", provenance=tmp_path / "a.json", terminal_log=tmp_path / "a.log")
+            b = runprov.Run("B", provenance=tmp_path / "b.json", terminal_log=tmp_path / "b.log")
+            a.__enter__()
+            b.__enter__()
+            os.write(1, b"BOTH-LIVE\n")
+            a.__exit__(None, None, None)  # OUT OF ORDER, on purpose
+            os.write(1, b"ONLY-B-LIVE\n")
+            b.__exit__(None, None, None)
+            os.write(1, b"AFTER-BOTH\n")
+        finally:
+            # Unconditional, so a failure of the thing under test cannot take pytest's own
+            # streams down with it — without this a regression here loses the test report.
+            os.dup2(saved1, 1)
+            os.dup2(saved2, 2)
+            os.close(saved1)
+            os.close(saved2)
+    return a, b, sink.read_text(encoding="utf-8")
+
+
+def test_stopping_captures_out_of_order_does_not_destroy_stdout(tmp_path, monkeypatch):
+    """THE DEFECT: fds 1 and 2 are process-global, so unwinding them in the wrong order
+    leaves fd 1 pointing into a pipe nobody reads.
+
+    Capture B, started inside A, saves *A's pipe* as its "original" — that is what fd 1
+    held when B started. Stopping A first and B second therefore reinstalls A's pipe over
+    fd 1 after A has stopped reading it. Measured before the fix: `AFTER-BOTH` and every
+    subsequent write in the process vanished, with no error anywhere. That is precisely
+    what `terminal.py`'s own docstring calls worse than recording nothing.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    _a, _b, passed = _out_of_order_captures(tmp_path, tmp_path / "real_stdout.txt")
+
+    assert "AFTER-BOTH" in passed, (
+        "stdout was destroyed by the out-of-order unwind — fd 1 was left pointing into an "
+        "orphaned pipe, so everything written after both captures ended was lost"
+    )
+    assert "BOTH-LIVE" in passed and "ONLY-B-LIVE" in passed, "capture tees, never diverts"
+
+
+def test_an_out_of_order_stop_is_recorded_not_merely_survived(tmp_path, monkeypatch):
+    """Surviving it is not enough. The outer log stops early while its descriptors stay
+    installed, so a reader comparing the log against the run's own start/finish times finds
+    output that ends before the run did. The record has to explain that, or the discrepancy
+    reads as a truncated log."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    a, b, _passed = _out_of_order_captures(tmp_path, tmp_path / "real_stdout.txt")
+
+    outer = a.record["terminal_log"]
+    assert outer.get("out_of_order") is True
+    assert "after this run finished" in outer["note"]
+    assert "out_of_order" not in b.record["terminal_log"], (
+        "the INNER capture unwound normally and must not be flagged"
+    )
+
+
+def test_the_outer_log_keeps_what_was_written_while_it_was_live(tmp_path, monkeypatch):
+    """The outer capture's file cannot be closed the instant `stop()` is called.
+
+    Its pump thread may not have been scheduled yet, so bytes written while it was live are
+    still in a chain of pipes. Measured without the bounded drain: the outer log recorded
+    **none** of `BOTH-LIVE`, which was written while that capture was the only one the
+    caller had asked for. It must equally not contain what came after it stopped.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    _a, _b, _passed = _out_of_order_captures(tmp_path, tmp_path / "real_stdout.txt")
+
+    outer = (tmp_path / "a.log").read_text(encoding="utf-8", errors="replace")
+    inner = (tmp_path / "b.log").read_text(encoding="utf-8", errors="replace")
+    assert "BOTH-LIVE" in outer, "written while the outer capture was live — it belongs there"
+    assert "ONLY-B-LIVE" not in outer, "written after it stopped — it does not"
+    assert "BOTH-LIVE" in inner and "ONLY-B-LIVE" in inner
+    assert "AFTER-BOTH" not in inner
+
+
+def test_nested_captures_unwound_in_order_are_unaffected(tmp_path, monkeypatch):
+    """The ordinary nesting — inner closed first — already worked, and the fix must not buy
+    the out-of-order case at its expense. Neither record is flagged, and the terminal keeps
+    every line."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    sink = tmp_path / "real_stdout.txt"
+    with open(sink, "w", encoding="utf-8") as fh:
+        saved1, saved2 = os.dup(1), os.dup(2)
+        os.dup2(fh.fileno(), 1)
+        os.dup2(fh.fileno(), 2)
+        try:
+            # Constructed here, not before the redirect — see `_out_of_order_captures`.
+            a = runprov.Run("A", provenance=tmp_path / "a.json", terminal_log=tmp_path / "a.log")
+            with a:
+                os.write(1, b"OUTER-ONLY\n")
+                b = runprov.Run(
+                    "B", provenance=tmp_path / "b.json", terminal_log=tmp_path / "b.log"
+                )
+                with b:
+                    os.write(1, b"NESTED\n")
+                os.write(1, b"OUTER-AGAIN\n")
+            os.write(1, b"AFTER-BOTH\n")
+        finally:
+            os.dup2(saved1, 1)
+            os.dup2(saved2, 2)
+            os.close(saved1)
+            os.close(saved2)
+
+    passed = sink.read_text(encoding="utf-8")
+    for line in ("OUTER-ONLY", "NESTED", "OUTER-AGAIN", "AFTER-BOTH"):
+        assert line in passed, f"{line} never reached the terminal"
+    assert "out_of_order" not in a.record["terminal_log"]
+    assert "out_of_order" not in b.record["terminal_log"]
+    outer = (tmp_path / "a.log").read_text(encoding="utf-8", errors="replace")
+    assert "OUTER-AGAIN" in outer, "the outer capture must resume recording after the inner"
+    assert "NESTED" in outer, "the inner capture mirrors THROUGH the outer one"
+
+
+def test_an_output_registered_before_a_chdir_is_not_hashed_somewhere_else(tmp_path, monkeypatch):
+    """THE DEFECT: a record holds ONE `cwd`, and `write()` resolved pending outputs against
+    whatever directory the script had reached by then.
+
+    Measured before the fix: `output("rel.tsv")` followed by `os.chdir(sub)` and a relative
+    write produced `path: "rel.tsv"` with `cwd:` the ORIGINAL directory and the sha256 of
+    `sub/rel.tsv`. The record named a file that did not exist and carried the digest of a
+    different one — silently, with nothing downstream able to detect it.
+
+    MISSING is the honest answer here: the script said it would write `rel.tsv` beside the
+    run's cwd and did not.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.output("rel.tsv")
+        os.chdir(sub)
+        pathlib.Path("rel.tsv").write_text("written under the NEW cwd\n", encoding="utf-8")
+    os.chdir(tmp_path)
+
+    out = run.record["outputs"][0]
+    assert out["kind"] == "MISSING", (
+        "the file beside the recorded cwd was never written; hashing the one under the new "
+        "cwd puts a digest in the record that its own path does not name"
+    )
+    assert "sha256" not in out
+
+
+def test_a_path_registered_after_a_chdir_is_recorded_so_that_it_resolves(tmp_path, monkeypatch):
+    """The other half: registering *after* a chdir must still hash the file the caller
+    means, and must record it so that `cwd + path` finds it. A relative spelling cannot do
+    that — the record's `cwd` is no longer the directory it belongs to — so the path is
+    stored absolute."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "src.tsv").write_text("payload\n", encoding="utf-8")
+
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        os.chdir(sub)
+        run.input("src.tsv")
+        run.output("made.tsv")
+        pathlib.Path("made.tsv").write_text("out\n", encoding="utf-8")
+    os.chdir(tmp_path)
+
+    rec = run.record
+    got = rec["inputs"][0]
+    assert got["sha256"] == runprov.sha256(sub / "src.tsv"), "it hashed what the caller meant"
+    for entry in (got, rec["outputs"][0]):
+        assert (pathlib.Path(rec["cwd"]) / entry["path"]).exists(), (
+            f"{entry['path']} does not resolve against the record's own cwd"
+        )
+
+
+def test_an_ordinary_relative_path_is_still_recorded_relative(tmp_path, monkeypatch):
+    """The anchoring must be invisible when nothing moves. Rewriting every relative output
+    into an absolute path would make each record machine-specific and every artifact
+    comparison across two checkouts fail on the paths alone."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input("in.tsv")
+        run.output("out.tsv")
+        pathlib.Path("out.tsv").write_text("b\n", encoding="utf-8")
+
+    assert run.record["inputs"][0]["path"] == "in.tsv"
+    assert run.record["outputs"][0]["path"] == "out.tsv"
+    assert run.record["outputs"][0]["kind"] == "file"
+
+
+def test_a_capture_whose_stop_failed_does_not_poison_the_next_one(tmp_path, monkeypatch):
+    """One failed teardown must not disable teardown for the rest of the process.
+
+    `stop()` can raise before it touches the live stack at all — `_flush_std` runs first.
+    A capture left on that stack is indistinguishable from one still holding the
+    descriptors, so every capture started afterwards finds itself "not innermost", defers
+    its own teardown to an owner that will never unwind it, and never restores fd 1. The
+    process would lose terminal capture permanently after a single failure, which is the
+    kind of degradation nothing reports.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+
+    broken = runprov.Capture(tmp_path / "broken.log")
+    broken.start()
+    monkeypatch.setattr(runprov.terminal, "_flush_std", _raise_runtime)
+    assert "stopping capture failed" in broken.stop()["error"]
+    monkeypatch.undo()
+    broken._restore_fds()
+    broken._close_saved()
+
+    assert runprov.terminal._LIVE == [], (
+        "a capture that failed to stop is still on the live stack, so the next capture "
+        "will defer its teardown to it and never restore the descriptors"
+    )
+    # And prove it by using the next one, rather than trusting the list.
+    sink = tmp_path / "real_stdout.txt"
+    with open(sink, "w", encoding="utf-8") as fh:
+        saved1, saved2 = os.dup(1), os.dup(2)
+        os.dup2(fh.fileno(), 1)
+        os.dup2(fh.fileno(), 2)
+        try:
+            with runprov.Run(
+                "after", provenance=tmp_path / "p.json", terminal_log=tmp_path / "a.log"
+            ):
+                os.write(1, b"DURING\n")
+            os.write(1, b"AFTER\n")
+        finally:
+            os.dup2(saved1, 1)
+            os.dup2(saved2, 2)
+            os.close(saved1)
+            os.close(saved2)
+    body = sink.read_text(encoding="utf-8")
+    assert "DURING" in body and "AFTER" in body
+    assert "DURING" in (tmp_path / "a.log").read_text(encoding="utf-8", errors="replace")
+
+
+class _RunawayClock:
+    """A clock that always advances, so the drain's deadline is reached rather than its
+    idle condition. Substituted for the module's `time` reference — patching `time` itself
+    would reach every other user of it in the process, including pytest's own teardown."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.slept = 0
+
+    def monotonic(self):
+        self.now += 0.4
+        return self.now
+
+    def sleep(self, _seconds):
+        self.slept += 1
+
+
+def test_the_drain_gives_up_rather_than_waiting_for_a_pump_that_never_idles(tmp_path, monkeypatch):
+    """The out-of-order path waits for the mirror thread to finish what is already in the
+    pipe. That wait is a heuristic on a byte count, so it MUST be bounded: a capture whose
+    inner run keeps printing would otherwise hold the outer run's exit open indefinitely —
+    a provenance module hanging the run it describes, which is the FIFO defect again.
+
+    The count is made to keep moving, so the only way out is the deadline.
+    """
+    monkeypatch.chdir(tmp_path)
+    cap = runprov.Capture(tmp_path / "t.log")
+    clock = _RunawayClock()
+    monkeypatch.setattr(runprov.terminal, "time", clock)
+
+    ticking = itertools.count()
+    # `_seen` is an instance attribute, so the property goes on the CLASS with
+    # raising=False. A property is a data descriptor and therefore still wins over the
+    # instance value `__init__` already set.
+    monkeypatch.setattr(type(cap), "_seen", property(lambda _s: next(ticking)), raising=False)
+    cap._quiesce(limit=1.0, idle=0.0)
+
+    assert clock.slept >= 1, "it must actually have waited, not fallen straight through"
+    assert clock.now <= 1.0 + 0.4 * 2, "and it must have stopped at the deadline"
+
+
+def test_tearing_down_a_capture_that_has_no_pump_thread_restores_the_descriptors(tmp_path):
+    """`_teardown_fds` guards `self._thread is not None`, and the guard has to hold: the
+    descriptors are what the caller's output depends on, and skipping the restore because
+    there is no thread to join would be the swallow-stdout failure with extra steps."""
+    cap = runprov.Capture(tmp_path / "t.log")
+    sink = tmp_path / "sink.txt"
+    with open(sink, "w", encoding="utf-8") as fh:
+        before = os.dup(1)
+        cap._saved = {1: os.dup(1)}  # saved, but no pipe and no pump was ever started
+        os.dup2(fh.fileno(), 1)
+        try:
+            cap._teardown_fds()
+            os.write(1, b"RESTORED\n")
+        finally:
+            os.dup2(before, 1)
+            os.close(before)
+    assert cap._saved == {}, "the saved descriptor must be released, not leaked"
+    assert "RESTORED" not in sink.read_text(encoding="utf-8"), (
+        "fd 1 was left pointing at the sink — the restore was skipped"
+    )
+
+
+def test_the_drain_stops_as_soon_as_the_pump_is_idle(tmp_path, monkeypatch):
+    """The other half of the bound. A drain that always runs to its deadline would add two
+    seconds to every out-of-order stop while looking correct in every assertion about
+    CONTENT — mutation testing found exactly that hole: removing the early return changed
+    no observable output, only the wait.
+    """
+    monkeypatch.chdir(tmp_path)
+    cap = runprov.Capture(tmp_path / "t.log")
+    clock = _RunawayClock()
+    monkeypatch.setattr(runprov.terminal, "time", clock)
+
+    cap._quiesce(limit=100.0, idle=0.0)  # `_seen` never moves — the pump is idle
+
+    assert clock.slept <= 2, "it kept waiting after the byte count had settled"
+    assert clock.now < 10.0, "it ran toward the deadline instead of returning when idle"
