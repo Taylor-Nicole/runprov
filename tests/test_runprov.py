@@ -3335,6 +3335,36 @@ def test_the_reader_counts_the_torn_fragment_it_could_not_read(tmp_path):
 
 
 # ================================================ input shapes the package had never met
+CONTROL_CHARS_IN_NAMES = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows refuses a filename containing \\n or \\r (OSError 22), so the fixture "
+    "cannot be built and the hazard cannot exist there. The escaper itself is unit-tested "
+    "on every platform by test_the_pin_escaper_neutralises_control_characters.",
+)
+
+
+def test_the_pin_escaper_neutralises_control_characters():
+    """The escaping logic, as a pure function, on EVERY platform.
+
+    The two tests below build a file whose NAME contains a control character, which Windows
+    will not do. Skipping them there would leave the escaper untested on Windows even though
+    the code runs there -- so the rule is checked directly, and only the filesystem fixture
+    is skipped.
+    """
+    safe = runprov.Run._safe_for_pin
+    assert safe("ordinary/name.tsv") == "ordinary/name.tsv", "an ordinary name is untouched"
+    assert safe("a.tsv\n#  0000  FORGED.tsv") == "a.tsv\\n#  0000  FORGED.tsv"
+    assert safe("b.tsv\rHIDDEN") == "b.tsv\\rHIDDEN"
+    assert safe("c\ttab.tsv") == "c\\ttab.tsv"
+    assert safe("d\x7fdel.tsv") == "d\\x7fdel.tsv"
+    for bad in ("\n", "\r", "\x7f"):
+        assert bad not in safe(f"x{bad}y"), f"{bad!r} must not survive into an artifact"
+    # An accented name is NOT a control character and must survive intact -- escaping it
+    # would mangle every legitimate non-ASCII filename in the corpus.
+    assert safe("café.tsv") == "café.tsv"
+
+
+@CONTROL_CHARS_IN_NAMES
 def test_a_newline_in_a_filename_cannot_forge_a_pin_entry(tmp_path, monkeypatch):
     """THE PIN IS A LINE-ORIENTED FORMAT, and a filename may contain a newline.
 
@@ -3370,6 +3400,7 @@ def test_a_newline_in_a_filename_cannot_forge_a_pin_entry(tmp_path, monkeypatch)
     assert "inputs (1)" in pin, "the count and the listing must agree"
 
 
+@CONTROL_CHARS_IN_NAMES
 def test_a_carriage_return_cannot_overwrite_the_pin_either(tmp_path, monkeypatch):
     """A lone `\\r` rewrites the line in any terminal or editor that honours it, so a name
     can hide what precedes it without containing a newline at all."""
