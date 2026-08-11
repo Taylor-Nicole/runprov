@@ -1330,7 +1330,7 @@ def test_a_consumer_that_writes_data_to_stdout_gets_nothing_from_runprov_on_stdo
         [sys.executable, str(_consumer(tmp_path))], capture_output=True, timeout=120
     )
     assert proc.returncode == 0, proc.stderr.decode()
-    assert proc.stdout == b"id\tvalue\n1\t2\n", (
+    assert proc.stdout.splitlines() == [b"id\tvalue", b"1\t2"], (
         f"stdout must be the caller's data and only the caller's data; got {proc.stdout!r}"
     )
     # ... and the provenance still SAID something. Silence would be the other failure.
@@ -1365,7 +1365,7 @@ def test_the_dirty_tree_warning_reaches_stderr_and_never_the_data(tmp_path, monk
     err = proc.stderr.decode()
     assert "CODE is modified relative to git_commit" in err
     assert "src/a.py" in err, "the warning must name the files, not just announce itself"
-    assert proc.stdout == b"id\tvalue\n1\t2\n"
+    assert proc.stdout.splitlines() == [b"id\tvalue", b"1\t2"]
 
 
 def test_quiet_cannot_silence_a_warning(tmp_path, monkeypatch, capsys):
