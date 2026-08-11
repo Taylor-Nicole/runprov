@@ -69,14 +69,26 @@ strict = true
 # is about, in the config of the tool meant to catch it.
 
 [tool.pytest.ini_options]
-addopts = "-q --cov=runprov --cov-report=term-missing --cov-fail-under=100"
+addopts = "-q"
+# NO COVERAGE FLAGS HERE, deliberately. `addopts` applies to every invocation of pytest in
+# this directory, so a distribution packager running a bare `pytest` -- Debian, conda-forge,
+# a Nix build -- hits an unknown `--cov` and the build fails on a plugin nobody asked
+# for. The gate is not weakened: `ci.py test` passes the same flags, and CI calls ci.py.
 testpaths = ["tests"]
 
-# 100, and it is reachable here: the package is 457 statements with no I/O it cannot fake.
-# 100 is the only threshold that does not need defending -- any other number is an
-# argument about which lines deserve a test, held once and then never revisited. The
+# 100, and it is reachable here: the package is 621 statements and 176 branches with no I/O
+# it cannot fake. 100 is the only threshold that does not need defending -- any other number
+# is an argument about which lines deserve a test, held once and then never revisited. The
 # earlier 80 was set because the suite achieved 85.68; that is the wrong direction of
 # reasoning, and the tests were written to close the gap instead.
+#
+# `--cov-branch` IS THE GATE, and it was missing until 2026-08-11. Statement coverage read
+# 100% while five conditions had never been evaluated both ways: the with-block that records
+# nothing, both halves of `module()`'s file check, the empty rename component, and an
+# unreadable distribution with no collector. That is this package's own meta-finding arriving
+# a second time -- four regressions in the C0a state machine survived 91/91 green, because a
+# line that RAN is not a behaviour that was CHECKED, and a partial branch is precisely a
+# condition whose other half nobody has ever executed. Statement-only coverage cannot see it.
 [tool.coverage.report]
 exclude_also = ["if __name__ == .__main__.:", "raise SystemExit"]
 

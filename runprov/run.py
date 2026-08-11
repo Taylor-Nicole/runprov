@@ -34,32 +34,108 @@ import sys
 import traceback
 import types
 import typing
+import uuid
 
 from ._report import diagnostic, summary
 from .environment import write_snapshot
 from .hashing import describe, sha256
 from .project import OTHER_FILES_KEPT, Project, active, classify_status, git, is_configured
+from .terminal import Capture
 
 # The record format, named and versioned. A consumer -- a script, a dashboard, an agent
 # reading the history -- can branch on this instead of guessing from which keys happen to
 # be present. Bump it when a field changes meaning, never when one is added.
-SCHEMA = "runprov.run.v1"
+#
+# v1 -> v2 (ADR-029, 2026-08-11): `content_sha256` is COMPUTED DIFFERENTLY -- volatile
+# stripping now reaches inside gzip, spans block boundaries, and is scoped to runprov's own
+# records; `sha256_tree` gained a separator. A v1 digest and a v2 digest answer different
+# questions, so comparing them across the boundary is meaningless and the marker says so.
+SCHEMA = "runprov.run.v2"
+
+# The HISTORY line is a different shape from the sidecar -- a summary, flattened, with
+# `git_commit` where the record has a whole `code` block -- and both answered to
+# `runprov.run.v1`. A consumer branching on the marker, which is the only reason the field
+# exists, would have applied the wrong reader to one of them.
+HISTORY_SCHEMA = "runprov.history.v2"
 
 
-def _caller_file() -> pathlib.Path | None:
-    """The script that constructed the Run — not this package's own file.
+def _jsonable(obj: typing.Any) -> typing.Any:  # noqa: ANN401 - walks arbitrary record data
+    """Replace non-finite floats with their names, recursively.
+
+    `json.dumps` emits bare `NaN`, `Infinity` and `-Infinity`, which are **not JSON**: every
+    strict parser rejects the document. So one NaN metric — an AUROC on a class with no
+    positives, a loss that diverged — made the sidecar AND the history line unreadable to
+    anything that is not Python, which is most of what reads a provenance record.
+
+    The value becomes the STRING `"NaN"`, not `null` and not a dropped key. A dropped key
+    loses the measurement; `null` says "not measured", which is a different fact from
+    "measured, and the answer was not a number".
+    """
+    if isinstance(obj, float):
+        if obj != obj:
+            return "NaN"
+        if obj in (float("inf"), float("-inf")):
+            return "Infinity" if obj > 0 else "-Infinity"
+        return obj
+    if isinstance(obj, dict):
+        return {k: _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(v) for v in obj]
+    return obj
+
+
+def _subclass_files(cls: type) -> frozenset[pathlib.Path]:
+    """The files defining `Run` SUBCLASSES in this instance's MRO.
+
+    A project that wraps `Run` — to bind a default project, to add a field, to keep an old
+    hashing convention — is doing the obvious thing, and `scripts/audit/_provenance.py` in
+    the host project is exactly that. Without this the wrapper's own file is the first frame
+    outside the package, so every script using it records THE WRAPPER as its script.
+
+    Derived from the MRO rather than from a registry or a marker attribute, so it costs a
+    wrapper nothing: subclassing is the declaration.
+    """
+    out = set()
+    for klass in cls.__mro__:
+        # `Run` itself lives inside the package and is already excluded by path; `object`
+        # and any non-Run mixin are not shims and must not silence a real caller frame.
+        if klass is Run or not issubclass(klass, Run):
+            continue
+        f = getattr(sys.modules.get(klass.__module__), "__file__", None)
+        if f:
+            out.add(pathlib.Path(f).resolve())
+    return frozenset(out)
+
+
+def _caller_file(skip: frozenset[pathlib.Path] = frozenset()) -> pathlib.Path | None:
+    """The script that constructed the Run — not this package's own file, nor a shim's.
 
     `_provenance.py` computed `script_sha256` as `Path(__file__).parent / f"{script}.py"`,
     which held only while it sat in the same directory as its callers. Promoting the module
     breaks that silently: the hash becomes None for every script and nothing says so. Walk
     the stack instead, skipping frames inside this package.
+
+    `skip` carries the files defining `Run` subclasses (see `_subclass_files`). It is a
+    PREFERENCE, not an exclusion, and the difference is the whole of the second rule below:
+
+    1. the first frame outside the package that is not a subclass-defining file — the real
+       script, when a wrapper sits between it and here;
+    2. failing that, the first frame outside the package at all. A script that defines its
+       own `Run` subclass **and uses it** is a single file that is both, and excluding it
+       outright would record `script_file: null` for exactly the self-contained script this
+       walk exists to find. Recording the file twice over is right; recording nothing is not.
     """
     here = pathlib.Path(__file__).resolve().parent
+    fallback: pathlib.Path | None = None
     for fr in inspect.stack()[1:]:
         f = pathlib.Path(fr.filename).resolve()
-        if here not in f.parents and f.is_file():
+        if here in f.parents or not f.is_file():
+            continue
+        if fallback is None:
+            fallback = f
+        if f not in skip:
             return f
-    return None
+    return fallback
 
 
 _IMPLICIT_WARNED = False
@@ -103,6 +179,12 @@ class Run:
         params: the parameters that shaped the result. Recorded verbatim.
         project: where this is happening. Defaults to the configured project.
         script_path: override the auto-detected caller file (wrappers, notebooks).
+        terminal_log: capture what this run prints. A path captures there; `False`
+            disables capture even where the project configures `terminal_log_dir`; `None`
+            (the default) follows the project. Capture is a TEE — output still reaches the
+            terminal unchanged — and the record states which mechanism was used, because
+            `capture: "python"` cannot see a subprocess and an empty log would otherwise be
+            indistinguishable from a quiet run.
         provenance: where the sidecar goes, AND the switch that makes `__exit__` write.
             Without it a `with` block records nothing when the body raises — `__exit__`
             has nowhere to write to — so `with Run(...) as run:` plus `run.write(P)` at
@@ -121,6 +203,7 @@ class Run:
         project: Project | None = None,
         script_path: pathlib.Path | None = None,
         provenance: pathlib.Path | None = None,
+        terminal_log: pathlib.Path | None | bool = None,
     ) -> None:
         self.project = project or active()
         self.project_source = (
@@ -137,10 +220,18 @@ class Run:
         state = classify_status(everything, self.project.code_paths)
         dirty = "\n".join(state.code)
 
-        sp = pathlib.Path(script_path) if script_path else _caller_file()
+        # `type(self)`, not `Run` — the point is to see the subclass the CALLER used.
+        sp = pathlib.Path(script_path) if script_path else _caller_file(_subclass_files(type(self)))
         self.record: dict[str, typing.Any] = {
             "schema": SCHEMA,
             "script": script,
+            # C8. `run_id` is a CHAIN id -- 30 stages of one pass share it -- and the ad-hoc
+            # fallback collides at one-second resolution, so no run had a unique address and
+            # an edge in a lineage graph could not say which run it came from. uuid4, in the
+            # sidecar and the history, and DELIBERATELY NOT IN THE PIN: a uuid is a timestamp
+            # wearing a different name, and embedding one made two identical runs over
+            # identical inputs both report 80 artifacts CHANGED.
+            "run_uid": uuid.uuid4().hex,
             "run_id": self.project.run_id(),
             "generation": self.project.generation(),
             "started_utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -223,6 +314,16 @@ class Run:
         # left the history saying `failed` and the sidecar saying `ok` -- and the sidecar
         # is the file a human opens.
         self._last_written: pathlib.Path | None = None
+        # Whether `header()` has already rendered a pin. An input registered after that
+        # point is NOT in the pin already embedded in an artifact, and no later inspection
+        # can tell -- the artifact simply understates itself, in its own body.
+        self._pin_rendered = False
+        # Started BEFORE the warnings below, deliberately. The log answers "what appeared
+        # on the terminal during this run", and a dirty-tree warning is part of that
+        # evidence -- a log that omits the reason the commit does not identify the code is
+        # missing the line most worth having. A tee copies rather than diverts, so they
+        # still reach stderr either way; the only question is whether they are also on disk.
+        self._capture = self._begin_capture(terminal_log)
         if not state.captured:
             # "We could not look" said out loud. This printed NOTHING and recorded
             # `git_code_dirty: false`, which reads as a verified clean tree -- the single
@@ -243,6 +344,65 @@ class Run:
                 "commit does not identify what ran:",
                 *(f"    {line}" for line in dirty.splitlines()),
             )
+
+    # ---------------------------------------------------------------- terminal capture
+    def _begin_capture(self, requested: pathlib.Path | None | bool) -> Capture | None:
+        """Resolve the three-way switch and start capturing. NEVER raises."""
+        if requested is False:
+            return None
+        path: pathlib.Path | None
+        if requested is None or requested is True:
+            d = self.project.terminal_log_dir
+            if d is None:
+                return None
+            # `<script>_<run_id>.log`. The run id is what stops two passes of one script
+            # from overwriting each other's evidence.
+            path = pathlib.Path(d) / f"{self.record['script']}_{self.record['run_id']}.log"
+        else:
+            path = pathlib.Path(requested)
+        try:
+            cap = Capture(path)
+            cap.start()
+        except Exception as exc:  # guards-ok: capture is an addition to the record, never
+            # a precondition for it. Whatever fails here, the run proceeds unrecorded-by-tee
+            diagnostic(f"  WARNING: terminal capture could not start: {exc}")
+            return None
+        return cap
+
+    def _end_capture(self) -> None:
+        """Stop the tee and put the result in the record. Idempotent, and never raises.
+
+        MUST run before outputs are hashed. The log is still being appended to while the
+        run is alive, so a hash taken first describes a file that no longer exists in that
+        form — the artifact would be pinned to a prefix of itself.
+        """
+        if self._capture is None:
+            return
+        cap, self._capture = self._capture, None
+        try:
+            rec = cap.stop()
+        except Exception as exc:  # guards-ok: see _persist -- this runs while an exception
+            # may already be in flight and must not become the failure the caller sees
+            diagnostic(f"  WARNING: terminal capture could not stop cleanly: {exc}")
+            return
+        if rec is not None:
+            self.record["terminal_log"] = rec
+
+    def terminal_log(self, path: str | pathlib.Path) -> pathlib.Path:
+        """Register a log THIS RUN DID NOT CAPTURE — one the caller already produced.
+
+        The primitive under the automatic capture, and useful on its own: a step driven by
+        `make step 2>&1 | tee logs/step.log`, or a harness that already collects a child's
+        output, has the file this field is for and needs no capture at all. It is hashed
+        at `write()` like any other artifact, and it takes no ownership of any stream — so
+        it is the shape to reach for wherever taking over fds 1 and 2 would be unwelcome.
+
+        RETURNS the path, like `input()` and `output()`, so registering stays the easy way.
+        """
+        p = pathlib.Path(path)
+        self.record["terminal_log"] = {"path": str(p), "capture": "caller"}
+        self._pending.append(p)
+        return p
 
     # ------------------------------------------------------------- failure recording
     def __enter__(self) -> Run:
@@ -284,6 +444,11 @@ class Run:
                 "traceback": "".join(traceback.format_exception(exc_type, exc, tb))[-4000:],
             }
         self._in_context = False
+        # FIRST, before _finish() hashes anything. The capture is still appending while the
+        # run is alive, so hashing the log before stopping pins a prefix of it -- and on the
+        # fd path fds 1 and 2 are still the pipe, so every diagnostic _finish emits would go
+        # into the file being described instead of to the terminal.
+        self._end_capture()
         try:
             self._finish()
         except Exception as exc:  # never replace the exception being recorded
@@ -327,7 +492,21 @@ class Run:
                 f"A registered input is hashed and pinned, so it must be present at "
                 f"registration time. Register it after producing it, or check the path."
             )
-        self.record["inputs"].append(describe(p))
+        if self._pin_rendered:
+            diagnostic(
+                f"  PROVENANCE WARNING: {self.record['script']}: input registered AFTER the "
+                f"pin was rendered — {p}\n"
+                f"    header() has already been written into an artifact, and that pin does "
+                f"NOT list this input. The artifact understates what it was made from, and "
+                f"nothing downstream can detect it. Register every input before header()."
+            )
+        try:
+            self.record["inputs"].append(describe(p))
+        except ValueError as exc:
+            # `describe` refuses a FIFO/socket/device rather than blocking on it. Re-raised
+            # with the script name, because the bare hang this replaces named neither the
+            # script nor the path -- there was no output at all.
+            raise ValueError(f"{self.record['script']}: {exc}") from exc
         return p
 
     def output(self, path: str | pathlib.Path) -> pathlib.Path:
@@ -339,6 +518,51 @@ class Run:
         p = pathlib.Path(path)
         self._pending.append(p)
         return p
+
+    def open_output(self, path: str | pathlib.Path, comment: str = "# ") -> typing.IO[str]:
+        """Open a text artifact for writing, REGISTERED and PINNED, in UTF-8.
+
+        The pin as the default of the write path. Doing it by hand takes three things a
+        caller has to remember separately, and forgetting any one of them is silent:
+
+            with open(run.output(OUT), "w", encoding="utf-8") as fh:   # register
+                fh.write(run.header())                                 # pin
+                ...                                                    # and utf-8
+
+        Measured on the source project: **63 of 155 `run.output()` call sites sit in scripts
+        that write no pin at all.** That is not carelessness, it is the shape of the API —
+        the correct spelling is three steps and the incomplete one is one step, so the
+        incomplete one wins. This makes the correct spelling the short one:
+
+            with run.open_output(OUT) as fh:
+                df.to_csv(fh, sep="\t", index=False)
+
+        `encoding="utf-8"` is forced and cannot be overridden. `header()` contains an em
+        dash, so under the machine's locale encoding the same artifact is 189 bytes on one
+        machine and 187 on another — a different SHA-256 for identical data — and raises
+        outright under ascii. A provenance package whose artifact hashes depend on the
+        writer's locale has one job and does not do it.
+
+        `comment` is the marker the pin is written behind, because `#` is not a comment
+        everywhere. **There is no way to ask for no pin**: that is what `output()` is for,
+        and a caller writing parquet or a PNG should use it.
+
+        Registers the output first, so a crash between here and the write still records the
+        artifact as `MISSING` rather than losing it.
+        """
+        p = pathlib.Path(self.output(path))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # No **kwargs, deliberately. Every option a caller might pass here is either
+        # already decided (encoding, mode) or a reason to use `output()` and open the file
+        # themselves. A pinning helper with a dozen knobs is a second `open()`.
+        fh = open(p, "w", encoding="utf-8")
+        try:
+            fh.write(self.header(comment))
+        except Exception:  # guards-ok: an artifact half-written by this method would be
+            # worse than one this method refused to open -- close before re-raising
+            fh.close()
+            raise
+        return fh
 
     def environment_snapshot(
         self, directory: str | pathlib.Path | None = None
@@ -471,6 +695,7 @@ class Run:
                 f"{c}  inputs     : NONE REGISTERED. Either this artifact is "
                 f"derived from nothing, or its reads bypass run.input()."
             )
+        self._pin_rendered = True
         return "\n".join(lines) + "\n"
 
     def _pin_name(self, raw: str) -> str:
@@ -484,8 +709,15 @@ class Run:
         key.
         """
         try:
-            return str(pathlib.Path(raw).relative_to(self.project.root))
-        except (ValueError, TypeError):
+            p = pathlib.Path(raw)
+            if not p.is_absolute():
+                # RESOLVED AGAINST THE RUN'S CWD FIRST. `relative_to` on a raw relative
+                # string always raises against an absolute root, so `run.input("data/x.tsv")`
+                # -- the natural spelling -- pinned as `<external>/x.tsv`, announcing a file
+                # as foreign to the very repository holding it.
+                p = pathlib.Path(self.record["cwd"]) / p
+            return str(p.resolve().relative_to(pathlib.Path(self.project.root).resolve()))
+        except (ValueError, TypeError, OSError):
             return f"<external>/{pathlib.Path(raw).name}"
 
     # ---------------------------------------------------------------- finish
@@ -565,7 +797,7 @@ class Run:
         cannot be encoded is worth less than the run it belongs to.
         """
         try:
-            return json.dumps(self.record, indent=2, default=str)
+            return json.dumps(_jsonable(self.record), indent=2, default=str)
         except (TypeError, ValueError) as exc:
             diagnostic(
                 f"  WARNING: could not serialise part of the record ({exc}); "
@@ -580,7 +812,7 @@ class Run:
                         json.dumps({k: v}, default=str)
                     except (TypeError, ValueError):
                         section[k] = f"UNSERIALISABLE <{type(v).__name__}>"
-            return json.dumps(self.record, indent=2, default=str)
+            return json.dumps(_jsonable(self.record), indent=2, default=str)
 
     def _persist(self, p: pathlib.Path) -> bool:
         """Write the sidecar. NEVER raises.
@@ -614,8 +846,9 @@ class Run:
         """
         r = self.record
         summary = {
-            "schema": SCHEMA,
+            "schema": HISTORY_SCHEMA,
             "script": r["script"],
+            "run_uid": r["run_uid"],
             "run_id": r["run_id"],
             "generation": r["generation"],
             # So `grep '"status": "failed"' runs.jsonl` is the whole query. A history of
@@ -636,20 +869,55 @@ class Run:
             # copied, archived or merged, this is the only record of where it landed.
             "history_destination": r["history"]["destination"],
             "project_source": r["history"]["project_source"],
-            "script_sha256": r["code"]["script_sha256"],
+            # THE PATH, not only its hash. This carried `script_sha256` alone, which
+            # answers "did the code change" and not "which file was it" — so the history
+            # could not say what ran without opening the sidecar, and the sidecar holds
+            # only that script's LATEST run. The old transformation log's `script:` field,
+            # hand-typed and demonstrably wrong (it names `proteins_ns5b_domains/…` for a
+            # step whose `run_command` runs `…_3utr/v65/…`), is the field this replaces,
+            # so the replacement has to be present in the same file a reader reads.
+            "script_file": r["code"]["script_file"],
             "packages": r["environment"]["packages"],
+            # The content-addressed full package set, when the project configures one.
+            # `packages` is the tracked subset — four names by default — which is enough
+            # to explain the usual numerical difference and useless when the cause is a
+            # package nobody thought to track. Absent (not null) when snapshots are off,
+            # because "this project does not capture them" and "capture was attempted and
+            # produced nothing" are different facts and only one of them is true here.
+            **(
+                {"environment_snapshot": r["environment"]["snapshot"]}
+                if "snapshot" in r["environment"]
+                else {}
+            ),
+            # BOTH identities. The pin uses `content_sha256`; this carried `sha256`
+            # alone, so the same input had two names and nothing could join a pinned
+            # artifact back to the run that made it without rehashing every candidate.
             "inputs": [
-                {"path": i["path"], "sha256": i.get("sha256") or i.get("sha256_tree")}
+                {
+                    "path": i["path"],
+                    "sha256": i.get("sha256") or i.get("sha256_tree"),
+                    "content_sha256": i.get("content_sha256"),
+                }
                 for i in r["inputs"]
             ],
             "outputs": [
-                {"path": o["path"], "sha256": o.get("sha256") or o.get("sha256_tree")}
+                {
+                    "path": o["path"],
+                    "sha256": o.get("sha256") or o.get("sha256_tree"),
+                    "content_sha256": o.get("content_sha256"),
+                }
                 for o in r["outputs"]
             ],
             # Where the FULL record is. Without this an archiver reading the history can
             # find every artifact a run produced EXCEPT its own provenance.
             "provenance_path": str(prov_path),
             "notes": r.get("notes", {}),
+            # The old log's `terminal_log_file`, and more than it: the mechanism is carried
+            # alongside the path, so a reader can tell an empty log that saw everything from
+            # one that could never have seen a subprocess. Absent when nothing was captured.
+            **({"terminal_log": r["terminal_log"]} if "terminal_log" in r else {}),
         }
         self._history_appended = True
-        self.project.resolved_sink().append(summary)
+        # `_jsonable` here too: the sink dumps SEPARATELY, so sanitising only the
+        # sidecar left the history line carrying bare NaN, unreadable to a strict parser.
+        self.project.resolved_sink().append(_jsonable(summary))

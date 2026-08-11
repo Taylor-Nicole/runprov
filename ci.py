@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -52,7 +53,19 @@ def lint() -> None:
 
 
 def test() -> None:
-    run(PY, "-m", "pytest")
+    # The coverage gate lives HERE and not in pyproject's `addopts`, so a bare `pytest`
+    # still works for a downstream packager without pytest-cov installed. --cov-branch is
+    # the gate: statement coverage read 100% while five conditions had never been evaluated
+    # both ways.
+    run(
+        PY,
+        "-m",
+        "pytest",
+        "--cov=runprov",
+        "--cov-branch",
+        "--cov-report=term-missing",
+        "--cov-fail-under=100",
+    )
 
 
 def build() -> None:
@@ -70,6 +83,18 @@ def build() -> None:
         run(PY, "-m", "venv", str(venv))
         vpy = venv / ("Scripts" if sys.platform == "win32" else "bin") / "python"
         wheel = next((ROOT / "dist").glob("*.whl"))
+        # PEP 561 does not apply without this file INSIDE the wheel, and its absence is
+        # invisible: the source tree type-checks fine, the wheel installs fine, and every
+        # consumer silently gets an untyped package. Checked against the built artifact
+        # rather than against the source tree, because the source tree is not what ships.
+        with zipfile.ZipFile(wheel) as zf:
+            names = zf.namelist()
+        if "runprov/py.typed" not in names:
+            raise SystemExit(
+                f"py.typed is NOT in the wheel ({wheel.name}); PEP 561 does not apply and "
+                f"every consumer's type checker will ignore this package's annotations. "
+                f"Wheel contents: {sorted(names)}"
+            )
         run(str(vpy), "-m", "pip", "install", "--quiet", str(wheel))
         run(str(vpy), "-c", "import runprov; print(runprov.__version__)", cwd=Path(tmp))
 

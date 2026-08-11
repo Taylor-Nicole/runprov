@@ -286,6 +286,17 @@ class Project:
     # worth writing where someone will look for it, and content-addressed so enabling it
     # costs one file per DISTINCT environment rather than one per run.
     env_snapshot_dir: pathlib.Path | None = None
+    # Where captured terminal output goes, auto-named `<script>_<run_id>.log`. None
+    # disables capture. Opt-in for the same reason snapshots are, and one directory rather
+    # than a path per script because ~50 pipeline steps must not each need editing to adopt
+    # it. A per-Run `terminal_log=` overrides this; that is a default and an override, not
+    # two ways to do one thing.
+    #
+    # The run id BELONGS in this filename, unlike in `header()` where it was removed for
+    # making every artifact differ on every run. A log is per-pass evidence and is never
+    # compared across runs, so there is nothing for a stamp to destabilise — and two runs
+    # of one script sharing a log file would silently overwrite the first one's evidence.
+    terminal_log_dir: pathlib.Path | None = None
     # WHERE records go. None means "a JsonlSink at resolved_run_log()". Supplying one is
     # how a lab points many pipelines at a shared store without forking the package.
     sink: RecordSink | None = None

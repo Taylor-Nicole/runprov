@@ -12,13 +12,21 @@ live next door in `test_provenance_shim.py`.
 
 from __future__ import annotations
 
+import ast
 import builtins
+import gzip
+import hashlib
+import importlib
+import inspect
 import io
 import json
+import os
 import pathlib
 import re
+import subprocess
 import sys
 import textwrap
+import types
 
 import pytest
 
@@ -29,6 +37,7 @@ import runprov  # noqa: E402
 import runprov.__main__ as cli  # noqa: E402
 import runprov._report  # noqa: E402
 import runprov.environment  # noqa: E402
+import runprov.terminal  # noqa: E402
 
 
 # --------------------------------------------------------------------- hashing
@@ -46,8 +55,16 @@ def test_content_digest_ignores_volatile_json_keys(tmp_path):
     itself a declared output, permanently unable to hash the same twice."""
     a = tmp_path / "a.json"
     b = tmp_path / "b.json"
-    a.write_text(json.dumps({"started_utc": "2026-01-01T00:00:00Z", "n": 5}))
-    b.write_text(json.dumps({"started_utc": "2099-12-31T23:59:59Z", "n": 5}))
+    # ADR-029 R2 scoped this to runprov's OWN records, so the fixture carries the marker.
+    # Before that scoping the rule fired on any *.json and erased a user's legitimate
+    # `mtime_utc` from its digest — see
+    # `test_volatile_stripping_applies_only_to_runprovs_own_records`.
+    a.write_text(
+        json.dumps({"schema": "runprov.run.v2", "started_utc": "2026-01-01T00:00:00Z", "n": 5})
+    )
+    b.write_text(
+        json.dumps({"schema": "runprov.run.v2", "started_utc": "2099-12-31T23:59:59Z", "n": 5})
+    )
     assert runprov.content_digest(a) == runprov.content_digest(b)
 
 
@@ -359,6 +376,111 @@ def test_rendered_yaml_keeps_the_field_names_of_the_log_it_replaces():
         assert k in d, k
 
 
+# The four fields the transformation log carried that the rendered view did not. Each is
+# recorded — `script_file` and the env snapshot in the sidecar, `parameters` and `notes` in
+# the history line — so this is a rendering gap, not a capture gap.
+COMPAT = [
+    {
+        "script": "annotate_segmentation_status_fuzzy",
+        "script_file": "src/segmentation/fuzzy/annotate_segmentation_status_fuzzy.py",
+        "started_utc": "2026-01-19T17:48:00Z",
+        "status": "ok",
+        # Nested, and with the value types the old log used: a list, a bool, a null.
+        "parameters": {
+            "inputs": ["data/a.csv"],
+            "column": "sequence",
+            "inplace": False,
+            "min_frac": 0.2,
+            "robust_min_frac_classes": None,
+        },
+        "notes": {"n_rows": 469747, "passed": 5001, "failed": 0},
+        "environment_snapshot": {
+            "path": "provenance/environments/env-4d1ef6e1838eef07.txt",
+            "sha256": "4d1ef6e1838eef07" + "f" * 48,
+        },
+    },
+    # A run recorded before these fields existed. The renderer must not invent them.
+    {"script": "older_step", "started_utc": "2025-07-28T15:27:00Z", "status": "ok"},
+]
+
+
+def test_rendered_yaml_names_the_script_file_and_never_guesses_it():
+    """The old log's `script:` was typed by hand, and in the source project it names a
+    DIFFERENT file from the one `run_command:` runs — `proteins_ns5b_domains/…` against the
+    `…_3utr/v65/…` that actually ran. Emitting the observed path is the whole point.
+
+    The failure mode to guard is the tempting one: falling back to the step name when
+    `script_file` is absent. That reproduces the defect being replaced — a `script:` field
+    naming something that is not what ran — while looking populated.
+    """
+    yaml = pytest.importorskip("yaml")
+    a, b = yaml.safe_load(cli._yaml(COMPAT))
+    assert a["script"] == "src/segmentation/fuzzy/annotate_segmentation_status_fuzzy.py"
+    assert a["step"] == "annotate_segmentation_status_fuzzy", "step stays the logical name"
+    assert "script" in b, "the key must be present — a reader must not KeyError on old runs"
+    assert b["script"] != b["step"], "an unrecorded script_file must never render as the step"
+    assert "not recorded" in b["script"]
+
+
+def test_rendered_yaml_carries_params_and_notes_under_the_old_key_names():
+    """`params` and `summary` are where the old log put these, and both are real mappings
+    there rather than prose. Types must survive: a bool that arrives as the string "False"
+    is a different fact."""
+    yaml = pytest.importorskip("yaml")
+    a = yaml.safe_load(cli._yaml(COMPAT))[0]
+    assert a["params"]["column"] == "sequence"
+    assert a["params"]["inputs"] == ["data/a.csv"]
+    assert a["params"]["inplace"] is False, "a bool must not be stringified"
+    assert a["params"]["min_frac"] == 0.2, "a number must not be stringified"
+    assert a["params"]["robust_min_frac_classes"] is None
+    assert a["summary"]["n_rows"] == 469747
+
+
+def test_rendered_yaml_omits_the_keys_a_run_simply_did_not_use():
+    """Two different absences, deliberately rendered differently. `script:` should always
+    have been knowable, so its absence is announced. Snapshots are opt-in and off by
+    default, so a project that never configured them has no requirements file at all —
+    stamping every entry with `requirements_file: "not configured"` is noise, not a record.
+    """
+    yaml = pytest.importorskip("yaml")
+    a, b = yaml.safe_load(cli._yaml(COMPAT))
+    assert a["requirements_file"] == "provenance/environments/env-4d1ef6e1838eef07.txt"
+    assert "requirements_file" not in b
+    assert "params" not in b and "summary" not in b
+
+
+def test_rendered_yaml_still_parses_with_nasty_params_and_notes():
+    """`q()` is total because it always json.dumps. Nested values must inherit that, not a
+    second hand-rolled rule — the predecessor's log is unreadable for exactly this reason."""
+    yaml = pytest.importorskip("yaml")
+    rows = [
+        {
+            "script": "s",
+            "parameters": {"a: b": "#c\nd", "quote": '"', "brace": "}{", "tab": "\t"},
+            "notes": {"empty": {}, "list": [1, None, True], "unicode": "é—"},
+        }
+    ]
+    d = yaml.safe_load(cli._yaml(rows))[0]
+    assert d["params"]["a: b"] == "#c\nd"
+    assert d["summary"]["list"] == [1, None, True]
+    assert d["summary"]["unicode"] == "é—"
+
+
+def test_history_line_carries_the_script_file_and_the_env_snapshot(tmp_path, monkeypatch):
+    """The renderer can only show what the history holds. `_append_history` carried
+    `script_sha256` but not the path it hashed, and the tracked-package subset but not the
+    content-addressed snapshot — so both facts existed in the sidecar and died there."""
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=log, env_snapshot_dir=tmp_path / "envs")
+    with runprov.Run("s", provenance=tmp_path / "p.json"):
+        pass
+    line = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert line["script_file"], "the path, not only its hash"
+    assert line["script_file"].endswith(".py")
+    assert line["environment_snapshot"]["path"].endswith(".txt")
+
+
 def test_the_timeline_shows_the_full_invocation():
     out = cli._timeline(NASTY)
     assert "/usr/bin/python x.py --flag 'a: b' #hash" in out
@@ -632,9 +754,15 @@ def test_every_record_declares_its_schema(tmp_path):
     sink = runprov.MemorySink()
     proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
     run = runprov.Run("t", project=proj)
-    assert run.record["schema"] == runprov.SCHEMA == "runprov.run.v1"
+    assert run.record["schema"] == runprov.SCHEMA == "runprov.run.v2"
     run.write(tmp_path / "p.json")
-    assert sink.records[0]["schema"] == runprov.SCHEMA
+    # The history line declares its OWN name. It asserted `== runprov.SCHEMA` until
+    # 2026-08-11, which is how one string came to label two different shapes (C7): the
+    # sidecar is the full record, the history line is a flattened summary, and a consumer
+    # branching on the marker -- the only reason the field exists -- would have applied the
+    # wrong reader to one of them.
+    assert sink.records[0]["schema"] == runprov.HISTORY_SCHEMA == "runprov.history.v2"
+    assert runprov.SCHEMA != runprov.HISTORY_SCHEMA
 
 
 def test_the_pin_is_identical_on_two_machines_for_an_input_outside_the_root(tmp_path):
@@ -711,7 +839,11 @@ def test_content_digest_is_streamed_not_read_whole(tmp_path):
     assert isinstance(fn, ast.FunctionDef)
     body = fn.body[1:] if ast.get_docstring(fn) else fn.body
     code = "\n".join(ast.unparse(node) for node in body)
-    assert "read_text()" not in code and "read_bytes()" not in code
+    assert "read_text()" not in code and "read_bytes()" not in code, (
+        "the spelling half — cheap, and it CANNOT see the defect class: `fh.read()`, "
+        "`list(fh)` and `''.join(fh)` all load the whole file and all pass this line. "
+        "The property is asserted below."
+    )
     # and it still agrees with the whole-file definition it replaced
     p = tmp_path / "big.tsv"
     p.write_text("# built_utc: X\n" + "".join(f"{i}\ta\n" for i in range(50000)), encoding="utf-8")
@@ -927,9 +1059,792 @@ def test_a_dirty_tree_is_announced(tmp_path, capsys):
     assert "CODE is modified relative to git_commit" in cap.err and cap.out == ""
 
 
+# =========================================================== terminal capture (the tee)
+def test_capture_records_a_subprocess_and_still_reaches_the_terminal(tmp_path, monkeypatch):
+    """THE POINT OF fd-LEVEL CAPTURE, and the reason python-level would not do.
+
+    A subprocess writes to file descriptor 1 directly and never touches `sys.stdout`, so a
+    tee that swaps the Python stream records an EMPTY FILE THAT LOOKS LIKE A LOG. This
+    repository's main consumer is a harness that wraps sibling scripts as subprocesses, so
+    that failure would be silent and total.
+
+    The second assertion is the one that keeps this honest: capture must COPY, never
+    divert. If the child's output stopped reaching the real stdout, this package would be
+    doing the thing `_report.py` exists to prevent.
+
+    The ordinary-python half is written through a dup of fd 1 rather than with `print()`,
+    because under pytest's capture `sys.stdout` is pytest's own buffer and never reaches
+    fd 1 at all — a `print()` here would prove nothing about fd capture either way. The
+    python-level path is covered separately, where `print()` IS the right instrument.
+    """
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "t.log"
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    sink = tmp_path / "real_stdout.txt"
+    with open(sink, "w", encoding="utf-8") as fh:
+        saved = os.dup(1)
+        os.dup2(fh.fileno(), 1)  # the "terminal" for this test, so we can read it back
+        try:
+            with runprov.Run("s", provenance=tmp_path / "p.json", terminal_log=log) as run:
+                subprocess.run([sys.executable, "-c", "print('FROM-A-CHILD')"], check=True)
+                with os.fdopen(os.dup(1), "w", closefd=True) as direct:
+                    direct.write("FROM-PYTHON\n")
+        finally:
+            os.dup2(saved, 1)
+            os.close(saved)
+    body = log.read_text(encoding="utf-8")
+    assert "FROM-A-CHILD" in body, "a python-level tee cannot see this — fd capture must"
+    assert "FROM-PYTHON" in body
+    assert run.record["terminal_log"]["capture"] == "fd"
+    passed_through = sink.read_text(encoding="utf-8")
+    assert "FROM-A-CHILD" in passed_through and "FROM-PYTHON" in passed_through, (
+        "capture must TEE, never divert — the output still belongs to the caller"
+    )
+
+
+def test_the_captured_log_is_hashed_after_the_capture_stops(tmp_path, monkeypatch):
+    """Hashing before the tee stops pins a PREFIX of the log. The recorded digest must be
+    the digest of the finished file, or the one artifact describing the run is pinned to
+    something that never existed on disk."""
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "t.log"
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json", terminal_log=log) as run:
+        print("x" * 5000, flush=True)
+    rec = run.record["terminal_log"]
+    assert rec["sha256"] == runprov.sha256(log), "the recorded hash must match the FINAL file"
+    assert rec["bytes"] == log.stat().st_size
+
+
+def test_python_level_capture_says_it_cannot_see_subprocesses(tmp_path, monkeypatch):
+    """The fallback must ANNOUNCE itself, in the record and not only on stderr. An empty
+    log means two different things and only the mechanism distinguishes them."""
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "t.log"
+    cap = runprov.Capture(log)
+    # The module reference inside runprov.terminal, NOT `os.dup2` itself. `runprov.terminal.os`
+    # IS the os module, so patching an attribute on it patches it for the whole interpreter —
+    # which broke pytest's own capture teardown when this test was first written.
+    monkeypatch.setattr(runprov.terminal, "os", _NoDup2())
+    cap.start()
+    print("VISIBLE-TO-PYTHON")
+    rec = cap.stop()
+    assert cap.mode == "python"
+    assert "VISIBLE-TO-PYTHON" in log.read_text(encoding="utf-8")
+    assert "subprocesses is NOT included" in rec["note"]
+    assert rec["capture"] == "python"
+
+
+def test_a_capture_that_cannot_open_its_file_does_not_touch_the_streams(tmp_path, capsys):
+    """A provenance addition must never cost the caller its stdout. If the log cannot be
+    opened, nothing is swapped and the run proceeds."""
+    blocker = tmp_path / "afile"
+    blocker.write_text("not a directory", encoding="utf-8")
+    before_out, before_err = sys.stdout, sys.stderr
+    cap = runprov.Capture(blocker / "sub" / "t.log")
+    cap.start()
+    assert cap.mode == "none"
+    assert sys.stdout is before_out and sys.stderr is before_err, "streams must be untouched"
+    assert cap.stop()["capture"] == "none"
+    assert "terminal capture off" in capsys.readouterr().err
+
+
+def test_terminal_log_false_overrides_a_configured_directory(tmp_path, monkeypatch):
+    """The per-Run switch must be able to say NO, not only yes — a step that streams data
+    to stdout must be able to opt out of a project-wide default."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(
+        root=tmp_path, run_log=tmp_path / "runs.jsonl", terminal_log_dir=tmp_path / "logs"
+    )
+    with runprov.Run("on", provenance=tmp_path / "a.json") as on:
+        pass
+    with runprov.Run("off", provenance=tmp_path / "b.json", terminal_log=False) as off:
+        pass
+    assert on.record["terminal_log"]["path"].endswith(".log")
+    assert "_" in pathlib.Path(on.record["terminal_log"]["path"]).name, "named <script>_<run_id>"
+    assert "terminal_log" not in off.record
+
+
+def test_a_caller_supplied_log_is_registered_without_any_capture(tmp_path, monkeypatch):
+    """The primitive under the automatic capture. It takes no stream, so it is the shape
+    for a harness that already collects a child's output, or a `| tee` in a Makefile."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    log = tmp_path / "made_by_the_shell.log"
+    log.write_text("output the caller collected\n", encoding="utf-8")
+    before = sys.stdout
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        assert run.terminal_log(log) == log
+        assert sys.stdout is before, "registering a log must not touch any stream"
+    assert run.record["terminal_log"]["capture"] == "caller"
+    hashed = [o for o in run.record["outputs"] if o["path"] == str(log)]
+    assert hashed and hashed[0]["sha256"], "it is hashed like any other artifact"
+
+
+def test_the_history_and_the_yaml_view_carry_the_terminal_log(tmp_path, monkeypatch):
+    """`terminal_log_file` is the old log's field name, and the mechanism travels beside
+    it — the old field was a bare path and could not say what it had been able to see."""
+    yaml = pytest.importorskip("yaml")
+    monkeypatch.chdir(tmp_path)
+    runlog = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=runlog, terminal_log_dir=tmp_path / "logs")
+    with runprov.Run("s", provenance=tmp_path / "p.json"):
+        print("recorded", flush=True)
+    line = json.loads(runlog.read_text(encoding="utf-8").splitlines()[-1])
+    assert line["terminal_log"]["capture"] == "fd"
+    d = yaml.safe_load(cli._yaml([line]))[0]
+    assert d["terminal_log_file"].endswith(".log")
+    assert d["terminal_log_capture"] == "fd"
+
+
+class _RaisingFile:
+    """A real file-like object whose writes fail — a full disk, or a vanished mount.
+
+    A fake, not a mock: it has the interface and the behaviour, so the code under test
+    takes the same path it would take in production. Nothing asserts that a method was
+    called; the assertions are about what the run RECORDED, which is the only thing that
+    matters to a reader of the history.
+    """
+
+    def __init__(self, exc=None):
+        # Constructed in the body, not the default: a call in a default argument is
+        # evaluated once at import and shared by every instance.
+        self.exc = exc or OSError("no space left on device")
+        self.closed = False
+
+    def write(self, *_a):
+        raise self.exc
+
+    def flush(self):
+        raise self.exc
+
+    def close(self):
+        self.closed = True
+        raise self.exc
+
+
+def test_a_log_that_cannot_be_written_still_lets_the_output_through(tmp_path, monkeypatch):
+    """The priority when the disk fails is not ambiguous: the run's output belongs to the
+    caller and the copy is the expendable half. A capture that ate stdout on a full disk
+    would be the `_report.py` defect with extra steps."""
+    monkeypatch.chdir(tmp_path)
+    sink = tmp_path / "real.txt"
+    cap = runprov.Capture(tmp_path / "t.log")
+    with open(sink, "w", encoding="utf-8") as fh:
+        saved = os.dup(1)
+        os.dup2(fh.fileno(), 1)
+        try:
+            cap.start()
+            cap._fh = _RaisingFile()  # the disk fills AFTER the capture started
+            os.write(1, b"STILL-REACHES-THE-TERMINAL\n")
+            cap.stop()
+        finally:
+            os.dup2(saved, 1)
+            os.close(saved)
+    assert "STILL-REACHES-THE-TERMINAL" in sink.read_text(encoding="utf-8")
+
+
+def test_when_neither_mechanism_works_capture_is_off_and_says_so(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "t.log"
+    cap = runprov.Capture(log)
+    monkeypatch.setattr(runprov.terminal, "os", _NoDup2())
+    monkeypatch.setattr(runprov.terminal, "_flush_std", _raise_runtime)
+    cap.start()
+    assert cap.mode == "none"
+    assert "terminal capture off" in capsys.readouterr().err
+    assert cap.stop()["capture"] == "none"
+
+
+def test_a_capture_whose_log_vanished_records_it_as_MISSING(tmp_path):
+    """Registered and absent is a finding, exactly as it is for any other output."""
+    cap = runprov.Capture(tmp_path / "gone.log")
+    cap.mode = "fd"
+    assert cap.describe()["kind"] == "MISSING"
+
+
+def test_a_process_still_holding_the_output_open_is_reported_not_hung(tmp_path, monkeypatch):
+    """A provenance module must never hang the run it is describing. If a child inherited
+    the captured fd and never exits, the join times out, the log is declared possibly
+    short, and the run continues."""
+    monkeypatch.chdir(tmp_path)
+    cap = runprov.Capture(tmp_path / "t.log")
+    cap.start()
+
+    class _Stuck:
+        def join(self, timeout=None):
+            return None
+
+        def is_alive(self):
+            return True
+
+    cap._thread = _Stuck()
+    rec = cap.stop()
+    assert "did not finish" in rec["error"]
+
+
+def test_stopping_a_capture_never_raises_into_the_run(tmp_path, monkeypatch, capsys):
+    """`stop()` runs while an exception may already be in flight. It must not become the
+    failure the caller sees — the same rule `_persist` follows."""
+    monkeypatch.chdir(tmp_path)
+    cap = runprov.Capture(tmp_path / "t.log")
+    cap.start()
+    monkeypatch.setattr(runprov.terminal, "_flush_std", _raise_runtime)
+    rec = cap.stop()
+    assert "stopping capture failed" in rec["error"]
+    assert "WARNING" in capsys.readouterr().err
+    cap._restore_fds()
+    cap._close_saved()
+
+
+def test_a_run_whose_capture_cannot_start_or_stop_is_still_recorded(tmp_path, monkeypatch, capsys):
+    """Capture is an ADDITION to the record, never a precondition for it. Both ends are
+    isolated, so a broken tee costs the log and never the run."""
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=log)
+
+    class _ExplodingCapture:
+        def __init__(self, path):
+            raise RuntimeError("cannot even construct")
+
+    monkeypatch.setattr(runprov.run, "Capture", _ExplodingCapture)
+    with runprov.Run("a", provenance=tmp_path / "a.json", terminal_log=tmp_path / "a.log"):
+        pass
+    assert "could not start" in capsys.readouterr().err
+    assert json.loads(log.read_text(encoding="utf-8").splitlines()[-1])["status"] == "ok"
+
+    class _ExplodingStop:
+        def __init__(self, path):
+            self.path, self.mode, self.error = path, "fd", None
+
+        def start(self):
+            return None
+
+        def stop(self):
+            raise RuntimeError("stop blew up")
+
+    monkeypatch.setattr(runprov.run, "Capture", _ExplodingStop)
+    with runprov.Run("b", provenance=tmp_path / "b.json", terminal_log=tmp_path / "b.log") as run:
+        pass
+    assert "could not stop cleanly" in capsys.readouterr().err
+    assert "terminal_log" not in run.record
+    assert json.loads(log.read_text(encoding="utf-8").splitlines()[-1])["status"] == "ok"
+
+
+def test_a_capture_returning_no_description_leaves_the_record_alone(tmp_path, monkeypatch):
+    """`stop()` returns None when its own teardown failed. The record must then carry no
+    `terminal_log` key at all rather than a null one — absent and 'null' read differently."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+
+    class _NoDescription:
+        def __init__(self, path):
+            self.path, self.mode, self.error = path, "fd", None
+
+        def start(self):
+            return None
+
+        def stop(self):
+            return None
+
+    monkeypatch.setattr(runprov.run, "Capture", _NoDescription)
+    with runprov.Run("s", provenance=tmp_path / "p.json", terminal_log=tmp_path / "s.log") as run:
+        pass
+    assert "terminal_log" not in run.record
+
+
+def test_the_python_tee_survives_a_stream_that_refuses_to_write(tmp_path):
+    """`_StreamTee` must pass through first and copy second, so a broken copy target cannot
+    cost the caller its output."""
+    out = io.StringIO()
+    tee = runprov.terminal._StreamTee(out, _RaisingFile())
+    assert tee.write("kept\n") == 5
+    assert out.getvalue() == "kept\n"
+    assert tee.encoding == out.encoding  # delegation, not reimplementation
+
+
+def test_flush_and_write_helpers_never_raise(monkeypatch):
+    """Both run while fds are mid-swap, where reporting a failure would write to the very
+    stream that just failed."""
+    monkeypatch.setattr(sys, "stdout", _RaisingFile())
+    runprov.terminal._flush_std()  # must not raise
+    runprov.terminal._write_all(-1, b"nowhere")  # a closed fd: returns, does not raise
+
+
+def test_write_all_completes_a_short_write(monkeypatch):
+    """`os.write` may write fewer bytes than asked. Losing the tail of a line to that would
+    corrupt exactly the evidence this file exists to keep."""
+    seen = []
+
+    class _ShortWriter:
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+        def write(self, fd, data):
+            seen.append(bytes(data))
+            return 1 if len(data) > 1 else len(data)
+
+    monkeypatch.setattr(runprov.terminal, "os", _ShortWriter())
+    runprov.terminal._write_all(1, b"abc")
+    assert b"".join(d[:1] for d in seen) == b"abc", "every byte must be written exactly once"
+
+
+def test_write_all_gives_up_when_the_target_refuses_everything(monkeypatch):
+    """A writer returning 0 forever would spin the mirror thread. It must terminate."""
+
+    class _Zero:
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+        def write(self, fd, data):
+            return 0
+
+    monkeypatch.setattr(runprov.terminal, "os", _Zero())
+    runprov.terminal._write_all(1, b"abc")  # returns rather than looping
+
+
+def test_restoring_fds_tolerates_a_closed_descriptor(tmp_path):
+    """Nothing useful remains to be done about a failed restore, and raising would replace
+    the run's own outcome."""
+    cap = runprov.Capture(tmp_path / "t.log")
+    cap._saved = {1: -1, 2: -1}  # never-valid descriptors
+    cap._restore_fds()
+    cap._close_saved()
+    assert cap._saved == {}
+
+
+def test_the_pump_stops_when_its_pipe_disappears(tmp_path):
+    """The read end going away mid-run is process teardown, not an error to report — there
+    is nothing left to mirror and nothing to report to."""
+    cap = runprov.Capture(tmp_path / "t.log")
+    rfd, wfd = os.pipe()
+    os.close(rfd)
+    os.close(wfd)
+    cap._pump(rfd, 1)  # a closed fd: returns rather than raising
+
+
+def test_every_half_of_the_capture_works_without_the_other(tmp_path):
+    """Each piece holds an optional collaborator, and each `is not None` guard had only
+    ever been true. A guard whose false branch nobody has executed is a guard nobody has
+    checked — and these are the states reached when the log file could not be opened, which
+    is exactly when the rest must keep working.
+    """
+    # the pump, mirroring with NO file to copy into
+    cap = runprov.Capture(tmp_path / "unused.log")
+    rfd, wfd = os.pipe()
+    sink = tmp_path / "mirror.txt"
+    with open(sink, "wb") as fh:
+        os.write(wfd, b"MIRRORED-ANYWAY\n")
+        os.close(wfd)
+        cap._fh = None
+        cap._pump(rfd, fh.fileno())
+    assert sink.read_bytes() == b"MIRRORED-ANYWAY\n", "no file to copy into, mirror still runs"
+
+    # stop() in fd mode with no thread ever started
+    lone = runprov.Capture(tmp_path / "none.log")
+    lone.mode = "fd"
+    assert lone.stop()["kind"] == "MISSING"
+
+    # closing when there is nothing open
+    runprov.Capture(tmp_path / "x.log")._close_file()
+
+    # the python tee with no copy target: pure passthrough
+    out = io.StringIO()
+    assert runprov.terminal._StreamTee(out, None).write("through\n") == 8
+    assert out.getvalue() == "through\n"
+
+
+def _raise_runtime(*_a, **_k):
+    raise RuntimeError("simulated failure")
+
+
+class _NoDup2:
+    """The `os` module with `dup2` broken — a machine whose fds 1 and 2 cannot be moved.
+
+    A real object standing in for a real module, rather than a mock: everything except the
+    one call under test behaves exactly as it does in production, so the fallback is
+    exercised against the genuine `os.pipe`, `os.dup` and `os.close`.
+    """
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+    def dup2(self, *a, **k):
+        raise OSError("dup2 unavailable on this machine")
+
+
+# ===================================== council batch: a run must not hang, crash, or lie
+def test_registering_a_fifo_fails_instead_of_hanging(tmp_path):
+    """R15. `open()` on a FIFO blocks until a writer appears, so registering one hangs the
+    run FOREVER — with no message, in provenance capture, before the work starts. A
+    provenance module that hangs the run it is describing is the worst failure available to
+    it: worse than a wrong record, because there is no record and no process either.
+
+    Measured before this: the probe needed SIGALRM to escape.
+    """
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    with pytest.raises(ValueError, match="not a regular file"):
+        runprov.describe(fifo)
+
+
+def test_a_run_refuses_a_fifo_input_by_name(tmp_path, monkeypatch):
+    """The same guard where a caller meets it, and it must say WHICH script and WHICH path
+    — the bare hang gave neither."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        with pytest.raises(ValueError) as e:
+            run.input(fifo)
+    assert "s:" in str(e.value) and "pipe" in str(e.value)
+
+
+def test_a_corrupt_gzip_does_not_escape_content_digest(tmp_path):
+    """R16. `zlib.error` is not an OSError, so a truncated or corrupt `.gz` raised straight
+    out of `content_digest` — inside provenance capture, on a registered input. The except
+    clause listed OSError, EOFError and BadGzipFile and missed the one decompression
+    actually raises."""
+    p = tmp_path / "bad.gz"
+    p.write_bytes(b"\x1f\x8b\x08\x00" + b"garbagegarbage")
+    assert runprov.content_digest(p) == runprov.sha256(p), "it must fall back to the raw hash"
+
+
+def test_a_non_finite_note_still_produces_strict_json(tmp_path, monkeypatch):
+    """R11. `json.dumps` emits bare `NaN`/`Infinity`, which are NOT JSON. Every strict
+    parser rejects the file — so a single NaN metric makes the sidecar AND the history line
+    unreadable to anything that is not Python."""
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=log)
+    prov = tmp_path / "p.json"
+    with runprov.Run("s", provenance=prov) as run:
+        run.note("auroc", float("nan"))
+        run.note("loss", float("inf"))
+
+    def strict(text):
+        return json.loads(
+            text, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(f"non-JSON: {c}"))
+        )
+
+    rec = strict(prov.read_text(encoding="utf-8"))
+    strict(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert rec["notes"]["auroc"] == "NaN" and rec["notes"]["loss"] == "Infinity", (
+        "the VALUE must survive as a string — dropping it would lose the measurement"
+    )
+
+
+def test_an_unreadable_subdirectory_is_reported_not_silently_dropped(tmp_path):
+    """R8. `rglob` skips a directory it cannot enter and says nothing, so the tree hash
+    changed while the tree did not — the silent-skip class, in the function whose job is
+    saying what a run read."""
+    d = tmp_path / "tree"
+    (d / "sub").mkdir(parents=True)
+    (d / "sub" / "f").write_text("x", encoding="utf-8")
+    (d / "ok").write_text("y", encoding="utf-8")
+    before = runprov.describe(d)
+    # The CLEAN reading first, and it is what makes the count falsifiable: asserting only
+    # `== 1` on the broken tree passes against a hardcoded 1. Mutation-tested.
+    assert before["n_unreadable_dirs"] == 0
+    os.chmod(d / "sub", 0o000)
+    try:
+        after = runprov.describe(d)
+    finally:
+        # 0o700, not 0o755: restoring only what the test removed. S103 flags the broader
+        # mask, and it is right to — a test has no business widening permissions.
+        os.chmod(d / "sub", 0o700)
+    assert after.get("n_unreadable_dirs") == 1, "the count must appear in the record"
+    assert after["sha256_tree"] != before["sha256_tree"], "it genuinely hashes less"
+    assert "sub" in " ".join(after.get("unreadable_dirs", [])), "and name what it could not read"
+
+
+# ================================================ I5: the quickstart must teach the fix
+def _readme() -> str:
+    """The shipped README, in either layout.
+
+    `runprov/README.md` here; `README.md` at the root of the extracted standalone. Both are
+    the SAME shipped file, and a test that silently skipped when it found neither would be
+    the silent-skip class — so a missing README is a failure, not a pass.
+    """
+    for cand in (REPO / "runprov" / "README.md", REPO / "README.md"):
+        if cand.is_file():
+            return cand.read_text(encoding="utf-8")
+    raise AssertionError(f"no shipped README found under {REPO}")
+
+
+def _first_python_block(text: str) -> str:
+    m = re.search(r"```python\n(.*?)```", text, re.S)
+    assert m, "the README has no python block; the quickstart is the first one"
+    return m.group(1)
+
+
+def test_the_readme_quickstart_teaches_the_shape_that_actually_records():
+    """I5, and it is the defect with the widest blast radius in the package's history.
+
+    The README's front page taught `run = Run(...)` … `run.write(PROV)` for the package's
+    whole life. Someone integrating it copied that shape, their script died halfway, and the
+    record was lost — the exact defect the package exists to eliminate, taught by its own
+    quickstart. The second shape is worse because it looks like the fix: `__exit__` only
+    writes when `provenance=` reached the CONSTRUCTOR, so adding `with` while leaving
+    `write()` at the end buys nothing.
+
+    Parsed rather than grepped. A substring check for "provenance" passes on the very
+    sentence that CONDEMNS the shape, so it would be green while the quickstart taught the
+    defect — an unfalsifiable check, in the test guarding against unfalsifiable teaching.
+    """
+    tree = ast.parse(_first_python_block(_readme()))
+
+    def is_run(node):
+        return isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Run"
+
+    bound = [
+        item.context_expr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.With)
+        for item in node.items
+        if is_run(item.context_expr)
+    ]
+    every = [n for n in ast.walk(tree) if is_run(n)]
+
+    assert bound, "the quickstart must construct Run inside a `with`"
+    assert len(bound) == len(every), (
+        "every Run in the quickstart must be bound by `with`; a bare `run = Run(...)` "
+        "records nothing when the body raises"
+    )
+    for call in bound:
+        assert any(k.arg == "provenance" for k in call.keywords), (
+            "`with Run(...)` WITHOUT provenance= is the shape that looks like the fix and "
+            "is not: __exit__ has nowhere to write, so a crash still records nothing"
+        )
+
+
+def test_the_constructor_documents_the_trap_and_not_merely_the_argument():
+    """The other half of I5. Naming `provenance` in the signature is not documenting it:
+    the argument is not guessable — two plausible shapes are silent and one is correct — so
+    the docstring has to say what goes wrong, not just what the parameter is called."""
+    doc = inspect.getdoc(runprov.Run) or ""
+    assert "provenance:" in doc, "the constructor's Args must name provenance"
+
+    # THE ENTRY, not the whole docstring. Checking the docstring as a whole passed while the
+    # entry said only "where the sidecar goes" — the class intro happens to mention the trap
+    # a dozen lines earlier, so the assertion was satisfied by text a reader looking up this
+    # parameter never reaches. Mutation-tested: gutting the entry now fails.
+    entry = doc[doc.index("provenance:") :]
+    nxt = re.search(r"\n {0,8}\w[\w_]*:", entry)  # the next Args key at the same indent
+    entry = (entry[: nxt.start()] if nxt else entry).lower()
+
+    assert "raises" in entry or "crash" in entry, "the entry must say what happens on failure"
+    assert "records nothing" in entry or "silent" in entry, (
+        "it must state the CONSEQUENCE — that the run is lost — not merely the mechanism"
+    )
+
+
+# ======================================================== I4: the Run-subclass shim
+def _write_shim(tmp_path, name="shimmod"):
+    """A REAL module defining a real Run subclass — the obvious refactor, in a real file.
+
+    Not a stand-in: the defect only exists because `inspect.stack()` sees an actual frame
+    from an actual file, so anything short of a real module on disk would test something
+    else. This is what `scripts/audit/_provenance.py` is in the host project.
+    """
+    src = tmp_path / f"{name}.py"
+    src.write_text(
+        textwrap.dedent(
+            """
+            import runprov
+
+            class ShimRun(runprov.Run):
+                def __init__(self, script, params=None, **kw):
+                    super().__init__(script, params, **kw)
+            """
+        ),
+        encoding="utf-8",
+    )
+    sys.path.insert(0, str(tmp_path))
+    try:
+        return importlib.import_module(name), src
+    finally:
+        sys.path.remove(str(tmp_path))
+
+
+def test_a_run_subclass_records_its_caller_not_the_shim(tmp_path, monkeypatch):
+    """I4. A `Run` factory or subclass is the obvious refactor, and it made every script
+    record THE FACTORY as `script_file` — because a shim frame is the first frame outside
+    the package and the stack walk had no way to know it was a shim.
+
+    Live in the host project: `extract_runprov` recorded
+    `scripts/audit/_provenance.py`. The consequence reaches the rendered log, where the
+    `script:` field then names something other than what ran — the exact defect that field
+    was added to replace.
+    """
+    monkeypatch.chdir(tmp_path)
+    mod, shim_src = _write_shim(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with mod.ShimRun("s", provenance=tmp_path / "p.json") as run:
+        pass
+    recorded = pathlib.Path(run.record["code"]["script_file"]).resolve()
+    assert recorded != shim_src.resolve(), "the shim must not be recorded as the script"
+    assert recorded == pathlib.Path(__file__).resolve(), "the CALLER is the script"
+
+
+def test_a_subclass_used_in_its_own_file_still_records_that_file(tmp_path):
+    """The fix must not overshoot. If a script defines its own `Run` subclass AND uses it,
+    that file IS the script — skipping it outright would record `script_file: null` for
+    exactly the self-contained script the walk exists to find.
+
+    Run as a REAL entry point, in a subprocess. Importing it and calling in from here would
+    put this test file on the stack as a genuine outer caller, and then the right answer is
+    debatable rather than known — which would make the test's verdict an artefact of how the
+    test was built. `python selfcontained.py` is the case the rule is written for.
+    """
+    src = tmp_path / "selfcontained.py"
+    src.write_text(
+        textwrap.dedent(
+            f"""
+            import json, pathlib, sys
+            sys.path.insert(0, {str(REPO)!r})
+            import runprov
+
+            class LocalRun(runprov.Run):
+                pass
+
+            runprov.configure(root=pathlib.Path({str(tmp_path)!r}),
+                              run_log=pathlib.Path({str(tmp_path / "runs.jsonl")!r}))
+            with LocalRun("s", provenance=pathlib.Path({str(tmp_path / "p.json")!r})) as r:
+                print(json.dumps(r.record["code"]["script_file"]))
+            """
+        ),
+        encoding="utf-8",
+    )
+    out = subprocess.run(
+        [sys.executable, str(src)], capture_output=True, text=True, cwd=tmp_path, check=True
+    )
+    got = json.loads(out.stdout.splitlines()[0])
+    assert got is not None, "a self-contained script must not record script_file: null"
+    assert pathlib.Path(got).resolve() == src.resolve()
+
+
+def test_a_subclass_whose_module_has_no_file_is_simply_not_preferred_against(tmp_path, monkeypatch):
+    """A `Run` subclass defined in a notebook cell, an `exec`'d string, or a REPL has a
+    `__module__` with no `__file__`. There is no path to prefer against, so the walk
+    proceeds exactly as it would have — the shim rule must degrade to the old behaviour
+    rather than raise or record nothing."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    # A class object, so N806 does not apply the way ruff reads it — bound to a lowercase
+    # name to keep the linter honest rather than silenced with a noqa.
+    dynamic_cls = type("Dynamic", (runprov.Run,), {"__module__": "not_an_imported_module"})
+    assert runprov.run._subclass_files(dynamic_cls) == frozenset()
+    with dynamic_cls("s", provenance=tmp_path / "p.json") as run:
+        pass
+    assert run.record["code"]["script_file"].endswith("test_runprov.py")
+
+
 def test_the_caller_file_falls_back_to_none_when_every_frame_is_internal(monkeypatch):
     monkeypatch.setattr(runprov.run.inspect, "stack", lambda: [])
     assert runprov.run._caller_file() is None
+
+
+# ============================================================ coverage: the FIVE branches
+# statement coverage said 100% while these five conditions had never been evaluated both
+# ways. That is the ledger's own meta-finding arriving a second time: the C0a state machine
+# was broken in four ways with 91/91 green, because a line that RAN is not a behaviour that
+# was CHECKED. Each test below is named for the behaviour, not for the branch.
+
+
+def test_a_with_block_with_no_provenance_and_no_write_records_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    """The one KNOWN gap in the state machine, which had no test — so nothing would have
+    noticed if it silently changed. `_finish` reaches its history clause with `_written`
+    false and `provenance_path` None, writes no sidecar, and appends no line.
+
+    This is documented in the remediation ledger as "confirmed unchanged" and pinned here
+    for the first time. It is deliberately a CHARACTERISATION test: it asserts the current
+    behaviour so that changing it becomes a decision rather than an accident.
+
+    THE SECOND ASSERTION IS THE LOAD-BEARING ONE. "No line was written" is also true when
+    the append CRASHED — with no `write()` there is no `finished_utc`, so an
+    `_append_history` reached by mistake raises KeyError, `__exit__` swallows it as a
+    capture failure, and the file is equally absent. Mutation-tested: removing the
+    `_deferred_history is not None` guard leaves the first assertion green and this one
+    red. A test that cannot tell "correctly recorded nothing" from "died trying" is the
+    unfalsifiable shape this repository keeps finding.
+    """
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=log)
+    capsys.readouterr()
+    with runprov.Run("silent") as run:
+        run.note("did_work", True)
+    err = capsys.readouterr().err
+    assert not log.exists(), "no provenance= and no write() records NOTHING — including here"
+    assert "provenance capture failed" not in err, (
+        "it must record nothing BY DESIGN, not by crashing on the way to recording"
+    )
+
+
+def test_a_module_whose_resolved_file_is_not_a_file_records_no_hash(tmp_path, monkeypatch):
+    """`module()`'s own comment claims "no sha256 key means the resolved path is not a
+    readable file". That claim had never been executed — a namespace package resolves to a
+    directory, and hashing it would raise inside provenance capture."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    fake = types.ModuleType("nspkg")
+    fake.__file__ = str(tmp_path / "nspkg")  # a directory, not a file
+    (tmp_path / "nspkg").mkdir()
+    with runprov.Run("m", provenance=tmp_path / "p.json") as run:
+        run.module(fake)
+    rec = run.record["modules"][0]
+    assert "sha256" not in rec, "an unhashable resolved path must not invent a hash"
+    assert rec["resolved_file"].endswith("nspkg")
+
+
+def test_a_module_inside_the_project_is_recorded_without_a_warning(tmp_path, monkeypatch, capsys):
+    """The quiet half of `module()`. Only the OUTSIDE case was tested, so the warning had
+    never been shown not to fire — a warning that always fires is the same defect as one
+    that never does."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    src = tmp_path / "inside.py"
+    src.write_text("x = 1\n", encoding="utf-8")
+    fake = types.ModuleType("inside")
+    fake.__file__ = str(src)
+    with runprov.Run("m", provenance=tmp_path / "p.json") as run:
+        capsys.readouterr()
+        run.module(fake)
+        err = capsys.readouterr().err
+    rec = run.record["modules"][0]
+    assert rec["inside_project"] is True and "sha256" in rec
+    assert "resolved OUTSIDE" not in err, "a module inside the project must not warn"
+
+
+def test_a_status_line_whose_path_is_empty_yields_no_path():
+    """`if p:` inside the rename split had only ever been true. git reports an untracked
+    directory as `?? pkg/`, and `rstrip("/")` on a bare `/` leaves the empty string — a
+    path that must be dropped rather than recorded as ''."""
+    restored, paths = runprov.project._split_status("?? /")
+    assert paths == [], "an empty component must not become a recorded path"
+    assert restored == "?? /"
+
+
+def test_an_unreadable_distribution_is_skipped_when_no_collector_is_passed(monkeypatch):
+    """`installed_packages()` takes `unreadable` optionally, and every test had passed one.
+    With none, an unnameable distribution must still be skipped rather than keyed on ''."""
+    import importlib.metadata as md
+
+    class Broken:
+        _path = "/nowhere/broken.dist-info"
+        version = "1.0"
+
+        @property
+        def metadata(self):
+            raise RuntimeError("unreadable metadata")
+
+    monkeypatch.setattr(md, "distributions", lambda: [Broken()])
+    assert runprov.environment.installed_packages() == {}, "no collector, no crash, no '' key"
 
 
 # =================================================================== coverage: the sinks
@@ -1507,7 +2422,12 @@ def test_data_churn_alone_still_does_not_report_the_code_as_dirty(tmp_path):
     assert code["git_other_changes"] == 2, "unchanged meaning: the whole-tree change count"
     assert sorted(code["git_dirty_other_files"]) == [" M data.tsv", "?? reports/"]
     assert code["git_other_files_omitted"] == 0
-    assert runprov.SCHEMA == "runprov.run.v1", "no field changed meaning, so no bump"
+    # v1 -> v2 at ADR-029: `content_sha256` is computed differently (volatile stripping
+    # now reaches inside gzip, spans block boundaries and is scoped to runprov's own
+    # records) and `sha256_tree` gained a separator. This guard exists to stop a GRATUITOUS
+    # bump, and the rule it enforces is "bump when a field changes meaning" — which one
+    # now has. It is updated, not deleted: the next bump still has to justify itself.
+    assert runprov.SCHEMA == "runprov.run.v2", "bumped by ADR-029: content_sha256 changed meaning"
 
 
 def test_a_renamed_makefile_outside_code_paths_still_counts_as_code():
@@ -1695,3 +2615,691 @@ def test_a_diagnostic_survives_a_console_that_cannot_encode_it(monkeypatch, caps
     written = buf.buffer.getvalue().decode("ascii")
     assert "every git_* field" in written, "the warning must still arrive"
     assert "—" not in written
+
+
+def test_a_non_regular_file_inside_a_tree_is_counted_not_silently_dropped(tmp_path):
+    """The other half of R8, in the same shape. A FIFO inside a directory cannot be hashed
+    — opening it is the hang `describe` refuses at the top — but dropping it without a word
+    leaves the tree hash describing a population nobody stated."""
+    d = tmp_path / "tree"
+    d.mkdir()
+    (d / "real").write_text("x", encoding="utf-8")
+    os.mkfifo(d / "pipe")
+    rec = runprov.describe(d)
+    assert rec["n_files"] == 1 and rec["n_skipped_nonregular"] == 1
+    assert "pipe" in " ".join(rec["skipped_nonregular"])
+    assert rec["sha256_tree"], "the readable half is still hashed"
+
+
+# ================================================== council batch C + the packaging pair
+# UNIT tests first, then INTEGRATION tests that drive a whole run and read the artifacts
+# back. Fakes where a real object can be built (files, streams, a mutating file); a spy
+# only where the property IS an interaction — the stat/hash ORDER in R10 cannot be observed
+# from the record alone, because a stable file gives identical output either way.
+
+
+class _MutatingFile:
+    """A fake `sha256` that changes the file WHILE it is being hashed.
+
+    The TOCTOU window is a race, and a race cannot be reproduced by waiting for it. Standing
+    in for the hash function and mutating from inside is the only way to make the window
+    deterministic — and it is a fake, not a mock: it computes and returns a real digest, so
+    everything downstream behaves exactly as in production.
+    """
+
+    def __init__(self, path, grow_to=b"much longer content than before"):
+        self.path, self.grow_to, self.calls = path, grow_to, 0
+
+    def __call__(self, path, *a, **k):
+        self.calls += 1
+        digest = runprov.hashing.sha256.__wrapped__(path, *a, **k) if False else None
+        import hashlib
+
+        digest = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+        if pathlib.Path(path) == self.path:
+            self.path.write_bytes(self.grow_to)  # the file moves under us
+        return digest
+
+
+def test_the_history_carries_both_identities_of_an_input(tmp_path, monkeypatch):
+    """C3. The pin uses `content_sha256`; the history used `sha256` alone. The same input
+    therefore had two identities and nothing could join them — a reader holding a pinned
+    artifact could not find the run that produced it without rehashing every candidate."""
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=log)
+    src = tmp_path / "in.tsv"
+    src.write_text("# built_utc: 2026-01-01\nid\tv\nx\t1\n", encoding="utf-8")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(src)
+    entry = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])["inputs"][0]
+    assert entry["sha256"] == runprov.sha256(src)
+    assert entry["content_sha256"] == runprov.content_digest(src), (
+        "the history must carry the identity the PIN uses, or the two cannot be joined"
+    )
+    assert entry["sha256"] != entry["content_sha256"], "this file has a volatile stamp"
+
+
+def test_an_in_repo_relative_path_pins_by_its_repo_path(tmp_path, monkeypatch):
+    """C4. `_pin_name` called `relative_to` on the raw string, so a RELATIVE in-repo path
+    raised ValueError and pinned as `<external>/name` — announcing a file as foreign to the
+    very repository holding it."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "x.tsv").write_text("a\n", encoding="utf-8")
+    run = runprov.Run("s", project=runprov.Project(root=tmp_path))
+    assert run._pin_name("data/x.tsv") == "data/x.tsv"
+    assert run._pin_name(str(tmp_path / "data" / "x.tsv")) == "data/x.tsv"
+    assert run._pin_name("/etc/passwd").startswith("<external>/"), "genuinely outside stays so"
+
+    # THE CASE THAT MAKES THE cwd JOIN LOAD-BEARING, and the one a naive test misses:
+    # a relative path resolves against the LIVE cwd, which is the run's cwd right up until
+    # the script chdirs. Then `Path("data/x.tsv").resolve()` silently means somewhere else.
+    # The run's own cwd is captured at construction and is the only correct basis.
+    # Mutation-tested: without the join, this pins as <external>/x.tsv.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert run._pin_name("data/x.tsv") == "data/x.tsv", (
+        "a relative input must pin against the RUN's cwd, not wherever the script has since "
+        "chdir'd to"
+    )
+
+
+def test_the_sidecar_and_the_history_do_not_share_one_schema_name(tmp_path, monkeypatch):
+    """C7. One string, `runprov.run.v1`, labelled two different shapes. A consumer branching
+    on it — which the field exists for — would apply the wrong reader to one of them."""
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=log)
+    prov = tmp_path / "p.json"
+    with runprov.Run("s", provenance=prov):
+        pass
+    side = json.loads(prov.read_text(encoding="utf-8"))
+    hist = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert side["schema"] == runprov.SCHEMA == "runprov.run.v2"
+    assert hist["schema"] == runprov.HISTORY_SCHEMA == "runprov.history.v2"
+    assert side["schema"] != hist["schema"], "two shapes must not answer to one name"
+
+
+def test_a_file_that_moves_while_being_hashed_is_recorded_as_unstable(tmp_path, monkeypatch):
+    """R10. `size_bytes` was stat-ed BEFORE hashing, so a file written while it was read
+    recorded a size that never went with that digest — and nothing said so."""
+    p = tmp_path / "growing.tsv"
+    p.write_bytes(b"short")
+    monkeypatch.setattr(runprov.hashing, "sha256", _MutatingFile(p))
+    rec = runprov.hashing.describe(p)
+    assert rec["unstable_during_hash"] is True, "a file that moved under the hash must say so"
+    assert rec["size_bytes"] == len(b"much longer content than before"), (
+        "the recorded size must be the post-hash stat, not a stale pre-hash one"
+    )
+
+
+def test_size_is_stat_ed_after_the_hash_not_before(tmp_path):
+    """R10, the ORDER — and the one property in this batch that a record cannot show, since
+    a stable file yields identical output either way. A spy is the right instrument here and
+    a fake is not: the claim is about the sequence of calls, not about a value."""
+    from unittest import mock
+
+    p = tmp_path / "f.tsv"
+    p.write_text("x\n", encoding="utf-8")
+    calls: list[str] = []
+    real_stat = pathlib.Path.stat
+    with (
+        mock.patch.object(
+            runprov.hashing, "sha256", side_effect=lambda *a, **k: calls.append("hash") or "0" * 64
+        ),
+        mock.patch.object(
+            pathlib.Path,
+            "stat",
+            autospec=True,
+            side_effect=lambda self, *a, **k: (calls.append("stat"), real_stat(self))[1],
+        ),
+    ):
+        runprov.hashing.describe(p)
+    assert "hash" in calls and calls.index("hash") < len(calls) - 1, (
+        "at least one stat must follow the hash — that is what makes size_bytes match it"
+    )
+
+
+def test_registering_an_input_after_the_pin_is_written_warns(tmp_path, monkeypatch, capsys):
+    """R14. `header()` renders the pin from the inputs registered SO FAR. Called early, it
+    embeds a pin that understates its own artifact — and the artifact then claims, in its own
+    body, to be derived from less than it was. Nothing can detect that after the fact, so it
+    has to be said at the moment it happens."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    a, b = tmp_path / "a.tsv", tmp_path / "b.tsv"
+    for f in (a, b):
+        f.write_text("x\n", encoding="utf-8")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(a)
+        run.header()
+        capsys.readouterr()
+        run.input(b)
+        err = capsys.readouterr().err
+    assert "PROVENANCE WARNING" in err and "pin" in err.lower()
+    assert "b.tsv" in err, "it must name the input that arrived too late"
+
+
+def test_no_warning_when_every_input_precedes_the_pin(tmp_path, monkeypatch, capsys):
+    """The other half — a warning that always fires is the same defect as one that never
+    does, and this is the ordinary correct usage."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    a = tmp_path / "a.tsv"
+    a.write_text("x\n", encoding="utf-8")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(a)
+        capsys.readouterr()
+        run.header()
+        err = capsys.readouterr().err
+    assert "pin" not in err.lower()
+
+
+# ---------------------------------------------------------------- INTEGRATION
+def test_a_whole_run_end_to_end_reads_back_consistently(tmp_path, monkeypatch):
+    """INTEGRATION. One real run: real files, a real subprocess, a real sidecar, a real
+    append-only history, and the rendered YAML view — then every artifact is read back and
+    cross-checked against the others. The unit tests above each pin one field; this asserts
+    they still agree once the whole thing has run.
+    """
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(
+        root=tmp_path,
+        run_log=log,
+        terminal_log_dir=tmp_path / "logs",
+        env_snapshot_dir=tmp_path / "envs",
+    )
+    src = tmp_path / "in.tsv"
+    src.write_text("# built_utc: 2026-01-01\nid\tv\nx\t1\n", encoding="utf-8")
+    out = tmp_path / "out.tsv"
+    prov = tmp_path / "out_provenance.json"
+
+    with runprov.Run("integration", {"k": 6}, provenance=prov) as run:
+        text = pathlib.Path(run.input(src)).read_text(encoding="utf-8")
+        subprocess.run([sys.executable, "-c", "print('child ran')"], check=True)
+        with open(run.output(out), "w", encoding="utf-8") as fh:
+            fh.write(run.header())
+            fh.write(text)
+        run.note("rows", 1)
+        run.seeds([42])
+
+    side = json.loads(prov.read_text(encoding="utf-8"))
+    hist = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+
+    # the two records describe the same run, under DIFFERENT schema names (C7)
+    assert side["run_id"] == hist["run_id"] and side["schema"] != hist["schema"]
+    # the input is joinable across both by either identity (C3)
+    assert hist["inputs"][0]["content_sha256"] == side["inputs"][0]["content_sha256"]
+    # the pin inside the artifact names the input by its REPO-RELATIVE path (C4)
+    body = out.read_text(encoding="utf-8")
+    assert "in.tsv" in body and "<external>" not in body
+    # the pin is deterministic: no timestamp, no run id
+    assert side["run_id"] not in body
+    # the terminal log caught the SUBPROCESS, and the record says by which mechanism
+    assert "child ran" in pathlib.Path(side["terminal_log"]["path"]).read_text(encoding="utf-8")
+    assert side["terminal_log"]["capture"] == "fd"
+    # the output is hashed, present, and not MISSING
+    assert side["outputs"][0]["sha256"] == runprov.sha256(out)
+    # and the whole history line renders in the transformation-log shape
+    yaml = pytest.importorskip("yaml")
+    doc = yaml.safe_load(cli._yaml([hist]))[0]
+    assert doc["step"] == "integration" and doc["params"] == {"k": 6}
+    assert doc["summary"] == {"rows": 1}
+    assert doc["requirements_file"].endswith(".txt")
+
+
+# ============================================ ADR-029: the digest migration (R1 R2 R3 R9)
+def test_a_volatile_stamp_spanning_a_block_boundary_is_still_stripped(tmp_path):
+    """R1. The substitution ran per 8,192-line block, so a `"started_utc": "..."` split
+    across a boundary was never matched — and the artifact oscillated forever, which is the
+    one thing `content_digest` exists to prevent."""
+
+    def build(stamp):
+        p = tmp_path / f"big_{stamp[:4]}.json"
+        # It must be RUNPROV'S OWN record, because R2 scopes the stripping to those. The
+        # two fixes interact and this test failed until it said so — which is the scoping
+        # working, not a defect.
+        pad = "".join(f'  "pad{i}": {i},\n' for i in range(8190))
+        p.write_text(
+            '{\n  "schema": "runprov.run.v2",\n' + pad + f'  "started_utc":\n    "{stamp}"\n}}\n',
+            encoding="utf-8",
+        )
+        return p
+
+    a, b = build("2026-01-01T00:00:00Z"), build("2099-12-31T23:59:59Z")
+    assert runprov.content_digest(a) == runprov.content_digest(b), (
+        "two runs differing only in a boundary-spanning stamp must pin identically"
+    )
+
+
+def test_volatile_stripping_applies_only_to_runprovs_own_records(tmp_path):
+    """R2. `VOLATILE_JSON` fired on ANY `*.json`, so a user's data file with a legitimate
+    key named `mtime_utc` had it erased from its digest — two genuinely different datasets
+    collided. The stripping exists for the records runprov writes, which carry timestamps
+    it puts there itself; it has no business rewriting somebody's data."""
+    a, b = tmp_path / "data_a.json", tmp_path / "data_b.json"
+    a.write_text('{"sample": "S1", "mtime_utc": "REAL DATA A", "n": 1}', encoding="utf-8")
+    b.write_text('{"sample": "S1", "mtime_utc": "REAL DATA B", "n": 1}', encoding="utf-8")
+    assert runprov.content_digest(a) != runprov.content_digest(b), (
+        "a user's data must not be erased by a rule about runprov's own timestamps"
+    )
+
+    # ...and runprov's OWN record still has its stamps stripped, or every sidecar oscillates
+    def record(stamp):
+        p = tmp_path / f"rec_{stamp[:4]}.json"
+        p.write_text(
+            f'{{"schema": "runprov.run.v2", "script": "s", "started_utc": "{stamp}", "n": 1}}',
+            encoding="utf-8",
+        )
+        return p
+
+    assert runprov.content_digest(record("2026-01-01")) == runprov.content_digest(
+        record("2099-12-31")
+    ), "runprov's own record must still be stable across runs"
+
+
+def test_a_gzipped_artifact_with_a_build_stamp_is_stable(tmp_path):
+    """R3. `.gz` was decompressed and hashed raw, with no volatile stripping — so a gzipped
+    artifact carrying `# built_utc:` differed on every run, and so did everything pinning
+    it. The exact oscillation the plain-text path was written to stop."""
+
+    def build(stamp):
+        p = tmp_path / f"a_{stamp[:4]}.tsv.gz"
+        with gzip.open(p, "wt", encoding="utf-8") as fh:
+            fh.write(f"# built_utc: {stamp}\nid\tvalue\nx\t1\n")
+        return p
+
+    assert runprov.content_digest(build("2026-01-01")) == runprov.content_digest(
+        build("2099-12-31")
+    )
+
+
+def test_a_gzipped_binary_still_falls_back_to_the_raw_digest(tmp_path):
+    """The half that keeps R3 from becoming R13's mistake: a gzipped BINARY must not be
+    decoded as text. It falls back to hashing the decompressed bytes."""
+    p = tmp_path / "b.bin.gz"
+    with gzip.open(p, "wb") as fh:
+        fh.write(bytes(range(256)) * 4)
+    assert runprov.content_digest(p), "it must produce a digest rather than raising"
+
+
+def test_the_tree_hash_separates_a_name_from_its_digest(tmp_path):
+    """R9. `name || hex-digest` with no separator is not injective by construction. The
+    review called the second preimage 'trivial'; it is not — it needs a preimage attack on
+    SHA-256, and one could not be built. The separator is free, so the argument goes away
+    rather than being defended."""
+    d = tmp_path / "t"
+    d.mkdir()
+    (d / "f").write_text("x", encoding="utf-8")
+    digest = runprov.describe(d)["sha256_tree"]
+    naive = hashlib.sha256()
+    naive.update(b"f")
+    naive.update(runprov.sha256(d / "f").encode())
+    assert digest != naive.hexdigest(), "the separator must actually be in the stream"
+
+
+def test_the_schema_marker_moved_because_content_sha256_changed_meaning(tmp_path):
+    """ADR-029 step 2. The marker is bumped when a field changes MEANING, never when one is
+    added — and `content_sha256` is computed differently after this migration. A consumer
+    comparing a v1 digest against a v2 digest is comparing two different questions."""
+    assert runprov.SCHEMA == "runprov.run.v2"
+    assert runprov.HISTORY_SCHEMA == "runprov.history.v2"
+
+
+def test_content_digest_really_streams_measured_not_grepped(tmp_path):
+    """C14. The test above asserts `read_text()` and `read_bytes()` do not appear — two
+    spellings, not the property. `fh.read()`, `list(fh)` and `"".join(fh)` each load the
+    whole file and each pass it, so the check could not see its own defect class.
+
+    This measures the thing that actually matters: peak allocation while digesting a file
+    far larger than any buffer the function is allowed to hold. A streaming implementation
+    peaks at roughly one block of lines; a whole-file one peaks at the file.
+    """
+    import tracemalloc
+
+    p = tmp_path / "big.tsv"
+    p.write_text(
+        "# built_utc: 2026-01-01T00:00:00Z\n" + "".join(f"{i}\tvalue{i}\n" for i in range(400_000)),
+        encoding="utf-8",
+    )
+    size = p.stat().st_size
+    assert size > 4_000_000, "the fixture must be large enough for the two cases to differ"
+
+    tracemalloc.start()
+    try:
+        digest = runprov.content_digest(p)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert digest
+    assert peak < size / 4, (
+        f"content_digest held {peak / 1e6:.1f} MB for a {size / 1e6:.1f} MB file — that is "
+        f"not streaming. The module docstring promises multi-GB inputs are fine."
+    )
+
+
+# ============================================ A1: the pin as the default of the write path
+def test_open_output_registers_pins_and_forces_utf8_in_one_call(tmp_path, monkeypatch):
+    """A1. Pinning currently takes THREE things a caller must remember separately —
+    `run.output(p)`, `fh.write(run.header())`, and `encoding="utf-8"` — and measured on the
+    host project, 63 of 155 `run.output()` sites sit in scripts that write no pin at all.
+
+    A default nobody has to remember is the only kind that gets used.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    src = tmp_path / "in.tsv"
+    src.write_text("id\tv\nx\t1\n", encoding="utf-8")
+    out = tmp_path / "out.tsv"
+
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(src)
+        with run.open_output(out) as fh:
+            fh.write("id\tv\nx\t1\n")
+
+    body = out.read_text(encoding="utf-8")
+    assert body.startswith("# provenance"), "the pin must be the first thing in the artifact"
+    assert "in.tsv" in body, "and it must name what the artifact was made from"
+    assert body.rstrip().endswith("x\t1"), "the caller's content follows it"
+    assert [o["path"] for o in run.record["outputs"]] == [str(out)], "registered exactly once"
+
+
+def test_open_output_writes_utf8_whatever_the_locale_says(tmp_path, monkeypatch):
+    """The encoding half, and it is not decoration: `header()` contains an em dash, so
+    without an explicit UTF-8 the artifact is written in the machine's locale encoding —
+    189 bytes under UTF-8, 187 under cp1252, a different SHA-256 for the same artifact, and
+    `UnicodeEncodeError` outright under ascii."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    out = tmp_path / "o.tsv"
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        with run.open_output(out) as fh:
+            assert fh.encoding.lower().replace("-", "") == "utf8"
+            fh.write("café\n")
+    assert "café" in out.read_bytes().decode("utf-8")
+
+
+def test_open_output_takes_the_comment_marker_for_the_format(tmp_path, monkeypatch):
+    """A pin is a comment, and `#` is not a comment everywhere. A caller writing an artifact
+    whose reader would choke on `#` must be able to say so rather than skip the pin."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    out = tmp_path / "o.sql"
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        with run.open_output(out, comment="-- ") as fh:
+            fh.write("select 1;\n")
+    assert out.read_text(encoding="utf-8").startswith("-- provenance")
+
+
+def test_open_output_still_records_a_crash_as_a_failed_run(tmp_path, monkeypatch):
+    """The ergonomic path must not quietly lose the property the package exists for. A body
+    that dies mid-write still leaves a record saying so."""
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=log)
+    prov = tmp_path / "p.json"
+    with pytest.raises(RuntimeError):
+        with runprov.Run("s", provenance=prov) as run:
+            with run.open_output(tmp_path / "o.tsv") as fh:
+                fh.write("partial\n")
+                raise RuntimeError("died halfway")
+    rec = json.loads(prov.read_text(encoding="utf-8"))
+    assert rec["status"] == "failed" and rec["failure"]["type"] == "RuntimeError"
+
+
+def test_open_output_closes_the_handle_if_the_pin_cannot_be_written(tmp_path, monkeypatch):
+    """An artifact HALF-written by this helper would be worse than one it refused to open:
+    a file containing a truncated pin and nothing else still looks like an artifact. If
+    rendering the pin fails, the handle closes and the exception reaches the caller."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    out = tmp_path / "o.tsv"
+    opened = []
+
+    real_open = open
+
+    def spy_open(*a, **k):  # a real handle, remembered so the test can check it closed
+        fh = real_open(*a, **k)
+        opened.append(fh)
+        return fh
+
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        monkeypatch.setattr(
+            type(run), "header", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no pin"))
+        )
+        monkeypatch.setattr(runprov.run, "open", spy_open, raising=False)
+        with pytest.raises(RuntimeError, match="no pin"):
+            run.open_output(out)
+
+    assert out.read_text(encoding="utf-8") == "", "nothing may reach a half-pinned artifact"
+    # THE ASSERTION THAT MAKES IT FALSIFIABLE. "the file is empty" is also true when the
+    # handle leaked -- the write simply never happened. Mutation-tested: dropping the
+    # `fh.close()` leaves the emptiness check green and this one red.
+    assert opened and all(fh.closed for fh in opened), "the handle must not leak"
+
+
+# ================================================= C8 + L1: a unique address, and lineage
+def test_every_run_has_a_unique_address_that_the_pin_never_sees(tmp_path, monkeypatch):
+    """C8. `run_id` is a CHAIN id — 30 stages of one pass share it — and the ad-hoc fallback
+    collides at one-second resolution. So no run had a unique address, and an edge in a
+    lineage graph could not say WHICH run it came from.
+
+    `run_uid` is uuid4, in the sidecar and the history. It must never reach the pin: a uuid
+    is a timestamp wearing a different name, and embedding one made two identical runs over
+    identical inputs both report 80 artifacts CHANGED.
+    """
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=log, run_id=lambda: "chain_shared")
+    src = tmp_path / "in.tsv"
+    src.write_text("x\n", encoding="utf-8")
+    uids = []
+    for i in range(3):
+        prov = tmp_path / f"p{i}.json"
+        with runprov.Run("stage", provenance=prov) as run:
+            run.input(src)
+            pin = run.header()
+        rec = json.loads(prov.read_text(encoding="utf-8"))
+        uids.append(rec["run_uid"])
+        assert rec["run_id"] == "chain_shared", "the chain id is deliberately shared"
+        assert rec["run_uid"] not in pin, "a uuid in the pin destabilises every artifact"
+    assert len(set(uids)) == 3, "three runs of one chain must have three distinct addresses"
+    hist = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    assert len({h["run_uid"] for h in hist}) == 3
+
+
+def _hist(tmp_path, rows):
+    p = tmp_path / "h.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return p
+
+
+def _rec(uid, script, started, ins=(), outs=()):
+    return {
+        "schema": "runprov.history.v2",
+        "run_uid": uid,
+        "run_id": "r",
+        "script": script,
+        "started_utc": started,
+        "finished_utc": started,
+        "status": "ok",
+        "inputs": [{"path": p, "sha256": s, "content_sha256": s} for p, s in ins],
+        "outputs": [{"path": p, "sha256": s, "content_sha256": s} for p, s in outs],
+    }
+
+
+def test_lineage_joins_on_the_digest_not_the_path(tmp_path):
+    """L1. Matching a consumer's input to a producer's output BY PATH is a heuristic: the
+    same path is rewritten by many runs over a project's life, so every read has as many
+    candidate producers as there were writes. Joining on the DIGEST is a fact — that byte
+    sequence was produced exactly where it was produced."""
+    rows = [
+        _rec("A", "build", "2026-01-01T00:00:00Z", outs=[("data/x.tsv", "a" * 64)]),
+        # the SAME PATH, different content, later — a path join cannot tell these apart
+        _rec("B", "build", "2026-01-02T00:00:00Z", outs=[("data/x.tsv", "b" * 64)]),
+        _rec("C", "train", "2026-01-03T00:00:00Z", ins=[("data/x.tsv", "a" * 64)]),
+    ]
+    g = cli._lineage([json.loads(x) for x in _hist(tmp_path, rows).read_text().splitlines()])
+    assert g["ambiguous"] == 0
+    assert ("A", "C") in g["edges"], "C read A's bytes, not B's — the digest says so"
+    assert ("B", "C") not in g["edges"]
+
+
+def test_a_producer_that_finished_after_the_consumer_started_is_not_one(tmp_path):
+    """Two runs writing identical content is ordinary — a rebuild that reproduces. The
+    digest alone then has two candidates, and time settles it: an artifact cannot have been
+    read from a run that had not finished writing it."""
+    rows = [
+        _rec("EARLY", "build", "2026-01-01T00:00:00Z", outs=[("x", "c" * 64)]),
+        _rec("READER", "use", "2026-01-02T00:00:00Z", ins=[("x", "c" * 64)]),
+        _rec("LATER", "build", "2026-01-03T00:00:00Z", outs=[("x", "c" * 64)]),
+    ]
+    g = cli._lineage([json.loads(x) for x in _hist(tmp_path, rows).read_text().splitlines()])
+    assert ("EARLY", "READER") in g["edges"]
+    assert ("LATER", "READER") not in g["edges"], "a run cannot read from its own future"
+    assert g["ambiguous"] == 0
+
+
+def test_an_input_nobody_produced_is_an_orphan_and_is_counted(tmp_path):
+    """An orphan is not a failure — a corpus downloaded outside the history is legitimately
+    one. It is a COUNT, because 'every edge resolved' over a graph with no edges is the
+    empty-set claim this project keeps finding."""
+    rows = [_rec("X", "use", "2026-01-01T00:00:00Z", ins=[("outside.tsv", "d" * 64)])]
+    g = cli._lineage([json.loads(x) for x in _hist(tmp_path, rows).read_text().splitlines()])
+    assert g["orphan"] == 1 and g["resolvable"] == 0 and g["edges"] == []
+
+
+def test_lineage_reports_records_that_cannot_take_part(tmp_path):
+    """A record with no `run_uid` predates C8 and cannot be an endpoint. Counted rather than
+    dropped: 1,310 entries in the real history predate run_id and the same will be true of
+    this field, so a graph that silently excluded them would understate its own coverage."""
+    rows = [
+        {
+            "script": "ancient",
+            "started_utc": "2025-01-01T00:00:00Z",
+            "outputs": [{"path": "x", "sha256": "e" * 64}],
+        },
+        _rec("NEW", "use", "2026-01-01T00:00:00Z", ins=[("x", "e" * 64)]),
+    ]
+    g = cli._lineage([json.loads(x) for x in _hist(tmp_path, rows).read_text().splitlines()])
+    assert g["records_without_uid"] == 1, "the count must be reported, not hidden"
+    # AND IT STILL PARTICIPATES. Requiring `run_uid` made the rule non-retroactive, and L1's
+    # whole claim is that it works retroactively by a reader rule alone — measured, all 2,196
+    # records in the real history predate the field, so insisting on it produced a graph of
+    # 0 edges over the entire corpus. run_uid ADDRESSES; the digest RESOLVES.
+    assert g["resolvable"] == 1 and g["orphan"] == 0
+    assert g["edges"][0][1] == "NEW"
+    assert g["edges"][0][0].startswith("derived:"), "an old record gets a derived address"
+
+
+def test_the_lineage_cli_renders_and_counts(tmp_path, capsys):
+    rows = [
+        _rec("A", "build", "2026-01-01T00:00:00Z", outs=[("x", "f" * 64)]),
+        _rec("B", "use", "2026-01-02T00:00:00Z", ins=[("x", "f" * 64)]),
+    ]
+    p = _hist(tmp_path, rows)
+    assert cli.main(["lineage", "--log", str(p)]) == 0
+    out = capsys.readouterr().out
+    assert "build" in out and "use" in out and "1 edge" in out
+
+
+def test_lineage_handles_an_output_with_no_digest_and_a_truncated_render(tmp_path, capsys):
+    """Three states the graph must survive: an output recorded as MISSING (registered, never
+    written — it has no digest and can produce no edge), a run whose edges exceed what the
+    text view prints, and the JSON view a consumer would actually parse."""
+    rows = [
+        {
+            "schema": "runprov.history.v2",
+            "run_uid": "P",
+            "script": "p",
+            "started_utc": "2026-01-01T00:00:00Z",
+            "finished_utc": "2026-01-01T00:00:00Z",
+            "inputs": [],
+            # MISSING: registered and never written, so no digest to join on
+            "outputs": [{"path": "gone.tsv", "kind": "MISSING"}]
+            + [{"path": f"o{i}.tsv", "sha256": f"{i:064d}"} for i in range(210)],
+        }
+    ]
+    rows += [
+        {
+            "schema": "runprov.history.v2",
+            "run_uid": "C",
+            "script": "c",
+            "started_utc": "2026-01-02T00:00:00Z",
+            "finished_utc": "2026-01-02T00:00:00Z",
+            "inputs": [{"path": f"o{i}.tsv", "sha256": f"{i:064d}"} for i in range(210)],
+            "outputs": [],
+        }
+    ]
+    g = cli._lineage(rows)
+    assert g["resolvable"] == 210, "the MISSING output must produce no edge and no crash"
+    p = _hist(tmp_path, rows)
+
+    assert cli.main(["lineage", "--log", str(p)]) == 0
+    text = capsys.readouterr().out
+    assert "more edge(s) not shown" in text, "the text view must say what it truncated"
+
+    assert cli.main(["lineage", "--log", str(p), "--format", "json"]) == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["resolvable"] == 210 and parsed["ambiguous"] == 0
+
+
+# ============================================== R7: a torn line must cost ONE record only
+def test_a_record_appended_after_a_torn_line_survives(tmp_path):
+    """R7. A process SIGKILLed mid-append leaves a line with no terminator — measured, 5 of
+    12 trials. `O_APPEND` then positions the NEXT write at that fragment's end, so the new
+    record is concatenated onto it and BOTH are unreadable. The torn one was lost anyway;
+    the next one is collateral, and it is the one that had nothing wrong with it.
+
+    Worse, `_load` counts the result as ONE unreadable line, so the reader understates the
+    loss by exactly the record it did not know it had destroyed.
+    """
+    p = tmp_path / "h.jsonl"
+    p.write_bytes(b'{"script": "A"}\n{"script": "B", "pad": "xxxx')  # B torn by a kill
+    runprov.JsonlSink(p).append({"script": "C"})
+
+    parsed, unreadable = [], 0
+    for ln in p.read_text(encoding="utf-8").splitlines():
+        try:
+            parsed.append(json.loads(ln)["script"])
+        except (json.JSONDecodeError, KeyError):
+            unreadable += 1
+    assert "C" in parsed, "the NEW record must survive a torn predecessor"
+    assert "A" in parsed
+    assert unreadable == 1, "exactly one record is lost — the one that was actually torn"
+
+
+def test_a_normal_append_gains_no_blank_line(tmp_path):
+    """The healing must be invisible in the ordinary case. A stray blank line every append
+    would make the history grow at twice the rate and read as corruption."""
+    p = tmp_path / "h.jsonl"
+    sink = runprov.JsonlSink(p)
+    for i in range(3):
+        sink.append({"n": i})
+    body = p.read_text(encoding="utf-8")
+    assert body.count("\n\n") == 0 and len(body.splitlines()) == 3
+    assert [json.loads(x)["n"] for x in body.splitlines()] == [0, 1, 2]
+
+
+def test_the_first_record_in_a_new_history_has_no_leading_newline(tmp_path):
+    """An empty file has no torn tail to separate from, and a leading blank line would be
+    an unreadable 'record' in every history's first position."""
+    p = tmp_path / "fresh.jsonl"
+    runprov.JsonlSink(p).append({"n": 1})
+    assert p.read_bytes().startswith(b'{"n": 1}')
+    assert len(p.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_the_reader_counts_the_torn_fragment_it_could_not_read(tmp_path):
+    """The loss must be visible. `_load` counts unreadable lines rather than dropping them,
+    and after healing that count is the true number of records lost."""
+    p = tmp_path / "h.jsonl"
+    p.write_bytes(b'{"script": "A"}\n{"torn')
+    runprov.JsonlSink(p).append({"script": "C"})
+    rows, bad = cli._load(p)
+    assert [r["script"] for r in rows] == ["A", "C"]
+    assert bad == 1, "the fragment is counted, not silently skipped"
