@@ -716,7 +716,12 @@ class Run:
                 # -- the natural spelling -- pinned as `<external>/x.tsv`, announcing a file
                 # as foreign to the very repository holding it.
                 p = pathlib.Path(self.record["cwd"]) / p
-            return str(p.resolve().relative_to(pathlib.Path(self.project.root).resolve()))
+            # `.as_posix()`, NOT `str()`. `str(PurePath)` renders the platform separator,
+            # so the same input pinned on Windows and on Linux produced two DIFFERENT pins
+            # for identical data -- the exact machine-dependence this method's docstring
+            # says it exists to prevent. `describe()` already used as_posix() for the tree
+            # hash; the pin did not. Found by the Windows CI job, not by review.
+            return p.resolve().relative_to(pathlib.Path(self.project.root).resolve()).as_posix()
         except (ValueError, TypeError, OSError):
             return f"<external>/{pathlib.Path(raw).name}"
 
