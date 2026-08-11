@@ -39,6 +39,19 @@ able to tell "the run printed nothing" from "this capture could never have seen 
 fd is attempted first and `python` is the fallback, announced when it happens — the same
 shape as the `flock` downgrade in `sinks.py`, and for the same reason. The fallback is not
 hypothetical: fds 1 and 2 can be closed outright (a daemonised job), and `dup2` then raises.
+
+TWO CAPTURES AT ONCE
+--------------------
+fds 1 and 2 are process-global, so a second capture does not get its own copy of the
+terminal: it `dup2`s over the first one's pipe, and the "original" it saves IS that pipe.
+Captures therefore form a CHAIN — the inner one mirrors into the outer one, which mirrors
+to the terminal — and it can only be taken apart from the inside out.
+
+Nothing enforces that on the caller, so `_LIVE` tracks it here. A capture stopped while an
+inner one is still running does not touch the descriptors; it closes its log, records
+`out_of_order`, and is unwound when the inner one ends. Restoring out of order reinstalls a
+pipe whose reader has already gone, and every subsequent write in the process disappears
+into it — the failure this file's third paragraph calls worse than recording nothing.
 """
 
 from __future__ import annotations
@@ -47,6 +60,7 @@ import os
 import pathlib
 import sys
 import threading
+import time
 import typing
 
 from ._report import diagnostic
@@ -55,6 +69,14 @@ from ._report import diagnostic
 #: enough that output reaches the terminal promptly — a capture that batches a progress bar
 #: into invisibility has changed the thing it was meant to observe.
 _CHUNK = 65536
+
+#: Live fd captures, outermost first. **fds 1 and 2 are process-global**, so a second
+#: capture started while a first is running does not get its own copy of the terminal — it
+#: dup2s over the first one's pipe, and its saved "original" IS that pipe. Unwinding
+#: therefore has to happen in reverse order of starting, and `stop()` cannot assume it is
+#: the innermost. See `_stop_fd`; measured behaviour before this existed is in its comment.
+_LIVE: list[Capture] = []
+_LIVE_LOCK = threading.Lock()
 
 
 class Capture:
@@ -70,10 +92,13 @@ class Capture:
         self.path = path
         self.mode: str = "none"
         self.error: str | None = None
+        self.out_of_order = False
         self._fh: typing.IO[bytes] | None = None
         self._saved: dict[int, int] = {}
         self._thread: threading.Thread | None = None
         self._py_saved: tuple[typing.IO[str], typing.IO[str]] | None = None
+        self._finished = False
+        self._seen = 0
 
     # ------------------------------------------------------------------ start
     def start(self) -> None:
@@ -126,6 +151,8 @@ class Capture:
             target=self._pump, args=(rfd, self._saved[1]), daemon=True, name="runprov-tee"
         )
         self._thread.start()
+        with _LIVE_LOCK:
+            _LIVE.append(self)
         return True
 
     def _pump(self, rfd: int, mirror: int) -> None:
@@ -135,13 +162,18 @@ class Capture:
                 chunk = os.read(rfd, _CHUNK)
                 if not chunk:
                     return
-                if self._fh is not None:
+                fh = self._fh  # bound ONCE: an out-of-order stop closes it from another
+                # thread, and re-reading the attribute between the check and the write is
+                # exactly the window that produces a write to a closed file.
+                if fh is not None:
                     try:
-                        self._fh.write(chunk)
-                        self._fh.flush()
-                    except OSError:  # guards-ok: a full disk must not eat the output —
-                        # the mirror below still runs, so the terminal keeps working and
-                        # only the RECORD is short. The reverse would lose the run's output.
+                        fh.write(chunk)
+                        fh.flush()
+                        self._seen += len(chunk)
+                    except (OSError, ValueError):  # guards-ok: a full disk must not eat the
+                        # output — the mirror below still runs, so the terminal keeps
+                        # working and only the RECORD is short. The reverse would lose the
+                        # run's output. ValueError is the closed-handle race above.
                         pass
                 _write_all(mirror, chunk)
         except OSError:  # guards-ok: the pipe went away (process teardown). Nothing left
@@ -182,35 +214,123 @@ class Capture:
         try:
             _flush_std()
             if self.mode == "fd":
-                # ORDER IS LOad-BEARING, and getting it wrong loses output silently.
-                # `_restore_fds` puts fds 1 and 2 back, which drops the last write ends of
-                # the pipe so the pump's `os.read` returns empty and the thread finishes.
-                # The SAVED fds must stay open across that join: they are the mirror
-                # target, and closing them first makes every remaining `_write_all` fail
-                # with EBADF -- into a guard that returns quietly. Measured before this was
-                # split: the tail of the run reached the log file and never the terminal.
-                self._restore_fds()
-                if self._thread is not None:
-                    # Bounded: the pipe's write ends are closed above, so the read returns
-                    # empty and the thread exits. The timeout is a backstop against a
-                    # subprocess that inherited the fd and is still holding it open — a
-                    # provenance module must not hang the run it is describing.
-                    self._thread.join(timeout=5.0)
-                    if self._thread.is_alive():
-                        self.error = "mirror thread did not finish within 5 s"
-                        diagnostic(
-                            "  WARNING: terminal capture: a process still holds the "
-                            "captured output open; the log may be short."
-                        )
-                self._close_saved()
+                self._stop_fd()
             else:
                 self._restore_python()
-            self._close_file()
+                self._close_file()
         except Exception as exc:  # guards-ok: this runs while an exception may already be
             # in flight; it must never become the failure the caller sees
             self.error = f"stopping capture failed: {exc}"
             diagnostic(f"  WARNING: {self.error}")
+        finally:
+            if self.mode == "fd" and not self.out_of_order:
+                # A capture whose teardown never reached `_stop_fd` — this method can raise
+                # in `_flush_std`, before the stack is touched at all — would otherwise stay
+                # on `_LIVE` for the life of the process, and every capture started
+                # afterwards would find itself "not innermost" and defer forever. One
+                # failed stop would silently disable capture teardown for good.
+                self._forget()
         return self.describe()
+
+    def _stop_fd(self) -> None:
+        """End an fd capture, respecting the fact that fds 1 and 2 are process-global.
+
+        THE DEFECT THIS CLOSES. fds are one resource shared by every capture in the
+        process. Capture B, started inside A, dup2s its pipe over A's — so B's "saved
+        original" is *A's pipe*, not the terminal. Unwinding B then A restores the chain
+        correctly. Unwinding **A then B** does not: B's restore reinstalls A's pipe over
+        fd 1 after A has already stopped and closed its mirror. Measured before this
+        existed: every subsequent `print` in the process went into a pipe nobody was
+        reading, and stdout was gone for the rest of the run — the exact failure this
+        module's docstring calls worse than recording nothing.
+
+        So a capture that is not the innermost does NOT touch the descriptors. It closes
+        its file (its log is complete and its record accurate) and leaves the pipe
+        installed as the inner capture's mirror target. The innermost unwinds itself and
+        then everything below it that is already finished, restoring the real terminal
+        exactly once, at the bottom.
+        """
+        with _LIVE_LOCK:
+            self._finished = True
+            unwind: list[Capture] = []
+            if self not in _LIVE:
+                pass  # already unwound, or a second `stop()` — do not restore twice
+            elif _LIVE[-1] is not self:
+                self.out_of_order = True
+            else:
+                while _LIVE and _LIVE[-1]._finished:
+                    unwind.append(_LIVE.pop())
+        if self.out_of_order:
+            # Finalise the LOG but not the descriptors, so `describe()` reports a file that
+            # has stopped growing while the pump keeps mirroring to the terminal. Closing
+            # it here is only safe because the pump tolerates the handle vanishing
+            # mid-write — it races this call by construction.
+            self._quiesce()
+            self._close_file()
+            diagnostic(
+                "  PROVENANCE NOTICE: terminal capture stopped while an inner capture was "
+                f"still running ({self.path.name}). Its log is closed here and does not "
+                "include later output; the output descriptors stay installed until the "
+                "inner capture ends."
+            )
+            return
+        for cap in unwind:
+            cap._teardown_fds()
+
+    def _forget(self) -> None:
+        """Drop this capture from the live stack. Idempotent; safe to call twice."""
+        with _LIVE_LOCK:
+            if self in _LIVE:
+                _LIVE.remove(self)
+
+    def _quiesce(self, limit: float = 2.0, idle: float = 0.05) -> None:
+        """Wait, bounded, for the pump to finish what is already in the pipe.
+
+        Only used by the out-of-order path, where the descriptors cannot be closed to
+        force an EOF and there is therefore no *exact* end-of-log. Everything written
+        while this capture was live is somewhere in a chain of pipes and pump threads that
+        may not have been scheduled yet; closing the file the instant `stop()` is called
+        loses all of it. Measured without this: an outer capture stopped immediately after
+        a write recorded **none** of it.
+
+        This is a HEURISTIC and is labelled as one — it waits for the byte count to stop
+        moving, which cannot distinguish "drained" from "briefly idle". It narrows the
+        window; it does not close it, which is why `out_of_order` goes into the record.
+        """
+        deadline = time.monotonic() + limit
+        last = -1
+        while time.monotonic() < deadline:
+            seen = self._seen
+            if seen == last:
+                return
+            last = seen
+            time.sleep(idle)
+
+    def _teardown_fds(self) -> None:
+        """Put the descriptors back and stop the pump. ORDER IS LOAD-BEARING.
+
+        `_restore_fds` puts fds 1 and 2 back, which drops the last write ends of the pipe
+        so the pump's `os.read` returns empty and the thread finishes. The SAVED fds must
+        stay open across that join: they are the mirror target, and closing them first
+        makes every remaining `_write_all` fail with EBADF -- into a guard that returns
+        quietly. Measured before this was split: the tail of the run reached the log file
+        and never the terminal.
+        """
+        self._restore_fds()
+        if self._thread is not None:
+            # Bounded: the pipe's write ends are closed above, so the read returns empty
+            # and the thread exits. The timeout is a backstop against a subprocess that
+            # inherited the fd and is still holding it open — a provenance module must not
+            # hang the run it is describing.
+            self._thread.join(timeout=5.0)
+            if self._thread.is_alive():
+                self.error = "mirror thread did not finish within 5 s"
+                diagnostic(
+                    "  WARNING: terminal capture: a process still holds the "
+                    "captured output open; the log may be short."
+                )
+        self._close_saved()
+        self._close_file()
 
     def describe(self) -> dict[str, typing.Any]:
         """The record entry: where, how, how big, and whether it is trustworthy."""
@@ -228,6 +348,14 @@ class Capture:
             # reader needs to know an empty log may mean "could not see" rather than
             # "printed nothing".
             rec["note"] = "python-level capture: output from subprocesses is NOT included"
+        if self.out_of_order:
+            # A reader comparing this log to the run's own start/finish times would
+            # otherwise find output from AFTER the run ended and have no way to explain it.
+            rec["out_of_order"] = True
+            rec["note"] = (
+                "this capture was stopped while an inner capture was still running, so the "
+                "log also contains output written after this run finished"
+            )
         if self.error:
             rec["error"] = self.error
         return rec
