@@ -28,7 +28,13 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: python -m pip install --upgrade ruff mypy
+      # PINNED, not `--upgrade`. This job installed whatever ruff and mypy had released
+      # that morning, so the lint gate changed WITHOUT A COMMIT: it went red on ruff 0.16.2
+      # for a README code block that 0.15.15 had accepted, on a push that touched neither.
+      # A formatter is a moving specification; pinning it is the difference between "this
+      # code is badly formatted" and "the formatter changed its mind overnight".
+      # Same argument as the SHA-pinned actions above. Dependabot raises both.
+      - run: python -m pip install "ruff==0.16.2" "mypy==2.3.0"
       # Calls ci.py, which is what a contributor runs locally. If this job restated the
       # commands instead, the two would drift and "it passes locally" would stop meaning
       # anything.

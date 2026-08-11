@@ -48,7 +48,10 @@ dependencies = []
 
 [project.optional-dependencies]
 test = ["pytest>=7", "pytest-cov>=4", "pyyaml>=6"]  # pyyaml only to CHECK the rendered YAML
-dev = ["runprov[test]", "ruff>=0.6", "mypy>=1.10", "build", "twine", "pre-commit"]
+# ruff and mypy are pinned EXACTLY, and deliberately: both are moving
+# specifications, and an unpinned formatter turns an unrelated push red. The CI
+# lint job installs these same versions, so "it passes locally" means something.
+dev = ["runprov[test]", "ruff==0.16.2", "mypy==2.3.0", "build", "twine", "pre-commit"]
 
 [project.urls]
 Homepage = "https://github.com/Taylor-Nicole/runprov"

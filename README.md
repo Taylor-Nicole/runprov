@@ -291,7 +291,7 @@ The old log's `terminal_log_file`, and the one field of it with no equivalent he
 incidents whose only evidence was what a run printed.
 
 ```python
-configure(root=ROOT, terminal_log_dir=ROOT / "logs")   # <script>_<run_id>.log
+configure(root=ROOT, terminal_log_dir=ROOT / "logs")  # <script>_<run_id>.log
 ```
 
 **It is a tee, never a redirect.** Everything written still reaches the terminal, unchanged
@@ -327,7 +327,7 @@ which a step that streams data to stdout will want. And the primitive underneath
 available on its own:
 
 ```python
-run.terminal_log(LOG)   # register a log the CALLER produced — `make step 2>&1 | tee`
+run.terminal_log(LOG)  # register a log the CALLER produced — `make step 2>&1 | tee`
 ```
 
 That registers an existing file as an ordinary output, hashed and pinned like any other,
