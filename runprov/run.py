@@ -480,9 +480,28 @@ class Run:
         return out
 
     # ---------------------------------------------------------------- registration
+    def _anchor(self, p: pathlib.Path) -> pathlib.Path:
+        """Freeze a relative path against the directory it was registered from.
+
+        A record has exactly ONE `cwd`, and every relative path in it is read against that
+        one value. A script calling `os.chdir` breaks that silently. Measured before this
+        existed: `run.output("rel.tsv")` followed by a chdir recorded `path: "rel.tsv"`
+        with `cwd:` the ORIGINAL directory, while the digest was taken from the file under
+        the NEW one. The record named a file that did not exist and carried the hash of a
+        different one — no error, no warning, and nothing downstream able to tell.
+
+        Resolving against the CURRENT directory is what the caller means, so that is kept.
+        What changes is the recorded spelling: once the two disagree the path is stored
+        ABSOLUTE, because a relative path is only meaningful beside the `cwd` it belongs
+        to and this record no longer holds that one.
+        """
+        if p.is_absolute() or str(pathlib.Path.cwd()) == self.record["cwd"]:
+            return p
+        return pathlib.Path.cwd() / p
+
     def input(self, path: str | pathlib.Path) -> pathlib.Path:
         """Hash and record a read. RETURNS the path, so registering is the easy path."""
-        p = pathlib.Path(path)
+        p = self._anchor(pathlib.Path(path))
         if not p.exists():
             # A bare FileNotFoundError from inside os.stat names neither the script nor
             # the fact that provenance registration raised it. The read was going to fail
@@ -523,8 +542,11 @@ class Run:
 
         Callers do `df.to_csv(run.output(p))`, so the file does not exist yet at call
         time. Hashing eagerly silently dropped every output whose writer had not yet run.
+
+        The path is anchored HERE rather than in `write()`, so that a `chdir` between the
+        two cannot move which file gets hashed. See `_anchor`.
         """
-        p = pathlib.Path(path)
+        p = self._anchor(pathlib.Path(path))
         self._pending.append(p)
         return p
 
@@ -792,8 +814,18 @@ class Run:
             if q in seen:
                 continue
             seen.add(q)
-            if q.exists():
-                self.record["outputs"].append(describe(q))
+            # Against the RECORDED cwd, never the current one. `output()` anchored this
+            # path when it was registered, so a relative entry means "relative to
+            # record['cwd']" — and resolving it against a directory the script has since
+            # chdir'd into is what hashed one file while naming another.
+            target = q if q.is_absolute() else pathlib.Path(self.record["cwd"]) / q
+            if target.exists():
+                described = describe(target)
+                # Keep the spelling the caller registered: `describe` reports the path it
+                # was handed, and substituting the resolved one would rewrite every
+                # ordinary relative output into an absolute path for no reason.
+                described["path"] = str(q)
+                self.record["outputs"].append(described)
             else:
                 # A registered output that was never written is a FINDING, not an
                 # omission. Dropping it here is how a stage reports success having
