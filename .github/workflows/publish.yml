@@ -39,7 +39,12 @@ jobs:
         with:
           python-version: "${{ matrix.python }}"
       - run: python -m pip install -e ".[test]"
-      - run: python ci.py test -q
+      # NO `-q`: ci.py treats every argument as a step name, so `ci.py test -q`
+      # exits 1 with "unknown step '-q'" and the publish job -- which needs this
+      # one -- never runs. The entire release path was unexercised until this was
+      # caught by reading it; a tag would have built and stopped. `-q` is already
+      # in pyproject's addopts.
+      - run: python ci.py test
 
   publish:
     needs: [build, test]

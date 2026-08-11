@@ -149,7 +149,7 @@ direction that is *not* cheap, which is another argument for MIT first.
 
 ## What this repository is missing anyway
 
-There is no LICENSE, no CITATION.cff, and no author affiliation recorded anywhere — a gap
+RESOLVED: `LICENSE`, `CITATION.cff` and the affiliation all exist as of 2026-08-07. Their absence was a gap
 the earlier review already flagged as a reviewer's first question: *"How do I cite this
 software, and who are the authors with their ORCIDs and affiliations?"* The same DRCI
 conversation answers all of it at once. Worth doing in one pass.

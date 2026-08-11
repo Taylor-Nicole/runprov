@@ -6,8 +6,9 @@ has been published — that decision, and the account it happens under, are your
 
 ## The one blocking decision
 
-**There is no LICENSE file in this repository.** Without one the code is "all rights
-reserved" by default: nobody may legally use, copy or redistribute it, PyPI will accept the
+**RESOLVED 2026-08-07 — `LICENSE` holds CeCILL-B verbatim, and `pyproject.toml` declares
+`license = "CECILL-B"`.** The reasoning is kept because it still applies to anyone forking
+this. Without a licence, code is "all rights reserved" by default: nobody may legally use, copy or redistribute it, PyPI will accept the
 upload but the package is unusable, and JOSS and every software registry will reject it.
 
 It has to be decided before anything else because it determines the copyright holder — and
