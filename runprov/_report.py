@@ -67,13 +67,35 @@ def quiet() -> bool:
     return os.environ.get(QUIET_ENV, "").strip().lower() not in _FALSEY
 
 
+def _write(line: str) -> None:
+    """Write one line to stderr, and NEVER raise while doing it.
+
+    These messages contain em dashes, and stderr on Windows is encoded with the console
+    code page rather than UTF-8. Measured: the same diagnostic encodes fine under utf-8
+    and cp1252, and raises `UnicodeEncodeError` under cp932 and ascii -- so on a Japanese
+    or a stripped-down console, a run would die INSIDE provenance capture, at the moment
+    it was trying to report something. Windows CI caught it as a mojibake byte (0x97, the
+    cp1252 em dash) before it caught it as a crash.
+
+    A provenance module that kills the run it is describing is the failure this whole
+    package exists to prevent, so the message degrades instead: unencodable characters
+    become the target encoding's replacement and the warning still arrives.
+    """
+    try:
+        print(line, file=sys.stderr, flush=True)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stderr, "encoding", None) or "ascii"
+        sys.stderr.write(line.encode(enc, "replace").decode(enc, "replace") + "\n")
+        sys.stderr.flush()
+
+
 def diagnostic(*lines: str) -> None:
     """Something that bears on whether the record is TRUE. stderr, always, unsilenceable."""
     for line in lines:
         # flush because a warning is often the last thing emitted before the process dies,
         # and stderr redirected into a file by a job runner is not guaranteed to be
         # line-buffered on every platform this package claims to support.
-        print(line, file=sys.stderr, flush=True)
+        _write(line)
 
 
 def summary(*lines: str) -> None:

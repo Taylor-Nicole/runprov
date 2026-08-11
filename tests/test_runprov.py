@@ -13,6 +13,7 @@ live next door in `test_provenance_shim.py`.
 from __future__ import annotations
 
 import builtins
+import io
 import json
 import pathlib
 import re
@@ -26,6 +27,7 @@ sys.path.insert(0, str(REPO))
 
 import runprov  # noqa: E402
 import runprov.__main__ as cli  # noqa: E402
+import runprov._report  # noqa: E402
 import runprov.environment  # noqa: E402
 
 
@@ -1329,12 +1331,12 @@ def test_a_consumer_that_writes_data_to_stdout_gets_nothing_from_runprov_on_stdo
     proc = subprocess.run(
         [sys.executable, str(_consumer(tmp_path))], capture_output=True, timeout=120
     )
-    assert proc.returncode == 0, proc.stderr.decode()
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
     assert proc.stdout.splitlines() == [b"id\tvalue", b"1\t2"], (
         f"stdout must be the caller's data and only the caller's data; got {proc.stdout!r}"
     )
     # ... and the provenance still SAID something. Silence would be the other failure.
-    err = proc.stderr.decode()
+    err = proc.stderr.decode("utf-8", "replace")
     assert "provenance -> " in err and "resolved OUTSIDE" in err
 
 
@@ -1361,8 +1363,8 @@ def test_the_dirty_tree_warning_reaches_stderr_and_never_the_data(tmp_path, monk
     (repo / "src" / "a.py").write_text("x = 2\n", encoding="utf-8")  # now dirty
 
     proc = subprocess.run([sys.executable, str(_consumer(repo))], capture_output=True, timeout=120)
-    assert proc.returncode == 0, proc.stderr.decode()
-    err = proc.stderr.decode()
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    err = proc.stderr.decode("utf-8", "replace")
     assert "CODE is modified relative to git_commit" in err
     assert "src/a.py" in err, "the warning must name the files, not just announce itself"
     assert proc.stdout.splitlines() == [b"id\tvalue", b"1\t2"]
@@ -1674,3 +1676,22 @@ def test_the_timeline_tells_an_unknown_dirty_state_from_a_clean_one_and_names_th
     out = capsys.readouterr().out
     assert out.count("DIRTY STATE UNKNOWN (git status did not run)") == 1
     assert f"history    {p}" in out
+
+
+def test_a_diagnostic_survives_a_console_that_cannot_encode_it(monkeypatch, capsys):
+    """These messages contain em dashes, and stderr on Windows uses the console code page.
+    Measured: fine under utf-8 and cp1252, `UnicodeEncodeError` under cp932 and ascii -- so
+    on a Japanese or stripped-down console a run would die INSIDE provenance capture, at
+    the moment it was trying to report something. Windows CI surfaced it as a mojibake
+    byte (0x97, the cp1252 em dash) before it could surface as a crash."""
+
+    class NarrowStderr(io.TextIOWrapper):
+        pass
+
+    buf = io.TextIOWrapper(io.BytesIO(), encoding="ascii", newline="")
+    monkeypatch.setattr(sys, "stderr", buf)
+    runprov._report.diagnostic("timeout — every git_* field means 'we could not look'")
+    buf.flush()
+    written = buf.buffer.getvalue().decode("ascii")
+    assert "every git_* field" in written, "the warning must still arrive"
+    assert "—" not in written
