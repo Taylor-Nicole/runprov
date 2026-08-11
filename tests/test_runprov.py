@@ -3452,3 +3452,52 @@ def test_a_broken_symlink_is_refused_by_name(tmp_path, monkeypatch):
     # assertion was satisfied by its own fixture. Mutation-tested.
     assert "whose target does not exist" in msg, "it must say WHY it does not exist"
     assert "gone.tsv" in msg, "and name the target it points at"
+
+
+def test_the_pin_escaper_keeps_legitimate_non_ascii_while_escaping_the_rest():
+    """The escaper must be SURGICAL. Its first implementation ran the whole name through
+    `unicode_escape` whenever any character offended, so a name containing both an accent
+    and a newline came out with the accent mangled too — `café` becoming `caf\\xe9` in a
+    committed artifact, for a corpus that has accented filenames.
+
+    Escape the offending character; leave every other one alone.
+    """
+    safe = runprov.Run._safe_for_pin
+    assert safe("café.tsv") == "café.tsv"
+    assert safe("café\nx.tsv") == "café\\nx.tsv", "the accent survives, the newline does not"
+    assert safe("naïve\ttab.tsv") == "naïve\\ttab.tsv"
+
+    # A lone surrogate OUTSIDE the surrogateescape range (U+DC80-U+DCFF). These do not come
+    # from an undecodable byte -- they arrive from a caller that built the string itself --
+    # but they are equally unencodable, so they must not reach an artifact either.
+    assert safe("x\ud800y.tsv") == "x\\ud800y.tsv"
+    assert "\ud800" not in safe("x\ud800y.tsv").encode("utf-8", "strict").decode("utf-8")
+
+
+def test_a_filename_that_is_not_utf8_cannot_break_the_callers_write(tmp_path, monkeypatch):
+    """A POSIX filename is BYTES, not text. Python decodes an undecodable one with
+    `surrogateescape`, so the name carries lone surrogates — and `fh.write(run.header())`
+    with `encoding="utf-8"`, which this package insists on everywhere, then raises
+
+        UnicodeEncodeError: 'utf-8' codec can't encode character '\\udcff'
+
+    Measured before this was fixed: registering such a file KILLED THE CALLER'S WRITE. The
+    artifact was never created, and the failure came from inside provenance capture — the
+    same class as a FIFO hanging the run, and the reason `_report._write` degrades rather
+    than raising.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    odd = tmp_path / os.fsdecode(b"bad\xff name.tsv")
+    odd.write_text("x\n", encoding="utf-8")
+
+    out = tmp_path / "artifact.tsv"
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(odd)
+        with run.open_output(out) as fh:  # the ordinary write path
+            fh.write("id\tv\nx\t1\n")
+
+    body = out.read_text(encoding="utf-8")
+    assert "bad" in body and "name.tsv" in body, "the name is recorded, not dropped"
+    assert "\\xff" in body, "the undecodable byte is shown as an escape"
+    assert out.stat().st_size > 0
