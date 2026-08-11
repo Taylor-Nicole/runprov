@@ -45,15 +45,18 @@ from .project import (
     git,
     is_configured,
 )
-from .run import SCHEMA, Run
+from .run import HISTORY_SCHEMA, SCHEMA, Run
 from .sinks import JsonlSink, MemorySink, RecordSink
+from .terminal import Capture
 
 __all__ = [
     "DEFAULT_CODE_PATHS",
     "DEFAULT_TRACKED",
+    "HISTORY_SCHEMA",
     "SCHEMA",
     "VOLATILE",
     "VOLATILE_JSON",
+    "Capture",
     "JsonlSink",
     "MemorySink",
     "Project",

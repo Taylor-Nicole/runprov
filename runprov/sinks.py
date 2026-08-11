@@ -78,9 +78,30 @@ class JsonlSink:
         line = json.dumps(record, default=str) + "\n"
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "a", encoding="utf-8") as fh:
+            # BINARY, and explicitly UTF-8 encoded here. Text mode cannot seek to inspect the
+            # last byte without a decode, and the encoding is not the platform's business:
+            # a history whose bytes depend on the writer's locale is the defect `header()`
+            # already learned.
+            with open(self.path, "ab+") as fh:
                 with _exclusive(fh):
-                    fh.write(line)
+                    # R7. A process SIGKILLed mid-append leaves a line with no terminator --
+                    # measured, 5 of 12 trials. O_APPEND then puts the NEXT write at that
+                    # fragment's end, so the new record is concatenated onto it and BOTH are
+                    # unreadable. The torn one was lost anyway; the next one is collateral,
+                    # and it is the one that had nothing wrong with it. Worse, the reader
+                    # counts the result as ONE unreadable line, understating the loss by
+                    # exactly the record it did not know it had destroyed.
+                    #
+                    # One newline closes it: the fragment becomes its own unreadable line,
+                    # the new record lands intact on the next, and the count is true again.
+                    # Inside the lock, because a concurrent writer must not see the file
+                    # between the check and the fix.
+                    fh.seek(0, os.SEEK_END)
+                    if fh.tell():
+                        fh.seek(-1, os.SEEK_END)
+                        if fh.read(1) != b"\n":
+                            fh.write(b"\n")
+                    fh.write(line.encode("utf-8"))
                     fh.flush()
                     os.fsync(fh.fileno())
         except Exception as exc:  # never let recording break a run
@@ -108,7 +129,7 @@ import contextlib  # noqa: E402 - kept next to its only user for readability
 
 
 @contextlib.contextmanager
-def _exclusive(fh: typing.IO[str]) -> typing.Iterator[None]:
+def _exclusive(fh: typing.IO[typing.Any]) -> typing.Iterator[None]:
     """Exclusive lock for the duration of the block.
 
     Two implementations, and the Windows half exists only because Windows CI FAILED: 24

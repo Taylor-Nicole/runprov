@@ -138,11 +138,79 @@ reads `<detected root>/provenance/runs.jsonl`, so if you set `run_log` — as th
 above does — every one of those commands needs `--log reports/runs.jsonl` or it will
 correctly report that nothing has been recorded at the default path.
 
-`--format yaml` deliberately keeps the old field names — `step`, `input`, `output`,
-`run_command`, `date` — so anyone who could read the old file can read this one. What changed
-is where the values come from: observed and hashed, rather than typed by hand. Measured on
-the source project's history: **2,079 runs render to 5.0 MB, and `yaml.safe_load` parses all
-2,079 entries in 6.6 s** (2026-08-10). The file it replaces does not parse at all.
+`--format yaml` deliberately keeps the old field names — `step`, `script`, `input`, `output`,
+`run_command`, `date`, `params`, `summary`, `requirements_file` — so anyone who could read the
+old file can read this one. What changed is where the values come from: observed and hashed,
+rather than typed by hand.
+
+| old field | where the value now comes from |
+|---|---|
+| `step` | the name passed to `Run(...)` |
+| `script` | `script_file` — the caller file **walked off the stack**, not re-typed. In the source project the hand-typed `script:` names `proteins_ns5b_domains/…` for a step whose `run_command` runs `…_3utr/v65/…`: two different files in one entry |
+| `params` | `parameters` — what argparse parsed, with its types intact |
+| `summary` | `notes` — `run.note()` values, where the old log had a hand-written `description:` paragraph |
+| `requirements_file` | the content-addressed `env-<sha16>.txt`, one file per **distinct** environment rather than one timestamped pip freeze per invocation (87 files, 8 distinct contents, on disk in the source project) |
+
+Two deliberate departures from the old shape. Every scalar is **quoted**, so `date` loads as
+an ISO-8601 string rather than a bare YAML timestamp — the unconditional-quoting rule is what
+makes the renderer total, and carving a date-shaped exception into it is how the predecessor's
+writer became correct only for the values its author thought of. And a key is **omitted** when
+the run did not use the feature, rather than filled with a default: `requirements_file`
+appears only when the project configures snapshots. `script` is the exception that proves the
+rule — it is always emitted, because a record that cannot name the file that ran should say
+so rather than fall back to `step`, which would reproduce the very defect the field replaces.
+
+Measured on the source project's history, the same 2,121 records rendered by both versions
+(2026-08-11): **5.14 MB → 5.94 MB**, and `yaml.safe_load` parses all 2,121 entries in
+**3.1 s → 4.9 s**. The four added fields cost 15.6% of the file. Of those records 2,117 carry
+`summary` and 1,386 carry `params`; **none carries `script` or `requirements_file`**, because
+both reach the history line only from this version onward — an old run cannot be back-filled
+and is not pretended into one. The file it replaces does not parse at all.
+
+## Lineage: which run produced what this one read
+
+```bash
+python -m runprov lineage --log reports/runs.jsonl
+python -m runprov lineage --format json          # for a consumer
+```
+
+The history already records, per run, the exact set of files read and written **with the
+hashes taken at the moment of use**. That is the raw material of a complete DAG, and it was
+unusable for one reason: the obvious way to match a consumer's input to a producer's output
+is **by path**, and a path is rewritten by many runs over a project's life. Every read then
+has as many candidate producers as there were writes.
+
+**Join on the digest instead.** A path is a name; a digest is a fact — those bytes were
+produced exactly where they were produced. Two rules make it total:
+
+1. match on `content_sha256`, falling back to the raw hash;
+2. the producer must have **finished before the consumer started**. Two runs writing
+   identical content is ordinary (a rebuild that reproduces), so the digest alone can have
+   several candidates; time settles it, and the latest such producer wins.
+
+Measured on this project's real history — **2,196 records**:
+
+| | resolvable | ambiguous | orphan |
+|---|---:|---:|---:|
+| join on the path *(the heuristic)* | 282 | **3,444** | 4,188 |
+| join on the digest *(this)* | **3,657** | **0** | 4,257 |
+
+`ambiguous` is 0 **by construction** rather than by luck — and it is still printed, because
+a count that can only be zero is one nobody should trust without seeing it.
+
+**Orphans went up, and that is the honest direction.** An input whose *path* was produced by
+some run, but whose *bytes* were not, is now an orphan instead of a false edge. An orphan is
+not a failure either: a corpus fetched outside the history is legitimately one.
+
+`run_uid` (uuid4) gives each run a unique address, because `run_id` is a **chain** id that
+thirty stages of one pass share. It is in the sidecar and the history and **never in the
+pin** — a uuid is a timestamp wearing a different name, and embedding one made two identical
+runs over identical inputs both report 80 artifacts CHANGED.
+
+Records written before `run_uid` existed are addressed by sidecar path plus start time, and
+the count of those derived addresses is reported. That matters: every one of the 2,196
+records above predates the field, so a reader that insisted on it would have produced a
+graph of zero edges over the entire corpus it was written to read.
 
 ## Every run records the command that produced it
 
@@ -216,6 +284,62 @@ interpreter that is actually running — the sibling's shared helper shelled out
 thing. And a distribution whose version cannot be read is recorded as `UNKNOWN` rather
 than omitted, because a snapshot silently missing an entry is worse than one that says so.
 
+## What the run printed
+
+The old log's `terminal_log_file`, and the one field of it with no equivalent here until
+2026-08-11. It earns its place: §7 of the source project's `RESUME.md` is a list of
+incidents whose only evidence was what a run printed.
+
+```python
+configure(root=ROOT, terminal_log_dir=ROOT / "logs")   # <script>_<run_id>.log
+```
+
+**It is a tee, never a redirect.** Everything written still reaches the terminal, unchanged
+and in order; this copies, it does not divert. That rule is absolute because `_report.py`
+exists precisely to undo the day this library wrote to the caller's stdout and corrupted a
+redirected artifact — a capture is the same defect wearing a useful hat, unless it passes
+everything through. If the log cannot be opened, nothing is swapped and the run continues.
+
+**Two mechanisms, and the difference is not a detail.** An ordinary Python write reaches
+file descriptor 1 *through* `sys.stdout`. A **subprocess** writes to file descriptor 1
+directly and never touches `sys.stdout`.
+
+| mechanism | sees | when |
+|---|---|---|
+| `fd` | everything, **including subprocesses** | the default; `dup2` a pipe over fds 1 and 2 |
+| `python` | this interpreter only | fallback when `dup2` is refused (fds closed, a daemonised job) |
+
+So for a harness that wraps other programs, python-level capture writes **an empty file that
+looks like a log**. That is why the mechanism is in the record rather than left to be
+inferred — a reader has to be able to tell *"the run printed nothing"* from *"this capture
+could never have seen it"*:
+
+```yaml
+terminal_log_file: "logs/demo_step_adhoc_20260811T105303Z.log"
+terminal_log_capture: "fd"
+```
+
+The fallback announces itself when it happens, the same way the `flock` downgrade does.
+
+**Three ways in, one of which takes no stream at all.** `terminal_log=PATH` on a single
+`Run` captures there; `terminal_log=False` opts one step out of a project-wide default —
+which a step that streams data to stdout will want. And the primitive underneath is
+available on its own:
+
+```python
+run.terminal_log(LOG)   # register a log the CALLER produced — `make step 2>&1 | tee`
+```
+
+That registers an existing file as an ordinary output, hashed and pinned like any other,
+and touches no stream whatsoever. It is the shape to reach for wherever taking over fds 1
+and 2 would be unwelcome, and it works with subprocesses because the shell did the tee.
+
+**The capture stops before anything is hashed.** The log is still being appended to while
+the run is alive, so a digest taken first pins a prefix of the file — the one artifact
+describing the run, pinned to something that never existed on disk. `__exit__` ends the
+capture before `_finish` runs, which is also why the `provenance -> …` confirmation is on
+your terminal but not inside the log.
+
 ## Configuring it
 
 `Project` holds everything location-dependent. Detection is the default; the detected root
@@ -226,6 +350,7 @@ inferred later.
 |---|---|---|
 | `root` | git top level of the CWD | recorded as `code.project_root` |
 | `env_snapshot_dir` | `None` (off) | full package set per distinct environment |
+| `terminal_log_dir` | `None` (off) | tee stdout+stderr to `<script>_<run_id>.log`; per-`Run` `terminal_log=` overrides, `False` opts out |
 | `run_log` | `<root>/provenance/runs.jsonl` | deliberately *not* any path a host repo uses — a misconfigured install must not append to a history it does not belong to. Set it and the CLI needs `--log` |
 | `code_paths` | `src scripts conf pyproject.toml Makefile` | what "dirty" means. Include config and rule registries: they are read by the code, so they change behaviour like code does |
 | `tracked_packages` | numpy, pandas, scipy, sklearn | versions recorded per run |
@@ -331,7 +456,21 @@ the case that most deserves to be announced.
 
 ## Tests
 
-`tests/test_runprov.py`, 100 tests, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, 187 tests, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
-Coverage is **100%** of 514 statements and the gate is set there. Run everything CI runs
+There are **no mocks**: not one `unittest.mock` import in the suite. Substitution is either a
+real thing (309 uses of `tmp_path` — actual files, actual JSONL, actual `Run` objects) or a
+narrow simulation of an environment this machine is not (`sys.platform` for Windows,
+`__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
+stubs the subject to make it agree with the test.
+
+Coverage is **100%** of 982 statements **and 296 branches**, and the gate is set there with
+`--cov-branch`. The branch half was added 2026-08-11 and was not decoration: statement
+coverage read 100% while five conditions had never been evaluated both ways — including the
+`with` block that records nothing, which is a *known* documented gap that no test held. Each
+of the five tests closing them was then **mutation-tested**: the guarded behaviour was broken
+on purpose in a copy of the package, and each test was confirmed to go red. One did not, and
+that is the reason the practice earns its place — "no history line was written" is also true
+when the write *crashed*, so the test could not tell correct silence from a swallowed
+`KeyError`. It asserts on both now. Run everything CI runs
 with `python ci.py` — the workflow calls that same file, so local and CI cannot drift.
