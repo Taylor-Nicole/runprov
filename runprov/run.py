@@ -203,7 +203,7 @@ class Run:
         project: Project | None = None,
         script_path: pathlib.Path | None = None,
         provenance: pathlib.Path | None = None,
-        terminal_log: pathlib.Path | None | bool = None,
+        terminal_log: pathlib.Path | bool | None = None,
     ) -> None:
         self.project = project or active()
         self.project_source = (
@@ -346,7 +346,7 @@ class Run:
             )
 
     # ---------------------------------------------------------------- terminal capture
-    def _begin_capture(self, requested: pathlib.Path | None | bool) -> Capture | None:
+    def _begin_capture(self, requested: pathlib.Path | bool | None) -> Capture | None:
         """Resolve the three-way switch and start capturing. NEVER raises."""
         if requested is False:
             return None
