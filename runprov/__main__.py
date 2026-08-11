@@ -61,6 +61,14 @@ def _timeline(rows: list[dict[str, typing.Any]]) -> str:
         out.append(
             f"     code       {r.get('git_commit', '?')}"
             + ("  DIRTY" if r.get("git_code_dirty") else "")
+            # `is False`, never a default. A record written before this field existed does
+            # not know the answer, and defaulting it to True would print the reassuring
+            # answer for exactly the runs that cannot support it.
+            + (
+                "  DIRTY STATE UNKNOWN (git status did not run)"
+                if r.get("git_status_captured") is False
+                else ""
+            )
         )
         ins, outs = r.get("inputs") or [], r.get("outputs") or []
         for i in ins:
@@ -70,6 +78,8 @@ def _timeline(rows: list[dict[str, typing.Any]]) -> str:
         if status != "ok":
             f = r.get("failure") or {}
             out.append(f"     FAILED     {f.get('type', '?')}: {str(f.get('message', ''))[:160]}")
+        if r.get("history_destination"):
+            out.append(f"     history    {r['history_destination']}")
         if r.get("seeds"):
             out.append(f"     seeds      {r['seeds']}")
         out.append("")

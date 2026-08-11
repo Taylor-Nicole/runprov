@@ -35,9 +35,10 @@ import traceback
 import types
 import typing
 
+from ._report import diagnostic, summary
 from .environment import write_snapshot
 from .hashing import describe, sha256
-from .project import Project, active, git
+from .project import OTHER_FILES_KEPT, Project, active, classify_status, git, is_configured
 
 # The record format, named and versioned. A consumer -- a script, a dashboard, an agent
 # reading the history -- can branch on this instead of guessing from which keys happen to
@@ -61,14 +62,55 @@ def _caller_file() -> pathlib.Path | None:
     return None
 
 
+_IMPLICIT_WARNED = False
+
+
+def _warn_implicit_project(project: Project) -> None:
+    """Say, once, that nothing configured this — the exact state of the forgetful script.
+
+    `configure(run_log=...)` called from a paths module binds the history for every script
+    that imports that module. A script that forgets the import does not fail: it gets a
+    freshly detected project with a different root and a different history file, appends
+    there, prints a sidecar path that looks completely normal, and the "one continuous
+    history" quietly becomes two. Nothing else in the record can distinguish that from a
+    project that simply has no configuration, so the condition itself is what gets reported.
+    """
+    global _IMPLICIT_WARNED
+    if _IMPLICIT_WARNED:
+        return
+    _IMPLICIT_WARNED = True
+    diagnostic(
+        f"  PROVENANCE WARNING: no configure() has run in this process, so this Run uses an "
+        f"AUTO-DETECTED project:\n"
+        f"    root     {project.root}\n"
+        f"    history  {project.history_destination()}\n"
+        f"    If this project configures runprov from a paths module, THIS SCRIPT DID NOT "
+        f"IMPORT IT, and this run will not join the project's history. Call configure() "
+        f"— even with the defaults — to make the choice explicit and silence this."
+    )
+
+
 class Run:
     """Collects provenance for a single run.
+
+    Use it as a context manager AND pass `provenance=`. Both, or a crash records nothing:
+
+        with Run("build_labels", vars(args), provenance=PROV) as run:
+            ...
 
     Args:
         script: the name recorded, and the key a history is grouped by.
         params: the parameters that shaped the result. Recorded verbatim.
         project: where this is happening. Defaults to the configured project.
         script_path: override the auto-detected caller file (wrappers, notebooks).
+        provenance: where the sidecar goes, AND the switch that makes `__exit__` write.
+            Without it a `with` block records nothing when the body raises — `__exit__`
+            has nowhere to write to — so `with Run(...) as run:` plus `run.write(P)` at
+            the end is as silent on a crash as no `with` block at all. That is the trap
+            this argument creates and it is documented here because it is not guessable:
+            two plausible shapes, both silent, one correct. Given `provenance=`, calling
+            `write()` yourself is optional; the history is appended once, at exit, with
+            the final status.
     """
 
     def __init__(
@@ -81,9 +123,19 @@ class Run:
         provenance: pathlib.Path | None = None,
     ) -> None:
         self.project = project or active()
+        self.project_source = (
+            "argument" if project is not None else ("configured" if is_configured() else "implicit")
+        )
+        if self.project_source == "implicit":
+            _warn_implicit_project(self.project)
         root = self.project.root
-        dirty = git(root, "status", "--porcelain", "--", *self.project.code_paths)
+        # ONE unscoped status, classified in Python. This was TWO calls -- a scoped one
+        # for the boolean and an unscoped one for a bare count -- so the whole-tree cost
+        # was already being paid, and paid twice, to reach a NARROWER answer. Measured on
+        # the host repo (2,994 tracked files, 2.6 GB): two calls 19.2 ms, one call 14.1 ms.
         everything = git(root, "status", "--porcelain")
+        state = classify_status(everything, self.project.code_paths)
+        dirty = "\n".join(state.code)
 
         sp = pathlib.Path(script_path) if script_path else _caller_file()
         self.record: dict[str, typing.Any] = {
@@ -110,9 +162,24 @@ class Run:
                 "git_commit": git(root, "rev-parse", "HEAD"),
                 "git_commit_short": git(root, "rev-parse", "--short", "HEAD"),
                 "git_branch": git(root, "rev-parse", "--abbrev-ref", "HEAD"),
-                "git_code_dirty": bool(dirty),
-                "git_dirty_code_files": (dirty.splitlines() if dirty else []),
+                "git_status_captured": state.captured,
+                "git_code_dirty": bool(state.code),
+                "git_dirty_code_files": list(state.code),
+                # Code changes the configured `code_paths` did NOT cover. Non-empty means
+                # the scope does not match this project's layout, and it is the field that
+                # would have named the integrator's `pkg/` on day one.
+                "git_dirty_outside_code_paths": list(state.outside_code_paths),
+                # The whole tree, code included: "is this working tree modified at all",
+                # which is layout-independent by construction and needs no list to be true.
+                "git_tree_dirty": bool(state.code or state.other),
+                # UNCHANGED MEANING (whole-tree change count), so no consumer breaks --
+                # but no longer the only trace, which was the defect.
                 "git_other_changes": len(everything.splitlines()) if everything else 0,
+                "git_dirty_other_files": list(state.other[:OTHER_FILES_KEPT]),
+                "git_other_files_omitted": max(0, len(state.other) - OTHER_FILES_KEPT),
+                # What "code" meant for THIS record. A boolean whose definition lives only
+                # in the caller's configuration is uninterpretable once the run is history.
+                "code_paths": list(self.project.code_paths),
                 "script_file": str(sp) if sp else None,
                 "script_sha256": sha256(sp) if sp and sp.is_file() else None,
             },
@@ -122,6 +189,14 @@ class Run:
                 "hostname": platform.node(),
                 "cpu_count": os.cpu_count(),
                 "packages": self._versions(),
+            },
+            # WHERE THE HISTORY LINE WENT. The console printed the sidecar path and never
+            # this one, so a split history -- two projects, two runs.jsonl, one of them
+            # nobody is reading -- was invisible from the terminal.
+            "history": {
+                "destination": self.project.history_destination(),
+                "sink": type(self.project.resolved_sink()).__name__,
+                "project_source": self.project_source,
             },
             "seeds": [],
             "inputs": [],
@@ -148,13 +223,26 @@ class Run:
         # left the history saying `failed` and the sidecar saying `ok` -- and the sidecar
         # is the file a human opens.
         self._last_written: pathlib.Path | None = None
-        if dirty:
-            print(
-                "  PROVENANCE WARNING: CODE is modified relative to git_commit; the "
-                "commit does not identify what ran:"
+        if not state.captured:
+            # "We could not look" said out loud. This printed NOTHING and recorded
+            # `git_code_dirty: false`, which reads as a verified clean tree -- the single
+            # most consequential boolean in the record, failing toward the reassuring
+            # answer.
+            diagnostic(
+                f"  PROVENANCE WARNING: `git status` did not run in {root}; this run's "
+                f"dirty state is UNKNOWN, not clean (git_status_captured: false). No "
+                f"repository, no git binary, or the 20 s timeout — every git_* field in "
+                f"this record means 'we could not look'."
             )
-            for line in dirty.splitlines():
-                print(f"    {line}")
+        elif dirty:
+            # DIAGNOSTIC, and the load-bearing one: it says the commit in the record does
+            # not identify what ran. It goes to stderr unconditionally and RUNPROV_QUIET
+            # does not reach it.
+            diagnostic(
+                "  PROVENANCE WARNING: CODE is modified relative to git_commit; the "
+                "commit does not identify what ran:",
+                *(f"    {line}" for line in dirty.splitlines()),
+            )
 
     # ------------------------------------------------------------- failure recording
     def __enter__(self) -> Run:
@@ -199,7 +287,7 @@ class Run:
         try:
             self._finish()
         except Exception as exc:  # never replace the exception being recorded
-            print(f"  WARNING: provenance capture failed during exit: {exc}", file=sys.stderr)
+            diagnostic(f"  WARNING: provenance capture failed during exit: {exc}")
         return False  # NEVER swallow the caller's exception.
 
     def _finish(self) -> None:
@@ -271,7 +359,7 @@ class Run:
         try:
             rec = write_snapshot(pathlib.Path(d))
         except Exception as exc:  # never let provenance capture break a run
-            print(f"  WARNING: could not write environment snapshot: {exc}")
+            diagnostic(f"  WARNING: could not write environment snapshot: {exc}")
             rec = {"error": str(exc)}
         self.record["environment"]["snapshot"] = rec
         return rec
@@ -307,7 +395,7 @@ class Run:
                 # non-existent path would raise inside provenance capture instead.
                 rec["sha256"] = sha256(fp)
             if not rec["inside_project"]:
-                print(
+                diagnostic(
                     f"  PROVENANCE WARNING: {rec['module']} resolved OUTSIDE the project root: {f}"
                 )
         self.record.setdefault("modules", []).append(rec)
@@ -440,22 +528,31 @@ class Run:
             # A second write() rewrites the sidecar deliberately (a caller may want the
             # record at two paths) but must NOT append a second history line: one run is
             # one line, or every count taken from the history is wrong.
-            print("  (history already recorded for this run; sidecar rewritten only)")
+            summary("  (history already recorded for this run; sidecar rewritten only)")
         else:
             self._append_history(p)
 
         if self.record.get("status") == "failed":
-            print(
+            # DIAGNOSTIC: the run did not do what it was asked to. Not quietenable.
+            diagnostic(
                 f"  RUN FAILED — recorded: {self.record['failure']['type']}: "
                 f"{self.record['failure']['message'][:120]}"
             )
-        print(f"provenance -> {p}")
-        print(
+        # CONFIRMATION: the record was written, and here is what is in it. Every fact in
+        # these two lines is also in the sidecar this line names, which is why this is the
+        # one message RUNPROV_QUIET may hide.
+        summary(
+            f"provenance -> {p}",
+            # The HISTORY path, not only the sidecar. Printing the sidecar and never this
+            # is what made a split history invisible from the terminal.
+            f"  history -> {self.record['history']['destination']}\n"
             f"  code {self.record['code']['git_commit_short']}"
             f"{' (CODE DIRTY)' if self.record['code']['git_code_dirty'] else ''}"
+            # "we could not look" must not print as the reassuring answer.
+            f"{'' if self.record['code']['git_status_captured'] else ' (DIRTY STATE UNKNOWN)'}"
             f"  inputs {len(self.record['inputs'])}"
             f"  outputs {len(self.record['outputs'])}"
-            f"  seeds {self.record['seeds']}"
+            f"  seeds {self.record['seeds']}",
         )
         return p
 
@@ -470,10 +567,9 @@ class Run:
         try:
             return json.dumps(self.record, indent=2, default=str)
         except (TypeError, ValueError) as exc:
-            print(
+            diagnostic(
                 f"  WARNING: could not serialise part of the record ({exc}); "
-                f"degrading the offending entries",
-                file=sys.stderr,
+                f"degrading the offending entries"
             )
             for key in ("notes", "parameters"):
                 section = self.record.get(key)
@@ -503,9 +599,7 @@ class Run:
             p.write_text(text, encoding="utf-8")
             return True
         except OSError as exc:
-            print(
-                f"  WARNING: could not write the provenance sidecar to {p}: {exc}", file=sys.stderr
-            )
+            diagnostic(f"  WARNING: could not write the provenance sidecar to {p}: {exc}")
             return False
 
     def _append_history(self, prov_path: pathlib.Path) -> None:
@@ -536,6 +630,12 @@ class Run:
             "seeds": r["seeds"],
             "git_commit": r["code"]["git_commit_short"],
             "git_code_dirty": r["code"]["git_code_dirty"],
+            "git_status_captured": r["code"]["git_status_captured"],
+            "git_tree_dirty": r["code"]["git_tree_dirty"],
+            # A history line that says which history it belongs to. Once a line has been
+            # copied, archived or merged, this is the only record of where it landed.
+            "history_destination": r["history"]["destination"],
+            "project_source": r["history"]["project_source"],
             "script_sha256": r["code"]["script_sha256"],
             "packages": r["environment"]["packages"],
             "inputs": [
