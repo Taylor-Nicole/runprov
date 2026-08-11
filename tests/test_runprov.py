@@ -3488,12 +3488,16 @@ def _fs_allows_non_utf8_names(where: pathlib.Path) -> bool:
     the fixture. An ext4 volume mounted elsewhere would behave like Linux, and a probe gets
     that right where a platform check would not.
     """
-    probe = where / os.fsdecode(b"\xff_probe")
     try:
+        # INSIDE the try, deliberately. On Windows `os.fsdecode` itself raises
+        # UnicodeDecodeError on an invalid byte -- filenames there are UTF-16 -- so building
+        # the name is already part of what is being probed. With this line outside the try,
+        # the Windows job failed in the probe that exists to decide whether to skip.
+        probe = where / os.fsdecode(b"\xff_probe")
         probe.write_text("x", encoding="utf-8")
         probe.unlink()
         return True
-    except (OSError, UnicodeError):
+    except (OSError, UnicodeError, ValueError):
         return False
 
 
