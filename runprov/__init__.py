@@ -43,6 +43,7 @@ from .project import (
     default_run_id,
     detect_root,
     git,
+    is_configured,
 )
 from .run import SCHEMA, Run
 from .sinks import JsonlSink, MemorySink, RecordSink
@@ -67,6 +68,7 @@ __all__ = [
     "detect_root",
     "git",
     "installed_packages",
+    "is_configured",
     "sha256",
     "write_snapshot",
 ]

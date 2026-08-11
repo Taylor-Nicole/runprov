@@ -42,6 +42,8 @@ import pathlib
 import sys
 import typing
 
+from ._report import diagnostic
+
 if typing.TYPE_CHECKING:  # pragma: no cover
     pass
 
@@ -82,7 +84,10 @@ class JsonlSink:
                     fh.flush()
                     os.fsync(fh.fileno())
         except Exception as exc:  # never let recording break a run
-            print(f"  WARNING: could not append to run history: {exc}")
+            # DIAGNOSTIC: a record that was meant to be kept was not kept. stderr, and
+            # RUNPROV_QUIET does not reach it -- losing history silently is the failure
+            # this whole package exists to make impossible.
+            diagnostic(f"  WARNING: could not append to run history: {exc}")
 
 
 class MemorySink:
@@ -138,10 +143,18 @@ def _exclusive(fh: typing.IO[str]) -> typing.Iterator[None]:
                 msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
                 locked = "msvcrt"
         except (ImportError, OSError):
-            print(
-                "  NOTE: no file locking available; run history appended unlocked. "
-                "Concurrent writers may interleave."
-            )
+            pass
+    if locked is None:
+        # OUTSIDE the platform branches, and that is the whole fix. This notice used to
+        # sit inside the win32-only inner `except`, so a POSIX `flock` that raised -- an
+        # NFS or CIFS mount, a container without the syscall -- degraded to an unlocked
+        # append and said NOTHING. Those filesystems are the lock's entire justification,
+        # so the one case that most deserved announcing was the one case that could not.
+        # Verified by stubbing fcntl to raise: the line was written, no notice appeared.
+        diagnostic(
+            "  NOTE: no file locking available; run history appended unlocked. "
+            "Concurrent writers may interleave."
+        )
     try:
         yield
     finally:

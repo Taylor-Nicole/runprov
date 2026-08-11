@@ -871,7 +871,8 @@ def test_module_records_where_an_import_resolved_from(tmp_path, capsys):
     rec = run.record["modules"][0]
     assert rec["module"] == "json" and rec["sha256"]
     assert rec["inside_project"] is False
-    assert "resolved OUTSIDE" in capsys.readouterr().out
+    cap = capsys.readouterr()
+    assert "resolved OUTSIDE" in cap.err and cap.out == ""
 
 
 def test_module_handles_something_without_a_file(tmp_path):
@@ -902,7 +903,8 @@ def test_an_unwritable_snapshot_directory_warns_and_does_not_break_the_run(tmp_p
     run = runprov.Run("t", project=proj)
     rec = run.environment_snapshot()
     assert rec is not None and "error" in rec
-    assert "could not write environment snapshot" in capsys.readouterr().out
+    cap = capsys.readouterr()
+    assert "could not write environment snapshot" in cap.err and cap.out == ""
 
 
 def test_a_dirty_tree_is_announced(tmp_path, capsys):
@@ -919,7 +921,8 @@ def test_a_dirty_tree_is_announced(tmp_path, capsys):
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "one"], check=True)
     (repo / "src" / "a.py").write_text("x = 2\n", encoding="utf-8")
     runprov.Run("t", project=runprov.Project(root=repo, sink=runprov.MemorySink()))
-    assert "CODE is modified relative to git_commit" in capsys.readouterr().out
+    cap = capsys.readouterr()
+    assert "CODE is modified relative to git_commit" in cap.err and cap.out == ""
 
 
 def test_the_caller_file_falls_back_to_none_when_every_frame_is_internal(monkeypatch):
@@ -934,7 +937,8 @@ def test_a_sink_that_cannot_write_warns_instead_of_raising(tmp_path, capsys):
     blocker = tmp_path / "afile"
     blocker.write_text("not a directory", encoding="utf-8")
     runprov.JsonlSink(blocker / "sub" / "runs.jsonl").append({"a": 1})
-    assert "could not append to run history" in capsys.readouterr().out
+    cap = capsys.readouterr()
+    assert "could not append to run history" in cap.err and cap.out == ""
 
 
 def test_the_posix_lock_path_is_exercised(monkeypatch, tmp_path):
@@ -1003,7 +1007,8 @@ def test_no_locking_available_says_so(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(builtins, "__import__", nothing)
     monkeypatch.setattr(sys, "platform", "win32")
     runprov.JsonlSink(tmp_path / "runs.jsonl").append({"a": 1})
-    assert "no file locking available" in capsys.readouterr().out
+    cap = capsys.readouterr()
+    assert "no file locking available" in cap.err and cap.out == ""
 
 
 def test_cli_filters_by_script(tmp_path, capsys):
@@ -1274,3 +1279,398 @@ def test_encoding_skips_a_section_that_is_not_a_dict(tmp_path):
     rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
     assert rec["parameters"] == ["not", "a", "dict"]
     assert rec["notes"]["bad"].startswith("UNSERIALISABLE")
+
+
+def _consumer(tmp_path) -> pathlib.Path:
+    """Write a script that emits DATA on stdout and records provenance while doing it.
+
+    This is the shape the defect was reported in and the shape a pipeline step actually
+    has: the artifact goes to stdout, the provenance goes to a sidecar.
+    """
+    (tmp_path / "in.tsv").write_text("id\tvalue\n1\t2\n", encoding="utf-8")
+    script = tmp_path / "step.py"
+    script.write_text(
+        textwrap.dedent(f"""
+            import pathlib, sys
+            sys.path.insert(0, {str(REPO)!r})
+            import runprov
+
+            root = pathlib.Path({str(tmp_path)!r})
+            proj = runprov.Project(
+                root=root,
+                run_log=root / "runs.jsonl",
+                run_id=lambda: "r",
+                generation=lambda: "g",
+            )
+            run = runprov.Run("step", project=proj)
+            run.input(root / "in.tsv")
+            out = run.output(root / "out.tsv")
+            out.write_text("x", encoding="utf-8")
+            run.module(runprov)
+            sys.stdout.write("id\\tvalue\\n1\\t2\\n")   # THE DATA, and nothing else may join it
+            run.write(root / "prov.json")
+        """),
+        encoding="utf-8",
+    )
+    return script
+
+
+def test_a_consumer_that_writes_data_to_stdout_gets_nothing_from_runprov_on_stdout(
+    tmp_path, monkeypatch
+):
+    """`python step.py > result.tsv` must produce result.tsv and NOTHING else.
+
+    Byte-exact, not "does not contain 'provenance'": the point is that stdout is the
+    caller's channel and the library has no business on it at all.
+    """
+    import subprocess
+
+    monkeypatch.delenv("RUNPROV_QUIET", raising=False)  # the summary must be ON for this
+    proc = subprocess.run(
+        [sys.executable, str(_consumer(tmp_path))], capture_output=True, timeout=120
+    )
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert proc.stdout == b"id\tvalue\n1\t2\n", (
+        f"stdout must be the caller's data and only the caller's data; got {proc.stdout!r}"
+    )
+    # ... and the provenance still SAID something. Silence would be the other failure.
+    err = proc.stderr.decode()
+    assert "provenance -> " in err and "resolved OUTSIDE" in err
+
+
+def test_the_dirty_tree_warning_reaches_stderr_and_never_the_data(tmp_path, monkeypatch):
+    """The load-bearing message: the recorded commit does not identify what ran.
+
+    Checked through a real redirect, because this is the one message that must survive
+    every future attempt to make the package quieter.
+    """
+    import subprocess
+
+    monkeypatch.delenv("RUNPROV_QUIET", raising=False)
+    repo = tmp_path / "r"
+    (repo / "src").mkdir(parents=True)
+    for cmd in (
+        ["git", "init", "-q", str(repo)],
+        ["git", "-C", str(repo), "config", "user.email", "t@e.org"],
+        ["git", "-C", str(repo), "config", "user.name", "T"],
+    ):
+        subprocess.run(cmd, check=True)
+    (repo / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "one"], check=True)
+    (repo / "src" / "a.py").write_text("x = 2\n", encoding="utf-8")  # now dirty
+
+    proc = subprocess.run([sys.executable, str(_consumer(repo))], capture_output=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr.decode()
+    err = proc.stderr.decode()
+    assert "CODE is modified relative to git_commit" in err
+    assert "src/a.py" in err, "the warning must name the files, not just announce itself"
+    assert proc.stdout == b"id\tvalue\n1\t2\n"
+
+
+def test_quiet_cannot_silence_a_warning(tmp_path, monkeypatch, capsys):
+    """The invariant that makes the switch safe to have at all: a knob that can turn off a
+    provenance warning is the knob that gets turned off. `RUNPROV_QUIET` reaches
+    `summary()` and nothing else."""
+    monkeypatch.setenv("RUNPROV_QUIET", "1")
+    run = runprov.Run("t", project=_project(tmp_path))
+    run.module(json)  # resolves outside the project -> a diagnostic
+    run.record["status"] = "failed"
+    run.record["failure"] = {"type": "Boom", "message": "it broke", "traceback": ""}
+    run.write(tmp_path / "prov.json")
+    cap = capsys.readouterr()
+    assert cap.out == ""
+    assert "resolved OUTSIDE" in cap.err
+    assert "RUN FAILED" in cap.err
+    assert "provenance -> " not in cap.err  # the summary, and only the summary, is hidden
+
+
+def test_the_summary_is_on_by_default_and_a_falsey_value_keeps_it_on(tmp_path, monkeypatch, capsys):
+    """The other state. `RUNPROV_QUIET=0` meaning *quiet* is exactly the surprise that
+    gets a switch blamed for a missing message."""
+    for value in (None, "", "0", "false", "NO", " off "):
+        if value is None:
+            monkeypatch.delenv("RUNPROV_QUIET", raising=False)
+        else:
+            monkeypatch.setenv("RUNPROV_QUIET", value)
+        run = runprov.Run("t", project=_project(tmp_path))
+        run.write(tmp_path / "prov.json")
+        cap = capsys.readouterr()
+        assert cap.out == "", f"RUNPROV_QUIET={value!r} must not put anything on stdout"
+        assert "provenance -> " in cap.err, f"RUNPROV_QUIET={value!r} must not silence"
+        assert "seeds []" in cap.err
+
+
+def test_no_library_module_calls_bare_print():
+    """The regression guard, and it is structural on purpose.
+
+    Eight call sites drifted onto stdout one at a time; asserting the behaviour of the
+    eight that exist today does not stop the ninth. `_report.py` is the ONE place allowed
+    to call `print`, and `__main__.py` is a CLI whose rendered log IS its output.
+
+    This sees literals, not behaviour — a `sys.stdout.write` would slip past it — which is
+    why the subprocess tests above exist as well. It is the cheap half of a pair.
+    """
+    offenders = {}
+    for mod in sorted((REPO / "runprov").glob("*.py")):
+        if mod.name in ("_report.py", "__main__.py"):
+            continue
+        hits = [
+            f"{mod.name}:{n}"
+            for n, line in enumerate(mod.read_text(encoding="utf-8").splitlines(), 1)
+            if re.search(r"(?<![\w.])print\s*\(", line)
+        ]
+        if hits:
+            offenders[mod.name] = hits
+    assert offenders == {}, (
+        f"library modules must emit through runprov._report, not print(): {offenders}"
+    )
+
+
+def test_a_posix_locking_failure_is_announced(monkeypatch, tmp_path, capsys):
+    """The notice sat inside the win32-only branch, so a POSIX `flock` that raised -- NFS,
+    CIFS, a container without the syscall -- degraded to an unlocked append in SILENCE.
+    Those filesystems are the entire justification for having the lock, so that was the
+    one case that most deserved announcing and the one case that could not."""
+    real_import = builtins.__import__
+
+    def no_fcntl(name, *a, **k):
+        if name == "fcntl":
+            raise ImportError("pretend NFS")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_fcntl)
+    monkeypatch.setattr(sys, "platform", "linux")
+    p = tmp_path / "runs.jsonl"
+    runprov.JsonlSink(p).append({"a": 1})
+    assert json.loads(p.read_text(encoding="utf-8"))["a"] == 1
+    assert "no file locking available" in capsys.readouterr().err
+
+
+def _repo_with(tmp_path, subdir):
+    """A REAL git repository with one committed module under `subdir`, plus one data file.
+
+    Real rather than a stub, for the reason the file docstring gives: the defect lives in
+    what `git status` reports for a layout, and a faked git can only report what the author
+    of the fake already believed.
+    """
+    import subprocess
+
+    repo = tmp_path / "integration"
+    (repo / subdir).mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@e.org"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
+    (repo / subdir / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "data.tsv").write_text("id\n1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "one"], check=True)
+    return repo
+
+
+def test_uncommitted_code_outside_the_default_code_paths_is_not_reported_as_clean(tmp_path):
+    """I2. `code_paths` was the PATHSPEC of `git status`, so a project laid out any other
+    way -- `pkg/` rather than `src/` -- edited uncommitted code and got `git_code_dirty:
+    false`, an empty `git_dirty_code_files`, and a commit hash that looks like it names what
+    ran. The most consequential boolean in the record failed toward the reassuring answer.
+    The whole tree is read now and `code_paths` only WIDENS what counts."""
+    repo = _repo_with(tmp_path, "pkg")
+    (repo / "pkg" / "mod.py").write_text("x = 2\n", encoding="utf-8")  # uncommitted edit
+    proj = runprov.Project(root=repo, sink=runprov.MemorySink())  # the DEFAULT code_paths
+    code = runprov.Run("t", project=proj).record["code"]
+    assert code["git_code_dirty"] is True, "an edited module is not a clean tree"
+    assert any("pkg/mod.py" in line for line in code["git_dirty_code_files"])
+    assert code["git_dirty_outside_code_paths"] == code["git_dirty_code_files"], (
+        "and the record must say the configured scope missed it, or the next reader "
+        "cannot tell a bad scope from a clean tree"
+    )
+    assert code["git_tree_dirty"] is True
+    assert code["code_paths"] == list(runprov.DEFAULT_CODE_PATHS)
+
+
+def test_data_churn_alone_still_does_not_report_the_code_as_dirty(tmp_path):
+    """The other half, and the reason `git_code_dirty` is not simply the whole-tree state:
+    a pipeline dirties its own output tree on every run, and a boolean that is red forever
+    is a boolean everyone learns to ignore. The churn is still LISTED -- an integer with no
+    file list was the only trace the `pkg/` case ever left."""
+    repo = _repo_with(tmp_path, "pkg")
+    (repo / "data.tsv").write_text("id\n1\n2\n", encoding="utf-8")
+    (repo / "reports").mkdir()
+    (repo / "reports" / "out.parquet").write_bytes(b"\x00")
+    code = runprov.Run("t", project=runprov.Project(root=repo, sink=runprov.MemorySink())).record[
+        "code"
+    ]
+    assert code["git_code_dirty"] is False
+    assert code["git_tree_dirty"] is True, "the tree IS modified and the record must say so"
+    assert code["git_other_changes"] == 2, "unchanged meaning: the whole-tree change count"
+    assert sorted(code["git_dirty_other_files"]) == [" M data.tsv", "?? reports/"]
+    assert code["git_other_files_omitted"] == 0
+    assert runprov.SCHEMA == "runprov.run.v1", "no field changed meaning, so no bump"
+
+
+def test_a_renamed_makefile_outside_code_paths_still_counts_as_code():
+    """Both ends of a rename, a basename with no informative suffix, and a blank line."""
+    state = runprov.project.classify_status(
+        "R  Makefile -> build/Makefile\n\n M docs/notes.md", ("src",)
+    )
+    assert state.captured is True
+    assert state.code == ("R  Makefile -> build/Makefile",)
+    assert state.outside_code_paths == state.code
+    assert state.other == (" M docs/notes.md",)
+
+
+def test_the_status_parser_restores_the_leading_space_git_strip_ate():
+    """`git()` ends with `stdout.strip()`, so the FIRST porcelain line arrives one character
+    short: ` M pkg/mod.py` becomes `M pkg/mod.py`. Parsing from a fixed column 3 then yields
+    `kg/mod.py` -- which matches no code path and ends in no known suffix, so the very first
+    changed file in every run would have been classified as not-code. It also reads as a
+    STAGED change when it is an unstaged one."""
+    assert runprov.project._split_status("M pkg/mod.py") == (" M pkg/mod.py", ["pkg/mod.py"])
+    assert runprov.project._split_status(" M pkg/mod.py") == (" M pkg/mod.py", ["pkg/mod.py"])
+
+
+def test_the_status_parser_reads_both_ends_of_a_rename_and_unquotes_a_quoted_path():
+    line = "R  old/a.py -> pkg/b.py"
+    assert runprov.project._split_status(line) == (line, ["old/a.py", "pkg/b.py"])
+    quoted = ' M "src/caf\\303\\251.py"'
+    assert runprov.project._split_status(quoted) == (quoted, ["src/caf\\303\\251.py"])
+    assert runprov.project._split_status("?? pkg/") == ("?? pkg/", ["pkg"])
+    assert runprov.project._split_status("??") == ("??", []), "unparseable names no path"
+    assert runprov.project.classify_status("??", ("src",)).code == ("??",), (
+        "and a line the parser cannot read is counted as CODE, never quietly as churn"
+    )
+    assert runprov.project.looks_like_code("pkg/deep/mod.py") is True
+    assert runprov.project.looks_like_code("reports/audit/LICENSE") is False
+
+
+def test_a_record_made_where_git_could_not_run_is_not_a_record_of_a_clean_tree(tmp_path, capsys):
+    """`git()` returns None on ANY failure -- no repository, no git binary, the 20 s timeout
+    -- and `bool(None)` is False, so the two facts were written identically. A companion
+    boolean rather than a nullable `git_code_dirty`: `None` is falsy, so every consumer
+    already written as `if rec["git_code_dirty"]` would go on reading "we could not look"
+    as "clean", which is the coercion that caused this."""
+    blind_root = tmp_path / "not_a_repo"
+    blind_root.mkdir()
+    blind = runprov.Run(
+        "t", project=runprov.Project(root=blind_root, sink=runprov.MemorySink())
+    ).record["code"]
+    seen = runprov.Run(
+        "t", project=runprov.Project(root=_repo_with(tmp_path, "src"), sink=runprov.MemorySink())
+    ).record["code"]
+
+    assert (seen["git_status_captured"], seen["git_code_dirty"]) == (True, False)
+    assert (blind["git_status_captured"], blind["git_code_dirty"]) == (False, False)
+    assert (blind["git_status_captured"], blind["git_code_dirty"]) != (
+        seen["git_status_captured"],
+        seen["git_code_dirty"],
+    ), "a consumer must be able to tell 'we could not look' from 'verified clean'"
+    assert "dirty state is UNKNOWN, not clean" in capsys.readouterr().err
+
+
+def test_a_status_that_fails_inside_a_real_repository_is_recorded_as_unknown(
+    tmp_path, monkeypatch, capsys
+):
+    """The case the record could never express: git is installed, the repository is there,
+    the commit is real -- and `git status` did not complete. Everything else in the record
+    looks authoritative, which is exactly why the one thing that failed must be stated."""
+    repo = _repo_with(tmp_path, "src")
+    real = runprov.project.subprocess.run
+
+    def flaky(cmd, **kwargs):
+        if "status" in tuple(cmd):
+            raise runprov.project.subprocess.TimeoutExpired(list(cmd), 20)
+        return real(cmd, **kwargs)
+
+    monkeypatch.setattr(runprov.project.subprocess, "run", flaky)
+    run = runprov.Run("t", project=runprov.Project(root=repo, sink=runprov.MemorySink()))
+    code = run.record["code"]
+    assert code["git_commit"] is not None, "git works and the repository is real"
+    assert code["git_status_captured"] is False
+    assert code["git_code_dirty"] is False, "and on its own this now means nothing"
+    run.write(tmp_path / "p.json")
+    assert "(DIRTY STATE UNKNOWN)" in capsys.readouterr().err
+
+
+def test_the_history_destination_is_recorded_printed_and_carried_in_the_line(tmp_path, capsys):
+    """The console printed the SIDECAR path and never the HISTORY path, so a project whose
+    `configure(run_log=...)` had not been imported appended to a second runs.jsonl under a
+    different root and produced identical-looking output. The README promises one continuous
+    history; a promise nothing states per run cannot be checked."""
+    log = tmp_path / "elsewhere" / "runs.jsonl"
+    proj = runprov.Project(root=tmp_path, run_log=log, run_id=lambda: "r", generation=lambda: "g")
+    run = runprov.Run("t", project=proj)
+    run.write(tmp_path / "p.json")
+
+    assert run.record["history"]["destination"] == str(log)
+    sidecar = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert sidecar["history"]["destination"] == str(log)
+    line = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    assert line["history_destination"] == str(log), "an archived line must name its own file"
+    assert line["project_source"] == "argument"
+    assert f"history -> {log}" in capsys.readouterr().err
+
+
+def test_the_history_destination_names_a_sink_that_has_no_path(tmp_path):
+    assert runprov.Project(root=tmp_path).history_destination() == str(
+        tmp_path / "provenance" / "runs.jsonl"
+    )
+    jsonl = runprov.JsonlSink(tmp_path / "h.jsonl")
+    assert runprov.Project(root=tmp_path, sink=jsonl).history_destination() == (
+        f"JsonlSink({tmp_path / 'h.jsonl'})"
+    )
+    assert runprov.Project(root=tmp_path, sink=runprov.MemorySink()).history_destination() == (
+        "MemorySink"
+    )
+
+
+def test_the_implicit_project_warning_fires_for_the_forgetful_script_and_not_otherwise(
+    tmp_path, monkeypatch, capsys
+):
+    """The warning names the ONE condition in which a history can split behind your back:
+    a Run built when nothing in the process ever called `configure()`. A script that forgot
+    to import its project's paths module is in exactly that state and in no other."""
+    monkeypatch.setattr(runprov.project, "_ACTIVE", None)
+    monkeypatch.setattr(runprov.project, "_CONFIGURED", False)
+    monkeypatch.setattr(runprov.run, "_IMPLICIT_WARNED", False)
+    monkeypatch.chdir(tmp_path)
+    assert runprov.is_configured() is False
+
+    forgot = runprov.Run("script_that_forgot_the_import")
+    out = capsys.readouterr().err
+    assert "no configure() has run" in out
+    assert forgot.record["history"]["destination"] in out, "and it names the file it will use"
+    assert forgot.record["history"]["project_source"] == "implicit"
+
+    runprov.Run("same_process_again")
+    assert "no configure() has run" not in capsys.readouterr().err, (
+        "once per process: a warning repeated per Run is scrollback, not a warning"
+    )
+
+    monkeypatch.setattr(runprov.run, "_IMPLICIT_WARNED", False)
+    override = runprov.Project(root=tmp_path, sink=runprov.MemorySink())
+    assert runprov.Run("t", project=override).record["history"]["project_source"] == "argument"
+    runprov.configure(root=tmp_path, sink=runprov.MemorySink())
+    assert runprov.is_configured() is True
+    assert runprov.Run("t").record["history"]["project_source"] == "configured"
+    assert "no configure() has run" not in capsys.readouterr().err, (
+        "a per-call override and a configured project are both deliberate; neither warns"
+    )
+
+
+def test_the_timeline_tells_an_unknown_dirty_state_from_a_clean_one_and_names_the_history(
+    tmp_path, capsys
+):
+    """The CLI is a consumer too. If `python -m runprov log` renders both as a blank space,
+    the distinction exists only for whoever reads raw JSON."""
+    p = tmp_path / "runs.jsonl"
+    p.write_text(
+        json.dumps({"script": "blind", "git_status_captured": False, "history_destination": str(p)})
+        + "\n"
+        + json.dumps({"script": "seen", "git_status_captured": True})
+        + "\n",
+        encoding="utf-8",
+    )
+    cli.main(["log", "--log", str(p)])
+    out = capsys.readouterr().out
+    assert out.count("DIRTY STATE UNKNOWN (git status did not run)") == 1
+    assert f"history    {p}" in out

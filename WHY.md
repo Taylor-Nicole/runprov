@@ -66,6 +66,20 @@ That last clause matters more than it looks. Because registration is syntactical
 a checker can fail the build on a read that bypassed it. Prose provenance cannot be checked
 by anything except a careful human reading two files side by side.
 
+The second thing to say, before anyone copies anything, is the shape:
+
+```python
+with Run("build_labels", vars(args), provenance=PROV) as run:  # provenance= is not optional
+    ...
+```
+
+`provenance=` on the **constructor** is what makes a crash record. A `Run` built without it
+writes nothing at exit no matter how the block ends, so `run.write(PROV)` as the last line
+of a script — with or without a `with` block — records nothing when the script dies halfway.
+Both wrong shapes are silent. This document's own package taught the first one on its front
+page for its entire life; someone integrated it, their step died halfway, and the run was
+lost.
+
 ## The six properties, and the incident behind each
 
 Nothing here is a design preference. Each property is the scar tissue of a specific defect
@@ -89,19 +103,32 @@ forever across identical runs. Gzip files are decompressed first, because the gz
 stores a compression mtime and a `.gz` rewritten from identical bytes never hashes the same
 twice.
 
-**3. Failures are recorded.**
+**3. Failures are recorded — but only in one of the three shapes you might write.**
 `write()` is the last line of a script, so a step that dies halfway records nothing — which
 is exactly the flaw diagnosed in the predecessor. This package shipped with the same hole
 for one commit before it was caught by testing it against its own criticism. `Run` is now a
-context manager: a crash writes `status: "failed"`, the exception, the traceback tail, and
-every registered-but-unproduced output listed as `MISSING` — usually the most informative
-line in the record. The exception is always re-raised.
+context manager, and `with Run(..., provenance=PROV) as run:` writes `status: "failed"`, the
+exception, the traceback tail, and every registered-but-unproduced output listed as
+`MISSING` — usually the most informative line in the record. The exception is always
+re-raised, and a clean `SystemExit(0)` is not counted as a failure.
 
-**4. Concurrent writes cannot corrupt the history.**
-Measured on the source project's own history: 1,908 lines, median 2,032 bytes, **max 7,274,
-and 65 lines over 4,096** — the size below which POSIX guarantees an append is atomic. Above
-it, two parallel runs interleave into a line that is not JSON. Sequential pipelines hide
-this; parallel ones do not, and the corruption is silent and unrecoverable.
+The hole did not fully close with the context manager, and the honest version of this
+property says so: `__exit__` writes only when `provenance=` was given to the constructor.
+`with Run(...) as run:` plus `run.write(PROV)` at the end still records nothing on a crash.
+Two plausible shapes, both silent, one correct — which is a defect in the interface as much
+as in the docs, and until it is one, the documentation has to carry it.
+
+**4. Concurrent writes cannot corrupt the history — as a portability property.**
+Measured on the source project's own history: 2,086 lines, median 2,017 bytes, **max 7,274,
+and 107 lines over 4,096** — the size below which POSIX guarantees an append is atomic. The
+first version of this section stopped there and claimed that above the bound two parallel
+runs interleave into a line that is not JSON. **That is wrong on Linux and the correction is
+worth stating rather than quietly deleting**: with locking disabled entirely, 8 processes ×
+20 appends of 9 KB produced 160/160 intact records, because Linux holds the inode lock
+across the whole `write()`. The `flock` earns its place elsewhere — NFS and CIFS do not
+honour the POSIX guarantee at all, and Windows has no `O_APPEND` semantics of this kind,
+where CI caught 24 concurrent appends producing 23 lines. It is a portability property, and
+the mechanism originally cited for it was not the one that fails.
 
 **5. The history is one continuous file, and it can be read back.**
 Created once, appended forever, never rewritten — the property the predecessor had and
@@ -109,8 +136,10 @@ deserves to keep. What it did not have was durability: its writer appended YAML 
 into a file that began as a list, so the whole record became unparseable and eleven repair
 scripts grew around it. JSONL degrades one line at a time. `python -m runprov log --format
 yaml` renders it back in the old file's own field names, so nothing is lost in the move;
-1,938 runs render to 4.7 MB that `yaml.safe_load` parses in 3 seconds, from a source file
-that does not parse at all.
+measured on the current history, 2,079 runs render to 5.0 MB that `yaml.safe_load` parses in
+6.6 s, from a source file that does not parse at all. (An earlier reading of this said 1,938
+runs, 4.7 MB, 3.0 s — the same file, smaller, on a different machine. The per-run size is
+unchanged at ~2.4 kB; the parse time is hardware, not a property of the format.)
 
 **6. Every run records the command that produced it** — interpreter, arguments and working
 directory, shell-quoted so it can be pasted back. This one was a regression at first: it
@@ -122,8 +151,9 @@ it is most of the answer to "why did this run differ".
 
 * **It is not novel, and the pitch should not claim it is.** `sumatra`, `recipy`,
   `provenance` and `dvc` all address versions of this. The honest positioning: *the smallest
-  possible one — zero dependencies, four public objects — with each design choice traceable
-  to a specific failure in a real project.* Most of the alternatives ask you to run a
+  possible one — zero runtime dependencies, 514 statements, and a quickstart that uses two
+  of the 21 exported names — with each design choice traceable to a specific failure in a
+  real project.* Most of the alternatives ask you to run a
   daemon, adopt a workflow engine, or restructure your pipeline. This one asks you to change
   `open(p)` to `open(run.input(p))`.
 * **It records; it does not audit.** It cannot tell you a registered read was the read that
