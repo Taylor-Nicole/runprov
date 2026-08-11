@@ -1475,6 +1475,13 @@ class _NoDup2:
 
 
 # ===================================== council batch: a run must not hang, crash, or lie
+NO_FIFO = pytest.mark.skipif(
+    not hasattr(os, "mkfifo"),
+    reason="Windows has no FIFOs, so the hazard cannot exist there and neither can the test",
+)
+
+
+@NO_FIFO
 def test_registering_a_fifo_fails_instead_of_hanging(tmp_path):
     """R15. `open()` on a FIFO blocks until a writer appears, so registering one hangs the
     run FOREVER — with no message, in provenance capture, before the work starts. A
@@ -1489,6 +1496,7 @@ def test_registering_a_fifo_fails_instead_of_hanging(tmp_path):
         runprov.describe(fifo)
 
 
+@NO_FIFO
 def test_a_run_refuses_a_fifo_input_by_name(tmp_path, monkeypatch):
     """The same guard where a caller meets it, and it must say WHICH script and WHICH path
     — the bare hang gave neither."""
@@ -1536,6 +1544,11 @@ def test_a_non_finite_note_still_produces_strict_json(tmp_path, monkeypatch):
     )
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="chmod(0o000) does not deny directory traversal on Windows, so the condition "
+    "under test cannot be created there",
+)
 def test_an_unreadable_subdirectory_is_reported_not_silently_dropped(tmp_path):
     """R8. `rglob` skips a directory it cannot enter and says nothing, so the tree hash
     changed while the tree did not — the silent-skip class, in the function whose job is
@@ -2617,6 +2630,7 @@ def test_a_diagnostic_survives_a_console_that_cannot_encode_it(monkeypatch, caps
     assert "—" not in written
 
 
+@NO_FIFO
 def test_a_non_regular_file_inside_a_tree_is_counted_not_silently_dropped(tmp_path):
     """The other half of R8, in the same shape. A FIFO inside a directory cannot be hashed
     — opening it is the hang `describe` refuses at the top — but dropping it without a word
@@ -2688,6 +2702,8 @@ def test_an_in_repo_relative_path_pins_by_its_repo_path(tmp_path, monkeypatch):
     (tmp_path / "data").mkdir()
     (tmp_path / "data" / "x.tsv").write_text("a\n", encoding="utf-8")
     run = runprov.Run("s", project=runprov.Project(root=tmp_path))
+    # POSIX separators on EVERY platform: a pin is embedded in a committed artifact, so a
+    # backslash form on Windows and a slash form on Linux would be two pins for one input.
     assert run._pin_name("data/x.tsv") == "data/x.tsv"
     assert run._pin_name(str(tmp_path / "data" / "x.tsv")) == "data/x.tsv"
     assert run._pin_name("/etc/passwd").startswith("<external>/"), "genuinely outside stays so"
@@ -2994,6 +3010,7 @@ def test_content_digest_really_streams_measured_not_grepped(tmp_path):
         f"vs {large_peak / 1e6:.1f} MB for {large_size / 1e6:.1f} MB. Streaming means the "
         f"peak is bounded by the block, not by the input."
     )
+
 
 def test_open_output_registers_pins_and_forces_utf8_in_one_call(tmp_path, monkeypatch):
     """A1. Pinning currently takes THREE things a caller must remember separately —
