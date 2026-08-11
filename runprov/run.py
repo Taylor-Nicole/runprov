@@ -709,27 +709,46 @@ class Run:
 
     @staticmethod
     def _safe_for_pin(name: str) -> str:
-        """Escape anything that could forge a line in the pin.
+        """Make a filename safe to write into a pin, changing nothing else.
 
-        THE PIN IS A LINE-ORIENTED FORMAT and a filename may contain a newline. Measured
-        before this existed: a file named `a.tsv\\n#     0000000000000000  NEVER_READ.tsv`
-        produced a pin reading
+        Two hazards, both measured on real behaviour rather than imagined:
 
-            #   inputs (1), sha256:
-            #     2d711642b726b044  a.tsv
-            #     0000000000000000  NEVER_READ.tsv
+        **A newline forges an entry.** The pin is line-oriented. A file named
+        `a.tsv\\n#     0000000000000000  NEVER_READ.tsv` produced a pin whose body read
+        `inputs (1)` above TWO listed inputs, the second naming a file nobody read with a
+        digest nobody computed. A lone `\\r` does the same to any reader that honours it.
 
-        -- an artifact claiming, in its own body, to derive from a file nobody read, with a
-        digest nobody computed, while the count said 1 and the list showed 2. A lone `\\r`
-        does the same thing to any reader that honours it, without needing a newline at all.
+        **An undecodable name breaks the caller's write.** A POSIX filename is bytes;
+        Python decodes an invalid one with `surrogateescape`, so the name carries lone
+        surrogates and `fh.write(run.header())` under UTF-8 raises `UnicodeEncodeError`.
+        Provenance then kills the artifact it was describing.
 
-        A pin is the artifact's claim about what made it. A name that can forge an entry
-        makes the claim worthless, so control characters are escaped and the name stays on
-        one line. The name is KEPT, not dropped: an odd filename is a fact about the run.
+        SURGICAL, character by character. The first version ran the whole name through
+        `unicode_escape` whenever any character offended, which mangled `café` into
+        `caf\\xe9` in a committed artifact for a corpus that has accented filenames. The
+        offending character is escaped; every other one is left exactly as it is.
+
+        The name is KEPT in escaped form rather than dropped: an odd filename is a fact
+        about the run, and a pin that silently omits an input is the defect this whole
+        block exists to prevent.
         """
-        if any(ord(c) < 0x20 or ord(c) == 0x7F for c in name):
-            return name.encode("unicode_escape").decode("ascii")
-        return name
+        named = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+        out = []
+        for ch in name:
+            code = ord(ch)
+            if ch in named:
+                out.append(named[ch])
+            elif code < 0x20 or code == 0x7F:
+                out.append(f"\\x{code:02x}")
+            elif 0xDC80 <= code <= 0xDCFF:
+                # `surrogateescape` maps an undecodable byte B to U+DC00+B. Render the BYTE,
+                # which is what was actually on disk.
+                out.append(f"\\x{code - 0xDC00:02x}")
+            elif 0xD800 <= code <= 0xDFFF:
+                out.append(f"\\u{code:04x}")  # any other lone surrogate: still unencodable
+            else:
+                out.append(ch)
+        return "".join(out)
 
     def _pin_name(self, raw: str) -> str:
         """The label a pinned input carries INSIDE an artifact.
