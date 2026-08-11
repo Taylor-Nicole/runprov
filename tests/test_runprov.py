@@ -2954,35 +2954,47 @@ def test_content_digest_really_streams_measured_not_grepped(tmp_path):
     spellings, not the property. `fh.read()`, `list(fh)` and `"".join(fh)` each load the
     whole file and each pass it, so the check could not see its own defect class.
 
-    This measures the thing that actually matters: peak allocation while digesting a file
-    far larger than any buffer the function is allowed to hold. A streaming implementation
-    peaks at roughly one block of lines; a whole-file one peaks at the file.
+    THE PROPERTY OF STREAMING IS SCALE INVARIANCE: peak memory is bounded by the BLOCK, not
+    by the file, so tripling the input must not triple the peak. That is what is measured
+    here, and it is the second version of this test.
+
+    The first compared peak against a fraction of one file's size (`peak < size / 4`) and
+    was GREEN LOCALLY AND RED IN CI: 1.9 MB peak for a 7.4 MB file, missing an arbitrary
+    threshold by 2%. The implementation was streaming correctly the whole time — a block of
+    8,192 Python `str` objects costs far more than the bytes it holds, and how much more
+    depends on the interpreter and the platform. A threshold tuned on one machine is a test
+    of that machine.
+
+    Comparing two sizes cancels the constant out. A whole-file implementation grows with the
+    file and fails; a streaming one does not care.
     """
     import tracemalloc
 
-    p = tmp_path / "big.tsv"
-    p.write_text(
-        "# built_utc: 2026-01-01T00:00:00Z\n" + "".join(f"{i}\tvalue{i}\n" for i in range(400_000)),
-        encoding="utf-8",
+    def peak_for(lines: int) -> tuple[int, int]:
+        p = tmp_path / f"f{lines}.tsv"
+        p.write_text(
+            "# built_utc: 2026-01-01T00:00:00Z\n"
+            + "".join(f"{i}\tvalue{i}\n" for i in range(lines)),
+            encoding="utf-8",
+        )
+        tracemalloc.start()
+        try:
+            assert runprov.content_digest(p)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        return peak, p.stat().st_size
+
+    small_peak, small_size = peak_for(150_000)
+    large_peak, large_size = peak_for(600_000)
+
+    assert large_size > small_size * 3, "the two fixtures must actually differ in size"
+    assert large_peak < small_peak * 1.5, (
+        f"peak grew with the file — {small_peak / 1e6:.1f} MB for {small_size / 1e6:.1f} MB "
+        f"vs {large_peak / 1e6:.1f} MB for {large_size / 1e6:.1f} MB. Streaming means the "
+        f"peak is bounded by the block, not by the input."
     )
-    size = p.stat().st_size
-    assert size > 4_000_000, "the fixture must be large enough for the two cases to differ"
 
-    tracemalloc.start()
-    try:
-        digest = runprov.content_digest(p)
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-
-    assert digest
-    assert peak < size / 4, (
-        f"content_digest held {peak / 1e6:.1f} MB for a {size / 1e6:.1f} MB file — that is "
-        f"not streaming. The module docstring promises multi-GB inputs are fine."
-    )
-
-
-# ============================================ A1: the pin as the default of the write path
 def test_open_output_registers_pins_and_forces_utf8_in_one_call(tmp_path, monkeypatch):
     """A1. Pinning currently takes THREE things a caller must remember separately —
     `run.output(p)`, `fh.write(run.header())`, and `encoding="utf-8"` — and measured on the
