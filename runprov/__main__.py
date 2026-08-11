@@ -179,6 +179,12 @@ def _yaml(rows: list[dict[str, typing.Any]]) -> str:
         if term.get("path"):
             out.append(f"  terminal_log_file: {q(term['path'])}")
             out.append(f"  terminal_log_capture: {q(term.get('capture', 'unknown'))}")
+            # Same reason as `capture`, one step further: this log stops before its run
+            # does, because an inner capture still held the descriptors. Without the flag
+            # a reader sees a log whose last line predates `finished_utc` and reads it as
+            # truncation. Emitted only when true — a caveat on every entry is noise.
+            if term.get("out_of_order"):
+                out.append("  terminal_log_out_of_order: true")
         if r.get("inputs"):
             out.append("  input_sha256:")
             for i in r["inputs"]:

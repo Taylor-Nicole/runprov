@@ -3878,3 +3878,24 @@ def test_the_drain_stops_as_soon_as_the_pump_is_idle(tmp_path, monkeypatch):
 
     assert clock.slept <= 2, "it kept waiting after the byte count had settled"
     assert clock.now < 10.0, "it ran toward the deadline instead of returning when idle"
+
+
+def test_the_yaml_view_flags_a_log_that_stops_before_its_run_does(tmp_path, monkeypatch):
+    """`out_of_order` has to survive into the YAML view, for the same reason `capture` does.
+
+    The old `transformation_log.yml` carried a bare path, so a reader could not tell a log
+    that saw everything from one that could not. This is that gap one step further: without
+    the flag, a log whose last line predates `finished_utc` reads as truncated, and the
+    natural conclusion — the run was killed — is wrong.
+    """
+    yaml = pytest.importorskip("yaml")
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    a, b, _passed = _out_of_order_captures(tmp_path, tmp_path / "real_stdout.txt")
+
+    rendered = cli._yaml([a.record])
+    assert "terminal_log_out_of_order: true" in rendered
+    assert yaml.safe_load(rendered)[0]["terminal_log_out_of_order"] is True
+    assert "out_of_order" not in cli._yaml([b.record]), (
+        "the ordinary case must not carry the caveat"
+    )

@@ -340,6 +340,27 @@ describing the run, pinned to something that never existed on disk. `__exit__` e
 capture before `_finish` runs, which is also why the `provenance -> …` confirmation is on
 your terminal but not inside the log.
 
+**Two captures at once form a chain, and it comes apart from the inside out.** File
+descriptors 1 and 2 belong to the process, not to a `Run`, so a second capture does not get
+its own copy of the terminal — it takes over the first one's pipe, and the "original" it
+saves *is* that pipe. Nesting therefore works: the inner capture mirrors into the outer one,
+which mirrors to the terminal, and both logs are complete.
+
+Stopping them in the wrong order is the case to know about. An outer capture stopped while
+an inner one is still running cannot restore the descriptors — putting back a pipe whose
+reader has gone would send every later write in the process into a void. So it does not: it
+closes its log, marks the entry
+
+```yaml
+terminal_log_file: "logs/outer_adhoc_20260811T105303Z.log"
+terminal_log_capture: "fd"
+terminal_log_out_of_order: true
+```
+
+and the inner capture unwinds it on the way out. The cost is that the outer log ends where
+it stopped rather than where its `Run` did, which is what the flag is there to say. If you
+control the order, close the inner `Run` first and none of this arises.
+
 ## Configuring it
 
 `Project` holds everything location-dependent. Detection is the default; the detected root
