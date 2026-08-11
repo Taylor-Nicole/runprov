@@ -180,6 +180,7 @@ def describe(path: pathlib.Path) -> dict[str, typing.Any]:
     the same reason.
     """
     st = path.stat()
+    link_target = os.readlink(path) if path.is_symlink() else None
     if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
         raise ValueError(
             f"cannot register {path}: not a regular file or directory "
@@ -188,6 +189,12 @@ def describe(path: pathlib.Path) -> dict[str, typing.Any]:
         )
     rec: dict[str, typing.Any] = {
         "path": str(path),
+        # A RECORD THAT CANNOT TELL A FILE FROM A LINK TO IT is incomplete in a way that
+        # matters: the link can be repointed afterwards and every hash in the record stays
+        # valid while describing different bytes. The digest below is the TARGET's, which is
+        # right -- that is what was read -- so the record has to say that is what happened.
+        "symlink": link_target is not None,
+        **({"symlink_target": link_target} if link_target is not None else {}),
         "size_bytes": st.st_size,
         "mtime_utc": dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
