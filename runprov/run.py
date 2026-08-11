@@ -487,10 +487,19 @@ class Run:
             # A bare FileNotFoundError from inside os.stat names neither the script nor
             # the fact that provenance registration raised it. The read was going to fail
             # anyway; failing here with the context is strictly more useful.
+            # A DANGLING SYMLINK is not the same as a missing file, and `exists()` reports
+            # both as absent. Saying which one it is turns "check the path" into "the link
+            # is there, its target is not".
+            dangling = p.is_symlink()
             raise FileNotFoundError(
-                f"{self.record['script']}: cannot register input {p} — it does not exist. "
-                f"A registered input is hashed and pinned, so it must be present at "
-                f"registration time. Register it after producing it, or check the path."
+                f"{self.record['script']}: cannot register input {p} — "
+                + (
+                    f"it is a symlink whose target does not exist ({os.readlink(p)!r}). "
+                    if dangling
+                    else "it does not exist. "
+                )
+                + "A registered input is hashed and pinned, so it must be present at "
+                "registration time. Register it after producing it, or check the path."
             )
         if self._pin_rendered:
             diagnostic(
@@ -698,6 +707,30 @@ class Run:
         self._pin_rendered = True
         return "\n".join(lines) + "\n"
 
+    @staticmethod
+    def _safe_for_pin(name: str) -> str:
+        """Escape anything that could forge a line in the pin.
+
+        THE PIN IS A LINE-ORIENTED FORMAT and a filename may contain a newline. Measured
+        before this existed: a file named `a.tsv\\n#     0000000000000000  NEVER_READ.tsv`
+        produced a pin reading
+
+            #   inputs (1), sha256:
+            #     2d711642b726b044  a.tsv
+            #     0000000000000000  NEVER_READ.tsv
+
+        -- an artifact claiming, in its own body, to derive from a file nobody read, with a
+        digest nobody computed, while the count said 1 and the list showed 2. A lone `\\r`
+        does the same thing to any reader that honours it, without needing a newline at all.
+
+        A pin is the artifact's claim about what made it. A name that can forge an entry
+        makes the claim worthless, so control characters are escaped and the name stays on
+        one line. The name is KEPT, not dropped: an odd filename is a fact about the run.
+        """
+        if any(ord(c) < 0x20 or ord(c) == 0x7F for c in name):
+            return name.encode("unicode_escape").decode("ascii")
+        return name
+
     def _pin_name(self, raw: str) -> str:
         """The label a pinned input carries INSIDE an artifact.
 
@@ -721,9 +754,10 @@ class Run:
             # for identical data -- the exact machine-dependence this method's docstring
             # says it exists to prevent. `describe()` already used as_posix() for the tree
             # hash; the pin did not. Found by the Windows CI job, not by review.
-            return p.resolve().relative_to(pathlib.Path(self.project.root).resolve()).as_posix()
+            rel = p.resolve().relative_to(pathlib.Path(self.project.root).resolve())
+            return self._safe_for_pin(rel.as_posix())
         except (ValueError, TypeError, OSError):
-            return f"<external>/{pathlib.Path(raw).name}"
+            return self._safe_for_pin(f"<external>/{pathlib.Path(raw).name}")
 
     # ---------------------------------------------------------------- finish
     def write(self, path: str | pathlib.Path) -> pathlib.Path:

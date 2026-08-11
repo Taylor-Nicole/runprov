@@ -3332,3 +3332,92 @@ def test_the_reader_counts_the_torn_fragment_it_could_not_read(tmp_path):
     rows, bad = cli._load(p)
     assert [r["script"] for r in rows] == ["A", "C"]
     assert bad == 1, "the fragment is counted, not silently skipped"
+
+
+# ================================================ input shapes the package had never met
+def test_a_newline_in_a_filename_cannot_forge_a_pin_entry(tmp_path, monkeypatch):
+    """THE PIN IS A LINE-ORIENTED FORMAT, and a filename may contain a newline.
+
+    Measured before this was fixed: registering a file literally named
+
+        a.tsv\\n#     0000000000000000  NEVER_READ.tsv
+
+    produced a pin whose body read
+
+        #   inputs (1), sha256:
+        #     2d711642b726b044  a.tsv
+        #     0000000000000000  NEVER_READ.tsv
+
+    -- an artifact claiming, IN ITS OWN BODY, to derive from a file that was never read,
+    with a digest nobody computed. The count said 1 and the list showed 2.
+
+    A pin is the artifact's claim about what made it. A name that can forge an entry makes
+    the claim worthless, so control characters are escaped and the name stays on one line.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    evil = tmp_path / "a.tsv\n#     0000000000000000  NEVER_READ.tsv"
+    evil.write_text("x\n", encoding="utf-8")
+
+    with runprov.Run("victim", provenance=tmp_path / "p.json") as run:
+        run.input(evil)
+        pin = run.header()
+
+    body = [ln for ln in pin.splitlines() if ln.startswith("#     ")]
+    assert len(body) == 1, f"one input must render as exactly one line, got {body}"
+    assert "NEVER_READ" in body[0], "the real name is kept, escaped, not discarded"
+    assert "\\n" in body[0], "the newline must be escaped, not literal"
+    assert "inputs (1)" in pin, "the count and the listing must agree"
+
+
+def test_a_carriage_return_cannot_overwrite_the_pin_either(tmp_path, monkeypatch):
+    """A lone `\\r` rewrites the line in any terminal or editor that honours it, so a name
+    can hide what precedes it without containing a newline at all."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    sneaky = tmp_path / "b.tsv\rHIDDEN"
+    sneaky.write_text("x\n", encoding="utf-8")
+    with runprov.Run("v", provenance=tmp_path / "p.json") as run:
+        run.input(sneaky)
+        pin = run.header()
+    assert "\r" not in pin, "no raw control character may reach the artifact"
+    assert "\\r" in pin
+
+
+def test_a_symlink_records_that_it_is_one_and_what_it_points_at(tmp_path, monkeypatch):
+    """A record that cannot tell a file from a link to it is incomplete in a way that
+    matters: the link can be repointed afterwards, and every hash in the record stays valid
+    while describing different bytes. The digest is the TARGET's, which is correct -- that
+    is what was read -- but the record must say so."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    real = tmp_path / "real.tsv"
+    real.write_text("id\tv\nx\t1\n", encoding="utf-8")
+    link = tmp_path / "link.tsv"
+    link.symlink_to(real)
+
+    rec = runprov.describe(link)
+    assert rec["sha256"] == runprov.sha256(real), "the bytes read are the target's"
+    assert rec["symlink"] is True
+    assert pathlib.Path(rec["symlink_target"]).name == "real.tsv"
+    assert runprov.describe(real).get("symlink") is False, "a plain file says so too"
+
+
+def test_a_broken_symlink_is_refused_by_name(tmp_path, monkeypatch):
+    """`stat()` on a dangling link raises a bare FileNotFoundError naming neither the run
+    nor what was wrong with it. Registering it must say both."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    dangling = tmp_path / "dangling.tsv"
+    dangling.symlink_to(tmp_path / "gone.tsv")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        with pytest.raises(FileNotFoundError) as e:
+            run.input(dangling)
+    msg = str(e.value)
+    assert "s:" in msg and "dangling.tsv" in msg
+    # A PHRASE THE PATH CANNOT SUPPLY. `"symlink" in msg.lower()` passed even with the
+    # distinction removed, because pytest's tmp_path is named after the test —
+    # `test_a_broken_symlink_is_refused_by0` — and the path is in the message. The
+    # assertion was satisfied by its own fixture. Mutation-tested.
+    assert "whose target does not exist" in msg, "it must say WHY it does not exist"
+    assert "gone.tsv" in msg, "and name the target it points at"
