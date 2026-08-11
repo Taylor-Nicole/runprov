@@ -1,0 +1,13 @@
+# A provenance tool whose own repository tracks a stale coverage database is a poor
+# advertisement. `.coverage` was committed until 2026-08-11.
+__pycache__/
+*.py[cod]
+.coverage
+.coverage.*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+.venv/
