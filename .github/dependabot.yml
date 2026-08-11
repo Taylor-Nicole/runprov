@@ -1,6 +1,11 @@
-# Actions pinned by major tag are convenient and go stale; this is what keeps them fresh
-# without hand-watching a repository nobody looks at between releases.
-version: 2
+# Actions are pinned by COMMIT. A tag -- and `release/v1` even more so -- is a MOVING
+# reference: it can be repointed at any time, so a workflow that names it today can run
+# different code tomorrow while this file is unchanged. That is indefensible in a package
+# whose entire subject is knowing which code ran, and it mattered most for
+# `pypa/gh-action-pypi-publish`, which was tracking a BRANCH and holds publishing rights.
+#
+# A SHA carries no version, so nothing would say it had gone stale -- which is what this
+# file is for. It rewrites the SHA and the trailing `# vX.Y.Z` comment together.
 updates:
   - package-ecosystem: github-actions
     directory: /
