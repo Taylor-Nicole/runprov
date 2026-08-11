@@ -3470,8 +3470,31 @@ def test_the_pin_escaper_keeps_legitimate_non_ascii_while_escaping_the_rest():
     # A lone surrogate OUTSIDE the surrogateescape range (U+DC80-U+DCFF). These do not come
     # from an undecodable byte -- they arrive from a caller that built the string itself --
     # but they are equally unencodable, so they must not reach an artifact either.
+    # The surrogateescape range (U+DC80-U+DCFF): an undecodable BYTE from a POSIX
+    # filename. It renders as the byte that was actually on disk, which is the useful
+    # thing to see. Checked here so the branch is exercised on filesystems that
+    # cannot hold such a name at all -- macOS and Windows both refuse to create one.
+    assert safe("bad\udcff name.tsv") == "bad\\xff name.tsv"
     assert safe("x\ud800y.tsv") == "x\\ud800y.tsv"
     assert "\ud800" not in safe("x\ud800y.tsv").encode("utf-8", "strict").decode("utf-8")
+
+
+def _fs_allows_non_utf8_names(where: pathlib.Path) -> bool:
+    """Can THIS filesystem hold a filename that is not valid UTF-8?
+
+    Probed rather than guessed from `sys.platform`: it is a property of the filesystem, not
+    the operating system. Linux/ext4 stores filenames as arbitrary bytes; APFS rejects them
+    with OSError 92 (Illegal byte sequence) and Windows stores UTF-16, so neither can build
+    the fixture. An ext4 volume mounted elsewhere would behave like Linux, and a probe gets
+    that right where a platform check would not.
+    """
+    probe = where / os.fsdecode(b"\xff_probe")
+    try:
+        probe.write_text("x", encoding="utf-8")
+        probe.unlink()
+        return True
+    except (OSError, UnicodeError):
+        return False
 
 
 def test_a_filename_that_is_not_utf8_cannot_break_the_callers_write(tmp_path, monkeypatch):
@@ -3486,6 +3509,11 @@ def test_a_filename_that_is_not_utf8_cannot_break_the_callers_write(tmp_path, mo
     same class as a FIFO hanging the run, and the reason `_report._write` degrades rather
     than raising.
     """
+    if not _fs_allows_non_utf8_names(tmp_path):
+        pytest.skip(
+            "this filesystem cannot store a non-UTF-8 filename, so the hazard "
+            "cannot exist here; the escaper itself is unit-tested above"
+        )
     monkeypatch.chdir(tmp_path)
     runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
     odd = tmp_path / os.fsdecode(b"bad\xff name.tsv")
