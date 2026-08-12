@@ -4867,3 +4867,132 @@ def test_outside_a_repository_the_lock_is_archived(tmp_path):
     # And when `hash-object` itself cannot answer — no such file, or no git at all — the
     # answer is "not stored", which archives. Never "stored", which would drop the copy.
     assert runprov.environment._already_in_git(tmp_path, tmp_path / "absent.lock") is None
+
+
+# ------------------------------------------------------- INPUT SHAPES, THE REMAINDER
+# A path near PATH_MAX (~3,900 chars), a directory containing a symlink LOOP, one file
+# reached by three spellings, and NFC-vs-NFD filenames were all probed and all already
+# correct. The two below were not.
+
+
+def test_an_input_replaced_after_registration_is_flagged(tmp_path, monkeypatch):
+    """THE UNCLOSED HALF OF R10. `unstable_during_hash` catches a file rewritten WHILE it
+    is being read. Nothing caught one rewritten a second later — so a run pinned
+    `sha256: abc…` and finished beside a file that no longer held those bytes, with the
+    record asserting in good faith something no longer true of anything on disk.
+
+    A checker comparing the pin to the file then reports a difference that is real and is
+    NOT the run's fault, which is the kind of red check that teaches people to ignore
+    checks. The record now says which side moved.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    src = tmp_path / "in.tsv"
+    src.write_text("original\n", encoding="utf-8")
+
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(src)
+        recorded = run.record["inputs"][0]["sha256"]
+        src.write_text("replaced, and a different length\n", encoding="utf-8")
+
+    entry = run.record["inputs"][0]
+    assert entry["changed_after_registration"] == "size"
+    assert entry["sha256"] == recorded, "the digest must stay what the run actually READ"
+    assert entry["sha256"] != runprov.sha256(src)
+
+
+def test_an_input_deleted_after_registration_is_flagged_as_gone(tmp_path, monkeypatch):
+    """Gone is not the same as changed, and a reader needs to tell them apart: one means
+    the bytes moved on, the other that there is nothing left to compare against."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    src = tmp_path / "in.tsv"
+    src.write_text("original\n", encoding="utf-8")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(src)
+        src.unlink()
+    assert run.record["inputs"][0]["changed_after_registration"] == "gone"
+
+
+def test_an_unchanged_input_is_not_flagged(tmp_path, monkeypatch):
+    """The guard that keeps the flag meaningful. A check that fires on every run says
+    nothing, and this one runs a `stat` per input on every run."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    (tmp_path / "in.tsv").write_text("steady\n", encoding="utf-8")
+    (tmp_path / "tree").mkdir()
+    (tmp_path / "tree" / "a.txt").write_text("a\n", encoding="utf-8")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        run.input(tmp_path / "tree")
+    assert all("changed_after_registration" not in e for e in run.record["inputs"])
+
+
+def test_moved_since_reports_a_time_only_change(tmp_path):
+    """Size is the cheap signal; mtime is the one that catches a rewrite of the SAME
+    length, which is what a corrected value in a fixed-width table looks like."""
+    p = tmp_path / "x.tsv"
+    p.write_text("aaaa\n", encoding="utf-8")
+    rec = runprov.describe(p)
+    p.write_text("bbbb\n", encoding="utf-8")  # identical length
+    os.utime(p, (0, 0))  # and an unmistakably different mtime
+    assert runprov.hashing.moved_since(rec) == "mtime"
+
+
+def test_moved_since_does_not_claim_a_change_it_cannot_see(tmp_path):
+    """It answers from a `stat`, so it must not overstate. A file that became unreadable
+    is a fact, but it is not evidence the CONTENT moved — and a directory entry carries no
+    size to compare."""
+    p = tmp_path / "x.tsv"
+    p.write_text("a\n", encoding="utf-8")
+    rec = runprov.describe(p)
+    assert runprov.hashing.moved_since(rec) is None
+
+    d = tmp_path / "tree"
+    d.mkdir()
+    (d / "a.txt").write_text("a\n", encoding="utf-8")
+    assert runprov.hashing.moved_since(runprov.describe(d)) is None, "a tree has no size"
+    assert runprov.hashing.moved_since({}) is None, "and an entry with no path is not a claim"
+
+
+def test_an_input_that_exists_but_cannot_be_read_names_the_script(tmp_path, monkeypatch):
+    """`exists()` is TRUE for a file with no read permission — `stat` works, `open` does
+    not — so the missing-input check passes and the failure surfaces from inside `sha256`
+    as a bare PermissionError naming neither the script nor the fact that provenance
+    raised it. The same treatment the missing-input case already had."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    locked = tmp_path / "locked.tsv"
+    locked.write_text("x\n", encoding="utf-8")
+    os.chmod(locked, 0o000)
+    if os.access(locked, os.R_OK):  # root, or a filesystem without permission bits
+        pytest.skip("this user can read a mode-000 file, so the hazard cannot arise here")
+    try:
+        with pytest.raises(OSError) as caught:
+            with runprov.Run("the_script", provenance=tmp_path / "p.json") as run:
+                run.input(locked)
+    finally:
+        os.chmod(locked, 0o644)
+    assert "the_script" in str(caught.value)
+    assert "could not be read" in str(caught.value)
+
+
+def test_moved_since_is_silent_when_the_stat_itself_fails(tmp_path):
+    """A `stat` can fail for reasons other than the file being gone — here, a parent
+    directory that can no longer be entered. Reporting "changed" from that would be
+    inventing evidence: nothing was observed about the content at all."""
+    box = tmp_path / "box"
+    box.mkdir()
+    p = box / "x.tsv"
+    p.write_text("a\n", encoding="utf-8")
+    rec = runprov.describe(p)
+    # 0o700, not 0o755: the restore only has to give this test's own user the directory
+    # back, and a wider mask is what the linter is right to object to.
+    os.chmod(box, 0o000)
+    if os.access(p, os.R_OK):  # root, or a filesystem without permission bits
+        os.chmod(box, 0o700)
+        pytest.skip("this user can traverse a mode-000 directory")
+    try:
+        assert runprov.hashing.moved_since(rec) is None
+    finally:
+        os.chmod(box, 0o700)

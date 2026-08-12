@@ -374,3 +374,42 @@ def describe(path: pathlib.Path) -> dict[str, typing.Any]:
             "%Y-%m-%dT%H:%M:%SZ"
         )
     return rec
+
+
+def _mtime_utc(st: os.stat_result) -> str:
+    return dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def moved_since(rec: dict[str, typing.Any]) -> str | None:
+    """Has this file changed since `describe()` recorded it? A reason, or None.
+
+    The unclosed half of the R10 race. `unstable_during_hash` catches a file rewritten
+    WHILE it was being read; nothing caught one rewritten a second later, so a run could
+    pin `sha256: abc…` and finish beside a file that no longer had those bytes — with the
+    record asserting, in good faith, something no longer true of anything on disk.
+
+    A STAT, not a re-hash. Re-reading every input at the end of a run would double the I/O
+    on a multi-GB corpus to answer a question a `stat` answers, and a provenance module
+    that doubles the cost of the work gets removed from the work.
+
+    Resolution is the honest limit and it is stated rather than hidden: `mtime_utc` is
+    recorded to the second, so a rewrite within the same second that preserves the byte
+    count is invisible here. This makes the common case VISIBLE; it does not make the race
+    impossible, which nothing short of a lock does.
+    """
+    raw = rec.get("path")
+    if not raw or rec.get("kind") not in ("file", None) or "size_bytes" not in rec:
+        return None  # a directory tree, or an entry that never carried a stat to compare
+    try:
+        st = pathlib.Path(raw).stat()
+    except FileNotFoundError:
+        return "gone"
+    except OSError:  # guards-ok: unreadable now is a fact worth reporting, but it is not
+        # evidence the CONTENT moved, and claiming it did would be the overstatement this
+        # function exists to avoid.
+        return None
+    if st.st_size != rec.get("size_bytes"):
+        return "size"
+    if _mtime_utc(st) != rec.get("mtime_utc"):
+        return "mtime"
+    return None
