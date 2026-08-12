@@ -250,6 +250,16 @@ def manager(
     Paths are deliberately absent from the result. `VIRTUAL_ENV` and `CONDA_PREFIX` hold
     absolute paths carrying a username and a machine layout, and this dict goes into a
     record that gets committed and shared.
+
+    THE LIMIT, measured rather than assumed: on-disk evidence is always available, and the
+    environment variables only when the environment is ACTIVATED. A mamba prefix invoked by
+    its interpreter path reports `conda-family`; activated, it also reports `conda` and the
+    env name. Poetry is the weak case -- Poetry 1.8's `poetry run` sets `VIRTUAL_ENV` and
+    NOT `POETRY_ACTIVE`, so a poetry environment looks like any other virtualenv unless
+    `poetry shell` was used. `lockfiles()` is what identifies it: `poetry.lock` says how the
+    PROJECT declares its dependencies, which is the question being asked anyway. The two
+    functions answer different halves -- how the interpreter was built, and how the project
+    is declared.
     """
     prefix = pathlib.Path(sys.prefix) if prefix is None else prefix
     env = dict(os.environ) if env is None else env
