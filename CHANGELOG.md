@@ -44,6 +44,19 @@ Nothing has been published yet. Everything below is what a first release would c
 - **Failure recording.** `with Run(..., provenance=PROV)` records `status: "failed"` with
   the exception type, message and traceback tail, and every registered-but-unproduced output
   as `MISSING`.
+- **Termination recording.** SIGTERM and SIGHUP raise `Terminated` (a `BaseException`, so a
+  broad `except Exception:` cannot swallow one) and take the same path — so SLURM's time
+  limit, `scancel` and `docker stop` leave a record instead of nothing. Verified against a
+  real signalled process. Never replaces a handler the caller installed, and does not arm
+  outside the main thread; the record states which, per signal. **SIGKILL and SIGSTOP
+  cannot be caught by any program** and still leave nothing, which is stated rather than
+  worked around.
+- **`open_output` refuses formats a `#` pin would corrupt** (`PIN_UNSAFE`). Newick is why:
+  a pinned tree *parses*, and Biopython 1.85 read a 3-taxon tree back with **6 terminals**,
+  three of them harvested from the pin's own prose. FASTQ, FASTA, VCF, SAM and the binary
+  formats are refused for reasons recorded per suffix — VCF and SAM reject the pin **even
+  with the format's own marker**. `output()` remains the way to record an artifact that
+  cannot hold a pin.
 
 ### Fixed, with what each was measured to be
 

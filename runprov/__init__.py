@@ -62,7 +62,7 @@ from .project import (
     git,
     is_configured,
 )
-from .run import HISTORY_SCHEMA, SCHEMA, Run
+from .run import HISTORY_SCHEMA, PIN_UNSAFE, SCHEMA, Run, Terminated
 from .sinks import JsonlSink, MemorySink, RecordSink
 from .terminal import Capture
 
@@ -70,6 +70,7 @@ __all__ = [
     "DEFAULT_CODE_PATHS",
     "DEFAULT_TRACKED",
     "HISTORY_SCHEMA",
+    "PIN_UNSAFE",
     "SCHEMA",
     "VOLATILE",
     "VOLATILE_JSON",
@@ -79,6 +80,7 @@ __all__ = [
     "Project",
     "RecordSink",
     "Run",
+    "Terminated",
     "active",
     "configure",
     "content_digest",

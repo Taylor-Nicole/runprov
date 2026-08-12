@@ -354,6 +354,58 @@ The predecessor appended only on success, so "300 runs" meant 300 *completed* ru
 unknown denominator, and this package shipped with the same hole for exactly one commit.
 `grep '"status": "failed"' runs.jsonl` is now the whole query.
 
+### A kill is recorded too — and the one that cannot be
+
+A crash was recorded and a `kill` was not, which had it backwards for anything long-running:
+SLURM's time limit is **SIGTERM**-then-SIGKILL, `scancel` is SIGTERM, `docker stop` is
+SIGTERM, and closing a terminal on a detached job is **SIGHUP**. Each of those left no
+sidecar and no history line — a run indistinguishable from one that never started.
+
+Inside a `with` block those now raise `Terminated`, which takes the ordinary failure path:
+
+```json
+"status": "failed",
+"failure": {"type": "Terminated", "message": "terminated by SIGTERM (15)"},
+"signals": {"SIGTERM": "armed", "SIGHUP": "armed"}
+```
+
+Everything up to the signal is kept — the inputs it had read and hashed, the notes it had
+taken, the outputs it never got to write, as `MISSING`. `Terminated` derives from
+**BaseException**, like `KeyboardInterrupt`, so an `except Exception:` around a pipeline
+step cannot swallow a termination and go on to report success. (SIGINT already worked:
+Python raises `KeyboardInterrupt`, which was always recorded.)
+
+Nothing writes a record *from* the handler. A signal handler runs at an arbitrary bytecode
+boundary, and doing I/O there is how you get a half-written record; raising hands the run
+back to `__exit__`, which already knows how to finish one.
+
+**`SIGKILL` and `SIGSTOP` cannot be caught by any program**, so `kill -9`, the OOM killer,
+and SLURM's follow-up after the grace period still leave nothing. That is the operating
+system, not a gap to be closed later, and it is said here so a missing record is not read
+as a missing run.
+
+Two things it will not do, both recorded rather than assumed. It **will not replace a
+handler the caller installed** — a script with its own SIGTERM handler has decided what
+termination means for it, and overriding that to improve a log would be provenance changing
+the run it claims to observe. And `signal.signal` is main-thread-only, so a `Run` in a
+worker thread arms nothing. Both say so in the record instead of implying coverage:
+
+```json
+"signals": {"SIGTERM": "not armed — the caller has its own handler", "SIGHUP": "armed"}
+"signals": {"SIGTERM": "not armed — not the main thread", "SIGHUP": "not armed — not the main thread"}
+```
+
+`Terminated` carries `signum`, so a caller who wants the conventional shell status can have
+it — nothing here imposes one:
+
+```python
+try:
+    with Run("step", provenance=PROV) as run:
+        ...
+except Terminated as t:
+    raise SystemExit(128 + t.signum) from t
+```
+
 ## Environment snapshots
 
 `environment.packages` records the tracked subset with every run — enough to explain the

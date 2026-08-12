@@ -23,6 +23,7 @@ no run id. Both were tried; both made every pinned artifact differ on every run.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import inspect
 import json
@@ -30,6 +31,7 @@ import os
 import pathlib
 import platform
 import shlex
+import signal
 import sys
 import threading
 import traceback
@@ -112,6 +114,30 @@ PIN_UNSAFE = {
     ".png": "binary; `open_output` is text mode and a pin would corrupt it",
     ".pdf": "binary; `open_output` is text mode and a pin would corrupt it",
 }
+
+
+class Terminated(BaseException):
+    """A termination signal arrived while a `Run` was open. See `Run._catch_signals`.
+
+    **BaseException, not Exception**, and deliberately: `except Exception:` around a
+    pipeline step is ordinary, and if it swallowed a SIGTERM the step would go on to report
+    success for work the operating system had already stopped. `KeyboardInterrupt` and
+    `SystemExit` sit outside `Exception` for the same reason, and a `kill` belongs with
+    them rather than with a `ValueError`.
+
+    Catch it if you want the conventional shell exit status, which nothing here imposes:
+
+        try:
+            with Run("step", provenance=PROV) as run:
+                ...
+        except Terminated as t:
+            raise SystemExit(128 + t.signum) from t
+    """
+
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+        self.name = signal.Signals(signum).name
+        super().__init__(f"terminated by {self.name} ({signum})")
 
 
 def _jsonable(obj: typing.Any) -> typing.Any:  # noqa: ANN401 - walks arbitrary record data
@@ -532,6 +558,68 @@ class Run:
         return p
 
     # ------------------------------------------------------------- failure recording
+    def _catch_signals(self) -> None:
+        """Turn a termination signal into an exception, so the ordinary failure path runs.
+
+        A crash was recorded and a `kill` was not, and on a cluster the second is how long
+        runs actually end: SLURM's time limit is SIGTERM-then-SIGKILL, `scancel` is SIGTERM,
+        `docker stop` is SIGTERM, and closing a terminal on a detached job is SIGHUP. Every
+        one of them left no sidecar and no history line — indistinguishable from a run that
+        never started, which is the silence this package exists to end. (SIGINT already
+        worked: Python raises `KeyboardInterrupt` for it, which `__exit__` records.)
+
+        Raising is the whole mechanism. There is no separate write-the-record-from-a-handler
+        path, because a signal handler runs at an arbitrary bytecode boundary and doing I/O
+        from one is how you get a half-written record. Raising hands the run back to
+        `__exit__`, which already knows how to hash outputs, mark unproduced ones MISSING,
+        stop the capture and append the history — the same path a `ZeroDivisionError` takes.
+
+        `Terminated` derives from **BaseException**, like `KeyboardInterrupt`, so a broad
+        `except Exception:` in a pipeline step cannot swallow a termination and turn it into
+        a run that reports success.
+
+        IT WILL NOT TAKE A HANDLER THE CALLER INSTALLED. A script with its own SIGTERM
+        handler has decided what termination means for it, and overriding that to improve a
+        log would be provenance changing the run it claims to observe. The record says which
+        signals were armed and why not, rather than implying coverage it does not have.
+
+        **SIGKILL and SIGSTOP cannot be caught by anything**, so `kill -9`, the OOM killer,
+        and SLURM's follow-up after the grace period still leave nothing. That is a property
+        of the operating system, not a gap to be closed later, and it is stated here so the
+        absence of a record is not read as the absence of a run.
+        """
+        self._signal_restore: list[tuple[int, typing.Any]] = []
+        armed: dict[str, str] = {}
+        for name in ("SIGTERM", "SIGHUP"):
+            sig = getattr(signal, name, None)
+            if sig is None:  # SIGHUP does not exist on Windows
+                armed[name] = "absent on this platform"
+                continue
+            try:
+                previous = signal.getsignal(sig)
+                if previous is not signal.SIG_DFL:
+                    armed[name] = "not armed — the caller has its own handler"
+                    continue
+                signal.signal(sig, self._on_signal)
+            except (ValueError, OSError):
+                # guards-ok: `signal.signal` is main-thread-only, and provenance must not
+                # be the reason a worker thread dies. Stated in the record either way.
+                armed[name] = "not armed — not the main thread"
+                continue
+            self._signal_restore.append((sig, previous))
+            armed[name] = "armed"
+        self.record["signals"] = armed
+
+    def _on_signal(self, signum: int, frame: types.FrameType | None) -> None:
+        """Raise, and do nothing else. See `_catch_signals` on why there is no I/O here."""
+        raise Terminated(signum)
+
+    def _release_signals(self) -> None:
+        for sig, previous in getattr(self, "_signal_restore", []):
+            with contextlib.suppress(ValueError, OSError):  # guards-ok: as above
+                signal.signal(sig, previous)
+        self._signal_restore = []
+
     def __enter__(self) -> Run:
         """Use `with Run(..., provenance=P) as run:` so a CRASH still leaves a record.
 
@@ -541,8 +629,13 @@ class Run:
         *completed* runs with an unknown denominator. Building the replacement with the
         same hole and a better interface would have been the funnier version of the same
         mistake, and it shipped that way for one commit.
+
+        A termination signal is caught here too — see `_catch_signals`. It is armed on
+        ENTRY rather than in `__init__` because raising only helps if there is a block to
+        unwind: outside a `with`, there is no `__exit__` to record anything.
         """
         self._in_context = True
+        self._catch_signals()
         return self
 
     def __exit__(
@@ -571,6 +664,11 @@ class Run:
                 "traceback": "".join(traceback.format_exception(exc_type, exc, tb))[-4000:],
             }
         self._in_context = False
+        # Before anything that can block or raise. Leaving our handler installed past the
+        # block would let a signal arriving during teardown raise INSIDE `_finish`, where
+        # the record is being written -- so the mechanism for recording a termination would
+        # be the thing that lost the record.
+        self._release_signals()
         # FIRST, before _finish() hashes anything. The capture is still appending while the
         # run is alive, so hashing the log before stopping pins a prefix of it -- and on the
         # fd path fds 1 and 2 are still the pipe, so every diagnostic _finish emits would go
