@@ -622,9 +622,12 @@ else here has exactly one correct implementation — a SHA-256 is a SHA-256 — 
 extension points for them would be decoration in a package whose entire claim is that it is
 the smallest thing that does the job.
 
-Records carry `"schema": "runprov.run.v1"`. A consumer — a script, a dashboard, an agent
-reading the history — branches on that instead of guessing from which keys are present.
-The marker is bumped when a field changes meaning, never when one is added.
+Records carry a `"schema"` marker, and the two record kinds carry **different** ones: a
+sidecar written by `provenance=` says `"runprov.run.v2"`, a line appended to `runs.jsonl`
+says `"runprov.history.v2"`. A consumer — a script, a dashboard, an agent reading the
+history — branches on that instead of guessing from which keys are present, and branching
+on the wrong one of the two matches nothing at all. The marker is bumped when a field
+changes meaning, never when one is added.
 
 Types ship: the package includes a PEP 561 `py.typed` marker, and it reaches the wheel.
 Verified from a consumer package with nothing but the installed wheel — `p: int =

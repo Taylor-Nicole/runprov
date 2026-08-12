@@ -380,8 +380,18 @@ def _mtime_utc(st: os.stat_result) -> str:
     return dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def moved_since(rec: dict[str, typing.Any]) -> str | None:
+def moved_since(rec: dict[str, typing.Any], base: pathlib.Path | None = None) -> str | None:
     """Has this file changed since `describe()` recorded it? A reason, or None.
+
+    `base` is the directory a RELATIVE recorded path is relative to — the run's recorded
+    `cwd`, never the current one. Without it this stat'd the recorded spelling against
+    wherever the process happened to be standing at the end of the run, so an ordinary
+    `chdir` between registration and `write()` pointed the check at a different file, or at
+    no file. Both directions were wrong and both were silent-ish: a file that never moved
+    was reported "gone" — a permanent false `changed_after_registration` in the sidecar and
+    the history — and a file that genuinely WAS rewritten stat'd a nonexistent path,
+    returned None, and left the record asserting it still matched. That second one is
+    precisely the race this function was added to close, reopened by the path handling.
 
     The unclosed half of the R10 race. `unstable_during_hash` catches a file rewritten
     WHILE it was being read; nothing caught one rewritten a second later, so a run could
@@ -400,8 +410,9 @@ def moved_since(rec: dict[str, typing.Any]) -> str | None:
     raw = rec.get("path")
     if not raw or rec.get("kind") not in ("file", None) or "size_bytes" not in rec:
         return None  # a directory tree, or an entry that never carried a stat to compare
+    p = pathlib.Path(raw)
     try:
-        st = pathlib.Path(raw).stat()
+        st = (p if p.is_absolute() or base is None else base / p).stat()
     except FileNotFoundError:
         return "gone"
     except OSError:  # guards-ok: unreadable now is a fact worth reporting, but it is not

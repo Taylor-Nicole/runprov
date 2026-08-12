@@ -374,9 +374,13 @@ def main(argv: list[str] | None = None) -> int:
     if not path.is_file():
         print(
             f"no run history at {path}\n"
-            f"  It is created by the first `run.write(...)`. Nothing has been recorded "
-            f"here yet — which is a different thing from a run that was not recorded, "
-            f"and worth telling apart.",
+            f"  It is created by the first recorded run — `with Run(..., provenance=...)`.\n"
+            f"  Nothing has been recorded here yet, which is a different thing from a run\n"
+            f"  that was not recorded, and worth telling apart.\n"
+            f"  This CLI cannot see what your scripts passed to configure(): with no --log\n"
+            f"  it reads the DEFAULT path above. If configure(run_log=...) sent the history\n"
+            f"  somewhere else, pass --log that path — the runs are not missing, this is the\n"
+            f"  wrong file to look in.",
             file=sys.stderr,
         )
         return 1
