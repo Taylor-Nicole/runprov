@@ -317,7 +317,10 @@ result while omitting every non-Python tool the result depended on.
 
 So when the interpreter's prefix has a `conda-meta/`, its packages are read from there and
 rendered in conda's own `name=version=build` spelling, under a heading, and the record
-gains `n_conda_packages`. It is a directory read, not a subprocess — the same argument as
+gains `n_conda_packages`. The rule is *"this prefix has a conda-meta"*, not *"which tool
+made it"* — measured on conda and mamba; micromamba and pixi build prefixes in the same
+format and so follow by construction, which is stated that way round because neither was
+run here. It is a directory read, not a subprocess — the same argument as
 for `importlib.metadata`: `conda list` needs a `conda` on PATH, which need not be the one
 that owns this interpreter, while the prefix cannot disagree with itself. The prefix
 **path** never reaches the body: two identical environments installed at different
