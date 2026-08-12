@@ -26,8 +26,10 @@ import pathlib
 import re
 import subprocess
 import sys
+import tarfile
 import textwrap
 import types
+import zipfile
 
 import pytest
 
@@ -4006,3 +4008,272 @@ def test_lineage_joins_the_other_way_too_a_v2_producer_read_by_a_v1_consumer(tmp
     producer, consumer = got["edges"][0]
     assert producer == rows[0]["run_uid"]
     assert consumer.startswith("derived:"), "the v1 consumer has no uid of its own"
+
+
+# ------------------------------------------------------------- CONTAINER FORMATS
+# Measured across csv, tsv, txt, json, xlsx (openpyxl AND xlsxwriter), parquet, feather,
+# pickle, npy, npz, gz, zip, tar and sqlite: every one is stable under `content_digest`
+# except the archives below, which embed a write time the way the gzip header does.
+
+
+def _zip(path, entries, **kw):
+    with zipfile.ZipFile(path, "w") as z:
+        for name, data in entries:
+            z.writestr(zipfile.ZipInfo(name, kw.get("when", (1999, 1, 1, 0, 0, 0))), data)
+    return path
+
+
+BASE = [("a.csv", "id,v\na,1\n"), ("b.txt", "hello\n")]
+
+
+def test_a_zip_rewritten_from_identical_files_has_one_content_digest(tmp_path):
+    """A zip stores a modification time PER ENTRY, so an archive rebuilt from unchanged
+    files is a different byte sequence every time. That is the gzip-header defect one
+    container up, and it reaches further than it looks: `.xlsx`, `.docx`, `.odt`, `.whl`
+    and `.npz` are all zips. Measured: two `df.to_excel()` calls a second apart produced
+    different digests for the same two rows, so a spreadsheet regenerated from unchanged
+    data made everything pinning it differ — the oscillation this module exists to end.
+    """
+    early = _zip(tmp_path / "early.zip", BASE, when=(1999, 1, 1, 0, 0, 0))
+    later = _zip(tmp_path / "later.zip", BASE, when=(2026, 8, 12, 9, 30, 0))
+    assert runprov.sha256(early) != runprov.sha256(later), "the BYTES differ; that is the point"
+    assert runprov.content_digest(early) == runprov.content_digest(later)
+
+
+def test_the_raw_hash_still_separates_what_the_content_digest_calls_equal(tmp_path):
+    """Both questions keep their own answer. `content_digest` says "same content"; `sha256`
+    still says "not the same file", and every record carries both."""
+    early = _zip(tmp_path / "early.zip", BASE, when=(1999, 1, 1, 0, 0, 0))
+    later = _zip(tmp_path / "later.zip", BASE, when=(2026, 8, 12, 9, 30, 0))
+    rec_a, rec_b = runprov.describe(early), runprov.describe(later)
+    assert rec_a["content_sha256"] == rec_b["content_sha256"]
+    assert rec_a["sha256"] != rec_b["sha256"]
+
+
+@pytest.mark.parametrize(
+    ("what", "entries"),
+    [
+        ("content changed", [("a.csv", "id,v\na,2\n"), ("b.txt", "hello\n")]),
+        ("entry renamed", [("a2.csv", "id,v\na,1\n"), ("b.txt", "hello\n")]),
+        ("entry removed", [("a.csv", "id,v\na,1\n")]),
+        ("entry added", [*BASE, ("c.txt", "x\n")]),
+        # The one a name-plus-digest concatenation without separators would miss.
+        ("contents swapped between names", [("a.csv", "hello\n"), ("b.txt", "id,v\na,1\n")]),
+    ],
+)
+def test_a_zip_digest_still_sees_a_real_change(tmp_path, what, entries):
+    """A digest that ignores the right things must still catch everything else — the
+    failure mode of "normalise harder" is a hash that cannot tell two files apart."""
+    ref = _zip(tmp_path / "ref.zip", BASE)
+    other = _zip(tmp_path / "other.zip", entries)
+    assert runprov.content_digest(ref) != runprov.content_digest(other), what
+
+
+def test_the_order_entries_were_written_in_is_not_content(tmp_path):
+    """Entry order is a property of the writer, not of the archive's content."""
+    ref = _zip(tmp_path / "ref.zip", BASE)
+    flipped = _zip(tmp_path / "flipped.zip", list(reversed(BASE)))
+    assert runprov.content_digest(ref) == runprov.content_digest(flipped)
+
+
+def test_a_directory_entry_is_not_an_empty_file(tmp_path):
+    """Both contribute a name and no bytes. Without the type flag they would collide, and
+    an archive that lost a file to a directory of the same name would hash unchanged."""
+    as_file = _zip(tmp_path / "f.zip", [("thing", "")])
+    as_dir = tmp_path / "d.zip"
+    with zipfile.ZipFile(as_dir, "w") as z:
+        z.writestr(zipfile.ZipInfo("thing/", (1999, 1, 1, 0, 0, 0)), "")
+    assert runprov.content_digest(as_file) != runprov.content_digest(as_dir)
+
+
+def _core_xml(created, title="t"):
+    return (
+        '<?xml version="1.0"?><cp:coreProperties xmlns:dcterms="http://purl.org/dc/terms/">'
+        f"<dc:title>{title}</dc:title>"
+        f'<dcterms:created xsi:type="dcterms:W3CDTF">{created}</dcterms:created>'
+        f'<dcterms:modified xsi:type="dcterms:W3CDTF">{created}</dcterms:modified>'
+        "</cp:coreProperties>"
+    )
+
+
+def test_the_ooxml_write_timestamp_is_not_content(tmp_path):
+    """Zip entry mtimes were only half of it. Measured on real openpyxl output: the ten
+    entries of two `.xlsx` files written a second apart were byte-identical except
+    `docProps/core.xml`, whose `dcterms:created` and `dcterms:modified` carry the write
+    time — inside the entry, where normalising the container cannot reach it."""
+    a = _zip(
+        tmp_path / "a.xlsx",
+        [("xl/w.xml", "<r/>"), ("docProps/core.xml", _core_xml("2026-08-12T08:41:32Z"))],
+    )
+    b = _zip(
+        tmp_path / "b.xlsx",
+        [("xl/w.xml", "<r/>"), ("docProps/core.xml", _core_xml("2026-08-12T08:41:33Z"))],
+    )
+    assert runprov.content_digest(a) == runprov.content_digest(b)
+
+
+def test_the_rest_of_the_ooxml_properties_are_still_content(tmp_path):
+    """Only the two timestamp elements are dropped. A changed title is a changed document,
+    and blanking the whole part would have hidden it."""
+    a = _zip(
+        tmp_path / "a.xlsx", [("docProps/core.xml", _core_xml("2026-01-01T00:00:00Z", "before"))]
+    )
+    b = _zip(
+        tmp_path / "b.xlsx", [("docProps/core.xml", _core_xml("2026-01-01T00:00:00Z", "after"))]
+    )
+    assert runprov.content_digest(a) != runprov.content_digest(b)
+
+
+def test_the_ooxml_rule_reaches_only_the_part_the_spec_names(tmp_path):
+    """ADR-029 R2 in a new place: a rule that rewrites bytes must know exactly whose bytes.
+    The JSON stamp rule once fired on any `*.json` and erased a user's legitimate
+    `mtime_utc`, colliding two different datasets. This one is pinned to the single path
+    the OOXML specification fixes, so a user's own `core.xml` keeps its timestamps."""
+    a = _zip(tmp_path / "a.zip", [("data/core.xml", _core_xml("2026-01-01T00:00:00Z"))])
+    b = _zip(tmp_path / "b.zip", [("data/core.xml", _core_xml("2026-06-06T00:00:00Z"))])
+    assert runprov.content_digest(a) != runprov.content_digest(b), (
+        "a `core.xml` that is not the OOXML part is ordinary user data"
+    )
+
+
+def test_an_oversized_core_xml_is_streamed_and_says_so_by_differing(tmp_path):
+    """The substitution needs the part whole, so it is bounded. `docProps/core.xml` is a
+    handful of elements by specification; an entry claiming that name and megabytes of body
+    is not that part, and is hashed as ordinary bytes rather than read into memory."""
+    big = "<x>" + "p" * (1 << 20) + "</x>"
+    a = _zip(tmp_path / "a.xlsx", [("docProps/core.xml", _core_xml("2026-01-01T00:00:00Z") + big)])
+    b = _zip(tmp_path / "b.xlsx", [("docProps/core.xml", _core_xml("2026-06-06T00:00:00Z") + big)])
+    assert runprov.content_digest(a) != runprov.content_digest(b)
+
+
+def _tar(path, members):
+    with tarfile.open(path, "w") as t:
+        for name, body, when in members:
+            info = tarfile.TarInfo(name)
+            data = body.encode()
+            info.size, info.mtime, info.uid, info.gid = len(data), when, 1000, 1000
+            t.addfile(info, io.BytesIO(data))
+    return path
+
+
+def test_a_tar_carries_mtime_uid_and_gid_and_none_of_them_are_content(tmp_path):
+    """Same argument as the zip, plus ownership: the same tree packed by two people on two
+    machines is the same content, and a digest that disagreed would report every transfer
+    as a change."""
+    a = _tar(tmp_path / "a.tar", [("m.txt", "one\n", 1000000000)])
+    b = tmp_path / "b.tar"
+    with tarfile.open(b, "w") as t:
+        info = tarfile.TarInfo("m.txt")
+        info.size, info.mtime, info.uid, info.gid = 4, 1786524101, 501, 20
+        t.addfile(info, io.BytesIO(b"one\n"))
+    assert runprov.sha256(a) != runprov.sha256(b)
+    assert runprov.content_digest(a) == runprov.content_digest(b)
+
+
+def test_a_tar_digest_sees_content_and_link_targets(tmp_path):
+    """A symlink's TARGET is its content — two archives whose links point elsewhere are not
+    the same archive, and a link contributes no bytes for a naive digest to notice."""
+    a = _tar(tmp_path / "a.tar", [("m.txt", "one\n", 1)])
+    b = _tar(tmp_path / "b.tar", [("m.txt", "two\n", 1)])
+    assert runprov.content_digest(a) != runprov.content_digest(b)
+
+    def linked(path, target):
+        with tarfile.open(path, "w") as t:
+            info = tarfile.TarInfo("l")
+            info.type, info.linkname = tarfile.SYMTYPE, target
+            t.addfile(info)
+            d = tarfile.TarInfo("dir")
+            d.type = tarfile.DIRTYPE
+            t.addfile(d)
+        return path
+
+    assert runprov.content_digest(linked(tmp_path / "l1.tar", "here")) != runprov.content_digest(
+        linked(tmp_path / "l2.tar", "elsewhere")
+    )
+
+
+def test_a_tar_member_that_cannot_be_streamed_falls_back_to_the_raw_hash(tmp_path, monkeypatch):
+    """`extractfile` returns None for a regular member it cannot open as a stream.
+
+    Inventing a marker for it would put a content digest in the record for an archive
+    nobody actually read — and two archives differing only inside unreadable members would
+    then be certified identical. The raw hash of the container is the honest answer, and it
+    is the fallback a corrupt gzip or zip already takes.
+    """
+    a = _tar(tmp_path / "a.tar", [("m.txt", "one\n", 1)])
+    b = _tar(tmp_path / "b.tar", [("m.txt", "two\n", 1)])
+    assert runprov.content_digest(a) != runprov.content_digest(b)
+
+    monkeypatch.setattr(tarfile.TarFile, "extractfile", lambda self, m: None)
+    assert runprov.content_digest(a) == runprov.sha256(a)
+    assert runprov.content_digest(a) != runprov.content_digest(b), (
+        "falling back must not make two different archives agree"
+    )
+
+
+def test_a_zip_directory_and_an_empty_file_cannot_collide(tmp_path):
+    """No type flag is written beside the name, because a zip directory IS a name ending in
+    `/`. The separator has to carry the weight instead: without the NUL, entries `a` and
+    `b` build the same byte string as a single entry `ab`."""
+    empty_file = _zip(tmp_path / "f.zip", [("thing", "")])
+    as_dir = tmp_path / "d.zip"
+    with zipfile.ZipFile(as_dir, "w") as z:
+        z.writestr(zipfile.ZipInfo("thing/", (1999, 1, 1, 0, 0, 0)), "")
+    assert runprov.content_digest(empty_file) != runprov.content_digest(as_dir)
+
+    split = _zip(tmp_path / "split.zip", [("a/", ""), ("b/", "")])
+    joined = _zip(tmp_path / "joined.zip", [("a/b/", "")])
+    assert runprov.content_digest(split) != runprov.content_digest(joined), (
+        "two names must not concatenate into one"
+    )
+
+
+def test_a_truncated_archive_falls_back_to_the_raw_hash(tmp_path):
+    """A container that announces itself and then cannot be read must not take the run down
+    from inside provenance — the same rule the corrupt-gzip path follows."""
+    good = _zip(tmp_path / "good.zip", BASE)
+    broken = tmp_path / "broken.zip"
+    broken.write_bytes(good.read_bytes()[:-40] + b"\0" * 40)
+    if zipfile.is_zipfile(broken):  # only meaningful if it still LOOKS like a zip
+        assert runprov.content_digest(broken) == runprov.sha256(broken)
+
+
+def test_the_order_members_were_added_in_is_not_tar_content(tmp_path):
+    """As for the zip: member order is the writer's business, not the archive's content."""
+    one = _tar(tmp_path / "one.tar", [("a.txt", "A\n", 1), ("b.txt", "B\n", 1)])
+    two = _tar(tmp_path / "two.tar", [("b.txt", "B\n", 1), ("a.txt", "A\n", 1)])
+    assert runprov.sha256(one) != runprov.sha256(two)
+    assert runprov.content_digest(one) == runprov.content_digest(two)
+
+
+def test_a_tar_name_and_a_link_target_cannot_be_confused_for_each_other(tmp_path):
+    """A CONSTRUCTED collision, which is what makes the separator load-bearing rather than
+    ornamental.
+
+    Each member contributes `name`, a one-byte type flag, a NUL, then its payload. Drop
+    that NUL and these two archives build the identical byte string:
+
+        name "a",  link -> "Lb"    ->  "a"  "L" "Lb"
+        name "aL", link -> "b"     ->  "aL" "L" "b"
+
+    ADR-029's R9 row called the equivalent zip case a "trivial second preimage" and was
+    corrected — for digests that needs a preimage attack on SHA-256. Here the collision is
+    in the ENCODING and takes two lines to write, which is the version of that argument
+    that actually holds.
+
+    Note which separator this pins. An earlier draft put a NUL after the NAME and claimed
+    this same collision for it; that was wrong, because the flag's own NUL already
+    terminates the name field. The redundant byte was removed rather than left with a
+    plausible-looking justification.
+    """
+
+    def linked(path, name, target):
+        with tarfile.open(path, "w") as t:
+            info = tarfile.TarInfo(name)
+            info.type, info.linkname = tarfile.SYMTYPE, target
+            t.addfile(info)
+        return path
+
+    a = linked(tmp_path / "a.tar", "a", "Lb")
+    b = linked(tmp_path / "b.tar", "aL", "b")
+    assert runprov.content_digest(a) != runprov.content_digest(b)
