@@ -5692,3 +5692,24 @@ def test_verify_walks_past_a_comment_line_that_is_not_part_of_the_pin(tmp_path):
 
     rendered = runprov.verify.render({"artifacts": [rep]})
     assert "!! pin s: declares 2 input(s), carries 1" in rendered
+
+
+def test_the_cli_names_the_invocation_the_reader_actually_used(monkeypatch, capsys):
+    """Two ways in, two names. Hardcoding one meant the console script — the only form
+    `uvx runprov` and `pipx run runprov` can resolve — printed usage telling the reader to
+    type something else, and every `error:` line named an invocation they had not used.
+
+    Leaving `prog` unset is not the fix: argparse derives it from `sys.argv[0]`, which
+    under `-m` is this module's file, so the module form would advertise `__main__.py`.
+    """
+    for argv0, expected in (
+        ("/usr/lib/python3.12/runprov/__main__.py", "python -m runprov"),
+        ("/home/x/.venv/bin/runprov", "runprov"),
+        ("", "runprov"),
+    ):
+        monkeypatch.setattr(sys, "argv", [argv0] if argv0 else [])
+        with pytest.raises(SystemExit):
+            runprov.__main__.main(["--help"])
+        out = capsys.readouterr().out
+        assert out.startswith(f"usage: {expected} "), f"{argv0!r} -> {out.splitlines()[0]}"
+        assert "__main__.py" not in out
