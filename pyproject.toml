@@ -118,6 +118,17 @@ packages = ["runprov"]
 artifacts = ["runprov/py.typed"]
 
 [tool.hatch.build.targets.sdist]
+# An EXPLICIT list, so anything not named here is excluded -- which is why CHANGELOG.md and
+# SECURITY.md were missing from it while sitting in git, and the README linked to both. The
+# audience for the sdist is exactly the person that hurts: a Debian, conda-forge or Nix
+# packager rebuilding from the tarball, who gets the tests and `ci.py` to verify the build
+# and then no security policy to read and no changelog to attribute a version to.
+#
+# `.gitattributes` and `.github/` stay out deliberately, and that is a different judgement
+# rather than the same oversight: the first only affects a git checkout (it marks the
+# hash-pinned fixtures `-text`, and the tarball already preserves their bytes exactly), and
+# the second is CI configuration for THIS repository, which a downstream rebuild does not
+# run and cannot use.
 include = ["runprov", "tests", "ci.py", "README.md", "PUBLISHING.md", "WHY.md",
            "LICENSING.md", "CONTRIBUTING.md", "DCO.txt", "LICENSE", "CITATION.cff",
-           ".ruff.toml", ".pre-commit-config.yaml"]
+           "CHANGELOG.md", "SECURITY.md", ".ruff.toml", ".pre-commit-config.yaml"]

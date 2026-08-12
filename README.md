@@ -47,18 +47,38 @@ than assumed, wheel and sdist, each installed and imported and `python -m runpro
 | `pip install runprov` | wheel and sdist both ✓ |
 | `uv pip install runprov` | ✓ |
 | conda / mamba prefix, via `pip` | ✓ — and see [Environment snapshots](#environment-snapshots), which reads `conda-meta` |
-| **Poetry ≤ 1.8** | **cannot consume it**, and neither can it consume many current packages |
+| **Poetry with `pkginfo` &lt; 1.11** | **cannot consume it** — an old environment, not an old Poetry |
 
-That last row is worth the detail because the error names nothing useful. Poetry 1.8
-resolves the dependency and then reports `Unable to create package with no name`, leaving an
-environment that installed cleanly and cannot import. The cause is its bundled `pkginfo`
-&lt; 1.11, which returns `name = None` for any wheel whose `Metadata-Version` is newer than it
-knows; `hatchling` emits **2.5**. It is not the licence metadata — a build with the
-pre-PEP-639 `license = {text = ...}` emits 2.5 just the same, which was measured before this
-paragraph was written.
+That last row is worth the detail because the error names nothing useful: Poetry resolves the
+dependency and then reports `Unable to create package with no name`, leaving an environment
+that installed cleanly and cannot import. The cause is `pkginfo` &lt; 1.11, which returns
+`name = None` for any wheel whose `Metadata-Version` is newer than it knows; `hatchling`
+emits **2.5**. Measured against this wheel:
 
-**The fix is Poetry 2.x** (released January 2025), whose `pkginfo` parses it. Nothing here
-needs changing, and nothing here can change it short of a different build backend.
+| `pkginfo` | `Wheel(…).name` |
+|---|---|
+| 1.9.6 | `None` |
+| 1.10.0 | `None` |
+| 1.11.0 | `'runprov'` — warns `NewMetadataVersion`, then parses |
+| 1.12.1.2 | `'runprov'` |
+
+**The predicate is the installed `pkginfo`, not the Poetry version**, and an earlier draft of
+this table got that wrong. Poetry declares only a lower bound, so what breaks is an
+environment locked or installed before `pkginfo` 1.11 (May 2024) — not a release of Poetry.
+Measured from PyPI metadata and by resolving each one today:
+
+| Poetry | declares | a fresh install today resolves |
+|---|---|---|
+| 1.8.0, 1.8.2 | `pkginfo >=1.9.4,<2.0` | 1.12.1.2 — works |
+| 1.8.3, 1.8.4 | `pkginfo >=1.10,<2.0` | 1.12.1.2 — works |
+| 1.8.5 | `pkginfo >=1.12,<2.0` | **cannot hit the bug at all** |
+
+So `pip install -U pkginfo` in the Poetry environment fixes it, as does Poetry 1.8.5, as does
+Poetry 2.x. Nothing here needs changing, and nothing here can change it short of a different
+build backend.
+
+It is **not** the licence metadata — a build with the pre-PEP-639 `license = {text = ...}`
+emits 2.5 just the same, which was measured before this paragraph was written.
 
 ## Two shapes that record nothing, and the one that does
 

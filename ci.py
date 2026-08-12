@@ -141,7 +141,19 @@ def build() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         sdist = next((ROOT / "dist").glob("*.tar.gz"))
         with tarfile.open(sdist) as tf:
+            members = {n.split("/", 1)[-1] for n in tf.getnames()}
             tf.extractall(tmp, filter="data")
+        # `include` in pyproject is an EXPLICIT list, so a doc is dropped from the tarball by
+        # being forgotten rather than by being excluded -- and nothing said so. CHANGELOG.md
+        # and SECURITY.md were both missing while the shipped README linked to both, and the
+        # only reader affected is the one this sdist exists for: a packager rebuilding from
+        # source, with no security policy to read and no changelog to attribute a version to.
+        want = {"CHANGELOG.md", "SECURITY.md", "LICENSE", "README.md", "CITATION.cff", "ci.py"}
+        if missing := sorted(want - members):
+            raise SystemExit(
+                f"{sdist.name} is missing {missing}. Anything not named in "
+                f"[tool.hatch.build.targets.sdist] include is silently left out."
+            )
         unpacked = next(Path(tmp).glob("runprov-*"))
         out = Path(tmp) / "wheel"
         run(PY, "-m", "build", "--wheel", "--outdir", str(out), str(unpacked))
