@@ -30,9 +30,12 @@ artifact — and `UnicodeEncodeError` outright under cp932 or ascii. A provenanc
 whose artifact hashes depend on the writer's locale has one job and does not do it, which is
 why every file `runprov` writes itself pins UTF-8.
 
-**[WHY.md](WHY.md)** explains what this is for at four lengths, with the incident behind
-each design choice. **[PUBLISHING.md](PUBLISHING.md)** is the release procedure, and
-**[LICENSING.md](LICENSING.md)** the licence and copyright-holder decision.
+**[WHY.md](https://github.com/Taylor-Nicole/runprov/blob/main/WHY.md)** explains what this
+is for at four lengths, with the incident behind each design choice.
+**[PUBLISHING.md](https://github.com/Taylor-Nicole/runprov/blob/main/PUBLISHING.md)** is the
+release procedure, and
+**[LICENSING.md](https://github.com/Taylor-Nicole/runprov/blob/main/LICENSING.md)** the
+licence and copyright-holder decision.
 
 ## Installing it
 
@@ -741,14 +744,17 @@ it is better than leaving silence to be read as abandonment:
 * **Bugs**: open an issue with a reproducer. Expect a reply within about two weeks. A defect
   that produces a *wrong record* is the highest priority thing in this project and will be
   treated that way; a missing feature will usually get an honest "not soon".
-* **Security**: see [SECURITY.md](SECURITY.md) — email, do not open a public issue first.
+* **Security**: see
+  [SECURITY.md](https://github.com/Taylor-Nicole/runprov/blob/main/SECURITY.md) — email, do
+  not open a public issue first.
 * **Python versions**: whatever CI runs, currently 3.10–3.13, and the classifiers say only
   those. A new Python is added the October it goes green, not on release day.
 * **Dependencies**: there are none, and there will not be any. It is the property that makes
   a one-person package safe to depend on — nothing upstream can break it, and upgrading is a
   version-number change and nothing else.
-* **Changes**: [CHANGELOG.md](CHANGELOG.md), which states what was measured rather than what
-  was improved.
+* **Changes**:
+  [CHANGELOG.md](https://github.com/Taylor-Nicole/runprov/blob/main/CHANGELOG.md), which
+  states what was measured rather than what was improved.
 
 ## Tests
 
