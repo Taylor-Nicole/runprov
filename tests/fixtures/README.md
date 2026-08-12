@@ -49,3 +49,11 @@ What the fixture is for, concretely — v1 differs from v2 in ways a reader must
 | `script_file` | absent | present |
 | output digests | `sha256` only | `sha256` **and** `content_sha256` |
 | history line `schema` | `runprov.run.v1` | `runprov.history.v2` |
+
+## These files must never be normalised
+
+`.gitattributes` marks this directory `-text`. The fixtures are pinned by digests recorded
+inside them, so git's `core.autocrlf` — on by default on Windows — rewrites the bytes on
+checkout and the hashes stop matching. Windows CI failed exactly this way before the
+attribute existed: `test_lineage_joins_across_the_v1_v2_schema_boundary` reported the edge
+as unresolvable, which looked like a defect in the join rather than in the checkout.

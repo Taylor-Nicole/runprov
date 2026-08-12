@@ -1,0 +1,10 @@
+# Fixtures are BYTES, and their digests are the point.
+#
+# `artifact_v1.tsv` is pinned by a sha256 recorded inside `history_v1.jsonl` when the v1
+# code wrote it. Git's default on Windows is `core.autocrlf=true`, which rewrites LF to
+# CRLF on checkout — so the file arrives with different bytes, a different hash, and the
+# lineage join it exists to prove silently finds nothing. Windows CI caught exactly that.
+#
+# `-text` disables end-of-line conversion in both directions while keeping the files
+# diffable. Anything whose hash is asserted belongs here.
+tests/fixtures/** -text
