@@ -38,7 +38,7 @@ import uuid
 
 from ._report import diagnostic, summary
 from .environment import archive_lockfiles, lockfiles, manager, write_snapshot
-from .hashing import describe, sha256
+from .hashing import describe, moved_since, sha256
 from .project import OTHER_FILES_KEPT, Project, active, classify_status, git, is_configured
 from .terminal import Capture
 
@@ -568,6 +568,16 @@ class Run:
             )
         try:
             self.record["inputs"].append(describe(p))
+        except OSError as exc:
+            # A file that EXISTS and cannot be read. `exists()` is true -- stat works --
+            # so the check above passes and the failure surfaces from inside `sha256` as a
+            # bare `PermissionError` naming neither the script nor the fact that provenance
+            # raised it. Same treatment as the missing-input case, for the same reason.
+            raise OSError(
+                f"{self.record['script']}: cannot register input {p} — it exists but "
+                f"could not be read ({exc}). A registered input is hashed and pinned, so "
+                f"it must be readable at registration time."
+            ) from exc
         except ValueError as exc:
             # `describe` refuses a FIFO/socket/device rather than blocking on it. Re-raised
             # with the script name, because the bare hang this replaces named neither the
@@ -852,6 +862,27 @@ class Run:
             and "snapshot" not in self.record["environment"]
         ):
             self.environment_snapshot()
+        # THE UNCLOSED HALF OF R10. `unstable_during_hash` catches a file rewritten WHILE it
+        # was read; nothing caught one rewritten a second later, so a run could pin
+        # `sha256: abc...` and finish beside a file that no longer had those bytes. A stat
+        # per input, not a re-hash -- see `moved_since` for why, and for the resolution
+        # limit it does not hide.
+        changed = []
+        for entry in self.record["inputs"]:
+            why = moved_since(entry)
+            if why:
+                entry["changed_after_registration"] = why
+                changed.append(f"{entry.get('path', '?')} ({why})")
+        if changed:
+            diagnostic(
+                f"  PROVENANCE WARNING: {self.record['script']}: "
+                f"{len(changed)} registered input(s) CHANGED after they were read:\n"
+                + "".join(f"    {c}\n" for c in changed)
+                + "    The digests in this record and in any pin are what the run actually\n"
+                "    read. They no longer describe what is on disk, and a checker comparing\n"
+                "    the two will report a difference that is real but is not the run's."
+            )
+
         seen: set[pathlib.Path] = set()
         for q in self._pending:
             if q in seen:
