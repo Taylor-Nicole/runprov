@@ -89,7 +89,12 @@ def conda_packages(prefix: pathlib.Path | None = None) -> dict[str, str]:
     That is the same argument as for `importlib.metadata`: `conda list` needs a `conda` on
     PATH that may not be the one owning this interpreter, and in a mamba-plus-uv layout it
     reliably is not. The directory belongs to the prefix the interpreter is running from,
-    so it cannot disagree with itself. All four tools write it.
+    so it cannot disagree with itself.
+
+    MEASURED on conda and mamba, which share one prefix layout. micromamba and pixi build
+    prefixes in that same format and so are covered by construction rather than by test --
+    stated that way round on purpose, because neither was run here. Nothing depends on
+    WHICH tool wrote the directory: the rule is "this prefix has a conda-meta".
     """
     root = (prefix or pathlib.Path(sys.prefix)) / "conda-meta"
     out: dict[str, str] = {}
