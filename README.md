@@ -353,9 +353,29 @@ That says *what was installed*. Two more fields say **how to build it again**:
 **The manager is detected, never guessed and never executed.** `pyvenv.cfg` is written by
 `venv`, `virtualenv` and `uv` — and uv stamps its own version into it, which is the most
 reliable marker available. `conda-meta/` identifies the conda family. A short list of
-environment variables covers `poetry`, `pdm`, `hatch`, `rye`, `mamba` and `pixi`. The
-answer is a **list**, because a uv-created venv inside a conda prefix is an ordinary thing
-here and a single name would have to be wrong about one of them.
+environment variables adds `poetry`, `pdm`, `hatch`, `rye`, `mamba` and `pixi`. The answer
+is a **list**, because a uv-created venv inside a conda prefix is an ordinary thing here
+and a single name would have to be wrong about one of them. An **empty** list is a real
+answer too: a system interpreter built by no tool has no manager to name.
+
+Measured on five real environments, and the difference between the two kinds of evidence
+matters:
+
+| environment | detected | evidence |
+|---|---|---|
+| uv-created venv | `["uv", "venv"]` | `pyvenv.cfg:uv = 0.11.8` |
+| stdlib `venv` | `["venv"]` | — (a plain venv stamps no tool version) |
+| mamba prefix | `["conda-family"]` | `conda-meta` |
+| mamba prefix, **activated** | `["conda", "conda-family"]` | + `CONDA_DEFAULT_ENV = "hcv-test"` |
+| poetry venv, via `poetry run` | `["venv", "virtualenv"]` | `pyvenv.cfg:virtualenv = 20.25.1` |
+
+**On-disk evidence is always there; environment variables only when the environment is
+activated.** That last row is the honest limit: Poetry 1.8's `poetry run` sets `VIRTUAL_ENV`
+but not `POETRY_ACTIVE`, so a poetry environment is indistinguishable from any other
+virtualenv unless `poetry shell` was used. The `lockfiles` field is what identifies it —
+`poetry.lock` at the project root says how the project declares its dependencies, which is
+the question that was being asked anyway. The two fields answer different halves: how the
+**interpreter** was built, and how the **project** is declared.
 
 Environment **names** are recorded (`CONDA_DEFAULT_ENV`, `HATCH_ENV_ACTIVE`,
 `PIXI_ENVIRONMENT_NAME`) because a name is what someone asks for later. The paths beside
