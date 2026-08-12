@@ -36,6 +36,7 @@ import traceback
 import types
 import typing
 import uuid
+import weakref
 
 from ._report import diagnostic, summary
 from .environment import archive_lockfiles, lockfiles, manager, write_snapshot
@@ -110,6 +111,21 @@ def _jsonable(obj: typing.Any) -> typing.Any:  # noqa: ANN401 - walks arbitrary 
             # falls through to the recorded string, which is what happened before.
             del exc
     return obj
+
+
+def _release_abandoned(cap: Capture) -> None:
+    """Stop a capture whose `Run` was collected without ever being closed.
+
+    Idempotent by construction: a capture already stopped is no longer on the live stack,
+    and `stop()` on it restores nothing and closes nothing twice. Silent, because this runs
+    from a finalizer -- possibly during interpreter shutdown, where the streams a warning
+    would use may already be gone.
+    """
+    try:
+        cap.stop()
+    except Exception as exc:  # guards-ok: a finalizer that raises prints an
+        # unhandled-exception notice from deep inside the interpreter and helps nobody.
+        del exc
 
 
 #: Sidecar paths written in THIS process, and by which run. A sidecar is one run's record;
@@ -413,6 +429,18 @@ class Run:
             # a precondition for it. Whatever fails here, the run proceeds unrecorded-by-tee
             diagnostic(f"  WARNING: terminal capture could not start: {exc}")
             return None
+        # A RUN THAT IS NEVER ENTERED, WRITTEN, OR EXITED still started this capture --
+        # capture begins in `__init__`, deliberately, so that a caller using `write()`
+        # without a `with` block is still recorded. Measured: a Run built and abandoned
+        # left fds 1 and 2 dup2'd to its pipe for the life of the process, and every line
+        # the program printed afterwards went on accumulating in ITS log file. Output still
+        # reached the terminal -- the tee holds -- so nothing looked wrong, and the log
+        # ended up describing a run that never happened plus everything that came after it.
+        #
+        # `weakref.finalize`, not `__del__`: it does not put a finalizer on `Run`, it cannot
+        # resurrect the object, and it also fires at interpreter exit -- which covers the
+        # other half, a process that ends with a run still open.
+        weakref.finalize(self, _release_abandoned, cap)
         return cap
 
     def _end_capture(self) -> None:
