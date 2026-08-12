@@ -44,6 +44,13 @@ Nothing has been published yet. Everything below is what a first release would c
 - **Failure recording.** `with Run(..., provenance=PROV)` records `status: "failed"` with
   the exception type, message and traceback tail, and every registered-but-unproduced output
   as `MISSING`.
+- **`content_digest` blocks are bounded by bytes, not only by line count.** "Streamed" was
+  true only of files whose *lines* are short, so the shape that defeated it was not a big
+  file but a file with few big lines — an unwrapped FASTA, a minified JSON, a one-line
+  dump. Peak RSS for one call: **607 MB → 43 MB** on 8,192 contigs of ~30 kb (246 MB file);
+  unchanged on ordinary short-line text. Verified across 26 file shapes that **no digest
+  moves** — a moved digest would re-pin every artifact at once. A single line longer than
+  the block is still read whole, which is stated rather than implied.
 - **Termination recording.** SIGTERM and SIGHUP raise `Terminated` (a `BaseException`, so a
   broad `except Exception:` cannot swallow one) and take the same path — so SLURM's time
   limit, `scancel` and `docker stop` leave a record instead of nothing. Verified against a
