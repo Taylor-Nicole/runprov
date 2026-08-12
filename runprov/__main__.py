@@ -144,9 +144,17 @@ def _yaml(rows: list[dict[str, typing.Any]]) -> str:
         # written before `script_file` reached the history cannot support that claim, and
         # a populated-looking `script:` that names something other than what ran is the
         # exact defect this field replaces.
-        out.append(
-            f"  script: {q(r.get('script_file') or 'not recorded (this run predates script_file)')}"
-        )
+        # BOTH SHAPES. The history line flattens this to the top level; the SIDECAR keeps
+        # it nested under `code`, and reading only the flat one made `to_yaml(run.record)`
+        # report a fresh run as having no script file while `log --format yaml` -- the same
+        # renderer, over the same run, from the history -- printed the path. Two views of
+        # one run disagreeing is the failure this renderer exists to prevent.
+        script_file = r.get("script_file") or (r.get("code") or {}).get("script_file")
+        # The fallback states the absence and NOT a cause: it read "this run predates
+        # script_file", which is true of a v1 record and false of a `python -c` invocation
+        # that simply has no file. A populated-looking `script:` naming the wrong thing is
+        # the exact defect this field replaces, and so is a confident wrong explanation.
+        out.append(f"  script: {q(script_file or 'not recorded (no script file for this run)')}")
         out.append(f"  date: {q(r.get('started_utc', '?'))}")
         out.append(f"  input: {q(', '.join(ins) or 'none registered')}")
         out.append(f"  output: {q(', '.join(outs) or 'none registered')}")
