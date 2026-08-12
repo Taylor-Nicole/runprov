@@ -404,8 +404,25 @@ def _verify(args: argparse.Namespace) -> int:
     return 1 if report["stale"] or report["gone"] else 0
 
 
+def _prog() -> str:
+    """How the user actually invoked this, for usage and every error message.
+
+    There are two ways in and they need different names. `prog` was hardcoded to
+    `python -m runprov`, so the console script -- the one `uvx runprov` and `pipx run
+    runprov` resolve, and the only one they CAN resolve -- printed usage telling the reader
+    to type something else, and `runprov: error:` messages named an invocation they had not
+    used. Leaving `prog` unset is not the fix either: argparse would derive it from
+    `sys.argv[0]`, which under `-m` is the path to this file, so the module form would
+    advertise `__main__.py`.
+
+    `-m` sets `sys.argv[0]` to this file's path, which is what distinguishes the two.
+    """
+    entry = pathlib.Path(sys.argv[0]).name if sys.argv else ""
+    return "python -m runprov" if entry == "__main__.py" else "runprov"
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m runprov")
+    ap = argparse.ArgumentParser(prog=_prog())
     sub = ap.add_subparsers(dest="cmd", required=True)
     lg = sub.add_parser("log", help="read the continuous run history")
     lg.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
