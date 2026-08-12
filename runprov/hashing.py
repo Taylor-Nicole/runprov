@@ -45,7 +45,9 @@ import os
 import pathlib
 import re
 import stat
+import tarfile
 import typing
+import zipfile
 import zlib
 
 # Volatile stamps as HEADER COMMENTS.
@@ -75,6 +77,25 @@ _JSON_BLANK = r'"\1": ""'
 # boundary is still matched. Comfortably longer than any stamp the rule above can match.
 _CARRY = 4096
 
+# The write timestamp OOXML puts inside every .xlsx/.docx/.pptx, in a part whose path is
+# fixed by the specification. Measured: two `df.to_excel(...)` calls one second apart
+# produce archives whose ten entries are byte-identical except this one, so a spreadsheet
+# regenerated from unchanged data had a different digest every time.
+#
+# Scoped to `docProps/core.xml` and to nothing else, which is the ADR-029 R2 lesson: the
+# JSON stamp rule once fired on any `*.json` and erased a user's legitimate `mtime_utc`
+# key, colliding two different datasets. A rule that rewrites bytes has to know exactly
+# whose bytes they are.
+OOXML_CORE = "docProps/core.xml"
+OOXML_STAMP = re.compile(
+    rb"(<dcterms:(?:created|modified)\b[^>]*>)[^<]*(</dcterms:(?:created|modified)>)"
+)
+
+#: An entry read whole rather than streamed, so a substitution can be applied across it.
+#: Only reached for `docProps/core.xml`, which the specification makes small; the bound is
+#: here so a hostile archive claiming that name cannot be read into memory unbounded.
+_ENTRY_WHOLE_MAX = 1 << 20
+
 
 def sha256(path: pathlib.Path, chunk: int = 1 << 20) -> str:
     """Streamed, so multi-GB inputs are fine."""
@@ -99,7 +120,16 @@ def content_digest(path: pathlib.Path, chunk_lines: int = 8192) -> str | None:
     try:
         if path.suffix == ".gz":
             return _gzip_digest(path)
-    except (OSError, EOFError, gzip.BadGzipFile, zlib.error):
+        # Detected by CONTENT, not by extension, because the archives that matter here are
+        # not named `.zip`: an `.xlsx`, `.docx`, `.odt`, `.whl` and `.npz` are all zip
+        # containers, and an extension list would have to guess at the ones nobody thought
+        # of. `is_zipfile` reads the central directory and `is_tarfile` the first block —
+        # neither walks the file.
+        if zipfile.is_zipfile(path):
+            return _zip_digest(path)
+        if tarfile.is_tarfile(path):
+            return _tar_digest(path)
+    except (OSError, EOFError, gzip.BadGzipFile, zlib.error, zipfile.BadZipFile, tarfile.TarError):
         # `zlib.error` is NOT an OSError, and it is the one decompression actually raises on
         # a corrupt or truncated member -- so this clause listed three exceptions and missed
         # the only one that fires. It escaped `content_digest`, inside provenance capture,
@@ -166,6 +196,91 @@ def _gzip_digest(path: pathlib.Path, chunk: int = 1 << 20) -> str:
     with gzip.open(path, "rb") as fh:
         while blk := fh.read(chunk):
             h.update(blk)
+    return h.hexdigest()
+
+
+def _entry_digest(fh: typing.IO[bytes], chunk: int = 1 << 20) -> str:
+    """Digest one archive member's bytes, streamed."""
+    h = hashlib.sha256()
+    while blk := fh.read(chunk):
+        h.update(blk)
+    return h.hexdigest()
+
+
+def _zip_digest(path: pathlib.Path) -> str:
+    """Digest a zip by its CONTENTS, not by its container bytes.
+
+    A zip stores a modification time per entry, so an archive rewritten from identical
+    files is a different byte sequence every time — the same defect as the gzip header
+    mtime, and `.xlsx`, `.docx` and `.npz` are all zips. Measured: two `df.to_excel()`
+    calls a second apart produced different digests for the same two rows.
+
+    Name and entry digest, NUL-separated, in sorted order: sorted because zip entry order
+    is a property of the writer rather than of the content, and NUL-separated for the
+    ADR-029 R9 reason — `name || digest` concatenated with no separator is not injective
+    by construction.
+    """
+    h = hashlib.sha256()
+    with zipfile.ZipFile(path) as z:
+        for info in sorted(z.infolist(), key=lambda i: i.filename):
+            h.update(info.filename.encode("utf-8", "surrogateescape"))
+            # The NUL is what makes this injective (ADR-029 R9): without it two entries
+            # `a`,`b` and one entry `ab` build the same byte string. No type flag is added
+            # beside it, because a zip directory IS a name ending in `/` -- `is_dir()`
+            # tests exactly that -- so the name already carries the distinction and a flag
+            # would be a branch no test could ever reach.
+            h.update(b"\0")
+            if info.is_dir():
+                continue
+            if info.filename == OOXML_CORE and info.file_size <= _ENTRY_WHOLE_MAX:
+                with z.open(info) as fh:
+                    body = OOXML_STAMP.sub(rb"\1\2", fh.read())
+                h.update(hashlib.sha256(body).hexdigest().encode())
+            else:
+                with z.open(info) as fh:
+                    h.update(_entry_digest(fh).encode())
+            h.update(b"\0")
+    return h.hexdigest()
+
+
+def _tar_digest(path: pathlib.Path) -> str:
+    """Digest a tar by its CONTENTS. Same argument as `_zip_digest`.
+
+    A tar header carries mtime, uid, gid and mode. Measured: `tar.add()` of an unchanged
+    file one second later produced a different archive, so mtime alone is enough to make
+    a tarred artifact unhashable-twice. Ownership is deliberately out too — the same tree
+    packed by two people is the same content.
+    """
+    h = hashlib.sha256()
+    with tarfile.open(path) as t:
+        for member in sorted(t.getmembers(), key=lambda m: m.name):
+            # No separator after the name: the one-byte type flag below is followed by its
+            # own NUL, so the first NUL of every record lands immediately after the flag
+            # and the name field is delimited by construction. THAT NUL is load-bearing --
+            # without it `name "a" -> link "Lb"` and `name "aL" -> link "b"` build the same
+            # bytes -- and a second one here would be a byte no test could reach.
+            h.update(member.name.encode("utf-8", "surrogateescape"))
+            if member.isfile():
+                fh = t.extractfile(member)
+                if fh is None:
+                    # A regular member that cannot be opened as a stream. Substituting a
+                    # marker would put a digest in the record that describes an archive
+                    # nobody read; the raw hash of the container is the honest answer, and
+                    # it is the same fallback a corrupt gzip or zip takes.
+                    raise tarfile.TarError(f"member {member.name!r} could not be streamed")
+                # `F\0` is REDUNDANT here and kept on purpose: a file's payload is a
+                # fixed-width digest, so the name is recoverable without it. The other two
+                # kinds carry variable-length payloads and genuinely need the flag, and
+                # encoding all three the same way is what makes the injectivity argument
+                # one sentence instead of three cases.
+                h.update(b"F\0" + _entry_digest(fh).encode())
+            elif member.issym() or member.islnk():
+                # The target IS the content of a link. Two links pointing elsewhere are
+                # not the same archive.
+                h.update(b"L\0" + member.linkname.encode("utf-8", "surrogateescape"))
+            else:
+                h.update(b"O\0" + str(member.type).encode())
+            h.update(b"\0")
     return h.hexdigest()
 
 
