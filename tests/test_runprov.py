@@ -6049,3 +6049,109 @@ def test_the_byte_bound_does_not_move_any_digest(tmp_path):
             )
     assert len(digests) == 1, f"the block size changed the digest: {digests}"
     assert runprov.content_digest(p) in digests
+
+
+# ===================== a symlinked data directory is the normal layout, not a foreign file
+def test_a_symlinked_directory_inside_the_root_pins_as_repository_data(tmp_path):
+    """`data/ -> /mnt/bigdisk/data` is the standard bioinformatics layout, and every
+    Nextflow or Snakemake work directory stages its inputs as symlinks.
+
+    `resolve()` followed every link, so real repository data pinned as `<external>/x.tsv` —
+    wrong twice: it announces a file as foreign to the repository holding it, and
+    `<external>/` is deliberately not a path, so `verify` calls it UNVERIFIABLE. Those
+    inputs were unpinnable AND uncheckable.
+    """
+    root, big = tmp_path / "repo", tmp_path / "bigdisk"
+    (root / "results").mkdir(parents=True)
+    big.mkdir()
+    (big / "reads.tsv").write_text("id\tseq\n1\tACGT\n", encoding="utf-8")
+    (root / "data").symlink_to(big, target_is_directory=True)
+
+    proj = runprov.Project(root=root, run_log=root / "runs.jsonl", run_id=lambda: "r")
+    with runprov.Run("s", project=proj, provenance=root / "p.json") as run:
+        run.input(root / "data" / "reads.tsv")
+        with run.open_output(root / "results" / "out.tsv") as fh:
+            fh.write("done\n")
+
+    pin = (root / "results" / "out.tsv").read_text(encoding="utf-8")
+    assert "data/reads.tsv" in pin, pin
+    assert "<external>" not in pin, "repository data must not pin as foreign"
+
+    # And it is now checkable, which is the half that `<external>/` made impossible.
+    rep = runprov.verify.verify([root / "results"], root)
+    assert rep["ok"] == 1 and rep["unverifiable"] == 0
+
+
+def test_a_root_reached_through_a_link_still_resolves(tmp_path):
+    """The other direction, and why `resolve()` is kept as the second attempt: macOS `/tmp`
+    is `/private/tmp`, and plenty of clusters mount home directories through a link. There
+    the spelled path is not under the spelled root and only resolving finds the relation."""
+    real = tmp_path / "real_root"
+    (real / "data").mkdir(parents=True)
+    (real / "data" / "in.tsv").write_text("x\n", encoding="utf-8")
+    link = tmp_path / "via_link"
+    link.symlink_to(real, target_is_directory=True)
+
+    # The project names the LINK; the input is given by its REAL path.
+    proj = runprov.Project(root=link, run_log=link / "runs.jsonl", run_id=lambda: "r")
+    run = runprov.Run("s", project=proj)
+    run.input(real / "data" / "in.tsv")
+    assert "data/in.tsv" in run.header() and "<external>" not in run.header()
+
+
+def test_a_path_that_is_genuinely_outside_still_pins_as_external(tmp_path):
+    """The guard must not turn `<external>` into a category nothing reaches: a file outside
+    the root is a real thing to record, and the pin says so rather than inventing a name."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "elsewhere.tsv"
+    outside.write_text("x\n", encoding="utf-8")
+    proj = runprov.Project(root=root, run_log=root / "runs.jsonl", run_id=lambda: "r")
+    run = runprov.Run("s", project=proj)
+    run.input(outside)
+    assert "<external>/elsewhere.tsv" in run.header()
+
+
+def test_a_dotdot_through_a_link_declines_the_cheap_answer(tmp_path):
+    """`link/../x` normalises to the parent of the LINK, while on disk it means the parent
+    of its TARGET. The cheap normalisation would name a file that is not the one hashed, so
+    a path containing `..` skips it and only the resolved form is used."""
+    root = tmp_path / "repo"
+    (root / "sub").mkdir(parents=True)
+    target = tmp_path / "target"
+    (target / "deep").mkdir(parents=True)
+    (tmp_path / "sibling.tsv").write_text("x\n", encoding="utf-8")
+    (root / "sub" / "link").symlink_to(target / "deep", target_is_directory=True)
+
+    proj = runprov.Project(root=root, run_log=root / "runs.jsonl", run_id=lambda: "r")
+    run = runprov.Run("s", project=proj)
+    # Spelled: repo/sub/link/../../sibling.tsv. Normalised that is repo/sibling.tsv, which
+    # is NOT the file on disk — the real one sits beside `target`, outside the root.
+    run.input(root / "sub" / "link" / ".." / ".." / "sibling.tsv")
+    header = run.header()
+    assert "<external>/sibling.tsv" in header, header
+    assert "repo/sibling.tsv" not in header
+
+
+def test_a_symlink_loop_pins_as_external_instead_of_killing_the_run(tmp_path):
+    """`resolve()` on a loop raises RuntimeError, which is NOT an OSError — so it was not
+    caught here, escaped `_pin_name`, escaped `header()`, and killed the run at the moment
+    it tried to describe itself.
+
+    A loop is a misconfigured mount or a broken staging step: a fact about the inputs worth
+    recording, not a reason to lose the record. It pins as external, which is exactly what
+    "we could not place this under the root" means.
+    """
+    root, outside = tmp_path / "repo", tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (outside / "a").symlink_to(outside / "b")
+    (outside / "b").symlink_to(outside / "a")
+
+    with pytest.raises(RuntimeError):  # the precondition: resolve() really does raise
+        (outside / "a" / "x.tsv").resolve()
+
+    proj = runprov.Project(root=root, run_log=root / "runs.jsonl", run_id=lambda: "r")
+    run = runprov.Run("s", project=proj)
+    run.record["inputs"].append({"path": str(outside / "a" / "x.tsv"), "sha256": "0" * 64})
+    assert "<external>/x.tsv" in run.header()
