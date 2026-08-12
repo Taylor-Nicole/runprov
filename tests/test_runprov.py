@@ -4643,3 +4643,162 @@ def test_to_yaml_finds_the_script_file_in_a_sidecar_record_too(tmp_path, monkeyp
     from_history = yaml.safe_load(cli._yaml(history))[0]
     assert from_record["script"] == str(script)
     assert from_record["script"] == from_history["script"], "the two views must agree"
+
+
+def test_the_distribution_declares_a_console_script():
+    """`python -m runprov` is one entry point; the console script is another, and only the
+    second is reachable by `uvx runprov` or `pipx run runprov`.
+
+    Asserted against pyproject rather than against an installed environment, so the suite
+    stays runnable from a source checkout — `ci.py build` checks the built artifact, which
+    is the half that catches a wheel where the entry point did not survive packaging.
+    """
+    body = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+    assert "[project.scripts]" in body
+    assert 'runprov = "runprov.__main__:main"' in body
+
+
+def test_main_can_be_called_with_no_argv_the_way_a_console_script_calls_it():
+    """A console script calls `main()` with no arguments. If the signature required argv,
+    every `runprov ...` invocation would die with a TypeError while `python -m runprov`
+    kept working — the entry point is generated at install time and never type-checked."""
+    assert inspect.signature(cli.main).parameters["argv"].default is None
+    with pytest.raises(SystemExit):
+        cli.main([])  # argparse exits 2 on a missing subcommand; it must not TypeError
+
+
+# ------------------------------------------------- REBUILDING THE ENVIRONMENT LATER
+# A package list describes an environment; it does not say how to rebuild one. `uv sync`,
+# `mamba env create` and `poetry install` are different commands over different files, so
+# the record has to name which one applies and pin the file it applies to.
+
+
+def _prefix_with(tmp_path, cfg=None, conda=False):
+    root = tmp_path / "prefix"
+    root.mkdir(parents=True, exist_ok=True)
+    if cfg is not None:
+        (root / "pyvenv.cfg").write_text(cfg, encoding="utf-8")
+    if conda:
+        (root / "conda-meta").mkdir(exist_ok=True)
+    return root
+
+
+def test_a_uv_created_venv_says_so_and_says_which_uv(tmp_path):
+    """uv stamps its own version into `pyvenv.cfg`, which is the most reliable marker
+    available — no subprocess, no PATH lookup, and it survives the environment being
+    copied. `virtualenv` does the same; a plain `venv` writes neither, and that absence is
+    how a plain venv is recognised."""
+    cfg = "home = /usr/bin\nversion = 3.12.13\nuv = 0.11.8\n"
+    got = runprov.environment.manager(_prefix_with(tmp_path, cfg=cfg), env={})
+    assert got["detected"] == ["uv", "venv"]
+    assert got["evidence"]["pyvenv.cfg:uv"] == "0.11.8"
+
+    plain = runprov.environment.manager(
+        _prefix_with(tmp_path / "b", cfg="home = /usr/bin\n"), env={}
+    )
+    assert plain["detected"] == ["venv"], "a plain venv stamps no tool version"
+
+
+def test_overlapping_layouts_are_reported_as_several_not_resolved_to_one(tmp_path):
+    """A uv-created venv inside a conda prefix is an ordinary thing in this field, and a
+    single answer would have to be wrong about one of them."""
+    got = runprov.environment.manager(
+        _prefix_with(tmp_path, cfg="uv = 0.11.8\n", conda=True),
+        env={"CONDA_PREFIX": "/opt/mamba/envs/hcv", "MAMBA_EXE": "/opt/bin/mamba"},
+    )
+    assert got["detected"] == ["conda", "conda-family", "mamba", "uv", "venv"]
+
+
+def test_an_environment_NAME_is_recorded_but_never_a_path(tmp_path):
+    """The name is what a human asks for six months later. The paths beside it carry a
+    username and a machine layout, and this dict goes into a record that gets committed
+    and shared — so only the fact that they were set is kept."""
+    got = runprov.environment.manager(
+        _prefix_with(tmp_path),
+        env={
+            "CONDA_DEFAULT_ENV": "hcv-genotyping",
+            "CONDA_PREFIX": "/home/someone/mambaforge/envs/hcv-genotyping",
+            "VIRTUAL_ENV": "/home/someone/proj/.venv",
+        },
+    )
+    assert got["evidence"]["CONDA_DEFAULT_ENV"] == "hcv-genotyping"
+    assert got["evidence"]["CONDA_PREFIX"] == "set"
+    assert got["evidence"]["VIRTUAL_ENV"] == "set"
+    assert "someone" not in json.dumps(got), "no path may reach the record"
+
+
+def test_an_unreadable_pyvenv_cfg_still_proves_a_venv(tmp_path, monkeypatch):
+    """It is evidence, not a parser. A prefix with an unreadable `pyvenv.cfg` is still a
+    venv layout, and reporting nothing would be a worse answer than reporting less."""
+    root = _prefix_with(tmp_path, cfg="uv = 1.0\n")
+
+    def _boom(*a, **k):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(pathlib.Path, "read_text", _boom)
+    got = runprov.environment.manager(root, env={})
+    assert got["detected"] == ["venv"]
+    assert got["evidence"]["pyvenv.cfg"] == "present but unreadable"
+
+
+def test_the_lock_file_is_hashed_so_the_record_names_a_fixed_thing(tmp_path):
+    """`uv.lock` changes every time a dependency does. A record naming it without pinning
+    its content names a moving target — the same defect as a pin that lists a path and not
+    a digest."""
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("pandas>=3\n", encoding="utf-8")
+    got = runprov.environment.lockfiles(tmp_path)
+    assert [d["name"] for d in got] == ["uv.lock", "requirements.txt"]
+    assert got[0]["sha256"] == runprov.sha256(tmp_path / "uv.lock")
+    assert runprov.environment.lockfiles(tmp_path / "empty") == []
+
+
+def test_lock_files_are_archived_content_addressed_and_reused(tmp_path):
+    """Hashing says which lock it was; ARCHIVING means the run is still rebuildable after
+    that file has moved on. Content-addressed for the same reason the package snapshot is:
+    an unchanged lock collapses to one copy however many runs reference it."""
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    envs = tmp_path / "envs"
+
+    first = runprov.environment.archive_lockfiles(tmp_path, envs)
+    assert first[0]["reused"] is False
+    archived = pathlib.Path(first[0]["path"])
+    assert archived.read_text(encoding="utf-8") == "version = 1\n"
+    assert archived.name.startswith("lock-") and archived.name.endswith("uv.lock")
+
+    again = runprov.environment.archive_lockfiles(tmp_path, envs)
+    assert again[0]["reused"] is True, "an unchanged lock must not be copied twice"
+
+    (tmp_path / "uv.lock").write_text("version = 2\n", encoding="utf-8")
+    moved = runprov.environment.archive_lockfiles(tmp_path, envs)
+    assert moved[0]["reused"] is False and moved[0]["path"] != first[0]["path"]
+
+
+def test_a_lock_that_cannot_be_archived_is_recorded_not_fatal(tmp_path, monkeypatch):
+    """Provenance must never become the reason the work did not happen."""
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+
+    def _boom(*a, **k):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(pathlib.Path, "write_bytes", _boom)
+    got = runprov.environment.archive_lockfiles(tmp_path, tmp_path / "envs")
+    assert "read-only file system" in got[0]["error"]
+    assert got[0]["sha256"], "the digest is still recorded — only the copy failed"
+
+
+def test_a_run_records_how_its_environment_could_be_rebuilt(tmp_path, monkeypatch):
+    """End to end, through `Run`, so the wiring is tested and not just the helpers."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    runprov.configure(
+        root=tmp_path, run_log=tmp_path / "runs.jsonl", env_snapshot_dir=tmp_path / "envs"
+    )
+    with runprov.Run("step", provenance=tmp_path / "p.json") as run:
+        pass
+
+    env = run.record["environment"]
+    assert env["manager"]["detected"], "some manager must be identified for this venv"
+    assert [d["name"] for d in env["lockfiles"]] == ["uv.lock"]
+    assert env["snapshot"]["lockfiles"][0]["reused"] is False
+    assert pathlib.Path(env["snapshot"]["lockfiles"][0]["path"]).is_file()

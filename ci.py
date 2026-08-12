@@ -121,6 +121,17 @@ def build() -> None:
         run(str(vpy), "-m", "runprov", "log", "--log", "h.jsonl", cwd=Path(tmp))
         run(str(vpy), "-m", "runprov", "log", "--log", "h.jsonl", "--format", "yaml", cwd=Path(tmp))
         run(str(vpy), "-m", "runprov", "lineage", "--log", "h.jsonl", cwd=Path(tmp))
+        # The CONSOLE SCRIPT, which is a different entry point from `-m` and fails
+        # separately. `uvx runprov` and `pipx run runprov` resolve this one and cannot
+        # reach a `-m` module at all, so without it the "a reviewer can install it and
+        # check your claims" argument is one command short of true. Its absence is quiet:
+        # every `-m` invocation keeps working.
+        script = venv / ("Scripts" if sys.platform == "win32" else "bin") / "runprov"
+        if sys.platform == "win32":
+            script = script.with_suffix(".exe")
+        if not script.exists():
+            raise SystemExit(f"the `runprov` console script is NOT in the venv ({script})")
+        run(str(script), "log", "--log", "h.jsonl", cwd=Path(tmp))
 
     # THE SDIST, which nothing checked. `twine check` reads its metadata and never builds
     # it, so a file missing from the sdist is invisible until someone installs with

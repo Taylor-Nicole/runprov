@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pathlib
 import platform
 import sys
@@ -186,3 +187,147 @@ def write_snapshot(directory: pathlib.Path) -> dict[str, typing.Any]:
         # lives in a conda-family prefix".
         rec["n_conda_packages"] = len(conda)
     return rec
+
+
+#: Lock and requirement files, in the order a reader should trust them: a resolved lock
+#: pins exact versions and hashes, a `requirements.txt` may be a loose declaration. Fixed
+#: list rather than a glob, so what is captured is reviewable and cannot quietly widen.
+LOCKFILES = (
+    "uv.lock",
+    "poetry.lock",
+    "pdm.lock",
+    "pixi.lock",
+    "conda-lock.yml",
+    "Pipfile.lock",
+    "environment.yml",
+    "environment.yaml",
+    "requirements.txt",
+    "requirements.lock",
+    "requirements-dev.lock",
+)
+
+#: Environment variables that NAME an environment. Values are recorded because a name is
+#: the thing a human asks for -- "which env was that?" -- and none of these is a path.
+_NAME_VARS = ("CONDA_DEFAULT_ENV", "HATCH_ENV_ACTIVE", "PIXI_ENVIRONMENT_NAME")
+
+#: Variables whose PRESENCE identifies a manager. The values are paths, and paths carry
+#: usernames and machine layout, so only the fact that they are set is recorded.
+_MANAGER_VARS = {
+    "CONDA_PREFIX": "conda",
+    "MAMBA_EXE": "mamba",
+    "MAMBA_ROOT_PREFIX": "mamba",
+    "PIXI_PROJECT_ROOT": "pixi",
+    "POETRY_ACTIVE": "poetry",
+    "PDM_PROJECT_ROOT": "pdm",
+    "HATCH_ENV_ACTIVE": "hatch",
+    "RYE_HOME": "rye",
+    "UV_PROJECT_ENVIRONMENT": "uv",
+    "VIRTUAL_ENV": "venv",
+}
+
+
+def manager(
+    prefix: pathlib.Path | None = None, env: dict[str, str] | None = None
+) -> dict[str, typing.Any]:
+    """Which tool built the environment this interpreter is running in, and the EVIDENCE.
+
+    A package list says what is installed. It does not say how to rebuild it, and "rebuild
+    it" is the question anyone asks six months later. `uv sync`, `mamba env create` and
+    `poetry install` are different commands over different files, so the answer starts with
+    which one applies.
+
+    Detected from what is ON DISK and in the environment, never by running anything:
+
+    * `pyvenv.cfg` in the prefix — written by `venv`, `virtualenv` and `uv`, and **uv
+      stamps its own version into it**, which is the most reliable marker there is;
+    * `conda-meta/` in the prefix — conda, mamba, micromamba and pixi all create it;
+    * a small set of environment variables, listed above.
+
+    Returns the evidence beside the verdict, and a LIST rather than one name, because the
+    layouts overlap for real: a uv-created venv inside a conda prefix is an ordinary thing
+    in this field, and a single answer would have to be wrong about one of them.
+
+    Paths are deliberately absent from the result. `VIRTUAL_ENV` and `CONDA_PREFIX` hold
+    absolute paths carrying a username and a machine layout, and this dict goes into a
+    record that gets committed and shared.
+    """
+    prefix = pathlib.Path(sys.prefix) if prefix is None else prefix
+    env = dict(os.environ) if env is None else env
+    detected: list[str] = []
+    evidence: dict[str, typing.Any] = {}
+
+    cfg = prefix / "pyvenv.cfg"
+    if cfg.is_file():
+        detected.append("venv")
+        try:
+            for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+                key, _, value = line.partition("=")
+                key, value = key.strip().lower(), value.strip()
+                # `uv` and `virtualenv` write their own version; plain `venv` writes
+                # neither, which is itself how a plain venv is recognised.
+                if key in ("uv", "virtualenv") and value:
+                    detected.append(key)
+                    evidence[f"pyvenv.cfg:{key}"] = value
+        except OSError:  # guards-ok: an unreadable pyvenv.cfg still proves a venv layout,
+            # which is the part that was already recorded above.
+            evidence["pyvenv.cfg"] = "present but unreadable"
+
+    if (prefix / "conda-meta").is_dir():
+        detected.append("conda-family")
+        evidence["conda-meta"] = True
+
+    for var, name in _MANAGER_VARS.items():
+        if env.get(var):
+            detected.append(name)
+            evidence[var] = "set"  # never the value: it is a path
+
+    for var in _NAME_VARS:
+        if env.get(var):
+            evidence[var] = env[var]
+
+    # Sorted and deduplicated so two runs in one environment produce one answer regardless
+    # of dict iteration or which marker was seen first.
+    return {"detected": sorted(set(detected)), "evidence": evidence}
+
+
+def lockfiles(root: pathlib.Path) -> list[dict[str, typing.Any]]:
+    """Every lock or requirements file at the project root, hashed.
+
+    This is the half that makes an environment reproducible rather than merely described.
+    The snapshot says which versions were installed; the lock says how to install them
+    again, and a digest says WHICH lock — the file changes as the project moves, and a
+    record naming `uv.lock` without pinning its content names a moving target.
+    """
+    from .hashing import sha256
+
+    out: list[dict[str, typing.Any]] = []
+    for name in LOCKFILES:
+        path = root / name
+        if path.is_file():
+            out.append({"name": name, "sha256": sha256(path), "bytes": path.stat().st_size})
+    return out
+
+
+def archive_lockfiles(root: pathlib.Path, directory: pathlib.Path) -> list[dict[str, typing.Any]]:
+    """Copy each lock file into `directory`, named by its own digest.
+
+    Hashing a lock file records which one it was; copying it means the run can still be
+    rebuilt after that file has moved on. Content-addressed for the same reason the package
+    snapshot is: an unchanged lock collapses to one copy no matter how many runs reference
+    it, and `reused: true` says the environment's DECLARATION has not moved either.
+    """
+    directory = pathlib.Path(directory)
+    out: list[dict[str, typing.Any]] = []
+    for rec in lockfiles(root):
+        target = directory / f"lock-{rec['sha256'][:16]}-{rec['name']}"
+        rec = dict(rec, path=str(target), reused=target.is_file())
+        if not rec["reused"]:
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((root / rec["name"]).read_bytes())
+            except OSError as exc:  # guards-ok: a snapshot that could not be archived is
+                # recorded as such. Failing the caller's run because a copy failed would
+                # make provenance the reason the work did not happen.
+                rec["error"] = str(exc)
+        out.append(rec)
+    return out

@@ -37,7 +37,7 @@ import typing
 import uuid
 
 from ._report import diagnostic, summary
-from .environment import write_snapshot
+from .environment import archive_lockfiles, lockfiles, manager, write_snapshot
 from .hashing import describe, sha256
 from .project import OTHER_FILES_KEPT, Project, active, classify_status, git, is_configured
 from .terminal import Capture
@@ -307,6 +307,17 @@ class Run:
                 "hostname": platform.node(),
                 "cpu_count": os.cpu_count(),
                 "packages": self._versions(),
+                # WHICH TOOL BUILT THIS, and the evidence for saying so. A package list
+                # describes an environment; it does not say how to rebuild one, and
+                # `uv sync`, `mamba env create` and `poetry install` are different commands
+                # over different files. Detected from disk and environment, never by
+                # running anything, and carrying no paths -- see `environment.manager`.
+                "manager": manager(),
+                # The DECLARATION beside the result. The snapshot says which versions were
+                # installed; the lock says how to install them again, and the digest says
+                # which lock -- naming `uv.lock` without pinning its content names a file
+                # that moves.
+                "lockfiles": lockfiles(pathlib.Path(self.project.root)),
             },
             # WHERE THE HISTORY LINE WENT. The console printed the sidecar path and never
             # this one, so a split history -- two projects, two runs.jsonl, one of them
@@ -640,6 +651,11 @@ class Run:
             return None
         try:
             rec = write_snapshot(pathlib.Path(d))
+            # Hashing a lock file records WHICH one; copying it means the run can still be
+            # rebuilt after that file has moved on -- which it will, because a lock file
+            # changes every time a dependency does. Same directory and the same
+            # content-addressing as the package snapshot.
+            rec["lockfiles"] = archive_lockfiles(pathlib.Path(self.project.root), pathlib.Path(d))
         except Exception as exc:  # never let provenance capture break a run
             diagnostic(f"  WARNING: could not write environment snapshot: {exc}")
             rec = {"error": str(exc)}
