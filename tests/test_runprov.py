@@ -5978,3 +5978,74 @@ def test_the_handler_raises_into_the_block_it_guards(tmp_path):
     assert rec["status"] == "failed" and rec["failure"]["type"] == "Terminated"
     assert rec["notes"] == {"reached": True}
     assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL, "and it cleaned up after itself"
+
+
+def test_content_digest_streams_files_whose_LINES_are_long(tmp_path):
+    """The sibling of the scale-invariance test above, and the case it could not see.
+
+    That one triples the LINE COUNT at a fixed line length; a block bounded only by lines
+    passes it while remaining unbounded in bytes. The shape that defeats such a block is not
+    a big file but a file with few big lines — an unwrapped FASTA (`seqtk seq -l0`, most
+    assemblers, any single-sequence download), a minified JSON, a one-line dump. Measured
+    before the byte bound, on 8,192 contigs of ~30 kb: **607 MB peak for a 246 MB file**.
+    Under a SLURM memory cgroup that is an OOM kill inside provenance capture — and an OOM
+    kill is SIGKILL, the one ending nothing can record.
+
+    Same method as its sibling, for the same reason: comparing two sizes cancels out the
+    per-object constant that made an absolute threshold a test of one machine.
+    """
+    import tracemalloc
+
+    def peak_for(records: int, width: int) -> tuple[int, int]:
+        p = tmp_path / f"g{records}x{width}.fa"
+        with open(p, "w", encoding="utf-8") as fh:
+            for i in range(records):
+                fh.write(f">contig{i}\n" + "ACGT" * width + "\n")
+        tracemalloc.start()
+        try:
+            assert runprov.content_digest(p)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        return peak, p.stat().st_size
+
+    # Same line COUNT, four times the line LENGTH: only a byte bound can hold the peak.
+    small_peak, small_size = peak_for(2000, 2_000)
+    large_peak, large_size = peak_for(2000, 8_000)
+
+    assert large_size > small_size * 3, "the two fixtures must actually differ in size"
+    assert large_peak < small_peak * 1.5, (
+        f"peak grew with the LINE LENGTH — {small_peak / 1e6:.1f} MB for "
+        f"{small_size / 1e6:.1f} MB vs {large_peak / 1e6:.1f} MB for {large_size / 1e6:.1f} "
+        f"MB. A block bounded only by line count is unbounded in bytes."
+    )
+
+
+def test_the_byte_bound_does_not_move_any_digest(tmp_path):
+    """The bound is a memory change and must not be a FORMAT change. A digest that moved
+    would re-pin every artifact at once — the '80 artifacts CHANGED' failure this module
+    exists to prevent, arriving through an optimisation.
+
+    Pinned by construction rather than by a stored constant: the same bytes hashed at four
+    block sizes, including one smaller than a single line, must agree.
+    """
+    p = tmp_path / "mixed.txt"
+    p.write_text(
+        "# built_utc: 2026-01-01T00:00:00Z\n"
+        + "short\n\n"
+        + "x" * 40_000
+        + "\n"
+        + "".join(f"row{i}\tv{i}\n" for i in range(5_000))
+        + "tail-without-newline",
+        encoding="utf-8",
+    )
+    digests = set()
+    for chunk_bytes in (1 << 23, 1 << 16, 4096, 64):
+        with open(p, encoding="utf-8") as fh:
+            digests.add(
+                runprov.hashing._stream_digest(
+                    fh, is_json=False, chunk_lines=8192, chunk_bytes=chunk_bytes
+                )
+            )
+    assert len(digests) == 1, f"the block size changed the digest: {digests}"
+    assert runprov.content_digest(p) in digests

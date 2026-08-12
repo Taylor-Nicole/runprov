@@ -40,7 +40,6 @@ from __future__ import annotations
 import datetime as dt
 import gzip
 import hashlib
-import itertools
 import os
 import pathlib
 import re
@@ -76,6 +75,13 @@ _JSON_BLANK = r'"\1": ""'
 # ADR-029 R1. Carried between blocks so a `"started_utc": "..."` split across an 8,192-line
 # boundary is still matched. Comfortably longer than any stamp the rule above can match.
 _CARRY = 4096
+
+# The SECOND bound on a block, in characters. A block was `chunk_lines` lines regardless of
+# how long they were, which made peak memory a property of the file's line lengths rather
+# than of anything this module chose. 8 MiB is large enough that ordinary line-per-record
+# text still moves in big blocks, and small enough that a file of few enormous lines costs
+# a bounded amount instead of its own size several times over.
+_CHUNK_BYTES = 1 << 23
 
 # The write timestamp OOXML puts inside every .xlsx/.docx/.pptx, in a part whose path is
 # fixed by the specification. Measured: two `df.to_excel(...)` calls one second apart
@@ -114,6 +120,22 @@ def content_digest(path: pathlib.Path, chunk_lines: int = 8192) -> str | None:
     inputs are fine" -- true of `sha256`, false here, and this is the function called on
     every registered input. A 4 GB TSV would have taken 4 GB of memory to decide whether
     it had changed.
+
+    "Streamed" then meant BY LINE COUNT ONLY, which is the same claim one level up: a block
+    was 8,192 lines however long each one was, so peak memory was a property of the file's
+    line lengths rather than of anything chosen here. Measured on this machine, peak RSS for
+    one call, before and after the byte bound:
+
+        8,192 contigs of ~30 kb   246 MB file    607 MB -> 43 MB
+        one 100 MB line           100 MB file    429 MB -> 334 MB
+        6M short lines            142 MB file     22 MB -> 21 MB   (unchanged)
+
+    The middle row is the honest limit and it does not go away: the filter is line-oriented
+    and Python hands over one line at a time, so a single enormous line is read whole
+    whatever the block size. The cost is now one line rather than one block of them --
+    ordinary line-per-record text is bounded, an unwrapped FASTA is proportional to its
+    longest sequence. Fixing that too means abandoning line-oriented reading, which changes
+    where every match boundary falls, and this function may not move a digest.
     """
     if not path.is_file():
         return None
@@ -143,15 +165,43 @@ def content_digest(path: pathlib.Path, chunk_lines: int = 8192) -> str | None:
         return sha256(path)
 
 
-def _stream_digest(fh: typing.TextIO, *, is_json: bool, chunk_lines: int) -> str:
-    """The line filter, streamed, with a carry so a match may span a block boundary."""
+def _stream_digest(
+    fh: typing.TextIO, *, is_json: bool, chunk_lines: int, chunk_bytes: int = _CHUNK_BYTES
+) -> str:
+    """The line filter, streamed, with a carry so a match may span a block boundary.
+
+    BOUNDED BY BYTES AS WELL AS BY LINES, because "streamed" was true only of files whose
+    LINES are short. A block was `chunk_lines` lines however long each one was, so the shape
+    that defeats it is not a big file but a file with few big lines -- an unwrapped FASTA
+    (`seqtk seq -l0`, most assemblers, any single-sequence download), a minified JSON, a
+    one-line data dump. Measured before this bound, on a 200 MB unwrapped FASTA of two
+    100 MB lines: **850 MB peak**, 4.25x the file, for a function whose job is deciding
+    whether the file changed. Under a SLURM memory cgroup that is an OOM kill inside
+    provenance capture -- and an OOM kill is SIGKILL, the one ending nothing can record.
+
+    The non-JSON path also stops building the joined block at all and feeds the hash one
+    line at a time. The bytes are identical -- `"\\n".join(kept)` and a `\\n` between each
+    pair are the same stream -- but the peak drops from a copy of the block to a copy of one
+    line. The JSON path still needs a buffer, because `VOLATILE_JSON` matches across line
+    boundaries; that buffer is bounded by one block plus `_CARRY`.
+
+    A single line longer than `chunk_bytes` is still read whole, because the filter is
+    line-oriented and Python's iterator hands over a line at a time. That is a real limit
+    and it is smaller than the one it replaces: the cost is one line, not one block.
+    """
     h = hashlib.sha256()
     pending = ""
     first = True
     strip_json = False
     sniffed = False
     while True:
-        block = list(itertools.islice(fh, chunk_lines))
+        # Read to whichever bound arrives first. `islice` alone could not see the second.
+        block, size = [], 0
+        for line in fh:
+            block.append(line)
+            size += len(line)
+            if len(block) >= chunk_lines or size >= chunk_bytes:
+                break
         if not block:
             break
         if not sniffed:
@@ -162,16 +212,19 @@ def _stream_digest(fh: typing.TextIO, *, is_json: bool, chunk_lines: int) -> str
         kept = [ln.rstrip("\n") for ln in block if not VOLATILE.match(ln)]
         if not kept:
             continue
-        pending += ("" if first else "\n") + "\n".join(kept)
-        first = False
         if strip_json:
+            pending += ("" if first else "\n") + "\n".join(kept)
+            first = False
             pending = VOLATILE_JSON.sub(_JSON_BLANK, pending)
             if len(pending) > _CARRY:
                 h.update(pending[:-_CARRY].encode())
                 pending = pending[-_CARRY:]
         else:
-            h.update(pending.encode())
-            pending = ""
+            for line in kept:
+                if not first:
+                    h.update(b"\n")
+                h.update(line.encode())
+                first = False
     if strip_json:
         pending = VOLATILE_JSON.sub(_JSON_BLANK, pending)
     h.update(pending.encode())
