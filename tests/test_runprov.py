@@ -185,6 +185,52 @@ def test_run_records_a_registered_output_that_was_never_written(tmp_path):
     assert rec["outputs"][0]["kind"] == "MISSING"
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFO needed to make one")
+def test_an_output_that_cannot_be_hashed_is_recorded_and_does_not_destroy_the_run(tmp_path, capsys):
+    """The whole record used to be lost for ONE awkward output, and that is the opposite of
+    this package's job.
+
+    `describe()` refuses a FIFO by design rather than blocking on it, and the raise left
+    `write()`, left `_finish()`, and was swallowed by `__exit__`'s catch-all: no sidecar, no
+    history line, exit 0 — with `provenance=` AND a `with` block, the two things documented
+    to guarantee a record. A Snakemake `pipe()` output, a bash process substitution, a
+    container-root-owned file or an output deleted after `exists()` all reach it.
+
+    The asserts are deliberately about THE REST of the record. That the bad output is
+    labelled matters less than that the good output, the input, the note and the history
+    line all survive it — losing those was the defect.
+    """
+    proj = _project(tmp_path)
+    src = tmp_path / "in.tsv"
+    src.write_text("id\n1\n", encoding="utf-8")
+    fifo = tmp_path / "stream.out"
+    os.mkfifo(fifo)
+
+    with runprov.Run("t", project=proj, provenance=tmp_path / "t_prov.json") as run:
+        run.input(src)
+        run.output(fifo)
+        (good := run.output(tmp_path / "real.tsv")).write_text("id\n2\n", encoding="utf-8")
+        run.note("rows", 1)
+
+    rec = json.loads((tmp_path / "t_prov.json").read_text(encoding="utf-8"))
+    outs = {pathlib.Path(o["path"]).name: o for o in rec["outputs"]}
+
+    assert rec["status"] == "ok", "the run succeeded; an unhashable output is not a failure"
+    assert rec["notes"] == {"rows": 1} and len(rec["inputs"]) == 1
+    assert outs["real.tsv"]["sha256"], "the GOOD output must still be hashed and recorded"
+    assert outs["stream.out"]["kind"] == "UNHASHABLE"
+    assert "sha256" not in outs["stream.out"], "no digest may be invented for it"
+
+    history = (tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(history) == 1, "the run must reach the append-only history, not vanish from it"
+    assert json.loads(history[0])["notes"] == {"rows": 1}
+
+    # Announced, unlike MISSING: this file is present and ordinary-looking, so nothing but
+    # the warning tells the user its digest is absent.
+    assert "UNHASHABLE" in capsys.readouterr().err
+    assert good.exists()
+
+
 def test_run_hashes_outputs_at_write_time_not_at_registration(tmp_path):
     """Callers do `df.to_csv(run.output(p))`, so the file does not exist at call time.
     Eager hashing silently dropped every output whose writer had not yet run."""
@@ -805,6 +851,43 @@ def test_a_second_write_does_not_double_count_the_run(tmp_path):
     run.write(tmp_path / "b.json")
     assert len(sink.records) == 1
     assert (tmp_path / "a.json").is_file() and (tmp_path / "b.json").is_file()
+
+
+def test_a_second_write_does_not_double_the_outputs_inside_the_record(tmp_path):
+    """The other half of the test above, and the half that was wrong.
+
+    Counting history LINES stayed correct while what was inside them did not: `outputs` was
+    appended to on every `write()`, so a second call — which `write()`'s own docstring calls
+    legitimate, for a caller wanting the record at a second path — recorded one artifact
+    twice. Inside a `with` block the history line is deferred to `__exit__`, so it reads the
+    already-doubled list and the doubling reaches the append-only history, where any tally
+    over artifacts produced is then silently inflated for the life of the file.
+    """
+    sink = runprov.MemorySink()
+    proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
+
+    run = runprov.Run("t", project=proj)
+    (out := run.output(tmp_path / "o.tsv")).write_text("id\n1\n", encoding="utf-8")
+    run.write(tmp_path / "a.json")
+    run.write(tmp_path / "b.json")  # the second path this method's docstring invites
+
+    for name in ("a.json", "b.json"):
+        rec = json.loads((tmp_path / name).read_text(encoding="utf-8"))
+        paths = [o["path"] for o in rec["outputs"]]
+        assert paths == [str(out)], f"{name} recorded {len(paths)} entries for one file"
+
+    # The history line is the one that is permanent, and inside a `with` block it is
+    # deferred to `__exit__` — so it read the list AFTER every write() had appended to it.
+    sink2 = runprov.MemorySink()
+    proj2 = runprov.Project(root=tmp_path, sink=sink2, run_id=lambda: "r", generation=lambda: "g")
+    with runprov.Run("t", project=proj2, provenance=tmp_path / "c.json") as run2:
+        (out2 := run2.output(tmp_path / "p.tsv")).write_text("id\n1\n", encoding="utf-8")
+        run2.write(tmp_path / "d.json")
+
+    assert len(sink2.records) == 1, "still exactly one line for the run"
+    assert [o["path"] for o in sink2.records[0]["outputs"]] == [str(out2)], (
+        "the append-only history must not carry one artifact twice"
+    )
 
 
 def test_a_custom_sink_receives_the_records(tmp_path):
@@ -1659,6 +1742,74 @@ def test_the_constructor_documents_the_trap_and_not_merely_the_argument():
     assert "records nothing" in entry or "silent" in entry, (
         "it must state the CONSEQUENCE — that the run is lost — not merely the mechanism"
     )
+
+
+def test_the_package_docstring_teaches_the_shape_that_actually_records():
+    """The third door into I5, and the one that stayed open after the other two were shut.
+
+    `test_the_readme_quickstart_teaches_the_shape_that_actually_records` guards the README
+    and the test above guards `Run`'s own docstring, and both were green while
+    `runprov/__init__.py` still opened with `run = Run(...)` … `run.write(PROV)` — the first
+    row of the README's own "records nothing" table, in the module docstring, which is what
+    `help(runprov)` and `pydoc runprov` print and therefore the first thing anyone reads
+    after `import runprov`. The README was fixed when the shape cost someone a run; the
+    package docstring was not, so the two disagreed and the wrong one was reached first.
+
+    Parsed, not grepped, for the reason the README test gives: a substring check for
+    "provenance" passes on the prose that CONDEMNS the shape.
+    """
+    doc = inspect.getdoc(runprov) or ""
+
+    # The indented example, taken as the maximal blank-or-indented run after the summary.
+    # Slicing to the first `with` would beg the question -- the defect under test is a
+    # docstring with NO `with` in it at all, which would then yield an empty block and pass.
+    lines, block = doc.splitlines(), []
+    for line in lines[next(i for i, ln in enumerate(lines) if ln.startswith("    ")) :]:
+        if line.strip() and not line.startswith("    "):
+            break
+        block.append(line)
+    tree = ast.parse(textwrap.dedent("\n".join(block)))
+
+    def is_run(node):
+        return isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Run"
+
+    bound = [
+        item.context_expr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.With)
+        for item in node.items
+        if is_run(item.context_expr)
+    ]
+    every = [n for n in ast.walk(tree) if is_run(n)]
+
+    assert every, "the package docstring must show how to construct a Run"
+    assert len(bound) == len(every), (
+        "every Run in the package docstring must be bound by `with`; a bare `run = Run(...)` "
+        "records nothing when the body raises, and this docstring is what help() prints"
+    )
+    for call in bound:
+        assert any(k.arg == "provenance" for k in call.keywords), (
+            "`with Run(...)` WITHOUT provenance= is the shape that looks like the fix and is "
+            "not: __exit__ has nowhere to write, so a crash still records nothing"
+        )
+    # `.write` ON THE RUN, not any `.write`: the first spelling of this caught the
+    # `fh.write(run.header())` that the example is supposed to teach. The trap is the run's
+    # own write(), so the receiver has to be checked, and a bare `run = Run(...)` binding is
+    # checked alongside the `with ... as` one because that is the shape being excluded.
+    receivers = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.With):
+            for item in node.items:
+                if is_run(item.context_expr) and isinstance(item.optional_vars, ast.Name):
+                    receivers.add(item.optional_vars.id)
+        elif isinstance(node, ast.Assign) and is_run(node.value):
+            receivers.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    assert not any(
+        isinstance(n, ast.Attribute)
+        and n.attr == "write"
+        and getattr(n.value, "id", None) in receivers
+        for n in ast.walk(tree)
+    ), "run.write() here is the trap: write() INSTEAD OF provenance= is what loses the run"
 
 
 # ======================================================== I4: the Run-subclass shim
@@ -4940,6 +5091,45 @@ def test_moved_since_reports_a_time_only_change(tmp_path):
     p.write_text("bbbb\n", encoding="utf-8")  # identical length
     os.utime(p, (0, 0))  # and an unmistakably different mtime
     assert runprov.hashing.moved_since(rec) == "mtime"
+
+
+def test_a_relative_input_is_rechecked_against_the_recorded_cwd_not_the_current_one(
+    tmp_path, monkeypatch, capsys
+):
+    """A `chdir` between registering an input and finishing the run is ordinary, and it used
+    to point this check at whatever sat at the same relative spelling in the new directory.
+
+    Both directions are asserted because both were wrong and they fail oppositely. The
+    output loop in `write()` had always anchored to `record["cwd"]`; the input loop ten
+    lines above it had not, so the two disagreed inside one method.
+    """
+    work, other = tmp_path / "work", tmp_path / "other"
+    work.mkdir(), other.mkdir()
+    (work / "ref.fa").write_text(">a\nACGT\n", encoding="utf-8")
+    proj = _project(tmp_path)
+
+    # FALSE POSITIVE: a file nobody touched, reported "gone" forever in the record.
+    monkeypatch.chdir(work)
+    run = runprov.Run("stage", project=proj)
+    run.input("ref.fa")
+    monkeypatch.chdir(other)  # the same relative name does not exist here
+    rec = json.loads(run.write(tmp_path / "p1.json").read_text(encoding="utf-8"))
+    assert "changed_after_registration" not in rec["inputs"][0], (
+        "the input never moved; the check moved"
+    )
+    assert "CHANGED" not in capsys.readouterr().err
+
+    # FALSE NEGATIVE, and the worse one: the input genuinely IS rewritten, the stat lands on
+    # a path that does not exist, FileNotFoundError reads as "gone"... which was then ALSO
+    # wrong in the other direction. Anchored, the real rewrite is what gets reported.
+    monkeypatch.chdir(work)
+    run2 = runprov.Run("stage", project=proj)
+    run2.input("ref.fa")
+    (work / "ref.fa").write_text(">a\nACGTACGTACGT\n", encoding="utf-8")
+    monkeypatch.chdir(other)
+    rec2 = json.loads(run2.write(tmp_path / "p2.json").read_text(encoding="utf-8"))
+    assert rec2["inputs"][0]["changed_after_registration"] == "size"
+    assert "CHANGED" in capsys.readouterr().err
 
 
 def test_moved_since_does_not_claim_a_change_it_cannot_see(tmp_path):

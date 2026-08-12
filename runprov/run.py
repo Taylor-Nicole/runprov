@@ -728,6 +728,22 @@ class Run:
         return rec
 
     def seeds(self, seeds: typing.Iterable[int]) -> None:
+        """RECORD the seeds this run used. It does NOT set them.
+
+        The name reads like a setter and it is not one: nothing here touches `random`,
+        `numpy.random`, `torch` or `PYTHONHASHSEED`. Seed your generators yourself and
+        report the same values here — a run that calls this and never seeds anything
+        records a seed it did not use, which is worse than recording none, because the
+        record then asserts a reproducibility that does not hold.
+
+        It is a list because a run usually has more than one generator and they are not
+        interchangeable; recording only the one you remembered is how a rerun diverges in
+        a way nothing explains. Replaces on each call rather than accumulating.
+
+        Coerced with `int()` at registration, so a `numpy.int64` seed lands as a number the
+        record can be read back from, and a value that is not seed-shaped fails HERE, where
+        the caller can see which one it was.
+        """
         self.record["seeds"] = [int(s) for s in seeds]
 
     def note(self, key: str, value: typing.Any) -> None:  # noqa: ANN401
@@ -910,7 +926,23 @@ class Run:
 
     # ---------------------------------------------------------------- finish
     def write(self, path: str | pathlib.Path) -> pathlib.Path:
-        """Hash the registered outputs, write the record, append to the history."""
+        """Hash the registered outputs, write the record, append to the history.
+
+        CALLING THIS *INSTEAD OF* PASSING `provenance=` IS THE TRAP, and it is the reason
+        this method has a warning rather than a one-line description. `write()` runs where
+        you put it, so a run that dies before that line writes nothing at all: no sidecar,
+        no history entry, no warning — and a crash is the case the record was for. The
+        method cannot detect the mistake, because a call that never happens has nothing to
+        detect. Only the constructor can: `provenance=` is what arms `__exit__`, which is
+        the one place the final status is known.
+
+        Calling it INSIDE a `with Run(..., provenance=PROV)` block is fine and sometimes
+        useful — a caller may want the record at a second path. The history is still
+        appended exactly once, at exit, with the true status. It is `write()` as a
+        SUBSTITUTE for `provenance=` that loses the run, not `write()` itself.
+
+        Returns the path written, so a caller can register or log it.
+        """
         p = pathlib.Path(path)
         if (
             self.project.env_snapshot_dir is not None
@@ -924,7 +956,10 @@ class Run:
         # limit it does not hide.
         changed = []
         for entry in self.record["inputs"]:
-            why = moved_since(entry)
+            # Against the RECORDED cwd, exactly as the output loop below does. These two
+            # loops disagreed: outputs anchored, inputs did not, so a `chdir` between
+            # registration and here stat'd a relative input against the wrong directory.
+            why = moved_since(entry, base=pathlib.Path(self.record["cwd"]))
             if why:
                 entry["changed_after_registration"] = why
                 changed.append(f"{entry.get('path', '?')} ({why})")
@@ -938,6 +973,14 @@ class Run:
                 "    the two will report a difference that is real but is not the run's."
             )
 
+        # REBUILT, not appended to. `outputs` is derived entirely from `_pending`, and a
+        # second `write()` -- which this method's own docstring calls legitimate, for a
+        # caller wanting the record at a second path -- used to append the same files
+        # again. The count doubled for one artifact, and inside a `with` block the history
+        # line is deferred to `__exit__`, so it read the already-doubled list and the
+        # doubling reached the permanent, append-only history. The existing guard counts
+        # history LINES, which stayed correct while what was inside them did not.
+        self.record["outputs"] = []
         seen: set[pathlib.Path] = set()
         for q in self._pending:
             if q in seen:
@@ -949,7 +992,41 @@ class Run:
             # chdir'd into is what hashed one file while naming another.
             target = q if q.is_absolute() else pathlib.Path(self.record["cwd"]) / q
             if target.exists():
-                described = describe(target)
+                try:
+                    described = describe(target)
+                except (OSError, ValueError) as exc:
+                    # AN OUTPUT THAT CANNOT BE HASHED IS A FINDING, NOT A REASON TO LOSE
+                    # THE RUN. Unguarded, this raise left `write()`, left `_finish()`, and
+                    # was swallowed by `__exit__`'s catch-all as a one-line warning: no
+                    # sidecar, no history entry, exit 0 -- WITH `provenance=` and WITH a
+                    # `with` block, the two things documented to guarantee a record. Every
+                    # input, note, seed and successfully written output went with it, for
+                    # one awkward file among them.
+                    #
+                    # Reachable without contrivance: a Snakemake `pipe()` output or a bash
+                    # process substitution (a FIFO, which `describe` refuses BY DESIGN
+                    # rather than blocking on), a file a container wrote as root, an NFS
+                    # permission quirk, or an output deleted between `exists()` and here.
+                    #
+                    # `input()` has guarded exactly this call all along and raises AT
+                    # REGISTRATION, before the work -- the asymmetry was the defect:
+                    # `output()` defers hashing to here, AFTER the work, where raising
+                    # destroys a record that is otherwise complete and true.
+                    described = {
+                        "path": str(q),
+                        "kind": "UNHASHABLE",
+                        "note": f"exists but could not be hashed: {exc}",
+                    }
+                    # Announced, unlike MISSING, because the two degrade differently: a
+                    # MISSING output is a file the user can see is absent, while this one
+                    # is present and ordinary-looking and merely has no digest in the
+                    # record -- the silent degradation this package exists to refuse.
+                    diagnostic(
+                        f"  PROVENANCE WARNING: {self.record['script']}: output {q} exists "
+                        f"but could not be hashed ({exc}).\n"
+                        f"    It is recorded as UNHASHABLE with no digest. The run IS "
+                        f"recorded; this artifact cannot be pinned or joined on."
+                    )
                 # Keep the spelling the caller registered: `describe` reports the path it
                 # was handed, and substituting the resolved one would rewrite every
                 # ordinary relative output into an absolute path for no reason.

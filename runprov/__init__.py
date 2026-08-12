@@ -2,19 +2,34 @@
 #                    Hôpital Henri-Mondor, and Taylor Thompson
 # Licensed under the CeCILL-B Free Software License Agreement — see LICENSE.
 # https://cecill.info/
-"""runprov — record what a script read, wrote and ran as, in a form that can be checked.
+r"""runprov — record what a script read, wrote and ran as, in a form that can be checked.
 
-    from runprov import Run, Project, configure
+RAW, and that is load-bearing rather than stylistic: the example passes `sep="\t"`, and in a
+normal docstring that is an actual tab by the time `help(runprov)` prints it — the reader is
+shown `sep="        "` and cannot tell what to type. The example is the thing being got right
+here, so it has to survive being rendered.
+
+    from runprov import Run, configure
 
     configure(root=REPO, run_log=REPO / "reports" / "runs.jsonl")
 
-    run = Run("build_labels", vars(args))
-    df = pd.read_csv(run.input(INPUT))          # registering IS how you open it
-    with open(run.output(OUT), "w", encoding="utf-8") as fh:
-        fh.write(run.header())                  # the pin, inside the artifact
-        df.to_csv(fh, sep="\t", index=False)
-    run.note("n_rows", len(df))
-    run.write(OUT.with_name("build_labels_provenance.json"))
+    PROV = OUT.with_name("build_labels_provenance.json")
+
+    # provenance=PROV is what makes a crash record. Without it, __exit__ writes nothing.
+    with Run("build_labels", vars(args), provenance=PROV) as run:
+        df = pd.read_csv(run.input(INPUT), sep="\t")   # registering IS how you open it
+        with open(run.output(OUT), "w", encoding="utf-8") as fh:
+            fh.write(run.header())                     # the pin, inside the artifact
+            df.to_csv(fh, sep="\t", index=False)
+        run.note("n_rows", len(df))
+
+`provenance=` on the CONSTRUCTOR is load-bearing and this docstring used to get it wrong —
+it showed `run = Run(...)` with a closing `run.write(PROV)`, which is the shape README's
+"Two shapes that record nothing" table lists first: a crash halfway records no sidecar, no
+history line, and prints no warning. `with` alone does not fix it either, because `__exit__`
+only writes when `provenance=` reached the constructor. That the package's own front page
+taught the failure it exists to prevent is why `Run`'s class docstring states the rule
+unhedged, and why a test now asserts this one does too.
 
 Three properties, each of which exists because its absence caused a specific defect:
 
