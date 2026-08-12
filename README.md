@@ -382,10 +382,26 @@ Environment **names** are recorded (`CONDA_DEFAULT_ENV`, `HATCH_ENV_ACTIVE`,
 them are not: `VIRTUAL_ENV` and `CONDA_PREFIX` carry a username and a machine layout, and
 this record gets committed and shared, so only the fact that they were set is kept.
 
-**Lock files are hashed and archived.** Hashing says *which* lock — naming `uv.lock`
-without pinning its content names a file that moves. Archiving it as
-`lock-<sha16>-uv.lock` beside the snapshot means the run is still rebuildable after that
-file has moved on, which it will. `uv.lock`, `poetry.lock`, `pdm.lock`, `pixi.lock`,
+**Lock files are hashed, and archived only when git does not already have them.** Hashing
+says *which* lock — naming `uv.lock` without pinning its content names a file that moves.
+Archiving as `lock-<sha16>-uv.lock` keeps the run rebuildable after that file moves on.
+
+But a lock git already stores is **not** copied, and the record says so:
+
+```json
+{"name": "uv.lock", "sha256": "983dc95d…", "archived": false,
+ "git_blob": "45b983be36b73c0788dc9cbcb76cbb80fc7bb057", "note": "git already stores it"}
+```
+
+Measured on the project this came from: `uv.lock` is 1.1 MB and the snapshot directory is
+tracked, so archiving unconditionally committed a second copy of a file git already
+versions — once per lock change, into a repository that is a publication artifact. Git is
+the archive; `git cat-file -p <blob>` returns exactly those bytes.
+
+The test is whether git holds these **bytes**, not whether the path is tracked: a tracked
+lock with uncommitted edits is not stored yet, and that is precisely when the copy is worth
+making. A project whose lock never reaches git — generated at deploy time, or built outside
+a repository — gets the copy, which is the case archiving exists for. `uv.lock`, `poetry.lock`, `pdm.lock`, `pixi.lock`,
 `conda-lock.yml`, `Pipfile.lock`, `environment.yml`, `requirements.txt` and rye's
 `requirements*.lock` are recognised — a fixed list, so what gets captured is reviewable and
 cannot quietly widen.
