@@ -1091,15 +1091,59 @@ class Run:
                 # -- the natural spelling -- pinned as `<external>/x.tsv`, announcing a file
                 # as foreign to the very repository holding it.
                 p = pathlib.Path(self.record["cwd"]) / p
-            # `.as_posix()`, NOT `str()`. `str(PurePath)` renders the platform separator,
-            # so the same input pinned on Windows and on Linux produced two DIFFERENT pins
-            # for identical data -- the exact machine-dependence this method's docstring
-            # says it exists to prevent. `describe()` already used as_posix() for the tree
-            # hash; the pin did not. Found by the Windows CI job, not by review.
-            rel = p.resolve().relative_to(pathlib.Path(self.project.root).resolve())
-            return self._safe_for_pin(rel.as_posix())
-        except (ValueError, TypeError, OSError):
-            return self._safe_for_pin(f"<external>/{pathlib.Path(raw).name}")
+            root = pathlib.Path(self.project.root)
+            for candidate, base in self._pin_bases(p, root):
+                try:
+                    rel = candidate.relative_to(base)
+                except ValueError:
+                    continue
+                # `.as_posix()`, NOT `str()`. `str(PurePath)` renders the platform
+                # separator, so the same input pinned on Windows and on Linux produced two
+                # DIFFERENT pins for identical data -- the exact machine-dependence this
+                # method's docstring says it exists to prevent. `describe()` already used
+                # as_posix() for the tree hash; the pin did not. Found by the Windows CI
+                # job, not by review.
+                return self._safe_for_pin(rel.as_posix())
+        except (TypeError, OSError, RuntimeError):
+            # RuntimeError is `resolve()` on a SYMLINK LOOP, and it is not an OSError --
+            # so it was never caught here, escaped `_pin_name`, escaped `header()`, and
+            # killed the run at the moment it tried to describe itself. A loop is a
+            # misconfigured mount or a broken staging step, which is a fact about the
+            # inputs worth recording, not a reason to lose the run: it pins as external,
+            # which is what "we could not place this under the root" means.
+            pass
+        return self._safe_for_pin(f"<external>/{pathlib.Path(raw).name}")
+
+    @staticmethod
+    def _pin_bases(p: pathlib.Path, root: pathlib.Path) -> list[tuple[pathlib.Path, pathlib.Path]]:
+        """The two ways a path can be under the root, in the order they should be tried.
+
+        AS SPELLED FIRST, symlinks intact. `resolve()` alone followed every link, so the
+        standard layout where `data/` is a symlink to a big disk -- and every Nextflow or
+        Snakemake work directory, which stages inputs as symlinks -- pinned real repository
+        data as `<external>/x.tsv`. That is wrong twice over: it announces a file as foreign
+        to the repository holding it, and `<external>/` is deliberately not a path, so
+        `verify` reports it UNVERIFIABLE. Those inputs were unpinnable AND uncheckable.
+
+        The spelled form is also the more stable one. `/mnt/bigdisk/data/x.tsv` is this
+        machine's mount layout; `data/x.tsv` is what the repository looks like everywhere,
+        which is the property the pin is for.
+
+        RESOLVED SECOND, because the root itself can be reached through a link -- macOS
+        `/tmp` is `/private/tmp`, and plenty of clusters mount homes through one. There the
+        spelled path is not under the spelled root and only resolving finds the relationship.
+
+        A path containing `..` skips the spelled attempt entirely: `link/../x` normalises to
+        the parent of the LINK, while on disk it means the parent of its TARGET, so the
+        cheap normalisation would name a file that is not the one that was hashed. Rare, and
+        the resolved form answers it correctly, so the ambiguity is declined rather than
+        guessed at.
+        """
+        bases = []
+        if ".." not in p.parts:
+            bases.append((pathlib.Path(os.path.normpath(p)), pathlib.Path(os.path.normpath(root))))
+        bases.append((p.resolve(), root.resolve()))
+        return bases
 
     # ---------------------------------------------------------------- finish
     def write(self, path: str | pathlib.Path) -> pathlib.Path:

@@ -44,6 +44,21 @@ Nothing has been published yet. Everything below is what a first release would c
 - **Failure recording.** `with Run(..., provenance=PROV)` records `status: "failed"` with
   the exception type, message and traceback tail, and every registered-but-unproduced output
   as `MISSING`.
+- **A symlinked directory inside the root pins as repository data, not as `<external>/`.**
+  `_pin_name` resolved every link, so `data/ -> /mnt/bigdisk/data` — the standard layout,
+  and every Nextflow/Snakemake work directory, which stages inputs as symlinks — announced
+  real repository data as foreign, and `verify` then called it `UNVERIFIABLE` because
+  `<external>/` is deliberately not a path. Those inputs were unpinnable *and* uncheckable.
+  The spelled form is tried first and is also the more stable one: `/mnt/bigdisk/…` is this
+  machine's mount layout, `data/…` is what the repository looks like everywhere. `resolve()`
+  is kept as the second attempt, for a root reached through a link (macOS `/tmp`, cluster
+  homes); a path containing `..` skips the first attempt, since `link/../x` normalises to
+  the parent of the link and means the parent of its target. **This changes pin text for
+  symlinked layouts**, which is why it lands before the first release rather than after.
+- **A symlink loop no longer kills the run describing it.** `resolve()` raises
+  `RuntimeError` on a loop, which is not an `OSError` and was caught by nothing: it escaped
+  `_pin_name`, escaped `header()`, and took the run with it. Now pinned as external, which
+  is what "we could not place this under the root" means.
 - **`content_digest` blocks are bounded by bytes, not only by line count.** "Streamed" was
   true only of files whose *lines* are short, so the shape that defeated it was not a big
   file but a file with few big lines — an unwrapped FASTA, a minified JSON, a one-line
