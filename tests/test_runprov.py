@@ -4807,3 +4807,63 @@ def test_a_run_records_how_its_environment_could_be_rebuilt(tmp_path, monkeypatc
     assert [d["name"] for d in env["lockfiles"]] == ["uv.lock"]
     assert env["snapshot"]["lockfiles"][0]["reused"] is False
     assert pathlib.Path(env["snapshot"]["lockfiles"][0]["path"]).is_file()
+
+
+def _git_repo(root):
+    """A real repository, because the question is what git's object database contains and
+    a fake would only test the fake. No commit is needed: `git add` stores the blob, which
+    is exactly the condition being detected."""
+    root.mkdir(parents=True, exist_ok=True)
+    if subprocess.run(["git", "init", "-q", str(root)], capture_output=True).returncode != 0:
+        pytest.skip("git is not available")
+    return root
+
+
+def test_a_lock_git_already_stores_is_not_copied_again(tmp_path):
+    """THE COST THIS AVOIDS. Measured on the project this came from: `uv.lock` is 1.1 MB
+    and the snapshot directory is tracked, so archiving unconditionally committed a second
+    copy of a file git already versions — once per lock change, into a repository that is a
+    publication artifact.
+
+    The digest still pins WHICH lock. Git is the archive, and the recorded blob id makes it
+    one command to get the bytes back.
+    """
+    root = _git_repo(tmp_path / "proj")
+    lock = root / "uv.lock"
+    lock.write_text("version = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "uv.lock"], check=True, capture_output=True)
+
+    got = runprov.environment.archive_lockfiles(root, root / "envs")
+    assert got[0]["archived"] is False
+    assert got[0]["note"] == "git already stores it"
+    assert len(got[0]["git_blob"]) == 40
+    assert got[0]["sha256"], "the digest is still recorded — only the copy is skipped"
+    assert not (root / "envs").exists(), "nothing was written"
+
+
+def test_a_lock_with_uncommitted_edits_is_still_archived(tmp_path):
+    """Being tracked is the wrong question; having these BYTES is the right one. A
+    tracked lock with uncommitted edits is not stored yet, and that is precisely when the
+    copy is worth making — the run used those bytes and nothing else has them."""
+    root = _git_repo(tmp_path / "proj")
+    lock = root / "uv.lock"
+    lock.write_text("version = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "uv.lock"], check=True, capture_output=True)
+    lock.write_text("version = 2\n", encoding="utf-8")  # edited, not added
+
+    got = runprov.environment.archive_lockfiles(root, root / "envs")
+    assert got[0]["archived"] is True
+    assert pathlib.Path(got[0]["path"]).read_text(encoding="utf-8") == "version = 2\n"
+
+
+def test_outside_a_repository_the_lock_is_archived(tmp_path):
+    """No git, no archive — so runprov archives. `hash-object` works outside a repository
+    and `cat-file` cannot, which is the fallback that makes the check safe to run
+    anywhere."""
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    got = runprov.environment.archive_lockfiles(tmp_path, tmp_path / "envs")
+    assert got[0]["archived"] is True
+    assert runprov.environment._already_in_git(tmp_path, tmp_path / "uv.lock") is None
+    # And when `hash-object` itself cannot answer — no such file, or no git at all — the
+    # answer is "not stored", which archives. Never "stored", which would drop the copy.
+    assert runprov.environment._already_in_git(tmp_path, tmp_path / "absent.lock") is None

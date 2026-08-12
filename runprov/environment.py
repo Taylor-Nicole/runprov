@@ -322,19 +322,52 @@ def lockfiles(root: pathlib.Path) -> list[dict[str, typing.Any]]:
     return out
 
 
+def _already_in_git(root: pathlib.Path, path: pathlib.Path) -> str | None:
+    """The git blob id for these exact bytes, when git ALREADY stores them.
+
+    `git hash-object` is a pure function of the content -- it works outside a repository
+    too -- and `cat-file -e` then asks whether that object is in this repository's database.
+    Together they answer "does git already have this file, byte for byte", which is a
+    different and better question than "is this path tracked": a tracked path with
+    uncommitted edits is NOT stored yet, and that is exactly when a copy is worth making.
+    """
+    from .project import git
+
+    blob = git(root, "hash-object", "--", str(path))
+    if not blob:
+        return None
+    # `cat-file -e` prints nothing and exits 0 when the object exists. `git()` returns ""
+    # for that and None for a failure, and this line depends on the distinction.
+    return blob if git(root, "cat-file", "-e", blob) is not None else None
+
+
 def archive_lockfiles(root: pathlib.Path, directory: pathlib.Path) -> list[dict[str, typing.Any]]:
-    """Copy each lock file into `directory`, named by its own digest.
+    """Copy each lock file into `directory`, named by its own digest — unless git has it.
 
     Hashing a lock file records which one it was; copying it means the run can still be
     rebuilt after that file has moved on. Content-addressed for the same reason the package
     snapshot is: an unchanged lock collapses to one copy no matter how many runs reference
     it, and `reused: true` says the environment's DECLARATION has not moved either.
+
+    WHAT IT DOES NOT COPY. A lock git already stores is not copied, and the record says so
+    with the blob id. Measured on the project this came from: `uv.lock` is 1.1 MB and the
+    snapshot directory is tracked, so archiving unconditionally committed a second copy of
+    a file git already versions -- once per lock change, into a repository that is a
+    publication artifact. The digest still pins WHICH lock; git is the archive, and
+    `git cat-file -p <blob>` returns exactly those bytes.
+
+    A project whose lock is NOT in git -- a lock generated at deploy time, an environment
+    built outside a repository -- gets the copy, which is the case archiving exists for.
     """
     directory = pathlib.Path(directory)
     out: list[dict[str, typing.Any]] = []
     for rec in lockfiles(root):
+        blob = _already_in_git(root, root / rec["name"])
+        if blob:
+            out.append(dict(rec, archived=False, git_blob=blob, note="git already stores it"))
+            continue
         target = directory / f"lock-{rec['sha256'][:16]}-{rec['name']}"
-        rec = dict(rec, path=str(target), reused=target.is_file())
+        rec = dict(rec, archived=True, path=str(target), reused=target.is_file())
         if not rec["reused"]:
             try:
                 directory.mkdir(parents=True, exist_ok=True)
