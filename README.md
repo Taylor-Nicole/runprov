@@ -284,6 +284,26 @@ interpreter that is actually running — the sibling's shared helper shelled out
 thing. And a distribution whose version cannot be read is recorded as `UNKNOWN` rather
 than omitted, because a snapshot silently missing an entry is worse than one that says so.
 
+**conda, mamba, micromamba and pixi environments are mostly not Python distributions.**
+`importlib.metadata` cannot see them, and measured on a bare `mamba create -p env
+python=3.12` that is not a rounding error: conda installed **27** packages and the snapshot
+recorded **8**. The nineteen it missed were `libgcc`, `openssl`, `sqlite`, `icu`, `ncurses`,
+`tk` and the rest — and in a bioinformatics environment that same list is where `samtools`,
+`blast` and `mmseqs2` live. The snapshot claimed to describe the environment behind a
+result while omitting every non-Python tool the result depended on.
+
+So when the interpreter's prefix has a `conda-meta/`, its packages are read from there and
+rendered in conda's own `name=version=build` spelling, under a heading, and the record
+gains `n_conda_packages`. It is a directory read, not a subprocess — the same argument as
+for `importlib.metadata`: `conda list` needs a `conda` on PATH, which need not be the one
+that owns this interpreter, while the prefix cannot disagree with itself. The prefix
+**path** never reaches the body: two identical environments installed at different
+locations are the same environment, and a path there would make the digest machine-specific
+and defeat the content addressing.
+
+An ordinary venv has no `conda-meta`, gets no section, and its record carries no such
+field.
+
 ## What the run printed
 
 The old log's `terminal_log_file`, and the one field of it with no equivalent here until
