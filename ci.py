@@ -26,6 +26,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -68,6 +69,20 @@ def test() -> None:
     )
 
 
+#: Written and run inside the clean venv: the installed wheel must be able to RECORD a run,
+#: not only be imported. Kept as one string so the check is the same on every platform.
+_RECORD_ONE_RUN = (
+    "import pathlib, runprov; "
+    "runprov.configure(root=pathlib.Path('.'), run_log=pathlib.Path('h.jsonl')); "
+    "pathlib.Path('in.tsv').write_text('a\\n', encoding='utf-8'); "
+    "r = runprov.Run('smoke', provenance=pathlib.Path('p.json')); "
+    "r.input('in.tsv'); "
+    "fh = r.open_output('out.tsv'); fh.write('b\\n'); fh.close(); "
+    "r.write(pathlib.Path('p.json')); "
+    "print('recorded ok')"
+)
+
+
 def build() -> None:
     if (ROOT / "dist").is_dir():
         shutil.rmtree(ROOT / "dist")  # never check a stale artifact
@@ -97,6 +112,33 @@ def build() -> None:
             )
         run(str(vpy), "-m", "pip", "install", "--quiet", str(wheel))
         run(str(vpy), "-c", "import runprov; print(runprov.__version__)", cwd=Path(tmp))
+        # The CLI is a second entry point and fails separately from the import: a module
+        # that imports fine can still have a broken `__main__`, and `python -m runprov log`
+        # is how the README tells a reader to inspect their own history. Given a REAL
+        # record rather than an empty file -- an empty history exits non-zero on purpose,
+        # so pointing this at /dev/null tested the error path and called it success.
+        run(str(vpy), "-c", _RECORD_ONE_RUN, cwd=Path(tmp))
+        run(str(vpy), "-m", "runprov", "log", "--log", "h.jsonl", cwd=Path(tmp))
+        run(str(vpy), "-m", "runprov", "log", "--log", "h.jsonl", "--format", "yaml", cwd=Path(tmp))
+        run(str(vpy), "-m", "runprov", "lineage", "--log", "h.jsonl", cwd=Path(tmp))
+
+    # THE SDIST, which nothing checked. `twine check` reads its metadata and never builds
+    # it, so a file missing from the sdist is invisible until someone installs with
+    # `--no-binary`, or a downstream packager (conda-forge, a distro, spack) tries to
+    # rebuild from source -- which is exactly the audience a reproducibility package has.
+    # Unpack it somewhere else and build a wheel from THAT, with no source tree in reach.
+    with tempfile.TemporaryDirectory() as tmp:
+        sdist = next((ROOT / "dist").glob("*.tar.gz"))
+        with tarfile.open(sdist) as tf:
+            tf.extractall(tmp, filter="data")
+        unpacked = next(Path(tmp).glob("runprov-*"))
+        out = Path(tmp) / "wheel"
+        run(PY, "-m", "build", "--wheel", "--outdir", str(out), str(unpacked))
+        venv = Path(tmp) / "v"
+        run(PY, "-m", "venv", str(venv))
+        vpy = venv / ("Scripts" if sys.platform == "win32" else "bin") / "python"
+        run(str(vpy), "-m", "pip", "install", "--quiet", str(next(out.glob("*.whl"))))
+        run(str(vpy), "-c", "import runprov; print('sdist ok', runprov.__version__)", cwd=Path(tmp))
 
 
 def setup() -> None:
