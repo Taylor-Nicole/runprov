@@ -3899,3 +3899,110 @@ def test_the_yaml_view_flags_a_log_that_stops_before_its_run_does(tmp_path, monk
     assert "out_of_order" not in cli._yaml([b.record]), (
         "the ordinary case must not carry the caveat"
     )
+
+
+# ------------------------------------------------------- CONSUMER COMPATIBILITY (v1)
+# `tests/fixtures/history_v1.jsonl` is real v1 output, produced by the v1 code at 609299b.
+# See tests/fixtures/README.md — a compatibility fixture written from memory tests memory.
+
+FIXTURES = pathlib.Path(__file__).parent / "fixtures"
+
+
+def _v1_rows():
+    return [json.loads(line) for line in (FIXTURES / "history_v1.jsonl").read_text().splitlines()]
+
+
+def test_the_v1_fixture_really_is_v1(tmp_path):
+    """Guards the guard. If a regenerated fixture ever came out as v2, every test below
+    would keep passing while testing nothing at all — the shape this codebase has been
+    caught by before, where a check cannot tell its subject from its absence."""
+    rows = _v1_rows()
+    assert [r["schema"] for r in rows] == ["runprov.run.v1"] * 2
+    assert all("run_uid" not in r for r in rows), "v1 predates run_uid"
+    assert all("script_file" not in r for r in rows), "v1 predates script_file"
+    out = [o for r in rows for o in (r.get("outputs") or []) if "sha256" in o]
+    assert out and all("content_sha256" not in o for o in out), "v1 has no content digest"
+
+
+def test_todays_cli_reads_a_v1_history(tmp_path, capsys):
+    """The record format moved to v2 in ADR-029 and the histories in the field are v1. A
+    reader that needs its own schema version is not a reader of the history, it is a reader
+    of the present."""
+    rc = cli.main(["log", "--log", str(FIXTURES / "history_v1.jsonl")])
+    seen = capsys.readouterr()
+    body = seen.out + seen.err  # the "n of m run(s)" header is a diagnostic, not the report
+    assert rc == 0
+    assert "v1_producer" in body and "v1_failed" in body
+    assert "2 of 2 run(s)" in body, "neither v1 record may be skipped as unreadable"
+    assert "1 FAILED" in body and "ValueError: deliberate" in body
+    assert "in.tsv" in body and "out.tsv" in body, "v1 inputs and outputs must render"
+
+
+def test_the_yaml_view_of_a_v1_record_says_what_it_cannot_know(tmp_path):
+    """v1 has no `script_file`, and the YAML view's `script:` is that field. Filling it with
+    the step name would produce a populated-looking path that names something other than
+    what ran — which is the exact defect the old transformation log had."""
+    yaml = pytest.importorskip("yaml")
+    rendered = cli._yaml(_v1_rows())
+    docs = yaml.safe_load(rendered)
+    assert docs[0]["step"] == "v1_producer"
+    assert "predates script_file" in docs[0]["script"]
+    assert docs[0]["input"] == "in.tsv" and docs[0]["output"] == "out.tsv"
+
+
+def test_lineage_joins_across_the_v1_v2_schema_boundary(tmp_path, monkeypatch):
+    """THE DEFECT: an edge from a v1 producer to a v2 consumer was reported as an ORPHAN.
+
+    The join preferred `content_sha256` and fell back to `sha256`. A v1 output carries only
+    the raw hash; a v2 input of the SAME BYTES carries both, and the content digest is taken
+    over normalised text so it never equals the raw one. The two sides were therefore keyed
+    differently, and every edge crossing an upgrade vanished — reported not as unknown but
+    as "produced by no recorded run", which is a false statement rather than a missing one.
+
+    This is the ordinary case for anyone adopting v2: the history is v1 and the new runs
+    are not.
+    """
+    monkeypatch.chdir(tmp_path)
+    runlog = tmp_path / "runs.jsonl"
+    runlog.write_text((FIXTURES / "history_v1.jsonl").read_text(), encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=runlog)
+
+    # A REAL v2 run reading the v1 producer's actual artifact — not a hand-copied digest.
+    artifact = tmp_path / "out.tsv"
+    artifact.write_bytes((FIXTURES / "artifact_v1.tsv").read_bytes())
+    with runprov.Run("v2_consumer", provenance=tmp_path / "c.json") as run:
+        run.input(artifact)
+
+    rows = [json.loads(x) for x in runlog.read_text(encoding="utf-8").splitlines()]
+    got = cli._lineage(rows)
+    assert got["resolvable"] == 1, "the v1 -> v2 edge must resolve"
+    assert got["ambiguous"] == 0
+    producer, consumer = got["edges"][0]
+    assert producer.startswith("derived:"), "a v1 producer has no uid and is addressed"
+    assert consumer == run.record["run_uid"]
+    assert got["records_without_uid"] == 2, "and the v1 records are counted, not dropped"
+
+
+def test_lineage_joins_the_other_way_too_a_v2_producer_read_by_a_v1_consumer(tmp_path):
+    """The reverse direction, which is a DIFFERENT half of the join.
+
+    v1-produces/v2-consumes is fixed by probing every digest the consumer has. This one is
+    fixed by INDEXING every digest the producer has: a v2 output keyed only under its
+    preferred `content_sha256` is invisible to a v1 consumer, which has nothing but the raw
+    hash to look it up by. Mutation testing found this gap — the producer-side breadth
+    survived every test until this fixture existed.
+
+    Both records are real: today's code wrote `shared.tsv`, then the v1 code at 609299b read
+    it, in that order, so the producer-finished-before-consumer-started rule holds honestly
+    rather than by an edited timestamp.
+    """
+    rows = [json.loads(x) for x in (FIXTURES / "history_v2_then_v1.jsonl").read_text().splitlines()]
+    assert [r["schema"] for r in rows] == ["runprov.history.v2", "runprov.run.v1"], (
+        "the fixture must be a v2 producer followed by a v1 consumer, in that order"
+    )
+    got = cli._lineage(rows)
+    assert got["resolvable"] == 1, "a v1 consumer must find a v2 producer"
+    assert got["orphan"] == 0
+    producer, consumer = got["edges"][0]
+    assert producer == rows[0]["run_uid"]
+    assert consumer.startswith("derived:"), "the v1 consumer has no uid of its own"

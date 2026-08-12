@@ -1,0 +1,8 @@
+# provenance — this artifact and what produced it
+#   script     : v1_producer
+#   generation : (default)
+#   commit     : NONE — no commit to name (yet)
+#   inputs (1), sha256:
+#     24a0256d73777095  <external>/in.tsv
+id	v
+a	2
