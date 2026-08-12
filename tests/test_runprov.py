@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import concurrent.futures
 import gzip
 import hashlib
 import importlib
@@ -4996,3 +4997,138 @@ def test_moved_since_is_silent_when_the_stat_itself_fails(tmp_path):
         assert runprov.hashing.moved_since(rec) is None
     finally:
         os.chmod(box, 0o700)
+
+
+# ------------------------------------------- INPUT SHAPES UNDER THE CALLING SHAPES
+# The cross product. One file hashed by eight concurrent Runs gives one digest, and a
+# subprocess that rewrites a registered input is caught by `changed_after_registration` —
+# both already correct. The two below were silent.
+
+
+def test_a_subprocess_that_rewrites_a_registered_input_is_caught(tmp_path, monkeypatch):
+    """The post-registration check under a real calling shape rather than a constructed
+    one. A stage that shells out to a tool which rewrites its own input in place is an
+    ordinary pipeline, and the digest recorded is the one that was read."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    victim = tmp_path / "victim.tsv"
+    victim.write_text("before\n", encoding="utf-8")
+
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(victim)
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                f"import pathlib;pathlib.Path({str(victim)!r}).write_text('AFTER, longer\\n')",
+            ],
+            check=True,
+        )
+    assert run.record["inputs"][0]["changed_after_registration"] == "size"
+
+
+def test_one_input_hashed_by_many_threads_gives_one_digest(tmp_path, monkeypatch):
+    """Hashing is a read, and eight concurrent readers of one file must not disagree —
+    a digest that depended on who else was reading would be worthless."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    shared = tmp_path / "shared.tsv"
+    shared.write_text("x" * 100_000 + "\n", encoding="utf-8")
+    seen: list[str] = []
+
+    def work(i):
+        with runprov.Run(f"t{i}", provenance=tmp_path / f"t{i}.json") as run:
+            run.input(shared)
+            seen.append(run.record["inputs"][0]["sha256"])
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        list(ex.map(work, range(8)))
+    assert len(seen) == 8 and len(set(seen)) == 1
+
+
+def test_a_cwd_moving_under_a_run_is_announced_once(tmp_path, monkeypatch, capsys):
+    """`_anchor` already records the ABSOLUTE path when the cwd has moved, so the record
+    names the file actually read rather than the one the script meant. What it did not do
+    is say so — and two very different things reach this branch:
+
+    * a script that deliberately `chdir`s, where absolute paths are merely surprising —
+      they are machine-specific, so records from two machines stop comparing equal;
+    * ANOTHER THREAD moving the process-global cwd, where the file registered may not be
+      the one intended at all, and nothing else would ever hint at it.
+
+    Once per run, not once per path: a script that chdirs and then registers thirty files
+    has made one decision, not thirty.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "here").mkdir()
+    (tmp_path / "there").mkdir()
+    for where in ("here", "there"):
+        (tmp_path / where / "a.tsv").write_text(f"{where}\n", encoding="utf-8")
+        (tmp_path / where / "b.tsv").write_text(f"{where}\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+
+    os.chdir(tmp_path / "here")
+    try:
+        with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+            os.chdir(tmp_path / "there")
+            run.input("a.tsv")
+            run.input("b.tsv")
+    finally:
+        os.chdir(tmp_path)
+
+    err = capsys.readouterr().err
+    assert err.count("the working directory has moved") == 1, "once per run, not per path"
+    assert "ANOTHER THREAD" in err, "the race is the reading that costs the most"
+    for entry in run.record["inputs"]:
+        assert pathlib.Path(entry["path"]).is_absolute()
+        assert pathlib.Path(entry["path"]).read_text(encoding="utf-8") == "there\n"
+
+
+def test_two_runs_writing_one_sidecar_say_so(tmp_path, monkeypatch, capsys):
+    """A sidecar is ONE run's record. Two runs sharing a path leaves the file describing
+    whichever finished last, while the artifact beside it came from the other — and the
+    only clue is an unfamiliar `run_id`, which nobody checks. The history keeps both, so
+    nothing is lost; what was missing is being told."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    shared = tmp_path / "shared.json"
+
+    with runprov.Run("first", provenance=shared):
+        pass
+    capsys.readouterr()
+    with runprov.Run("second", provenance=shared) as second:
+        pass
+
+    err = capsys.readouterr().err
+    assert "already written by ANOTHER RUN" in err
+    assert json.loads(shared.read_text(encoding="utf-8"))["run_uid"] == second.record["run_uid"]
+    lines = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    assert {r["script"] for r in lines} == {"first", "second"}, "the history keeps both"
+
+
+def test_one_run_rewriting_its_own_sidecar_is_not_a_collision(tmp_path, monkeypatch, capsys):
+    """The guard that keeps the warning meaningful. `write()` inside a `with` block, then
+    `__exit__` correcting the same file, is the documented and correct spelling — warning
+    on it would fire on ordinary use and be tuned out within a day."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.write(tmp_path / "p.json")
+        run.write(tmp_path / "p.json")  # twice, explicitly: still ONE run
+    assert "already written by ANOTHER RUN" not in capsys.readouterr().err
+
+
+def test_two_spellings_of_one_sidecar_path_still_collide(tmp_path, monkeypatch, capsys):
+    """Keyed by the FILE, not by how it was spelled. `p.json` and `./sub/../p.json` are one
+    file, and a collision that a caller can hide by writing the path differently is a check
+    that reports on punctuation."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    (tmp_path / "sub").mkdir()
+
+    with runprov.Run("first", provenance=tmp_path / "p.json"):
+        pass
+    capsys.readouterr()
+    with runprov.Run("second", provenance=tmp_path / "sub" / ".." / "p.json"):
+        pass
+    assert "already written by ANOTHER RUN" in capsys.readouterr().err

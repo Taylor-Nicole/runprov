@@ -31,6 +31,7 @@ import pathlib
 import platform
 import shlex
 import sys
+import threading
 import traceback
 import types
 import typing
@@ -109,6 +110,12 @@ def _jsonable(obj: typing.Any) -> typing.Any:  # noqa: ANN401 - walks arbitrary 
             # falls through to the recorded string, which is what happened before.
             del exc
     return obj
+
+
+#: Sidecar paths written in THIS process, and by which run. A sidecar is one run's record;
+#: two runs sharing a path leaves the file describing whichever finished last. See `write`.
+_SIDECARS: dict[str, str] = {}
+_SIDECARS_LOCK = threading.Lock()
 
 
 def _subclass_files(cls: type) -> frozenset[pathlib.Path]:
@@ -334,6 +341,7 @@ class Run:
         self._pending: list[pathlib.Path] = []
         self.provenance_path = pathlib.Path(provenance) if provenance else None
         self._written = False
+        self._warned_cwd_moved = False
         # Inside a `with` block the run is NOT over when write() is called -- the work can
         # still fail afterwards. The sidecar is written eagerly (a caller may want it on
         # disk), and the HISTORY line is deferred to __exit__, the only moment the final
@@ -535,7 +543,26 @@ class Run:
         """
         if p.is_absolute() or str(pathlib.Path.cwd()) == self.record["cwd"]:
             return p
-        return pathlib.Path.cwd() / p
+        here = pathlib.Path.cwd()
+        if not self._warned_cwd_moved:
+            # ONCE per run, not once per path: a script that chdirs and then registers
+            # thirty files has made one decision, not thirty.
+            self._warned_cwd_moved = True
+            diagnostic(
+                f"  PROVENANCE NOTICE: {self.record['script']}: the working directory has "
+                f"moved since this run started.\n"
+                f"    started in : {self.record['cwd']}\n"
+                f"    now in     : {here}\n"
+                f"    Relative paths are being recorded ABSOLUTE, because a relative one is "
+                f"only meaningful\n"
+                f"    beside the cwd it belongs to and this record holds the other. Those "
+                f"paths are machine-\n"
+                f"    specific, so records from two machines will no longer compare equal. "
+                f"If the cwd moved\n"
+                f"    in ANOTHER THREAD, this is a race and the file registered may not be "
+                f"the one intended."
+            )
+        return here / p
 
     def input(self, path: str | pathlib.Path) -> pathlib.Path:
         """Hash and record a read. RETURNS the path, so registering is the easy path."""
@@ -915,6 +942,29 @@ class Run:
         # Conflating the two appended twice for one run, both lines carrying the same
         # run_id, so any tally over runs.jsonl was silently inflated.
         already = self._history_appended
+        # A SIDECAR IS ONE RUN'S RECORD, and writing two runs to one path leaves the file
+        # describing whichever finished last while the artifact beside it came from the
+        # other. The history keeps both, so nothing is lost -- but the sidecar is what a
+        # reader opens next to an output, and last-write-wins is not something it should
+        # discover by noticing the run_id is unfamiliar.
+        #
+        # Per PROCESS and by RESOLVED path: two Runs in one script sharing a path is the
+        # case this catches. Two separate processes cannot see each other here, and a lock
+        # would be the wrong price for a naming mistake.
+        resolved = str(pathlib.Path(p).resolve())
+        with _SIDECARS_LOCK:
+            prior = _SIDECARS.get(resolved)
+            _SIDECARS[resolved] = self.record["run_uid"]
+        if prior and prior != self.record["run_uid"]:
+            diagnostic(
+                f"  PROVENANCE WARNING: {self.record['script']}: this sidecar was already "
+                f"written by ANOTHER RUN in this process —\n"
+                f"    {resolved}\n"
+                f"    It now describes this run and no longer describes the earlier one, "
+                f"whose outputs may sit\n"
+                f"    beside it. Both are still in the history; give each run its own "
+                f"`provenance=` path."
+            )
         self._written = True
         self._last_written = p  # so __exit__ can correct THIS file, kwarg or not
         self._persist(p)  # never raises; a sidecar failure must not lose the history
