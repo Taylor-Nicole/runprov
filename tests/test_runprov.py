@@ -5733,3 +5733,103 @@ def test_the_cli_names_the_invocation_the_reader_actually_used(monkeypatch, caps
         out = capsys.readouterr().out
         assert out.startswith(f"usage: {expected} "), f"{argv0!r} -> {out.splitlines()[0]}"
         assert "__main__.py" not in out
+
+
+# ================= the pin is not a comment everywhere, and one format fails SILENTLY
+def test_open_output_refuses_a_newick_tree_because_the_pin_becomes_taxa(tmp_path):
+    """The entry that made `PIN_UNSAFE` a guard rather than a note.
+
+    A pinned Newick tree does not raise — it PARSES, and comes back carrying terminals
+    harvested out of the pin's own prose (`generation : (default)` and `commit : NONE — no
+    commit to name (yet)` supply `default` and `yet`). Reproduced without Biopython below,
+    because the point is not which parser is used: the pin's words land where taxon names
+    are read from, in a format that has nowhere to put a comment.
+    """
+    # The DEFAULT generation and no commit, which is the state the corruption was measured
+    # in: an unconfigured run in a directory that is not a repository. Both of the leaked
+    # names come from the prose those two absences produce.
+    proj = runprov.Project(root=tmp_path, run_log=tmp_path / "runs.jsonl", run_id=lambda: "r")
+    src = tmp_path / "aln.fa"
+    src.write_text(">a\nACGT\n", encoding="utf-8")
+    run = runprov.Run("tree", project=proj)
+    run.input(src)
+
+    with pytest.raises(ValueError, match="SILENTLY"):
+        run.open_output(tmp_path / "out.nwk")
+
+    # What the refusal prevents, shown rather than asserted about: the pin's own words
+    # sitting where a Newick parser reads names. `(default)` is the generation and `(yet)`
+    # closes "no commit to name" — a parser splitting on Newick's punctuation takes both.
+    corrupt = run.header() + "(a:0.1,b:0.2);\n"
+    assert "generation : (default)" in corrupt and "(yet)" in corrupt
+    leaked = [w for w in ("default", "yet") if f"({w})" in corrupt]
+    assert leaked == ["default", "yet"], "the prose a parser would take for taxa"
+
+    assert run.record["outputs"] == [] and not run._pending, (
+        "a refused path must leave no pending output behind to be recorded as MISSING"
+    )
+    assert not (tmp_path / "out.nwk").exists(), "and no file half-written by the refusal"
+
+
+def test_open_output_refuses_every_format_that_cannot_hold_a_pin(tmp_path):
+    """Newick fails silently; the rest fail loudly. They are all here because a fix that
+    only knew about Newick would leave the same defect standing in each of them."""
+    proj = _project(tmp_path)
+    run = runprov.Run("s", project=proj)
+    for name in (
+        "x.fastq",
+        "x.fq",
+        "x.fasta",
+        "x.fa",
+        "x.fna",
+        "x.vcf",
+        "x.sam",
+        "x.bam",
+        "x.cram",
+        "x.parquet",
+        "x.h5",
+        "x.npy",
+        "x.xlsx",
+        "x.gz",
+        "x.bgz",
+        "x.zst",
+        "x.zip",
+        "x.png",
+        "x.pdf",
+        "x.NWK",
+    ):
+        with pytest.raises(ValueError, match="refusing to write a provenance pin"):
+            run.open_output(tmp_path / name)
+
+
+def test_the_refusal_names_the_escape_hatch_and_the_escape_hatch_works(tmp_path):
+    """A guard that only says no teaches nothing. `output()` still records and hashes the
+    artifact — only the in-artifact pin is given up, which this format never had."""
+    proj = _project(tmp_path)
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.json") as run:
+        with pytest.raises(ValueError) as caught:
+            run.open_output(tmp_path / "t.nwk")
+        assert "run.output(path)" in str(caught.value)
+        assert "run.header(marker)" in str(caught.value)
+
+        out = run.output(tmp_path / "t.nwk")
+        out.write_text("(a:0.1,b:0.2);\n", encoding="utf-8")
+
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["outputs"][0]["sha256"], "the artifact is still recorded and hashed"
+    assert rec["outputs"][0]["kind"] == "file"
+    assert "provenance" not in (tmp_path / "t.nwk").read_text(encoding="utf-8")
+
+
+def test_open_output_still_pins_the_formats_that_can_hold_one(tmp_path):
+    """The guard must not become a reason to stop pinning. A `#` block is valid in these,
+    and GFF/GTF is the one bioinformatics format where the pin genuinely works."""
+    proj = _project(tmp_path)
+    src = tmp_path / "in.tsv"
+    src.write_text("x\n", encoding="utf-8")
+    run = runprov.Run("s", project=proj)
+    run.input(src)
+    for name in ("a.tsv", "a.csv", "a.txt", "a.md", "a.gff3", "a.gtf", "a.bed", "a.json"):
+        with run.open_output(tmp_path / name) as fh:
+            fh.write("payload\n")
+        assert "provenance" in (tmp_path / name).read_text(encoding="utf-8"), name
