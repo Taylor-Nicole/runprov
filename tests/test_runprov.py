@@ -1683,6 +1683,26 @@ def _first_python_block(text: str) -> str:
     return m.group(1)
 
 
+def test_the_readme_has_no_relative_links_because_it_is_the_pypi_page():
+    """The README becomes `Description` in METADATA, and PyPI does not rewrite relative
+    links: they resolve against `https://pypi.org/project/runprov/` and dead-end.
+
+    This is a test rather than a review note because the description **cannot be edited
+    after upload** — the same immutability PUBLISHING.md argues for versions applies to the
+    prose inside them, so the only remedy for a dead link is a new release. A pure `#anchor`
+    is fine: PyPI renders the headings it points at.
+    """
+    bad = [
+        m.group(0)
+        for m in re.finditer(r"\[[^\]]+\]\(([^)]+)\)", _readme())
+        if not m.group(1).startswith(("http://", "https://", "#"))
+    ]
+    assert not bad, (
+        f"{len(bad)} link(s) that 404 on the PyPI page: {bad}. Use the absolute "
+        f"https://github.com/…/blob/main/ form; a relative path only works on GitHub."
+    )
+
+
 def test_the_readme_quickstart_teaches_the_shape_that_actually_records():
     """I5, and it is the defect with the widest blast radius in the package's history.
 
