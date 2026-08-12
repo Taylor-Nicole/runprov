@@ -15,6 +15,8 @@ from __future__ import annotations
 import ast
 import builtins
 import concurrent.futures
+import contextlib
+import gc
 import gzip
 import hashlib
 import importlib
@@ -5132,3 +5134,135 @@ def test_two_spellings_of_one_sidecar_path_still_collide(tmp_path, monkeypatch, 
     with runprov.Run("second", provenance=tmp_path / "sub" / ".." / "p.json"):
         pass
     assert "already written by ANOTHER RUN" in capsys.readouterr().err
+
+
+# ------------------------------------------------------ CALLING SHAPES, THE REMAINDER
+# `SystemExit(0)` records ok, `SystemExit(1)` and KeyboardInterrupt record failed, a Run
+# nested inside another records both, and entering one Run twice appends one history line
+# — all probed and all already correct. The abandoned Run was not.
+
+
+class _Interrupted(BaseException):
+    """A BaseException that is not an Exception — the family KeyboardInterrupt belongs to.
+
+    Used INSTEAD of raising a real `KeyboardInterrupt` in-process. Python re-raises SIGINT
+    at interpreter exit when a KeyboardInterrupt was involved, so a test that raises one
+    kills the test runner's whole process group: measured, the suite reported 286 passed
+    and the process still died by signal 2, taking the shell that invoked it with it.
+
+    `__exit__` classifies on the exit CODE of a SystemExit and on nothing else, so this
+    class reaches the identical branch. The real type is exercised in a subprocess below,
+    where its exit convention is contained.
+    """
+
+
+@pytest.mark.parametrize(
+    ("raiser", "status", "kind"),
+    [
+        (SystemExit, "ok", None),  # SystemExit() — code None
+        (lambda: SystemExit(0), "ok", None),
+        (lambda: SystemExit(1), "failed", "SystemExit"),
+        (_Interrupted, "failed", "_Interrupted"),
+    ],
+)
+def test_the_baseexception_family_is_classified(tmp_path, monkeypatch, raiser, status, kind):
+    """`SystemExit` and `KeyboardInterrupt` derive from BaseException, not Exception, and
+    `raise SystemExit(main())` is how every script in the consuming project ends. Treating
+    them as clean would record an interrupted run as successful; treating them all as
+    failure would poison `grep '"status": "failed"'`, which is the query the whole deferral
+    was built to make trustworthy. The exit CODE is what separates them."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with contextlib.suppress(BaseException), runprov.Run("s", provenance=tmp_path / "p.json"):
+        raise raiser()
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["status"] == status
+    assert (rec.get("failure") or {}).get("type") == kind
+
+
+def test_a_real_keyboard_interrupt_is_recorded_as_failed(tmp_path):
+    """The real type, in a SUBPROCESS — because that is the only place its exit convention
+    can be observed without imposing it on the test runner. Ctrl-C during a long stage is
+    the most ordinary way a run ends early, and recording it as `ok` would be the worst
+    possible lie this package could tell."""
+    script = tmp_path / "step.py"
+    script.write_text(
+        "import pathlib, sys\n"
+        f"sys.path.insert(0, {str(REPO)!r})\n"
+        "import runprov\n"
+        f"T = pathlib.Path({str(tmp_path)!r})\n"
+        "runprov.configure(root=T, run_log=T / 'runs.jsonl')\n"
+        "with runprov.Run('interrupted', provenance=T / 'p.json'):\n"
+        "    raise KeyboardInterrupt\n",
+        encoding="utf-8",
+    )
+    done = subprocess.run([sys.executable, str(script)], capture_output=True, text=True)
+    assert done.returncode != 0
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["status"] == "failed"
+    assert rec["failure"]["type"] == "KeyboardInterrupt"
+
+
+def test_a_run_that_is_never_entered_does_not_keep_capturing(tmp_path, monkeypatch):
+    """Capture starts in `__init__` — deliberately, so a caller using `write()` without a
+    `with` block is still recorded. The cost is that a Run built and abandoned had fds 1
+    and 2 dup2'd to its pipe for the life of the process, with every line the program
+    printed afterwards accumulating in ITS log.
+
+    Nothing looked wrong: the tee holds, so output still reached the terminal. The log just
+    ended up describing a run that never happened, plus everything that came after it.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    log = tmp_path / "ab.log"
+    live_before = len(runprov.terminal._LIVE)
+
+    def build_and_drop():
+        runprov.Run("abandoned", provenance=tmp_path / "ab.json", terminal_log=log)
+
+    build_and_drop()
+    gc.collect()
+
+    assert len(runprov.terminal._LIVE) == live_before, "the capture must not stay live"
+    settled = log.stat().st_size
+    print("AFTER-THE-ABANDONED-RUN", flush=True)
+    assert log.stat().st_size == settled, "and its log must stop growing"
+    assert not (tmp_path / "ab.json").exists(), "an abandoned run records nothing, as before"
+
+
+def test_releasing_an_abandoned_capture_twice_is_harmless(tmp_path):
+    """The finalizer also fires for a run that WAS closed properly, and at interpreter
+    shutdown. Stopping an already-stopped capture must restore nothing and close nothing
+    twice — and it must not raise, because a finalizer that raises prints an
+    unhandled-exception notice from deep inside the interpreter and helps nobody."""
+    cap = runprov.Capture(tmp_path / "t.log")
+    cap.start()
+    cap.stop()
+    runprov.run._release_abandoned(cap)
+    runprov.run._release_abandoned(cap)
+
+
+def test_a_run_nested_inside_another_records_both(tmp_path, monkeypatch):
+    """A harness that wraps a step in its own Run is the obvious thing to write, and both
+    passes are real runs with their own inputs and outputs."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("outer", provenance=tmp_path / "o.json"):
+        with runprov.Run("inner", provenance=tmp_path / "i.json"):
+            pass
+    got = [json.loads(x)["script"] for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    assert sorted(got) == ["inner", "outer"]
+
+
+def test_entering_one_run_twice_appends_one_history_line(tmp_path, monkeypatch):
+    """The history counts RUNS. A second `with` on the same object is the same run, and
+    appending twice would inflate every tally taken over runs.jsonl."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    run = runprov.Run("twice", provenance=tmp_path / "p.json")
+    with run:
+        pass
+    with run:
+        pass
+    got = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    assert sum(1 for r in got if r["script"] == "twice") == 1
