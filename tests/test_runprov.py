@@ -28,10 +28,13 @@ import logging
 import os
 import pathlib
 import re
+import signal
 import subprocess
 import sys
 import tarfile
 import textwrap
+import threading
+import time
 import types
 import zipfile
 
@@ -5833,3 +5836,145 @@ def test_open_output_still_pins_the_formats_that_can_hold_one(tmp_path):
         with run.open_output(tmp_path / name) as fh:
             fh.write("payload\n")
         assert "provenance" in (tmp_path / name).read_text(encoding="utf-8"), name
+
+
+# ============================ a kill is how a long run actually ends, and it recorded nothing
+_KILLED_SCRIPT = """
+import pathlib, sys, time, runprov
+root = pathlib.Path(sys.argv[1])
+proj = runprov.Project(root=root, run_log=root / "runs.jsonl",
+                       run_id=lambda: "r", generation=lambda: "g")
+with runprov.Run("slow", {"n": 1}, project=proj, provenance=root / "p.json") as run:
+    src = root / "in.tsv"
+    src.write_text("id\\n1\\n", encoding="utf-8")
+    run.input(src)
+    run.output(root / "never.tsv")
+    run.note("started", True)
+    print("READY", flush=True)
+    time.sleep(60)
+"""
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGTERM"), reason="POSIX signal needed")
+def test_a_sigterm_records_the_run_instead_of_vanishing(tmp_path):
+    """SLURM's time limit, `scancel` and `docker stop` are all SIGTERM, and every one of
+    them used to leave no sidecar and no history line — a run indistinguishable from one
+    that never started, which is the silence this package exists to end.
+
+    A real process, really signalled: the mechanism is a signal handler and a fake cannot
+    show that the handler reaches `__exit__` through the interpreter's own delivery.
+    """
+    script = tmp_path / "slow.py"
+    script.write_text(_KILLED_SCRIPT, encoding="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, str(script), str(tmp_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(REPO)},
+    )
+    try:
+        assert proc.stdout is not None
+        assert proc.stdout.readline().strip() == "READY", "the run must be open before we kill"
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout=30)
+    finally:
+        proc.kill()
+
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["status"] == "failed"
+    assert rec["failure"]["type"] == "Terminated"
+    assert "SIGTERM" in rec["failure"]["message"]
+    assert rec["notes"] == {"started": True}, "everything up to the signal is still recorded"
+    assert rec["inputs"][0]["sha256"], "the input it had read"
+    assert rec["outputs"][0]["kind"] == "MISSING", "and the output it never got to write"
+    assert rec["signals"]["SIGTERM"] == "armed"
+
+    history = (tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(history) == 1 and json.loads(history[0])["status"] == "failed"
+
+
+def test_a_termination_is_not_swallowed_by_a_broad_except(tmp_path):
+    """`except Exception:` around a step is ordinary. If it caught a termination the step
+    would report success for work the OS had already stopped, so `Terminated` sits outside
+    `Exception` exactly as `KeyboardInterrupt` does."""
+    assert issubclass(runprov.Terminated, BaseException)
+    assert not issubclass(runprov.Terminated, Exception)
+
+    caught = None
+    try:
+        try:
+            raise runprov.Terminated(signal.SIGTERM)
+        except Exception:
+            caught = "swallowed"
+    except BaseException as exc:
+        caught = type(exc).__name__
+    assert caught == "Terminated"
+    assert runprov.Terminated(signal.SIGTERM).signum == signal.SIGTERM
+
+
+def test_it_will_not_take_a_signal_handler_the_caller_installed(tmp_path):
+    """A script with its own SIGTERM handler has decided what termination means for it.
+    Overriding that to improve a log would be provenance changing the run it observes."""
+    original = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, lambda *a: None)
+    try:
+        with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "p.json") as run:
+            assert run.record["signals"]["SIGTERM"] == "not armed — the caller has its own handler"
+        assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL, "theirs is untouched"
+    finally:
+        signal.signal(signal.SIGTERM, original)
+
+
+def test_the_handler_is_removed_when_the_block_ends(tmp_path):
+    """Left installed, a signal arriving during teardown would raise INSIDE `_finish` —
+    the mechanism for recording a termination would be what lost the record."""
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL, "test precondition"
+    with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "p.json") as run:
+        # `==`, not `is`: each access to a bound method builds a new object.
+        assert signal.getsignal(signal.SIGTERM) == run._on_signal
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+
+def test_a_run_in_a_worker_thread_says_it_could_not_arm_rather_than_dying(tmp_path):
+    """`signal.signal` is main-thread-only. Provenance must not be the reason a worker
+    dies, and the record states the gap rather than implying coverage."""
+    seen = {}
+
+    def work():
+        with runprov.Run("w", project=_project(tmp_path), provenance=tmp_path / "w.json") as run:
+            seen.update(run.record["signals"])
+
+    t = threading.Thread(target=work)
+    t.start()
+    t.join(timeout=30)
+    assert seen["SIGTERM"] == "not armed — not the main thread"
+    assert json.loads((tmp_path / "w.json").read_text(encoding="utf-8"))["status"] == "ok"
+
+
+def test_a_signal_absent_on_the_platform_is_recorded_as_absent(tmp_path, monkeypatch):
+    """SIGHUP does not exist on Windows. 'absent' and 'not armed' are different facts and
+    the record keeps them apart."""
+    monkeypatch.delattr(signal, "SIGHUP", raising=False)
+    with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "p.json") as run:
+        assert run.record["signals"]["SIGHUP"] == "absent on this platform"
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGTERM"), reason="POSIX signal needed")
+def test_the_handler_raises_into_the_block_it_guards(tmp_path):
+    """The subprocess test above proves the whole path end to end, but it runs in another
+    interpreter. This one signals THIS process, so the raise is exercised where it can be
+    seen: delivered by the interpreter, unwinding a real `with`, into a real `__exit__`.
+    """
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL, "test precondition"
+    with pytest.raises(runprov.Terminated) as caught:
+        with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "p.json") as run:
+            run.note("reached", True)
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(1)  # the raise lands at the next bytecode boundary, not here
+
+    assert caught.value.signum == signal.SIGTERM and caught.value.name == "SIGTERM"
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["status"] == "failed" and rec["failure"]["type"] == "Terminated"
+    assert rec["notes"] == {"reached": True}
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL, "and it cleaned up after itself"
