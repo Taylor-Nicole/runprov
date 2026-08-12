@@ -34,6 +34,29 @@ why every file `runprov` writes itself pins UTF-8.
 each design choice. **[PUBLISHING.md](PUBLISHING.md)** is the release procedure, and
 **[LICENSING.md](LICENSING.md)** the licence and copyright-holder decision.
 
+## Installing it
+
+Zero dependencies and pure Python, so there is not much to say — but it was verified rather
+than assumed, wheel and sdist, each installed and imported and `python -m runprov log` run:
+
+| | |
+|---|---|
+| `pip install runprov` | wheel and sdist both ✓ |
+| `uv pip install runprov` | ✓ |
+| conda / mamba prefix, via `pip` | ✓ — and see [Environment snapshots](#environment-snapshots), which reads `conda-meta` |
+| **Poetry ≤ 1.8** | **cannot consume it**, and neither can it consume many current packages |
+
+That last row is worth the detail because the error names nothing useful. Poetry 1.8
+resolves the dependency and then reports `Unable to create package with no name`, leaving an
+environment that installed cleanly and cannot import. The cause is its bundled `pkginfo`
+&lt; 1.11, which returns `name = None` for any wheel whose `Metadata-Version` is newer than it
+knows; `hatchling` emits **2.5**. It is not the licence metadata — a build with the
+pre-PEP-639 `license = {text = ...}` emits 2.5 just the same, which was measured before this
+paragraph was written.
+
+**The fix is Poetry 2.x** (released January 2025), whose `pkginfo` parses it. Nothing here
+needs changing, and nothing here can change it short of a different build backend.
+
 ## Two shapes that record nothing, and the one that does
 
 Both of these look like they are recording. Neither prints a warning. Measured, running the
