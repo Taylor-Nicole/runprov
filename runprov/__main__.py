@@ -20,6 +20,15 @@ Because a log nobody reads is a log nobody checks, this renders it back:
     python -m runprov log --format yaml         the transformation-log shape
     python -m runprov log --failed              only the runs that died
     python -m runprov log --script build_labels --limit 5
+
+And `verify`, which is the other half of the claim: `log` and `lineage` say what happened,
+and neither says whether what happened is still true.
+
+    python -m runprov verify                    do artifacts still match what they pin?
+    python -m runprov verify results/ --root .
+
+It reads the artifact and nothing else -- no history, no sidecar, no `configure()`, which
+is the whole reason the pin is written into the bytes. See `verify.py`.
 """
 
 from __future__ import annotations
@@ -31,6 +40,7 @@ import sys
 import typing
 
 from .project import active
+from .verify import render, verify
 
 
 def _load(path: pathlib.Path) -> tuple[list[dict[str, typing.Any]], int]:
@@ -355,6 +365,45 @@ def _render_lineage(rows: list[dict[str, typing.Any]], g: dict[str, typing.Any])
     return "\n".join(out)
 
 
+def _verify(args: argparse.Namespace) -> int:
+    """`verify`, and it deliberately never touches the history.
+
+    The pin is in the artifact, which is the whole point of putting it there: a committed
+    result can be checked by someone who has the repository and nothing else — no sidecar,
+    no `runs.jsonl`, no `configure()`. Requiring the history here would have made the check
+    depend on the one file the pin exists to survive.
+    """
+    root = pathlib.Path(args.root) if args.root else active().root
+    report = verify([pathlib.Path(p) for p in args.paths] or [root], root)
+
+    if args.format == "json":
+        sys.stdout.write(json.dumps(report, indent=2) + "\n")
+    else:
+        sys.stdout.write(render(report))
+
+    seen, pinned = report["artifacts_seen"], report["artifacts_pinned"]
+    if not pinned:
+        # NOT zero. A gate that goes green having checked nothing is worse than no gate,
+        # because someone will trust it -- the same rule as `git_status_captured: false`.
+        print(
+            f"# NOTHING CHECKED: {seen} file(s) examined under {root}, none carries a pin.\n"
+            f"#   This is 'we could not look', not 'nothing is wrong'. A pin is written by "
+            f"`run.header()`\n"
+            f"#   or `run.open_output()`; an artifact produced without one cannot be "
+            f"verified from its bytes.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        f"# {pinned} pinned artifact(s) of {seen} file(s) under {root}: "
+        f"{report['ok']} OK, {report['stale']} STALE, {report['gone']} GONE, "
+        f"{report['unverifiable']} UNVERIFIABLE",
+        file=sys.stderr,
+    )
+    return 1 if report["stale"] or report["gone"] else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m runprov")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -368,7 +417,15 @@ def main(argv: list[str] | None = None) -> int:
     ln = sub.add_parser("lineage", help="reconstruct the run DAG by joining on digests")
     ln.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     ln.add_argument("--format", choices=("text", "json"), default="text")
+    vf = sub.add_parser("verify", help="do artifacts still match the inputs they pin?")
+    vf.add_argument("paths", nargs="*", help="artifacts or directories (default: the root)")
+    vf.add_argument("--root", default=None, help="what pinned names are relative to")
+    vf.add_argument("--log", default=None, help=argparse.SUPPRESS)  # unused; keeps --log uniform
+    vf.add_argument("--format", choices=("text", "json"), default="text")
     args = ap.parse_args(argv)
+
+    if args.cmd == "verify":
+        return _verify(args)
 
     path = pathlib.Path(args.log) if args.log else active().resolved_run_log()
     if not path.is_file():

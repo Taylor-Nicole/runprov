@@ -40,7 +40,7 @@ import weakref
 
 from ._report import diagnostic, summary
 from .environment import archive_lockfiles, lockfiles, manager, write_snapshot
-from .hashing import describe, moved_since, sha256
+from .hashing import describe, moved_since, pin_digest, sha256
 from .project import OTHER_FILES_KEPT, Project, active, classify_status, git, is_configured
 from .terminal import Capture
 
@@ -833,11 +833,10 @@ class Run:
         # opened a file is a fact about the run, and facts about the run live there.
         pinned: dict[tuple[str, str], None] = {}
         for i in self.record["inputs"]:
-            # Content digest FIRST: two runs over the same data must pin identically.
-            sha = str(
-                i.get("content_sha256") or i.get("sha256") or i.get("sha256_tree") or "MISSING"
-            )[:16]
-            pinned.setdefault((sha, self._pin_name(i.get("path", "?"))), None)
+            # Content digest FIRST: two runs over the same data must pin identically. The
+            # precedence lives in `pin_digest` so that `verify` reads pins with the same
+            # expression that wrote them -- see its docstring for why that matters.
+            pinned.setdefault((pin_digest(i), self._pin_name(i.get("path", "?"))), None)
         ins = sorted(pinned)
         if ins:
             lines.append(f"{c}  inputs ({len(ins)}), sha256:")

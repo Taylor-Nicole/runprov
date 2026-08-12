@@ -23,8 +23,17 @@ Nothing has been published yet. Everything below is what a first release would c
 
 - `Run`, `Project`/`configure`, `describe`, `sha256`, `content_digest`, and an append-only
   JSONL history with `flock` (and a `msvcrt` path on Windows).
-- `python -m runprov log | lineage`, and a `runprov` console script — `uvx runprov` and
-  `pipx run runprov` resolve the second and cannot reach the first.
+- `python -m runprov log | lineage | verify`, and a `runprov` console script — `uvx runprov`
+  and `pipx run runprov` resolve the second and cannot reach the first.
+- **`verify`** — re-derives every input a pin names and compares. Until it existed,
+  invalidation was a property of the format and not of the product: everything needed was
+  in the artifact and nothing read it back. Reads the artifact and nothing else — no
+  history, no sidecar, no `configure()`. Transitive through inherited pins, measured on a
+  two-step chain: changing the root reports **2 stale artifacts**, and `via` names the step
+  whose claim failed rather than the artifact's own. `GONE` is counted apart from `STALE`
+  (a stale artifact is rebuilt; a missing input is found), and zero pins found is a
+  **non-zero exit** rather than a green check over nothing. The pin-digest precedence is
+  one function shared with `header()`, so the checker cannot disagree with what wrote it.
 - `log --format yaml`, and `runprov.to_yaml()` for a per-run manifest, both from one
   renderer and **without pyyaml**.
 - **Terminal capture** (`terminal_log`), tee-never-divert, at file-descriptor level so a
