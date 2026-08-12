@@ -5456,3 +5456,239 @@ def test_entering_one_run_twice_appends_one_history_line(tmp_path, monkeypatch):
         pass
     got = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
     assert sum(1 for r in got if r["script"] == "twice") == 1
+
+
+# ============================== `verify`: the half that reads the pin back and checks it
+def _chain(tmp_path, monkeypatch):
+    """A two-step chain, so the inherited pin is real rather than hand-written."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "results").mkdir()
+    src = tmp_path / "data" / "in.tsv"
+    src.write_text("id\tv\n1\ta\n", encoding="utf-8")
+    proj = _project(tmp_path)
+    for name, a, b in (
+        ("step1", src, tmp_path / "results" / "mid.tsv"),
+        ("step2", tmp_path / "results" / "mid.tsv", tmp_path / "results" / "final.tsv"),
+    ):
+        with runprov.Run(name, project=proj, provenance=b.with_suffix(".prov.json")) as run:
+            text = pathlib.Path(run.input(a)).read_text(encoding="utf-8")
+            with run.open_output(b) as fh:
+                fh.write(text)
+    return src, tmp_path / "results"
+
+
+def test_verify_passes_a_chain_nobody_has_touched(tmp_path, monkeypatch):
+    _, results = _chain(tmp_path, monkeypatch)
+    rep = runprov.verify.verify([results], tmp_path)
+    assert rep["ok"] == 2 and rep["stale"] == 0 and rep["gone"] == 0
+    assert rep["artifacts_pinned"] == 2, "the .prov.json sidecars carry no pin and must not count"
+
+
+def test_verify_reports_staleness_transitively_through_an_inherited_pin(tmp_path, monkeypatch):
+    """The property the pin-in-artifact design buys, and the reason every block is read.
+
+    `final.tsv` copies `mid.tsv`'s lines through, so it carries step1's pin as well as its
+    own. Changing the ROOT input must therefore surface on the grandchild too — reading
+    only the first block would check one generation and silently ignore a claim the
+    artifact is making in its own bytes.
+    """
+    src, results = _chain(tmp_path, monkeypatch)
+    src.write_text("id\tv\n1\tCHANGED\n", encoding="utf-8")
+
+    rep = runprov.verify.verify([results], tmp_path)
+    assert rep["stale"] == 2, "both the child and the grandchild pin the changed root"
+
+    final = next(a for a in rep["artifacts"] if a["artifact"].endswith("final.tsv"))
+    assert final["pins"] == 2 and final["scripts"] == ["step2", "step1"]
+    bad = [i for i in final["inputs"] if i["status"] != "OK"]
+    assert [(i["name"], i["via"]) for i in bad] == [("data/in.tsv", "step1")], (
+        "the failing claim must name the step that made it, not the artifact's own step"
+    )
+
+
+def test_verify_separates_a_missing_input_from_a_changed_one(tmp_path, monkeypatch):
+    """Different repairs: a stale artifact is rebuilt, a gone input is FOUND. Collapsing
+    them printed `1 STALE` over an artifact whose own line said GONE."""
+    _, results = _chain(tmp_path, monkeypatch)
+    (results / "mid.tsv").unlink()
+    rep = runprov.verify.verify([results / "final.tsv"], tmp_path)
+    assert rep["gone"] == 1 and rep["stale"] == 0
+    assert [i["status"] for i in rep["artifacts"][0]["inputs"]] == ["GONE", "OK"]
+
+
+def test_verify_refuses_to_guess_rather_than_reporting_a_green_it_cannot_justify(tmp_path):
+    """Three shapes where a comparison would be meaningless. Green must mean CHECKED."""
+    root = tmp_path
+    (root / "real.tsv").write_text("x\n", encoding="utf-8")
+    cases = [
+        ("<external>/elsewhere.tsv", "outside"),
+        ("odd\\nname.tsv", "escaped"),
+        ("real.tsv", "recorded no digest"),  # via the MISSING digest below
+    ]
+    digests = ["0" * 16, "0" * 16, "MISSING"]
+    for (name, expected), sha in zip(cases, digests, strict=True):
+        got = runprov.verify.check_input(sha, name, root)
+        assert got["status"] == "UNVERIFIABLE", name
+        assert expected in got["reason"]
+
+
+def test_verify_reports_an_input_it_cannot_hash_now_as_unverifiable(tmp_path):
+    """`describe` refuses a FIFO rather than blocking. That is not evidence of a change,
+    and calling it STALE would be the overstatement the hashing module avoids."""
+    os.mkfifo(tmp_path / "pipe.tsv")
+    got = runprov.verify.check_input("0" * 16, "pipe.tsv", tmp_path)
+    assert got["status"] == "UNVERIFIABLE" and "regular file" in got["reason"]
+
+
+def test_verify_catches_a_pin_that_declares_more_inputs_than_it_carries(tmp_path):
+    """Three surviving entries agreeing proves nothing about the fourth. A truncated or
+    hand-edited pin is a finding about the PIN, so it lands on the artifact."""
+    art = tmp_path / "a.tsv"
+    art.write_text(
+        f"# {runprov.verify.ANCHOR}\n"
+        "#   script     : s\n"
+        "#   inputs (3), sha256:\n"
+        f"#     {'0' * 16}  gone_one.tsv\n"
+        "id\n1\n",
+        encoding="utf-8",
+    )
+    rep = runprov.verify.verify_artifact(art, tmp_path)
+    assert rep["status"] == "STALE"
+    assert rep["pin_truncated"] == ["s: declares 3 input(s), carries 1"]
+
+
+def test_verify_accepts_a_pin_that_states_it_read_nothing(tmp_path):
+    """NONE REGISTERED is a checkable claim and it checks out. An artifact with a pin and
+    no entries and no such statement is NOT the same thing."""
+    stated, silent = tmp_path / "stated.tsv", tmp_path / "silent.tsv"
+    stated.write_text(
+        f"# {runprov.verify.ANCHOR}\n#   inputs     : NONE REGISTERED. Either this\n",
+        encoding="utf-8",
+    )
+    silent.write_text(f"# {runprov.verify.ANCHOR}\n#   script     : s\n", encoding="utf-8")
+    assert runprov.verify.verify_artifact(stated, tmp_path)["status"] == "OK"
+    assert runprov.verify.verify_artifact(silent, tmp_path)["status"] == "UNVERIFIABLE"
+
+
+def test_verify_reads_a_pin_written_with_any_comment_marker(tmp_path):
+    """The marker is whatever precedes the anchor, because `header(comment=...)` is the
+    caller's to choose — `## ` for a VCF, `; ` elsewhere. A reader that assumed `# ` would
+    verify only the formats it happened to know."""
+    src = tmp_path / "in.tsv"
+    src.write_text("x\n", encoding="utf-8")
+    proj = _project(tmp_path)
+    run = runprov.Run("s", project=proj)
+    run.input(src)
+    for marker in ("## ", "; ", ""):
+        art = tmp_path / f"a{len(marker)}.vcf"
+        art.write_text(run.header(marker) + "##fileformat=VCFv4.2\n", encoding="utf-8")
+        rep = runprov.verify.verify_artifact(art, tmp_path)
+        assert rep["status"] == "OK", f"marker {marker!r} -> {rep}"
+
+
+def test_verify_does_not_read_a_whole_binary_looking_for_a_pin(tmp_path):
+    """Bounded, and stated: a pin further in than SCAN_BYTES is not found. Reading every
+    byte of a 50 GB BAM to learn it has no pin is the cost that gets a checker removed."""
+    art = tmp_path / "big.bin"
+    art.write_bytes(b"\x00" * (runprov.verify.SCAN_BYTES + 64) + runprov.verify.ANCHOR.encode())
+    assert runprov.verify.read_pins(art) == []
+    assert runprov.verify.verify_artifact(art, tmp_path)["status"] == "NO PIN"
+
+
+def test_verify_treats_an_unreadable_or_undecodable_file_as_unpinned(tmp_path):
+    """Neither raises. A non-UTF-8 file cannot contain the anchor, and a pin recovered
+    from a mis-decoded artifact would carry digests we could not trust anyway."""
+    latin = tmp_path / "l.tsv"
+    latin.write_bytes(f"# {runprov.verify.ANCHOR}\n".encode("cp1252"))  # em dash -> 0x97
+    assert runprov.verify.read_pins(latin) == []
+
+    locked = tmp_path / "locked.tsv"
+    locked.write_text("x\n", encoding="utf-8")
+    locked.chmod(0o000)
+    try:
+        assert runprov.verify.read_pins(locked) == []
+    finally:
+        locked.chmod(0o644)
+
+
+def test_verify_collects_files_directories_and_neither(tmp_path):
+    """Sorted and deduped: naming a file AND its parent must not check it twice, and two
+    runs of the same check must report in the same order."""
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "b.tsv").write_text("b\n", encoding="utf-8")
+    (tmp_path / "a.tsv").write_text("a\n", encoding="utf-8")
+    got = runprov.verify.collect(
+        [tmp_path / "d", tmp_path / "d" / "b.tsv", tmp_path / "a.tsv", tmp_path / "nope.tsv"]
+    )
+    assert [p.name for p in got] == ["a.tsv", "b.tsv"]
+
+
+def test_verify_cli_exits_non_zero_and_says_so_when_it_checked_nothing(tmp_path, capsys):
+    """A gate that goes green having checked nothing is worse than no gate, because
+    someone will trust it. The same rule as `git_status_captured: false`."""
+    (tmp_path / "plain.tsv").write_text("id\n1\n", encoding="utf-8")
+    rc = runprov.__main__.main(["verify", str(tmp_path), "--root", str(tmp_path)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "NOTHING CHECKED" in err and "not 'nothing is wrong'" in err
+
+
+def test_verify_cli_reports_text_and_json_and_sets_the_exit_code(tmp_path, monkeypatch, capsys):
+    src, results = _chain(tmp_path, monkeypatch)
+
+    assert runprov.__main__.main(["verify", str(results), "--root", str(tmp_path)]) == 0
+    assert "OK" in capsys.readouterr().out
+
+    src.write_text("id\tv\n1\tCHANGED\n", encoding="utf-8")
+    assert runprov.__main__.main(["verify", str(results), "--root", str(tmp_path)]) == 1
+    text = capsys.readouterr()
+    assert "STALE" in text.out and "via step1" in text.out
+
+    assert (
+        runprov.__main__.main(["verify", str(results), "--root", str(tmp_path), "--format", "json"])
+        == 1
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stale"] == 2 and payload["root"] == str(tmp_path)
+
+
+def test_verify_cli_defaults_to_the_active_project_root(tmp_path, monkeypatch, capsys):
+    """No path and no --root: the project's own root. `verify` never reads the history —
+    the pin is in the artifact precisely so a checker needs nothing else."""
+    _chain(tmp_path, monkeypatch)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "elsewhere.jsonl")
+    assert runprov.__main__.main(["verify"]) == 0
+    assert not (tmp_path / "elsewhere.jsonl").exists(), "no history was consulted"
+    assert "2 pinned artifact(s)" in capsys.readouterr().err
+
+
+def test_verify_renders_nothing_for_an_empty_report():
+    assert runprov.verify.render({"artifacts": []}) == ""
+
+
+def test_verify_walks_past_a_comment_line_that_is_not_part_of_the_pin(tmp_path):
+    """An artifact's own comments sit beside the pin, and a reader that stopped at the
+    first unrecognised marker line would drop every entry after them.
+
+    The truncation note is rendered here too: it is a fact about the pin rather than about
+    any input, so it has no per-input line to appear on and would otherwise print nowhere.
+    """
+    src = tmp_path / "kept.tsv"
+    src.write_text("x\n", encoding="utf-8")
+    art = tmp_path / "a.tsv"
+    art.write_text(
+        f"# {runprov.verify.ANCHOR}\n"
+        "#   script     : s\n"
+        "# generated by the lab pipeline, which comments its own output\n"
+        "#   inputs (2), sha256:\n"
+        f"#     {runprov.hashing.pin_digest(runprov.describe(src))}  kept.tsv\n"
+        "id\n1\n",
+        encoding="utf-8",
+    )
+    rep = runprov.verify.verify_artifact(art, tmp_path)
+    assert [i["name"] for i in rep["inputs"]] == ["kept.tsv"], "the entry after the comment"
+    assert rep["status"] == "STALE" and rep["pin_truncated"]
+
+    rendered = runprov.verify.render({"artifacts": [rep]})
+    assert "!! pin s: declares 2 input(s), carries 1" in rendered

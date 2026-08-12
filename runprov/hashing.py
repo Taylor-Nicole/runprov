@@ -380,6 +380,30 @@ def _mtime_utc(st: os.stat_result) -> str:
     return dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+PIN_DIGEST_CHARS = 16
+
+
+def pin_digest(entry: dict[str, typing.Any]) -> str:
+    """The digest a PIN carries for one described file — exactly as `header()` renders it.
+
+    Shared with the verifier deliberately, and that is the whole reason it is a function.
+    A checker that recomputes this precedence independently is a checker that can disagree
+    with the pin it is checking, and the disagreement would read as a stale artifact: a
+    permanently red check over files nobody changed, which is the failure this package
+    already learned once when the run id was in the pin. One expression, two callers, no
+    way for them to drift.
+
+    Content digest FIRST, so two runs over the same data pin identically even when the
+    bytes differ by a volatile stamp. `sha256_tree` is the directory case. `MISSING` is
+    rendered rather than an empty string, because a pin that silently omits an input is
+    the defect the pin exists to prevent — the verifier reports it as unverifiable rather
+    than treating an absent digest as agreement.
+    """
+    return str(
+        entry.get("content_sha256") or entry.get("sha256") or entry.get("sha256_tree") or "MISSING"
+    )[:PIN_DIGEST_CHARS]
+
+
 def moved_since(rec: dict[str, typing.Any], base: pathlib.Path | None = None) -> str | None:
     """Has this file changed since `describe()` recorded it? A reason, or None.
 

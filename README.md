@@ -235,6 +235,61 @@ the count of those derived addresses is reported. That matters: every one of the
 records above predates the field, so a reader that insisted on it would have produced a
 graph of zero edges over the entire corpus it was written to read.
 
+## Verify: is this artifact still made from what it says it is?
+
+```bash
+python -m runprov verify                       # the project root
+python -m runprov verify results/ --root .     # a subtree
+python -m runprov verify --format json         # for a gate
+```
+
+Everything needed for this was here from the start — the pin is deterministic, the digests
+are in the artifact, the names are root-relative — and until now nothing read it back. That
+made invalidation a property of the **format** and not of the **product**: `log` and
+`lineage` tell you what happened, and neither tells you whether what happened is still
+true. A checker living in another repository is a checker most users do not have.
+
+For every input a pin names, `verify` re-derives that input's digest now and compares. It
+does **not** re-run anything and cannot tell you an artifact is correct — only whether the
+things it was made from still hash the way they did. That is what staleness is.
+
+It reads the artifact and nothing else. No sidecar, no `runs.jsonl`, no `configure()` —
+which is the whole reason the pin is in the bytes, and why `--log` is meaningless here.
+
+```
+STALE        results/final.tsv
+             STALE        data/in.tsv  (pinned e85456706a564976, now c694cbe65e827d62)  via step1
+```
+
+**Transitivity is free, and it is the point.** A step that reads an upstream artifact and
+writes its lines through carries the upstream pin as well as its own, so a changed root
+surfaces at every level that depends on it — and a grandchild stays stale after the root is
+restored, because the child was never rebuilt. `via` names the step whose claim failed,
+which for an inherited pin is **not** the artifact's own step. Nothing implements this; it
+falls out of the pin being in the bytes.
+
+Four outcomes, and the last two are the ones that make the check worth trusting:
+
+| | |
+|---|---|
+| `OK` | every pinned input still hashes as pinned |
+| `STALE` | one changed — rebuild the artifact |
+| `GONE` | a pinned input is no longer there. Counted apart from `STALE` because it is a different repair: a stale artifact is rebuilt, a missing input is **found** |
+| `UNVERIFIABLE` | a comparison would be meaningless, so none is claimed: a name outside the root (`<external>/…` is deliberately not a path), a name carrying an escape (a file named `a\nb` and one named `a<LF>b` render identically), or an input the run recorded no digest for |
+
+**It will not pass having checked nothing.** Zero pins found is a non-zero exit saying so
+in those words. A gate that goes green over a directory whose artifacts carry no pins is
+worse than no gate, because someone will trust it — the same rule that makes
+`git_status_captured: false` mean "we could not look" rather than "clean".
+
+Exit status is 0 when every pinned artifact verifies, 1 on any `STALE`, `GONE`, or nothing
+checked — so `python -m runprov verify results/` is a CI step as it stands.
+
+Two stated limits. The pin is looked for in the **first 64 KiB** only, because reading
+every byte of a 50 GB BAM to learn it has no pin is the cost that gets a checker deleted;
+and the comment marker is whatever precedes the anchor on its line, so a pin written with
+`header("## ")` for a VCF reads back exactly like one written with `# `.
+
 ## Every run records the command that produced it
 
 ```
