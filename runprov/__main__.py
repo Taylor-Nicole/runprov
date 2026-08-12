@@ -230,9 +230,30 @@ def _lineage(rows: list[dict[str, typing.Any]]) -> dict[str, typing.Any]:
     silently excluded them would understate its own coverage.
     """
 
-    def digest(io_: dict[str, typing.Any]) -> str | None:
-        d = io_.get("content_sha256") or io_.get("sha256") or io_.get("sha256_tree")
-        return str(d) if d else None
+    def digests(io_: dict[str, typing.Any]) -> list[str]:
+        """EVERY digest this entry carries, most specific first — not just the best one.
+
+        Preferring one and stopping breaks the join across the v1/v2 boundary. A `v1`
+        record holds `sha256` alone; a `v2` record of the SAME FILE holds `sha256` *and*
+        `content_sha256`, and the content digest is taken over normalised text, so it
+        never equals the raw one. Preferring `content_sha256` on the consumer and falling
+        back to `sha256` on the producer therefore compares two different keys, and every
+        edge crossing an upgrade is lost.
+
+        Measured on a mixed history: a v2 run reading a file a v1 run had just written was
+        reported as an ORPHAN INPUT — "produced by no recorded run", which is a false
+        statement about provenance rather than a missing one.
+
+        Indexing on all of them cannot invent an edge: equal `sha256` means identical
+        bytes, and equal `content_sha256` means identical content by the definition this
+        package already pins on. Order matters only for determinism when both hit.
+        """
+        out = []
+        for key in ("content_sha256", "sha256", "sha256_tree"):
+            d = io_.get(key)
+            if d and str(d) not in out:
+                out.append(str(d))
+        return out
 
     def address(r: dict[str, typing.Any]) -> str:
         """A unique handle for one run — RECORDED where C8 reached, DERIVED where it did not.
@@ -263,8 +284,7 @@ def _lineage(rows: list[dict[str, typing.Any]]) -> dict[str, typing.Any]:
     for r in usable:
         when = str(r.get("finished_utc") or r.get("started_utc") or "")
         for o in r.get("outputs") or []:
-            d = digest(o)
-            if d:
+            for d in digests(o):
                 produced.setdefault(d, []).append((when, address(r)))
     for v in produced.values():
         v.sort()
@@ -274,13 +294,12 @@ def _lineage(rows: list[dict[str, typing.Any]]) -> dict[str, typing.Any]:
     for r in usable:
         started = str(r.get("started_utc") or "")
         for i in r.get("inputs") or []:
-            d = digest(i)
-            candidates = [c for c in produced.get(d, []) if d] if d else []
             # rule 2: only a producer that had FINISHED. `<=` because a stage may write and
             # a later stage in the same second may read -- second resolution is the reason
             # the ad-hoc run id collides in the first place.
             me = address(r)
-            before = [c for c in candidates if c[0] <= started and c[1] != me]
+            candidates = [c for d in digests(i) for c in produced.get(d, [])]
+            before = sorted({c for c in candidates if c[0] <= started and c[1] != me})
             if not before:
                 orphan += 1
                 continue
