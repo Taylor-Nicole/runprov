@@ -287,6 +287,10 @@ def manager(
 
     # Sorted and deduplicated so two runs in one environment produce one answer regardless
     # of dict iteration or which marker was seen first.
+    #
+    # An EMPTY list is a real answer, not a failure: a system interpreter built by no tool
+    # has no manager to name, and saying so beats guessing "venv" because that is usually
+    # true. CI runs exactly that way.
     return {"detected": sorted(set(detected)), "evidence": evidence}
 
 
