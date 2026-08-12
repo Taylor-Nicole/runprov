@@ -3958,7 +3958,7 @@ def test_the_yaml_view_of_a_v1_record_says_what_it_cannot_know(tmp_path):
     rendered = cli._yaml(_v1_rows())
     docs = yaml.safe_load(rendered)
     assert docs[0]["step"] == "v1_producer"
-    assert "predates script_file" in docs[0]["script"]
+    assert "not recorded" in docs[0]["script"], "it must not invent a path"
     assert docs[0]["input"] == "in.tsv" and docs[0]["output"] == "out.tsv"
 
 
@@ -4537,11 +4537,14 @@ def test_an_object_with_no_item_method_is_still_recorded(tmp_path, monkeypatch):
     behaviour it always had — recorded as its string, never dropped and never fatal."""
     monkeypatch.chdir(tmp_path)
     runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    somewhere = tmp_path / "x.tsv"
     with runprov.Run("s", provenance=tmp_path / "p.json") as run:
-        run.note("path", pathlib.Path("/tmp/x.tsv"))
+        run.note("path", somewhere)
         run.note("set", {"b", "a"})
     got = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["notes"]
-    assert got["path"] == "/tmp/x.tsv"
+    # `str(Path)`, never a hardcoded literal: a POSIX spelling makes this fail on Windows
+    # for the separator rather than for the behaviour, which is what it did.
+    assert got["path"] == str(somewhere)
     assert isinstance(got["set"], str)
 
 
@@ -4619,3 +4622,24 @@ def test_a_numpy_style_NaN_is_still_named_after_unwrapping(tmp_path, monkeypatch
     assert ": NaN" not in body, "bare NaN is not JSON"
     got = json.loads(body)["notes"]
     assert got["auroc"] == "NaN" and got["ratio"] == "Infinity"
+
+
+def test_to_yaml_finds_the_script_file_in_a_sidecar_record_too(tmp_path, monkeypatch):
+    """The history line flattens `script_file` to the top level; the sidecar keeps it under
+    `code`. Reading only the flat one made `to_yaml(run.record)` report a run from a real
+    `.py` file as having none, while `log --format yaml` — the same renderer, the same run,
+    read from the history — printed the path. Two views of one run must not disagree."""
+    yaml = pytest.importorskip("yaml")
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    script = tmp_path / "step.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+
+    with runprov.Run("s", provenance=tmp_path / "p.json", script_path=script) as run:
+        pass
+
+    from_record = yaml.safe_load(runprov.to_yaml(run.record))[0]
+    history = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    from_history = yaml.safe_load(cli._yaml(history))[0]
+    assert from_record["script"] == str(script)
+    assert from_record["script"] == from_history["script"], "the two views must agree"
