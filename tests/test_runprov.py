@@ -4277,3 +4277,120 @@ def test_a_tar_name_and_a_link_target_cannot_be_confused_for_each_other(tmp_path
     a = linked(tmp_path / "a.tar", "a", "Lb")
     b = linked(tmp_path / "b.tar", "aL", "b")
     assert runprov.content_digest(a) != runprov.content_digest(b)
+
+
+# ----------------------------------------------------------- CONDA-FAMILY PREFIXES
+# Installation was verified under pip (wheel and sdist), uv, and mamba. What was NOT
+# right was what the snapshot RECORDED there.
+
+
+def _conda_prefix(root, packages, *, corrupt=(), stray=()):
+    """A prefix laid out the way conda, mamba, micromamba and pixi all lay one out."""
+    meta = root / "conda-meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    for name, version, build in packages:
+        body = json.dumps({"name": name, "version": version, "build": build})
+        (meta / f"{name}-{version}-{build}.json").write_text(body, encoding="utf-8")
+    for filename in corrupt:
+        (meta / filename).write_text("{not json", encoding="utf-8")
+    for filename in stray:
+        (meta / filename).write_text("{}", encoding="utf-8")
+    return root
+
+
+PKGS = [("samtools", "1.21", "h50ea8bc_0"), ("blast", "2.16.0", "h66d330f_4")]
+
+
+def test_a_conda_environment_is_not_only_its_python_packages(tmp_path):
+    """THE GAP. `importlib.metadata` sees Python distributions, and a conda-family
+    environment is mostly not those. Measured on a bare `mamba create -p env python=3.12`:
+    conda installed **27** packages and the snapshot recorded **8**.
+
+    The nineteen it missed were libgcc, openssl, sqlite, icu, ncurses, tk and the rest — and
+    in this package's own target setting that is exactly where `samtools`, `blast` and
+    `mmseqs2` live. A snapshot claiming to describe the environment that produced a result,
+    silently missing every non-Python tool it depended on.
+    """
+    got = runprov.environment.conda_packages(_conda_prefix(tmp_path, PKGS))
+    assert got == {"blast": "2.16.0=h66d330f_4", "samtools": "1.21=h50ea8bc_0"}
+
+
+def test_a_prefix_with_no_conda_meta_is_simply_not_a_conda_prefix(tmp_path):
+    """An ordinary venv must be unaffected — no section, no header line, and no field in
+    the record about a manager it has never met."""
+    assert runprov.environment.conda_packages(tmp_path) == {}
+    assert "conda" not in runprov.environment.render({"a": "1"}, 0, {})
+
+
+def test_an_unreadable_conda_record_is_recovered_from_its_filename(tmp_path):
+    """`name-version-build.json` is the layout by construction, so a corrupt record still
+    identifies its package. Dropping it would understate the environment, which is the one
+    thing a snapshot must never do."""
+    root = _conda_prefix(tmp_path, PKGS, corrupt=("mmseqs2-15.6f452-pl5321h6a68c12_0.json",))
+    got = runprov.environment.conda_packages(root)
+    assert got["mmseqs2"] == "15.6f452=pl5321h6a68c12_0"
+    assert len(got) == 3
+
+
+def test_a_conda_record_that_names_nothing_is_skipped_not_guessed(tmp_path):
+    """A corrupt file whose NAME does not carry the layout either. There is nothing to
+    recover, and inventing an entry would be worse than omitting one."""
+    root = _conda_prefix(tmp_path, PKGS, corrupt=("garbage.json",))
+    assert set(runprov.environment.conda_packages(root)) == {"blast", "samtools"}
+
+
+def test_the_snapshot_digest_moves_when_a_conda_package_moves(tmp_path):
+    """The whole point of the snapshot is answering "did the environment change?". Before
+    this, upgrading samtools changed nothing a record could see."""
+    pip = {"pandas": "3.0.5"}
+    before = runprov.environment.conda_packages(_conda_prefix(tmp_path / "a", PKGS))
+    after = runprov.environment.conda_packages(
+        _conda_prefix(tmp_path / "b", [("samtools", "1.22", "h50ea8bc_0"), PKGS[1]])
+    )
+    d = runprov.environment.digest
+    assert d(runprov.environment.render(pip, 0, before)) != d(
+        runprov.environment.render(pip, 0, after)
+    )
+
+
+def test_where_the_prefix_lives_is_not_part_of_the_environment(tmp_path):
+    """Two identical environments installed at different paths ARE the same environment.
+    A prefix in the body would make the digest machine-specific and defeat the content
+    addressing the file is named by — the same defect as an absolute path in a fixture."""
+    here = runprov.environment.conda_packages(_conda_prefix(tmp_path / "opt" / "envs" / "x", PKGS))
+    there = runprov.environment.conda_packages(_conda_prefix(tmp_path / "home" / "y", PKGS))
+    body = runprov.environment.render({"pandas": "3.0.5"}, 0, here)
+    assert body == runprov.environment.render({"pandas": "3.0.5"}, 0, there)
+    assert str(tmp_path) not in body
+
+
+def test_the_snapshot_record_counts_what_conda_put_there(tmp_path, monkeypatch):
+    """Through `write_snapshot`, so the wiring is tested and not just the helper — the
+    ADR-015 lesson that a fix has to be proved reachable."""
+    monkeypatch.setattr(sys, "prefix", str(_conda_prefix(tmp_path / "pfx", PKGS)))
+    rec = runprov.environment.write_snapshot(tmp_path / "envs")
+    assert rec["n_conda_packages"] == 2
+    body = pathlib.Path(rec["path"]).read_text(encoding="utf-8")
+    assert "samtools=1.21=h50ea8bc_0" in body
+    assert "# conda    : 2 package(s)" in body
+
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "plain"))
+    plain = runprov.environment.write_snapshot(tmp_path / "envs")
+    assert "n_conda_packages" not in plain
+    assert plain["sha256"] != rec["sha256"], "the two environments are not the same one"
+
+
+def test_conda_packages_are_ordered_by_name_not_by_filename(tmp_path):
+    """The same rule `installed_packages` follows, and for the same reason.
+
+    Entries are read from a sorted glob, which orders whole FILENAMES by byte — so `R-4.4`
+    sorts before `arrow-1.3` because `R` is 0x52 and `a` is 0x61. The snapshot is keyed by
+    the digest of its body, so an ordering that depends on how names happen to be spelled
+    would give two identical environments two different digests, and every record pointing
+    at `env-<sha16>` would disagree about which environment ran.
+    """
+    root = _conda_prefix(tmp_path, [("R", "4.4.2", "h1b0"), ("arrow", "1.3.0", "py312")])
+    got = runprov.environment.conda_packages(root)
+    assert list(got) == ["arrow", "R"], "sorted case-insensitively by NAME"
+    body = runprov.environment.render({}, 0, got).splitlines()
+    assert body.index("arrow=1.3.0=py312") < body.index("R=4.4.2=h1b0")
