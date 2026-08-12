@@ -407,6 +407,55 @@ and the inner capture unwinds it on the way out. The cost is that the outer log 
 it stopped rather than where its `Run` did, which is what the flag is there to say. If you
 control the order, close the inner `Run` first and none of this arises.
 
+## Keeping what the scripts it replaces did
+
+Three things the predecessor's scripts do, and where each one lands here.
+
+**A per-run YAML manifest.** They write `*_manifest_*.yml` with `yaml.safe_dump`.
+`runprov.to_yaml()` renders the same shape with **no pyyaml** — it is the renderer behind
+`log --format yaml`, so a manifest and the history view cannot disagree about a run:
+
+```python
+with Run("validate", vars(args), provenance=PROV) as run:
+    ...
+MANIFEST.write_text(runprov.to_yaml(run.record), encoding="utf-8")
+```
+
+After the block, deliberately: `__exit__` is where outputs are hashed and the status becomes
+known. What it will **not** do is append `---` documents to a shared log — that is the
+defect that left the predecessor's file unreadable partway through and spawned eleven
+`fix_transformation_log_*.py` repair scripts. The append-only history is JSONL for that
+reason, and this renders a view of it.
+
+**`json_safe()` over pandas and numpy scalars.** Every such script carries a copy, and it is
+not optional: `numpy.float64` subclasses `float` and survives, but `numpy.int64` and
+`numpy.bool_` subclass neither `int` nor `bool`. Measured before this was fixed,
+`run.note("n", df["v"].sum())` recorded the **string** `"6"` — which compares unequal to `6`
+in every downstream check and renders quoted in YAML. `df.nunique()`, `.sum()` and
+`(s > 1).any()` are the ordinary spellings, so it was the common case. Scalars are now
+unwrapped by duck-typing `.item()`, the same rule `json_safe()` used, and with no numpy
+import: this package has no dependencies and will not acquire one to describe your data.
+
+**Logging to a file and to the terminal at once.** Keep doing it — `configure_logging()`
+composes with capture and needs no change. fd-level capture moves the descriptor underneath
+every writer at once, so a `FileHandler` keeps its own log, a `StreamHandler` keeps printing,
+and `terminal_log` records both with the formatting intact.
+
+One caveat, and it only bites on the **python-level fallback**: `logging.StreamHandler(sys.stdout)`
+stores the stream *object*, so a handler built before the capture writes to the original
+stream and its lines never reach the log — while a bare `print()`, which resolves
+`sys.stdout` at call time, is captured. A script routing everything through `logging` would
+get a log that looks complete and holds almost nothing. The record says so:
+
+```json
+"terminal_log": {"capture": "python", "prebound_stream_handlers": 2,
+                 "note": "... 2 logging handler(s) were bound to the original streams
+                          before capture started and are NOT included"}
+```
+
+Reported rather than repaired. Rebinding another library's handlers from inside a provenance
+module is the overreach `_report.py` exists to prevent.
+
 ## Configuring it
 
 `Project` holds everything location-dependent. Detection is the default; the detected root

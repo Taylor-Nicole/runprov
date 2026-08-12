@@ -81,6 +81,33 @@ def _jsonable(obj: typing.Any) -> typing.Any:  # noqa: ANN401 - walks arbitrary 
         return {k: _jsonable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [_jsonable(v) for v in obj]
+    # No branch for `str`, `int`, `bool` or `None`: none of them has `.item()`, so all four
+    # fall past the test below unchanged. Two drafts carried such branches and mutation
+    # testing could not tell either from its absence — they encoded a distinction that does
+    # not exist, which is the kind of line that later reads as load-bearing and is not.
+    item = getattr(obj, "item", None)
+    if callable(item):
+        # NUMPY AND PANDAS SCALARS. `numpy.float64` subclasses `float` and survived the
+        # branch above; `numpy.int64` and `numpy.bool_` subclass NEITHER `int` NOR `bool`,
+        # so they fell through to the record's `default=str` and a COUNT WAS RECORDED AS
+        # THE STRING "6". Measured: `run.note("n", df["v"].sum())` wrote `"6"`, which
+        # compares unequal to 6 in every downstream check and renders quoted in the YAML
+        # view. `df.nunique()`, `.sum()` and `(s > 1).any()` are the ordinary spellings, so
+        # this is the common case rather than an exotic one.
+        #
+        # Duck-typed on `.item()` rather than importing numpy, because this package has no
+        # dependencies and must not acquire one to describe a caller's data. It is the same
+        # rule the predecessor's `json_safe()` used, for the same reason.
+        try:
+            # Recursive, not a bare `item()`: `numpy.float64("nan").item()` is a Python
+            # NaN, which `json.dumps` writes as bare `NaN` -- not JSON, and rejected by
+            # every strict parser. An AUROC on a class with no positives is exactly that
+            # value and arrives from numpy, so the two rules have to compose.
+            return _jsonable(item())
+        except Exception as exc:  # guards-ok: `.item()` on something that is not a scalar
+            # -- a 3-element array raises ValueError -- must not abort the caller's run. It
+            # falls through to the recorded string, which is what happened before.
+            del exc
     return obj
 
 
