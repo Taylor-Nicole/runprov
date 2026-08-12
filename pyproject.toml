@@ -20,6 +20,14 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
+    # Per version, and ONLY the versions CI actually runs. A classifier is a claim about
+    # where this works; `requires-python = ">=3.10"` is the constraint a resolver enforces,
+    # and the two disagreeing is how a package ends up installed somewhere it was never
+    # tested. Add the next one the October it goes green in the matrix, not before.
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering",
     "Topic :: System :: Archiving",
     # NO "License :: ..." CLASSIFIER, and this is deliberate rather than an omission.
