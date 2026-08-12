@@ -653,6 +653,54 @@ the lock in place, the same 8 × 20 × 9 KB test gives 160 lines, 160 of which p
 Where locking is unavailable the append still happens, unlocked. **It is only announced on
 Windows** — see the finding below.
 
+## The pin is not a comment everywhere, so `open_output` refuses some formats
+
+`#` is a comment in a TSV, a CSV, a GFF3 and a Makefile. It is not one in a FASTQ, and in a
+Newick tree it is worse than not-a-comment: the file still **parses**, and the pin's own
+words come back as taxa. Measured on Biopython 1.85, a 3-taxon tree written through the
+pin:
+
+```
+baseline terminals: 3 ['HCV1a_ref', 'HCV1b_ref', 'HCV2a']
+pinned   terminals: 6 ['default', 'yet', '1', 'HCV1a_ref', 'HCV1b_ref', 'HCV2a']
+```
+
+No exception, no warning. `default` and `yet` are pieces of the pin's prose —
+`generation : (default)` and `commit : NONE — no commit to name (yet)` — and a downstream
+clade assignment consumes that tree without complaint. That is the silent wrongness this
+package exists to refuse, produced by the method advertised as the safe default.
+
+So `open_output()` now **refuses** rather than leaving "`#` is not a comment everywhere" as
+a caveat the caller cannot see the consequence of. `run.PIN_UNSAFE` is the table, with the
+reason each format fails:
+
+| | |
+|---|---|
+| `.nwk` `.newick` `.nh` `.tree` | **silently wrong** — the pin parses as taxon names |
+| `.fastq` `.fq` | no comment syntax at all; a record must begin with `@` |
+| `.fasta` `.fa` `.fna` `.faa` `.ffn` | breaks `samtools faidx`; `Bio.SeqIO` warns it will become a `ValueError`. FASTA's only spec-legal comment is `;` |
+| `.vcf` | `##fileformat` must be the first line — `bcftools` says `unknown file type` even when the pin uses `##` |
+| `.sam` | `@provenance` is not a valid header record type; only `@CO` is |
+| `.bam` `.cram` `.parquet` `.h5` `.npy` `.xlsx` `.gz` `.zst` `.zip` `.png` `.pdf` | binary or compressed; `open_output` is text mode |
+
+The refusal names the way out, and the way out costs almost nothing:
+
+```python
+out = run.output(TREE)  # still registered, still hashed, still in the record
+out.write_text(newick, encoding="utf-8")
+```
+
+Only the *in-artifact* pin is given up — which a format that cannot hold one never had. The
+sidecar and the history are unchanged, so `lineage` still joins on it. A caller who wants a
+pin in a format with a real comment syntax can still render one and place it:
+`run.header("; ")`.
+
+**What this does not do yet** is place the pin correctly for the formats that could hold one
+somewhere other than line 1 — `##provenance` after `##fileformat` in a VCF, `@CO` after
+`@HD` in a SAM (which survives SAM→BAM→SAM, so it is the only route to pinning an
+alignment file). Those are refusals today rather than placements, and saying so is more
+useful than a table that implies they work.
+
 ## Extending it: one protocol, no hierarchy
 
 Where records go is the one genuine variable — a git-tracked JSONL beside the code for a

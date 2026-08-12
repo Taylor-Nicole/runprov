@@ -60,6 +60,59 @@ SCHEMA = "runprov.run.v2"
 # exists, would have applied the wrong reader to one of them.
 HISTORY_SCHEMA = "runprov.history.v2"
 
+# Formats where a leading comment block is not a comment, so `open_output` REFUSES rather
+# than writing one. The reason is per-suffix because they fail differently, and the
+# difference is what a caller needs in order to know what to do instead.
+#
+# NEWICK IS WHY THIS TABLE EXISTS, and it is the only entry that fails silently. A tree
+# pinned with `#` lines still PARSES. Measured on Biopython 1.85, a 3-taxon tree:
+#
+#   baseline terminals: 3 ['HCV1a_ref', 'HCV1b_ref', 'HCV2a']
+#   pinned   terminals: 6 ['default', 'yet', '1', 'HCV1a_ref', 'HCV1b_ref', 'HCV2a']
+#
+# No exception, no warning. The phantom taxa are harvested out of the pin's own prose --
+# `generation : (default)` and `commit : NONE -- no commit to name (yet)` supply the first
+# two, and the third comes from the digits, so it varies with the pin. A downstream clade
+# assignment consumes that without complaint, which makes it the exact silent-wrongness
+# this package exists to refuse, arriving through the method advertised as the safe default.
+#
+# The others are loud, and they are here because a fix that only knew about Newick would
+# leave the same defect standing in every one of them.
+PIN_UNSAFE = {
+    ".nwk": "Newick has no comment syntax — the pin's own words parse as taxon names, "
+    "SILENTLY (measured: a 3-taxon tree reads back with 6)",
+    ".newick": "Newick has no comment syntax — the pin parses as taxon names, silently",
+    ".nh": "Newick has no comment syntax — the pin parses as taxon names, silently",
+    ".tree": "Newick has no comment syntax — the pin parses as taxon names, silently",
+    ".fastq": "FASTQ has no comment syntax at all; a record must begin with '@'",
+    ".fq": "FASTQ has no comment syntax at all; a record must begin with '@'",
+    ".fasta": "a leading '#' breaks `samtools faidx`, and Bio.SeqIO warns it will become "
+    "a ValueError. FASTA's only spec-legal comment is ';'",
+    ".fa": "a leading '#' breaks `samtools faidx` (see .fasta)",
+    ".fna": "a leading '#' breaks `samtools faidx` (see .fasta)",
+    ".faa": "a leading '#' breaks `samtools faidx` (see .fasta)",
+    ".ffn": "a leading '#' breaks `samtools faidx` (see .fasta)",
+    ".vcf": "`##fileformat` must be the FIRST line; bcftools reports 'unknown file type' "
+    "even when the pin uses '##'",
+    ".sam": "'@provenance' is not a valid header record type; only '@CO' is, so samtools "
+    "fails to read the header even when the pin uses '@'",
+    ".bam": "binary; `open_output` is text mode and a pin would corrupt it",
+    ".cram": "binary; `open_output` is text mode and a pin would corrupt it",
+    ".parquet": "binary; `open_output` is text mode and a pin would corrupt it",
+    ".h5": "binary; `open_output` is text mode and a pin would corrupt it",
+    ".hdf5": "binary; `open_output` is text mode and a pin would corrupt it",
+    ".npy": "binary; `open_output` is text mode and a pin would corrupt it",
+    ".npz": "binary; `open_output` is text mode and a pin would corrupt it",
+    ".xlsx": "binary; `open_output` is text mode and a pin would corrupt it",
+    ".gz": "compressed; `open_output` is text mode and a pin would corrupt it",
+    ".bgz": "compressed; `open_output` is text mode and a pin would corrupt it",
+    ".zst": "compressed; `open_output` is text mode and a pin would corrupt it",
+    ".bz2": "compressed; `open_output` is text mode and a pin would corrupt it",
+    ".zip": "an archive; `open_output` is text mode and a pin would corrupt it",
+    ".png": "binary; `open_output` is text mode and a pin would corrupt it",
+    ".pdf": "binary; `open_output` is text mode and a pin would corrupt it",
+}
+
 
 def _jsonable(obj: typing.Any) -> typing.Any:  # noqa: ANN401 - walks arbitrary record data
     """Replace non-finite floats with their names, recursively.
@@ -681,9 +734,36 @@ class Run:
         everywhere. **There is no way to ask for no pin**: that is what `output()` is for,
         and a caller writing parquet or a PNG should use it.
 
+        AND FOR SOME FORMATS IT REFUSES, because "not a comment everywhere" was left as the
+        caller's problem and a caller cannot see the consequence. `PIN_UNSAFE` lists them
+        with the reason each one fails. The entry that made this a guard rather than a note
+        is Newick: a pinned tree does not raise, it *parses*, and comes back with extra
+        terminals named out of the pin's own prose — 3 taxa in, 6 out, measured. A loud
+        refusal is recoverable; a tree that is quietly wrong is the defect this package
+        exists to prevent, produced by the method advertised as the safe default.
+
+        The refusal names `output()`, which is the answer: register the artifact, write the
+        bytes yourself, and the record still describes it — only the in-artifact pin is
+        given up, which for a format that cannot hold one was never available. A caller who
+        wants a pin in a format with its own comment syntax can still write
+        `run.header(";")` by hand.
+
+        Refused BEFORE registering, so a rejected path leaves no pending output behind to
+        be recorded as `MISSING` by a run that never intended to write it.
+
         Registers the output first, so a crash between here and the write still records the
         artifact as `MISSING` rather than losing it.
         """
+        suffix = pathlib.Path(path).suffix.lower()
+        if (why := PIN_UNSAFE.get(suffix)) is not None:
+            raise ValueError(
+                f"{self.record['script']}: refusing to write a provenance pin into "
+                f"{pathlib.Path(path).name} — {why}.\n"
+                f"    Use `run.output(path)` and write the file yourself: the run still "
+                f"records and hashes it, and only the in-artifact pin is given up. If this "
+                f"format does have a comment syntax, `run.header(marker)` renders the pin "
+                f"for you to place correctly."
+            )
         p = pathlib.Path(self.output(path))
         p.parent.mkdir(parents=True, exist_ok=True)
         # No **kwargs, deliberately. Every option a caller might pass here is either
