@@ -17,11 +17,19 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade build twine
-      - run: python -m build
-      # twine check catches a README PyPI will refuse to render — the most common reason a
-      # first upload looks fine and lands ugly, and unfixable afterwards because a version
-      # can never be re-uploaded.
-      - run: python -m twine check --strict dist/*
+      # `ci.py build`, NOT a bare `python -m build` plus `twine check`. The artifact this
+      # job produces is the one that gets uploaded, and until this line it was the one
+      # artifact nothing verified: test.yml runs the full build check but triggers on
+      # `push: branches: [main]` and pull requests — NEVER on a tag. So the release path
+      # skipped the py.typed check that PUBLISHING.md itself calls invisible (the source
+      # tree type-checks, the wheel installs, and every consumer silently gets an untyped
+      # package), on a version that can never be re-uploaded.
+      #
+      # It still runs twine check --strict — which catches a README PyPI refuses to
+      # render — and adds: py.typed inside the wheel, the wheel installed into a clean
+      # venv where it must RECORD a run and answer all three CLI commands, and the SDIST
+      # built into a wheel of its own with no source tree in reach.
+      - run: python ci.py build
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
