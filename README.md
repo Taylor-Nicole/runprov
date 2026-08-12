@@ -330,6 +330,55 @@ and defeat the content addressing.
 An ordinary venv has no `conda-meta`, gets no section, and its record carries no such
 field.
 
+## Rebuilding the environment that produced an output
+
+Set `env_snapshot_dir` and every run writes a **requirements-style file automatically** —
+`env-<sha16>.txt`, holding the Python version, the platform, every installed
+`name==version`, and, in a conda-family prefix, every `name=version=build` from
+`conda-meta`. It is named by the digest of its own body, so identical environments collapse
+to one file and a changed one announces itself.
+
+That says *what was installed*. Two more fields say **how to build it again**:
+
+```json
+"environment": {
+  "manager": {"detected": ["uv", "venv"],
+              "evidence": {"pyvenv.cfg:uv": "0.11.8", "CONDA_DEFAULT_ENV": "hcv"}},
+  "lockfiles": [{"name": "uv.lock", "sha256": "5ad31d91…", "bytes": 58}],
+  "snapshot":  {"path": "…/env-5f76ca1b0bc35e27.txt", "reused": true,
+                "lockfiles": [{"path": "…/lock-5ad31d9178461ab8-uv.lock", "reused": false}]}
+}
+```
+
+**The manager is detected, never guessed and never executed.** `pyvenv.cfg` is written by
+`venv`, `virtualenv` and `uv` — and uv stamps its own version into it, which is the most
+reliable marker available. `conda-meta/` identifies the conda family. A short list of
+environment variables covers `poetry`, `pdm`, `hatch`, `rye`, `mamba` and `pixi`. The
+answer is a **list**, because a uv-created venv inside a conda prefix is an ordinary thing
+here and a single name would have to be wrong about one of them.
+
+Environment **names** are recorded (`CONDA_DEFAULT_ENV`, `HATCH_ENV_ACTIVE`,
+`PIXI_ENVIRONMENT_NAME`) because a name is what someone asks for later. The paths beside
+them are not: `VIRTUAL_ENV` and `CONDA_PREFIX` carry a username and a machine layout, and
+this record gets committed and shared, so only the fact that they were set is kept.
+
+**Lock files are hashed and archived.** Hashing says *which* lock — naming `uv.lock`
+without pinning its content names a file that moves. Archiving it as
+`lock-<sha16>-uv.lock` beside the snapshot means the run is still rebuildable after that
+file has moved on, which it will. `uv.lock`, `poetry.lock`, `pdm.lock`, `pixi.lock`,
+`conda-lock.yml`, `Pipfile.lock`, `environment.yml`, `requirements.txt` and rye's
+`requirements*.lock` are recognised — a fixed list, so what gets captured is reviewable and
+cannot quietly widen.
+
+So for any output, at any later date: the record gives the UTC start and finish, the script
+and its SHA-256, the commit and whether the tree was dirty, the exact package set, the
+manager, and the lock file as it stood at that moment.
+
+**One thing it does not do**: record every script *used* by a run. A `Run` names its own
+script. A pipeline of five scripts is five runs, joined by the shared history and by
+`python -m runprov lineage`, which reconstructs the DAG from digests rather than from
+names.
+
 ## What the run printed
 
 The old log's `terminal_log_file`, and the one field of it with no equivalent here until

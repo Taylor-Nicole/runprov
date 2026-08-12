@@ -53,6 +53,14 @@ test = ["pytest>=7", "pytest-cov>=4", "pyyaml>=6"]  # pyyaml only to CHECK the r
 # lint job installs these same versions, so "it passes locally" means something.
 dev = ["runprov[test]", "ruff==0.16.2", "mypy==2.3.0", "build", "twine", "pre-commit"]
 
+[project.scripts]
+# `runprov log ...` on PATH, not only `python -m runprov`. Absent until now, and its
+# absence is quiet: the module form works, so nothing fails — it is the OTHER forms that
+# cannot exist without an entry point. `uvx runprov` and `pipx run runprov` both resolve a
+# console script and neither can reach a `-m` module, so the "a reviewer can install it and
+# check your claims" argument in PUBLISHING.md was one command short of true.
+runprov = "runprov.__main__:main"
+
 [project.urls]
 Homepage = "https://github.com/Taylor-Nicole/runprov"
 Issues = "https://github.com/Taylor-Nicole/runprov/issues"
