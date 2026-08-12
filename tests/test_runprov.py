@@ -21,6 +21,7 @@ import inspect
 import io
 import itertools
 import json
+import logging
 import os
 import pathlib
 import re
@@ -2341,17 +2342,26 @@ def test_no_library_module_calls_bare_print():
     eight that exist today does not stop the ninth. `_report.py` is the ONE place allowed
     to call `print`, and `__main__.py` is a CLI whose rendered log IS its output.
 
-    This sees literals, not behaviour — a `sys.stdout.write` would slip past it — which is
-    why the subprocess tests above exist as well. It is the cheap half of a pair.
+    This sees CALLS, not behaviour — a `sys.stdout.write` would slip past it — which is why
+    the subprocess tests above exist as well. It is the cheap half of a pair.
+
+    Parsed rather than grepped. The regex version flagged a COMMENT: a note in
+    `terminal.py` explaining that a bare `print()` resolves `sys.stdout` at call time,
+    which is exactly the kind of comment this module should contain. A guard whose price is
+    the explanations gets paid by deleting the explanations, so it reads the tree instead —
+    strictly stronger, since a string or comment was never a call in the first place.
     """
     offenders = {}
     for mod in sorted((REPO / "runprov").glob("*.py")):
         if mod.name in ("_report.py", "__main__.py"):
             continue
+        tree = ast.parse(mod.read_text(encoding="utf-8"))
         hits = [
-            f"{mod.name}:{n}"
-            for n, line in enumerate(mod.read_text(encoding="utf-8").splitlines(), 1)
-            if re.search(r"(?<![\w.])print\s*\(", line)
+            f"{mod.name}:{node.lineno}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "print"
         ]
         if hits:
             offenders[mod.name] = hits
@@ -4394,3 +4404,218 @@ def test_conda_packages_are_ordered_by_name_not_by_filename(tmp_path):
     assert list(got) == ["arrow", "R"], "sorted case-insensitively by NAME"
     body = runprov.environment.render({}, 0, got).splitlines()
     assert body.index("arrow=1.3.0=py312") < body.index("R=4.4.2=h1b0")
+
+
+# --------------------------------------------------- PARITY WITH THE SCRIPTS IT REPLACES
+# The predecessor's scripts do three things this package has to keep doing: configure
+# logging to a file and to stdout, write a per-run YAML manifest, and run `json_safe()`
+# over pandas/numpy scalars before dumping. Each is tested here against what runprov offers.
+
+
+class _Scalar:
+    """A numpy-style scalar: NOT an int, but exposes `.item()`.
+
+    A fake rather than numpy, because this package has no dependencies and its test suite
+    must not acquire one to prove a duck-typing rule. `numpy.int64` behaves exactly this
+    way — it subclasses neither `int` nor `bool`, which is the whole reason the bug existed.
+    """
+
+    def __init__(self, value):
+        self._value = value
+
+    def item(self):
+        return self._value
+
+    def __str__(self):
+        return f"<scalar {self._value}>"
+
+
+class _NotAScalar:
+    """`.item()` exists and raises — a numpy ARRAY with more than one element."""
+
+    def item(self):
+        raise ValueError("can only convert an array of size 1 to a Python scalar")
+
+    def __str__(self):
+        return "[0 1 2]"
+
+
+def test_a_numpy_style_count_is_recorded_as_a_number_not_as_a_string(tmp_path, monkeypatch):
+    """THE DEFECT. `numpy.float64` subclasses `float` and survived; `numpy.int64` and
+    `numpy.bool_` subclass NEITHER `int` NOR `bool`, so they fell through to the record's
+    `default=str`.
+
+    Measured: `run.note("n", df["v"].sum())` recorded the STRING `"6"`. A count recorded as
+    text compares unequal to `6` in every downstream check, sorts as text, and renders
+    quoted in the YAML view — and `df.nunique()`, `.sum()` and `(s > 1).any()` are the
+    ordinary spellings, so this is the common case rather than an exotic one.
+
+    Duck-typed on `.item()`, which is the rule the predecessor's own `json_safe()` used.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.note("count", _Scalar(6))
+        run.note("flag", _Scalar(True))
+        run.note("nested", {"a": _Scalar(7), "b": [_Scalar(8)]})
+
+    got = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["notes"]
+    assert got["count"] == 6 and isinstance(got["count"], int)
+    assert got["flag"] is True
+    assert got["nested"] == {"a": 7, "b": [8]}
+
+
+def test_a_real_bool_stays_a_bool_and_is_not_taken_for_a_scalar(tmp_path, monkeypatch):
+    """`bool` is a subclass of `int`, and the ordering of the branches is what keeps a
+    plain `True` from being reported as `1`."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.note("t", True)
+        run.note("f", False)
+        run.note("i", 1)
+    got = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["notes"]
+    assert got["t"] is True and got["f"] is False and got["i"] == 1
+
+
+def test_something_whose_item_raises_is_recorded_not_dropped(tmp_path, monkeypatch):
+    """An array is not a scalar, and `.item()` on one raises. It must degrade to the
+    string it degraded to before, never take the caller's run down from inside a note."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.note("arr", _NotAScalar())
+    got = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["notes"]
+    assert got["arr"] == "[0 1 2]"
+
+
+def test_to_yaml_writes_a_manifest_for_one_run_without_pyyaml(tmp_path, monkeypatch):
+    """The predecessor wrote a per-run `*_manifest_*.yml` with `yaml.safe_dump`. That
+    capability is kept, and kept dependency-free: the renderer is the same one behind
+    `log --format yaml`, so the manifest and the history view cannot drift apart."""
+    yaml = pytest.importorskip("yaml")
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    with runprov.Run("validate", {"version": "v1"}, provenance=tmp_path / "p.json") as run:
+        run.input("in.tsv")
+        with run.open_output("out.tsv") as fh:
+            fh.write("b\n")
+        run.note("n_exact_matches", _Scalar(118))
+
+    manifest = tmp_path / "manifest.yml"
+    manifest.write_text(runprov.to_yaml(run.record), encoding="utf-8")
+
+    doc = yaml.safe_load(manifest.read_text(encoding="utf-8"))[0]
+    assert doc["step"] == "validate"
+    assert doc["params"] == {"version": "v1"}
+    assert doc["summary"] == {"n_exact_matches": 118}, "and the count is a NUMBER"
+    assert doc["status"] == "ok"
+    assert doc["input"] == "in.tsv" and doc["output"] == "out.tsv"
+    assert any("in.tsv" in line for line in doc["input_sha256"])
+
+
+def test_to_yaml_takes_one_record_or_many(tmp_path, monkeypatch):
+    """One run is a manifest; a list is the history view. Same function, so a manifest can
+    never disagree with `log --format yaml` about the same run."""
+    yaml = pytest.importorskip("yaml")
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("a", provenance=tmp_path / "a.json") as one:
+        pass
+    with runprov.Run("b", provenance=tmp_path / "b.json") as two:
+        pass
+    assert len(yaml.safe_load(runprov.to_yaml(one.record))) == 1
+    assert [d["step"] for d in yaml.safe_load(runprov.to_yaml([one.record, two.record]))] == [
+        "a",
+        "b",
+    ]
+
+
+def test_an_object_with_no_item_method_is_still_recorded(tmp_path, monkeypatch):
+    """The duck-typing must not become a requirement. Anything without `.item()` keeps the
+    behaviour it always had — recorded as its string, never dropped and never fatal."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.note("path", pathlib.Path("/tmp/x.tsv"))
+        run.note("set", {"b", "a"})
+    got = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["notes"]
+    assert got["path"] == "/tmp/x.tsv"
+    assert isinstance(got["set"], str)
+
+
+def test_python_capture_reports_the_logging_handlers_it_cannot_see(tmp_path, monkeypatch):
+    """THE SUBTLE HALF of the python-level fallback, and the one that costs a well-behaved
+    script the most.
+
+    `logging.StreamHandler(sys.stdout)` stores the stream OBJECT it was handed. Swapping
+    `sys.stdout` cannot reach it, so a handler installed before the capture keeps writing to
+    the original stream — while a bare `print()`, which resolves `sys.stdout` at call time,
+    is captured. Measured in one block: the log held `PRINTED` and not `LOGGED`.
+
+    A script that routes everything through `logging` — which is the well-behaved thing to
+    do, and what the scripts this package replaces do — therefore gets a log that looks
+    complete and holds almost nothing. Reported in the record, not repaired: rebinding
+    another library's handlers from inside a provenance module is the overreach
+    `_report.py` exists to prevent.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    monkeypatch.setattr(runprov.terminal, "os", _NoDup2())  # force the python fallback
+
+    logger = logging.getLogger("runprov-test-prebound")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    logger.addHandler(logging.StreamHandler(sys.stdout))
+    try:
+        with runprov.Run("s", provenance=tmp_path / "p.json", terminal_log=tmp_path / "t.log") as r:
+            logger.info("LOGGED")
+            print("PRINTED", flush=True)
+    finally:
+        logger.handlers.clear()
+
+    rec = r.record["terminal_log"]
+    assert rec["capture"] == "python"
+    assert rec["prebound_stream_handlers"] >= 1
+    assert "NOT included" in rec["note"]
+    body = (tmp_path / "t.log").read_text(encoding="utf-8", errors="replace")
+    assert "PRINTED" in body, "a bare print resolves sys.stdout at call time and IS seen"
+    assert "LOGGED" not in body, "the handler holds the old object — which is the point"
+
+
+def test_counting_the_handlers_never_takes_the_capture_down(tmp_path, monkeypatch):
+    """It is diagnostic. A logging configuration that cannot be walked — a handler list
+    replaced by a framework, a proxy that raises on attribute access — must degrade to "I
+    do not know" rather than fail a capture that is already falling back.
+
+    Broken LOCALLY, on one real logger. An earlier draft replaced `logging.Logger.manager`
+    with a raising fake and killed the whole pytest session: the logging plugin walks that
+    same manager at session finish. Same shape as the `monkeypatch.setattr(os, "dup2")`
+    incident this suite already carries a fake for — patching shared machinery to test one
+    function reaches every other user of it.
+    """
+    broken = logging.getLogger("runprov-test-unwalkable")
+    monkeypatch.setattr(broken, "handlers", 0)  # not iterable; `list()` raises TypeError
+    assert runprov.terminal._prebound_handlers(sys.stdout, sys.stderr) == 0
+
+
+def test_a_numpy_style_NaN_is_still_named_after_unwrapping(tmp_path, monkeypatch):
+    """The two rules have to compose, and the order matters.
+
+    `numpy.float64("nan").item()` is a Python NaN, which `json.dumps` writes as a bare
+    `NaN` — not JSON, and rejected by every strict parser, which is the defect `_jsonable`
+    was written for. Unwrapping the scalar without re-applying that rule would reintroduce
+    it through the new path. An AUROC on a class with no positives IS this value, and it
+    arrives from numpy.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.note("auroc", _Scalar(float("nan")))
+        run.note("ratio", _Scalar(float("inf")))
+
+    body = (tmp_path / "p.json").read_text(encoding="utf-8")
+    assert ": NaN" not in body, "bare NaN is not JSON"
+    got = json.loads(body)["notes"]
+    assert got["auroc"] == "NaN" and got["ratio"] == "Infinity"

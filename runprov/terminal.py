@@ -93,6 +93,7 @@ class Capture:
         self.mode: str = "none"
         self.error: str | None = None
         self.out_of_order = False
+        self.prebound_handlers = 0
         self._fh: typing.IO[bytes] | None = None
         self._saved: dict[int, int] = {}
         self._thread: threading.Thread | None = None
@@ -193,6 +194,9 @@ class Capture:
         """Swap `sys.stdout`/`sys.stderr` for tees. Sees this interpreter only."""
         try:
             _flush_std()
+            # Counted BEFORE the swap, because after it these handlers hold the only
+            # remaining references to the streams being replaced. See `_prebound_handlers`.
+            self.prebound_handlers = _prebound_handlers(sys.stdout, sys.stderr)
             self._py_saved = (sys.stdout, sys.stderr)
             # No `type: ignore` needed: `_StreamTee.__getattr__` returns Any, so mypy
             # accepts it as an IO[str] stand-in. An ignore here was unused, and an unused
@@ -348,6 +352,23 @@ class Capture:
             # reader needs to know an empty log may mean "could not see" rather than
             # "printed nothing".
             rec["note"] = "python-level capture: output from subprocesses is NOT included"
+            if self.prebound_handlers:
+                # The subtler half, and the one that bites a well-behaved script hardest.
+                # `logging.StreamHandler(sys.stdout)` stores the STREAM OBJECT it was given,
+                # so a handler installed before the capture keeps writing to the original
+                # stream and its lines never reach the log -- while a bare `print()`, which
+                # resolves `sys.stdout` at call time, does. Measured: the log held
+                # `PRINTED-DIRECTLY` and not `LOGGED-VIA-HANDLER`, from the same block.
+                #
+                # A script that routes everything through `logging` therefore gets a log
+                # that looks complete and contains almost nothing. Reported rather than
+                # repaired: rebinding another library's handlers from inside a provenance
+                # module is the overreach `_report.py` exists to prevent.
+                rec["prebound_stream_handlers"] = self.prebound_handlers
+                rec["note"] += (
+                    f"; {self.prebound_handlers} logging handler(s) were bound to the "
+                    "original streams before capture started and are NOT included"
+                )
         if self.out_of_order:
             # A reader comparing this log to the run's own start/finish times would
             # otherwise find output from AFTER the run ended and have no way to explain it.
@@ -422,6 +443,38 @@ class _StreamTee:
 
     def __getattr__(self, name: str) -> typing.Any:  # noqa: ANN401 - delegating proxy
         return getattr(self._stream, name)
+
+
+def _prebound_handlers(out: typing.IO[str], err: typing.IO[str]) -> int:
+    """How many `logging` handlers write to these exact stream OBJECTS.
+
+    Only meaningful for the python-level fallback. fd-level capture moves the descriptor
+    underneath every writer at once, so a handler bound to any of them is captured with no
+    help. Swapping `sys.stdout` does not: a handler holds the object it was constructed
+    with, and there is no way to reach it through the name.
+
+    Read-only and never raises. It walks the logging manager, which is stdlib, and a
+    failure to introspect it must not take down a capture that is already degrading.
+    """
+    try:
+        import logging
+
+        seen = 0
+        loggers = [logging.getLogger()]
+        loggers += [
+            lg
+            for lg in logging.Logger.manager.loggerDict.values()
+            if isinstance(lg, logging.Logger)
+        ]
+        for lg in loggers:
+            for handler in list(getattr(lg, "handlers", [])):
+                stream = getattr(handler, "stream", None)
+                if stream is out or stream is err:
+                    seen += 1
+        return seen
+    except Exception:  # guards-ok: this is diagnostic only. A logging configuration that
+        # cannot be walked is not a reason to fail the run, or the capture.
+        return 0
 
 
 def _flush_std() -> None:

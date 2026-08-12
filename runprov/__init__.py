@@ -31,6 +31,8 @@ this package, so the audit and any new pipeline share one implementation rather 
 copies that agree until they do not.
 """
 
+import typing
+
 from .environment import installed_packages, write_snapshot
 from .hashing import VOLATILE, VOLATILE_JSON, content_digest, describe, sha256
 from .project import (
@@ -73,6 +75,45 @@ __all__ = [
     "installed_packages",
     "is_configured",
     "sha256",
+    "to_yaml",
     "write_snapshot",
 ]
 __version__ = "0.1.0"
+
+
+def to_yaml(records: typing.Any) -> str:  # noqa: ANN401 - one record or an iterable of them
+    """Render a record — or a whole history — as the transformation-log YAML shape.
+
+    The predecessor wrote a per-run `*_manifest_*.yml` with `yaml.safe_dump`, and every
+    script doing so carried its own `json_safe()` to make pandas and numpy scalars
+    dumpable. Both of those are covered here: the renderer needs **no pyyaml**, and the
+    record has already been through `_jsonable`, which resolves a `numpy.int64` to an
+    `int` rather than to the string `"6"`.
+
+    `python -m runprov log --format yaml` is this same function over a whole history. This
+    is it for one run, for a caller who wants the manifest as a file beside the artifact:
+
+        with Run("step", provenance=PROV) as run:
+            ...
+        MANIFEST.write_text(runprov.to_yaml(run.record), encoding="utf-8")
+
+    AFTER the block, deliberately. `__exit__` is where outputs are hashed and the status
+    becomes known, so a manifest rendered inside the block describes a run that has not
+    finished — the same trap as `run.write()` instead of `provenance=`.
+
+    What it does NOT do is append `---` documents to a shared file. That is not an
+    oversight: the predecessor's writer appended `---` into a file that began as a list,
+    `yaml.safe_load_all` raises partway through the result, and eleven
+    `fix_transformation_log_*.py` repair scripts exist because of it. The append-only
+    history is JSONL for exactly that reason, and this renders a VIEW of it.
+    """
+    from .__main__ import _yaml  # local: keeps the CLI module off the package import path
+    from .run import _jsonable
+
+    # THE SAME normalisation the sidecar and the history line go through. `_jsonable` runs
+    # at serialisation time, so a LIVE `run.record` still holds whatever the caller handed
+    # to `note()` -- and rendering that directly produced a manifest reading
+    # `n_exact_matches: "<scalar 118>"` beside a sidecar reading `118`, for one run. Two
+    # renderings of the same record must not disagree, which is the whole claim here.
+    rows = [records] if isinstance(records, dict) else list(records)
+    return _yaml([_jsonable(r) for r in rows])
