@@ -307,20 +307,30 @@ the run hashed it, and whether two writes give the same digest. **A format whose
 absent is SKIPPED and says so** — a check that goes green because it did not run is the
 failure this package is about.
 
-Measured here, 25 formats, 0 failures:
+Measured here, **36 formats, 0 failures**:
 
 | pin placement | formats |
 |---|---|
 | in-band | TSV, CSV, BED, YAML, Markdown, SQL (`-- `) |
 | in the document | JSON (`write_json`, a top-level key) |
-| sidecar | FASTA, FASTQ, JSONL, VCF, SVG, Newick, Parquet, Feather/Arrow, **Pickle**, **joblib**, **cloudpickle**, `.npy`, `.npz`, `.mat`, PNG, TIFF, gzip, SQLite |
+| sidecar | FASTA, FASTQ, JSONL, VCF, SVG, Newick, **Parquet**, **Feather/Arrow**, **Pickle**, **joblib**, **cloudpickle**, `.npy`, `.npz`, **HDF5 `.h5`**, **AnnData `.h5ad`**, **Zarr**, **NetCDF**, **`.xlsx`**, **BAM**, **CRAM**, **bgzipped VCF**, **R `.rds`**, **ONNX**, **safetensors**, `.mat`, PNG, TIFF, gzip, SQLite |
 
-Two results worth reading rather than skimming. **gzip** is byte-unstable and
-content-stable: the gzip header stores an mtime so the raw bytes move on every write, and
-`content_digest` decompresses first — that is the two-hash design doing its job. **SciPy
-`.mat` is unstable in both**, because MATLAB stamps a creation time into a binary header
-that no text filter can reach, so a `.mat` pin moves on every run. Prefer `.npz`, or accept
-a permanently-red check for that artifact.
+Everything above round-trips: written through runprov, read back by `h5py`, `anndata`,
+`zarr`, `xarray`, `pysam`, `pyreadr`, `onnx`, `safetensors`, `openpyxl`, `pyarrow`, `joblib`
+and the rest. **PyTorch `.pt` is the only case not measured here**, because installing torch
+to test a container format is a 2 GB dependency — the case is written and will run if you
+have it.
+
+**Three results worth reading rather than skimming**, all measured rather than inferred:
+
+* **gzip** is byte-unstable and content-stable. Its header stores an mtime so the raw bytes
+  move on every write, and `content_digest` decompresses first. That is the two-hash design
+  doing its job, visible.
+* **SciPy `.mat` moves on every run.** It writes `Created on: Thu Aug 13 14:48:50 2026`
+  into its header — a timestamp in bytes no text filter can reach. Prefer `.npz`.
+* **CRAM moves on every run too**, and this was checked against the obvious excuse: two
+  writes of identical records, in the same directory, with an identical reference path,
+  still differ. Pin the BAM instead, or accept that this one artifact is permanently red.
 
 Adding your own format is three lines, and the file says how.
 
