@@ -7850,6 +7850,67 @@ def test_code_registers_a_script_in_another_language_into_the_same_digest(tmp_pa
     assert first["digest"] != second["digest"], "an R change moves the code digest"
 
 
+def test_code_is_recorded_without_a_with_block(tmp_path, monkeypatch):
+    """L-05. `__exit__` was the only place the code section was built, so `run.code(...)`
+    followed by `run.write(...)` — the documented manual shape — recorded nothing at all
+    while `code()` returned the path, so the call looked like it had worked. An R script
+    declared by a script that does not use a `with` block simply was not in the record."""
+    monkeypatch.chdir(tmp_path)
+    (r_script := tmp_path / "fit.R").write_text('cat("hi\\n")\n', encoding="utf-8")
+
+    run = runprov.Run("s", project=_project(tmp_path))
+    run.code(r_script)
+    run.write(tmp_path / "p.json")
+
+    imported = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["code"]["imported"]
+    assert "fit.R" in {f["path"] for f in imported["files"]}
+
+
+def test_declared_code_survives_hash_imported_code_being_off(tmp_path, monkeypatch):
+    """The other shape, and the worse one. `hash_imported_code=False` turns off DISCOVERY —
+    the sweep of `sys.modules` that costs a hash per first-party file. It was also dropping
+    everything the caller had explicitly DECLARED, which is the opposite of a cost control:
+    an explicit call is the one thing that cannot be inferred. A Python setting silently
+    removed an R script from the record."""
+    monkeypatch.chdir(tmp_path)
+    (r_script := tmp_path / "fit.R").write_text('cat("hi\\n")\n', encoding="utf-8")
+    # A REAL first-party module under the root, imported for the duration. Without one, the
+    # discovery half is invisible: an empty tmp_path yields nothing to discover, so a version
+    # that ignores the setting entirely produces the same `{"fit.R"}` and the test passes for
+    # the wrong reason. Found by mutating the setting away and watching this stay green.
+    proj = _project_with_module(tmp_path)
+    proj = dataclasses.replace(proj, hash_imported_code=False)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _forget_src()
+    import src.helper  # noqa: F401 - importing it is the point
+
+    try:
+        with runprov.Run("s", project=proj, provenance=tmp_path / "p.json") as run:
+            run.code(r_script)
+        imported = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["code"]["imported"]
+        paths = {f["path"] for f in imported["files"]}
+        assert paths == {"fit.R"}, f"declared code only, discovery still off: {paths}"
+    finally:
+        _forget_src()
+
+
+def test_hash_imported_code_off_and_nothing_declared_records_no_section(tmp_path, monkeypatch):
+    """The setting still has to mean something. With discovery off and nothing declared there
+    is no code section at all — otherwise "off" would have become "walk anyway"."""
+    monkeypatch.chdir(tmp_path)
+    proj = runprov.Project(
+        root=tmp_path,
+        run_log=tmp_path / "runs.jsonl",
+        run_id=lambda: "r",
+        generation=lambda: "g",
+        hash_imported_code=False,
+    )
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.json"):
+        pass
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["code"].get("imported") is None
+
+
 def test_code_refuses_a_file_it_cannot_read(tmp_path, monkeypatch):
     """Same treatment as `input()`: code that cannot be hashed at registration is a loud
     failure, not a silently absent line in the record."""

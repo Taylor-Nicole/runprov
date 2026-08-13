@@ -912,11 +912,7 @@ class Run:
         self._release_signals()
         # AT EXIT, so a module imported halfway through the work is still counted. See
         # `_imported_code`; guarded because provenance must not be what ends the run.
-        if self.project.hash_imported_code:
-            try:
-                self.record["code"]["imported"] = self._imported_code()
-            except Exception as exc:  # guards-ok: a partial answer beats a lost record
-                self.record["code"]["imported"] = {"error": str(exc)}
+        self._record_imported_code()
         # FIRST, before _finish() hashes anything. The capture is still appending while the
         # run is alive, so hashing the log before stopping pins a prefix of it -- and on the
         # fd path fds 1 and 2 are still the pipe, so every diagnostic _finish emits would go
@@ -927,6 +923,26 @@ class Run:
         except Exception as exc:  # never replace the exception being recorded
             diagnostic(f"  WARNING: provenance capture failed during exit: {exc}")
         return False  # NEVER swallow the caller's exception.
+
+    def _record_imported_code(self) -> None:
+        """Put the code section into the record, if there is anything to put there.
+
+        Called from `__exit__` and from `write()` outside a block, because those are the two
+        places a record is finalised and `code()` had been recorded by NEITHER of them in two
+        ordinary shapes: outside a `with` block nothing ran this at all, and with
+        `hash_imported_code=False` the whole section was skipped including the files the
+        caller had explicitly declared. `code()` returned the path in both cases, so the call
+        looked like it had worked.
+
+        Guarded because provenance must not be what ends the run -- a partial answer in the
+        record beats a lost record, which is the rule `_jsonable` follows for values.
+        """
+        if not (self.project.hash_imported_code or self._extra_code):
+            return
+        try:
+            self.record["code"]["imported"] = self._imported_code()
+        except Exception as exc:  # guards-ok: a partial answer beats a lost record
+            self.record["code"]["imported"] = {"error": str(exc)}
 
     def _wrote(self, p: pathlib.Path) -> bool:
         """Has this run already written a sidecar to `p`? By RESOLVED path.
@@ -992,7 +1008,13 @@ class Run:
         """
         root = pathlib.Path(self.project.root).resolve()
         seen: dict[str, str] = {}
-        for mod in list(sys.modules.values()):
+        # THE WALK IS THE OPTIONAL HALF. `hash_imported_code=False` turns off DISCOVERY --
+        # the sweep of `sys.modules` that costs a hash per first-party file. It was also
+        # dropping everything the caller had DECLARED with `code()`, which is the opposite
+        # of a cost control: an explicit call is the one thing that cannot be inferred and
+        # the one thing the user paid attention to. An R script vanished from the record
+        # because a Python setting was off.
+        for mod in list(sys.modules.values()) if self.project.hash_imported_code else ():
             f = getattr(mod, "__file__", None)
             if not f:
                 continue
@@ -1859,6 +1881,12 @@ class Run:
                 self.record["outputs"].append(
                     {"path": str(q), "kind": "MISSING", "note": "registered but never written"}
                 )
+        # OUTSIDE A BLOCK ONLY. Inside one, `__exit__` does this after the work, so a module
+        # imported halfway through is still counted -- doing it here as well would hash every
+        # first-party file twice for no gain. Without it, `run.code(...)` followed by
+        # `run.write(p)` with no `with` recorded nothing whatever.
+        if not self._in_context:
+            self._record_imported_code()
         self.record.setdefault("status", "ok")
         self.record["finished_utc"] = dt.datetime.now(dt.timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
