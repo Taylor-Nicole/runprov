@@ -44,7 +44,7 @@ import pathlib
 import re
 import typing
 
-from .hashing import PIN_DIGEST_CHARS, describe, pin_digest
+from .hashing import PIN_DIGEST_CHARS, PIN_SIDECAR_SUFFIX, describe, pin_digest
 
 # The first line of every pin, and the only thing that identifies one. Matched as a
 # SUBSTRING so the caller's comment marker -- `# `, `## `, `; `, whatever the format needs
@@ -194,10 +194,33 @@ def check_input(want: str, name: str, root: pathlib.Path) -> dict[str, typing.An
 
 
 def verify_artifact(path: pathlib.Path, root: pathlib.Path) -> dict[str, typing.Any]:
-    """One artifact: every pin in it, every input in those, and a status for the whole."""
+    """One artifact: every pin in it, every input in those, and a status for the whole.
+
+    A `.prov.txt` IS NOT THE ARTIFACT, it speaks for the file beside it. Checked as though it
+    were, a sidecar whose artifact had been deleted reported `OK` and exited 0 — the whole
+    point of the pin surviving separately, inverted into a green result over a file that is
+    not there. It is also the wrong name to print: the report said `out.png.prov.txt` and
+    never mentioned `out.png`, so even the passing case named a file the user did not make.
+    """
     blocks = read_pins(path)
     if not blocks:
         return {"artifact": str(path), "status": NO_PIN, "inputs": []}
+
+    speaks_for = None
+    if path.name.endswith(PIN_SIDECAR_SUFFIX):
+        speaks_for = path.with_name(path.name[: -len(PIN_SIDECAR_SUFFIX)])
+        if not speaks_for.exists():
+            # GONE, not UNVERIFIABLE: nothing here is ambiguous. The sidecar names its
+            # artifact, the artifact is absent, and that is a finding a checker exists to
+            # make. GONE is in FAILING, so the exit code follows.
+            return {
+                "artifact": str(speaks_for),
+                "status": GONE,
+                "reason": f"the artifact is no longer there; its pin survives in {path.name}",
+                "inputs": [],
+                "pins": len(blocks),
+                "scripts": [b["fields"].get("script", "?") for b in blocks],
+            }
 
     checked, truncated, scripts = [], [], []
     for pin in blocks:
@@ -228,7 +251,9 @@ def verify_artifact(path: pathlib.Path, root: pathlib.Path) -> dict[str, typing.
         status = UNVERIFIABLE
 
     out: dict[str, typing.Any] = {
-        "artifact": str(path),
+        # The ARTIFACT's name, not the sidecar's. A reader checking `out.png` should see
+        # `out.png` in the report; where the pin happened to live is the checker's business.
+        "artifact": str(speaks_for if speaks_for is not None else path),
         "status": status,
         "inputs": checked,
         "pins": len(blocks),

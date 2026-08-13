@@ -46,7 +46,13 @@ import weakref
 
 from ._report import diagnostic, summary
 from .environment import archive_lockfiles, lockfiles, manager, write_snapshot
-from .hashing import describe, moved_since, pin_digest, sha256
+from .hashing import (
+    PIN_SIDECAR_SUFFIX,
+    describe,
+    moved_since,
+    pin_digest,
+    sha256,
+)
 from .project import (
     OTHER_FILES_KEPT,
     Project,
@@ -194,7 +200,9 @@ PIN_BINARY = frozenset(
 #: What a sidecar pin is called: `calls.jsonl` -> `calls.jsonl.prov.txt`. The suffix is
 #: APPENDED rather than replacing, so two artifacts differing only in extension cannot
 #: collide on one sidecar, and the artifact it belongs to is readable from the name.
-PIN_SIDECAR_SUFFIX = ".prov.txt"
+#:
+#: Defined in `hashing` and re-exported here, because `verify` has to strip it to learn
+#: which file a `.prov.txt` speaks for. `runprov.run.PIN_SIDECAR_SUFFIX` keeps working.
 
 #: Markers that SOME parsers of a format accept, offered only when the caller asks for them
 #: by name. Measured rather than assumed, and the caveat is the reason each entry carries

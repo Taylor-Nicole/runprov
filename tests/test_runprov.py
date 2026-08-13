@@ -6011,6 +6011,55 @@ def test_a_format_that_cannot_hold_a_pin_gets_one_BESIDE_it(tmp_path):
     assert names == ["out.nwk", "out.nwk.prov.txt"], "the sidecar is an artifact, so it is hashed"
 
 
+def _sidecar_pinned(tmp_path):
+    """An artifact whose pin lives BESIDE it, plus its input. Returns (artifact, sidecar)."""
+    proj = _project(tmp_path)
+    (tmp_path / "in.tsv").write_text("id\n1\n", encoding="utf-8")
+    with runprov.Run("make", project=proj, provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        art = run.output(tmp_path / "out.png")
+        art.write_bytes(b"\x89PNG\r\n\x1a\n fake")
+        side = run.pin_sidecar(art)
+    return art, side
+
+
+def test_a_sidecar_whose_artifact_was_deleted_is_GONE_not_OK(tmp_path):
+    """L-03. A `.prov.txt` speaks FOR the file beside it; it is not that file. Checked as
+    though it were, every input still hashed correctly — they do, nothing touched them — so a
+    deleted artifact reported `OK` and exited 0. The pin surviving separately is the whole
+    point of a sidecar, and it was being read as evidence the artifact is fine."""
+    art, side = _sidecar_pinned(tmp_path)
+    report = runprov.verify.verify([tmp_path], tmp_path)
+    assert report["ok"] == 1 and report["gone"] == 0, "the premise: it passes while present"
+
+    art.unlink()
+    report = runprov.verify.verify([tmp_path], tmp_path)
+    assert report["gone"] == 1 and report["ok"] == 0
+    entry = next(r for r in report["artifacts"] if r["status"] == runprov.verify.GONE)
+    assert entry["artifact"] == str(art), "the report names the artifact, not its sidecar"
+    assert "no longer there" in entry["reason"]
+    assert side.is_file(), "the sidecar itself is untouched — it is evidence, not the finding"
+
+
+def test_the_verify_report_names_the_artifact_even_when_the_pin_is_beside_it(tmp_path):
+    """The passing case was wrong too: the row read `out.png.prov.txt`, so a reader checking
+    `out.png` never saw `out.png` in the report at all. Where the pin happens to live is the
+    checker's business, not the reader's."""
+    art, _ = _sidecar_pinned(tmp_path)
+    report = runprov.verify.verify([tmp_path], tmp_path)
+    names = [r["artifact"] for r in report["artifacts"]]
+    assert str(art) in names
+    assert not any(n.endswith(runprov.run.PIN_SIDECAR_SUFFIX) for n in names), names
+    assert runprov.verify.render(report).count("out.png.prov.txt") == 0
+
+
+def test_the_sidecar_suffix_has_one_definition(tmp_path):
+    """The writer appends it and the verifier strips it. Two copies of the string would
+    drift, and the drift would be silent: sidecars would still be written and would simply
+    stop being recognised as speaking for anything."""
+    assert runprov.run.PIN_SIDECAR_SUFFIX is runprov.hashing.PIN_SIDECAR_SUFFIX
+
+
 def test_binary_formats_are_still_refused_because_the_MODE_is_wrong(tmp_path):
     """Not about the pin at all: this method opens in text mode, so a caller cannot write a
     PNG or a BAM through the handle whatever happens to the provenance. The message points
