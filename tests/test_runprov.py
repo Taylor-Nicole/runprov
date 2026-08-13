@@ -127,6 +127,21 @@ def test_describe_hashes_a_directory_as_a_tree(tmp_path):
 
 
 # --------------------------------------------------------------------- the project
+@pytest.fixture(autouse=True)
+def _reset_once_per_process_warnings():
+    """Both "say this once" flags, reset before every test.
+
+    They are module globals by design — a run that says the same structural thing on every
+    one of fifty steps is noise, and that is the point of them. In a test suite the same
+    design makes assertions ORDER-DEPENDENT: whichever test runs first sees the message and
+    the rest see nothing, so a test can pass alone and fail in the suite, or worse pass in
+    the suite and stop testing anything. Reset here rather than in each test, because the
+    hazard belongs to the flags and not to the tests that happen to notice it.
+    """
+    runprov.run._IMPLICIT_WARNED = False
+    runprov.run._NO_REPO_WARNED = False
+
+
 def _project(tmp_path) -> runprov.Project:
     return runprov.Project(
         root=tmp_path,
@@ -2691,7 +2706,10 @@ def test_a_record_made_where_git_could_not_run_is_not_a_record_of_a_clean_tree(t
         seen["git_status_captured"],
         seen["git_code_dirty"],
     ), "a consumer must be able to tell 'we could not look' from 'verified clean'"
-    assert "dirty state is UNKNOWN, not clean" in capsys.readouterr().err
+    # The wording differs by situation now — an anomaly is a WARNING, not being under
+    # version control is a NOTE said once — but both must carry the same claim, which is
+    # that unknown is not clean. The record above is the contract; this is the human line.
+    assert "UNKNOWN rather than clean" in capsys.readouterr().err
 
 
 def test_a_status_that_fails_inside_a_real_repository_is_recorded_as_unknown(
@@ -6416,3 +6434,86 @@ def test_nothing_is_tracked_until_the_project_asks_for_it(tmp_path):
         "definitely_not_here": None,
         "nor_is_this_one": None,
     }
+
+
+# ============ a warning that fires forever on a condition nobody can change is ignored
+def test_not_being_a_repository_is_said_once_and_briefly(tmp_path, capsys, monkeypatch):
+    """Two situations printed the same four-line alarm: a project simply not under version
+    control, and a repository whose `git status` did not run. The first is how a great many
+    people work and will be true of every run they ever make.
+
+    Repeating an alarm on every run for a permanent condition the reader cannot act on is
+    the permanently-red check this package refuses everywhere else — it trains people to
+    stop reading warnings, including the ones that matter.
+    """
+    monkeypatch.setattr(runprov.run, "_NO_REPO_WARNED", False)
+    assert not runprov.project.is_repository(tmp_path), "precondition: no repo here"
+
+    proj = _project(tmp_path)
+    for i in range(3):
+        with runprov.Run(f"s{i}", project=proj, provenance=tmp_path / f"p{i}.json") as run:
+            pass
+
+    err = capsys.readouterr().err
+    assert err.count("not a git repository") == 1, "once per process, not once per run"
+    assert "PROVENANCE WARNING" not in err, "a way of working is a NOTE, not a warning"
+    # The thing that must never be lost, in the note and in the record.
+    assert "UNKNOWN rather than clean" in err
+    assert run.record["code"]["git_status_captured"] is False
+    assert run.record["code"]["git_commit"] is None
+
+
+def test_a_repository_whose_git_did_not_run_stays_loud_every_time(tmp_path, capsys, monkeypatch):
+    """The other half. A missing binary, a corrupt index or the 20 s timeout is a surprise,
+    it is wrong right now, and quietening it would hide the one case worth shouting about.
+    """
+    (tmp_path / ".git").mkdir()  # a repository by the only check that does not need git
+    assert runprov.project.is_repository(tmp_path)
+    monkeypatch.setattr(runprov.project, "git", lambda *a, **k: None)
+
+    proj = _project(tmp_path)
+    for i in range(3):
+        with runprov.Run(f"s{i}", project=proj, provenance=tmp_path / f"p{i}.json"):
+            pass
+
+    err = capsys.readouterr().err
+    assert err.count("this IS a repository") == 3, "an anomaly is reported on every run"
+    assert err.count("PROVENANCE WARNING") == 3
+
+
+def test_is_repository_sees_a_worktree_and_a_parent_repository(tmp_path):
+    """`.git` is a directory in an ordinary clone and a FILE in a worktree or submodule, and
+    a project root can sit below the repository top level. Checked on the filesystem because
+    the reason this is asked is usually that git did not work."""
+    clone = tmp_path / "clone"
+    (clone / "deep" / "nested").mkdir(parents=True)
+    (clone / ".git").mkdir()
+    assert runprov.project.is_repository(clone)
+    assert runprov.project.is_repository(clone / "deep" / "nested"), "found by walking up"
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt\n", encoding="utf-8")
+    assert runprov.project.is_repository(worktree), ".git as a FILE is still a repository"
+
+
+def test_the_dirty_file_list_is_capped_and_says_how_many_it_left_out(tmp_path, capsys, monkeypatch):
+    """The list was every dirty line, so a working tree with hundreds of modified files
+    buried the sentence that matters under hundreds of lines of stderr. A silently shortened
+    list is a different claim from a short one, so the remainder is counted — and the full
+    set is in the record either way."""
+    files = tuple(f" M src/mod{i}.py" for i in range(25))
+    monkeypatch.setattr(
+        runprov.run,
+        "classify_status",
+        lambda *a, **k: runprov.project.DirtyState(captured=True, code=files),
+    )
+    with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "p.json") as run:
+        pass
+
+    err = capsys.readouterr().err
+    shown = [ln for ln in err.splitlines() if ln.strip().startswith("M src/")]
+    assert runprov.run.DIRTY_FILES_SHOWN == 10
+    assert len(shown) == 10, "the terminal gets a readable number of lines"
+    assert "… and 15 more (all of them are in the record)" in err
+    assert len(run.record["code"]["git_dirty_code_files"]) == 25, "the record keeps them all"

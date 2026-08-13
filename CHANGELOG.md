@@ -44,6 +44,12 @@ Nothing has been published yet. Everything below is what a first release would c
 - **Failure recording.** `with Run(..., provenance=PROV)` records `status: "failed"` with
   the exception type, message and traceback tail, and every registered-but-unproduced output
   as `MISSING`.
+- **First-run warning noise.** "Not a git repository" and "this repository's `git status`
+  failed" printed the same four-line alarm. The first is how many people work and is true
+  of every run they will ever make — repeating an alarm for a condition the reader cannot
+  act on is the permanently-red check this package refuses elsewhere. It is now one note,
+  once per process; a repository whose git actually failed stays loud on every run. The
+  dirty-file list is capped at 10 with the remainder counted. **No record changes.**
 - **Nothing is tracked until the project asks.** `tracked_packages` defaulted to this
   project's own stack, so a run touching none of it recorded
   `{"numpy": null, "pandas": null, "scipy": null, "sklearn": null}` on every history line,

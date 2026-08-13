@@ -44,7 +44,15 @@ import weakref
 from ._report import diagnostic, summary
 from .environment import archive_lockfiles, lockfiles, manager, write_snapshot
 from .hashing import describe, moved_since, pin_digest, sha256
-from .project import OTHER_FILES_KEPT, Project, active, classify_status, git, is_configured
+from .project import (
+    OTHER_FILES_KEPT,
+    Project,
+    active,
+    classify_status,
+    git,
+    is_configured,
+    is_repository,
+)
 from .terminal import Capture
 
 # The record format, named and versioned. A consumer -- a script, a dashboard, an agent
@@ -62,6 +70,11 @@ SCHEMA = "runprov.run.v2"
 # `runprov.run.v1`. A consumer branching on the marker, which is the only reason the field
 # exists, would have applied the wrong reader to one of them.
 HISTORY_SCHEMA = "runprov.history.v2"
+
+# How many dirty files the terminal warning names before it says how many more. The record
+# keeps all of them; this is the line a human reads, and a 300-file tree used to bury the
+# sentence that matters under 300 lines of stderr.
+DIRTY_FILES_SHOWN = 10
 
 # Formats where a leading comment block is not a comment, so `open_output` REFUSES rather
 # than writing one. The reason is per-suffix because they fail differently, and the
@@ -270,6 +283,48 @@ def _caller_file(skip: frozenset[pathlib.Path] = frozenset()) -> pathlib.Path | 
 
 _IMPLICIT_WARNED = False
 
+# Once per process, like the one above: not being under version control is a stable fact.
+_NO_REPO_WARNED = False
+
+
+def _warn_no_git(root: pathlib.Path, *, repository: bool) -> None:
+    """Say that git could not be read — loudly for an anomaly, once for a way of working.
+
+    A repository whose `git status` did not run is a surprise: a missing binary, the 20 s
+    timeout, a corrupt index. Something is wrong and it is wrong right now, so it is said
+    in full, on every run.
+
+    Not being under version control is not a surprise. It is how a great many people work,
+    it will be true of every run they ever make, and there is nothing to do about it. The
+    old text shouted the same four lines at them forever, and a warning that fires
+    identically on every run of a condition the reader cannot change is precisely the
+    permanently-red check this package was written to end -- the one that teaches a reader
+    to skip warnings, including the ones that matter. Once per process, one line, and it
+    still says the thing that must not be lost: unknown is not clean.
+
+    The RECORD does not change in either case. `git_status_captured: false` is written the
+    same way, every `git_*` field is null, and `python -m runprov log` prints
+    `DIRTY STATE UNKNOWN (git status did not run)` on the row. This is the terminal, which
+    is for a human who is about to decide whether to keep reading.
+    """
+    if repository:
+        diagnostic(
+            f"  PROVENANCE WARNING: `git status` did not run in {root}, and this IS a "
+            f"repository; this run's dirty state is UNKNOWN, not clean "
+            f"(git_status_captured: false). No git binary, a corrupt index, or the 20 s "
+            f"timeout — every git_* field in this record means 'we could not look'."
+        )
+        return
+    global _NO_REPO_WARNED
+    if _NO_REPO_WARNED:
+        return
+    _NO_REPO_WARNED = True
+    diagnostic(
+        f"  PROVENANCE NOTE: {root} is not a git repository, so this run records no commit "
+        f"and its dirty state is UNKNOWN rather than clean (git_status_captured: false). "
+        f"Said once per process, because it is a stable fact and not an event."
+    )
+
 
 def _warn_implicit_project(project: Project) -> None:
     """Say, once, that nothing configured this — the exact state of the forgetful script.
@@ -471,20 +526,32 @@ class Run:
             # `git_code_dirty: false`, which reads as a verified clean tree -- the single
             # most consequential boolean in the record, failing toward the reassuring
             # answer.
-            diagnostic(
-                f"  PROVENANCE WARNING: `git status` did not run in {root}; this run's "
-                f"dirty state is UNKNOWN, not clean (git_status_captured: false). No "
-                f"repository, no git binary, or the 20 s timeout — every git_* field in "
-                f"this record means 'we could not look'."
-            )
+            #
+            # TWO SITUATIONS, and they used to print the same four lines. Not being under
+            # version control is a stable fact about how someone works; a repository whose
+            # `git status` did not run is an anomaly. Repeating an alarm on every run for a
+            # permanent condition the reader cannot act on is the "permanently red check"
+            # this package refuses elsewhere -- it trains people to stop reading warnings,
+            # including the ones that matter. The RECORD is unchanged either way:
+            # `git_status_captured: false` and every `git_*` field null.
+            _warn_no_git(root, repository=is_repository(root))
         elif dirty:
             # DIAGNOSTIC, and the load-bearing one: it says the commit in the record does
             # not identify what ran. It goes to stderr unconditionally and RUNPROV_QUIET
             # does not reach it.
+            #
+            # CAPPED. The list was every dirty line, so a working tree with 300 modified
+            # files buried the sentence that matters under 300 lines of stderr. The count
+            # of what was omitted is printed, because a silently shortened list is a
+            # different claim from a short one -- and the full set is in the record.
+            lines = dirty.splitlines()
+            shown = lines[:DIRTY_FILES_SHOWN]
+            more = len(lines) - len(shown)
             diagnostic(
                 "  PROVENANCE WARNING: CODE is modified relative to git_commit; the "
                 "commit does not identify what ran:",
-                *(f"    {line}" for line in dirty.splitlines()),
+                *(f"    {line}" for line in shown),
+                *([f"    … and {more} more (all of them are in the record)"] if more else []),
             )
 
     # ---------------------------------------------------------------- terminal capture
