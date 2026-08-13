@@ -71,11 +71,14 @@ Nothing has been published yet. Everything below is what a first release would c
 - **`examples/format_compatibility.py`** — writes an artifact in each of 30 formats through
   runprov and reads it back with that format's real library, reporting pin placement, parse,
   hash and digest stability. Skips (loudly) any format whose library is absent, so it is not
-  in the test suite. Measured: **25 round-tripped, 0 failed** — including Pickle, joblib,
-  cloudpickle, Parquet, Feather, `.npy`, `.npz`, `.mat`, PNG, TIFF, gzip and SQLite. It also
+  in the test suite. Measured: **36 round-tripped, 0 failed** — including Pickle, joblib,
+  cloudpickle, Parquet, Feather, HDF5, AnnData `.h5ad`, Zarr, NetCDF, `.xlsx`, BAM, CRAM,
+  bgzipped VCF, R `.rds`, ONNX, safetensors, `.npy`, `.npz`, `.mat`, PNG, TIFF, gzip and
+  SQLite. It also
   documents two honest limits: gzip is byte-unstable but content-stable (which is what
-  `content_digest` is for), and SciPy `.mat` is unstable in both because MATLAB stamps a
-  time into a binary header.
+  `content_digest` is for), and SciPy `.mat` plus CRAM move on every run — `.mat` writes
+  `Created on: <date>` into its header, and CRAM differs across two writes of identical
+  records with an identical reference path.
 - **A complete, runnable example.** `examples/summarise.py` is standard-library only and
   is executed by the suite, so it cannot quietly stop working — the README had **zero**
   whole scripts in 41 KB, every one a fragment with undefined names.

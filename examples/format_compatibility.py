@@ -275,6 +275,55 @@ CASE(
     read=lambda p: _zarr_read(p),
 )
 CASE(
+    "safetensors",
+    "m.safetensors",
+    requires=["safetensors", "numpy"],
+    write=_binary(lambda p: _safetensors_write(p)),
+    read=lambda p: _safetensors_read(p),
+)
+CASE(
+    "ONNX",
+    "m.onnx",
+    requires=["onnx"],
+    write=_binary(lambda p: _onnx_write(p)),
+    read=lambda p: len(importlib.import_module("onnx").load(p).graph.node),
+)
+CASE(
+    "BAM",
+    "a.bam",
+    requires=["pysam"],
+    write=_binary(lambda p: _bam_write(p)),
+    read=lambda p: _bam_read(p),
+)
+CASE(
+    "CRAM",
+    "a.cram",
+    requires=["pysam"],
+    write=_binary(lambda p: _cram_write(p)),
+    read=lambda p: _cram_read(p),
+)
+CASE(
+    "VCF, bgzipped",
+    "c.vcf.gz",
+    requires=["pysam"],
+    write=_binary(lambda p: _bgzf_vcf_write(p)),
+    read=lambda p: _bgzf_vcf_read(p),
+)
+CASE(
+    "AnnData .h5ad",
+    "a.h5ad",
+    requires=["anndata", "numpy"],
+    write=_binary(lambda p: _h5ad_write(p)),
+    read=lambda p: _h5ad_read(p),
+)
+CASE(
+    "R .rds",
+    "a.rds",
+    requires=["pyreadr"],
+    write=_binary(lambda p: _rds_write(p)),
+    read=lambda p: _rds_read(p),
+)
+CASE(
     "NetCDF",
     "a.nc",
     requires=["xarray", "numpy"],
@@ -368,8 +417,10 @@ def _zarr_write(p):
 
 
 def _zarr_read(p):
+    # `.shape[0]`, not `len()`: a zarr v3 Array is not Sized, and a reader that raises
+    # TypeError would be reported as a runprov failure when it is this file's bug.
     zarr = importlib.import_module("zarr")
-    return len(zarr.open(str(p), mode="r"))
+    return int(zarr.open(str(p), mode="r").shape[0])
 
 
 def _nc_write(p):
@@ -381,6 +432,117 @@ def _nc_read(p):
     xr = importlib.import_module("xarray")
     with xr.open_dataset(p) as ds:
         return ds.sizes["i"]
+
+
+def _safetensors_write(p):
+    # The NUMPY backend, not the torch one: safetensors is a container format and testing it
+    # should not require a 2 GB dependency to say whether the container round-trips.
+    importlib.import_module("safetensors.numpy").save_file({"w": _arange()}, str(p))
+
+
+def _safetensors_read(p):
+    return len(importlib.import_module("safetensors.numpy").load_file(str(p))["w"])
+
+
+def _onnx_write(p):
+    onnx = importlib.import_module("onnx")
+    h = importlib.import_module("onnx.helper")
+    tp = importlib.import_module("onnx").TensorProto
+    node = h.make_node("Identity", ["x"], ["y"])
+    graph = h.make_graph(
+        [node],
+        "g",
+        [h.make_tensor_value_info("x", tp.FLOAT, [1])],
+        [h.make_tensor_value_info("y", tp.FLOAT, [1])],
+    )
+    onnx.save(h.make_model(graph), str(p))
+
+
+def _sam_body():
+    return (
+        "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:100\n"
+        "r1\t0\tchr1\t1\t60\t4M\t*\t0\t0\tACGT\tIIII\n"
+        "r2\t0\tchr1\t5\t60\t4M\t*\t0\t0\tTTTT\tIIII\n"
+    )
+
+
+def _bam_write(p):
+    pysam = importlib.import_module("pysam")
+    sam = pathlib.Path(p).with_suffix(".sam")
+    sam.write_text(_sam_body(), encoding="utf-8")
+    with (
+        pysam.AlignmentFile(str(sam), "r") as src,
+        pysam.AlignmentFile(str(p), "wb", header=src.header) as out,
+    ):
+        for rec in src:
+            out.write(rec)
+
+
+def _bam_read(p):
+    pysam = importlib.import_module("pysam")
+    with pysam.AlignmentFile(str(p), "rb") as fh:
+        return sum(1 for _ in fh)
+
+
+def _cram_write(p):
+    pysam = importlib.import_module("pysam")
+    ref = pathlib.Path(p).with_name("ref.fa")
+    ref.write_text(">chr1\n" + "A" * 100 + "\n", encoding="utf-8")
+    pysam.faidx(str(ref))
+    sam = pathlib.Path(p).with_suffix(".sam")
+    sam.write_text(_sam_body(), encoding="utf-8")
+    with (
+        pysam.AlignmentFile(str(sam), "r") as src,
+        pysam.AlignmentFile(str(p), "wc", header=src.header, reference_filename=str(ref)) as out,
+    ):
+        for rec in src:
+            out.write(rec)
+
+
+def _cram_read(p):
+    pysam = importlib.import_module("pysam")
+    ref = pathlib.Path(p).with_name("ref.fa")
+    with pysam.AlignmentFile(str(p), "rc", reference_filename=str(ref)) as fh:
+        return sum(1 for _ in fh)
+
+
+def _bgzf_vcf_write(p):
+    pysam = importlib.import_module("pysam")
+    plain = pathlib.Path(p).with_suffix("")
+    plain.write_text(
+        "##fileformat=VCFv4.2\n##contig=<ID=chr1,length=100>\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        "chr1\t1\t.\tA\tG\t.\t.\t.\nchr1\t5\t.\tT\tC\t.\t.\t.\n",
+        encoding="utf-8",
+    )
+    pysam.tabix_compress(str(plain), str(p), force=True)
+
+
+def _bgzf_vcf_read(p):
+    pysam = importlib.import_module("pysam")
+    with pysam.VariantFile(str(p)) as fh:
+        return sum(1 for _ in fh)
+
+
+def _h5ad_write(p):
+    ad = importlib.import_module("anndata")
+    np = importlib.import_module("numpy")
+    ad.AnnData(np.zeros((2, 3), dtype="float32")).write_h5ad(pathlib.Path(p))
+
+
+def _h5ad_read(p):
+    ad = importlib.import_module("anndata")
+    return ad.read_h5ad(pathlib.Path(p)).n_obs
+
+
+def _rds_write(p):
+    pyreadr = importlib.import_module("pyreadr")
+    pyreadr.write_rds(str(p), _df())
+
+
+def _rds_read(p):
+    pyreadr = importlib.import_module("pyreadr")
+    return len(pyreadr.read_r(str(p))[None])
 
 
 def _missing(requires):
@@ -492,11 +654,15 @@ def main(argv=None):
         f"missing library."
     )
     print(
-        "stable = the digest that the PIN uses (content_sha256) is the same across two "
-        "writes.\n'raw-only' means the bytes moved but the content digest did not — that "
-        "is gzip's\nmtime header, and it is what content_digest exists to strip. 'NO' "
-        "means the format\nstamps the time into content the digest cannot see, so its pin "
-        "moves on every run."
+        "\nstable = the digest the PIN uses (content_sha256) is the same across two writes.\n"
+        "  'raw-only'  the bytes moved, the content digest did not — that is gzip's mtime\n"
+        "              header, and stripping it is what content_digest exists for.\n"
+        "  'NO'        the format stamps the time into bytes the digest cannot see, so the\n"
+        "              pin moves on every run and a check over it is permanently red.\n"
+        "              Measured, not inferred: SciPy .mat writes `Created on: <date>` into\n"
+        "              its header, and CRAM differs across two writes of identical records\n"
+        "              with an identical reference path. Prefer .npz over .mat; for CRAM,\n"
+        "              pin the BAM instead, or accept that this one artifact moves."
     )
     return 1 if failed else 0
 
