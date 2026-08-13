@@ -2,26 +2,63 @@
 
 Record what a script read, wrote and ran as — in a form a checker can verify.
 
+A **whole script**, standard library only, that you can paste into a file and run. It is
+also shipped as
+[`examples/summarise.py`](https://github.com/Taylor-Nicole/runprov/blob/main/examples/summarise.py),
+and a test runs it, so it cannot quietly stop working:
+
 ```python
+import argparse, csv, pathlib
 from runprov import Run, configure
 
-configure(root=REPO, run_log=REPO / "reports" / "runs.jsonl")
+ROOT = pathlib.Path(__file__).resolve().parent
+configure(root=ROOT)  # history -> <root>/provenance/runs.jsonl, where the CLI looks
 
-PROV = OUT.with_name("build_labels_provenance.json")
+parser = argparse.ArgumentParser()
+parser.add_argument("--input", default="data/measurements.tsv")
+parser.add_argument("--output", default="results/summary.tsv")
+parser.add_argument("--threshold", type=int, default=5)
+args = parser.parse_args()
 
-# provenance=PROV is what makes a crash record. Without it, __exit__ writes nothing.
-with Run("build_labels", vars(args), provenance=PROV) as run:
-    df = pd.read_csv(run.input(INPUT), sep="\t")  # registering IS how you open it
-    with open(run.output(OUT), "w", encoding="utf-8") as fh:
-        fh.write(run.header())  # the pin, inside the artifact
-        df.to_csv(fh, sep="\t", index=False)
-    run.note("n_rows", len(df))
+OUT = ROOT / args.output
+
+# provenance=... is what makes a crash record. Without it, __exit__ writes nothing.
+with Run("summarise", vars(args), provenance=OUT.with_name("summary.prov.json")) as run:
+    with open(run.input(ROOT / args.input), encoding="utf-8") as fh:  # registering IS
+        rows = list(csv.DictReader(fh, delimiter="\t"))  # how you open it
+
+    kept = [r for r in rows if int(r["value"]) >= args.threshold]
+
+    with run.open_output(OUT) as fh:  # registers + pins the artifact + utf-8
+        writer = csv.DictWriter(fh, fieldnames=["sample", "value"], delimiter="\t")
+        writer.writeheader()
+        writer.writerows(kept)
+
+    run.note("rows_read", len(rows))
+    run.note("rows_kept", len(kept))
+```
+
+```bash
+$ python summarise.py
+$ python -m runprov log            # what ran, on what, as what
+$ python -m runprov verify         # do the artifacts still match what they pin?
 ```
 
 That is the whole ceremony: `configure(...)` once, at import of your paths module, and one
-`with Run(..., provenance=PROV)`. **There is no `run.write()` call and you do not need
+`with Run(..., provenance=...)`. **There is no `run.write()` call and you do not need
 one** — `__exit__` writes the sidecar and appends the history line, on success and on a
 crash, and it is the only place the final status is known.
+
+**Leave `run_log` alone unless you have a reason.** It defaults to
+`<root>/provenance/runs.jsonl`, which is exactly where `python -m runprov log` looks when
+you do not pass `--log`, so the two halves of the package agree for free. Point it
+elsewhere and both still work — but every CLI call then needs `--log that/path`, and this
+README taught that trap on its own front page for a while.
+
+If your artifacts are not `#`-commented text — parquet, `.npy`, BAM, a PNG — use
+`run.output(p)` instead of `open_output`, and see
+[the pin is not a comment everywhere](#the-pin-is-not-a-comment-everywhere-so-open_output-refuses-some-formats).
+The run is still recorded and hashed; only the in-artifact pin is given up.
 
 `encoding="utf-8"` is not decoration either. Without it the artifact is written in the
 machine's locale encoding, and `header()` contains an em dash. Measured on one header: 189

@@ -44,6 +44,16 @@ Nothing has been published yet. Everything below is what a first release would c
 - **Failure recording.** `with Run(..., provenance=PROV)` records `status: "failed"` with
   the exception type, message and traceback tail, and every registered-but-unproduced output
   as `MISSING`.
+- **A complete, runnable example.** `examples/summarise.py` is standard-library only and
+  is executed by the suite, so it cannot quietly stop working — the README had **zero**
+  whole scripts in 41 KB, every one a fragment with undefined names.
+- **`runprov --version`.** It previously exited 2 with "the following arguments are
+  required: cmd", which is the first thing a bug report asks for.
+- **The quickstart no longer configures the CLI into failure.** It set
+  `run_log=<root>/reports/runs.jsonl`, which is precisely what makes a bare
+  `runprov log` report that nothing has been recorded; the default
+  `<root>/provenance/runs.jsonl` is where the CLI looks.
+- `CODE_OF_CONDUCT.md`, issue and pull-request templates.
 - **Constructing a `Run` no longer imports the packages it tracks.** `_versions` did
   `__import__(mod).__version__`, so building a provenance object imported numpy, pandas,
   scipy and sklearn whether or not the script used them — and numpy/MKL fix their
