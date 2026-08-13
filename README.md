@@ -447,6 +447,28 @@ except Terminated as t:
 
 `environment.packages` records the tracked subset with every run — enough to explain the
 usual numerical difference, useless when the cause is a package nobody thought to track.
+
+**It tracks nothing until you ask.** The default used to be this project's own stack, so a
+run that touched none of it recorded
+
+```json
+"packages": {"numpy": null, "pandas": null, "scipy": null, "sklearn": null}
+```
+
+on every line of the history, forever. Every null is truthful — `None` means "asked for,
+not present" — but nobody asked, and a field populated by assumption rather than by
+observation is the thing this package exists to replace. There is no domain-neutral list: a
+genomics pipeline, a web service and a training run share nothing worth pinning, and the
+facts that *are* universal — interpreter, platform, environment manager, lock files — are
+recorded unconditionally and were never in this list. One line asks:
+
+```python
+configure(root=ROOT, tracked_packages=("numpy", "pandas", "scipy", "sklearn"))
+```
+
+`run.module(mod)` is the sharper tool for what this field is usually reached for: it
+records where an import actually *resolved from*, and hashes it.
+
 Set `env_snapshot_dir` and every run also captures the FULL installed set:
 
 ```python
@@ -721,7 +743,7 @@ inferred later.
 | `terminal_log_dir` | `None` (off) | tee stdout+stderr to `<script>_<run_id>.log`; per-`Run` `terminal_log=` overrides, `False` opts out |
 | `run_log` | `<root>/provenance/runs.jsonl` | deliberately *not* any path a host repo uses — a misconfigured install must not append to a history it does not belong to. Set it and the CLI needs `--log` |
 | `code_paths` | `src scripts conf pyproject.toml Makefile` | what "dirty" means. Include config and rule registries: they are read by the code, so they change behaviour like code does |
-| `tracked_packages` | numpy, pandas, scipy, sklearn | versions recorded per run |
+| `tracked_packages` | **nothing** | versions recorded per run. There is no domain-neutral list, so it records nothing until asked — see below |
 | `run_id` | `$RUNPROV_RUN_ID`, else `adhoc_<utc>` | a chain exports one id so its stages share it; an unset id is *labelled* ad-hoc on purpose |
 | `generation` | `$RUNPROV_GENERATION`, else `(default)` | a generation is a corpus; a run is one pass over it |
 

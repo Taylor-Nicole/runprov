@@ -6386,3 +6386,33 @@ def test_the_cli_answers_version_which_is_the_first_thing_a_bug_report_asks(caps
         runprov.__main__.main(["--version"])
     assert exit_code.value.code == 0
     assert capsys.readouterr().out.strip() == f"runprov {runprov.__version__}"
+
+
+def test_nothing_is_tracked_until_the_project_asks_for_it(tmp_path):
+    """The default was the source project's ML stack, so every record of every OTHER kind
+    of run carried `{"numpy": null, "pandas": null, "scipy": null, "sklearn": null}` —
+    forever, on every history line. Each null is truthful, and nobody asked the question.
+
+    A field populated by assumption rather than by observation is prose provenance one
+    level down, which is the thing this package exists to replace.
+    """
+    assert runprov.DEFAULT_TRACKED == ()
+    run = runprov.Run("s", project=_tracking(tmp_path))
+    assert run.record["environment"]["packages"] == {}
+
+    # The facts that ARE universal were never in this list and are still unconditional.
+    env = run.record["environment"]
+    assert env["python"] and env["platform"] and "hostname" in env
+
+    # And asking is one argument, with `None` still meaning "asked for, not present".
+    # TWO absent names, deliberately: the module-to-distribution map is built once per run
+    # and reused, and with a single absent package that reuse never happens. The old ML-stack
+    # default had four names and covered it by accident, which is not coverage.
+    asked = runprov.Run(
+        "s", project=_tracking(tmp_path, "runprov", "definitely_not_here", "nor_is_this_one")
+    )
+    assert asked.record["environment"]["packages"] == {
+        "runprov": runprov.__version__,
+        "definitely_not_here": None,
+        "nor_is_this_one": None,
+    }
