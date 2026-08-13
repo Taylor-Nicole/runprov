@@ -48,7 +48,7 @@ no hashes, so two runs on different data are indistinguishable. There is no comm
 entry does not identify the code. The environment-snapshot function is defined and called
 from nowhere. Only successful runs are appended, so "300 runs" means 300 *completed* runs
 with an unknown denominator. The resulting log does not parse: `yaml.safe_load_all` raises
-at line 14,575, and **eleven** repair scripts exist to heal it — one of which is itself a
+at line 14,554 (and `safe_load` at 14,547, on the `---` documents), and **eleven** repair scripts exist to heal it — one of which is itself a
 step in the pipeline it documents.
 
 **Universal adoption did not produce a trustworthy record.** That is the whole finding.
