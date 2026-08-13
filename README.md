@@ -826,6 +826,22 @@ result does not look damaged until something parses it. `#` really is a comment 
 TSV, a YAML, a TOML and an INI — it is not one in XML or JSON, which have no comment
 syntax at all.
 
+**The rule is an allowlist, and that is deliberate.** `open_output()` writes the pin
+in-band only for suffixes known to treat a leading `#` as a comment — `.tsv` `.csv` `.txt`
+`.md` `.bed` `.gff3` `.gtf` `.yaml` `.toml` `.ini` and friends. **Everything else gets a
+sidecar**, including formats nobody has thought of.
+
+It used to be the other way round: pin in-band unless the suffix was on a list of
+known-unsafe ones. That default corrupts whatever is not on the list, and three separate
+rounds of review each found something that was not — Newick (a pinned tree *parses*, and
+Biopython read a 3-taxon tree back with 6 terminals), then SVG and JSON, then pickle. Each
+fix added a row and left the default intact. A guard whose default is to corrupt is not a
+guard.
+
+`.py` and `.sh` are deliberately **not** on the allowlist even though `#` is their comment:
+their first line can be a shebang, and a pin above it stops the file being executable.
+"Is `#` a comment" is not the same question as "is line 1 free".
+
 **A format that cannot hold a pin gets one beside it.** `open_output()` writes the artifact
 untouched and puts the pin in `<artifact>.prov.txt`, registered and hashed like any other
 output — so a FASTA, a FASTQ, a JSONL or a Newick tree keeps the property that matters:
@@ -842,6 +858,7 @@ Two opt-ins, because a measured trade is the caller's to make and must not be ma
 
 ```python
 run.open_output(REF, comment="; ")  # FASTA: Biopython reads it, samtools faidx REJECTS it
+run.open_output(Q, comment="-- ")  # SQL, TeX (`% `): no trade, just the right marker
 run.write_json(OUT, {"variants": 12})  # JSON: pin as a top-level key — changes your schema
 ```
 

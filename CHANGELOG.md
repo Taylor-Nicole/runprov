@@ -128,6 +128,13 @@ Nothing has been published yet. Everything below is what a first release would c
   touched it (`ET.parse` at line 1 column 1; `json.loads` at char 0). `.json` had been
   in the suite's list of formats a pin CAN go into, so a passing test was holding the
   corruption in place.
+- **In-band pinning is an ALLOWLIST.** It was a denylist, so a format nobody had thought of
+  got a `#` written into it — and three rounds of review each found another: Newick, then
+  SVG and JSON, then pickle. Each fix added a row and left the default intact. Now only
+  suffixes known to take a `#` comment are pinned in-band and everything else gets a
+  sidecar, so an unrecognised format gets the safe outcome. `.py`/`.sh` are excluded on
+  purpose: a pin above a shebang stops the file being executable. `.sql` and `.tex` pin
+  in-band when the caller names their real marker (`-- `, `% `).
 - **A sidecar pin for every format that cannot hold one in-band.** `open_output` no longer
   refuses a text format: it writes the artifact byte-exact and puts the pin in
   `<artifact>.prov.txt`, registered and hashed. Verified with the real tools — `samtools
