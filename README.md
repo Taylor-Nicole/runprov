@@ -841,7 +841,7 @@ had.
 Two opt-ins, because a measured trade is the caller's to make and must not be made for them:
 
 ```python
-run.open_output(REF, comment="; ")     # FASTA: Biopython reads it, samtools faidx REJECTS it
+run.open_output(REF, comment="; ")  # FASTA: Biopython reads it, samtools faidx REJECTS it
 run.write_json(OUT, {"variants": 12})  # JSON: pin as a top-level key — changes your schema
 ```
 
