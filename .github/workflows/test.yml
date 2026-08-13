@@ -62,7 +62,12 @@ jobs:
         with:
           python-version: "${{ matrix.python }}"
       - run: python -m pip install -e ".[test]"
-      - run: python -m pytest
+      # `ci.py test`, NOT a bare `pytest`. The coverage gate lives in that script rather than
+      # in pyproject's `addopts` so a downstream packager without pytest-cov can still run
+      # the suite -- which meant the gate every document calls "the gate" ran only at tag
+      # time, in publish.yml. Coverage could have fallen on every push for the life of the
+      # project and the release would have been the first thing to notice.
+      - run: python ci.py test
 
   build:
     # On every push, not only on a tag. A README that PyPI refuses to render is unfixable
