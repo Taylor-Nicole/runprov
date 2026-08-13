@@ -29,6 +29,7 @@ import logging
 import os
 import pathlib
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -6276,3 +6277,55 @@ def test_unreadable_distribution_metadata_records_none_rather_than_raising(tmp_p
     # With no map, the import name is tried as a distribution name directly, which is why
     # losing the map degrades the answer rather than the run.
     assert pkgs["runprov"] == runprov.__version__
+
+
+# ================================ the shipped example must actually run, or it is a lie
+def test_the_shipped_example_runs_and_produces_a_verifiable_artifact(tmp_path):
+    """`examples/summarise.py` is the only COMPLETE script the package ships, so it is what
+    a reader runs first. An example that has quietly stopped working teaches the reader that
+    the package does not work — and nothing else in the suite would notice, because every
+    other test builds its own fixtures rather than using the one users copy.
+
+    Copied to a temp directory and run as a SUBPROCESS: the example configures the project
+    root as its own parent, so running it in place would write a history into this
+    repository, and importing it would not exercise the `__main__` path a reader uses.
+    """
+    shutil.copytree(REPO / "examples", tmp_path / "examples")
+    proc = subprocess.run(
+        [sys.executable, str(tmp_path / "examples" / "summarise.py")],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(REPO)},
+        cwd=tmp_path,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "kept 3 of 4 rows" in proc.stdout
+
+    out = tmp_path / "examples" / "results" / "summary.tsv"
+    body = out.read_text(encoding="utf-8")
+    assert body.startswith("# provenance"), "the artifact must carry its own pin"
+    assert "examples/data/measurements.tsv" in body, "and name what it was made from"
+
+    # The default history path is the one the CLI reads with no --log, which is the whole
+    # reason the example does not set `run_log=`.
+    history = tmp_path / "provenance" / "runs.jsonl"
+    assert history.is_file(), "the example must write where `runprov log` looks by default"
+    rec = json.loads(history.read_text(encoding="utf-8").strip())
+    assert rec["status"] == "ok" and rec["notes"] == {"rows_read": 4, "rows_kept": 3}
+    assert rec["parameters"]["threshold"] == 5, "argparse types must survive into the record"
+
+    report = runprov.verify.verify([out], tmp_path)
+    assert report["ok"] == 1 and report["stale"] == 0
+
+
+def test_the_cli_answers_version_which_is_the_first_thing_a_bug_report_asks(capsys):
+    """`runprov --version` exited 2 with "the following arguments are required: cmd",
+    because the subcommand was required before anything could be parsed.
+
+    Read from the package rather than from installed metadata, so a source checkout that
+    was never `pip install`ed still answers — which is the case a contributor is in.
+    """
+    with pytest.raises(SystemExit) as exit_code:
+        runprov.__main__.main(["--version"])
+    assert exit_code.value.code == 0
+    assert capsys.readouterr().out.strip() == f"runprov {runprov.__version__}"

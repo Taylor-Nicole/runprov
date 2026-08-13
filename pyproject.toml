@@ -129,6 +129,9 @@ artifacts = ["runprov/py.typed"]
 # hash-pinned fixtures `-text`, and the tarball already preserves their bytes exactly), and
 # the second is CI configuration for THIS repository, which a downstream rebuild does not
 # run and cannot use.
-include = ["runprov", "tests", "ci.py", "README.md", "PUBLISHING.md", "WHY.md",
-           "LICENSING.md", "CONTRIBUTING.md", "DCO.txt", "LICENSE", "CITATION.cff",
-           "CHANGELOG.md", "SECURITY.md", ".ruff.toml", ".pre-commit-config.yaml"]
+include = ["runprov", "tests", "examples", "ci.py", "README.md", "PUBLISHING.md", "WHY.md",
+           "LICENSING.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "DCO.txt", "LICENSE",
+           "CITATION.cff", "CHANGELOG.md", "SECURITY.md", ".ruff.toml",
+           ".pre-commit-config.yaml"]
+# `examples` is here because a test runs it: shipping the suite without the file it
+# executes would make the sdist's own tests fail for the packager who runs them.

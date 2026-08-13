@@ -11,3 +11,9 @@ dist/
 build/
 *.egg-info/
 .venv/
+
+# Written by running `examples/summarise.py` from the repository. The example configures
+# the root as this repository, so its history lands here — which is the correct behaviour
+# and not something to commit.
+/provenance/
+examples/results/

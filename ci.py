@@ -148,7 +148,20 @@ def build() -> None:
         # and SECURITY.md were both missing while the shipped README linked to both, and the
         # only reader affected is the one this sdist exists for: a packager rebuilding from
         # source, with no security policy to read and no changelog to attribute a version to.
-        want = {"CHANGELOG.md", "SECURITY.md", "LICENSE", "README.md", "CITATION.cff", "ci.py"}
+        # `examples/summarise.py` is here because the SUITE RUNS IT: shipping the tests
+        # without the file one of them executes would make the sdist's own tests fail for
+        # the packager who runs them, which is the one audience this check exists for.
+        want = {
+            "CHANGELOG.md",
+            "CITATION.cff",
+            "CODE_OF_CONDUCT.md",
+            "LICENSE",
+            "README.md",
+            "SECURITY.md",
+            "ci.py",
+            "examples/summarise.py",
+            "examples/data/measurements.tsv",
+        }
         if missing := sorted(want - members):
             raise SystemExit(
                 f"{sdist.name} is missing {missing}. Anything not named in "

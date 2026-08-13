@@ -423,6 +423,13 @@ def _prog() -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog=_prog())
+    # `--version` before anything else, because it is the first thing a bug report asks for
+    # and it was the one thing this CLI could not answer: `runprov --version` exited 2 with
+    # "the following arguments are required: cmd". Read from the package rather than from
+    # installed metadata, so a source checkout that was never `pip install`ed still answers.
+    from . import __version__
+
+    ap.add_argument("--version", action="version", version=f"runprov {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
     lg = sub.add_parser("log", help="read the continuous run history")
     lg.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
