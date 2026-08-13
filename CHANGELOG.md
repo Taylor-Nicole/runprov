@@ -32,6 +32,12 @@ Nothing has been published yet. Everything below is what a first release would c
   where the target may be a script name, a `run_uid` prefix, a `run_id` or an artifact path.
   Text or `--format yaml`. **It writes nothing** — a reader over `runs.jsonl`, asserted by a
   test that compares every byte on disk before and after.
+- **`Project(sidecar_per_run=True)`** — a sidecar per run instead of one the next run
+  overwrites: `summary.prov.json` becomes `summary.<utc>.<run_uid8>.prov.json`. Sortable by
+  name because the time comes first, unique because the run_uid follows, and the stamp goes
+  before the WHOLE compound suffix so `*.prov.json` still matches — inserting before `.json`
+  alone silently breaks that glob. Default off, so a caller who names a path still gets it.
+  It also makes `show --stale` answerable for older runs.
 - **`show --stale` / `--rehash`** — a staleness column on the artifact index, answering
   "do I need to run this again" in one page. Computed from the HISTORY rather than the
   in-artifact pin, so it works for binaries that cannot hold one. `current` / `STALE` (an

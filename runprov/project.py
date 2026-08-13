@@ -347,6 +347,21 @@ class Project:
     sink: RecordSink | None = None
     code_paths: tuple[str, ...] = DEFAULT_CODE_PATHS
     tracked_packages: tuple[str, ...] = DEFAULT_TRACKED
+    #: Write a sidecar per RUN instead of one that the next run overwrites.
+    #:
+    #: `provenance=OUT.with_name("summary.prov.json")` names ONE path, so the tenth run of
+    #: a script leaves one sidecar and the nine before it are gone. The append-only history
+    #: still holds every one of those runs -- nothing about the RECORD is lost -- but the
+    #: file sitting beside the artifact describes only the last one, and a reader looking
+    #: for "when did this column appear" is reading the wrong run's answer.
+    #:
+    #: With this on, the stamp of the run is inserted before the final suffix:
+    #:
+    #:     summary.prov.json  ->  summary.20260813T143012Z.5709a907.prov.json
+    #:
+    #: Sortable first, unique second: the time is what a person browses by, and the run_uid
+    #: is what makes two runs inside the same second still two files.
+    sidecar_per_run: bool = False
     run_id: typing.Callable[[], str] = default_run_id
     generation: typing.Callable[[], str] = default_generation
 
