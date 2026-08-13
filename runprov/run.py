@@ -239,7 +239,27 @@ class Terminated(BaseException):
         super().__init__(f"terminated by {self.name} ({signum})")
 
 
-def _jsonable(obj: typing.Any) -> typing.Any:  # noqa: ANN401 - walks arbitrary record data
+#: What "this value cannot be written down" looks like when it is raised rather than
+#: returned. `TypeError` and `ValueError` are the documented `json.dumps` failures;
+#: `RecursionError` is not documented as one and is why this tuple exists — it subclasses
+#: `RuntimeError`, so it fell past a two-name `except` that had been correct for years and
+#: took the whole record with it. Anything that can only be raised by describing a caller's
+#: value belongs here: the record degrades one entry, it does not disappear.
+SERIALISATION_ERRORS = (TypeError, ValueError, RecursionError)
+
+#: How deep `_jsonable` will walk before it stops and says so. A record nested past this is
+#: not a record anybody reads; a walk that does not stop is a `RecursionError` INSIDE
+#: provenance capture, which cost the entire run its history line and its sidecar while the
+#: script exited 0. The same reasoning caps `OTHER_FILES_KEPT` at 50 and `imported_code_max`
+#: at 200: a bound that is stated in the record beats an unbounded walk that loses it.
+JSONABLE_MAX_DEPTH = 100
+
+
+def _jsonable(
+    obj: typing.Any,  # noqa: ANN401 - walks arbitrary record data
+    _seen: set[int] | None = None,
+    _depth: int = 0,
+) -> typing.Any:  # noqa: ANN401 - and returns it, reshaped
     """Replace non-finite floats with their names, recursively.
 
     `json.dumps` emits bare `NaN`, `Infinity` and `-Infinity`, which are **not JSON**: every
@@ -250,17 +270,42 @@ def _jsonable(obj: typing.Any) -> typing.Any:  # noqa: ANN401 - walks arbitrary 
     The value becomes the STRING `"NaN"`, not `null` and not a dropped key. A dropped key
     loses the measurement; `null` says "not measured", which is a different fact from
     "measured, and the answer was not a number".
+
+    CYCLES AND DEPTH follow that same rule. A config node holding a `parent` back-reference
+    is how most hierarchical config libraries represent a tree, and `parameters` is
+    documented as "what argparse actually parsed" — so such a value arrives here by the
+    ordinary route, not an exotic one. Unguarded it raised `RecursionError` during capture
+    and the run was recorded NOWHERE: no history line, no sidecar, exit 0, one WARNING on a
+    stderr nobody reads months later. Both replacements below are true statements about the
+    value, which is the only thing that may appear in a record in place of the value itself.
+
+    `_seen` holds the ids on the CURRENT PATH, not every id encountered: the same dict
+    appearing twice as siblings is shared structure, which is ordinary and is recorded twice.
+    Only a value that contains itself is a cycle.
     """
+    if _depth > JSONABLE_MAX_DEPTH:
+        return f"<nested beyond {JSONABLE_MAX_DEPTH} levels>"
     if isinstance(obj, float):
         if obj != obj:
             return "NaN"
         if obj in (float("inf"), float("-inf")):
             return "Infinity" if obj > 0 else "-Infinity"
         return obj
-    if isinstance(obj, dict):
-        return {k: _jsonable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_jsonable(v) for v in obj]
+    if isinstance(obj, (dict, list, tuple)):
+        if _seen is None:
+            _seen = set()
+        if id(obj) in _seen:
+            return "<circular reference>"
+        _seen.add(id(obj))
+        try:
+            if isinstance(obj, dict):
+                return {k: _jsonable(v, _seen, _depth + 1) for k, v in obj.items()}
+            return [_jsonable(v, _seen, _depth + 1) for v in obj]
+        finally:
+            # Off the path again, so a sibling that shares this value is not a cycle. The
+            # `finally` matters: a raise here would otherwise leave the id on the path and
+            # turn every later sighting of a shared value into "<circular reference>".
+            _seen.discard(id(obj))
     # No branch for `str`, `int`, `bool` or `None`: none of them has `.item()`, so all four
     # fall past the test below unchanged. Two drafts carried such branches and mutation
     # testing could not tell either from its absence — they encoded a distinction that does
@@ -283,7 +328,7 @@ def _jsonable(obj: typing.Any) -> typing.Any:  # noqa: ANN401 - walks arbitrary 
             # NaN, which `json.dumps` writes as bare `NaN` -- not JSON, and rejected by
             # every strict parser. An AUROC on a class with no positives is exactly that
             # value and arrives from numpy, so the two rules have to compose.
-            return _jsonable(item())
+            return _jsonable(item(), _seen, _depth + 1)
         except Exception as exc:  # guards-ok: `.item()` on something that is not a scalar
             # -- a 3-element array raises ValueError -- must not abort the caller's run. It
             # falls through to the recorded string, which is what happened before.
@@ -1853,7 +1898,7 @@ class Run:
         """
         try:
             return json.dumps(_jsonable(self.record), indent=2, default=str)
-        except (TypeError, ValueError) as exc:
+        except SERIALISATION_ERRORS as exc:
             diagnostic(
                 f"  WARNING: could not serialise part of the record ({exc}); "
                 f"degrading the offending entries"
@@ -1865,7 +1910,7 @@ class Run:
                 for k, v in list(section.items()):
                     try:
                         json.dumps({k: v}, default=str)
-                    except (TypeError, ValueError):
+                    except SERIALISATION_ERRORS:
                         section[k] = f"UNSERIALISABLE <{type(v).__name__}>"
             return json.dumps(_jsonable(self.record), indent=2, default=str)
 
