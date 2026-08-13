@@ -39,6 +39,7 @@ worse than no gate, because someone will trust it.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import typing
@@ -54,6 +55,36 @@ ANCHOR = "provenance — this artifact and what produced it"
 # reading the whole file to find one would mean reading every byte of a 50 GB BAM to learn
 # it has no pin. Bounded, and stated: a pin further in than this is not found.
 SCAN_BYTES = 1 << 16
+
+#: How far into a file the FIRST pin block may begin before the file stops counting as an
+#: artifact. See `read_pins` for the failure this closes.
+PIN_STARTS_WITHIN = 4
+
+#: Directories `collect()` does not walk. None of them holds artifacts a run produced, and
+#: two of them actively produce false positives: a virtualenv contains this package's own
+#: source and the wheel METADATA, both of which quote the pin format. Counted, never
+#: silently dropped -- `verify` reports how many files it skipped, because a checker that
+#: quietly narrows what it looked at is the failure this package exists to refuse.
+SKIP_DIRS = frozenset(
+    {
+        ".bzr",
+        ".git",
+        ".hg",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".svn",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "env",
+        "node_modules",
+        "site-packages",
+        "venv",
+    }
+)
 
 # Against the pin's own rendering: four spaces, the digest, TWO spaces, the name. The
 # two-space separator is what allows a name to contain single spaces.
@@ -99,9 +130,24 @@ def read_pins(path: pathlib.Path) -> list[dict[str, typing.Any]]:
         return []
 
     lines = head.splitlines()
-    blocks = []
+    blocks: list[dict[str, typing.Any]] = []
     for start, anchored in enumerate(lines):
         if ANCHOR not in anchored:
+            continue
+        # A PINNED ARTIFACT DECLARES ITSELF AT THE TOP; a file that merely MENTIONS the
+        # format is not an artifact. Without this the anchor was matched anywhere in the
+        # first 64 KiB, so `runprov verify` over a project reported this package's own
+        # `verify.py` (which holds the anchor as a constant), `run.py` (which renders it),
+        # their `.pyc` files, and the wheel's METADATA -- and METADATA embeds the README's
+        # EXAMPLE pin, so the check invented a GONE for `data/labels.tsv`, a path that
+        # exists only in documentation. A gate that fails because the docs describe the
+        # format is worse than no gate.
+        #
+        # A few lines of tolerance rather than exactly line 1: `open_output` writes the pin
+        # first, but a caller placing `header()` by hand may put a shebang or an encoding
+        # declaration above it. An INHERITED pin further down is still read -- that is where
+        # transitivity comes from -- it just cannot be the one that makes the file count.
+        if not blocks and start >= PIN_STARTS_WITHIN:
             continue
         marker = anchored[: anchored.index(ANCHOR)]
         pin: dict[str, typing.Any] = {"entries": [], "declared": None, "fields": {}}
@@ -193,20 +239,33 @@ def verify_artifact(path: pathlib.Path, root: pathlib.Path) -> dict[str, typing.
     return out
 
 
-def collect(paths: typing.Iterable[pathlib.Path]) -> list[pathlib.Path]:
-    """Files to examine: each path, or every regular file under it if it is a directory.
+def collect(paths: typing.Iterable[pathlib.Path]) -> tuple[list[pathlib.Path], int]:
+    """Files to examine, and how many were skipped. See `SKIP_DIRS` for what and why.
 
     Sorted, so two runs of the same check report in the same order — the same reason the
     pin itself is sorted. Duplicates collapse: naming a file and its parent directory must
     not double-count it.
+
+    A path named EXPLICITLY is always examined, even inside a skipped directory: the skip
+    list is about what a bare `verify` should walk, not a claim that those files cannot be
+    checked. Asking about one by name is an answerable question and it gets answered.
     """
     found: set[pathlib.Path] = set()
+    skipped = 0
     for p in paths:
-        if p.is_dir():
-            found.update(q for q in p.rglob("*") if q.is_file())
-        elif p.exists():
-            found.add(p)
-    return sorted(found)
+        if not p.is_dir():
+            if p.exists():
+                found.add(p)
+            continue
+        for dirpath, dirnames, filenames in os.walk(p):
+            here = pathlib.Path(dirpath)
+            pruned = [d for d in dirnames if d in SKIP_DIRS or d.endswith(".egg-info")]
+            for d in pruned:
+                # Counted before pruning, so the report can say what it did not look at.
+                skipped += sum(1 for _ in (here / d).rglob("*"))
+                dirnames.remove(d)
+            found.update(here / name for name in filenames if (here / name).is_file())
+    return sorted(found), skipped
 
 
 def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str, typing.Any]:
@@ -217,11 +276,13 @@ def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str
     finding. The COUNT still has to be visible: it is the difference between "everything
     checks out" and "nothing was checked".
     """
-    results = [verify_artifact(p, root) for p in collect(paths)]
+    examined, skipped = collect(paths)
+    results = [verify_artifact(p, root) for p in examined]
     pinned = [r for r in results if r["status"] != NO_PIN]
     return {
         "root": str(root),
         "artifacts_seen": len(results),
+        "files_skipped": skipped,
         "artifacts_pinned": len(pinned),
         # GONE is counted apart from STALE even though both fail the check. They are
         # different repairs -- a stale artifact is rebuilt, a gone input is FOUND -- and
