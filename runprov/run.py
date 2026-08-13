@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import importlib.metadata
 import inspect
 import json
 import os
@@ -694,14 +695,67 @@ class Run:
             self._append_history(path)
 
     def _versions(self) -> dict[str, typing.Any]:
-        out = {}
+        """Versions of the tracked packages, READ rather than imported.
+
+        This was `__import__(mod).__version__`, so constructing a `Run` imported numpy,
+        pandas, scipy and sklearn — whether or not the script used them. A provenance
+        object that CHANGES THE PROGRAM IT OBSERVES is the one thing this package cannot
+        be. It is not only latency: numpy and MKL fix their thread-pool configuration at
+        import time, libraries install `warnings` filters at import time, and some set
+        matplotlib's backend. The run was measurably different because it was traced, and
+        the trace said nothing about that.
+
+        Measured in a conda env holding all four, constructing one `Run` in an interpreter
+        that had imported none of them:
+
+                            imports                          RSS      warm     cold
+            before   numpy, pandas, scipy, sklearn        +135 MB   0.633 s   2.909 s
+            after    nothing                                +3 MB   0.336 s   1.017 s
+
+        Two timings because one would have been a claim about a page cache rather than
+        about this code: the same pair measured again on a just-mounted disk cost four times
+        as much on both sides. **The memory figure is the stable one**, and the import set is
+        the point regardless of either. The recorded versions are identical in every run,
+        `sklearn: 1.7.1` included, so this buys the reduction and changes no record.
+
+        `sys.modules` FIRST, because if the script imported it, the object it actually has
+        is the truth — an editable install, a `sys.path` shim or a vendored copy can differ
+        from what any metadata says, and `module()` exists precisely because that happens.
+        Distribution metadata second, via `packages_distributions()` so that the import name
+        and the distribution name are allowed to differ: `sklearn` is `scikit-learn`, and
+        looking up the import name would have reported the most-used tracked package in
+        science as absent.
+
+        THE MEANING NARROWS SLIGHTLY AND THAT IS THE TRADE. Before, a tracked package that
+        was installed but unused was reported by importing it. Now it is reported from
+        metadata, and one that is neither imported nor an installed distribution records
+        `None`. That is the honest answer to "what was in this environment" — the old one
+        answered "what could I have imported if I tried", and it charged the run to find out.
+        """
+        out: dict[str, typing.Any] = {}
+        by_module: dict[str, list[str]] | None = None
         for mod in self.project.tracked_packages:
-            try:
-                out[mod] = __import__(mod).__version__
-            except Exception:  # guards-ok: None IS the record — "this package was not
-                # importable in the run's environment" is a fact worth keeping, and a
-                # tracked package that is absent must not abort somebody's run
-                out[mod] = None
+            live = sys.modules.get(mod)
+            version = getattr(live, "__version__", None) if live is not None else None
+            if isinstance(version, str):
+                out[mod] = version
+                continue
+            if by_module is None:
+                # Built once per run and ONLY when something has to be looked up, so a
+                # script that imported everything it tracks never pays for the scan.
+                try:
+                    by_module = importlib.metadata.packages_distributions()  # type: ignore[assignment]
+                except Exception:  # guards-ok: no metadata is a reason to record None,
+                    # never a reason to fail the run this is describing
+                    by_module = {}
+            # None IS the record: "this package was not present in the run's environment"
+            # is a fact worth keeping, and a tracked package that is absent must not abort
+            # somebody's run. Left in place if every candidate distribution fails.
+            out[mod] = None
+            for dist in (by_module or {}).get(mod) or [mod]:
+                with contextlib.suppress(Exception):  # guards-ok: as above
+                    out[mod] = importlib.metadata.version(dist)
+                    break
         return out
 
     # ---------------------------------------------------------------- registration
