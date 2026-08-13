@@ -7031,11 +7031,89 @@ def test_show_finds_a_run_by_script_uid_run_id_or_artifact(tmp_path, monkeypatch
     of name they are holding."""
     rows = _history(tmp_path, monkeypatch)
     uid = rows[0]["run_uid"]
-    assert len(runprov.show.select(rows, "build")) == 2
-    assert len(runprov.show.select(rows, uid[:8])) == 1
-    assert len(runprov.show.select(rows, rows[0]["run_id"])) == 4, "run_id is a CHAIN id"
-    assert len(runprov.show.select(rows, "mid.tsv")) == 4, "written twice, read twice"
-    assert runprov.show.select(rows, "no_such_thing") == []
+    # FED A GENERATOR, not a list, for every one of the four kinds. `_show` hands `select`
+    # the streaming reader, and the four-pass implementation was only ever tested with a
+    # list -- so the guard that made it work with a generator could be deleted and the suite
+    # stayed green while `show <uid>`, `show <run_id>` and `show <artifact>` all answered a
+    # confident "nothing matches" for targets that exist. Three quarters of the command.
+    assert len(runprov.show.select(iter(rows), "build")) == 2
+    assert len(runprov.show.select(iter(rows), uid[:8])) == 1
+    assert len(runprov.show.select(iter(rows), rows[0]["run_id"])) == 4, "run_id is a CHAIN id"
+    assert len(runprov.show.select(iter(rows), "mid.tsv")) == 4, "written twice, read twice"
+    assert runprov.show.select(iter(rows), "no_such_thing") == []
+
+
+def test_select_takes_the_LAST_n_when_it_is_given_a_limit(tmp_path, monkeypatch):
+    """`--limit` moved into `select` so a bucket cannot grow past it -- which only helps if
+    it still means the same thing. Last N, because the last run is the state you are in."""
+    rows = _history(tmp_path, monkeypatch)
+    both = runprov.show.select(iter(rows), "build")
+    one = runprov.show.select(iter(rows), "build", limit=1)
+    # ON `parameters`, NOT `started_utc`. The two build runs finish inside one second, so the
+    # timestamps are equal and an assertion on them is true whichever run survives -- the
+    # `0 == 0` shape, which is what left `show --limit` unguarded in the first place. `mode`
+    # is "a" then "b", so it can only pass for the right one.
+    assert [r["parameters"]["mode"] for r in both] == ["a", "b"], "the premise"
+    assert len(one) == 1 and one[0]["parameters"]["mode"] == "b"
+
+
+def test_selecting_a_target_does_not_hold_the_records_that_do_not_match(tmp_path, monkeypatch):
+    """The property the four-pass version claimed in a comment and did not have: it held the
+    whole history to answer about one run -- 438 MB at 100,000 runs, and the same on the path
+    where NOTHING matches, to print "nothing matches".
+
+    ON WEAKREFS, NOT ON MEMORY. The obvious test measures `tracemalloc` peak at two history
+    sizes, and the first draft of it did. It passed alone and FAILED under `--cov`, because
+    coverage allocates per line executed and the walk is the thing being sized -- so the test
+    was reading the instrumentation. Threading the bound to accommodate that would have made
+    it a test of the harness, which is exactly the flaw the flaky timing test one section down
+    has. A weakref answers the real question directly: is the record still reachable after
+    `select` has walked past it? Deterministic, 200 records rather than 200,000, and it cannot
+    be moved by an allocator, a coverage run or a loaded machine.
+    """
+    import gc
+    import weakref
+
+    class Rec(dict):  # plain dicts cannot be weak-referenced; a subclass can
+        pass
+
+    rows = _history(tmp_path, monkeypatch)
+    seen: list[weakref.ref] = []
+    held: list[int] = []
+
+    def stream(n, script):
+        """Counts, AT THE LAST YIELD, how many earlier records are still reachable.
+
+        Measured from inside the walk deliberately. Checking after `select` returns proves
+        nothing: `records = list(records)` binds a local that dies with the frame, so every
+        record is collectable by then and the materialising version passes. The question is
+        what is held WHILE the history is being walked, which is the only moment at which
+        holding it costs anything.
+        """
+        for i in range(n):
+            rec = Rec(rows[i % len(rows)], run_uid=f"{i:032x}", script=script)
+            seen.append(weakref.ref(rec))
+            yield rec
+            del rec  # the generator's own reference; the consumer's is the one under test
+            if i == n - 1:
+                gc.collect()
+                held.append(sum(1 for w in seen if w() is not None))
+
+    assert runprov.show.select(stream(200, "not_the_target"), "target") == []
+    # A streaming walk holds the record it is looking at and nothing behind it. Measured: 1.
+    # The bound is 2 rather than 1 so that a consumer which happens to keep the previous
+    # record alive for one more step is not a failure -- the finding this guards is 200, and
+    # the distance between 2 and 200 is the whole point. Anything above a couple of records
+    # means the walk is accumulating, which is the defect.
+    assert held[0] <= 2, f"{held[0]} of 200 non-matching records held during the walk"
+
+    # The other half, or the assertion above would pass on a `select` that returns nothing at
+    # all: a record that DOES match is retained, because it is the answer.
+    seen.clear()
+    held.clear()
+    got = runprov.show.select(stream(200, "target"), "target")
+    assert len(got) == 200
+    assert held == [200], "matches must be kept — they are what was asked for"
 
 
 def test_the_yaml_view_quotes_every_scalar_so_a_typed_colon_cannot_break_it(tmp_path, monkeypatch):
