@@ -1370,7 +1370,7 @@ class Run:
             rec["sha256"] = sha256(pathlib.Path(resolved))
 
         try:
-            proc = subprocess.run(  # noqa: S603 - the caller named this program on purpose
+            proc = subprocess.run(
                 [resolved, *version_args],
                 capture_output=True,
                 text=True,

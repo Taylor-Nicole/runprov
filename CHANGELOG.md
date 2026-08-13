@@ -32,6 +32,13 @@ Nothing has been published yet. Everything below is what a first release would c
   where the target may be a script name, a `run_uid` prefix, a `run_id` or an artifact path.
   Text or `--format yaml`. **It writes nothing** — a reader over `runs.jsonl`, asserted by a
   test that compares every byte on disk before and after.
+- **`runprov exec -- <command>`** — a subprocess recorded as a run, for pipelines driven
+  from a Makefile, a Snakefile or a shell script where there is no Python to hold a
+  `run.tool()` call. Records the resolved tool and its version, the argv, declared inputs
+  and outputs (hashed), and the exit code; **returns the command's own exit code** so it
+  composes without changing what failure means. A non-zero exit is recorded as a failed run,
+  and a missing program is recorded rather than raised. `--capture` tees the command's
+  output at file-descriptor level.
 - **`run.tool(name)` and `run.code(path)`** — the work that is not Python. `tool()` records
   which binary resolved, its `sha256`, and the version it reports (stdout *or* stderr, since
   `samtools --version` uses the latter and exits non-zero); it is bounded by a timeout,

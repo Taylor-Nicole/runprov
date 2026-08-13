@@ -39,10 +39,13 @@ import argparse
 import collections
 import json
 import pathlib
+import shlex
+import subprocess
 import sys
 import typing
 
 from .project import active
+from .run import Run
 from .show import project_view, render_project, render_run, run_view, select, staleness
 from .show import to_yaml as _yaml_doc
 from .verify import render, verify
@@ -370,6 +373,87 @@ def _render_lineage(rows: list[dict[str, typing.Any]], g: dict[str, typing.Any])
     return "\n".join(out)
 
 
+class CommandFailedError(Exception):
+    """The wrapped command exited non-zero.
+
+    Raised INSIDE the `with` so `__exit__` records the run as failed, then caught so the
+    wrapper exits with the COMMAND's code rather than a Python traceback. Named without a
+    leading underscore because it reaches the terminal: `__exit__` prints the exception
+    type, and `_CommandFailedError: sort exited 2` reads like a leaked internal when it is in
+    fact the whole message.
+    """
+
+
+def _exec(args: argparse.Namespace) -> int:
+    """`runprov exec -- samtools sort in.bam -o out.bam`: a subprocess, recorded as a run.
+
+    `run.tool()` and `run.code()` are calls a caller has to make, and nothing detects an
+    unregistered `subprocess.run([...])`. For a pipeline driven from a Makefile, a Snakefile
+    or a shell script there is no Python to put them in at all -- so the recording has to be
+    something you can put IN FRONT of the command.
+
+    The recorded `command` is the `runprov exec` invocation, and that is deliberate rather
+    than a shortcut: it is what actually ran, AND re-running it re-runs the tool and records
+    the rerun. The wrapped argv is in `parameters` where a reader can see it directly.
+
+    Inputs and outputs are DECLARED, because they cannot be inferred without tracing every
+    syscall the tool makes. That is the same bargain `run.input()` strikes in Python: the
+    package will not guess what a step read.
+
+    The command's own exit code is returned, so this composes in a Makefile or a Snakemake
+    `shell:` directive without changing what failure means.
+    """
+    argv = [a for a in args.command if a != "--"] if args.command else []
+    if not argv:
+        print(
+            "runprov exec needs a command:  runprov exec -- samtools sort in.bam -o out.bam\n"
+            "  Declare what it reads and writes so the record can hash them:\n"
+            "    runprov exec --input in.bam --output out.bam -- samtools sort ...",
+            file=sys.stderr,
+        )
+        return 2
+
+    name = args.name or pathlib.Path(argv[0]).name
+    project = active()
+    provenance = (
+        pathlib.Path(args.provenance)
+        if args.provenance
+        else pathlib.Path(project.root) / "provenance" / f"{name}_{project.run_id()}.json"
+    )
+    provenance.parent.mkdir(parents=True, exist_ok=True)
+
+    returncode = 1
+    try:
+        with Run(
+            name,
+            {"argv": argv, "command": shlex.join(argv)},
+            project=project,
+            provenance=provenance,
+            terminal_log=pathlib.Path(args.capture) if args.capture else False,
+            script_path=pathlib.Path(argv[0]),
+        ) as run:
+            run.tool(argv[0])
+            for i in args.input:
+                run.input(i)
+            for o in args.output:
+                run.output(o)
+            try:
+                # Inheriting this process's stdout and stderr, so the command still writes
+                # to the terminal it was launched from -- and so `--capture`, which works at
+                # file-descriptor level, sees a subprocess's output too.
+                returncode = subprocess.run(argv, check=False).returncode
+            except OSError as exc:
+                run.note("exec_error", f"{type(exc).__name__}: {exc}")
+                raise CommandFailedError(str(exc)) from exc
+            run.note("exit_code", returncode)
+            if returncode != 0:
+                raise CommandFailedError(f"{argv[0]} exited {returncode}")
+    except CommandFailedError as exc:
+        print(f"  runprov exec: recorded a FAILED run — {exc}", file=sys.stderr)
+        return returncode if returncode else 1
+    return returncode
+
+
 def _show(
     args: argparse.Namespace,
     rows: list[dict[str, typing.Any]],
@@ -531,12 +615,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="with --stale, re-derive digests instead of comparing size and mtime (slower)",
     )
+    ex = sub.add_parser("exec", help="run a non-Python command AS a recorded run")
+    ex.add_argument("--name", default=None, help="the step name (default: the program's)")
+    ex.add_argument("--input", action="append", default=[], help="repeatable")
+    ex.add_argument("--output", action="append", default=[], help="repeatable")
+    ex.add_argument("--provenance", default=None, help="where the sidecar goes")
+    ex.add_argument("--capture", default=None, help="tee the command's output to this file")
+    ex.add_argument("command", nargs=argparse.REMAINDER, help="-- then the command to run")
     vf = sub.add_parser("verify", help="do artifacts still match the inputs they pin?")
     vf.add_argument("paths", nargs="*", help="artifacts or directories (default: the root)")
     vf.add_argument("--root", default=None, help="what pinned names are relative to")
     vf.add_argument("--log", default=None, help=argparse.SUPPRESS)  # unused; keeps --log uniform
     vf.add_argument("--format", choices=("text", "json"), default="text")
     args = ap.parse_args(argv)
+
+    if args.cmd == "exec":
+        return _exec(args)
 
     if args.cmd == "verify":
         return _verify(args)

@@ -482,6 +482,40 @@ model are the same event to a reader who has only one list.
 The history line carries `tools` as a compact `name → version` map; the paths and binary
 hashes stay in the sidecar.
 
+### A pipeline with no Python in it: `runprov exec`
+
+`tool()` and `code()` are calls someone has to make, and nothing detects an unregistered
+`subprocess.run([...])`. A Makefile, a Snakefile or a shell script has no Python to put them
+in at all — so the recording is something you put **in front of** the command:
+
+```bash
+runprov exec --name sort_rows --input in.tsv --output sorted.tsv \
+  -- sort -k2,2nr in.tsv -o sorted.tsv
+```
+
+```json
+"status": "ok",
+"parameters": {"argv": ["sort", "-k2,2nr", "in.tsv", "-o", "sorted.tsv"]},
+"tools":   [{"name": "sort", "version": "sort (GNU coreutils) 8.32", "path": "/usr/bin/sort"}],
+"inputs":  [{"path": "in.tsv",     "sha256": "edb6e61a…"}],
+"outputs": [{"path": "sorted.tsv", "sha256": "e7705a08…"}],
+"notes":   {"exit_code": 0}
+```
+
+**It returns the command's own exit code**, so it drops into a Makefile rule or a Snakemake
+`shell:` without changing what failure means. A non-zero exit is *also* recorded — `status:
+"failed"`, the exit code in the notes — and a program that does not exist is recorded with
+`found: false` rather than a traceback.
+
+The recorded `command` is the `runprov exec` invocation, which is deliberate: it is what
+actually ran, **and re-running it re-runs the tool and records the rerun**. The wrapped argv
+sits in `parameters` where a reader sees it directly.
+
+Inputs and outputs are **declared**, because they cannot be inferred without tracing every
+syscall the tool makes — the same bargain `run.input()` strikes in Python. `--capture FILE`
+tees the command's output, and because that works at file-descriptor level it sees a
+subprocess's output, which Python-level capture cannot.
+
 ### When did I add that column?
 
 The digest tells you an artifact changed on 12 March and which run and command changed it.

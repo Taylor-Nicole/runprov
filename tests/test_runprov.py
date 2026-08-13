@@ -7587,3 +7587,127 @@ def test_code_is_not_confused_with_input(tmp_path, monkeypatch):
     assert [pathlib.Path(i["path"]).name for i in rec["inputs"]] == ["in.tsv"]
     assert "step.sh" in {f["path"] for f in rec["code"]["imported"]["files"]}
     assert "step.sh" not in {pathlib.Path(i["path"]).name for i in rec["inputs"]}
+
+
+# ========== `runprov exec`: a subprocess recorded as a run, for pipelines with no Python
+def test_exec_records_a_shell_command_as_a_run(tmp_path, monkeypatch, capsys):
+    """`tool()` and `code()` are calls a caller has to make, and a Makefile or a Snakefile
+    has no Python to put them in. So the recording is something you put IN FRONT."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    (tmp_path / "in.tsv").write_text("b\n2\na\n1\n", encoding="utf-8")
+
+    rc = runprov.__main__.main(
+        [
+            "exec",
+            "--name",
+            "sorter",
+            "--input",
+            "in.tsv",
+            "--output",
+            "out.tsv",
+            "--provenance",
+            str(tmp_path / "p.json"),
+            "--",
+            "sort",
+            "in.tsv",
+            "-o",
+            "out.tsv",
+        ]
+    )
+    capsys.readouterr()
+    assert rc == 0 and (tmp_path / "out.tsv").is_file()
+
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["status"] == "ok" and rec["notes"]["exit_code"] == 0
+    assert rec["parameters"]["argv"] == ["sort", "in.tsv", "-o", "out.tsv"]
+    assert rec["tools"][0]["name"] == "sort" and rec["tools"][0]["found"] is True
+    assert [pathlib.Path(i["path"]).name for i in rec["inputs"]] == ["in.tsv"]
+    assert [pathlib.Path(o["path"]).name for o in rec["outputs"]] == ["out.tsv"]
+    assert rec["outputs"][0]["sha256"], "the artifact the tool wrote is hashed like any other"
+
+
+def test_exec_returns_the_commands_own_exit_code_and_records_the_failure(tmp_path, monkeypatch):
+    """It has to compose in a Makefile or a Snakemake `shell:` without changing what failure
+    means — so the command's code is returned, and the run is recorded as failed."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+
+    rc = runprov.__main__.main(
+        [
+            "exec",
+            "--name",
+            "boom",
+            "--provenance",
+            str(tmp_path / "p.json"),
+            "--",
+            "sh",
+            "-c",
+            "exit 3",
+        ]
+    )
+    assert rc == 3, "the tool's exit code, not 1 and not 0"
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["status"] == "failed"
+    assert rec["failure"]["type"] == "CommandFailedError"
+    assert rec["notes"]["exit_code"] == 3
+
+
+def test_exec_records_a_program_that_does_not_exist(tmp_path, monkeypatch):
+    """A missing tool is a fact about the run, and it must not be a traceback."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    rc = runprov.__main__.main(
+        ["exec", "--provenance", str(tmp_path / "p.json"), "--", "definitely_not_a_program"]
+    )
+    assert rc == 1
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["status"] == "failed"
+    assert "exec_error" in rec["notes"]
+    assert rec["tools"][0]["found"] is False, "and the tool is recorded as absent"
+
+
+def test_exec_without_a_command_explains_itself(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    assert runprov.__main__.main(["exec"]) == 2
+    err = capsys.readouterr().err
+    assert "runprov exec needs a command" in err and "--input" in err
+
+
+def test_exec_defaults_the_name_and_the_sidecar_path(tmp_path, monkeypatch, capsys):
+    """No `--name` and no `--provenance`: the program's own name, and a sidecar under the
+    project's provenance directory carrying the run id, so two runs do not collide."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    assert runprov.__main__.main(["exec", "--", "sh", "-c", "true"]) == 0
+    capsys.readouterr()
+    written = list((tmp_path / "provenance").glob("sh_*.json"))
+    assert len(written) == 1, written
+    assert json.loads(written[0].read_text(encoding="utf-8"))["script"] == "sh"
+
+
+def test_exec_can_tee_the_commands_output_to_a_file(tmp_path, monkeypatch, capsys):
+    """The command inherits this process's stdout, so `--capture` -- which works at file
+    descriptor level -- sees a SUBPROCESS's output, which Python-level capture cannot."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    log = tmp_path / "cmd.log"
+    rc = runprov.__main__.main(
+        [
+            "exec",
+            "--provenance",
+            str(tmp_path / "p.json"),
+            "--capture",
+            str(log),
+            "--",
+            "sh",
+            "-c",
+            "echo from-a-subprocess",
+        ]
+    )
+    capsys.readouterr()
+    assert rc == 0
+    assert "from-a-subprocess" in log.read_text(encoding="utf-8")
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["terminal_log"]["path"] == str(log)
