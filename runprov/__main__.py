@@ -8,8 +8,10 @@ The history is ONE file, created once and appended to forever: every run this pr
 ever recorded, in order, one JSON object per line. That is the same thing the predecessor's
 `transformation_log.yml` was for, and the reason it is JSONL rather than YAML is that the
 predecessor's file **stopped being readable**. Its writer appended `---` documents into a
-file that began as a list, so `yaml.safe_load_all` raises at line 14,575 and eleven repair
-scripts exist to heal it — one of which is itself a step in the pipeline it documents.
+file that began as a list. Measured on the real 24,300-line file: `safe_load` dies at line
+14,547 on those `---` documents, and `safe_load_all` dies at 14,554 on something else
+entirely -- an unquoted `Note:` inside a hand-written description. Eleven repair scripts
+exist to heal it, one of which is itself a step in the pipeline it documents.
 
 JSONL cannot fail that way. Each line stands alone: a corrupt line costs one record, never
 the file, and a reader can always skip it and say so.

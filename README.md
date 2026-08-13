@@ -200,12 +200,26 @@ generation but not the run id:
 this project has ever recorded, in order, never rewritten. That is the same job the sibling
 project's `transformation_log.yml` did, and the continuity is the property worth keeping.
 
-It is JSONL rather than YAML because the predecessor's file **stopped being readable**: its
-writer appended `---` documents into a file that began as a list, so `yaml.safe_load_all`
-raises at line 14,575, and eleven `fix_transformation_log_*.py` repair scripts exist — one of
-which is itself a step in the pipeline the log documents. In JSONL every line stands alone. A
-corrupt line costs one record, never the file, and the reader counts what it could not read
-instead of pretending it was not there.
+It is JSONL rather than YAML because the predecessor's file **stopped being readable**.
+Measured on the real 2.1 MB, 24,300-line file, which holds only **295 entries** because a
+single hand-written `description:` runs to 6,544 lines:
+
+| | |
+|---|---|
+| `yaml.safe_load` | `ComposerError` at line **14,547** — the writer appended `---` documents into a file that began as a list, and there are **252** of them |
+| `yaml.safe_load_all` | `ScannerError` at line **14,554** — an unquoted `Note:` inside a description. A colon in prose someone typed |
+
+Two different defects, and the second is the one that matters here: it is not the multi-
+document problem at all. It is a hand-written value that happened to contain `: `, in a
+writer whose quoting was correct only for the values its author had thought of. That is why
+`_yaml` in this package quotes **every scalar unconditionally** rather than sniffing for
+characters that need it — and why the same string round-trips through it cleanly. Eleven
+`fix_transformation_log_*.py` repair scripts exist because of all this, one of which is
+itself a step in the pipeline the log documents.
+
+A tolerant line-wise recovery gets **293 of 295** entries back. In JSONL every line stands
+alone: a corrupt line costs one record, never the file, and the reader counts what it could
+not read instead of pretending it was not there.
 
 Read it back with the CLI — a log nobody reads is a log nobody checks:
 
