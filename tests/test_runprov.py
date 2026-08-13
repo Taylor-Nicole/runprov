@@ -6482,7 +6482,12 @@ def test_the_shipped_example_runs_and_produces_a_verifiable_artifact(tmp_path):
     history = tmp_path / "provenance" / "runs.jsonl"
     assert history.is_file(), "the example must write where `runprov log` looks by default"
     rec = json.loads(history.read_text(encoding="utf-8").strip())
-    assert rec["status"] == "ok" and rec["notes"] == {"rows_read": 4, "rows_kept": 3}
+    assert rec["status"] == "ok"
+    assert rec["notes"] == {
+        "columns": ["sample", "value"],
+        "rows_read": 4,
+        "rows_kept": 3,
+    }, "the example records the schema it wrote — see the note() convention in the README"
     assert rec["parameters"]["threshold"] == 5, "argparse types must survive into the record"
 
     report = runprov.verify.verify([out], tmp_path)

@@ -409,6 +409,53 @@ Two digests beside one input path means that file has been read at **two differe
 versions** — which is the fact, and a script that has read forty is summarised as
 `[40 versions]` rather than printed. An artifact produced by a run that failed says so.
 
+### When did I add that column?
+
+The digest tells you an artifact changed on 12 March and which run and command changed it.
+It does not tell you *what* changed — that a column appeared, or a statistic was added.
+`runprov` will not open your files to find out; inspecting content is not its job, and a
+package that guesses at your schema is a package that is wrong about it eventually.
+
+**One line makes it answerable.** Record the shape you produced, as a note:
+
+```python
+run.note("columns", list(df.columns))  # the schema you wrote
+run.note("n_rows", len(df))
+run.note("dtypes", {c: str(t) for c, t in df.dtypes.items()})  # if it matters
+```
+
+Then the history dates it for you:
+
+```
+── build_stats  [ok] ───────────────────────────────────────────
+  started      2026-08-13T14:03:39Z
+  columns ["sample", "value"]
+── build_stats  [ok] ───────────────────────────────────────────
+  started      2026-08-13T14:03:40Z
+  columns ["sample", "value", "qval"]            <- qval arrives here
+── build_stats  [ok] ───────────────────────────────────────────
+  started      2026-08-13T14:03:41Z
+  columns ["sample", "value", "qval", "log2_fc"] <- and log2_fc here
+```
+
+`python -m runprov show build_stats` is the whole query. The project page lists the note
+KEYS a script records, so `notes: columns, n_rows` tells a reader what questions this
+script's history can answer before they ask one.
+
+**Conventions worth keeping**, because a note key that changes name is a note key you cannot
+grep across three years of history:
+
+| key | what it answers |
+|---|---|
+| `columns` | when a field appeared or was removed |
+| `n_rows`, `n_dropped` | when a filter changed what it kept |
+| `dtypes` | when a column changed type under you |
+| `model`, `temperature`, `prompt_sha256` | what a non-deterministic step was asked |
+| `tool_version` | what a subprocess reported about itself |
+
+Anything JSON-able works — `note()` takes `Any` and normalises numpy and pandas scalars, so
+`run.note("n", df.shape[0])` records `118` and not `"<scalar 118>"`.
+
 ### Do I need to run this again?
 
 ```bash

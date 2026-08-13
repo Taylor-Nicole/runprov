@@ -32,6 +32,12 @@ Nothing has been published yet. Everything below is what a first release would c
   where the target may be a script name, a `run_uid` prefix, a `run_id` or an artifact path.
   Text or `--format yaml`. **It writes nothing** — a reader over `runs.jsonl`, asserted by a
   test that compares every byte on disk before and after.
+- **A documented `note()` convention** for the questions a digest cannot answer. A digest
+  says an artifact changed; it cannot say a column appeared, and runprov will not open your
+  files to find out. `run.note("columns", list(df.columns))` makes "when did that column
+  arrive" a dated answer from `runprov show <script>`. Keys worth standardising — `columns`,
+  `n_rows`, `dtypes`, `model`/`temperature`/`prompt_sha256`, `tool_version` — are listed in
+  the README, and `examples/summarise.py` now records its own schema.
 - **`Project(sidecar_per_run=True)`** — a sidecar per run instead of one the next run
   overwrites: `summary.prov.json` becomes `summary.<utc>.<run_uid8>.prov.json`. Sortable by
   name because the time comes first, unique because the run_uid follows, and the stamp goes

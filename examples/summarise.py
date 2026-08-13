@@ -71,6 +71,13 @@ def main() -> int:
             writer.writerows(kept)
 
         # Whatever a reader would want to know that the files do not say themselves.
+        #
+        # `columns` is a CONVENTION worth adopting rather than a feature. The digest says
+        # this file changed; it cannot say that a column appeared, and runprov will not open
+        # your artifact to find out -- guessing at your schema is how a tool ends up wrong
+        # about it. Recording the shape you wrote makes "when did that column arrive" a
+        # question `runprov show summarise` answers, dated, without opening anything.
+        run.note("columns", ["sample", "value"])
         run.note("rows_read", len(rows))
         run.note("rows_kept", len(kept))
 
