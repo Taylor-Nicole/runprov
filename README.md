@@ -307,13 +307,13 @@ the run hashed it, and whether two writes give the same digest. **A format whose
 absent is SKIPPED and says so** — a check that goes green because it did not run is the
 failure this package is about.
 
-Measured here, **37 formats, 0 failures, nothing skipped**:
+Measured here, **60 formats, 0 failures, nothing skipped**:
 
 | pin placement | formats |
 |---|---|
 | in-band | TSV, CSV, BED, YAML, Markdown, SQL (`-- `) |
 | in the document | JSON (`write_json`, a top-level key) |
-| sidecar | FASTA, FASTQ, JSONL, VCF, SVG, Newick, **Parquet**, **Feather/Arrow**, **Pickle**, **joblib**, **cloudpickle**, `.npy`, `.npz`, **HDF5 `.h5`**, **AnnData `.h5ad`**, **Zarr**, **NetCDF**, **`.xlsx`**, **BAM**, **CRAM**, **bgzipped VCF**, **R `.rds`**, **ONNX**, **safetensors**, **PyTorch `.pt`**, `.mat`, PNG, TIFF, gzip, SQLite |
+| sidecar | everything else — FASTA, FASTQ, GenBank, PDB, Stockholm, PHYLIP, Nexus, Matrix Market, JSONL, VCF, BCF, BAM, CRAM, bigWig, PLINK, mzML, SVG, Newick, Parquet (file *and* partitioned directory), Feather/Arrow, ORC, Avro, Pickle, joblib, cloudpickle, `.npy`, `.npz`, HDF5, AnnData `.h5ad`, Zarr, NetCDF, `.xlsx`, Stata, SPSS, R `.rds`, DuckDB, SQLite, MessagePack, **GGUF**, ONNX, safetensors, PyTorch `.pt`, XGBoost, LightGBM, a SavedModel-shaped **directory**, `.mat`, PNG, TIFF, gzip |
 
 Everything above round-trips: written through runprov, read back by `h5py`, `anndata`,
 `zarr`, `xarray`, `pysam`, `pyreadr`, `onnx`, `safetensors`, `torch`, `openpyxl`, `pyarrow`,
@@ -324,11 +324,12 @@ Everything above round-trips: written through runprov, read back by `h5py`, `ann
 * **gzip** is byte-unstable and content-stable. Its header stores an mtime so the raw bytes
   move on every write, and `content_digest` decompresses first. That is the two-hash design
   doing its job, visible.
-* **SciPy `.mat` moves on every run.** It writes `Created on: Thu Aug 13 14:48:50 2026`
-  into its header — a timestamp in bytes no text filter can reach. Prefer `.npz`.
-* **CRAM moves on every run too**, and this was checked against the obvious excuse: two
-  writes of identical records, in the same directory, with an identical reference path,
-  still differ. Pin the BAM instead, or accept that this one artifact is permanently red.
+* **Four formats move on every run**, and the causes are not the same. `.mat` writes
+  `Created on: <date>`; SPSS `.sav` differs at exactly one byte, offset 108, the creation
+  time; CRAM differs across two writes of identical records with an identical reference
+  path; and **Avro carries a random 16-byte sync marker per file** — not a clock, so
+  freezing time would not help it. Prefer `.npz` over `.mat` and Parquet over Avro; for
+  CRAM, pin the BAM.
 * **A PyTorch `.pt` digest depends on its FILENAME.** A `.pt` is a zip and torch names the
   entries after the file stem, so `m.pt` contains `m/data.pkl` — identical weights saved as
   `model_v1.pt` and `model_v2.pt` hash differently, and renaming a checkpoint changes its

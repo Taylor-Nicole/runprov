@@ -71,7 +71,7 @@ Nothing has been published yet. Everything below is what a first release would c
 - **`examples/format_compatibility.py`** — writes an artifact in each of 30 formats through
   runprov and reads it back with that format's real library, reporting pin placement, parse,
   hash and digest stability. Skips (loudly) any format whose library is absent, so it is not
-  in the test suite. Measured: **37 round-tripped, 0 failed, 0 skipped** — including Pickle, joblib,
+  in the test suite. Measured: **60 round-tripped, 0 failed, 0 skipped** — including Pickle, joblib,
   cloudpickle, Parquet, Feather, HDF5, AnnData `.h5ad`, Zarr, NetCDF, `.xlsx`, BAM, CRAM,
   bgzipped VCF, R `.rds`, ONNX, safetensors, PyTorch `.pt`, `.npy`, `.npz`, `.mat`, PNG, TIFF, gzip and
   SQLite. It also

@@ -323,6 +323,178 @@ CASE(
     write=_binary(lambda p: _rds_write(p)),
     read=lambda p: _rds_read(p),
 )
+# ------------------------------------------------- DIRECTORY-shaped artifacts
+# A different code path: `describe()` hashes a directory as a TREE, not a file. A model or a
+# dataset that is a folder is normal in 2026 -- TensorFlow SavedModel, a partitioned Parquet
+# dataset, a CellRanger `outs/`, a Delta table -- and none of them is a single file to pin.
+CASE(
+    "Parquet dataset (dir)",
+    "ds.parquet",
+    requires=["pandas", "pyarrow"],
+    write=_binary(lambda p: _parquet_dataset(p)),
+    read=lambda p: len(importlib.import_module("pandas").read_parquet(p)),
+)
+CASE(
+    "Model dir (SavedModel shape)",
+    "model_dir",
+    write=_binary(lambda p: _model_dir(p)),
+    read=lambda p: sum(1 for _ in pathlib.Path(p).rglob("*") if _.is_file()),
+)
+
+# ------------------------------------------------- an artifact plus its INDEX
+# Not a format question but a provenance one: register only the BAM and the index is not
+# pinned, so a stale `.bai` is invisible to every check. Both are registered here.
+CASE(
+    "BAM + .bai index",
+    "idx.bam",
+    requires=["pysam"],
+    write=lambda run, p: _bam_with_index(run, p),
+    read=lambda p: _bam_read(p),
+)
+
+# ------------------------------------------------- more ML / AI
+CASE(
+    "DuckDB",
+    "a.duckdb",
+    requires=["duckdb"],
+    write=_binary(lambda p: _duckdb_write(p)),
+    read=lambda p: _duckdb_read(p),
+)
+CASE(
+    "GGUF",
+    "m.gguf",
+    requires=["gguf", "numpy"],
+    write=_binary(lambda p: _gguf_write(p)),
+    read=lambda p: _gguf_read(p),
+)
+CASE(
+    "ORC",
+    "t.orc",
+    requires=["pyarrow"],
+    write=_binary(lambda p: _orc_write(p)),
+    read=lambda p: _orc_read(p),
+)
+CASE(
+    "Avro",
+    "t.avro",
+    requires=["fastavro"],
+    write=_binary(lambda p: _avro_write(p)),
+    read=lambda p: _avro_read(p),
+)
+CASE(
+    "MessagePack",
+    "t.msgpack",
+    requires=["msgpack"],
+    write=_binary(lambda p: _msgpack_write(p)),
+    read=lambda p: len(importlib.import_module("msgpack").unpackb(pathlib.Path(p).read_bytes())),
+)
+CASE(
+    "XGBoost .ubj",
+    "m.ubj",
+    requires=["xgboost", "numpy"],
+    write=_binary(lambda p: _xgb_write(p)),
+    read=lambda p: _xgb_read(p),
+)
+CASE(
+    "LightGBM .txt",
+    "m.lgb.txt",
+    requires=["lightgbm", "numpy"],
+    write=_binary(lambda p: _lgb_write(p)),
+    read=lambda p: _lgb_read(p),
+)
+CASE(
+    "Stata .dta",
+    "t.dta",
+    requires=["pandas"],
+    write=_binary(lambda p: _df().to_stata(p, write_index=False)),
+    read=lambda p: len(importlib.import_module("pandas").read_stata(p)),
+)
+CASE(
+    "SPSS .sav",
+    "t.sav",
+    requires=["pyreadstat", "pandas"],
+    write=_binary(lambda p: importlib.import_module("pyreadstat").write_sav(_df(), str(p))),
+    read=lambda p: len(importlib.import_module("pyreadstat").read_sav(str(p))[0]),
+)
+
+# ------------------------------------------------- more bioinformatics
+CASE(
+    "Matrix Market .mtx",
+    "a.mtx",
+    requires=["scipy", "numpy"],
+    write=_binary(lambda p: _mtx_write(p)),
+    read=lambda p: _mtx_read(p),
+)
+CASE(
+    "GFF3",
+    "a.gff3",
+    write=lambda run, p: _write_text(
+        run, p, "##gff-version 3\nchr1\t.\tgene\t1\t9\t.\t+\t.\tID=g1\n"
+    ),
+    read=lambda p: sum(1 for x in _text(p).splitlines() if not x.startswith("#")),
+)
+CASE(
+    "GenBank",
+    "a.gb",
+    requires=["Bio"],
+    write=lambda run, p: _genbank_write(run, p),
+    read=lambda p: _genbank_read(p),
+)
+CASE(
+    "PDB",
+    "a.pdb",
+    requires=["Bio"],
+    write=lambda run, p: _write_text(run, p, _pdb_body()),
+    read=lambda p: _pdb_read(p),
+)
+CASE(
+    "Stockholm MSA",
+    "a.sto",
+    requires=["Bio"],
+    write=lambda run, p: _write_text(run, p, _stockholm_body()),
+    read=lambda p: _msa_read(p, "stockholm"),
+)
+CASE(
+    "PHYLIP MSA",
+    "a.phy",
+    requires=["Bio"],
+    write=lambda run, p: _write_text(run, p, " 2 4\nseq1      ACGT\nseq2      TTTT\n"),
+    read=lambda p: _msa_read(p, "phylip"),
+)
+CASE(
+    "Nexus",
+    "a.nex",
+    requires=["Bio"],
+    write=lambda run, p: _write_text(run, p, _nexus_body()),
+    read=lambda p: _msa_read(p, "nexus"),
+)
+CASE(
+    "BCF",
+    "c.bcf",
+    requires=["pysam"],
+    write=_binary(lambda p: _bcf_write(p)),
+    read=lambda p: _bcf_read(p),
+)
+CASE(
+    "bigWig",
+    "a.bw",
+    requires=["pyBigWig"],
+    write=_binary(lambda p: _bigwig_write(p)),
+    read=lambda p: _bigwig_read(p),
+)
+CASE(
+    "PLINK .bim/.fam/.bed",
+    "plink.bim",
+    write=lambda run, p: _plink_write(run, p),
+    read=lambda p: len(_text(p).splitlines()),
+)
+CASE(
+    "mzML",
+    "a.mzML",
+    requires=["pyteomics"],
+    write=lambda run, p: _write_text(run, p, _mzml_body()),
+    read=lambda p: len(list(_xml_root(p))),
+)
 CASE(
     "NetCDF",
     "a.nc",
@@ -564,6 +736,257 @@ def _rds_read(p):
     return len(pyreadr.read_r(str(p))[None])
 
 
+# ---------------------------------------------------------------- directory + index
+def _parquet_dataset(p):
+    pq = importlib.import_module("pyarrow.parquet")
+    pa = importlib.import_module("pyarrow")
+    pq.write_to_dataset(pa.Table.from_pylist(ROWS), root_path=str(p), partition_cols=["sample"])
+
+
+def _model_dir(p):
+    """The SHAPE of a TensorFlow SavedModel or an MLflow model: a directory of files.
+
+    TensorFlow itself is a ~600 MB dependency to prove that a folder hashes as a tree, and
+    the tree is the thing under test. `describe()` does not know or care what produced it.
+    """
+    root = pathlib.Path(p)
+    (root / "variables").mkdir(parents=True, exist_ok=True)
+    (root / "saved_model.pb").write_bytes(b"\x08\x01\x12\x04test")
+    (root / "variables" / "variables.index").write_bytes(b"IDX\x00")
+    (root / "fingerprint.pb").write_bytes(b"\x08\x02")
+
+
+def _bam_with_index(run, p):
+    """Both the BAM and its `.bai`, because registering only one pins only one.
+
+    A stale index is a real failure mode and it is invisible to any check that never
+    recorded the index in the first place.
+    """
+    pysam = importlib.import_module("pysam")
+    bam = run.output(p)
+    _bam_write(bam)
+    pysam.index(str(bam))
+    run.output(pathlib.Path(str(bam) + ".bai"))
+    run.pin_sidecar(bam)
+
+
+# ---------------------------------------------------------------- ML / AI
+def _duckdb_write(p):
+    duckdb = importlib.import_module("duckdb")
+    con = duckdb.connect(str(p))
+    con.execute("create table t (a integer)")
+    con.execute("insert into t values (1), (2)")
+    con.close()
+
+
+def _duckdb_read(p):
+    duckdb = importlib.import_module("duckdb")
+    con = duckdb.connect(str(p), read_only=True)
+    try:
+        return con.execute("select count(*) from t").fetchone()[0]
+    finally:
+        con.close()
+
+
+def _gguf_write(p):
+    gguf = importlib.import_module("gguf")
+    np = importlib.import_module("numpy")
+    w = gguf.GGUFWriter(str(p), "demo")
+    w.add_uint32("demo.count", 2)
+    w.add_tensor("w", np.zeros((2, 2), dtype="float32"))
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+
+
+def _gguf_read(p):
+    gguf = importlib.import_module("gguf")
+    return len(gguf.GGUFReader(str(p)).tensors)
+
+
+def _orc_write(p):
+    orc = importlib.import_module("pyarrow.orc")
+    pa = importlib.import_module("pyarrow")
+    orc.write_table(pa.Table.from_pylist(ROWS), str(p))
+
+
+def _orc_read(p):
+    orc = importlib.import_module("pyarrow.orc")
+    return orc.read_table(str(p)).num_rows
+
+
+def _avro_write(p):
+    fastavro = importlib.import_module("fastavro")
+    schema = {
+        "type": "record",
+        "name": "r",
+        "fields": [{"name": "sample", "type": "string"}, {"name": "value", "type": "int"}],
+    }
+    with open(p, "wb") as fh:
+        fastavro.writer(fh, fastavro.parse_schema(schema), ROWS)
+
+
+def _avro_read(p):
+    fastavro = importlib.import_module("fastavro")
+    with open(p, "rb") as fh:
+        return len(list(fastavro.reader(fh)))
+
+
+def _msgpack_write(p):
+    msgpack = importlib.import_module("msgpack")
+    pathlib.Path(p).write_bytes(msgpack.packb(ROWS))
+
+
+def _xgb_write(p):
+    xgb = importlib.import_module("xgboost")
+    np = importlib.import_module("numpy")
+    m = xgb.XGBRegressor(n_estimators=2, max_depth=2, random_state=0)
+    m.fit(np.arange(8).reshape(4, 2), np.array([0.0, 1.0, 2.0, 3.0]))
+    m.save_model(str(p))
+
+
+def _xgb_read(p):
+    xgb = importlib.import_module("xgboost")
+    m = xgb.XGBRegressor()
+    m.load_model(str(p))
+    return m.n_estimators or 2
+
+
+def _lgb_write(p):
+    lgb = importlib.import_module("lightgbm")
+    np = importlib.import_module("numpy")
+    ds = lgb.Dataset(np.arange(40).reshape(20, 2), label=np.arange(20) % 2)
+    booster = lgb.train({"objective": "binary", "verbose": -1, "num_leaves": 2}, ds, 2)
+    booster.save_model(str(p))
+
+
+def _lgb_read(p):
+    lgb = importlib.import_module("lightgbm")
+    return lgb.Booster(model_file=str(p)).num_trees()
+
+
+# ---------------------------------------------------------------- bioinformatics
+def _mtx_write(p):
+    sio = importlib.import_module("scipy.io")
+    sp = importlib.import_module("scipy.sparse")
+    np = importlib.import_module("numpy")
+    sio.mmwrite(str(p), sp.csr_matrix(np.eye(3)))
+
+
+def _mtx_read(p):
+    sio = importlib.import_module("scipy.io")
+    return sio.mmread(str(p)).shape[0]
+
+
+def _genbank_write(run, p):
+    seqio = importlib.import_module("Bio.SeqIO")
+    seq = importlib.import_module("Bio.Seq")
+    rec = importlib.import_module("Bio.SeqRecord")
+    r = rec.SeqRecord(seq.Seq("ACGTACGT"), id="X1", name="X1", description="demo")
+    r.annotations["molecule_type"] = "DNA"
+    with run.open_output(p) as fh:
+        seqio.write([r], fh, "genbank")
+
+
+def _genbank_read(p):
+    seqio = importlib.import_module("Bio.SeqIO")
+    return len(list(seqio.parse(str(p), "genbank")))
+
+
+def _pdb_body():
+    return (
+        "ATOM      1  N   MET A   1      11.104  13.207  10.000  1.00 20.00           N\n"
+        "ATOM      2  CA  MET A   1      12.104  14.207  11.000  1.00 20.00           C\n"
+        "END\n"
+    )
+
+
+def _pdb_read(p):
+    pdb = importlib.import_module("Bio.PDB")
+    parser = pdb.PDBParser(QUIET=True)
+    return len(list(parser.get_structure("s", str(p)).get_atoms()))
+
+
+def _stockholm_body():
+    return "# STOCKHOLM 1.0\nseq1 ACGT\nseq2 TTTT\n//\n"
+
+
+def _nexus_body():
+    return (
+        "#NEXUS\nbegin data;\ndimensions ntax=2 nchar=4;\nformat datatype=dna;\n"
+        "matrix\nseq1 ACGT\nseq2 TTTT\n;\nend;\n"
+    )
+
+
+def _msa_read(p, fmt):
+    alignio = importlib.import_module("Bio.AlignIO")
+    return len(alignio.read(str(p), fmt))
+
+
+def _bcf_write(p):
+    pysam = importlib.import_module("pysam")
+    plain = pathlib.Path(p).with_suffix(".vcf")
+    plain.write_text(
+        "##fileformat=VCFv4.2\n##contig=<ID=chr1,length=100>\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        "chr1\t1\t.\tA\tG\t.\t.\t.\nchr1\t5\t.\tT\tC\t.\t.\t.\n",
+        encoding="utf-8",
+    )
+    with (
+        pysam.VariantFile(str(plain)) as src,
+        pysam.VariantFile(str(p), "wb", header=src.header) as out,
+    ):
+        for rec in src:
+            out.write(rec)
+
+
+def _bcf_read(p):
+    pysam = importlib.import_module("pysam")
+    with pysam.VariantFile(str(p)) as fh:
+        return sum(1 for _ in fh)
+
+
+def _bigwig_write(p):
+    bw = importlib.import_module("pyBigWig").open(str(p), "w")
+    bw.addHeader([("chr1", 100)])
+    bw.addEntries(["chr1", "chr1"], [0, 10], ends=[5, 15], values=[1.0, 2.0])
+    bw.close()
+
+
+def _bigwig_read(p):
+    bw = importlib.import_module("pyBigWig").open(str(p))
+    try:
+        return len(bw.chroms())
+    finally:
+        bw.close()
+
+
+def _plink_write(run, p):
+    """The PLINK trio: `.bim` and `.fam` are text, `.bed` is binary with a magic prefix.
+
+    Three files ARE the artifact, so all three are registered. Pinning one of them would
+    describe a third of a dataset.
+    """
+    stem = pathlib.Path(p).with_suffix("")
+    with run.open_output(p) as fh:  # .bim
+        fh.write("1\trs1\t0\t1\tA\tG\n1\trs2\t0\t5\tT\tC\n")
+    fam = run.output(stem.with_suffix(".fam"))
+    fam.write_text("F1 I1 0 0 1 -9\n", encoding="utf-8")
+    bed = run.output(stem.with_suffix(".bed"))
+    bed.write_bytes(b"\x6c\x1b\x01\x00\x00")
+    run.pin_sidecar(bed)
+
+
+def _mzml_body():
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<mzML xmlns="http://psi.hupo.org/ms/mzml" version="1.1.0">'
+        '<run id="r1"><spectrumList count="1"><spectrum index="0" id="scan=1"/>'
+        "</spectrumList></run></mzML>\n"
+    )
+
+
 def _missing(requires):
     out = []
     for mod in requires:
@@ -676,12 +1099,16 @@ def main(argv=None):
         "\nstable = the digest the PIN uses (content_sha256) is the same across two writes.\n"
         "  'raw-only'  the bytes moved, the content digest did not — that is gzip's mtime\n"
         "              header, and stripping it is what content_digest exists for.\n"
-        "  'NO'        the format stamps the time into bytes the digest cannot see, so the\n"
-        "              pin moves on every run and a check over it is permanently red.\n"
-        "              Measured, not inferred: SciPy .mat writes `Created on: <date>` into\n"
-        "              its header, and CRAM differs across two writes of identical records\n"
-        "              with an identical reference path. Prefer .npz over .mat; for CRAM,\n"
-        "              pin the BAM instead, or accept that this one artifact moves."
+        "  'NO'        the pin moves on every run, so any check over that artifact is\n"
+        "              permanently red. FOUR here, and the causes are not the same:\n"
+        "                SciPy .mat  writes `Created on: <date>` into its header\n"
+        "                SPSS  .sav  one byte at offset 108 — the creation TIME\n"
+        "                CRAM        differs across two writes of identical records with\n"
+        "                            an identical reference path\n"
+        "                Avro        a RANDOM 16-byte sync marker per file, not a clock —\n"
+        "                            so freezing time would not help it\n"
+        "              Prefer .npz over .mat and Parquet over Avro; for CRAM pin the BAM.\n"
+        "              Otherwise record the sha256 and accept that this artifact moves."
     )
     return 1 if failed else 0
 
