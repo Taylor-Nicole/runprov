@@ -435,6 +435,15 @@ def _mtime_utc(st: os.stat_result) -> str:
 
 PIN_DIGEST_CHARS = 16
 
+#: What a pin written BESIDE an artifact is called: `<artifact><suffix>`.
+#:
+#: Here rather than in `run.py` because it is shared: the writer appends it, and the
+#: verifier has to strip it to learn which file a `.prov.txt` is speaking for. A verifier
+#: that did not know this convention checked the sidecar as though the sidecar were the
+#: artifact, and reported OK over a deleted file. Two copies of the string would be the same
+#: defect deferred -- the same argument that keeps `PIN_DIGEST_CHARS` in one place.
+PIN_SIDECAR_SUFFIX = ".prov.txt"
+
 
 def pin_digest(entry: dict[str, typing.Any]) -> str:
     """The digest a PIN carries for one described file — exactly as `header()` renders it.
