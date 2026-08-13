@@ -747,6 +747,30 @@ inferred later.
 | `run_id` | `$RUNPROV_RUN_ID`, else `adhoc_<utc>` | a chain exports one id so its stages share it; an unset id is *labelled* ad-hoc on purpose |
 | `generation` | `$RUNPROV_GENERATION`, else `(default)` | a generation is a corpus; a run is one pass over it |
 
+### What it says on the terminal, and how often
+
+Diagnostics are unsilenceable — `RUNPROV_QUIET` cannot reach them — because a provenance
+tool that can be told to stop warning is the one that gets told to stop warning. That makes
+*how often* they fire a design question rather than a taste one.
+
+| situation | what you get |
+|---|---|
+| **not a git repository** | one `PROVENANCE NOTE`, **once per process** |
+| **a repository whose `git status` failed** | a full `PROVENANCE WARNING`, **every run** |
+| **code dirty relative to the commit** | a warning naming up to 10 files, then `… and N more` |
+
+The split exists because the two used to print the same four-line alarm. Not being under
+version control is how a great many people work and will be true of every run they ever
+make; repeating an alarm forever for a condition the reader cannot act on is the
+permanently-red check this package refuses everywhere else, and it trains people to stop
+reading warnings — including the ones that matter. A repository whose `git status` did not
+run is a genuine surprise, so that one stays loud.
+
+**The record does not change with any of this.** `git_status_captured: false` is written
+the same way, every `git_*` field is null, `runprov log` prints
+`DIRTY STATE UNKNOWN (git status did not run)`, and the full dirty-file list is kept. Only
+the terminal is quieter, and only where quiet is honest.
+
 ## Concurrency
 
 The history append takes an advisory `flock`, and it is a **portability** property rather

@@ -276,6 +276,26 @@ def detect_root(start: pathlib.Path | None = None) -> pathlib.Path:
     return pathlib.Path(top) if top else base
 
 
+def is_repository(root: pathlib.Path) -> bool:
+    """Is there a repository here at all? A FILESYSTEM check, deliberately.
+
+    It exists to tell two very different situations apart, which `git()` returning `None`
+    cannot: a project that is simply not under version control, and a repository whose
+    `git status` did not run. The first is a stable fact about how someone works. The
+    second is an anomaly — a missing binary, a 20 s timeout, a corrupt index — and only the
+    second deserves to be shouted about on every run.
+
+    No subprocess, because the reason this is being asked is usually that git did not work,
+    and asking git whether git works is not an answer. `.git` is a directory in an ordinary
+    clone and a FILE in a worktree or a submodule, so both count; the walk goes up because
+    a project root can sit below the repository top level.
+    """
+    for d in (root, *root.parents):
+        if (d / ".git").exists():
+            return True
+    return False
+
+
 def _utc() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
