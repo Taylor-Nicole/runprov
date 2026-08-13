@@ -52,6 +52,14 @@ ignore = ["RUF003"]
 # ci.py exists to run other tools; S603 is the rule describing its entire job. Scoped to
 # the file, with the reason here, for the same reason as project.py: an inline directive
 # detaches the next time the formatter moves the line it sits on.
+# `run.py` and `__main__.py` each execute a program the CALLER named: `run.tool("samtools")`
+# asks a binary for its version, and `runprov exec -- <cmd>` exists to run the command in
+# front of it. S603 describes exactly what those two do on purpose, and there is no
+# untrusted input to check -- the argv came from the person typing it. Scoped to the files
+# rather than inline, for the reason given above project.py: `ruff format` moves which
+# physical line a multi-line call reports on, and a detached noqa is a coincidence.
+"run.py" = ["S603", "S607"]
+"__main__.py" = ["S603"]
 "ci.py" = ["S603"]
 
 # `examples/` is teaching code that a reader copies, and it is linted as such. What is
