@@ -16,6 +16,7 @@ import ast
 import builtins
 import concurrent.futures
 import contextlib
+import dataclasses
 import gc
 import gzip
 import hashlib
@@ -7149,3 +7150,93 @@ def test_rehash_reports_unknown_when_the_ARTIFACT_cannot_be_read(tmp_path, monke
     aux.unlink()
     os.mkfifo(aux)
     assert _state_of(runprov.show.staleness(rows, rehash=True), "aux.bin") == "?"
+
+
+# ================= a sidecar per run: the record beside the artifact is not overwritten
+def test_a_sidecar_per_run_keeps_every_run_beside_the_artifact(tmp_path, monkeypatch):
+    """`provenance=` names ONE path, so the tenth run leaves one sidecar and the nine
+    before it are gone. The append-only history still holds all ten -- no RECORD is lost --
+    but the file beside the artifact answers only for the last run, and "when did this
+    column appear" is a question about the ones that were overwritten.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "out").mkdir()
+    src = tmp_path / "in.tsv"
+    src.write_text("id\n1\n", encoding="utf-8")
+    proj = dataclasses.replace(_project(tmp_path), sidecar_per_run=True)
+
+    for i in range(3):
+        if i:
+            time.sleep(1.05)  # the stamp has one-second resolution
+        with runprov.Run(
+            "build", {"pass": i}, project=proj, provenance=tmp_path / "out" / "summary.prov.json"
+        ) as r:
+            r.input(src)
+            with r.open_output(tmp_path / "out" / "summary.tsv") as fh:
+                fh.write(f"pass {i}\n")
+
+    found = sorted((tmp_path / "out").glob("*.prov.json"))
+    assert len(found) == 3, "three runs, three sidecars, none overwritten"
+
+    passes = [json.loads(p.read_text(encoding="utf-8"))["parameters"]["pass"] for p in found]
+    assert passes == [0, 1, 2], "sorted by NAME is sorted by TIME, which is why time is first"
+
+    uids = {json.loads(p.read_text(encoding="utf-8"))["run_uid"] for p in found}
+    assert len(uids) == 3, "each sidecar describes its own run"
+
+
+def test_the_stamp_goes_before_the_whole_compound_suffix(tmp_path, monkeypatch):
+    """`Path("summary.prov.json").suffix` is `.json` and its stem is `summary.prov`, so the
+    obvious insertion gives `summary.prov.<stamp>.json` -- which no longer matches
+    `*.prov.json`, the glob every reader uses to find these. Measured by writing three and
+    watching the glob return nothing."""
+    monkeypatch.chdir(tmp_path)
+    proj = dataclasses.replace(_project(tmp_path), sidecar_per_run=True)
+    with runprov.Run("s", project=proj, provenance=tmp_path / "a.prov.json") as run:
+        pass
+    name = run.provenance_path.name
+    assert name.endswith(".prov.json"), name
+    assert name.startswith("a.20"), name
+    assert list(tmp_path.glob("*.prov.json")) == [run.provenance_path]
+
+    # A plain single suffix still behaves.
+    with runprov.Run("s", project=proj, provenance=tmp_path / "b.json") as run2:
+        pass
+    assert run2.provenance_path.name.endswith(".json")
+    assert run2.provenance_path.name.startswith("b.20")
+
+
+def test_without_the_flag_the_path_is_exactly_what_the_caller_named(tmp_path, monkeypatch):
+    """Default OFF: a caller who names a path gets that path, and a Makefile or a downstream
+    reader pointing at it keeps working."""
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "fixed.prov.json"
+    with runprov.Run("s", project=_project(tmp_path), provenance=target) as run:
+        pass
+    assert run.provenance_path == target and target.is_file()
+
+
+def test_per_run_sidecars_make_staleness_answerable_for_older_runs(tmp_path, monkeypatch):
+    """The reason this matters beyond tidiness. `show --stale` reads the PRODUCING run's
+    sidecar for its stat fields, and reports `?` when a later run has overwritten it. With
+    one sidecar per run, the older runs can still answer."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "out").mkdir()
+    src = tmp_path / "in.tsv"
+    src.write_text("id\n1\n", encoding="utf-8")
+    proj = dataclasses.replace(_project(tmp_path), sidecar_per_run=True)
+
+    for i in range(2):
+        if i:
+            time.sleep(1.05)
+        with runprov.Run(
+            "build", project=proj, provenance=tmp_path / "out" / f"o{i}.prov.json"
+        ) as r:
+            r.input(src)
+            with r.open_output(tmp_path / "out" / f"o{i}.tsv") as fh:
+                fh.write("x\n")
+
+    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    states = runprov.show.staleness(rows)
+    assert set(states.values()) == {"current"}, "both runs can still answer for themselves"
+    assert "?" not in states.values()

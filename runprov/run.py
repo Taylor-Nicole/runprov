@@ -565,7 +565,7 @@ class Run:
             "outputs": [],
         }
         self._pending: list[pathlib.Path] = []
-        self.provenance_path = pathlib.Path(provenance) if provenance else None
+        self.provenance_path = self._sidecar_name(provenance) if provenance else None
         self._written = False
         self._warned_cwd_moved = False
         # Inside a `with` block the run is NOT over when write() is called -- the work can
@@ -630,6 +630,35 @@ class Run:
             )
 
     # ---------------------------------------------------------------- terminal capture
+    def _sidecar_name(self, provenance: str | pathlib.Path) -> pathlib.Path:
+        """Where the sidecar goes, and whether the next run is allowed to land on it.
+
+        Off, this is the path the caller named and the tenth run overwrites the ninth. The
+        HISTORY still holds all ten -- the record is never lost -- but the file beside the
+        artifact answers only for the last one.
+
+        On (`Project(sidecar_per_run=True)`), the run's stamp goes before the final suffix:
+
+            summary.prov.json -> summary.20260813T143012Z.5709a907.prov.json
+
+        Time first because that is what a person browses by, run_uid second because two
+        runs inside one second are still two runs.
+
+        BEFORE EVERY SUFFIX, not before the last one. `Path("summary.prov.json").suffix` is
+        `.json` and its stem is `summary.prov`, so inserting there produces
+        `summary.prov.20260813T135628Z.9644b22e.json` -- which no longer matches
+        `*.prov.json`, the glob every tool and every reader uses to find these. Measured by
+        writing three of them and watching the glob return nothing. The compound suffix is
+        part of what the name MEANS, so the stamp goes in front of it.
+        """
+        p = pathlib.Path(provenance)
+        if not self.project.sidecar_per_run:
+            return p
+        stamp = self.record["started_utc"].replace("-", "").replace(":", "")
+        uid = str(self.record.get("run_uid", ""))[:8] or "nouid"
+        head, dot, suffixes = p.name.partition(".")
+        return p.with_name(f"{head}.{stamp}.{uid}{dot}{suffixes}")
+
     def _begin_capture(self, requested: pathlib.Path | bool | None) -> Capture | None:
         """Resolve the three-way switch and start capturing. NEVER raises."""
         if requested is False:

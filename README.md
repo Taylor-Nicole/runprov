@@ -49,6 +49,26 @@ That is the whole ceremony: `configure(...)` once, at import of your paths modul
 one** — `__exit__` writes the sidecar and appends the history line, on success and on a
 crash, and it is the only place the final status is known.
 
+**A sidecar per run, if you want every one kept.** `provenance=` names one path, so the
+tenth run of a script overwrites the ninth. The append-only history still holds all ten —
+no *record* is ever lost — but the file sitting beside the artifact answers only for the
+last run, and "when did this column appear" is a question about the ones it replaced.
+
+```python
+configure(root=ROOT, sidecar_per_run=True)
+# out/summary.prov.json  ->  out/summary.20260813T135658Z.83469069.prov.json
+#                            out/summary.20260813T135659Z.b0ce8d9c.prov.json
+#                            out/summary.20260813T135700Z.b967537f.prov.json
+```
+
+Time first so sorting by name sorts by run; `run_uid` second so two runs inside one second
+are still two files. The stamp goes in front of the **whole** compound suffix, so
+`*.prov.json` still finds them — inserting before `.json` alone breaks that glob, which is
+how the first version of this was caught.
+
+It also makes `show --stale` answerable for older runs: that check reads the *producing*
+run's sidecar for its stat fields, and reports `?` when a later run has overwritten it.
+
 **Leave `run_log` alone unless you have a reason.** It defaults to
 `<root>/provenance/runs.jsonl`, which is exactly where `python -m runprov log` looks when
 you do not pass `--log`, so the two halves of the package agree for free. Point it
