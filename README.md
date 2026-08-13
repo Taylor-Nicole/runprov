@@ -1093,7 +1093,13 @@ record:
 |---|---|
 | append one run | **546 µs**, and flat — the same at 0 records and at 100,000 |
 | `runprov show` (the whole project page) | **1.6 s**, **33 MB** peak RSS for the process |
+| `runprov log --limit 5` | **1.2 s**, **24 MB** — the same at any history length |
 | `show <script>` / `show <artifact>` | 0.01 s |
+
+**`--limit` is a view, never a trim.** `log` reads the history; it has never written to
+it. Asking for the last five shows five and leaves the other 99,995 exactly where they
+were — verified by sha256 before and after. It keeps a deque of N as records stream past,
+so the memory is the same whether the file holds five runs or a hundred thousand.
 
 The page **streams** the history rather than loading it. Materialising every record cost
 **392 MB**; consuming them one at a time costs 3. `--stale` makes a second pass over the

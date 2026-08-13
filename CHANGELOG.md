@@ -210,6 +210,11 @@ Nothing has been published yet. Everything below is what a first release would c
   `read_text().splitlines()` — the whole file as one string *and* a list of every line,
   before one record was parsed. Measured on a 100,000-run, 91 MB history: **488 MB → 392 MB**
   just from streaming the read.
+- **`log` streams too, in every format.** Each record is written as it passes and dropped;
+  `--limit N` keeps a deque of N and nothing else. Measured on the 91 MB history:
+  **1.2 s, 24 MB**, the same at any length. The YAML banner moved to the command so it is
+  emitted once rather than per record. `lineage` still materialises, because a graph
+  joining outputs to inputs across the whole history has nothing to stream past.
 - **`show` no longer materialises the history at all.** It consumes a stream and counts as
   it goes, so the project page costs **1.6 s and 33 MB** on that same 91 MB history instead
   of holding 392 MB. `--stale` takes a second pass over the file rather than a second copy
