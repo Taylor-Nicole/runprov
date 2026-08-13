@@ -307,19 +307,17 @@ the run hashed it, and whether two writes give the same digest. **A format whose
 absent is SKIPPED and says so** — a check that goes green because it did not run is the
 failure this package is about.
 
-Measured here, **36 formats, 0 failures**:
+Measured here, **37 formats, 0 failures, nothing skipped**:
 
 | pin placement | formats |
 |---|---|
 | in-band | TSV, CSV, BED, YAML, Markdown, SQL (`-- `) |
 | in the document | JSON (`write_json`, a top-level key) |
-| sidecar | FASTA, FASTQ, JSONL, VCF, SVG, Newick, **Parquet**, **Feather/Arrow**, **Pickle**, **joblib**, **cloudpickle**, `.npy`, `.npz`, **HDF5 `.h5`**, **AnnData `.h5ad`**, **Zarr**, **NetCDF**, **`.xlsx`**, **BAM**, **CRAM**, **bgzipped VCF**, **R `.rds`**, **ONNX**, **safetensors**, `.mat`, PNG, TIFF, gzip, SQLite |
+| sidecar | FASTA, FASTQ, JSONL, VCF, SVG, Newick, **Parquet**, **Feather/Arrow**, **Pickle**, **joblib**, **cloudpickle**, `.npy`, `.npz`, **HDF5 `.h5`**, **AnnData `.h5ad`**, **Zarr**, **NetCDF**, **`.xlsx`**, **BAM**, **CRAM**, **bgzipped VCF**, **R `.rds`**, **ONNX**, **safetensors**, **PyTorch `.pt`**, `.mat`, PNG, TIFF, gzip, SQLite |
 
 Everything above round-trips: written through runprov, read back by `h5py`, `anndata`,
-`zarr`, `xarray`, `pysam`, `pyreadr`, `onnx`, `safetensors`, `openpyxl`, `pyarrow`, `joblib`
-and the rest. **PyTorch `.pt` is the only case not measured here**, because installing torch
-to test a container format is a 2 GB dependency — the case is written and will run if you
-have it.
+`zarr`, `xarray`, `pysam`, `pyreadr`, `onnx`, `safetensors`, `torch`, `openpyxl`, `pyarrow`,
+`joblib` and the rest. Nothing is skipped and nothing fails.
 
 **Three results worth reading rather than skimming**, all measured rather than inferred:
 
@@ -331,6 +329,11 @@ have it.
 * **CRAM moves on every run too**, and this was checked against the obvious excuse: two
   writes of identical records, in the same directory, with an identical reference path,
   still differ. Pin the BAM instead, or accept that this one artifact is permanently red.
+* **A PyTorch `.pt` digest depends on its FILENAME.** A `.pt` is a zip and torch names the
+  entries after the file stem, so `m.pt` contains `m/data.pkl` — identical weights saved as
+  `model_v1.pt` and `model_v2.pt` hash differently, and renaming a checkpoint changes its
+  digest. That is torch's doing, not runprov's, and it is worth knowing before a rename
+  reads as a retrain.
 
 Adding your own format is three lines, and the file says how.
 
