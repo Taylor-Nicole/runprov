@@ -6955,3 +6955,197 @@ def test_an_artifact_from_a_failed_run_is_flagged_on_the_project_page():
     }
     text = runprov.show.render_project(runprov.show.project_view([rec]))
     assert "from a FAILED run" in text
+
+
+# ============ the staleness column: "do I need to run this again", in one page
+def _staleable(tmp_path, monkeypatch):
+    """A project whose artifacts can each be pushed into a different state."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "out").mkdir()
+    src = tmp_path / "data" / "in.tsv"
+    src.write_text("id\tv\n1\ta\n", encoding="utf-8")
+    ref = tmp_path / "data" / "ref.tsv"
+    ref.write_text("r\n", encoding="utf-8")
+    proj = _project(tmp_path)
+
+    with runprov.Run("build", project=proj, provenance=tmp_path / "out" / "mid.prov.json") as r:
+        r.input(src)
+        with r.open_output(tmp_path / "out" / "mid.tsv") as fh:
+            fh.write("a\n")
+    with runprov.Run("aux", project=proj, provenance=tmp_path / "out" / "aux.prov.json") as r:
+        r.input(ref)
+        (tmp_path / "out" / "aux.bin").write_bytes(b"\x00\x01")
+        r.output(tmp_path / "out" / "aux.bin")
+    with runprov.Run("temp", project=proj, provenance=tmp_path / "out" / "t.prov.json") as r:
+        r.input(ref)
+        (tmp_path / "out" / "gone.txt").write_text("x\n", encoding="utf-8")
+        r.output(tmp_path / "out" / "gone.txt")
+
+    return [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+
+
+def _state_of(states, name):
+    return next(v for k, v in states.items() if pathlib.Path(k).name == name)
+
+
+def test_the_artifact_index_says_which_artifacts_need_rebuilding(tmp_path, monkeypatch):
+    """The question the page exists to answer in one glance, when a build costs hours.
+
+    Answered from the HISTORY rather than from the in-artifact pin, which is why it works
+    for `aux.bin` — a binary that could never hold a pin at all.
+    """
+    rows = _staleable(tmp_path, monkeypatch)
+    assert set(runprov.show.staleness(rows).values()) == {"current"}
+
+    time.sleep(1.1)  # mtime has one-second resolution; see `moved_since`
+    (tmp_path / "data" / "in.tsv").write_text("id\tv\n1\tCHANGED\n", encoding="utf-8")
+    (tmp_path / "out" / "gone.txt").unlink()
+    (tmp_path / "out" / "aux.bin").write_bytes(b"hand edited, longer than before")
+
+    states = runprov.show.staleness(rows)
+    assert _state_of(states, "mid.tsv") == "STALE", "its input moved — rebuilding differs"
+    assert _state_of(states, "gone.txt") == "GONE"
+    assert _state_of(states, "aux.bin") == "MODIFIED", (
+        "the ARTIFACT changed, not its inputs — a different repair, so a different word"
+    )
+
+
+def test_the_cheap_check_reads_no_input_bytes(tmp_path, monkeypatch):
+    """A page consulted many times a day must not cost what the build costs. The default is
+    one `stat` per input; only `--rehash` reads them."""
+    rows = _staleable(tmp_path, monkeypatch)
+    opened = []
+    real_open = pathlib.Path.open
+
+    def watched(self, *a, **k):
+        opened.append(self)
+        return real_open(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "open", watched)
+    runprov.show.staleness(rows)
+    names = {p.name for p in opened}
+    assert "in.tsv" not in names and "ref.tsv" not in names, "no input was read"
+    assert any(n.endswith(".prov.json") for n in names), "only the sidecars, for their stats"
+
+
+def test_rehash_catches_what_a_stat_cannot(tmp_path, monkeypatch):
+    """`moved_since` compares size and mtime, so a rewrite inside one second that preserves
+    the byte count is invisible to it. That limit is documented rather than hidden, and
+    `--rehash` is the answer for anyone who cannot accept it."""
+    rows = _staleable(tmp_path, monkeypatch)
+    src = tmp_path / "data" / "in.tsv"
+    stat = src.stat()
+    src.write_text("id\tv\n1\tZ\n", encoding="utf-8")  # SAME length as "1\ta\n"... no: force it
+    src.write_bytes(b"id\tv\n1\tz\n")
+    os.utime(src, (stat.st_atime, stat.st_mtime))  # and put the mtime back
+
+    assert _state_of(runprov.show.staleness(rows), "mid.tsv") == "current", (
+        "the stat check cannot see this, and says so by being documented, not by guessing"
+    )
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "mid.tsv") == "STALE"
+
+
+def test_a_missing_or_overwritten_sidecar_reports_unknown_not_current(tmp_path, monkeypatch):
+    """The stat fields live in the sidecar because the history line trims them. A sidecar
+    that is gone, or that a later run has overwritten, cannot answer for THIS run — and
+    `current` would be the reassuring lie the whole package refuses."""
+    rows = _staleable(tmp_path, monkeypatch)
+    (tmp_path / "out" / "mid.prov.json").unlink()
+    assert _state_of(runprov.show.staleness(rows), "mid.tsv") == "?"
+
+    # Overwritten by a different run: same path, different run_uid.
+    doc = json.loads((tmp_path / "out" / "aux.prov.json").read_text(encoding="utf-8"))
+    doc["run_uid"] = "a-completely-different-run"
+    (tmp_path / "out" / "aux.prov.json").write_text(json.dumps(doc), encoding="utf-8")
+    assert _state_of(runprov.show.staleness(rows), "aux.bin") == "?", (
+        "digests from one run against stats from another would be confident nonsense"
+    )
+
+
+def test_a_registered_output_that_was_never_written_is_gone(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    proj = _project(tmp_path)
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.json") as r:
+        r.output(tmp_path / "never.tsv")
+    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    assert _state_of(runprov.show.staleness(rows), "never.tsv") == "GONE"
+
+
+def test_rehash_reports_unknown_when_an_input_cannot_be_read(tmp_path, monkeypatch):
+    rows = _staleable(tmp_path, monkeypatch)
+    (tmp_path / "data" / "in.tsv").unlink()
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "mid.tsv") == "?"
+
+
+def test_show_cli_takes_stale_and_rehash_and_tallies_them(tmp_path, monkeypatch, capsys):
+    rows = _staleable(tmp_path, monkeypatch)
+    log = str(tmp_path / "runs.jsonl")
+    time.sleep(1.1)
+    (tmp_path / "data" / "in.tsv").write_text("id\tv\n1\tCHANGED\n", encoding="utf-8")
+
+    assert runprov.__main__.main(["show", "--log", log, "--stale"]) == 0
+    seen = capsys.readouterr()
+    assert "STALE" in seen.out and "current" in seen.out
+    assert "STALE" in seen.err, "the summary line tallies the states"
+
+    assert runprov.__main__.main(["show", "--log", log, "--rehash", "--format", "yaml"]) == 0
+    payload = capsys.readouterr().out
+    assert '"state"' in payload and "STALE" in payload
+
+    # Without the flag the page is instant and carries no column.
+    assert runprov.__main__.main(["show", "--log", log]) == 0
+    assert "STALE" not in capsys.readouterr().out
+    assert len(rows) == 3
+
+
+def test_a_record_with_no_sidecar_path_reports_unknown(tmp_path):
+    """A run recorded before `provenance_path` existed, or one that never wrote a sidecar,
+    cannot supply the stat fields — and there is nothing to fall back to but honesty."""
+    rec = {
+        "script": "s",
+        "status": "ok",
+        "cwd": str(tmp_path),
+        "inputs": [{"path": "in.tsv", "sha256": "a" * 64}],
+        "outputs": [{"path": "out.tsv", "sha256": "b" * 64, "kind": "file"}],
+    }
+    (tmp_path / "out.tsv").write_text("x\n", encoding="utf-8")
+    assert runprov.show.staleness([rec]) == {"out.tsv": "?"}
+
+
+def test_two_artifacts_from_one_run_read_that_run_s_sidecar_once(tmp_path, monkeypatch):
+    """The sidecar is read per RUN, not per artifact. A step writing forty files must not
+    open and parse the same JSON forty times on a page consulted many times a day."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "out").mkdir()
+    src = tmp_path / "in.tsv"
+    src.write_text("x\n", encoding="utf-8")
+    with runprov.Run("many", project=_project(tmp_path), provenance=tmp_path / "p.json") as r:
+        r.input(src)
+        for i in range(3):
+            with r.open_output(tmp_path / "out" / f"o{i}.tsv") as fh:
+                fh.write("y\n")
+
+    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    reads = []
+    real = pathlib.Path.read_text
+
+    def watched(self, *a, **k):
+        reads.append(self.name)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", watched)
+    states = runprov.show.staleness(rows)
+    assert len(states) == 3 and set(states.values()) == {"current"}
+    assert reads.count("p.json") == 1, f"the sidecar was read {reads.count('p.json')} times"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFO needed to make one")
+def test_rehash_reports_unknown_when_the_ARTIFACT_cannot_be_read(tmp_path, monkeypatch):
+    """`describe` refuses a FIFO rather than blocking on it, and an artifact that cannot be
+    hashed now is a question that cannot be answered — not an artifact that is current."""
+    rows = _staleable(tmp_path, monkeypatch)
+    aux = tmp_path / "out" / "aux.bin"
+    aux.unlink()
+    os.mkfifo(aux)
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "aux.bin") == "?"

@@ -36,13 +36,14 @@ is the whole reason the pin is written into the bytes. See `verify.py`.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import pathlib
 import sys
 import typing
 
 from .project import active
-from .show import project_view, render_project, render_run, run_view, select
+from .show import project_view, render_project, render_run, run_view, select, staleness
 from .show import to_yaml as _yaml_doc
 from .verify import render, verify
 
@@ -410,13 +411,21 @@ def _show(
         return 0
 
     view = project_view(rows)
+    # OFF unless asked. The page is consulted many times a day and reading the filesystem
+    # is the one thing here that can cost what the work costs; `--stale` is a stat per
+    # input, `--rehash` reads them.
+    states = staleness(rows, rehash=args.rehash) if (args.stale or args.rehash) else None
     if args.format == "yaml":
-        sys.stdout.write(_yaml_doc(view))
+        sys.stdout.write(_yaml_doc({**view, "state": states} if states else view))
     else:
-        sys.stdout.write(render_project(view))
+        sys.stdout.write(render_project(view, states))
+    tally = ""
+    if states:
+        counts = collections.Counter(states.values())
+        tally = "; " + ", ".join(f"{n} {k}" for k, n in sorted(counts.items()))
     print(
         f"# {view['runs']} run(s), {len(view['scripts'])} script(s), "
-        f"{len(view['artifacts'])} artifact(s) from {path}"
+        f"{len(view['artifacts'])} artifact(s) from {path}{tally}"
         + (f"; {bad} unreadable line(s) skipped" if bad else ""),
         file=sys.stderr,
     )
@@ -512,6 +521,16 @@ def main(argv: list[str] | None = None) -> int:
     sh.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     sh.add_argument("--format", choices=("text", "yaml"), default="text")
     sh.add_argument("--limit", type=int, default=0, help="show only the last N matching runs")
+    sh.add_argument(
+        "--stale",
+        action="store_true",
+        help="check each artifact against the inputs of the run that made it (one stat each)",
+    )
+    sh.add_argument(
+        "--rehash",
+        action="store_true",
+        help="with --stale, re-derive digests instead of comparing size and mtime (slower)",
+    )
     vf = sub.add_parser("verify", help="do artifacts still match the inputs they pin?")
     vf.add_argument("paths", nargs="*", help="artifacts or directories (default: the root)")
     vf.add_argument("--root", default=None, help="what pinned names are relative to")

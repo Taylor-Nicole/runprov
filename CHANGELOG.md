@@ -32,6 +32,13 @@ Nothing has been published yet. Everything below is what a first release would c
   where the target may be a script name, a `run_uid` prefix, a `run_id` or an artifact path.
   Text or `--format yaml`. **It writes nothing** — a reader over `runs.jsonl`, asserted by a
   test that compares every byte on disk before and after.
+- **`show --stale` / `--rehash`** — a staleness column on the artifact index, answering
+  "do I need to run this again" in one page. Computed from the HISTORY rather than the
+  in-artifact pin, so it works for binaries that cannot hold one. `current` / `STALE` (an
+  input moved) / `MODIFIED` (the artifact itself changed) / `GONE` / `?`. Off by default;
+  `--stale` is one `stat` per input and reads no input bytes, taking the sizes and mtimes
+  from the producing run's sidecar and reporting `?` when that sidecar is absent or has
+  been overwritten by a later run.
 - **`verify`** — re-derives every input a pin names and compares. Until it existed,
   invalidation was a property of the format and not of the product: everything needed was
   in the artifact and nothing read it back. Reads the artifact and nothing else — no

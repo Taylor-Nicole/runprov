@@ -32,6 +32,8 @@ import json
 import pathlib
 import typing
 
+from .hashing import describe, moved_since, pin_digest
+
 #: How many characters of a digest identify an artifact version to a human. The same 16 the
 #: pin uses, so a digest read here can be matched against a digest read in an artifact.
 SHORT = 16
@@ -148,6 +150,144 @@ def project_view(records: list[dict[str, typing.Any]]) -> dict[str, typing.Any]:
     }
 
 
+# ------------------------------------------------------------------ staleness
+#: What the artifact index can say about a file that is on disk now.
+CURRENT = "current"
+STALE = "STALE"
+GONE = "GONE"
+MODIFIED = "MODIFIED"
+UNKNOWN = "?"
+
+
+def _resolve(path: str, cwd: str | None) -> pathlib.Path:
+    """A recorded path against the cwd of the run that recorded it, never the current one."""
+    p = pathlib.Path(path)
+    return p if p.is_absolute() or not cwd else pathlib.Path(cwd) / p
+
+
+def _sidecar(rec: dict[str, typing.Any]) -> dict[str, typing.Any] | None:
+    """The producing run's full record, or None if it cannot be had.
+
+    The history line trims an input to path and digests -- deliberately, because it is
+    appended forever and four extra fields cost 15.6% of the file. The SIDECAR keeps the
+    whole `describe()` output, including `size_bytes` and `mtime_utc`, which is what makes a
+    stat-only check possible at all.
+
+    The run_uid is checked, and that is not paranoia: a sidecar is overwritten by the next
+    run that writes to the same path, so the file sitting there may describe a DIFFERENT
+    run. Comparing digests from one run against stats from another would produce confident
+    nonsense, so a mismatch reports `?` instead.
+    """
+    path = rec.get("provenance_path")
+    if not path:
+        return None
+    try:
+        doc = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # guards-ok: no sidecar is "cannot tell", not "current"
+        return None
+    if rec.get("run_uid") and doc.get("run_uid") != rec.get("run_uid"):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def staleness(records: list[dict[str, typing.Any]], *, rehash: bool = False) -> dict[str, str]:
+    """For each artifact: is it still what the run that made it would make now?
+
+    ANSWERED FROM THE HISTORY, not from the pin, and that is the point. `verify` reads the
+    provenance block inside an artifact, so it can only speak about formats that can hold
+    one. This walks the run that produced the artifact and re-checks THAT run's inputs, so
+    it answers for a BAM, a parquet, a pickle and a figure exactly as well as for a TSV.
+
+    A STAT BY DEFAULT, not a re-hash: `moved_since` compares the size and mtime the record
+    already holds, which is one `stat` per input and no reading at all -- because a page
+    consulted many times a day must not cost what the build costs. Its resolution limit is
+    the one it documents: a rewrite inside the same second that preserves the byte count is
+    invisible. `rehash=True` re-derives every digest and has no such limit, and costs what
+    reading every input costs.
+
+    The states answer different questions and imply different repairs:
+
+        current    the artifact is there and its inputs have not moved
+        STALE      an input moved -- rebuilding would produce something else
+        MODIFIED   the ARTIFACT is not the bytes recorded (rehash only) -- someone or
+                   something else wrote it, which is not the same as stale
+        GONE       the artifact, or an input it needs, is not there any more
+        ?          it cannot be told: the sidecar with the stat fields is missing or has
+                   been overwritten by a later run. Saying `current` there would be the
+                   reassuring lie this package exists to refuse
+    """
+    producer: dict[str, dict[str, typing.Any]] = {}
+    for rec in records:
+        for o in rec.get("outputs") or []:
+            producer[_name(o)] = {"record": rec, "entry": o}
+
+    detailed: dict[int, dict[str, typing.Any] | None] = {}
+    out: dict[str, str] = {}
+    for path, made in producer.items():
+        rec, entry = made["record"], made["entry"]
+        cwd = rec.get("cwd")
+        base = pathlib.Path(cwd) if cwd else None
+        target = _resolve(path, cwd)
+        if entry.get("kind") == "MISSING" or not target.exists():
+            out[path] = GONE
+            continue
+
+        if rehash:
+            out[path] = _by_digest(rec, entry, target, base)
+            continue
+
+        key = id(rec)
+        if key not in detailed:
+            detailed[key] = _sidecar(rec)
+        doc = detailed[key]
+        if doc is None:
+            out[path] = UNKNOWN
+            continue
+
+        state = CURRENT
+        for i in doc.get("inputs") or []:
+            why = moved_since(i, base=base)
+            if why:
+                state = GONE if why == "gone" else STALE
+                break
+        if state is CURRENT:
+            # THE ARTIFACT ITSELF, from the sidecar's own output entry. Without this, a file
+            # someone edited by hand read as `current` because its INPUTS had not moved --
+            # true, and not the question the reader is asking.
+            mine = next((o for o in doc.get("outputs") or [] if _name(o) == _name(entry)), None)
+            if mine is not None and moved_since(mine, base=base):
+                state = MODIFIED
+        out[path] = state
+    return out
+
+
+def _by_digest(
+    rec: dict[str, typing.Any],
+    entry: dict[str, typing.Any],
+    target: pathlib.Path,
+    base: pathlib.Path | None,
+) -> str:
+    """The thorough check: re-derive every digest. No stat resolution limit, and no cheap."""
+    for i in rec.get("inputs") or []:
+        fresh = _digest_now(_resolve(_name(i), str(base) if base else None))
+        if fresh is None:
+            return UNKNOWN
+        if fresh != _short(i):
+            return STALE
+    fresh = _digest_now(target)
+    if fresh is None:
+        return UNKNOWN
+    # Not stale: the ARTIFACT is not what was recorded. A different repair entirely.
+    return CURRENT if fresh == _short(entry) else MODIFIED
+
+
+def _digest_now(path: pathlib.Path) -> str | None:
+    try:
+        return pin_digest(describe(path))
+    except (OSError, ValueError):  # guards-ok: unreadable now is "cannot tell", not "same"
+        return None
+
+
 # ------------------------------------------------------------------ rendering
 def _rule(title: str, width: int = 78) -> str:
     return f"── {title} " + "─" * max(0, width - len(title) - 4)
@@ -211,7 +351,7 @@ def render_run(view: dict[str, typing.Any]) -> str:
     return "\n".join(out) + "\n"
 
 
-def render_project(view: dict[str, typing.Any]) -> str:
+def render_project(view: dict[str, typing.Any], states: dict[str, str] | None = None) -> str:
     """The notebook page: what each script reads and writes, then what exists now."""
     out = [_rule(f"project notebook — {view['runs']} run(s), {len(view['scripts'])} script(s)")]
 
@@ -248,8 +388,10 @@ def render_project(view: dict[str, typing.Any]) -> str:
         for path, a in view["artifacts"].items():
             flag = "" if a["status"] == "ok" else f"  <- from a {a['status'].upper()} run"
             kind = "" if a["kind"] == "file" else f"  [{a['kind']}]"
-            out.append(f"  {a['digest']}  {path}{kind}")
-            out.append(f"  {' ' * SHORT}  by {a['by']}  {a['when']}{flag}")
+            # The column a reader is actually scanning for: do I need to run this again.
+            mark = f"{states.get(path, '')!s:<9}" if states else ""
+            out.append(f"  {mark}{a['digest']}  {path}{kind}")
+            out.append(f"  {' ' * (SHORT + len(mark))}  by {a['by']}  {a['when']}{flag}")
     return "\n".join(out) + "\n"
 
 
