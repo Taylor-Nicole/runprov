@@ -28,9 +28,34 @@ import typing
 
 from .sinks import JsonlSink, RecordSink
 
-# Packages whose version is recorded with every run. The audit's list is an ML stack;
-# yours will differ, which is why it is a field and not a constant.
-DEFAULT_TRACKED = ("numpy", "pandas", "scipy", "sklearn")
+# Packages whose version is recorded with every run. EMPTY BY DEFAULT, and that is the
+# considered answer rather than an omission.
+#
+# It used to be `("numpy", "pandas", "scipy", "sklearn")` -- the source project's stack,
+# shipped as everyone's default. For a run that uses none of them the record then carried
+#
+#     "packages": {"numpy": null, "pandas": null, "scipy": null, "sklearn": null}
+#
+# on every single line of the history, forever. Each of those nulls is truthful --  `None`
+# means "asked for, not present" -- but nobody asked. The package had guessed what mattered
+# and then recorded four answers to a question the user never posed, which is the same
+# failure as prose provenance one level down: a field populated by assumption rather than
+# by observation.
+#
+# There is no domain-neutral list. A genomics pipeline, a Django service and a PyTorch
+# training run share no package worth pinning, and the facts that ARE universal -- the
+# interpreter, the platform, the environment manager, the lock files -- are recorded
+# unconditionally and were never in this list. So the honest default is to record nothing
+# here until asked, which also keeps `None` meaning what it says.
+#
+# Paste this if you want the scientific stack back; it is one line, and it is now a
+# decision the project made rather than one it inherited:
+#
+#     configure(root=REPO, tracked_packages=("numpy", "pandas", "scipy", "sklearn"))
+#
+# `run.module(mod)` is the sharper tool for the thing this field is usually reached for --
+# it records where an import actually RESOLVED from, and hashes it.
+DEFAULT_TRACKED: tuple[str, ...] = ()
 
 # Paths whose modification means "the code that ran is not the committed code". Anything
 # that changes behaviour belongs here — including declarative inputs like a rule registry

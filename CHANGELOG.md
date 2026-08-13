@@ -44,6 +44,15 @@ Nothing has been published yet. Everything below is what a first release would c
 - **Failure recording.** `with Run(..., provenance=PROV)` records `status: "failed"` with
   the exception type, message and traceback tail, and every registered-but-unproduced output
   as `MISSING`.
+- **Nothing is tracked until the project asks.** `tracked_packages` defaulted to this
+  project's own stack, so a run touching none of it recorded
+  `{"numpy": null, "pandas": null, "scipy": null, "sklearn": null}` on every history line,
+  forever. Every null was truthful and nobody had asked — a field populated by assumption
+  rather than observation, which is the failure the package exists to replace. There is no
+  domain-neutral list; the universal facts (interpreter, platform, environment manager,
+  lock files) were never in it and are still unconditional. `configure(tracked_packages=…)`
+  is one line, and `run.module(mod)` is the sharper tool for what this is usually reached
+  for.
 - **`verify` no longer mistakes documentation for an artifact.** The anchor was matched
   anywhere in the first 64 KiB, so a bare `runprov verify` in a project with a virtualenv
   reported this package's own `verify.py` and `run.py`, their `.pyc` files, and the wheel
