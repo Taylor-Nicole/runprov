@@ -88,44 +88,96 @@ def _load(path: pathlib.Path) -> tuple[list[dict[str, typing.Any]], int]:
     return rows, bad
 
 
-def _timeline(rows: list[dict[str, typing.Any]]) -> str:
-    out = []
-    for r in rows:
-        status = r.get("status", "ok")
-        mark = "  " if status == "ok" else "!!"
-        out.append(f"{mark} {r.get('started_utc', '?'):20} {r.get('script', '?')}")
-        out.append(
-            f"     run_id     {r.get('run_id', '?')}   generation {r.get('generation', '?')}"
+def _timeline(rows: typing.Iterable[dict[str, typing.Any]]) -> str:
+    return "".join(_timeline_entry(r) for r in rows)
+
+
+def _timeline_entry(r: dict[str, typing.Any]) -> str:
+    """ONE run, rendered alone. Split out of `_timeline` so `log` can write each record
+    as it streams past instead of building every line before printing any of them."""
+    out: list[str] = []
+    status = r.get("status", "ok")
+    mark = "  " if status == "ok" else "!!"
+    out.append(f"{mark} {r.get('started_utc', '?'):20} {r.get('script', '?')}")
+    out.append(f"     run_id     {r.get('run_id', '?')}   generation {r.get('generation', '?')}")
+    out.append(f"     command    {r.get('command', '?')}")
+    if r.get("cwd"):
+        out.append(f"     cwd        {r['cwd']}")
+    out.append(
+        f"     code       {r.get('git_commit', '?')}"
+        + ("  DIRTY" if r.get("git_code_dirty") else "")
+        # `is False`, never a default. A record written before this field existed does
+        # not know the answer, and defaulting it to True would print the reassuring
+        # answer for exactly the runs that cannot support it.
+        + (
+            "  DIRTY STATE UNKNOWN (git status did not run)"
+            if r.get("git_status_captured") is False
+            else ""
         )
-        out.append(f"     command    {r.get('command', '?')}")
-        if r.get("cwd"):
-            out.append(f"     cwd        {r['cwd']}")
-        out.append(
-            f"     code       {r.get('git_commit', '?')}"
-            + ("  DIRTY" if r.get("git_code_dirty") else "")
-            # `is False`, never a default. A record written before this field existed does
-            # not know the answer, and defaulting it to True would print the reassuring
-            # answer for exactly the runs that cannot support it.
-            + (
-                "  DIRTY STATE UNKNOWN (git status did not run)"
-                if r.get("git_status_captured") is False
-                else ""
-            )
-        )
-        ins, outs = r.get("inputs") or [], r.get("outputs") or []
-        for i in ins:
-            out.append(f"     in   {str(i.get('sha256') or '')[:16]}  {i.get('path', '?')}")
-        for o in outs:
-            out.append(f"     out  {str(o.get('sha256') or '')[:16]}  {o.get('path', '?')}")
-        if status != "ok":
-            f = r.get("failure") or {}
-            out.append(f"     FAILED     {f.get('type', '?')}: {str(f.get('message', ''))[:160]}")
-        if r.get("history_destination"):
-            out.append(f"     history    {r['history_destination']}")
-        if r.get("seeds"):
-            out.append(f"     seeds      {r['seeds']}")
-        out.append("")
-    return "\n".join(out)
+    )
+    ins, outs = r.get("inputs") or [], r.get("outputs") or []
+    for i in ins:
+        out.append(f"     in   {str(i.get('sha256') or '')[:16]}  {i.get('path', '?')}")
+    for o in outs:
+        out.append(f"     out  {str(o.get('sha256') or '')[:16]}  {o.get('path', '?')}")
+    if status != "ok":
+        f = r.get("failure") or {}
+        out.append(f"     FAILED     {f.get('type', '?')}: {str(f.get('message', ''))[:160]}")
+    if r.get("history_destination"):
+        out.append(f"     history    {r['history_destination']}")
+    if r.get("seeds"):
+        out.append(f"     seeds      {r['seeds']}")
+    out.append("")
+    return "\n".join(out) + "\n"
+
+
+def _q(value: object) -> str:
+    """ALWAYS json.dumps. Never a cleverer rule.
+
+    The first version quoted only when it spotted `:`, `#`, a newline or a quote — and
+    emitted `cwd: ?` for a record that predates the cwd field. A bare `?` opens a YAML
+    complex key, so `yaml.safe_load` died at line 10 of the rendered file. That is the
+    SAME defect as the log this replaces: hand-rolled serialisation that is correct for
+    the values its author happened to think of.
+
+    JSON strings are valid YAML scalars (YAML 1.2 is a JSON superset), so quoting
+    unconditionally is both simpler and total. `test_rendered_yaml_parses_with_nasty_values`
+    holds the line.
+    """
+    return json.dumps("" if value is None else str(value))
+
+
+def _structure(value: object) -> str:
+    """A nested value, in JSON flow style — which IS valid YAML, and total.
+
+    `params:` and `summary:` are mappings in the old log, not scalars, so `_q()` cannot
+    render them: it stringifies, and `inplace: "False"` is a different fact from
+    `inplace: false`. The alternative to flow style is emitting block YAML, which means
+    writing an indenter — a second hand-rolled serialiser, in the function whose
+    docstring above explains why the first one broke the file it replaces.
+
+    This is total for the same reason `_q()` is. Every value here arrived via
+    `json.loads` of a history line, so `json.dumps` of it cannot raise; `default=str`
+    is belt-and-braces for a caller passing hand-built rows (the tests do).
+    """
+    return json.dumps(value, default=str, ensure_ascii=False)
+
+
+def _yaml_header() -> str:
+    """The banner, emitted once. Separated so `log --format yaml` can stream its entries."""
+    return "\n".join(
+        [
+            "# GENERATED by `python -m runprov log --format yaml`. Do not hand-edit —",
+            "# the source of truth is the append-only run history, and every path below",
+            "# carries the SHA-256 that was measured when the file was read or written.",
+            "#",
+            "# Field names are the transformation log's, so anything that could read that file",
+            "# can read this one. Two deliberate differences: every scalar is QUOTED, so `date`",
+            "# loads as an ISO-8601 string rather than as a bare YAML timestamp, and a key is",
+            "# omitted when the run did not use the feature rather than filled with a default.",
+            "",
+        ]
+    )
 
 
 def _yaml(rows: list[dict[str, typing.Any]]) -> str:
@@ -136,121 +188,87 @@ def _yaml(rows: list[dict[str, typing.Any]]) -> str:
     values come from: these were observed and hashed, not typed by hand.
     """
 
-    def q(value: object) -> str:
-        """ALWAYS json.dumps. Never a cleverer rule.
+    return _yaml_header() + "".join(_yaml_entry(r) for r in rows)
 
-        The first version quoted only when it spotted `:`, `#`, a newline or a quote — and
-        emitted `cwd: ?` for a record that predates the cwd field. A bare `?` opens a YAML
-        complex key, so `yaml.safe_load` died at line 10 of the rendered file. That is the
-        SAME defect as the log this replaces: hand-rolled serialisation that is correct for
-        the values its author happened to think of.
 
-        JSON strings are valid YAML scalars (YAML 1.2 is a JSON superset), so quoting
-        unconditionally is both simpler and total. `test_rendered_yaml_parses_with_nasty_values`
-        holds the line.
-        """
-        return json.dumps("" if value is None else str(value))
-
-    def structure(value: object) -> str:
-        """A nested value, in JSON flow style — which IS valid YAML, and total.
-
-        `params:` and `summary:` are mappings in the old log, not scalars, so `q()` cannot
-        render them: it stringifies, and `inplace: "False"` is a different fact from
-        `inplace: false`. The alternative to flow style is emitting block YAML, which means
-        writing an indenter — a second hand-rolled serialiser, in the function whose
-        docstring above explains why the first one broke the file it replaces.
-
-        This is total for the same reason `q()` is. Every value here arrived via
-        `json.loads` of a history line, so `json.dumps` of it cannot raise; `default=str`
-        is belt-and-braces for a caller passing hand-built rows (the tests do).
-        """
-        return json.dumps(value, default=str, ensure_ascii=False)
-
-    out = [
-        "# GENERATED by `python -m runprov log --format yaml`. Do not hand-edit —",
-        "# the source of truth is the append-only run history, and every path below",
-        "# carries the SHA-256 that was measured when the file was read or written.",
-        "#",
-        "# Field names are the transformation log's, so anything that could read that file",
-        "# can read this one. Two deliberate differences: every scalar is QUOTED, so `date`",
-        "# loads as an ISO-8601 string rather than as a bare YAML timestamp, and a key is",
-        "# omitted when the run did not use the feature rather than filled with a default.",
-        "",
-    ]
-    for r in rows:
-        ins = [i.get("path", "?") for i in (r.get("inputs") or [])]
-        outs = [o.get("path", "?") for o in (r.get("outputs") or [])]
-        out.append(f"- step: {q(r.get('script', '?'))}")
-        # `script` is the FILE; `step` is the logical name. The old log had one field for
-        # both and they disagreed. The fallback here is deliberately not `step`: a record
-        # written before `script_file` reached the history cannot support that claim, and
-        # a populated-looking `script:` that names something other than what ran is the
-        # exact defect this field replaces.
-        # BOTH SHAPES. The history line flattens this to the top level; the SIDECAR keeps
-        # it nested under `code`, and reading only the flat one made `to_yaml(run.record)`
-        # report a fresh run as having no script file while `log --format yaml` -- the same
-        # renderer, over the same run, from the history -- printed the path. Two views of
-        # one run disagreeing is the failure this renderer exists to prevent.
-        script_file = r.get("script_file") or (r.get("code") or {}).get("script_file")
-        # The fallback states the absence and NOT a cause: it read "this run predates
-        # script_file", which is true of a v1 record and false of a `python -c` invocation
-        # that simply has no file. A populated-looking `script:` naming the wrong thing is
-        # the exact defect this field replaces, and so is a confident wrong explanation.
-        out.append(f"  script: {q(script_file or 'not recorded (no script file for this run)')}")
-        out.append(f"  date: {q(r.get('started_utc', '?'))}")
-        out.append(f"  input: {q(', '.join(ins) or 'none registered')}")
-        out.append(f"  output: {q(', '.join(outs) or 'none registered')}")
-        out.append(f"  run_command: {q(r.get('command', '?'))}")
-        out.append(f"  cwd: {q(r.get('cwd', '?'))}")
-        out.append(f"  run_id: {q(r.get('run_id', '?'))}")
-        out.append(f"  generation: {q(r.get('generation', '?'))}")
-        out.append(f"  git_commit: {q(r.get('git_commit', '?'))}")
-        out.append(f"  status: {q(r.get('status', 'ok'))}")
-        # `params` and `summary` are the old log's names for these. What changed is where
-        # the values come from: `params` is what argparse actually parsed rather than a
-        # re-typed prose copy, and `summary` holds `run.note()` values — typed numbers —
-        # where the old log had a `description:` paragraph somebody wrote by hand.
-        if r.get("parameters"):
-            out.append(f"  params: {structure(r['parameters'])}")
-        if r.get("notes"):
-            out.append(f"  summary: {structure(r['notes'])}")
-        # The content-addressed environment file, under the name the old log used for the
-        # per-invocation pip freeze it replaces — one file per DISTINCT environment rather
-        # than 87 timestamped copies holding 8 distinct contents. Omitted, not defaulted:
-        # snapshots are opt-in, and a project that never configured them has no such file.
-        snap = r.get("environment_snapshot") or {}
-        if snap.get("path"):
-            out.append(f"  requirements_file: {q(snap['path'])}")
-        # The old log's `terminal_log_file`, under its own name. `terminal_log_capture` has
-        # no counterpart there and is emitted beside it deliberately: the old field was a
-        # path and nothing else, so a reader could not tell a log that saw everything from
-        # one written by a mechanism blind to subprocesses.
-        term = r.get("terminal_log") or {}
-        if term.get("path"):
-            out.append(f"  terminal_log_file: {q(term['path'])}")
-            out.append(f"  terminal_log_capture: {q(term.get('capture', 'unknown'))}")
-            # Same reason as `capture`, one step further: this log stops before its run
-            # does, because an inner capture still held the descriptors. Without the flag
-            # a reader sees a log whose last line predates `finished_utc` and reads it as
-            # truncation. Emitted only when true — a caveat on every entry is noise.
-            if term.get("out_of_order"):
-                out.append("  terminal_log_out_of_order: true")
-        if r.get("inputs"):
-            out.append("  input_sha256:")
-            for i in r["inputs"]:
-                out.append(
-                    "    - "
-                    + q(str(i.get("sha256") or "MISSING")[:64] + "  " + str(i.get("path", "")))
-                )
-        if r.get("outputs"):
-            out.append("  output_sha256:")
-            for o in r["outputs"]:
-                out.append(
-                    "    - "
-                    + q(str(o.get("sha256") or "MISSING")[:64] + "  " + str(o.get("path", "")))
-                )
-        out.append("")
-    return "\n".join(out)
+def _yaml_entry(r: dict[str, typing.Any]) -> str:
+    """ONE run in the transformation-log shape. Split out of `_yaml` so that
+    `log --format yaml` can write each record as it streams rather than building every
+    entry before printing any of them."""
+    out: list[str] = []
+    ins = [i.get("path", "?") for i in (r.get("inputs") or [])]
+    outs = [o.get("path", "?") for o in (r.get("outputs") or [])]
+    out.append(f"- step: {_q(r.get('script', '?'))}")
+    # `script` is the FILE; `step` is the logical name. The old log had one field for
+    # both and they disagreed. The fallback here is deliberately not `step`: a record
+    # written before `script_file` reached the history cannot support that claim, and
+    # a populated-looking `script:` that names something other than what ran is the
+    # exact defect this field replaces.
+    # BOTH SHAPES. The history line flattens this to the top level; the SIDECAR keeps
+    # it nested under `code`, and reading only the flat one made `to_yaml(run.record)`
+    # report a fresh run as having no script file while `log --format yaml` -- the same
+    # renderer, over the same run, from the history -- printed the path. Two views of
+    # one run disagreeing is the failure this renderer exists to prevent.
+    script_file = r.get("script_file") or (r.get("code") or {}).get("script_file")
+    # The fallback states the absence and NOT a cause: it read "this run predates
+    # script_file", which is true of a v1 record and false of a `python -c` invocation
+    # that simply has no file. A populated-looking `script:` naming the wrong thing is
+    # the exact defect this field replaces, and so is a confident wrong explanation.
+    out.append(f"  script: {_q(script_file or 'not recorded (no script file for this run)')}")
+    out.append(f"  date: {_q(r.get('started_utc', '?'))}")
+    out.append(f"  input: {_q(', '.join(ins) or 'none registered')}")
+    out.append(f"  output: {_q(', '.join(outs) or 'none registered')}")
+    out.append(f"  run_command: {_q(r.get('command', '?'))}")
+    out.append(f"  cwd: {_q(r.get('cwd', '?'))}")
+    out.append(f"  run_id: {_q(r.get('run_id', '?'))}")
+    out.append(f"  generation: {_q(r.get('generation', '?'))}")
+    out.append(f"  git_commit: {_q(r.get('git_commit', '?'))}")
+    out.append(f"  status: {_q(r.get('status', 'ok'))}")
+    # `params` and `summary` are the old log's names for these. What changed is where
+    # the values come from: `params` is what argparse actually parsed rather than a
+    # re-typed prose copy, and `summary` holds `run.note()` values — typed numbers —
+    # where the old log had a `description:` paragraph somebody wrote by hand.
+    if r.get("parameters"):
+        out.append(f"  params: {_structure(r['parameters'])}")
+    if r.get("notes"):
+        out.append(f"  summary: {_structure(r['notes'])}")
+    # The content-addressed environment file, under the name the old log used for the
+    # per-invocation pip freeze it replaces — one file per DISTINCT environment rather
+    # than 87 timestamped copies holding 8 distinct contents. Omitted, not defaulted:
+    # snapshots are opt-in, and a project that never configured them has no such file.
+    snap = r.get("environment_snapshot") or {}
+    if snap.get("path"):
+        out.append(f"  requirements_file: {_q(snap['path'])}")
+    # The old log's `terminal_log_file`, under its own name. `terminal_log_capture` has
+    # no counterpart there and is emitted beside it deliberately: the old field was a
+    # path and nothing else, so a reader could not tell a log that saw everything from
+    # one written by a mechanism blind to subprocesses.
+    term = r.get("terminal_log") or {}
+    if term.get("path"):
+        out.append(f"  terminal_log_file: {_q(term['path'])}")
+        out.append(f"  terminal_log_capture: {_q(term.get('capture', 'unknown'))}")
+        # Same reason as `capture`, one step further: this log stops before its run
+        # does, because an inner capture still held the descriptors. Without the flag
+        # a reader sees a log whose last line predates `finished_utc` and reads it as
+        # truncation. Emitted only when true — a caveat on every entry is noise.
+        if term.get("out_of_order"):
+            out.append("  terminal_log_out_of_order: true")
+    if r.get("inputs"):
+        out.append("  input_sha256:")
+        for i in r["inputs"]:
+            out.append(
+                "    - "
+                + _q(str(i.get("sha256") or "MISSING")[:64] + "  " + str(i.get("path", "")))
+            )
+    if r.get("outputs"):
+        out.append("  output_sha256:")
+        for o in r["outputs"]:
+            out.append(
+                "    - "
+                + _q(str(o.get("sha256") or "MISSING")[:64] + "  " + str(o.get("path", "")))
+            )
+    out.append("")
+    return "\n".join(out) + "\n"
 
 
 def _lineage(rows: list[dict[str, typing.Any]]) -> dict[str, typing.Any]:
@@ -478,6 +496,74 @@ def _exec(args: argparse.Namespace) -> int:
     return returncode
 
 
+def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
+    """`log`, streamed: one record in memory at a time, or `--limit` of them.
+
+    The history is appended forever and this is the command that reads all of it. Rendering
+    used to build every line for every record before printing any of them, which on a
+    100,000-run history means holding the whole thing twice -- once parsed, once as text.
+
+    `--limit N` keeps a deque of N and nothing else: the last N runs are what was asked for,
+    and the 99,900 before them do not need to be in memory to be skipped. Without a limit
+    each record is WRITTEN as it streams past and then dropped.
+
+    NOTHING IS DISCARDED FROM THE FILE. This reads; it has never written. `--limit` is a
+    view over the history, not a trim of it -- the records it does not show are exactly
+    where they were, and the next command without `--limit` shows them again.
+    """
+    keep: collections.deque[dict[str, typing.Any]] | None = (
+        collections.deque(maxlen=args.limit) if args.limit else None
+    )
+    bad = total = shown = n_failed = 0
+
+    def matches(r: dict[str, typing.Any]) -> bool:
+        return not (
+            (args.script and r.get("script") != args.script)
+            or (args.run_id and r.get("run_id") != args.run_id)
+            or (args.failed and r.get("status") != "failed")
+        )
+
+    def emit(r: dict[str, typing.Any]) -> None:
+        nonlocal shown, n_failed
+        shown += 1
+        n_failed += r.get("status") == "failed"
+        if args.format == "yaml":
+            sys.stdout.write(_yaml_entry(r))
+        elif args.format == "jsonl":
+            sys.stdout.write(json.dumps(r) + "\n")
+        else:
+            sys.stdout.write(_timeline_entry(r))
+
+    if args.format == "yaml":
+        # ONCE, by the command rather than the renderer: streaming writes each record as
+        # it passes, and a banner emitted per record is not a banner.
+        sys.stdout.write(_yaml_header())
+
+    for rec in _stream(path):
+        if rec is None:
+            bad += 1
+            continue
+        total += 1
+        if not matches(rec):
+            continue
+        if keep is not None:
+            keep.append(rec)
+        else:
+            emit(rec)
+
+    if keep is not None:
+        for rec in keep:
+            emit(rec)
+
+    print(
+        f"# {shown} of {total} run(s) from {path}"
+        + (f"; {n_failed} FAILED" if n_failed else "")
+        + (f"; {bad} unreadable line(s) skipped" if bad else ""),
+        file=sys.stderr,
+    )
+    return 0
+
+
 def _counted(path: pathlib.Path, bad: list[int]) -> typing.Iterator[dict[str, typing.Any]]:
     """The history, streamed, with unreadable lines counted into `bad` rather than dropped."""
     for rec in _stream(path):
@@ -693,43 +779,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "show":
         return _show(args, path)
 
+    if args.cmd == "log":
+        return _log(args, path)
+
+    # LINEAGE is what is left, and it is the one command that genuinely needs every record
+    # at once: the graph joins outputs to inputs across the whole history, so there is
+    # nothing to stream past. Not guarded by an `if`, because the subparser is required and
+    # every other command has returned by here -- a branch that cannot be false is a branch
+    # a reader has to check anyway.
     rows, bad = _load(path)
     total = len(rows)
-
-    if args.cmd == "lineage":
-        g = _lineage(rows)
-        if args.format == "json":
-            sys.stdout.write(json.dumps(g, indent=2) + "\n")
-        else:
-            sys.stdout.write(_render_lineage(rows, g) + "\n")
-        print(
-            f"# {total} record(s) from {path}"
-            + (f"; {bad} unreadable line(s) skipped" if bad else ""),
-            file=sys.stderr,
-        )
-        return 0
-    if args.script:
-        rows = [r for r in rows if r.get("script") == args.script]
-    if args.run_id:
-        rows = [r for r in rows if r.get("run_id") == args.run_id]
-    if args.failed:
-        rows = [r for r in rows if r.get("status") == "failed"]
-    if args.limit:
-        rows = rows[-args.limit :]
-
-    if args.format == "yaml":
-        sys.stdout.write(_yaml(rows))
-    elif args.format == "jsonl":
-        for r in rows:
-            sys.stdout.write(json.dumps(r) + "\n")
+    g = _lineage(rows)
+    if args.format == "json":
+        sys.stdout.write(json.dumps(g, indent=2) + "\n")
     else:
-        sys.stdout.write(_timeline(rows))
-
-    n_failed = sum(1 for r in rows if r.get("status") == "failed")
+        sys.stdout.write(_render_lineage(rows, g) + "\n")
     print(
-        f"# {len(rows)} of {total} run(s) from {path}"
-        + (f"; {n_failed} FAILED" if n_failed else "")
-        + (f"; {bad} unreadable line(s) skipped" if bad else ""),
+        f"# {total} record(s) from {path}" + (f"; {bad} unreadable line(s) skipped" if bad else ""),
         file=sys.stderr,
     )
     return 0
