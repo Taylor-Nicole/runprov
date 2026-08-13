@@ -2412,6 +2412,103 @@ def test_encoding_skips_a_section_that_is_not_a_dict(tmp_path):
     assert rec["notes"]["bad"].startswith("UNSERIALISABLE")
 
 
+def test_a_config_that_points_at_itself_still_produces_a_record(tmp_path):
+    """L-01. A config node holding a `parent` back-reference is how most hierarchical config
+    libraries represent a tree, and `parameters` is documented as "what argparse actually
+    parsed" — so this value arrives by the ordinary route. Unguarded, `_jsonable` recursed
+    until `RecursionError`, which is a `RuntimeError` and so fell past the degrade path's
+    `except (TypeError, ValueError)`. The run then exited 0 having written NO history line
+    and NO sidecar: the one failure this package exists to prevent, arriving through its own
+    sanitiser. The cycle must cost the caller that one field and nothing else."""
+    proj = _project(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    cyc = {"name": "cfg"}
+    cyc["parent"] = cyc
+    with runprov.Run("s", {"cfg": cyc}, project=proj, provenance=tmp_path / "p.json") as run:
+        run.note("ok", 1)
+
+    assert (tmp_path / "p.json").exists(), "the sidecar must survive a cyclic parameter"
+    rec = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    assert rec["parameters"]["cfg"]["parent"] == "<circular reference>"
+    assert rec["parameters"]["cfg"]["name"] == "cfg", "the rest of the node is still recorded"
+    assert rec["notes"]["ok"] == 1, "an unrelated note is untouched"
+
+
+def test_shared_structure_is_recorded_twice_and_is_not_a_cycle(tmp_path):
+    """The guard tracks the ids on the CURRENT PATH, not every id seen. One dict passed as
+    two parameters is ordinary sharing — a config section reused by two steps — and both
+    sightings must record the value. A `seen` set that never forgets would call the second
+    one a cycle and silently blank a field that is perfectly serialisable."""
+    proj = _project(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    shared = {"a": 1}
+    with runprov.Run(
+        "s",
+        {"x": shared, "y": shared, "z": [shared, shared]},
+        project=proj,
+        provenance=tmp_path / "p.json",
+    ):
+        pass
+    rec = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    assert rec["parameters"] == {"x": {"a": 1}, "y": {"a": 1}, "z": [{"a": 1}, {"a": 1}]}
+
+
+def test_a_parameter_nested_past_the_cap_is_named_rather_than_lost(tmp_path):
+    """Depth alone lost the record too, with no cycle anywhere: 2,000 nested dicts is a
+    `RecursionError` in the same place. The cap states itself in the record — the rule the
+    NaN branch already follows, and the reason `git_other_files_omitted` exists."""
+    proj = _project(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    deep = "leaf"
+    for _ in range(2000):
+        deep = {"k": deep}
+    with runprov.Run("deep", {"d": deep}, project=proj, provenance=tmp_path / "p.json"):
+        pass
+
+    assert (tmp_path / "p.json").exists()
+    body = log.read_text(encoding="utf-8")
+    assert f"<nested beyond {runprov.run.JSONABLE_MAX_DEPTH} levels>" in body
+    walk, levels = json.loads(body.splitlines()[0])["parameters"]["d"], 0
+    while isinstance(walk, dict):
+        walk, levels = walk["k"], levels + 1
+    assert walk == f"<nested beyond {runprov.run.JSONABLE_MAX_DEPTH} levels>"
+    # One less than the cap, and the arithmetic is worth pinning: `parameters` is itself the
+    # first level the walk descends, so a value reached at `parameters["d"]` keeps 99 of its
+    # own levels. Asserting the exact number is what caught this off by one when the guard
+    # was written -- a cap whose stated size is not the size it applies is the kind of
+    # almost-true number this package exists to refuse.
+    assert levels == runprov.run.JSONABLE_MAX_DEPTH - 1, (
+        f"the walk stopped after {levels} levels, not at the stated cap"
+    )
+
+
+def test_a_value_that_recurses_while_being_stringified_costs_one_entry_not_the_run(tmp_path):
+    """L-01, second half. `_jsonable`'s depth cap cannot help here: the value is a plain
+    object, so it passes through untouched and the recursion happens inside `json.dumps`'s
+    `default=str`. The degrade path is what must catch it — and it caught only `TypeError`
+    and `ValueError`, so a `RecursionError` (a `RuntimeError`) fell past a two-name `except`
+    that had been correct for years and lost the entire record.
+
+    Written because removing `RecursionError` from `SERIALISATION_ERRORS` left every other
+    test in this file green: the cap above hides the raise from the guard below, so the two
+    halves of the fix have to be tested apart."""
+
+    class Recursive:
+        def __str__(self) -> str:
+            return str(self)
+
+    proj = _project(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.json") as run:
+        run.note("fine", 1)
+        run.note("bad", Recursive())
+
+    assert (tmp_path / "p.json").exists(), "one bad note must not cost the sidecar"
+    rec = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    assert rec["notes"]["bad"].startswith("UNSERIALISABLE")
+    assert rec["notes"]["fine"] == 1, "the entries beside it are untouched"
+
+
 def _consumer(tmp_path) -> pathlib.Path:
     """Write a script that emits DATA on stdout and records provenance while doing it.
 
