@@ -146,6 +146,32 @@ PIN_UNSAFE = {
     ".pdf": "binary; `open_output` is text mode and a pin would corrupt it",
 }
 
+#: Of the above, the ones that are BINARY or COMPRESSED. `open_output` opens in text mode,
+#: so these are refused whatever happens to the pin -- the mode is the problem, not the
+#: comment. Everything else in `PIN_UNSAFE` is text and gets a SIDECAR instead.
+PIN_BINARY = frozenset(
+    {".bam", ".cram", ".parquet", ".h5", ".hdf5", ".npy", ".npz", ".xlsx",
+     ".gz", ".bgz", ".zst", ".bz2", ".zip", ".png", ".pdf"}
+)  # fmt: skip
+
+#: What a sidecar pin is called: `calls.jsonl` -> `calls.jsonl.prov.txt`. The suffix is
+#: APPENDED rather than replacing, so two artifacts differing only in extension cannot
+#: collide on one sidecar, and the artifact it belongs to is readable from the name.
+PIN_SIDECAR_SUFFIX = ".prov.txt"
+
+#: Markers that SOME parsers of a format accept, offered only when the caller asks for them
+#: by name. Measured rather than assumed, and the caveat is the reason each entry carries
+#: one: `;` is the legacy Pearson FASTA comment and Biopython reads it without complaint,
+#: while `samtools faidx` rejects the file outright. That is a real trade a caller can make
+#: knowingly and must not be made for them, so the default stays the sidecar.
+PIN_ALTERNATIVE = {
+    ".fasta": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
+    ".fa": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
+    ".fna": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
+    ".faa": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
+    ".ffn": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
+}
+
 
 class Terminated(BaseException):
     """A termination signal arrived while a `Run` was open. See `Run._catch_signals`.
@@ -991,15 +1017,31 @@ class Run:
         artifact as `MISSING` rather than losing it.
         """
         suffix = pathlib.Path(path).suffix.lower()
-        if (why := PIN_UNSAFE.get(suffix)) is not None:
+        why = PIN_UNSAFE.get(suffix)
+        # BINARY IS STILL A REFUSAL, and it is not about the pin: this method opens in text
+        # mode, so a caller cannot write a PNG or a BAM through the handle it returns
+        # whatever the pin does. `output()` plus `pin_sidecar()` is the route for those.
+        if why is not None and suffix in PIN_BINARY:
             raise ValueError(
-                f"{self.record['script']}: refusing to write a provenance pin into "
-                f"{pathlib.Path(path).name} — {why}.\n"
-                f"    Use `run.output(path)` and write the file yourself: the run still "
-                f"records and hashes it, and only the in-artifact pin is given up. If this "
-                f"format does have a comment syntax, `run.header(marker)` renders the pin "
-                f"for you to place correctly."
+                f"{self.record['script']}: cannot open {pathlib.Path(path).name} here — "
+                f"{why}.\n"
+                f"    Use `p = run.output(path)`, write it with whatever library owns the "
+                f"format, and call `run.pin_sidecar(p)` for the provenance beside it."
             )
+
+        # An explicitly requested ALTERNATIVE marker: the caller has named a comment
+        # character this format's parsers may accept, which is a trade they are entitled to
+        # make and must not have made for them. Only the exact marker in the table, so
+        # passing `"## "` for a VCF still cannot get through -- that one was MEASURED to
+        # fail even though it is the format's own marker.
+        alternative = PIN_ALTERNATIVE.get(suffix)
+        inline = why is None or (alternative is not None and comment == alternative[0])
+        if alternative is not None and inline:
+            diagnostic(
+                f"  PROVENANCE NOTE: pinning {pathlib.Path(path).name} in-band with "
+                f"{comment!r} — {alternative[1]}. `run.pin_sidecar()` avoids the trade."
+            )
+
         p = pathlib.Path(self.output(path))
         p.parent.mkdir(parents=True, exist_ok=True)
         # No **kwargs, deliberately. Every option a caller might pass here is either
@@ -1007,12 +1049,105 @@ class Run:
         # themselves. A pinning helper with a dozen knobs is a second `open()`.
         fh = open(p, "w", encoding="utf-8")
         try:
-            fh.write(self.header(comment))
+            if inline:
+                fh.write(self.header(comment))
         except Exception:  # guards-ok: an artifact half-written by this method would be
             # worse than one this method refused to open -- close before re-raising
             fh.close()
             raise
+        if not inline:
+            # TEXT, but with nowhere to put a comment. The artifact is written untouched
+            # and the pin goes beside it, so "this artifact can say what it was made from"
+            # survives for a FASTA or a JSONL exactly as it does for a TSV.
+            self.pin_sidecar(p, comment=comment)
         return fh
+
+    def pin_sidecar(self, path: str | pathlib.Path, comment: str = "# ") -> pathlib.Path:
+        """Write the pin BESIDE an artifact instead of inside it, and register it.
+
+        The general answer for every format that cannot hold a comment: a FASTA, a JSONL, a
+        BAM, a PNG, a parquet. `<artifact>.prov.txt` carries exactly what `header()` would
+        have written into the file, so the property that matters -- an artifact that can say
+        what it was made from, after the run's own sidecar has been overwritten by the next
+        run -- survives for formats that could never take an in-band pin.
+
+        Registered as an output, so it is hashed and recorded like any other artifact and
+        `verify` can read it. It is a real file the run produced, not a note about one.
+
+        Weaker than an in-band pin, and honestly so: a sidecar can be separated from its
+        artifact by a copy, a move or a `tar` that takes one and not the other. That is why
+        in-band is still the default wherever the format allows it. It is much stronger than
+        nothing, which is what these formats had.
+
+        Call it after `run.output(p)` for a file another library writes:
+
+            fig = run.output(OUT / "panel.png")
+            plt.savefig(fig)
+            run.pin_sidecar(fig)
+        """
+        target = pathlib.Path(path)
+        side = target.with_name(target.name + PIN_SIDECAR_SUFFIX)
+        side.parent.mkdir(parents=True, exist_ok=True)
+        # The artifact's own name is in the sidecar, because a `.prov.txt` that has been
+        # separated from what it describes should still say what it described.
+        body = f"{comment}provenance for: {target.name}\n{self.header(comment)}"
+        side.write_text(body, encoding="utf-8")
+        self.output(side)
+        return side
+
+    def write_json(
+        self, path: str | pathlib.Path, payload: dict[str, typing.Any], key: str = "_provenance"
+    ) -> pathlib.Path:
+        """Write a JSON artifact with the pin embedded as a KEY, registered and hashed.
+
+        JSON has no comment syntax, so there is no in-band pin a file handle could write --
+        `open_output` gives a `.json` a sidecar for exactly that reason. What JSON does have
+        is structure, and a top-level key is a place a pin can live where every parser will
+        read it and none will choke on it. That cannot be done through a handle, because it
+        means serialising the whole document, so it is its own method.
+
+        IT CHANGES YOUR SCHEMA, and that is why it is opt-in rather than what `.json` does
+        by default. A consumer iterating top-level keys sees one more than it wrote. Pass a
+        `key` your readers ignore, or use `output()` and take the sidecar.
+
+        The pin is stored as STRUCTURE, not as the rendered comment block: a consumer
+        reading the digests should not have to parse prose out of a string.
+
+        A mapping only. A JSON array has nowhere to put a key, and wrapping it in an object
+        to make room would change what the document IS rather than annotate it -- so that
+        raises here, where the caller can see it, rather than silently restructuring.
+
+            run.write_json(OUT / "calls.json", {"variants": rows})
+        """
+        if not isinstance(payload, dict):
+            raise TypeError(
+                f"{self.record['script']}: write_json needs a mapping to add {key!r} to, "
+                f"not {type(payload).__name__}. Wrapping it would change what the document "
+                f"is; use `run.output(path)` and `run.pin_sidecar(path)` instead."
+            )
+        if key in payload:
+            raise ValueError(
+                f"{self.record['script']}: {key!r} is already in the payload — refusing to "
+                f"overwrite it. Pass a different `key=`."
+            )
+        p = pathlib.Path(self.output(path))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        pin = {
+            "script": self.record["script"],
+            "generation": self.record["generation"],
+            "commit": self.record["code"]["git_commit_short"],
+            # The same expression the in-band pin uses, so a checker reading either sees
+            # the same digest for the same input. See `hashing.pin_digest`.
+            "inputs": sorted(
+                {(pin_digest(i), self._pin_name(i.get("path", "?"))) for i in self.record["inputs"]}
+            ),
+        }
+        self._pin_rendered = True
+        p.write_text(
+            json.dumps({key: pin, **payload}, indent=2, sort_keys=False, default=str) + "\n",
+            encoding="utf-8",
+        )
+        return p
 
     def environment_snapshot(
         self, directory: str | pathlib.Path | None = None
