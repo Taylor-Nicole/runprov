@@ -585,9 +585,11 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
     """
     bad = [0]
     if args.target:
-        # A TARGET is a filter, so only what matches is held -- and what matches is a
-        # handful of runs, not a hundred thousand.
-        matched = select(_counted(path, bad), args.target)
+        # A TARGET IS A FILTER, and now genuinely is one: `select` fills its four buckets
+        # in a single streaming pass, so what is held is what matches -- a handful of runs,
+        # not a hundred thousand. `--limit` is passed IN rather than sliced off the result,
+        # so a bucket cannot grow past it on the way.
+        matched = select(_counted(path, bad), args.target, limit=args.limit or None)
         if not matched:
             print(
                 f"nothing in {path} matches {args.target!r}.\n"
@@ -597,8 +599,6 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
                 file=sys.stderr,
             )
             return 1
-        if args.limit:
-            matched = matched[-args.limit :]
         views = [run_view(r) for r in matched]
         if args.format == "yaml":
             sys.stdout.write(_yaml_doc(views))

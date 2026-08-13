@@ -446,7 +446,9 @@ def _scalar(v: object) -> str:
 
 
 def select(
-    records: typing.Iterable[dict[str, typing.Any]], target: str
+    records: typing.Iterable[dict[str, typing.Any]],
+    target: str,
+    limit: int | None = None,
 ) -> list[dict[str, typing.Any]]:
     """Runs matching `target`: a script name, a run_uid prefix, a run_id, or an artifact path.
 
@@ -454,25 +456,35 @@ def select(
     A developer asking about `build_labels` and a developer asking about `results/x.tsv` are
     asking the same question -- what happened here -- and should not have to say which kind
     of name they happen to be holding.
+
+    ONE PASS, FOUR BUCKETS. The four kinds used to be four comprehensions over a list, which
+    meant `list(records)` first -- and `records` is the history generator, so the whole file
+    was held to answer a question about one run: 445 MB at 100,000 runs, 2.0 GB at 500,000,
+    and the same on the path where NOTHING matches, to print "nothing matches". The comment
+    that stood here claimed the opposite ("only what matches is held").
+
+    The buckets are disjoint by construction and a lower-priority one is only ever returned
+    when every higher one is empty, so filling all four in one pass returns exactly what four
+    ordered passes returned. `limit` bounds each bucket to the last N, which is the same
+    slice the caller used to take afterwards -- taken here so a bucket cannot grow past it.
     """
-    # ONE pass into a list first: `records` may be a generator, and a generator that four
-    # comprehensions walk in turn is empty after the first one -- silently, returning "no
-    # match" for a target that matches.
-    records = list(records)
-    by_script = [r for r in records if r.get("script") == target]
-    if by_script:
-        return by_script
-    by_uid = [r for r in records if str(r.get("run_uid", "")).startswith(target)]
-    if by_uid:
-        return by_uid
-    by_run_id = [r for r in records if r.get("run_id") == target]
-    if by_run_id:
-        return by_run_id
-    return [
-        r
-        for r in records
-        if any(
+    kinds: tuple[collections.deque[dict[str, typing.Any]], ...] = tuple(
+        collections.deque(maxlen=limit) for _ in range(4)
+    )
+    by_script, by_uid, by_run_id, by_path = kinds
+    for r in records:
+        if r.get("script") == target:
+            by_script.append(r)
+        elif str(r.get("run_uid", "")).startswith(target):
+            by_uid.append(r)
+        elif r.get("run_id") == target:
+            by_run_id.append(r)
+        elif any(
             _name(e) == target or pathlib.Path(_name(e)).name == target
             for e in (r.get("outputs") or []) + (r.get("inputs") or [])
-        )
-    ]
+        ):
+            by_path.append(r)
+    for bucket in kinds:
+        if bucket:
+            return list(bucket)
+    return []
