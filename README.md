@@ -352,6 +352,56 @@ Everything above round-trips: written through runprov, read back by `h5py`, `ann
 
 Adding your own format is three lines, and the file says how.
 
+## The notebook: `show`
+
+`log` is a timeline and `lineage` is a graph. Neither answers the question you actually have
+three weeks in — **which script expects which input, and does the thing I need already
+exist?** Rebuilding an artifact that was already correct, because nobody could tell, is the
+expensive mistake when a build takes hours.
+
+```bash
+python -m runprov show                 # the project page
+python -m runprov show build_labels    # every run of one script
+python -m runprov show results/mid.tsv # every run that read or wrote one artifact
+python -m runprov show --format yaml
+```
+
+The project page is built per **script**, because that is what the question is about:
+
+```
+  build    2 run(s)
+    last 2026-08-13T11:35:13Z    first 2026-08-13T11:34:39Z
+    file src/build.py
+    expects:
+      data/in.tsv   04bdbee1490cec52 7f21c0a91b3e5d44
+    writes:
+      out/mid.tsv
+    params:  mode
+    notes:   rows
+
+── artifacts on record (2) ───────────────────────────────────────────────────
+
+  bd6f7dc7a8d29a50  out/mid.tsv
+                    by build  2026-08-13T11:35:13Z
+```
+
+Two digests beside one input path means that file has been read at **two different
+versions** — which is the fact, and a script that has read forty is summarised as
+`[40 versions]` rather than printed. An artifact produced by a run that failed says so.
+
+A target can be a script name, a `run_uid` prefix, a `run_id` or an artifact path, and they
+are all tried: someone asking about `build` and someone asking about `out/mid.tsv` are
+asking the same question and should not have to say which kind of name they hold.
+
+**It writes nothing.** `show` reads `runs.jsonl` and renders it — no new field, no file, no
+change to any record. A view that could alter what it displays would be a view you have to
+trust, and the record is the thing being trusted. There is a test asserting the bytes on
+disk are identical before and after.
+
+Text by default and YAML with `--format yaml`, deliberately not HTML: this gets read in the
+terminal beside the work, many times a day. The YAML quotes **every scalar**, for the reason
+the section above gives — the predecessor's log dies on a `Note:` somebody typed.
+
 ## Verify: is this artifact still made from what it says it is?
 
 ```bash
