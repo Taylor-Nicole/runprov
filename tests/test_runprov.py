@@ -6648,3 +6648,74 @@ def test_svg_and_json_are_written_clean_and_would_have_broken_in_band(tmp_path):
         broken.write_text(run.header() + payload, encoding="utf-8")
         with pytest.raises(Exception):  # noqa: B017 - two libraries, two error types
             parse(broken)
+
+
+def test_a_format_nobody_listed_gets_the_SAFE_outcome(tmp_path):
+    """THE INVERSION, and the reason for it.
+
+    The rule used to be "pin in-band unless the suffix is on a list of known-unsafe
+    formats", so a format nobody had thought of got a `#` written into it. Three rounds of
+    review each found another one nobody had thought of — Newick, where a pinned tree
+    PARSED and came back with three phantom taxa; SVG and JSON, found by instrumenting a
+    real plotting script; then pickle. Each fix added a row and left the default intact.
+
+    A guard whose default is to corrupt is not a guard. The question is now "is this format
+    known to take a `#` comment?", so anything unrecognised is written byte-exact with the
+    pin beside it — safe for a format that has not been invented yet.
+    """
+    proj = _project(tmp_path)
+    src = tmp_path / "in.tsv"
+    src.write_text("x\n", encoding="utf-8")
+    run = runprov.Run("s", project=proj)
+    run.input(src)
+
+    payload = "PAYLOAD\n"
+    for name in ("a.weirdext", "a.qza2", "a.h5adx", "a.loomx", "a.no_such_format", "a"):
+        assert pathlib.Path(name).suffix.lower() not in runprov.run.PIN_INLINE
+        with run.open_output(tmp_path / name) as fh:
+            fh.write(payload)
+        assert (tmp_path / name).read_text(encoding="utf-8") == payload, f"{name}: byte-exact"
+        assert (tmp_path / (name + runprov.run.PIN_SIDECAR_SUFFIX)).is_file(), name
+
+
+def test_executable_scripts_are_not_pinned_in_band_even_though_hash_is_a_comment(tmp_path):
+    """`#` IS a comment in Python and shell, and they are still not on the allowlist: their
+    first line can be a shebang, and a pin above it stops the file being executable.
+    "Is `#` a comment" is not the same question as "is line 1 free"."""
+    proj = _project(tmp_path)
+    src = tmp_path / "in.tsv"
+    src.write_text("x\n", encoding="utf-8")
+    run = runprov.Run("s", project=proj)
+    run.input(src)
+    for name in ("generated.py", "wrapper.sh", "tool.pl", "helper.rb"):
+        with run.open_output(tmp_path / name) as fh:
+            fh.write("#!/usr/bin/env python3\nprint('hi')\n")
+        assert (tmp_path / name).read_text(encoding="utf-8").startswith("#!"), name
+        assert (tmp_path / (name + runprov.run.PIN_SIDECAR_SUFFIX)).is_file(), name
+
+
+def test_pickle_and_friends_are_refused_with_the_message_a_caller_needs(tmp_path):
+    """Naming a binary format buys a better MESSAGE, not the protection — the allowlist
+    already sends anything unrecognised to the sidecar. A caller holding a `pickle.dump`
+    needs to be told they cannot write it through a text handle, not that the pin moved."""
+    proj = _project(tmp_path)
+    run = runprov.Run("s", project=proj)
+    for name in (
+        "model.pkl",
+        "model.pickle",
+        "model.joblib",
+        "t.feather",
+        "t.arrow",
+        "d.sqlite",
+        "x.nc",
+        "x.mat",
+        "i.tiff",
+        "i.jpg",
+        "m.pt",
+        "m.safetensors",
+        "a.h5ad",
+        "a.rds",
+    ):
+        with pytest.raises(ValueError, match="cannot open") as caught:
+            run.open_output(tmp_path / name)
+        assert "run.pin_sidecar(p)" in str(caught.value), name

@@ -146,12 +146,39 @@ PIN_UNSAFE = {
     ".pdf": "binary; `open_output` is text mode and a pin would corrupt it",
 }
 
+#: THE ALLOWLIST: suffixes whose format is known to treat a leading `#` line as a comment,
+#: and whose first line is not otherwise special. Anything not named here gets a SIDECAR.
+#:
+#: This is the inversion. The rule used to be "pin in-band unless the suffix is on a list of
+#: known-unsafe formats", and that default corrupts whatever nobody thought of -- which over
+#: three rounds of review was Newick (a pinned tree PARSED and came back with three phantom
+#: taxa), then SVG and JSON (found by instrumenting a real plotting script), then pickle.
+#: Each fix added a row and left the default intact. A guard whose default is to corrupt is
+#: not a guard, so the default is now the safe outcome and the list is of what is SAFE.
+#:
+#: Deliberately NOT here, though `#` is a comment in all of them: `.py`, `.sh`, `.pl`, `.rb`
+#: and friends. Their first line can be a shebang, and a pin above it stops the file being
+#: executable -- "is `#` a comment" is not the same question as "is line 1 free".
+#: `.md` IS here: `#` renders as a heading rather than a comment, which is visible but not
+#: corrupting, and it has been pinned that way from the start.
+PIN_INLINE = frozenset(
+    {".bed", ".bedgraph", ".cfg", ".conf", ".csv", ".gff", ".gff3", ".gtf", ".ini",
+     ".md", ".properties", ".tab", ".toml", ".tsv", ".txt", ".yaml", ".yml"}
+)  # fmt: skip
+
 #: Of the above, the ones that are BINARY or COMPRESSED. `open_output` opens in text mode,
 #: so these are refused whatever happens to the pin -- the mode is the problem, not the
 #: comment. Everything else in `PIN_UNSAFE` is text and gets a SIDECAR instead.
+#: Naming them buys a better MESSAGE, not the protection -- the allowlist already sends an
+#: unknown suffix to the sidecar. These get "you cannot write this through a text handle"
+#: instead, which is the actual problem for a caller holding a `pickle.dump`.
 PIN_BINARY = frozenset(
-    {".bam", ".cram", ".parquet", ".h5", ".hdf5", ".npy", ".npz", ".xlsx",
-     ".gz", ".bgz", ".zst", ".bz2", ".zip", ".png", ".pdf"}
+    {
+    ".arrow", ".bam", ".bcf", ".bgz", ".bz2", ".cram", ".db", ".feather", ".gif", ".gz", ".h5",
+    ".h5ad", ".hdf5", ".joblib", ".jpeg", ".jpg", ".loom", ".mat", ".nc", ".npy", ".npz",
+    ".onnx", ".parquet", ".pdf", ".pickle", ".pkl", ".png", ".pt", ".pth", ".qza", ".rds",
+    ".safetensors", ".sqlite", ".sqlite3", ".tif", ".tiff", ".webp", ".xlsx", ".zip", ".zst"
+    }
 )  # fmt: skip
 
 #: What a sidecar pin is called: `calls.jsonl` -> `calls.jsonl.prov.txt`. The suffix is
@@ -164,7 +191,12 @@ PIN_SIDECAR_SUFFIX = ".prov.txt"
 #: one: `;` is the legacy Pearson FASTA comment and Biopython reads it without complaint,
 #: while `samtools faidx` rejects the file outright. That is a real trade a caller can make
 #: knowingly and must not be made for them, so the default stays the sidecar.
+#: An empty caveat means there is no trade at all -- the marker is simply that format's
+#: comment syntax, and `#` was only ever the wrong default for it. A non-empty caveat is
+#: said on stderr at the moment the trade is made.
 PIN_ALTERNATIVE = {
+    ".sql": ("-- ", ""),
+    ".tex": ("% ", ""),
     ".fasta": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
     ".fa": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
     ".fna": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
@@ -1017,11 +1049,11 @@ class Run:
         artifact as `MISSING` rather than losing it.
         """
         suffix = pathlib.Path(path).suffix.lower()
-        why = PIN_UNSAFE.get(suffix)
-        # BINARY IS STILL A REFUSAL, and it is not about the pin: this method opens in text
-        # mode, so a caller cannot write a PNG or a BAM through the handle it returns
-        # whatever the pin does. `output()` plus `pin_sidecar()` is the route for those.
-        if why is not None and suffix in PIN_BINARY:
+        why = PIN_UNSAFE.get(suffix, "the format is not known to accept a `#` comment")
+        # BINARY IS A REFUSAL, and it is not about the pin: this method opens in text mode,
+        # so a caller cannot write a PNG or a BAM through the handle it returns whatever
+        # the pin does. `output()` plus `pin_sidecar()` is the route for those.
+        if suffix in PIN_BINARY:
             raise ValueError(
                 f"{self.record['script']}: cannot open {pathlib.Path(path).name} here — "
                 f"{why}.\n"
@@ -1034,9 +1066,15 @@ class Run:
         # make and must not have made for them. Only the exact marker in the table, so
         # passing `"## "` for a VCF still cannot get through -- that one was MEASURED to
         # fail even though it is the format's own marker.
+        # AN ALLOWLIST, and inverting it is the point. This asked `is the suffix KNOWN to be
+        # unsafe?`, so a format nobody had thought of got a `#` pin written into it -- and
+        # every round of review found another one nobody had thought of: Newick, then SVG
+        # and JSON from a real plotting script, then pickle. A guard whose default is to
+        # corrupt is not a guard. The question is now `is this format KNOWN to take a `#`
+        # comment?`, so an unrecognised suffix gets the sidecar, which is safe for anything.
         alternative = PIN_ALTERNATIVE.get(suffix)
-        inline = why is None or (alternative is not None and comment == alternative[0])
-        if alternative is not None and inline:
+        inline = suffix in PIN_INLINE or (alternative is not None and comment == alternative[0])
+        if alternative is not None and inline and alternative[1]:
             diagnostic(
                 f"  PROVENANCE NOTE: pinning {pathlib.Path(path).name} in-band with "
                 f"{comment!r} — {alternative[1]}. `run.pin_sidecar()` avoids the trade."
