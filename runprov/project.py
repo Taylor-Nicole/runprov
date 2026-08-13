@@ -362,6 +362,20 @@ class Project:
     #: Sortable first, unique second: the time is what a person browses by, and the run_uid
     #: is what makes two runs inside the same second still two files.
     sidecar_per_run: bool = False
+    #: Hash the project's OWN modules that the run actually imported.
+    #:
+    #: `git_commit` identifies the code only when the tree is clean, and during development
+    #: it never is. `script_sha256` pins the entry point and nothing it calls -- so a run
+    #: whose result changed because `src/utils/stats.py` changed recorded a commit, a clean
+    #: entry script, and no trace of the file that did it.
+    #:
+    #: Scoped to modules resolving UNDER the project root, because third-party packages are
+    #: already answered by `packages` and `env_snapshot_dir`, and hashing site-packages on
+    #: every run would cost far more than it says.
+    hash_imported_code: bool = True
+    #: How many imported modules are hashed before the rest are counted instead. A record
+    #: must not become the repository it describes; `imported_code_omitted` states the tail.
+    imported_code_max: int = 200
     run_id: typing.Callable[[], str] = default_run_id
     generation: typing.Callable[[], str] = default_generation
 

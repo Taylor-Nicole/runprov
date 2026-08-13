@@ -32,6 +32,14 @@ Nothing has been published yet. Everything below is what a first release would c
   where the target may be a script name, a `run_uid` prefix, a `run_id` or an artifact path.
   Text or `--format yaml`. **It writes nothing** — a reader over `runs.jsonl`, asserted by a
   test that compares every byte on disk before and after.
+- **Every run hashes the project's own modules that it imported.** `git_commit` identifies
+  the code only when the tree is clean and `script_sha256` pins the entry point alone, so a
+  run whose result changed because a helper module changed had no trace of it. Measured:
+  editing `src/utils/stats.py` moves the imported-code digest while `script_sha256` stays
+  put. Read at exit so lazy imports count; scoped under the project root, with virtualenvs
+  and build trees inside the root excluded. The history line carries one digest and a count
+  (the per-file list is in the sidecar, since the history is appended forever);
+  `hash_imported_code=False` turns it off and `imported_code_max` caps it.
 - **A documented `note()` convention** for the questions a digest cannot answer. A digest
   says an artifact changed; it cannot say a column appeared, and runprov will not open your
   files to find out. `run.note("columns", list(df.columns))` makes "when did that column

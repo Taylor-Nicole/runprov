@@ -409,6 +409,39 @@ Two digests beside one input path means that file has been read at **two differe
 versions** — which is the fact, and a script that has read forty is summarised as
 `[40 versions]` rather than printed. An artifact produced by a run that failed says so.
 
+### What code actually ran
+
+`git_commit` identifies the code **only when the tree is clean**, and during development it
+never is. `script_sha256` pins the entry point and nothing it calls. So a run whose numbers
+moved because `src/utils/stats.py` moved recorded a commit, a clean-looking entry script,
+and no trace of the file that did it.
+
+Every run now hashes the project's **own modules that it actually imported**:
+
+```json
+"code": {"imported": {
+  "count": 4, "omitted": 0, "digest": "137dc9cf…",
+  "files": [{"path": "analyse.py",          "sha256": "b56f3e28…"},
+            {"path": "src/utils/stats.py",  "sha256": "99602c77…"}]}}
+```
+
+Measured: edit `src/utils/stats.py`, leave the entry script alone, and the digest moves
+from `137dc9cf…` to `2e62cd07…` while `script_sha256` is unchanged. That is the gap.
+
+**Read at exit**, so a module imported halfway through the work is still counted. **Under
+the project root only** — third-party packages are answered by `packages` and
+`env_snapshot_dir`, and hashing site-packages every run would cost far more than it says,
+so a virtualenv living inside the root is excluded too.
+
+The **history line carries a summary**, not the list: one `digest` and a `count`. That
+answers "did any first-party code change between these two runs" — the question a history
+is asked — without multiplying an append-forever file by fifty modules. The per-file hashes
+are in the sidecar.
+
+`configure(hash_imported_code=False)` turns it off; `imported_code_max` caps the list, and
+`omitted` states the tail. `run.module(m)` remains the sharper tool when you want to know
+where one specific import *resolved from*, which is a different question.
+
 ### When did I add that column?
 
 The digest tells you an artifact changed on 12 March and which run and command changed it.
