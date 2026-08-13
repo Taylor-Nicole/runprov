@@ -44,6 +44,16 @@ Nothing has been published yet. Everything below is what a first release would c
 - **Failure recording.** `with Run(..., provenance=PROV)` records `status: "failed"` with
   the exception type, message and traceback tail, and every registered-but-unproduced output
   as `MISSING`.
+- **Constructing a `Run` no longer imports the packages it tracks.** `_versions` did
+  `__import__(mod).__version__`, so building a provenance object imported numpy, pandas,
+  scipy and sklearn whether or not the script used them — and numpy/MKL fix their
+  thread-pool configuration at import time, so the run was measurably different because it
+  was traced. Versions are now read from `sys.modules` (what the script actually holds)
+  then from distribution metadata, via `packages_distributions()` so `sklearn` still
+  resolves through `scikit-learn`. Measured on one `Run()` with all four installed and none
+  imported: **RSS +135 MB → +3 MB**, and the recorded versions are identical. A tracked
+  package that is neither imported nor installed now records `None` rather than being
+  imported to find out.
 - **A symlinked directory inside the root pins as repository data, not as `<external>/`.**
   `_pin_name` resolved every link, so `data/ -> /mnt/bigdisk/data` — the standard layout,
   and every Nextflow/Snakemake work directory, which stages inputs as symlinks — announced

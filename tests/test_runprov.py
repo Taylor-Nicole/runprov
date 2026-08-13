@@ -20,6 +20,7 @@ import gc
 import gzip
 import hashlib
 import importlib
+import importlib.metadata
 import inspect
 import io
 import itertools
@@ -6155,3 +6156,123 @@ def test_a_symlink_loop_pins_as_external_instead_of_killing_the_run(tmp_path):
     run = runprov.Run("s", project=proj)
     run.record["inputs"].append({"path": str(outside / "a" / "x.tsv"), "sha256": "0" * 64})
     assert "<external>/x.tsv" in run.header()
+
+
+# ============== provenance must not change the program it observes: tracked packages
+def _tracking(tmp_path, *mods):
+    return runprov.Project(
+        root=tmp_path,
+        run_log=tmp_path / "runs.jsonl",
+        run_id=lambda: "r",
+        generation=lambda: "g",
+        tracked_packages=mods,
+    )
+
+
+def test_constructing_a_run_does_not_import_the_packages_it_tracks(tmp_path):
+    """`__import__(mod).__version__` imported numpy, pandas, scipy and sklearn whether or
+    not the script used them, so the provenance object CHANGED THE PROGRAM IT OBSERVED.
+
+    Not merely latency, which is the part that is easy to see: numpy and MKL fix their
+    thread-pool configuration at import time and libraries install `warnings` filters at
+    import time, so the run was measurably different because it was traced — and the record
+    said nothing about that. Measured on one `Run()` in an env holding all four: 0.633 s and
+    +135 MB RSS before, 0.336 s and +3 MB after, with identical recorded versions.
+
+    A module whose import has a visible side effect stands in for all of them, because the
+    side effect is the point rather than the identity of any particular package.
+    """
+    pkg = tmp_path / "sideeffecty"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(
+        "import builtins\nbuiltins._RUNPROV_SIDE_EFFECT = True\n__version__ = '9.9'\n",
+        encoding="utf-8",
+    )
+    sys.path.insert(0, str(tmp_path))
+    try:
+        assert not hasattr(builtins, "_RUNPROV_SIDE_EFFECT"), "precondition"
+        run = runprov.Run("s", project=_tracking(tmp_path, "sideeffecty"))
+        assert not hasattr(builtins, "_RUNPROV_SIDE_EFFECT"), (
+            "constructing a Run imported a tracked package and ran its module-level code"
+        )
+        assert "sideeffecty" not in sys.modules
+        # Importable but neither imported nor an installed distribution, so there is
+        # nothing to READ — and reading is now the only thing this is allowed to do.
+        assert run.record["environment"]["packages"] == {"sideeffecty": None}
+    finally:
+        sys.path.remove(str(tmp_path))
+        sys.modules.pop("sideeffecty", None)
+        if hasattr(builtins, "_RUNPROV_SIDE_EFFECT"):
+            del builtins._RUNPROV_SIDE_EFFECT
+
+
+def test_an_already_imported_package_is_read_from_the_object_the_script_holds(tmp_path):
+    """`sys.modules` first: if the script imported it, the object it actually has is the
+    truth. An editable install, a `sys.path` shim or a vendored copy can disagree with any
+    metadata — which is the whole reason `module()` exists."""
+    mod = types.ModuleType("pretend_pkg")
+    mod.__version__ = "3.2.1-from-the-object"
+    sys.modules["pretend_pkg"] = mod
+    try:
+        run = runprov.Run("s", project=_tracking(tmp_path, "pretend_pkg"))
+        assert run.record["environment"]["packages"] == {"pretend_pkg": "3.2.1-from-the-object"}
+    finally:
+        del sys.modules["pretend_pkg"]
+
+
+def test_a_tracked_package_whose_distribution_has_another_name_is_still_found(tmp_path):
+    """`sklearn` ships as `scikit-learn`, and it is the most-used tracked package in
+    science. Looking the IMPORT name up in metadata would have reported it absent, so the
+    module-to-distribution map is what makes reading a viable replacement for importing.
+
+    A REAL `.dist-info` on `sys.path`, not a patched map, and not a package that happens to
+    be installed here. The first version of this test used `_pytest` → `pytest` and passed
+    while proving nothing: `_pytest` defines `__version__`, so it was answered from
+    `sys.modules` and the map was never consulted. Depending on some dev-only dependency
+    instead would make the test a statement about this machine's environment — a distro
+    packager running `pytest` with only the `test` extra would not have it.
+    """
+    site = tmp_path / "site"
+    info = site / "my_dist-4.5.6.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: my-dist\nVersion: 4.5.6\n", encoding="utf-8"
+    )
+    # What maps the import name to the distribution name; `sklearn`'s case exactly.
+    (info / "top_level.txt").write_text("mymod\n", encoding="utf-8")
+
+    sys.path.insert(0, str(site))
+    importlib.invalidate_caches()
+    try:
+        assert "mymod" not in sys.modules, "it must be resolved by the MAP, not by import"
+        assert importlib.metadata.packages_distributions().get("mymod") == ["my-dist"]
+        run = runprov.Run("s", project=_tracking(tmp_path, "mymod"))
+        assert run.record["environment"]["packages"] == {"mymod": "4.5.6"}
+    finally:
+        sys.path.remove(str(site))
+        importlib.invalidate_caches()
+
+
+def test_an_absent_tracked_package_records_none_rather_than_failing_the_run(tmp_path):
+    """None IS the record. A tracked package that is absent is a fact about the
+    environment, and it must never abort somebody's run."""
+    run = runprov.Run("s", project=_tracking(tmp_path, "no_such_package_anywhere", "runprov"))
+    pkgs = run.record["environment"]["packages"]
+    assert pkgs["no_such_package_anywhere"] is None
+    assert pkgs["runprov"] == runprov.__version__, "and a name that IS a distribution resolves"
+
+
+def test_unreadable_distribution_metadata_records_none_rather_than_raising(tmp_path, monkeypatch):
+    """No metadata is a reason to record None, never a reason to fail the run being
+    described — the same rule the rest of this module follows."""
+
+    def boom():
+        raise RuntimeError("metadata unreadable")
+
+    monkeypatch.setattr(importlib.metadata, "packages_distributions", boom)
+    run = runprov.Run("s", project=_tracking(tmp_path, "no_such_package_anywhere", "runprov"))
+    pkgs = run.record["environment"]["packages"]
+    assert pkgs["no_such_package_anywhere"] is None
+    # With no map, the import name is tried as a distribution name directly, which is why
+    # losing the map degrades the answer rather than the run.
+    assert pkgs["runprov"] == runprov.__version__
