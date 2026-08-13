@@ -442,6 +442,46 @@ are in the sidecar.
 `omitted` states the tail. `run.module(m)` remains the sharper tool when you want to know
 where one specific import *resolved from*, which is a different question.
 
+### The work that is not Python
+
+For a pipeline whose real work is `samtools`, `bwa`, `Rscript` or a shell wrapper, the
+Python environment answers almost nothing: `packages` lists what pip installed, and the
+thing that made the BAM is not in it.
+
+```python
+with Run("call_variants", vars(args), provenance=PROV) as run:
+    run.tool("samtools")  # which one, and what version
+    run.tool("bcftools")
+    script = run.code(SCRIPTS / "fit.R")  # code that ran, in another language
+    subprocess.run(["Rscript", script, run.input(BAM)], check=True)
+```
+
+```json
+"tools": [{"name": "samtools", "found": true, "version": "samtools 1.20",
+           "path": "/home/…/envs/bcftools_env/bin/samtools", "sha256": "e2ff5f14…"}]
+```
+
+**The path matters as much as the version.** When a conda env and `/usr/bin` both have a
+`samtools`, the environment decides which one ran and the version string cannot tell you.
+The binary's own `sha256` settles the case where two builds call themselves `1.20`.
+
+`tool()` **runs the tool** with `--version` — a side effect, which is why it is a call you
+make rather than something that happens to every run. Bounded by `timeout` and never
+raising: a tool that hangs or is missing is *recorded* as such, because provenance must not
+be why a pipeline stops. A version printed to **stderr** with a non-zero exit still counts —
+that is `samtools --version` exactly. A tool that is not found is recorded `found: false`
+rather than omitted: "we looked and it was not there" is a fact; silence is not.
+
+`code()` registers an R script, a shell wrapper, a Snakefile — anything `sys.modules` will
+never see, because the interpreter that ran it was a subprocess. It hashes into the **same
+digest** as the Python, so *"did any code change between these two runs"* stays one
+comparison whatever language the code is in. It returns the path, so registering is how you
+pass it. It is deliberately **not** `input()`: a new column in a data file and a rewritten
+model are the same event to a reader who has only one list.
+
+The history line carries `tools` as a compact `name → version` map; the paths and binary
+hashes stay in the sidecar.
+
 ### When did I add that column?
 
 The digest tells you an artifact changed on 12 March and which run and command changed it.
