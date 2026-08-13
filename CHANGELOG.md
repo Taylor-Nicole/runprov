@@ -122,7 +122,12 @@ Nothing has been published yet. Everything below is what a first release would c
   three of them harvested from the pin's own prose. FASTQ, FASTA, VCF, SAM and the binary
   formats are refused for reasons recorded per suffix — VCF and SAM reject the pin **even
   with the format's own marker**. `output()` remains the way to record an artifact that
-  cannot hold a pin.
+  cannot hold a pin. **`.svg`, `.xml`, `.html`, `.json`, `.jsonl`, `.geojson`, `.ipynb`
+  and `.tex` were added after instrumenting a real matplotlib script**: they are TEXT,
+  so `open_output` wrote them happily and the damage only appeared when a parser
+  touched it (`ET.parse` at line 1 column 1; `json.loads` at char 0). `.json` had been
+  in the suite's list of formats a pin CAN go into, so a passing test was holding the
+  corruption in place.
 
 ### Fixed, with what each was measured to be
 
