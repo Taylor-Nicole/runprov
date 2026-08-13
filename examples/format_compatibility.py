@@ -264,8 +264,8 @@ CASE(
     "PyTorch .pt",
     "m.pt",
     requires=["torch"],
-    write=_binary(lambda p: importlib.import_module("torch").save({"w": [1, 2]}, p)),
-    read=lambda p: len(importlib.import_module("torch").load(p, weights_only=True)["w"]),
+    write=_binary(lambda p: _torch_write(p)),
+    read=lambda p: _torch_read(p),
 )
 CASE(
     "Zarr",
@@ -432,6 +432,25 @@ def _nc_read(p):
     xr = importlib.import_module("xarray")
     with xr.open_dataset(p) as ds:
         return ds.sizes["i"]
+
+
+def _torch_write(p):
+    # A TENSOR, not a list of ints: a `.pt` in the wild is a checkpoint, and a container
+    # tested with a payload it never carries answers an easier question than the real one.
+    #
+    # A `.pt` IS A ZIP, and torch names the entries after the FILE STEM -- `m.pt` holds
+    # `m/data.pkl`. So the same weights saved as `model_v1.pt` and `model_v2.pt` have
+    # different digests, and RENAMING a checkpoint changes its hash. That is a property of
+    # torch rather than of runprov, and it is worth knowing before a rename reads as a
+    # retrain. Measured: identical weights to the same filename in two directories give the
+    # same digest; to two filenames, they do not.
+    torch = importlib.import_module("torch")
+    torch.save({"w": torch.zeros(4), "epoch": 3}, str(p))
+
+
+def _torch_read(p):
+    torch = importlib.import_module("torch")
+    return len(torch.load(str(p), weights_only=True)["w"])
 
 
 def _safetensors_write(p):
