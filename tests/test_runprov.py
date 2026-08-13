@@ -7466,3 +7466,124 @@ def test_a_failure_while_hashing_imports_is_recorded_not_raised(tmp_path, monkey
     rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
     assert rec["code"]["imported"] == {"error": "sys.modules exploded"}
     assert rec["status"] == "ok", "the RUN succeeded; only the capture of it did not"
+
+
+# ============ the work that is not Python: external tools, and scripts in other languages
+def test_tool_records_which_binary_and_what_version(tmp_path, monkeypatch):
+    """For a pipeline whose real work is subprocesses, the Python environment answers almost
+    nothing: `packages` lists what pip installed, and the thing that made the BAM is not in
+    it. The PATH says WHICH one, when a conda env and /usr/bin both have a `samtools`."""
+    monkeypatch.chdir(tmp_path)
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    tool = fake / "faketool"
+    tool.write_text("#!/bin/sh\necho 'faketool 9.9.9'\n", encoding="utf-8")
+    tool.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake), prepend=os.pathsep)
+
+    with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "p.json") as run:
+        got = run.tool("faketool")
+
+    assert got["found"] is True
+    assert got["version"] == "faketool 9.9.9"
+    assert got["path"] == str(tool)
+    assert len(got["sha256"]) == 64, "the binary itself, for two builds calling themselves 9.9.9"
+
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["tools"][0]["name"] == "faketool"
+    line = json.loads((tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip())
+    assert line["tools"] == {"faketool": "faketool 9.9.9"}, "the history carries name -> version"
+
+
+def test_a_tool_that_is_absent_is_recorded_as_absent(tmp_path, monkeypatch):
+    """ "We looked and it was not there" is a fact about the run. Silence is not."""
+    monkeypatch.chdir(tmp_path)
+    with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "p.json") as run:
+        got = run.tool("definitely_not_on_this_path")
+    assert got == {"name": "definitely_not_on_this_path", "found": False}
+    assert json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["tools"] == [got]
+
+
+def test_a_tool_that_hangs_or_cannot_run_is_recorded_never_raised(tmp_path, monkeypatch):
+    """Provenance must not be the reason a pipeline stops. `--version` on an unknown binary
+    is not free and not always harmless, which is why this is bounded and guarded."""
+    monkeypatch.chdir(tmp_path)
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    slow = fake / "slowtool"
+    slow.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
+    slow.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake), prepend=os.pathsep)
+
+    with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "p.json") as run:
+        got = run.tool("slowtool", timeout=0.4)
+
+    assert got["found"] is True and got["version"] is None
+    assert "Timeout" in got["version_error"], got
+    assert json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["status"] == "ok"
+
+
+def test_a_version_printed_to_stderr_is_still_a_version(tmp_path, monkeypatch):
+    """Plenty of tools print their version to stderr, and a non-zero exit does not mean they
+    failed to tell us — `samtools --version` is the canonical example."""
+    monkeypatch.chdir(tmp_path)
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    noisy = fake / "noisytool"
+    noisy.write_text("#!/bin/sh\necho 'noisytool 2.1' >&2\nexit 1\n", encoding="utf-8")
+    noisy.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake), prepend=os.pathsep)
+
+    with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "p.json") as run:
+        got = run.tool("noisytool")
+    assert got["version"] == "noisytool 2.1" and got["exit_code"] == 1
+
+
+def test_code_registers_a_script_in_another_language_into_the_same_digest(tmp_path, monkeypatch):
+    """An R script or a shell wrapper is code that ran, and `sys.modules` will never know
+    about it — the interpreter that ran it was a subprocess. Declared, then treated
+    identically, so "did any code change" stays ONE comparison across languages."""
+    monkeypatch.chdir(tmp_path)
+    r_script = tmp_path / "fit.R"
+    r_script.write_text('cat("fitting\\n")\n', encoding="utf-8")
+
+    with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "a.json") as run:
+        returned = run.code(r_script)
+    assert returned == r_script, "it returns the path, so registering is how you pass it"
+
+    first = json.loads((tmp_path / "a.json").read_text(encoding="utf-8"))["code"]["imported"]
+    assert "fit.R" in {f["path"] for f in first["files"]}
+
+    r_script.write_text('cat("fitting differently\\n")\n', encoding="utf-8")
+    with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "b.json") as run:
+        run.code(r_script)
+    second = json.loads((tmp_path / "b.json").read_text(encoding="utf-8"))["code"]["imported"]
+    assert first["digest"] != second["digest"], "an R change moves the code digest"
+
+
+def test_code_refuses_a_file_it_cannot_read(tmp_path, monkeypatch):
+    """Same treatment as `input()`: code that cannot be hashed at registration is a loud
+    failure, not a silently absent line in the record."""
+    monkeypatch.chdir(tmp_path)
+    with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "p.json") as run:
+        with pytest.raises(OSError, match="cannot register code"):
+            run.code(tmp_path / "no_such_script.R")
+
+
+def test_code_is_not_confused_with_input(tmp_path, monkeypatch):
+    """A new column in a data file and a rewritten model are the same event to a reader who
+    only has one list, so they are two lists."""
+    monkeypatch.chdir(tmp_path)
+    data = tmp_path / "in.tsv"
+    data.write_text("a\n1\n", encoding="utf-8")
+    script = tmp_path / "step.sh"
+    script.write_text("echo hi\n", encoding="utf-8")
+
+    with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "p.json") as run:
+        run.input(data)
+        run.code(script)
+
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert [pathlib.Path(i["path"]).name for i in rec["inputs"]] == ["in.tsv"]
+    assert "step.sh" in {f["path"] for f in rec["code"]["imported"]["files"]}
+    assert "step.sh" not in {pathlib.Path(i["path"]).name for i in rec["inputs"]}

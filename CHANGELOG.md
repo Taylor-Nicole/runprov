@@ -32,6 +32,13 @@ Nothing has been published yet. Everything below is what a first release would c
   where the target may be a script name, a `run_uid` prefix, a `run_id` or an artifact path.
   Text or `--format yaml`. **It writes nothing** — a reader over `runs.jsonl`, asserted by a
   test that compares every byte on disk before and after.
+- **`run.tool(name)` and `run.code(path)`** — the work that is not Python. `tool()` records
+  which binary resolved, its `sha256`, and the version it reports (stdout *or* stderr, since
+  `samtools --version` uses the latter and exits non-zero); it is bounded by a timeout,
+  never raises, and records `found: false` rather than omitting an absent tool. `code()`
+  registers an R script, shell wrapper or Snakefile that `sys.modules` can never see, and
+  hashes it into the SAME code digest as the Python — so "did any code change" is one
+  comparison across languages. The history line carries `tools` as `name → version`.
 - **Every run hashes the project's own modules that it imported.** `git_commit` identifies
   the code only when the tree is clean and `script_sha256` pins the entry point alone, so a
   run whose result changed because a helper module changed had no trace of it. Measured:

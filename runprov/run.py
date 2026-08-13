@@ -33,7 +33,9 @@ import os
 import pathlib
 import platform
 import shlex
+import shutil
 import signal
+import subprocess
 import sys
 import threading
 import traceback
@@ -573,6 +575,7 @@ class Run:
             "outputs": [],
         }
         self._pending: list[pathlib.Path] = []
+        self._extra_code: dict[str, str] = {}
         self.provenance_path = self._sidecar_name(provenance) if provenance else None
         self._written = False
         self._warned_cwd_moved = False
@@ -925,6 +928,12 @@ class Run:
                 # reason to fail the run; it simply cannot be hashed
                 continue
 
+        # DECLARED code joins IMPORTED code, so the digest answers "did any code change"
+        # for an R script exactly as it does for a Python module.
+        for path, digest in self._extra_code.items():
+            with contextlib.suppress(ValueError, OSError):
+                rel = pathlib.Path(path).resolve().relative_to(root).as_posix()
+                seen.setdefault(rel, digest)
         ordered = sorted(seen.items())
         kept = ordered[: self.project.imported_code_max]
         body = "\n".join(f"{h}  {r}" for r, h in kept)
@@ -1287,6 +1296,100 @@ class Run:
             encoding="utf-8",
         )
         return p
+
+    def code(self, path: str | pathlib.Path) -> pathlib.Path:
+        """Register a NON-PYTHON code file that ran: an R script, a shell wrapper, a Snakefile.
+
+        `_imported_code` finds Python by walking `sys.modules`, and there is no equivalent
+        for a file handed to `Rscript` or `bash` -- the interpreter that ran it is a
+        subprocess, and this process never imported anything. So it is declared, and then it
+        is treated identically: hashed, and folded into the SAME digest as the Python, so
+        that "did any code change between these two runs" is still one comparison whatever
+        language the code is in.
+
+        Returns the path, like `input()`, so registering is how you pass it:
+
+            subprocess.run(["Rscript", run.code(SCRIPTS / "fit.R"), str(data)], check=True)
+
+        NOT `input()`, though that would also hash it. An input is data the run read; this
+        is code the run executed, and a record that cannot tell them apart cannot answer
+        "what changed" -- a new column in a data file and a rewritten model are the same
+        event to a reader who only has one list.
+        """
+        p = pathlib.Path(path)
+        anchored = self._anchor(p)
+        try:
+            self._extra_code[str(anchored)] = sha256(anchored)
+        except OSError as exc:
+            raise OSError(
+                f"{self.record['script']}: cannot register code {anchored} — it must be "
+                f"readable at registration time ({exc})."
+            ) from exc
+        return anchored
+
+    def tool(
+        self,
+        name: str,
+        *,
+        version_args: tuple[str, ...] = ("--version",),
+        timeout: float = 10.0,
+    ) -> dict[str, typing.Any]:
+        """Record an EXTERNAL tool a subprocess will use: where it resolved, and its version.
+
+        `samtools`, `bcftools`, `bwa`, `Rscript`, `bedtools`. For a pipeline whose real work
+        is subprocesses, the Python environment answers almost nothing -- `packages` lists
+        what pip installed, and the thing that made the BAM is not in it.
+
+        Two facts, and they answer different questions. The PATH says WHICH samtools, when a
+        conda env and `/usr/bin` both have one and the environment decides. The VERSION says
+        what it was, in the form the tool itself reports it -- and the binary's sha256 says
+        it exactly, for the case where two builds call themselves the same version.
+
+        IT RUNS THE TOOL. That is a side effect, so it is a method the caller invokes rather
+        than something that happens to every run: `--version` on an unknown binary is not
+        free and not always harmless. Bounded by `timeout` and never raising -- a tool that
+        hangs or is absent is recorded as absent, because provenance must not be the reason
+        a pipeline stops.
+
+            run.tool("samtools")
+            run.tool("Rscript")
+
+        A tool that is NOT found is recorded with `found: false` rather than omitted. "We
+        looked and it was not there" is a fact about the run; silence is not.
+        """
+        rec: dict[str, typing.Any] = {"name": name}
+        resolved = shutil.which(name)
+        rec["found"] = resolved is not None
+        if resolved is None:
+            self.record.setdefault("tools", []).append(rec)
+            return rec
+
+        rec["path"] = resolved
+        with contextlib.suppress(OSError):  # guards-ok: an unreadable binary is still a
+            # resolved path, and the path is the more useful half
+            rec["sha256"] = sha256(pathlib.Path(resolved))
+
+        try:
+            proc = subprocess.run(  # noqa: S603 - the caller named this program on purpose
+                [resolved, *version_args],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            # STDOUT OR STDERR: plenty of tools print their version to stderr, and
+            # `samtools --version` returning 1 does not mean it failed to tell us.
+            blob = (proc.stdout or "") + (proc.stderr or "")
+            first = next((ln.strip() for ln in blob.splitlines() if ln.strip()), "")
+            rec["version"] = first[:200] or None
+            rec["exit_code"] = proc.returncode
+        except (OSError, subprocess.SubprocessError) as exc:  # guards-ok: timeout, or a
+            # binary that cannot be executed. Recorded, never raised.
+            rec["version"] = None
+            rec["version_error"] = f"{type(exc).__name__}: {exc}"[:200]
+
+        self.record.setdefault("tools", []).append(rec)
+        return rec
 
     def environment_snapshot(
         self, directory: str | pathlib.Path | None = None
@@ -1819,6 +1922,9 @@ class Run:
             # digest answers "did any first-party code change between these two runs",
             # which is the question the history is asked, and the count says how much it
             # is a digest OF.
+            # NAME -> VERSION only. The paths and binary hashes are in the sidecar; what a
+            # history is asked is "which samtools was this", and that is one short string.
+            "tools": {x["name"]: x.get("version") for x in (r.get("tools") or [])},
             "imported_code": {
                 "count": (r["code"].get("imported") or {}).get("count"),
                 "digest": (r["code"].get("imported") or {}).get("digest"),
