@@ -7245,3 +7245,224 @@ def test_per_run_sidecars_make_staleness_answerable_for_older_runs(tmp_path, mon
     states = runprov.show.staleness(rows)
     assert set(states.values()) == {"current"}, "both runs can still answer for themselves"
     assert "?" not in states.values()
+
+
+# ================ the code that RAN: first-party modules the run actually imported
+def _forget_src():
+    """Drop every `src*` module before and after a test that imports one.
+
+    Each test builds its own `src/` under its own tmp_path, so a cached `src` package from
+    an earlier test carries a `__path__` pointing at a directory this one never made --
+    and `import src.helper` then fails for a reason that has nothing to do with the code
+    under test. Order-dependence in a suite is a bug in the suite.
+    """
+    for name in [m for m in sys.modules if m == "src" or m.startswith("src.")]:
+        del sys.modules[name]
+    importlib.invalidate_caches()
+
+
+def _project_with_module(tmp_path, body="X = 1\n"):
+    (tmp_path / "src").mkdir(exist_ok=True)
+    (tmp_path / "src" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "src" / "helper.py").write_text(body, encoding="utf-8")
+    return _project(tmp_path)
+
+
+def test_the_modules_a_run_imported_are_hashed_not_only_the_entry_script(tmp_path, monkeypatch):
+    """`git_commit` identifies the code only when the tree is clean, and in development it
+    never is. `script_sha256` pins the entry point and nothing it calls. So a run whose
+    numbers moved because `src/helper.py` moved recorded a commit, a clean-looking entry
+    script, and no trace of the file that did it.
+    """
+    proj = _project_with_module(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _forget_src()
+    import src.helper  # noqa: F401 - importing it is the point
+
+    try:
+        with runprov.Run("s", project=proj, provenance=tmp_path / "p.json"):
+            pass
+        rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+        imported = rec["code"]["imported"]
+        paths = {f["path"] for f in imported["files"]}
+        assert "src/helper.py" in paths, paths
+        assert all(len(f["sha256"]) == 64 for f in imported["files"])
+        assert imported["count"] == len(imported["files"]) and imported["omitted"] == 0
+    finally:
+        _forget_src()
+
+
+def test_the_digest_moves_when_a_DEPENDENCY_moves_and_the_entry_script_does_not(
+    tmp_path, monkeypatch
+):
+    """The whole point, and the case `script_sha256` cannot see."""
+    proj = _project_with_module(tmp_path, "X = 1\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _forget_src()
+    import src.helper
+
+    try:
+        with runprov.Run("s", project=proj, provenance=tmp_path / "a.json"):
+            pass
+        first = json.loads((tmp_path / "a.json").read_text(encoding="utf-8"))
+
+        (tmp_path / "src" / "helper.py").write_text("X = 2  # changed\n", encoding="utf-8")
+        importlib.reload(src.helper)
+        with runprov.Run("s", project=proj, provenance=tmp_path / "b.json"):
+            pass
+        second = json.loads((tmp_path / "b.json").read_text(encoding="utf-8"))
+    finally:
+        _forget_src()
+
+    assert first["code"]["imported"]["digest"] != second["code"]["imported"]["digest"]
+    assert first["code"]["script_sha256"] == second["code"]["script_sha256"], (
+        "the entry script did not change, which is exactly why this field was needed"
+    )
+
+
+def test_dependencies_installed_inside_the_root_are_not_this_project_s_code(tmp_path, monkeypatch):
+    """A virtualenv inside the repository is under the root and is NOT the project's code.
+    Hashing site-packages on every run would cost far more than it says, and `packages` plus
+    the environment snapshot already answer for it."""
+    proj = _project_with_module(tmp_path)
+    vendored = tmp_path / ".venv" / "lib" / "site-packages" / "thirdparty"
+    vendored.mkdir(parents=True)
+    (vendored / "__init__.py").write_text("Y = 1\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(vendored.parent))
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _forget_src()
+    sys.modules.pop("thirdparty", None)
+    import src.helper  # noqa: F401
+    import thirdparty  # noqa: F401
+
+    try:
+        with runprov.Run("s", project=proj, provenance=tmp_path / "p.json"):
+            pass
+        paths = {
+            f["path"]
+            for f in json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["code"][
+                "imported"
+            ]["files"]
+        }
+        assert "src/helper.py" in paths
+        assert not any("site-packages" in p for p in paths), paths
+    finally:
+        _forget_src()
+        sys.modules.pop("thirdparty", None)
+
+
+def test_the_history_line_carries_the_summary_and_not_every_file(tmp_path, monkeypatch):
+    """The history is appended FOREVER. Fifty modules per line would multiply it, so it
+    carries one digest and a count -- enough to answer "did any first-party code change
+    between these two runs", which is the question the history is asked."""
+    proj = _project_with_module(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _forget_src()
+    import src.helper  # noqa: F401
+
+    try:
+        with runprov.Run("s", project=proj, provenance=tmp_path / "p.json"):
+            pass
+    finally:
+        _forget_src()
+
+    line = json.loads((tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip())
+    assert sorted(line["imported_code"]) == ["count", "digest"]
+    assert "files" not in line["imported_code"], "the list belongs in the sidecar"
+    sidecar = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert line["imported_code"]["digest"] == sidecar["code"]["imported"]["digest"]
+
+
+def test_the_list_is_capped_and_says_how_many_it_left_out(tmp_path, monkeypatch):
+    """A record must not become the repository it describes."""
+    proj = dataclasses.replace(_project_with_module(tmp_path), imported_code_max=2)
+    # FOUR modules against a cap of two, so there is a tail to leave out. With two of each
+    # the assertion below passes on `0 == 0` and proves nothing.
+    for n in ("a", "b", "c"):
+        (tmp_path / "src" / f"{n}.py").write_text(f"{n.upper()} = 1\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _forget_src()
+    import src.a
+    import src.b
+    import src.c
+    import src.helper  # noqa: F401
+
+    try:
+        with runprov.Run("s", project=proj, provenance=tmp_path / "p.json"):
+            pass
+    finally:
+        _forget_src()
+
+    imported = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["code"]["imported"]
+    assert len(imported["files"]) == 2
+    assert imported["omitted"] == imported["count"] - 2 > 0
+
+
+def test_hashing_imported_code_can_be_turned_off(tmp_path, monkeypatch):
+    proj = dataclasses.replace(_project_with_module(tmp_path), hash_imported_code=False)
+    monkeypatch.chdir(tmp_path)
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.json"):
+        pass
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert "imported" not in rec["code"]
+    assert json.loads((tmp_path / "runs.jsonl").read_text().strip())["imported_code"] == {
+        "count": None,
+        "digest": None,
+    }
+
+
+def test_a_module_whose_file_vanished_does_not_fail_the_run(tmp_path, monkeypatch):
+    """Provenance must never be the reason a run dies -- and a module can outlive its file
+    (a temp module, an editable install that moved, a notebook cell)."""
+    proj = _project_with_module(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _forget_src()
+    import src.helper  # noqa: F401
+
+    (tmp_path / "src" / "helper.py").unlink()
+    try:
+        with runprov.Run("s", project=proj, provenance=tmp_path / "p.json"):
+            pass
+    finally:
+        _forget_src()
+    imported = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["code"]["imported"]
+    assert "src/helper.py" not in {f["path"] for f in imported["files"]}
+
+
+def test_two_names_for_one_module_file_are_hashed_once(tmp_path, monkeypatch):
+    """`sys.modules` can hold the same file under several names — a package and its alias,
+    `__main__` and the module it also imports. Hashing it twice would make the digest depend
+    on how a module happened to be reached rather than on what the code is."""
+    proj = _project_with_module(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _forget_src()
+    import src.helper
+
+    monkeypatch.setitem(sys.modules, "an_alias_for_helper", src.helper)
+    try:
+        with runprov.Run("s", project=proj, provenance=tmp_path / "p.json"):
+            pass
+    finally:
+        _forget_src()
+
+    files = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["code"]["imported"][
+        "files"
+    ]
+    paths = [f["path"] for f in files]
+    assert paths.count("src/helper.py") == 1, paths
+
+
+def test_a_failure_while_hashing_imports_is_recorded_not_raised(tmp_path, monkeypatch):
+    """Provenance must never be the reason a run dies. A partial answer that says it is
+    partial beats a lost record."""
+    monkeypatch.chdir(tmp_path)
+
+    def boom(self):
+        raise RuntimeError("sys.modules exploded")
+
+    monkeypatch.setattr(runprov.Run, "_imported_code", boom)
+    with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "p.json"):
+        pass
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["code"]["imported"] == {"error": "sys.modules exploded"}
+    assert rec["status"] == "ok", "the RUN succeeded; only the capture of it did not"

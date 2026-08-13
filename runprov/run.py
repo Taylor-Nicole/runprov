@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import hashlib
 import importlib.metadata
 import inspect
 import json
@@ -75,6 +76,13 @@ HISTORY_SCHEMA = "runprov.history.v2"
 # keeps all of them; this is the line a human reads, and a 300-file tree used to bury the
 # sentence that matters under 300 lines of stderr.
 DIRTY_FILES_SHOWN = 10
+
+#: Path components that mean "not this project's own code, even though it is under the
+#: root": an environment, an installed copy, a build tree. What lives in them is a
+#: dependency, and dependencies are answered by `packages` and the environment snapshot.
+_NOT_PROJECT_CODE = frozenset(
+    {".venv", "venv", "env", "site-packages", "dist-packages", "node_modules", "build", "dist"}
+)
 
 # Formats where a leading comment block is not a comment, so `open_output` REFUSES rather
 # than writing one. The reason is per-suffix because they fail differently, and the
@@ -841,6 +849,13 @@ class Run:
         # the record is being written -- so the mechanism for recording a termination would
         # be the thing that lost the record.
         self._release_signals()
+        # AT EXIT, so a module imported halfway through the work is still counted. See
+        # `_imported_code`; guarded because provenance must not be what ends the run.
+        if self.project.hash_imported_code:
+            try:
+                self.record["code"]["imported"] = self._imported_code()
+            except Exception as exc:  # guards-ok: a partial answer beats a lost record
+                self.record["code"]["imported"] = {"error": str(exc)}
         # FIRST, before _finish() hashes anything. The capture is still appending while the
         # run is alive, so hashing the log before stopping pins a prefix of it -- and on the
         # fd path fds 1 and 2 are still the pipe, so every diagnostic _finish emits would go
@@ -864,6 +879,63 @@ class Run:
         if self._deferred_history is not None and not self._history_appended:
             path, self._deferred_history = self._deferred_history, None
             self._append_history(path)
+
+    def _imported_code(self) -> dict[str, typing.Any]:
+        """The project's OWN modules this run imported, each hashed. See `hash_imported_code`.
+
+        THE GAP THIS CLOSES. `git_commit` identifies the code only when the tree is clean,
+        and during development it never is; `script_sha256` pins the entry point and nothing
+        it calls. So a run whose numbers changed because `src/utils/stats.py` changed
+        recorded a commit, a clean-looking entry script, and no trace of the file that did
+        it. `run.module(m)` answers for one module a caller thought to name -- this answers
+        for every one that was actually loaded.
+
+        READ AT EXIT, not at construction, because imports happen lazily: a module pulled in
+        halfway through the work is part of what ran and would be invisible to a snapshot
+        taken at the start.
+
+        UNDER THE ROOT ONLY. Third-party packages are already answered by `packages` and by
+        `env_snapshot_dir`, and hashing site-packages on every run would cost far more than
+        it says -- so a virtualenv living inside the root is excluded too, since what is in
+        it is a dependency rather than this project's code.
+
+        Sorted by path so two runs over unchanged code produce the same list in the same
+        order, and therefore the same `digest` -- which is what makes "did any first-party
+        code change between these two runs" a comparison of one string.
+        """
+        root = pathlib.Path(self.project.root).resolve()
+        seen: dict[str, str] = {}
+        for mod in list(sys.modules.values()):
+            f = getattr(mod, "__file__", None)
+            if not f:
+                continue
+            try:
+                p = pathlib.Path(f).resolve()
+                rel = p.relative_to(root).as_posix()
+            except (ValueError, OSError):  # guards-ok: outside the root, or unresolvable
+                continue
+            # A virtualenv or an installed copy INSIDE the root is a dependency, not code.
+            if any(part in _NOT_PROJECT_CODE for part in pathlib.Path(rel).parts):
+                continue
+            if rel in seen:
+                continue
+            try:
+                seen[rel] = sha256(p)
+            except OSError:  # guards-ok: a module whose file has since gone is not a
+                # reason to fail the run; it simply cannot be hashed
+                continue
+
+        ordered = sorted(seen.items())
+        kept = ordered[: self.project.imported_code_max]
+        body = "\n".join(f"{h}  {r}" for r, h in kept)
+        return {
+            "count": len(ordered),
+            "omitted": max(0, len(ordered) - len(kept)),
+            # ONE digest over the whole set, so the history line can carry the answer to
+            # "did any first-party code change" without carrying every file to say it.
+            "digest": hashlib.sha256(body.encode()).hexdigest() if kept else None,
+            "files": [{"path": r, "sha256": h} for r, h in kept],
+        }
 
     def _versions(self) -> dict[str, typing.Any]:
         """Versions of the tracked packages, READ rather than imported.
@@ -1742,6 +1814,15 @@ class Run:
             "parameters": r["parameters"],
             "seeds": r["seeds"],
             "git_commit": r["code"]["git_commit_short"],
+            # A SUMMARY, not the list. The full per-file hashes are in the sidecar; the
+            # history is appended forever, and 50 modules per line would multiply it. One
+            # digest answers "did any first-party code change between these two runs",
+            # which is the question the history is asked, and the count says how much it
+            # is a digest OF.
+            "imported_code": {
+                "count": (r["code"].get("imported") or {}).get("count"),
+                "digest": (r["code"].get("imported") or {}).get("digest"),
+            },
             "git_code_dirty": r["code"]["git_code_dirty"],
             "git_status_captured": r["code"]["git_status_captured"],
             "git_tree_dirty": r["code"]["git_tree_dirty"],
