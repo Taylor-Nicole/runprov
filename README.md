@@ -389,6 +389,37 @@ Two digests beside one input path means that file has been read at **two differe
 versions** — which is the fact, and a script that has read forty is summarised as
 `[40 versions]` rather than printed. An artifact produced by a run that failed says so.
 
+### Do I need to run this again?
+
+```bash
+python -m runprov show --stale     # one stat per input
+python -m runprov show --rehash    # re-derive every digest, slower, no resolution limit
+```
+
+```
+  current  a4c3ed04a95a3da1  out/final.txt
+  STALE    ae31646fa3c0107e  out/mid.tsv       <- an input moved; rebuilding differs
+  MODIFIED b413f47d13ee2fe6  out/aux.bin       <- the ARTIFACT changed, not its inputs
+  GONE     2d711642b726b044  out/deleted.txt
+  ?        …                                   <- cannot be told, and will not guess
+```
+
+**Answered from the history, not from the pin** — which is why it works for `aux.bin`, a
+binary that could never hold a pin at all. `verify` reads the block inside an artifact;
+this walks the run that produced the artifact and re-checks *that run's* inputs.
+
+**Off unless asked, because the page is free and the check is not.** `--stale` is one
+`stat` per input and reads no input bytes — there is a test asserting that. It gets the
+sizes and mtimes from the producing run's sidecar, since the history line trims those
+fields deliberately (they would cost 15.6% of an append-forever file). If that sidecar is
+missing, or a later run has overwritten it, the answer is `?` rather than `current`:
+digests from one run compared against stats from another would be confident nonsense.
+
+`--stale` inherits `moved_since`'s documented limit — a rewrite inside one second that
+preserves the byte count is invisible to a `stat`. `--rehash` has no such limit and costs
+what reading every input costs. There is a test that constructs exactly that case and shows
+one mode missing it and the other catching it.
+
 A target can be a script name, a `run_uid` prefix, a `run_id` or an artifact path, and they
 are all tried: someone asking about `build` and someone asking about `out/mid.tsv` are
 asking the same question and should not have to say which kind of name they hold.
