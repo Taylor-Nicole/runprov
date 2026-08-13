@@ -5816,54 +5816,45 @@ def test_the_cli_names_the_invocation_the_reader_actually_used(monkeypatch, caps
 
 
 # ================= the pin is not a comment everywhere, and one format fails SILENTLY
-def test_open_output_refuses_a_newick_tree_because_the_pin_becomes_taxa(tmp_path):
-    """The entry that made `PIN_UNSAFE` a guard rather than a note.
+def test_a_format_that_cannot_hold_a_pin_gets_one_BESIDE_it(tmp_path):
+    """Newick is why the guard exists: a pinned tree PARSES, and Biopython read a 3-taxon
+    tree back with 6 terminals, three of them harvested from the pin's own prose.
 
-    A pinned Newick tree does not raise — it PARSES, and comes back carrying terminals
-    harvested out of the pin's own prose (`generation : (default)` and `commit : NONE — no
-    commit to name (yet)` supply `default` and `yet`). Reproduced without Biopython below,
-    because the point is not which parser is used: the pin's words land where taxon names
-    are read from, in a format that has nowhere to put a comment.
+    Refusing outright was the first fix and it was half of one — it protected the artifact
+    and gave up the property that makes the pin worth having, which is that an artifact can
+    say what it was made from after the run's sidecar has been overwritten. The file is now
+    written untouched and the pin goes next to it.
     """
-    # The DEFAULT generation and no commit, which is the state the corruption was measured
-    # in: an unconfigured run in a directory that is not a repository. Both of the leaked
-    # names come from the prose those two absences produce.
-    proj = runprov.Project(root=tmp_path, run_log=tmp_path / "runs.jsonl", run_id=lambda: "r")
+    proj = _project(tmp_path)
     src = tmp_path / "aln.fa"
     src.write_text(">a\nACGT\n", encoding="utf-8")
-    run = runprov.Run("tree", project=proj)
-    run.input(src)
+    with runprov.Run("tree", project=proj, provenance=tmp_path / "p.json") as run:
+        run.input(src)
+        with run.open_output(tmp_path / "out.nwk") as fh:
+            fh.write("(HCV1a:0.1,HCV1b:0.2,HCV2a:0.3);\n")
 
-    with pytest.raises(ValueError, match="SILENTLY"):
-        run.open_output(tmp_path / "out.nwk")
+    tree = (tmp_path / "out.nwk").read_text(encoding="utf-8")
+    assert tree == "(HCV1a:0.1,HCV1b:0.2,HCV2a:0.3);\n", "not one byte added to the artifact"
+    assert "provenance" not in tree
 
-    # What the refusal prevents, shown rather than asserted about: the pin's own words
-    # sitting where a Newick parser reads names. `(default)` is the generation and `(yet)`
-    # closes "no commit to name" — a parser splitting on Newick's punctuation takes both.
-    corrupt = run.header() + "(a:0.1,b:0.2);\n"
-    assert "generation : (default)" in corrupt and "(yet)" in corrupt
-    leaked = [w for w in ("default", "yet") if f"({w})" in corrupt]
-    assert leaked == ["default", "yet"], "the prose a parser would take for taxa"
+    side = tmp_path / ("out.nwk" + runprov.run.PIN_SIDECAR_SUFFIX)
+    assert side.is_file()
+    body = side.read_text(encoding="utf-8")
+    assert "provenance for: out.nwk" in body, "a separated sidecar must still name its artifact"
+    assert "aln.fa" in body, "and carry the pin it would have written inside"
 
-    assert run.record["outputs"] == [] and not run._pending, (
-        "a refused path must leave no pending output behind to be recorded as MISSING"
-    )
-    assert not (tmp_path / "out.nwk").exists(), "and no file half-written by the refusal"
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    names = sorted(pathlib.Path(o["path"]).name for o in rec["outputs"])
+    assert names == ["out.nwk", "out.nwk.prov.txt"], "the sidecar is an artifact, so it is hashed"
 
 
-def test_open_output_refuses_every_format_that_cannot_hold_a_pin(tmp_path):
-    """Newick fails silently; the rest fail loudly. They are all here because a fix that
-    only knew about Newick would leave the same defect standing in each of them."""
+def test_binary_formats_are_still_refused_because_the_MODE_is_wrong(tmp_path):
+    """Not about the pin at all: this method opens in text mode, so a caller cannot write a
+    PNG or a BAM through the handle whatever happens to the provenance. The message points
+    at the two calls that do work."""
     proj = _project(tmp_path)
     run = runprov.Run("s", project=proj)
     for name in (
-        "x.fastq",
-        "x.fq",
-        "x.fasta",
-        "x.fa",
-        "x.fna",
-        "x.vcf",
-        "x.sam",
         "x.bam",
         "x.cram",
         "x.parquet",
@@ -5876,41 +5867,129 @@ def test_open_output_refuses_every_format_that_cannot_hold_a_pin(tmp_path):
         "x.zip",
         "x.png",
         "x.pdf",
-        "x.NWK",
-        # TEXT formats with no `#` comment, which are the trap: the file is written
-        # happily and looks undamaged until a parser touches it.
+    ):
+        with pytest.raises(ValueError, match="cannot open") as caught:
+            run.open_output(tmp_path / name)
+        assert "run.output(path)" in str(caught.value)
+        assert "run.pin_sidecar(p)" in str(caught.value)
+
+
+def test_every_text_format_that_cannot_hold_a_pin_is_written_clean_with_a_sidecar(tmp_path):
+    """One rule for all of them, so a format nobody thought about behaves like the ones
+    that were. The artifact is byte-exact and the pin is beside it."""
+    proj = _project(tmp_path)
+    src = tmp_path / "in.tsv"
+    src.write_text("x\n", encoding="utf-8")
+    run = runprov.Run("s", project=proj)
+    run.input(src)
+    payload = "PAYLOAD\n"
+    for name in (
+        "x.fastq",
+        "x.fq",
+        "x.fasta",
+        "x.fna",
+        "x.vcf",
+        "x.sam",
+        "x.nwk",
         "x.svg",
         "x.xml",
         "x.html",
-        "x.htm",
-        "x.xhtml",
         "x.json",
         "x.jsonl",
         "x.geojson",
         "x.ipynb",
         "x.tex",
     ):
-        with pytest.raises(ValueError, match="refusing to write a provenance pin"):
-            run.open_output(tmp_path / name)
+        with run.open_output(tmp_path / name) as fh:
+            fh.write(payload)
+        assert (tmp_path / name).read_text(encoding="utf-8") == payload, name
+        assert (tmp_path / (name + runprov.run.PIN_SIDECAR_SUFFIX)).is_file(), name
 
 
-def test_the_refusal_names_the_escape_hatch_and_the_escape_hatch_works(tmp_path):
-    """A guard that only says no teaches nothing. `output()` still records and hashes the
-    artifact — only the in-artifact pin is given up, which this format never had."""
+def test_a_format_specific_marker_is_offered_only_when_the_caller_names_it(tmp_path, capsys):
+    """`;` is the legacy Pearson FASTA comment. Measured: Biopython reads it without
+    complaint and `samtools faidx` REJECTS the file outright. That is a real trade, so it is
+    available and it is never made on the caller's behalf — the default stays the sidecar.
+
+    A marker that does NOT help is not a way in. `##` is VCF's own meta-line marker and was
+    measured to leave `bcftools` reporting `unknown file type`, so a VCF gets a sidecar
+    however it is asked for.
+    """
     proj = _project(tmp_path)
-    with runprov.Run("s", project=proj, provenance=tmp_path / "p.json") as run:
-        with pytest.raises(ValueError) as caught:
-            run.open_output(tmp_path / "t.nwk")
-        assert "run.output(path)" in str(caught.value)
-        assert "run.header(marker)" in str(caught.value)
+    src = tmp_path / "in.tsv"
+    src.write_text("x\n", encoding="utf-8")
+    run = runprov.Run("s", project=proj)
+    run.input(src)
 
-        out = run.output(tmp_path / "t.nwk")
-        out.write_text("(a:0.1,b:0.2);\n", encoding="utf-8")
+    with run.open_output(tmp_path / "legacy.fasta", comment="; ") as fh:
+        fh.write(">seq1\nACGT\n")
+    body = (tmp_path / "legacy.fasta").read_text(encoding="utf-8")
+    assert body.startswith("; provenance"), "the caller asked for it, so it is in-band"
+    assert not (tmp_path / "legacy.fasta.prov.txt").exists(), "and not also beside it"
+    err = capsys.readouterr().err
+    assert "`samtools faidx` REJECTS" in err, "the trade is stated at the moment it is made"
 
+    # The default, and the VCF case: sidecar regardless of the marker offered.
+    with run.open_output(tmp_path / "plain.fasta") as fh:
+        fh.write(">seq1\nACGT\n")
+    assert (tmp_path / "plain.fasta.prov.txt").is_file()
+    with run.open_output(tmp_path / "calls.vcf", comment="## ") as fh:
+        fh.write("##fileformat=VCFv4.2\n")
+    assert (tmp_path / "calls.vcf").read_text(encoding="utf-8").startswith("##fileformat")
+    assert (tmp_path / "calls.vcf.prov.txt").is_file()
+
+
+def test_pin_sidecar_is_callable_for_a_file_another_library_wrote(tmp_path):
+    """The route for a figure or a BAM: `output()` registers it, the library writes it, and
+    the pin goes beside it. This is what the binary refusal points at."""
+    proj = _project(tmp_path)
+    src = tmp_path / "in.tsv"
+    src.write_text("x\n", encoding="utf-8")
+    with runprov.Run("plot", project=proj, provenance=tmp_path / "p.json") as run:
+        run.input(src)
+        png = run.output(tmp_path / "panel.png")
+        png.write_bytes(b"\x89PNG\r\n\x1a\n binary bytes")
+        side = run.pin_sidecar(png)
+
+    assert side == tmp_path / "panel.png.prov.txt"
+    assert (tmp_path / "panel.png").read_bytes().startswith(b"\x89PNG"), "artifact untouched"
+    assert "in.tsv" in side.read_text(encoding="utf-8")
     rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
-    assert rec["outputs"][0]["sha256"], "the artifact is still recorded and hashed"
-    assert rec["outputs"][0]["kind"] == "file"
-    assert "provenance" not in (tmp_path / "t.nwk").read_text(encoding="utf-8")
+    assert sorted(pathlib.Path(o["path"]).name for o in rec["outputs"]) == [
+        "panel.png",
+        "panel.png.prov.txt",
+    ]
+
+
+def test_write_json_puts_the_pin_in_the_document_as_structure(tmp_path):
+    """JSON has no comments but it has structure, and a top-level key is a place every
+    parser will read and none will choke on. It cannot go through a file handle — it means
+    serialising the whole document — so it is its own method, and opt-in because it changes
+    the caller's schema."""
+    proj = _project(tmp_path)
+    src = tmp_path / "in.tsv"
+    src.write_text("x\n", encoding="utf-8")
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.json") as run:
+        run.input(src)
+        out = run.write_json(tmp_path / "summary.json", {"variants": 12, "sample": "A"})
+
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert doc["variants"] == 12 and doc["sample"] == "A", "the payload is untouched"
+    pin = doc["_provenance"]
+    assert pin["script"] == "s"
+    # STRUCTURE, not prose: a consumer reading digests must not have to parse a comment.
+    assert pin["inputs"] == [[runprov.hashing.pin_digest(run.record["inputs"][0]), "in.tsv"]]
+
+
+def test_write_json_refuses_to_restructure_or_overwrite(tmp_path):
+    """A JSON array has nowhere to put a key, and wrapping it in an object would change what
+    the document IS rather than annotate it. An existing key is the caller's."""
+    proj = _project(tmp_path)
+    run = runprov.Run("s", project=proj)
+    with pytest.raises(TypeError, match="needs a mapping"):
+        run.write_json(tmp_path / "a.json", [1, 2, 3])
+    with pytest.raises(ValueError, match="already in the payload"):
+        run.write_json(tmp_path / "b.json", {"_provenance": "mine"})
 
 
 def test_open_output_still_pins_the_formats_that_can_hold_one(tmp_path):
@@ -5921,13 +6000,14 @@ def test_open_output_still_pins_the_formats_that_can_hold_one(tmp_path):
     src.write_text("x\n", encoding="utf-8")
     run = runprov.Run("s", project=proj)
     run.input(src)
-    # NO `.json` HERE. It sat in this list asserting that a JSON file can carry a `#`
-    # pin, which is false -- the suite was pinning the corruption in place. YAML, TOML
-    # and INI are the text formats where `#` really IS a comment.
+    # NO `.json` HERE. It sat in this list asserting that a JSON file can carry a `#` pin,
+    # which is false -- the suite was pinning the corruption in place. YAML, TOML and INI
+    # are the text formats where `#` really IS a comment.
     for name in ("a.tsv", "a.csv", "a.txt", "a.md", "a.gff3", "a.gtf", "a.bed", "a.yaml"):
         with run.open_output(tmp_path / name) as fh:
             fh.write("payload\n")
         assert "provenance" in (tmp_path / name).read_text(encoding="utf-8"), name
+        assert not (tmp_path / (name + ".prov.txt")).exists(), f"{name}: in-band, so no sidecar"
 
 
 # ============================ a kill is how a long run actually ends, and it recorded nothing
@@ -6534,42 +6614,37 @@ def test_the_dirty_file_list_is_capped_and_says_how_many_it_left_out(tmp_path, c
     assert len(run.record["code"]["git_dirty_code_files"]) == 25, "the record keeps them all"
 
 
-def test_the_text_formats_with_no_comment_syntax_are_refused_for_a_measured_reason(tmp_path):
-    """`.svg` and `.json` are TEXT, and that is what made them the trap: `open_output`
-    wrote them happily and the result did not look damaged until something parsed it.
+def test_svg_and_json_are_written_clean_and_would_have_broken_in_band(tmp_path):
+    """`.svg` and `.json` are TEXT, and that is what made them the trap: `open_output` used
+    to write them happily and the result did not look damaged until something parsed it.
+    Found by instrumenting a real matplotlib script that saves a figure as `.svg`.
 
-    Found by instrumenting a real matplotlib script that saves a figure as `.svg`. Worse,
-    `.json` had been sitting in the list of formats this suite asserted a pin CAN go into,
-    so the corruption was pinned in place by a passing test.
-
-    The refusal is asserted here against what the parsers actually do, rather than against
-    a claim in a table — the table is the thing under test.
+    Asserted against what the PARSERS do rather than against a table, because the table is
+    the thing under test: the artifact this method produces must parse, and the in-band pin
+    it declines to write must not.
     """
+    import xml.etree.ElementTree as ET
+
     proj = _project(tmp_path)
     src = tmp_path / "in.tsv"
     src.write_text("x\n", encoding="utf-8")
     run = runprov.Run("s", project=proj)
     run.input(src)
 
-    payloads = {
-        "fig.svg": '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>\n',
-        "data.json": '{"a": 1}\n',
+    cases = {
+        "fig.svg": ('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>\n', ET.parse),
+        "data.json": ('{"a": 1}\n', lambda q: json.loads(pathlib.Path(q).read_text())),
     }
-    parsers = {
-        "fig.svg": lambda p: __import__("xml.etree.ElementTree", fromlist=["x"]).parse(p),
-        "data.json": lambda p: json.loads(p.read_text(encoding="utf-8")),
-    }
-    for name, payload in payloads.items():
-        with pytest.raises(ValueError, match="refusing to write a provenance pin"):
-            run.open_output(tmp_path / name)
+    for name, (payload, parse) in cases.items():
+        with run.open_output(tmp_path / name) as fh:
+            fh.write(payload)
+        artifact = tmp_path / name
+        assert artifact.read_text(encoding="utf-8") == payload, "byte-exact"
+        parse(artifact)  # must not raise
+        assert (tmp_path / (name + runprov.run.PIN_SIDECAR_SUFFIX)).is_file()
 
-        # What the refusal prevents: written by hand, the pin makes the file unparseable.
-        corrupt = tmp_path / f"corrupt_{name}"
-        corrupt.write_text(run.header() + payload, encoding="utf-8")
+        # What the sidecar buys: the same bytes with the pin in them do not parse.
+        broken = tmp_path / f"broken_{name}"
+        broken.write_text(run.header() + payload, encoding="utf-8")
         with pytest.raises(Exception):  # noqa: B017 - two libraries, two error types
-            parsers[name](corrupt)
-
-        # And `output()` is the way through: recorded and hashed, no pin, still parseable.
-        good = run.output(tmp_path / f"ok_{name}")
-        good.write_text(payload, encoding="utf-8")
-        parsers[name](good)
+            parse(broken)

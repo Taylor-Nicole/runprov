@@ -128,6 +128,15 @@ Nothing has been published yet. Everything below is what a first release would c
   touched it (`ET.parse` at line 1 column 1; `json.loads` at char 0). `.json` had been
   in the suite's list of formats a pin CAN go into, so a passing test was holding the
   corruption in place.
+- **A sidecar pin for every format that cannot hold one in-band.** `open_output` no longer
+  refuses a text format: it writes the artifact byte-exact and puts the pin in
+  `<artifact>.prov.txt`, registered and hashed. Verified with the real tools — `samtools
+  faidx` indexes the FASTA, Biopython reads it, `pd.read_json(lines=True)` sees 2 rows not
+  3. `run.pin_sidecar(p)` does the same for a file another library wrote (a figure, a BAM).
+  Two measured opt-ins: `comment="; "` for FASTA (Biopython reads it, `samtools faidx`
+  rejects it — stated on stderr as the trade is made) and `run.write_json()`, which embeds
+  the pin as a top-level key. **JSONL gets no opt-in**: a leading provenance line makes
+  pandas read 3 rows for a 2-row file, which is the Newick failure again.
 
 ### Fixed, with what each was measured to be
 

@@ -826,7 +826,43 @@ result does not look damaged until something parses it. `#` really is a comment 
 TSV, a YAML, a TOML and an INI — it is not one in XML or JSON, which have no comment
 syntax at all.
 
-The refusal names the way out, and the way out costs almost nothing:
+**A format that cannot hold a pin gets one beside it.** `open_output()` writes the artifact
+untouched and puts the pin in `<artifact>.prov.txt`, registered and hashed like any other
+output — so a FASTA, a FASTQ, a JSONL or a Newick tree keeps the property that matters:
+after the run's own sidecar has been overwritten by the next run, the artifact can still say
+what it was made from. Verified with the real tools: `samtools faidx` indexes the FASTA,
+Biopython reads it, `pd.read_json(lines=True)` sees **2 rows and not 3**.
+
+It is honestly weaker than in-band — a sidecar can be separated from its artifact by a copy,
+a move, or a `tar` that takes one and not the other — which is why in-band stays the default
+wherever the format allows it. It is much stronger than nothing, which is what these formats
+had.
+
+Two opt-ins, because a measured trade is the caller's to make and must not be made for them:
+
+```python
+run.open_output(REF, comment="; ")     # FASTA: Biopython reads it, samtools faidx REJECTS it
+run.write_json(OUT, {"variants": 12})  # JSON: pin as a top-level key — changes your schema
+```
+
+`open_output` cannot write JSON's pin, because that means serialising the whole document
+rather than prepending a line, so `write_json` is its own method. It refuses a list (there is
+nowhere to put a key, and wrapping it would change what the document *is*) and refuses to
+overwrite a key you already use. **JSONL has no opt-in**: a leading provenance line parses,
+and measured, `pd.read_json(lines=True)` then reports 3 rows for a 2-row file — the Newick
+failure again, so it is sidecar-only.
+
+Binary and compressed formats are still refused by `open_output`, and that is about the
+*mode* rather than the pin — you cannot write a PNG through a text handle. Use `output()`
+and pin beside it:
+
+```python
+fig = run.output(OUT / "panel.png")
+plt.savefig(fig)
+run.pin_sidecar(fig)
+```
+
+The old refusal named the way out, and that way out still works:
 
 ```python
 out = run.output(TREE)  # still registered, still hashed, still in the record
