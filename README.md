@@ -295,6 +295,35 @@ the count of those derived addresses is reported. That matters: every one of the
 records above predates the field, so a reader that insisted on it would have produced a
 graph of zero edges over the entire corpus it was written to read.
 
+## Does it work with your formats? Run the matrix and see
+
+```bash
+python examples/format_compatibility.py
+```
+
+It writes an artifact in each format through `runprov`, reads it back with that format's
+**real library**, and reports where the pin went, whether the artifact still parses, whether
+the run hashed it, and whether two writes give the same digest. **A format whose library is
+absent is SKIPPED and says so** — a check that goes green because it did not run is the
+failure this package is about.
+
+Measured here, 25 formats, 0 failures:
+
+| pin placement | formats |
+|---|---|
+| in-band | TSV, CSV, BED, YAML, Markdown, SQL (`-- `) |
+| in the document | JSON (`write_json`, a top-level key) |
+| sidecar | FASTA, FASTQ, JSONL, VCF, SVG, Newick, Parquet, Feather/Arrow, **Pickle**, **joblib**, **cloudpickle**, `.npy`, `.npz`, `.mat`, PNG, TIFF, gzip, SQLite |
+
+Two results worth reading rather than skimming. **gzip** is byte-unstable and
+content-stable: the gzip header stores an mtime so the raw bytes move on every write, and
+`content_digest` decompresses first — that is the two-hash design doing its job. **SciPy
+`.mat` is unstable in both**, because MATLAB stamps a creation time into a binary header
+that no text filter can reach, so a `.mat` pin moves on every run. Prefer `.npz`, or accept
+a permanently-red check for that artifact.
+
+Adding your own format is three lines, and the file says how.
+
 ## Verify: is this artifact still made from what it says it is?
 
 ```bash
