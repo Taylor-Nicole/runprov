@@ -88,7 +88,9 @@ def run_view(record: dict[str, typing.Any]) -> dict[str, typing.Any]:
     }
 
 
-def project_view(records: list[dict[str, typing.Any]]) -> dict[str, typing.Any]:
+def project_view(
+    records: typing.Iterable[dict[str, typing.Any]],
+) -> dict[str, typing.Any]:
     """The notebook: every script, what it reads, what it writes, and what exists now.
 
     Built per SCRIPT rather than per run, because "which inputs does this expect" is a
@@ -98,8 +100,12 @@ def project_view(records: list[dict[str, typing.Any]]) -> dict[str, typing.Any]:
     """
     scripts: dict[str, dict[str, typing.Any]] = {}
     artifacts: dict[str, dict[str, typing.Any]] = {}
+    # COUNTED as they stream past, because `records` may be a generator and a generator has
+    # no length -- and asking for one would materialise the history this exists not to hold.
+    seen = 0
 
     for rec in records:
+        seen += 1
         name = rec.get("script", "?")
         s = scripts.setdefault(
             name,
@@ -144,7 +150,7 @@ def project_view(records: list[dict[str, typing.Any]]) -> dict[str, typing.Any]:
         s["parameters"] = sorted(s["parameters"])
 
     return {
-        "runs": len(records),
+        "runs": seen,
         "scripts": dict(sorted(scripts.items())),
         "artifacts": dict(sorted(artifacts.items())),
     }
@@ -190,7 +196,9 @@ def _sidecar(rec: dict[str, typing.Any]) -> dict[str, typing.Any] | None:
     return doc if isinstance(doc, dict) else None
 
 
-def staleness(records: list[dict[str, typing.Any]], *, rehash: bool = False) -> dict[str, str]:
+def staleness(
+    records: typing.Iterable[dict[str, typing.Any]], *, rehash: bool = False
+) -> dict[str, str]:
     """For each artifact: is it still what the run that made it would make now?
 
     ANSWERED FROM THE HISTORY, not from the pin, and that is the point. `verify` reads the
@@ -437,7 +445,9 @@ def _scalar(v: object) -> str:
     return json.dumps(str(v))
 
 
-def select(records: list[dict[str, typing.Any]], target: str) -> list[dict[str, typing.Any]]:
+def select(
+    records: typing.Iterable[dict[str, typing.Any]], target: str
+) -> list[dict[str, typing.Any]]:
     """Runs matching `target`: a script name, a run_uid prefix, a run_id, or an artifact path.
 
     Four things one argument can mean, resolved by trying each and returning what matched.
@@ -445,6 +455,10 @@ def select(records: list[dict[str, typing.Any]], target: str) -> list[dict[str, 
     asking the same question -- what happened here -- and should not have to say which kind
     of name they happen to be holding.
     """
+    # ONE pass into a list first: `records` may be a generator, and a generator that four
+    # comprehensions walk in turn is empty after the first one -- silently, returning "no
+    # match" for a target that matches.
+    records = list(records)
     by_script = [r for r in records if r.get("script") == target]
     if by_script:
         return by_script

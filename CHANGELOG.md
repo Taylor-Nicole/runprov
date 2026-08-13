@@ -204,6 +204,17 @@ Nothing has been published yet. Everything below is what a first release would c
   the pin as a top-level key. **JSONL gets no opt-in**: a leading provenance line makes
   pandas read 3 rows for a 2-row file, which is the Newick failure again.
 
+### Fixed for long histories
+
+- **Reading the history streamed instead of slurped.** `_load` did
+  `read_text().splitlines()` — the whole file as one string *and* a list of every line,
+  before one record was parsed. Measured on a 100,000-run, 91 MB history: **488 MB → 392 MB**
+  just from streaming the read.
+- **`show` no longer materialises the history at all.** It consumes a stream and counts as
+  it goes, so the project page costs **1.6 s and 33 MB** on that same 91 MB history instead
+  of holding 392 MB. `--stale` takes a second pass over the file rather than a second copy
+  in memory. Guarded by ratio tests: 4x the runs must not cost 4x the memory.
+
 ### Tested
 
 - **NFS / Lustre.** The degraded path is tested unconditionally by forcing `flock` to raise
