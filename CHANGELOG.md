@@ -44,6 +44,15 @@ Nothing has been published yet. Everything below is what a first release would c
 - **Failure recording.** `with Run(..., provenance=PROV)` records `status: "failed"` with
   the exception type, message and traceback tail, and every registered-but-unproduced output
   as `MISSING`.
+- **`verify` no longer mistakes documentation for an artifact.** The anchor was matched
+  anywhere in the first 64 KiB, so a bare `runprov verify` in a project with a virtualenv
+  reported this package's own `verify.py` and `run.py`, their `.pyc` files, and the wheel
+  METADATA — and METADATA embeds the README's *example* pin, so it invented a `GONE` for
+  `data/labels.tsv`, a path that exists only in prose. A pinned artifact declares itself at
+  the top; a file that merely mentions the format does not. Build, VCS and virtualenv
+  directories are no longer walked, and the count of files skipped is **reported** rather
+  than silently applied. Measured on one demo project: 898 files and 5 false findings →
+  18 files, 1 artifact, 1 OK.
 - **A complete, runnable example.** `examples/summarise.py` is standard-library only and
   is executed by the suite, so it cannot quietly stop working — the README had **zero**
   whole scripts in 41 KB, every one a fragment with undefined names.

@@ -395,9 +395,13 @@ def _verify(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # The skipped count is REPORTED, never merely applied. A checker that quietly narrows
+    # what it looked at reads as "everything is fine" when it means "I did not look there".
+    skipped = report["files_skipped"]
     print(
-        f"# {pinned} pinned artifact(s) of {seen} file(s) under {root}: "
-        f"{report['ok']} OK, {report['stale']} STALE, {report['gone']} GONE, "
+        f"# {pinned} pinned artifact(s) of {seen} file(s) under {root}"
+        + (f" ({skipped} skipped in build/vcs/venv dirs)" if skipped else "")
+        + f": {report['ok']} OK, {report['stale']} STALE, {report['gone']} GONE, "
         f"{report['unverifiable']} UNVERIFIABLE",
         file=sys.stderr,
     )

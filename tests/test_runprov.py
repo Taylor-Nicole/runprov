@@ -5643,10 +5643,67 @@ def test_verify_collects_files_directories_and_neither(tmp_path):
     (tmp_path / "d").mkdir()
     (tmp_path / "d" / "b.tsv").write_text("b\n", encoding="utf-8")
     (tmp_path / "a.tsv").write_text("a\n", encoding="utf-8")
-    got = runprov.verify.collect(
+    got, skipped = runprov.verify.collect(
         [tmp_path / "d", tmp_path / "d" / "b.tsv", tmp_path / "a.tsv", tmp_path / "nope.tsv"]
     )
     assert [p.name for p in got] == ["a.tsv", "b.tsv"]
+    assert skipped == 0
+
+
+def test_verify_does_not_treat_a_file_that_MENTIONS_the_pin_format_as_an_artifact(tmp_path):
+    """Found by running `runprov verify` with no arguments in a project with a virtualenv.
+
+    The anchor was matched anywhere in the first 64 KiB, so the checker reported this
+    package's own `verify.py` (which holds the anchor as a constant), `run.py` (which
+    renders it), their `.pyc` files, and the installed wheel's METADATA — and METADATA
+    embeds the README's EXAMPLE pin, so it invented a `GONE` for `data/labels.tsv`, a path
+    that exists only in documentation. A gate that fails because the docs describe the
+    format is worse than no gate.
+
+    A pinned artifact declares itself at the TOP. A file that merely talks about pins does
+    not, and that is the whole discriminator.
+    """
+    doc = tmp_path / "explaining.md"
+    doc.write_text(
+        "# How the pin works\n\nHere is what one looks like:\n\n"
+        "```\n"
+        f"# {runprov.verify.ANCHOR}\n"
+        "#   script     : build_labels\n"
+        "#   inputs (1), sha256:\n"
+        f"#     {'0' * 16}  data/labels.tsv\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    assert runprov.verify.read_pins(doc) == [], "prose about the format is not a pin"
+    assert runprov.verify.verify_artifact(doc, tmp_path)["status"] == "NO PIN"
+
+    # And the tolerance is real: a shebang above a hand-placed pin still counts.
+    script = tmp_path / "generated.txt"
+    script.write_text(f"#!/usr/bin/env cat\n# {runprov.verify.ANCHOR}\n#   script : s\n", "utf-8")
+    assert len(runprov.verify.read_pins(script)) == 1
+
+
+def test_verify_does_not_walk_build_and_vcs_directories_but_counts_what_it_skipped(tmp_path):
+    """A bare `verify` in a real project walked `.venv`, which is where the false positives
+    above came from — and 898 files to check 1 artifact. Skipping is right; skipping
+    SILENTLY is the failure this package refuses everywhere else, so the count is reported.
+
+    A path named explicitly is still examined: the list is about what a bare `verify`
+    walks, not a claim that those files cannot be checked.
+    """
+    (tmp_path / "results").mkdir()
+    (tmp_path / "results" / "out.tsv").write_text("x\n", encoding="utf-8")
+    for skipped_dir in (".git", ".venv", "__pycache__", "node_modules", "thing.egg-info"):
+        d = tmp_path / skipped_dir
+        d.mkdir()
+        (d / "noise.tsv").write_text("noise\n", encoding="utf-8")
+
+    found, skipped = runprov.verify.collect([tmp_path])
+    assert [p.name for p in found] == ["out.tsv"]
+    assert skipped == 5, "one file in each skipped directory, counted rather than dropped"
+
+    named, _ = runprov.verify.collect([tmp_path / ".venv" / "noise.tsv"])
+    assert [p.name for p in named] == ["noise.tsv"], "an explicit path is always examined"
 
 
 def test_verify_cli_exits_non_zero_and_says_so_when_it_checked_nothing(tmp_path, capsys):
