@@ -42,6 +42,8 @@ import sys
 import typing
 
 from .project import active
+from .show import project_view, render_project, render_run, run_view, select
+from .show import to_yaml as _yaml_doc
 from .verify import render, verify
 
 
@@ -367,6 +369,60 @@ def _render_lineage(rows: list[dict[str, typing.Any]], g: dict[str, typing.Any])
     return "\n".join(out)
 
 
+def _show(
+    args: argparse.Namespace,
+    rows: list[dict[str, typing.Any]],
+    path: pathlib.Path,
+    bad: int,
+) -> int:
+    """`show`, which reads the history and renders it. It writes nothing, by design.
+
+    With no target it is the PROJECT page -- every script, what it expects, what it writes,
+    and every artifact on record with the run that produced it. That is the question a
+    developer has three weeks in: does this already exist, and what did it come from.
+
+    With a target it is one page per matching run, oldest last, because the last one is the
+    state you are in.
+    """
+    if args.target:
+        matched = select(rows, args.target)
+        if not matched:
+            print(
+                f"nothing in {path} matches {args.target!r}.\n"
+                f"  A target is a script name, a run_uid prefix, a run_id or an artifact "
+                f"path.\n  `python -m runprov show` with no target lists every script this "
+                f"project has run.",
+                file=sys.stderr,
+            )
+            return 1
+        if args.limit:
+            matched = matched[-args.limit :]
+        views = [run_view(r) for r in matched]
+        if args.format == "yaml":
+            sys.stdout.write(_yaml_doc(views))
+        else:
+            sys.stdout.write("\n".join(render_run(v) for v in views))
+        print(
+            f"# {len(matched)} run(s) matching {args.target!r} from {path}"
+            + (f"; {bad} unreadable line(s) skipped" if bad else ""),
+            file=sys.stderr,
+        )
+        return 0
+
+    view = project_view(rows)
+    if args.format == "yaml":
+        sys.stdout.write(_yaml_doc(view))
+    else:
+        sys.stdout.write(render_project(view))
+    print(
+        f"# {view['runs']} run(s), {len(view['scripts'])} script(s), "
+        f"{len(view['artifacts'])} artifact(s) from {path}"
+        + (f"; {bad} unreadable line(s) skipped" if bad else ""),
+        file=sys.stderr,
+    )
+    return 0
+
+
 def _verify(args: argparse.Namespace) -> int:
     """`verify`, and it deliberately never touches the history.
 
@@ -447,6 +503,15 @@ def main(argv: list[str] | None = None) -> int:
     ln = sub.add_parser("lineage", help="reconstruct the run DAG by joining on digests")
     ln.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     ln.add_argument("--format", choices=("text", "json"), default="text")
+    sh = sub.add_parser("show", help="the notebook: one page per project, or per run")
+    sh.add_argument(
+        "target",
+        nargs="?",
+        help="a script name, run_uid prefix, run_id or artifact path; omit for the project",
+    )
+    sh.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
+    sh.add_argument("--format", choices=("text", "yaml"), default="text")
+    sh.add_argument("--limit", type=int, default=0, help="show only the last N matching runs")
     vf = sub.add_parser("verify", help="do artifacts still match the inputs they pin?")
     vf.add_argument("paths", nargs="*", help="artifacts or directories (default: the root)")
     vf.add_argument("--root", default=None, help="what pinned names are relative to")
@@ -474,6 +539,9 @@ def main(argv: list[str] | None = None) -> int:
 
     rows, bad = _load(path)
     total = len(rows)
+
+    if args.cmd == "show":
+        return _show(args, rows, path, bad)
 
     if args.cmd == "lineage":
         g = _lineage(rows)

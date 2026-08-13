@@ -25,6 +25,13 @@ Nothing has been published yet. Everything below is what a first release would c
   JSONL history with `flock` (and a `msvcrt` path on Windows).
 - `python -m runprov log | lineage | verify`, and a `runprov` console script — `uvx runprov`
   and `pipx run runprov` resolve the second and cannot reach the first.
+- **`show`** — the notebook the history already contained. `show` with no argument is the
+  PROJECT page: every script, the inputs it expects (with a digest per distinct version it
+  has read), the outputs it writes, its parameter and note keys, and an index of every
+  artifact on record with the run that produced it. `show <target>` is one page per run,
+  where the target may be a script name, a `run_uid` prefix, a `run_id` or an artifact path.
+  Text or `--format yaml`. **It writes nothing** — a reader over `runs.jsonl`, asserted by a
+  test that compares every byte on disk before and after.
 - **`verify`** — re-derives every input a pin names and compares. Until it existed,
   invalidation was a property of the format and not of the product: everything needed was
   in the artifact and nothing read it back. Reads the artifact and nothing else — no

@@ -6719,3 +6719,239 @@ def test_pickle_and_friends_are_refused_with_the_message_a_caller_needs(tmp_path
         with pytest.raises(ValueError, match="cannot open") as caught:
             run.open_output(tmp_path / name)
         assert "run.pin_sidecar(p)" in str(caught.value), name
+
+
+# =========== `show`: the notebook the history already contained, per run and per project
+def _history(tmp_path, monkeypatch):
+    """Two scripts, a chain, two versions of one input, and one failure."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "out").mkdir()
+    src = tmp_path / "data" / "in.tsv"
+    proj = _project(tmp_path)
+
+    for value in ("a", "b"):  # the SAME input path at two different digests
+        src.write_text(f"id\tv\n1\t{value}\n", encoding="utf-8")
+        with runprov.Run(
+            "build", {"mode": value}, project=proj, provenance=tmp_path / "p.json"
+        ) as r:
+            r.input(src)
+            with r.open_output(tmp_path / "out" / "mid.tsv") as fh:
+                fh.write(f"{value}\n")
+            r.note("rows", 1)
+
+    with runprov.Run("report", {}, project=proj, provenance=tmp_path / "q.json") as r:
+        r.input(tmp_path / "out" / "mid.tsv")
+        (tmp_path / "out" / "final.txt").write_text("done\n", encoding="utf-8")
+        r.output(tmp_path / "out" / "final.txt")
+
+    with contextlib.suppress(ValueError):
+        with runprov.Run("report", {}, project=proj, provenance=tmp_path / "r.json") as r:
+            r.input(tmp_path / "out" / "mid.tsv")
+            raise ValueError("boom")
+
+    return [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+
+
+def test_the_project_page_says_which_script_expects_which_input(tmp_path, monkeypatch):
+    """The question three weeks in, and the one `log` and `lineage` do not answer: which
+    script expects which input, and does the thing I need already exist?
+
+    Built per SCRIPT rather than per run, because that is what the question is about. A file
+    read at two different digests is two answers and both are worth seeing.
+    """
+    rows = _history(tmp_path, monkeypatch)
+    view = runprov.show.project_view(rows)
+
+    assert view["runs"] == 4
+    assert sorted(view["scripts"]) == ["build", "report"]
+
+    build = view["scripts"]["build"]
+    assert build["runs"] == 2 and build["failed"] == 0
+    versions = next(iter(build["inputs"].values()))
+    assert len(versions) == 2, "one path read at two digests is two versions, not one"
+    assert build["parameters"] == ["mode"] and build["note_keys"] == ["rows"]
+
+    report = view["scripts"]["report"]
+    assert report["runs"] == 2 and report["failed"] == 1, "a failed run is still a run"
+
+    # The artifact index: what exists, and what made it.
+    names = {pathlib.Path(p).name for p in view["artifacts"]}
+    assert {"mid.tsv", "final.txt"} <= names
+    made_by = {pathlib.Path(p).name: a["by"] for p, a in view["artifacts"].items()}
+    assert made_by["mid.tsv"] == "build" and made_by["final.txt"] == "report"
+
+
+def test_the_project_page_is_rendered_without_needing_a_second_document(tmp_path, monkeypatch):
+    """One page. The point is not to open several files and reconstruct the history."""
+    rows = _history(tmp_path, monkeypatch)
+    text = runprov.show.render_project(runprov.show.project_view(rows))
+    for expected in ("build", "report", "expects:", "writes:", "artifacts on record"):
+        assert expected in text, expected
+    assert "FAILED" in text, "a script with a failed run must say so on the project page"
+
+
+def test_a_run_page_carries_what_a_person_asks_about_a_run(tmp_path, monkeypatch):
+    rows = _history(tmp_path, monkeypatch)
+    view = runprov.show.run_view(rows[0])
+    text = runprov.show.render_run(view)
+    for expected in ("started", "run_id", "parameters", "inputs (1)", "outputs", "notes"):
+        assert expected in text, expected
+    assert view["parameters"] == {"mode": "a"}
+    assert view["inputs"][0]["digest"] and len(view["inputs"][0]["digest"]) == runprov.show.SHORT
+
+
+def test_a_failed_run_page_leads_with_the_failure(tmp_path, monkeypatch):
+    rows = _history(tmp_path, monkeypatch)
+    failed = next(r for r in rows if r.get("status") == "failed")
+    text = runprov.show.render_run(runprov.show.run_view(failed))
+    assert "[FAILED]" in text and "ValueError" in text and "boom" in text
+
+
+def test_show_finds_a_run_by_script_uid_run_id_or_artifact(tmp_path, monkeypatch):
+    """Four things one argument can mean. A developer asking about `build` and one asking
+    about `out/mid.tsv` are asking the same question and should not have to say which kind
+    of name they are holding."""
+    rows = _history(tmp_path, monkeypatch)
+    uid = rows[0]["run_uid"]
+    assert len(runprov.show.select(rows, "build")) == 2
+    assert len(runprov.show.select(rows, uid[:8])) == 1
+    assert len(runprov.show.select(rows, rows[0]["run_id"])) == 4, "run_id is a CHAIN id"
+    assert len(runprov.show.select(rows, "mid.tsv")) == 4, "written twice, read twice"
+    assert runprov.show.select(rows, "no_such_thing") == []
+
+
+def test_the_yaml_view_quotes_every_scalar_so_a_typed_colon_cannot_break_it(tmp_path, monkeypatch):
+    """The predecessor's log dies at line 14,554 of 24,300 on an unquoted `Note:` inside a
+    hand-written description. A quoting rule with exceptions is correct until someone types
+    a colon, so there are no exceptions."""
+    yaml = pytest.importorskip("yaml")
+    rows = _history(tmp_path, monkeypatch)
+    rows[0]["notes"]["description"] = "Recomputed p_l/p_o. Note: qval and log2_fc are NOT modified"
+    rows[0]["notes"]["worse"] = "a: b\n- item\n#c\t\"q\" 's' ---"
+
+    rendered = runprov.show.to_yaml(runprov.show.project_view(rows))
+    back = yaml.safe_load(rendered)
+    assert back["runs"] == 4
+
+    one = runprov.show.to_yaml([runprov.show.run_view(rows[0])])
+    parsed = yaml.safe_load(one)
+    assert parsed[0]["notes"]["description"].startswith("Recomputed")
+    assert parsed[0]["notes"]["worse"] == rows[0]["notes"]["worse"]
+
+
+def test_show_writes_nothing(tmp_path, monkeypatch):
+    """A view that could alter what it displays is a view you have to trust, and the record
+    is the thing being trusted."""
+    rows = _history(tmp_path, monkeypatch)
+    before = {p: p.read_bytes() for p in sorted(tmp_path.rglob("*")) if p.is_file()}
+    runprov.show.render_project(runprov.show.project_view(rows))
+    runprov.show.render_run(runprov.show.run_view(rows[0]))
+    runprov.show.to_yaml(runprov.show.project_view(rows))
+    after = {p: p.read_bytes() for p in sorted(tmp_path.rglob("*")) if p.is_file()}
+    assert before == after
+
+
+def test_show_cli_renders_both_pages_and_says_when_nothing_matches(tmp_path, monkeypatch, capsys):
+    _history(tmp_path, monkeypatch)
+    log = str(tmp_path / "runs.jsonl")
+
+    assert runprov.__main__.main(["show", "--log", log]) == 0
+    assert "project notebook" in capsys.readouterr().out
+
+    assert runprov.__main__.main(["show", "build", "--log", log, "--limit", "1"]) == 0
+    assert "inputs (1)" in capsys.readouterr().out
+
+    assert runprov.__main__.main(["show", "--log", log, "--format", "yaml"]) == 0
+    assert '"scripts"' in capsys.readouterr().out
+
+    assert runprov.__main__.main(["show", "build", "--log", log, "--format", "yaml"]) == 0
+    assert '"run"' in capsys.readouterr().out
+
+    assert runprov.__main__.main(["show", "nope", "--log", log]) == 1
+    err = capsys.readouterr().err
+    assert "nothing in" in err and "script name, a run_uid prefix" in err
+
+
+def test_the_yaml_emitter_handles_empty_and_scalar_shapes(tmp_path):
+    """Small shapes it must not choke on, since a record can legitimately hold any of them."""
+    yaml = pytest.importorskip("yaml")
+    for obj in ({}, [], {"a": {}}, {"a": []}, [1, 2], "bare", 3, None, True, 1.5):
+        rendered = runprov.show.to_yaml(obj)
+        yaml.safe_load(rendered)  # must not raise
+    assert yaml.safe_load(runprov.show.to_yaml({"a": [{"b": 1}]}))["a"][0]["b"] == 1
+
+
+def test_the_views_survive_a_record_that_is_missing_almost_everything():
+    """A renderer meets records written by OLDER versions, and by runs that did nothing.
+    Every field here is optional in some real record, so every one is absent in this one.
+
+    The history is append-only and never rewritten, which is exactly why a reader has to
+    cope with the shapes it already contains rather than the shape it wishes for.
+    """
+    bare = {"script": "minimal", "status": "ok"}
+    view = runprov.show.run_view(bare)
+    text = runprov.show.render_run(view)
+    assert "minimal" in text and "[ok]" in text
+    for absent in ("script ", "cwd ", "command ", "seeds", "terminal"):
+        assert absent not in text, f"{absent!r} has no value and must not be printed"
+
+    project = runprov.show.render_project(runprov.show.project_view([bare]))
+    assert "minimal" in project
+    assert "expects:" not in project and "writes:" not in project
+    assert "artifacts on record" not in project, "nothing was produced, so there is no index"
+
+
+def test_a_run_page_shows_seeds_and_the_terminal_log_when_there_are_any():
+    rec = {
+        "script": "train",
+        "status": "ok",
+        "run_uid": "abcdef123456789",
+        "script_file": "src/train.py",
+        "cwd": "/w",
+        "command": "python src/train.py",
+        "seeds": [20250131],
+        "terminal_log": {"path": "logs/train.log"},
+        "git_code_dirty": True,
+    }
+    text = runprov.show.render_run(runprov.show.run_view(rec))
+    assert "seeds" in text and "20250131" in text
+    assert "logs/train.log" in text
+    assert "DIRTY" in text, "a dirty tree is the most consequential line on the page"
+
+
+def test_many_versions_of_one_input_are_counted_rather_than_listed():
+    """A script that has read forty versions of one file has a fact worth stating and a list
+    not worth printing. The count is the finding."""
+    many = [
+        {
+            "script": "s",
+            "status": "ok",
+            # The digest must differ in its FIRST characters: `_short` takes 16, and a
+            # fixture varying only the tail collapses to one version and tests nothing.
+            "inputs": [{"path": "data/in.tsv", "sha256": f"{i}" + "a" * 63}],
+            "outputs": [],
+        }
+        for i in range(runprov.show.VERSIONS_SHOWN + 2)
+    ]
+    text = runprov.show.render_project(runprov.show.project_view(many))
+    assert f"[{runprov.show.VERSIONS_SHOWN + 2} versions]" in text
+    assert "0" + "a" * 15 not in text, "the digests are summarised, not listed"
+
+    few = many[: runprov.show.VERSIONS_SHOWN]
+    lean = runprov.show.render_project(runprov.show.project_view(few))
+    assert "0" + "a" * 15 in lean, "a handful of versions IS worth naming"
+
+
+def test_an_artifact_from_a_failed_run_is_flagged_on_the_project_page():
+    """`MISSING` and a partial write both come from failed runs, and an index that lists
+    them beside good artifacts without saying so is the reassuring answer again."""
+    rec = {
+        "script": "s",
+        "status": "failed",
+        "started_utc": "2026-01-01T00:00:00Z",
+        "inputs": [],
+        "outputs": [{"path": "out/half.tsv", "sha256": "a" * 64, "kind": "file"}],
+    }
+    text = runprov.show.render_project(runprov.show.project_view([rec]))
+    assert "from a FAILED run" in text
