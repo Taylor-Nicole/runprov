@@ -1083,6 +1083,28 @@ the same way, every `git_*` field is null, `runprov log` prints
 `DIRTY STATE UNKNOWN (git status did not run)`, and the full dirty-file list is kept. Only
 the terminal is quieter, and only where quiet is honest.
 
+### A long history is the point, so it was measured on one
+
+A history that runs for years is the goal, not an edge case. Measured on a realistic
+**100,000-run, 91 MB** history — 40 scripts, 5,000 artifacts, notes and parameters on every
+record:
+
+| | |
+|---|---|
+| append one run | **546 µs**, and flat — the same at 0 records and at 100,000 |
+| `runprov show` (the whole project page) | **1.6 s**, **33 MB** peak RSS for the process |
+| `show <script>` / `show <artifact>` | 0.01 s |
+
+The page **streams** the history rather than loading it. Materialising every record cost
+**392 MB**; consuming them one at a time costs 3. `--stale` makes a second pass over the
+file rather than keeping a second copy in memory — re-reading 91 MB costs seconds, holding
+it costs hundreds of megabytes, and only one of those grows without bound as the project
+does.
+
+That reading was itself a `read_text().splitlines()` until this was measured: the whole file
+as one string *and* a list of every line, before a single record was parsed. The same defect
+`content_digest` had, in the other function that meets the biggest file.
+
 ## Running the network-filesystem tests on your cluster
 
 `flock` on NFS depends on the server, the protocol version and whether `lockd` is running.

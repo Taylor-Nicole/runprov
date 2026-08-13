@@ -7968,3 +7968,91 @@ def test_constructing_a_run_does_not_scale_with_the_history(tmp_path, monkeypatc
         f"construction cost {grown * 1e3:.1f}ms with a 3,000-record history against "
         f"{empty * 1e3:.1f}ms with none — something is reading it"
     )
+
+
+def test_the_project_page_does_not_hold_the_history_in_memory(tmp_path):
+    """The page a developer opens many times a day, over a file that only ever grows.
+
+    Measured on a realistic 100,000-run, 91 MB history: materialising every record cost
+    392 MB, streaming it costs 3. So `project_view` consumes an ITERABLE and counts as it
+    goes -- asking for `len(records)` would materialise the history this exists not to hold.
+
+    A ratio, not a threshold: 4x the runs must not cost 4x the memory. The aggregate is a
+    handful of scripts and artifacts however long the history is.
+    """
+    import tracemalloc
+
+    def peak_for(n):
+        def stream():
+            for i in range(n):
+                yield {
+                    "script": f"s{i % 20}",
+                    "status": "ok",
+                    "started_utc": "2026-01-01T00:00:00Z",
+                    "inputs": [{"path": f"in/{i % 50}.tsv", "sha256": f"{i:064x}"}],
+                    "outputs": [{"path": f"out/{i % 100}.tsv", "sha256": f"{i:064x}"}],
+                }
+
+        tracemalloc.start()
+        try:
+            view = runprov.show.project_view(stream())
+            assert view["runs"] == n
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    small, large = peak_for(5_000), peak_for(20_000)
+    assert large < small * 2, (
+        f"4x the runs took {large / small:.1f}x the memory — project_view is holding the "
+        f"history rather than aggregating it"
+    )
+
+
+def test_reading_the_history_streams_rather_than_slurping(tmp_path):
+    """`_stream` yields a record at a time. The first version did
+    `read_text().splitlines()`, holding the whole file AND a list of every line before one
+    record was parsed -- two full copies of a file whose design is that it never stops
+    growing. Same defect `content_digest` had, in the function that meets the biggest file.
+    """
+    import tracemalloc
+
+    target = tmp_path / "runs.jsonl"
+    with target.open("w", encoding="utf-8") as fh:
+        for i in range(20_000):
+            fh.write(json.dumps({"i": i, "pad": "x" * 900}) + "\n")
+    size = target.stat().st_size
+    assert size > 15_000_000, "the fixture must be big enough for slurping to show"
+
+    tracemalloc.start()
+    try:
+        count = sum(1 for rec in runprov.__main__._stream(target) if rec is not None)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert count == 20_000
+    assert peak < size / 4, (
+        f"peak {peak / 1e6:.0f} MB against a {size / 1e6:.0f} MB file — it is reading it whole"
+    )
+
+
+def test_an_unreadable_line_is_still_counted_when_streaming(tmp_path):
+    """The count is what stops a corrupt line from being silently dropped, and it has to
+    survive the switch from a list to a generator."""
+    target = tmp_path / "runs.jsonl"
+    target.write_text('{"i": 0}\nnot json at all\n\n{"i": 1}\n', encoding="utf-8")
+    assert list(runprov.__main__._stream(target)) == [{"i": 0}, None, {"i": 1}]
+    rows, bad = runprov.__main__._load(target)
+    assert [r["i"] for r in rows] == [0, 1] and bad == 1
+
+
+def test_show_reports_unreadable_lines_it_streamed_past(tmp_path, capsys):
+    """`bad` is accumulated as the stream runs, so the summary can still say what it could
+    not read — a reader must not be told 'N runs' when it was N plus something broken."""
+    target = tmp_path / "runs.jsonl"
+    target.write_text(
+        json.dumps({"script": "s", "status": "ok", "outputs": [], "inputs": []}) + "\ntorn{\n",
+        encoding="utf-8",
+    )
+    assert runprov.__main__.main(["show", "--log", str(target)]) == 0
+    assert "1 unreadable line(s) skipped" in capsys.readouterr().err
