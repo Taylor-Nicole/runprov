@@ -112,6 +112,23 @@ PIN_UNSAFE = {
     "even when the pin uses '##'",
     ".sam": "'@provenance' is not a valid header record type; only '@CO' is, so samtools "
     "fails to read the header even when the pin uses '@'",
+    # TEXT, and that is the trap in them: `open_output` can write these perfectly happily,
+    # and the result does not look damaged until something tries to parse it. Found by
+    # instrumenting a real matplotlib script that saves `.svg` -- the figure came out and
+    # `ET.parse` then failed at line 1, column 1. `#` is a comment in a TSV, a YAML, a TOML
+    # and an INI; it is an id selector in CSS, a macro parameter in TeX, and simply invalid
+    # in XML and JSON, which have no comment syntax at all.
+    ".svg": "SVG is XML, which has no comment syntax a leading '#' can use — measured: "
+    "the file is written and then `ET.parse` fails at line 1, column 1",
+    ".xml": "XML has no line-comment syntax; a leading '#' is not well-formed",
+    ".html": "HTML has no line-comment syntax; a leading '#' is text, not a comment",
+    ".htm": "HTML has no line-comment syntax; a leading '#' is text, not a comment",
+    ".xhtml": "XHTML is XML; a leading '#' is not well-formed",
+    ".json": "JSON has no comment syntax — measured: `json.loads` fails at char 0",
+    ".jsonl": "JSON Lines: every line must be one JSON value, and a '#' line is not one",
+    ".geojson": "GeoJSON is JSON; it has no comment syntax",
+    ".ipynb": "a notebook is JSON; a '#' line makes it unopenable rather than commented",
+    ".tex": "TeX comments with '%'; '#' is a macro parameter character and will error",
     ".bam": "binary; `open_output` is text mode and a pin would corrupt it",
     ".cram": "binary; `open_output` is text mode and a pin would corrupt it",
     ".parquet": "binary; `open_output` is text mode and a pin would corrupt it",

@@ -5877,6 +5877,18 @@ def test_open_output_refuses_every_format_that_cannot_hold_a_pin(tmp_path):
         "x.png",
         "x.pdf",
         "x.NWK",
+        # TEXT formats with no `#` comment, which are the trap: the file is written
+        # happily and looks undamaged until a parser touches it.
+        "x.svg",
+        "x.xml",
+        "x.html",
+        "x.htm",
+        "x.xhtml",
+        "x.json",
+        "x.jsonl",
+        "x.geojson",
+        "x.ipynb",
+        "x.tex",
     ):
         with pytest.raises(ValueError, match="refusing to write a provenance pin"):
             run.open_output(tmp_path / name)
@@ -5909,7 +5921,10 @@ def test_open_output_still_pins_the_formats_that_can_hold_one(tmp_path):
     src.write_text("x\n", encoding="utf-8")
     run = runprov.Run("s", project=proj)
     run.input(src)
-    for name in ("a.tsv", "a.csv", "a.txt", "a.md", "a.gff3", "a.gtf", "a.bed", "a.json"):
+    # NO `.json` HERE. It sat in this list asserting that a JSON file can carry a `#`
+    # pin, which is false -- the suite was pinning the corruption in place. YAML, TOML
+    # and INI are the text formats where `#` really IS a comment.
+    for name in ("a.tsv", "a.csv", "a.txt", "a.md", "a.gff3", "a.gtf", "a.bed", "a.yaml"):
         with run.open_output(tmp_path / name) as fh:
             fh.write("payload\n")
         assert "provenance" in (tmp_path / name).read_text(encoding="utf-8"), name
@@ -6517,3 +6532,44 @@ def test_the_dirty_file_list_is_capped_and_says_how_many_it_left_out(tmp_path, c
     assert len(shown) == 10, "the terminal gets a readable number of lines"
     assert "… and 15 more (all of them are in the record)" in err
     assert len(run.record["code"]["git_dirty_code_files"]) == 25, "the record keeps them all"
+
+
+def test_the_text_formats_with_no_comment_syntax_are_refused_for_a_measured_reason(tmp_path):
+    """`.svg` and `.json` are TEXT, and that is what made them the trap: `open_output`
+    wrote them happily and the result did not look damaged until something parsed it.
+
+    Found by instrumenting a real matplotlib script that saves a figure as `.svg`. Worse,
+    `.json` had been sitting in the list of formats this suite asserted a pin CAN go into,
+    so the corruption was pinned in place by a passing test.
+
+    The refusal is asserted here against what the parsers actually do, rather than against
+    a claim in a table — the table is the thing under test.
+    """
+    proj = _project(tmp_path)
+    src = tmp_path / "in.tsv"
+    src.write_text("x\n", encoding="utf-8")
+    run = runprov.Run("s", project=proj)
+    run.input(src)
+
+    payloads = {
+        "fig.svg": '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>\n',
+        "data.json": '{"a": 1}\n',
+    }
+    parsers = {
+        "fig.svg": lambda p: __import__("xml.etree.ElementTree", fromlist=["x"]).parse(p),
+        "data.json": lambda p: json.loads(p.read_text(encoding="utf-8")),
+    }
+    for name, payload in payloads.items():
+        with pytest.raises(ValueError, match="refusing to write a provenance pin"):
+            run.open_output(tmp_path / name)
+
+        # What the refusal prevents: written by hand, the pin makes the file unparseable.
+        corrupt = tmp_path / f"corrupt_{name}"
+        corrupt.write_text(run.header() + payload, encoding="utf-8")
+        with pytest.raises(Exception):  # noqa: B017 - two libraries, two error types
+            parsers[name](corrupt)
+
+        # And `output()` is the way through: recorded and hashed, no pin, still parseable.
+        good = run.output(tmp_path / f"ok_{name}")
+        good.write_text(payload, encoding="utf-8")
+        parsers[name](good)

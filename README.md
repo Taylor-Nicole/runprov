@@ -816,7 +816,15 @@ reason each format fails:
 | `.fasta` `.fa` `.fna` `.faa` `.ffn` | breaks `samtools faidx`; `Bio.SeqIO` warns it will become a `ValueError`. FASTA's only spec-legal comment is `;` |
 | `.vcf` | `##fileformat` must be the first line — `bcftools` says `unknown file type` even when the pin uses `##` |
 | `.sam` | `@provenance` is not a valid header record type; only `@CO` is |
+| `.svg` `.xml` `.html` `.htm` `.xhtml` | XML has no comment syntax — measured: the file is written, then `ET.parse` fails at line 1, column 1 |
+| `.json` `.jsonl` `.geojson` `.ipynb` | JSON has no comment syntax — measured: `json.loads` fails at char 0 |
+| `.tex` | TeX comments with `%`; `#` is a macro parameter character |
 | `.bam` `.cram` `.parquet` `.h5` `.npy` `.xlsx` `.gz` `.zst` `.zip` `.png` `.pdf` | binary or compressed; `open_output` is text mode |
+
+The text formats are the trap in that table: `open_output` writes them happily and the
+result does not look damaged until something parses it. `#` really is a comment in a
+TSV, a YAML, a TOML and an INI — it is not one in XML or JSON, which have no comment
+syntax at all.
 
 The refusal names the way out, and the way out costs almost nothing:
 
