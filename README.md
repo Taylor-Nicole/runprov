@@ -1083,6 +1083,30 @@ the same way, every `git_*` field is null, `runprov log` prints
 `DIRTY STATE UNKNOWN (git status did not run)`, and the full dirty-file list is kept. Only
 the terminal is quieter, and only where quiet is honest.
 
+## Running the network-filesystem tests on your cluster
+
+`flock` on NFS depends on the server, the protocol version and whether `lockd` is running.
+None of that can be discovered from a laptop, and asserting it from one would be a claim
+about a machine that is not the machine that matters. So the real test is **opt-in and
+pointed at your mount**:
+
+```bash
+RUNPROV_NETWORK_FS_DIR=/mnt/lustre/scratch/you python -m pytest -k network_fs -s
+```
+
+It appends 8 × 20 records of ~4 KB from **separate processes** — processes rather than
+threads, because on a cluster the writers are separate jobs, and a thread pool shares one
+file description, which is exactly the sharing that hides the bug. 4 KB straddles the bound
+below which POSIX guarantees an atomic `O_APPEND` and above which it does not. A second
+test *reports* whether `flock` works on that mount at all, as a measurement rather than an
+assertion — plenty of exports have no `lockd`, and the point is that the answer is printed.
+
+Without the variable both are **skipped by name**, never quietly passed.
+
+The degraded path — no locking at all — is tested unconditionally by forcing `flock` to
+raise `ENOLCK`, which is what such a mount does: every record still lands, the downgrade is
+announced on stderr, and a torn line costs **one record, never the file**.
+
 ## Concurrency
 
 The history append takes an advisory `flock`, and it is a **portability** property rather

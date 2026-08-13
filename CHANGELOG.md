@@ -204,6 +204,20 @@ Nothing has been published yet. Everything below is what a first release would c
   the pin as a top-level key. **JSONL gets no opt-in**: a leading provenance line makes
   pandas read 3 rows for a 2-row file, which is the Newick failure again.
 
+### Tested
+
+- **NFS / Lustre.** The degraded path is tested unconditionally by forcing `flock` to raise
+  `ENOLCK`: every record lands, the downgrade is announced, and a torn line costs one record
+  rather than the file. The REAL test is opt-in and pointed at your mount with
+  `RUNPROV_NETWORK_FS_DIR`, appending from 8 separate processes; a second one reports
+  whether `flock` works there at all. Skipped by name when the variable is unset.
+- **Performance regressions, as ratios rather than thresholds.** History append does not
+  slow as the file grows; `project_view` is linear in run count; `read_pins` does not read
+  past `SCAN_BYTES`; `content_digest` peak memory is flat against both line count and line
+  length; `Run()` construction does not scale with the history. An absolute number is a test
+  of the machine that set it — this suite learned that when `peak < size / 4` passed locally
+  and failed in CI by 2%.
+
 ### Fixed, with what each was measured to be
 
 - **A filename could forge a pin entry.** A crafted name containing a newline wrote an extra

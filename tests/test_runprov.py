@@ -17,6 +17,7 @@ import builtins
 import concurrent.futures
 import contextlib
 import dataclasses
+import errno
 import gc
 import gzip
 import hashlib
@@ -7711,3 +7712,259 @@ def test_exec_can_tee_the_commands_output_to_a_file(tmp_path, monkeypatch, capsy
     assert "from-a-subprocess" in log.read_text(encoding="utf-8")
     rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
     assert rec["terminal_log"]["path"] == str(log)
+
+
+# ============================ NFS and Lustre: the filesystems the lock exists for
+#: Point this at a directory on a REAL network filesystem and the tests below run there.
+#:
+#:     RUNPROV_NETWORK_FS_DIR=/mnt/lustre/scratch/you python -m pytest -k network_fs
+#:
+#: They are skipped otherwise, loudly and by name, because the alternative is a suite that
+#: reports success for the one environment it never entered. `flock` on NFS depends on the
+#: server, the protocol version and whether lockd is running; none of that can be
+#: discovered from a laptop, and asserting it from one would be a claim about a machine
+#: that is not the machine that matters.
+NETWORK_FS = os.environ.get("RUNPROV_NETWORK_FS_DIR")
+
+
+def _append_many(target, n, size, tag):
+    """One process appending `n` records of about `size` bytes through the real sink."""
+    sink = runprov.JsonlSink(pathlib.Path(target))
+    for i in range(n):
+        sink.append({"tag": tag, "i": i, "pad": "x" * size})
+
+
+def test_concurrent_appends_survive_when_locking_is_UNAVAILABLE(tmp_path, monkeypatch):
+    """The NFS case, forced rather than waited for.
+
+    `flock` on NFS depends on the server, the protocol version and whether lockd is running.
+    When it is not there, `fcntl.flock` raises and this package degrades to an unlocked
+    `O_APPEND` -- which is exactly the configuration a cluster hands you. So the degraded
+    path is tested directly instead of hoping the lock is always available.
+
+    What must hold with NO lock at all: every record still lands, and any line that did tear
+    costs ONE record rather than the file. That is the JSONL promise, and it is the reason
+    the format was chosen over the YAML it replaces.
+    """
+    import fcntl
+
+    def no_locks(*_a, **_k):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(fcntl, "flock", no_locks)
+
+    target = tmp_path / "runs.jsonl"
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda t: _append_many(target, 20, 4000, t), range(8)))
+
+    rows, bad = runprov.__main__._load(target)
+    assert len(rows) + bad == 160, f"records lost outright: {len(rows)} + {bad} torn"
+    assert bad == 0 or len(rows) >= 160 - bad, "a torn line must cost one record, never more"
+
+
+def test_the_downgrade_to_no_locking_is_ANNOUNCED(tmp_path, monkeypatch, capsys):
+    """The notice used to sit inside a win32-only branch, so a POSIX `flock` that raised --
+    an NFS or CIFS mount, a container without the syscall -- degraded silently. Those
+    filesystems are the lock's entire justification, so that was the one case that most
+    deserved announcing and the one case that could not."""
+    import fcntl
+
+    monkeypatch.setattr(
+        fcntl, "flock", lambda *_a, **_k: (_ for _ in ()).throw(OSError(errno.ENOLCK, "nope"))
+    )
+    runprov.JsonlSink(tmp_path / "h.jsonl").append({"a": 1})
+    err = capsys.readouterr().err
+    assert "no file locking available" in err
+    assert "may interleave" in err, "the consequence, not only the fact"
+    assert json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8"))["a"] == 1
+
+
+def test_a_torn_line_costs_one_record_not_the_file(tmp_path):
+    """What a network filesystem can actually do to an append, written directly. A YAML
+    document that loses a line stops parsing; JSONL loses one record and says so."""
+    target = tmp_path / "runs.jsonl"
+    sink = runprov.JsonlSink(target)
+    sink.append({"i": 0})
+    with target.open("a", encoding="utf-8") as fh:
+        fh.write('{"i": 1, "trunc')  # an interleaved half-write, no newline
+    sink.append({"i": 2})
+
+    rows, bad = runprov.__main__._load(target)
+    assert bad == 1, "the torn line is COUNTED, never silently dropped"
+    assert [r["i"] for r in rows] == [0, 2], "the records either side are intact"
+
+
+@pytest.mark.skipif(not NETWORK_FS, reason="set RUNPROV_NETWORK_FS_DIR to a real NFS/Lustre path")
+def test_network_fs_concurrent_appends_do_not_lose_records():
+    """THE REAL TEST, on the filesystem that matters. Run it on the cluster:
+
+        RUNPROV_NETWORK_FS_DIR=/mnt/lustre/scratch/you python -m pytest -k network_fs
+
+    Processes rather than threads, because on a cluster the writers are separate jobs and
+    a thread pool shares one file description -- which is precisely the sharing that hides
+    the bug. 8 x 20 records of ~4 KB, which straddles the 4,096-byte bound below which
+    POSIX guarantees an atomic O_APPEND and above which it does not.
+    """
+    root = pathlib.Path(NETWORK_FS)
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / f"runprov_nfs_{os.getpid()}.jsonl"
+    try:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=8) as pool:
+            list(pool.map(_append_many, [target] * 8, [20] * 8, [4000] * 8, range(8)))
+
+        rows, bad = runprov.__main__._load(target)
+        assert bad == 0, f"{bad} torn line(s) on {root} — locking is not holding there"
+        assert len(rows) == 160, f"{len(rows)} of 160 records survived on {root}"
+        assert len({(r["tag"], r["i"]) for r in rows}) == 160, "and none was duplicated"
+    finally:
+        target.unlink(missing_ok=True)
+
+
+@pytest.mark.skipif(not NETWORK_FS, reason="set RUNPROV_NETWORK_FS_DIR to a real NFS/Lustre path")
+def test_network_fs_reports_whether_locking_is_actually_available():
+    """Not an assertion, a MEASUREMENT: does `flock` work on this mount at all?
+
+    It is allowed to fail -- plenty of NFS exports have no lockd -- and the point is that
+    the answer is printed rather than assumed. A run on such a mount degrades to an
+    unlocked append and says so, which is the behaviour the tests above pin down.
+    """
+    import fcntl
+
+    probe = pathlib.Path(NETWORK_FS) / f"runprov_lockprobe_{os.getpid()}"
+    probe.write_text("x", encoding="utf-8")
+    try:
+        with probe.open("a") as fh:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                available = True
+                detail = ""
+            except OSError as exc:
+                available = False
+                detail = f"{type(exc).__name__}: {exc}"
+        print(f"\nflock on {NETWORK_FS}: {'AVAILABLE' if available else 'UNAVAILABLE'} {detail}")
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+# ==================== performance regressions: shapes, never absolute numbers
+# Every test here compares TWO measurements of the same operation at different sizes. An
+# absolute threshold is a test of the machine that set it -- this suite already learned that
+# once, when `peak < size / 4` passed locally and failed in CI by 2% on a 7.4 MB file. A
+# ratio cancels the machine out: a linear implementation stays linear on a slow disk too.
+def _elapsed(fn, *a, **k):
+    start = time.perf_counter()
+    fn(*a, **k)
+    return time.perf_counter() - start
+
+
+def test_appending_to_the_history_does_not_get_slower_as_it_grows(tmp_path):
+    """The history is appended FOREVER, so an append that reads the file first is a defect
+    that only shows up in year two. A 2,000-record history must cost the same per append as
+    an empty one."""
+    fresh = runprov.JsonlSink(tmp_path / "fresh.jsonl")
+    grown = runprov.JsonlSink(tmp_path / "grown.jsonl")
+    for i in range(2000):
+        grown.append({"i": i, "pad": "x" * 500})
+
+    rec = {"i": -1, "pad": "x" * 500}
+    empty_cost = min(_elapsed(fresh.append, rec) for _ in range(20))
+    grown_cost = min(_elapsed(grown.append, rec) for _ in range(20))
+
+    assert grown_cost < empty_cost * 8 + 5e-4, (
+        f"appending to a 2,000-record history cost {grown_cost * 1e6:.0f}us against "
+        f"{empty_cost * 1e6:.0f}us for an empty one — the append is reading the file"
+    )
+
+
+def test_the_project_page_is_linear_in_the_number_of_runs(tmp_path):
+    """`show` is the page a developer opens many times a day, over a history that only ever
+    grows. Quadratic aggregation would be invisible at 100 runs and unusable at 10,000."""
+
+    def rows(n):
+        return [
+            {
+                "script": f"s{i % 20}",
+                "status": "ok",
+                "started_utc": "2026-01-01T00:00:00Z",
+                "inputs": [{"path": f"in/{i % 50}.tsv", "sha256": f"{i:064x}"}],
+                "outputs": [{"path": f"out/{i}.tsv", "sha256": f"{i:064x}", "kind": "file"}],
+            }
+            for i in range(n)
+        ]
+
+    small = min(_elapsed(runprov.show.project_view, rows(2000)) for _ in range(3))
+    large = min(_elapsed(runprov.show.project_view, rows(8000)) for _ in range(3))
+
+    # 4x the input. Linear would be ~4x; the bound catches quadratic (~16x) with room for
+    # allocator noise on a busy machine.
+    assert large < small * 9, (
+        f"4x the runs cost {large / small:.1f}x the time — project_view is not linear"
+    )
+
+
+def test_reading_a_pin_does_not_read_the_whole_artifact(tmp_path):
+    """`verify` opens every candidate file in a tree. It reads a bounded prefix looking for
+    the anchor, so a 50 GB BAM costs the same as a 1 KB TSV -- and a regression here turns
+    a check into a full-corpus read."""
+    small = tmp_path / "small.bin"
+    small.write_bytes(b"\x00" * 4096)
+    large = tmp_path / "large.bin"
+    large.write_bytes(b"\x00" * (64 * 1024 * 1024))
+
+    small_cost = min(_elapsed(runprov.verify.read_pins, small) for _ in range(5))
+    large_cost = min(_elapsed(runprov.verify.read_pins, large) for _ in range(5))
+
+    assert large_cost < small_cost * 20 + 5e-3, (
+        f"a 64 MB file cost {large_cost * 1e3:.1f}ms against {small_cost * 1e3:.1f}ms for "
+        f"4 KB — read_pins is reading past SCAN_BYTES ({runprov.verify.SCAN_BYTES} bytes)"
+    )
+
+
+def test_content_digest_memory_does_not_grow_with_the_file(tmp_path):
+    """The property the whole streaming design exists for, guarded as a ratio. Both the line
+    COUNT and the line LENGTH are varied, because a block bounded by only one of them looks
+    streamed until the other moves -- which is how the byte bound came to be needed."""
+    import tracemalloc
+
+    def peak(records, width):
+        p = tmp_path / f"f{records}x{width}.txt"
+        with open(p, "w", encoding="utf-8") as fh:
+            for i in range(records):
+                fh.write(f"{i}\t" + "y" * width + "\n")
+        tracemalloc.start()
+        try:
+            assert runprov.content_digest(p)
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    # ABOVE both block bounds (8,192 lines and 8 MiB), or all three fixtures fit in ONE
+    # block and the test measures a single read three times -- 4x the lines took 4.0x the
+    # memory, which looked like a regression and was a fixture too small to stream.
+    base = peak(20_000, 500)
+    more_lines = peak(80_000, 500)
+    longer_lines = peak(20_000, 2_000)
+
+    assert more_lines < base * 2, f"4x the LINES took {more_lines / base:.1f}x the memory"
+    assert longer_lines < base * 2, f"4x the LINE LENGTH took {longer_lines / base:.1f}x"
+
+
+def test_constructing_a_run_does_not_scale_with_the_history(tmp_path, monkeypatch):
+    """A `Run` reads nothing of the existing history at construction, and must not start:
+    the 2,000th step of a pipeline must cost what the first one did."""
+    monkeypatch.chdir(tmp_path)
+    proj = _project(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    with log.open("w", encoding="utf-8") as fh:
+        for i in range(3000):
+            fh.write(json.dumps({"i": i, "pad": "x" * 600}) + "\n")
+
+    grown = min(_elapsed(runprov.Run, "s", project=proj) for _ in range(5))
+    log.unlink()
+    empty = min(_elapsed(runprov.Run, "s", project=proj) for _ in range(5))
+
+    assert grown < empty * 3 + 5e-3, (
+        f"construction cost {grown * 1e3:.1f}ms with a 3,000-record history against "
+        f"{empty * 1e3:.1f}ms with none — something is reading it"
+    )
