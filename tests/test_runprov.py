@@ -876,6 +876,69 @@ def test_a_second_write_does_not_double_count_the_run(tmp_path):
     assert (tmp_path / "a.json").is_file() and (tmp_path / "b.json").is_file()
 
 
+def test_writing_a_second_path_does_not_cost_the_one_the_constructor_named(tmp_path):
+    """L-02. `write()`'s docstring calls a second path "fine and sometimes useful" — a
+    promise of TWO records, not a swap of one for the other. `__exit__` corrected only the
+    LAST path written, so `write(other)` inside the block left the `provenance=` file never
+    created at all: the path every document calls the guarantee, the only one armed for a run
+    that dies, absent because the caller also wrote somewhere else."""
+    log, proj = _sinked(tmp_path)
+    with runprov.Run("t", project=proj, provenance=tmp_path / "primary.json") as run:
+        run.write(tmp_path / "second.json")
+
+    assert (tmp_path / "primary.json").is_file(), "the constructor's sidecar must exist"
+    assert (tmp_path / "second.json").is_file(), "and so must the one write() named"
+    assert len(log.records) == 1, "two sidecars are still one run and one history line"
+
+
+def test_every_sidecar_a_run_wrote_carries_the_final_status(tmp_path):
+    """The other half. A sidecar written mid-block holds an optimistic snapshot: the status
+    is not known until `__exit__`. Correcting only the last one left the earlier files saying
+    `ok` beside a run that failed — two sidecars for one run, disagreeing, with nothing on
+    either to say which was corrected."""
+    log, proj = _sinked(tmp_path)
+    with contextlib.suppress(ValueError):
+        with runprov.Run("t", project=proj, provenance=tmp_path / "primary.json") as run:
+            run.write(tmp_path / "second.json")
+            raise ValueError("boom")
+
+    for name in ("primary.json", "second.json"):
+        rec = json.loads((tmp_path / name).read_text(encoding="utf-8"))
+        assert rec["status"] == "failed", f"{name} still claims the run succeeded"
+        assert rec["failure"]["type"] == "ValueError"
+    assert log.records[0]["status"] == "failed"
+
+
+def test_one_file_named_two_ways_is_one_sidecar(tmp_path):
+    """Spelling is not identity. `provenance=` and a later `write()` naming the same file
+    through a different spelling must not count as two, or the run reports two sidecars where
+    there is one and writes the same bytes twice."""
+    log, proj = _sinked(tmp_path)
+    (tmp_path / "out").mkdir()
+    with runprov.Run("t", project=proj, provenance=tmp_path / "out" / "p.json") as run:
+        run.write(tmp_path / "out" / ".." / "out" / "p.json")
+
+    assert (tmp_path / "out" / "p.json").is_file()
+    assert len(run._written_paths) == 1, f"counted {len(run._written_paths)} paths for one file"
+    assert len(log.records) == 1
+
+
+def test_a_sidecar_path_through_a_symlink_loop_does_not_end_the_run(tmp_path):
+    """L-02, the guard under it. `Path.resolve()` raises `RuntimeError` for a cyclic link,
+    not `OSError` — so an `except OSError` around it reads as careful and is not, which is
+    L-01's defect one exception family over. A run whose `provenance=` points through such a
+    link must still record; the sidecar is what is lost, and it says so."""
+    (tmp_path / "a").symlink_to(tmp_path / "b")
+    (tmp_path / "b").symlink_to(tmp_path / "a")
+    with pytest.raises(RuntimeError, match="Symlink loop"):
+        (tmp_path / "a").resolve()  # the premise, asserted rather than assumed
+
+    log, proj = _sinked(tmp_path)
+    with runprov.Run("t", project=proj, provenance=tmp_path / "a" / "p.json"):
+        pass
+    assert len(log.records) == 1, "the history line survives a sidecar path that cannot resolve"
+
+
 def test_a_second_write_does_not_double_the_outputs_inside_the_record(tmp_path):
     """The other half of the test above, and the half that was wrong.
 

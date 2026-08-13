@@ -641,7 +641,12 @@ class Run:
         # `provenance_path is not None`, so a run that called write() without the kwarg
         # left the history saying `failed` and the sidecar saying `ok` -- and the sidecar
         # is the file a human opens.
-        self._last_written: pathlib.Path | None = None
+        # EVERY path this run has written a sidecar to, in order, deduplicated by resolved
+        # path. A list rather than the single `_last_written` it replaces: with only the
+        # last one, `write(other)` inside a `with Run(provenance=P)` block left P as the
+        # path `__exit__` never got to, so the file the constructor named — the one
+        # documented to guarantee a record — was never created at all.
+        self._written_paths: list[pathlib.Path] = []
         # Whether `header()` has already rendered a pin. An input registered after that
         # point is NOT in the pin already embedded in an artifact, and no later inspection
         # can tell -- the artifact simply understates itself, in its own body.
@@ -915,14 +920,40 @@ class Run:
             diagnostic(f"  WARNING: provenance capture failed during exit: {exc}")
         return False  # NEVER swallow the caller's exception.
 
+    def _wrote(self, p: pathlib.Path) -> bool:
+        """Has this run already written a sidecar to `p`? By RESOLVED path.
+
+        Spelling is not identity: `provenance="out/p.json"` and `write("./out/p.json")` name
+        one file, and treating them as two writes it twice and reports two sidecars where
+        there is one.
+
+        RuntimeError, not only OSError: `Path.resolve()` raises `RuntimeError("Symlink loop
+        from ...")` for a cyclic link — measured, `ln -s a b; ln -s b a` — and OSError for the
+        rest. Catching the obvious name alone is what L-01 was, one exception family over.
+        """
+        try:
+            resolved = p.resolve()
+            return any(q.resolve() == resolved for q in self._written_paths)
+        except (OSError, RuntimeError):  # guards-ok: a path that cannot be resolved is not
+            # one we can prove we have written, and saying "no" here costs at most one extra
+            # write of the same record -- which `_persist` reports and does not raise from.
+            return False
+
     def _finish(self) -> None:
         """The exit-time capture, isolated so a failure in it cannot mask the run's."""
-        target = self._last_written or self.provenance_path
-        if self.provenance_path is not None and not self._written:
+        # SNAPSHOT FIRST: `write()` below appends to `_written_paths`, and re-persisting the
+        # file it has just persisted would be one wasted write per run.
+        previously = list(self._written_paths)
+        # THE CONSTRUCTOR'S PATH IS WRITTEN EVEN IF THE CALLER ALSO WROTE ELSEWHERE. It is
+        # the path `provenance=` names, the one every document calls the guarantee, and the
+        # only one armed for a run that dies. Preferring the caller's `write()` target left
+        # it absent -- `write()`'s own docstring says a second path is "fine and sometimes
+        # useful", which is a promise of TWO records, not a swap of one for the other.
+        if self.provenance_path is not None and not self._wrote(self.provenance_path):
             self.write(self.provenance_path)
-        elif self._written and target is not None:
-            # Already on disk, and the status may have just changed under it. Rewrite so
-            # the sidecar carries the truth rather than the optimistic snapshot.
+        # Already on disk, and the status may have just changed under them. Rewrite so every
+        # sidecar carries the truth rather than the optimistic snapshot it held at the time.
+        for target in previously:
             self._persist(target)
         if self._deferred_history is not None and not self._history_appended:
             path, self._deferred_history = self._deferred_history, None
@@ -1837,7 +1868,16 @@ class Run:
         # Per PROCESS and by RESOLVED path: two Runs in one script sharing a path is the
         # case this catches. Two separate processes cannot see each other here, and a lock
         # would be the wrong price for a naming mistake.
-        resolved = str(pathlib.Path(p).resolve())
+        # NEVER RAISES. This resolve exists only to key the duplicate-sidecar warning below,
+        # and a path it cannot resolve -- a symlink loop raises RuntimeError, a broken mount
+        # OSError -- must not be what ends the run. Unguarded it left `write()`, left
+        # `_finish()`, and cost the entire record: no sidecar, no history line, exit 0, for a
+        # warning about naming. Fall back to the spelling, which is a worse key and a fine
+        # one: the warning is advisory, the record is not.
+        try:
+            resolved = str(pathlib.Path(p).resolve())
+        except (OSError, RuntimeError):  # guards-ok: see above
+            resolved = str(p)
         with _SIDECARS_LOCK:
             prior = _SIDECARS.get(resolved)
             _SIDECARS[resolved] = self.record["run_uid"]
@@ -1852,7 +1892,8 @@ class Run:
                 f"`provenance=` path."
             )
         self._written = True
-        self._last_written = p  # so __exit__ can correct THIS file, kwarg or not
+        if not self._wrote(p):  # so __exit__ can correct THIS file, kwarg or not
+            self._written_paths.append(p)
         self._persist(p)  # never raises; a sidecar failure must not lose the history
         if self._in_context and not already:
             self._deferred_history = p  # see __init__; __exit__ appends it once
