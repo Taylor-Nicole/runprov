@@ -160,6 +160,7 @@ def build() -> None:
             "SECURITY.md",
             "ci.py",
             "examples/summarise.py",
+            "examples/format_compatibility.py",
             "examples/data/measurements.tsv",
         }
         if missing := sorted(want - members):

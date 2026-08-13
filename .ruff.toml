@@ -54,5 +54,18 @@ ignore = ["RUF003"]
 # detaches the next time the formatter moves the line it sits on.
 "ci.py" = ["S603"]
 
+# `examples/` is teaching code that a reader copies, and it is linted as such. What is
+# switched off and why:
+#   ANN    an example annotated to library standards reads like library code, which is
+#          exactly the wrong signal for a file whose job is to show the shortest honest
+#          version of a call. `summarise.py` keeps its annotations; the format matrix is a
+#          table of lambdas where they would be noise.
+#   S301   `pickle.loads` IS the format under test in format_compatibility.py. The rule is
+#          about untrusted input; this input was written two lines earlier by the same file.
+#   S314   likewise `ElementTree.parse`, which is how you check an SVG is still well-formed.
+#   N802   `CASE(...)` is a table constructor, and shouting it is what makes the table
+#          readable as data rather than as calls.
+"examples/*" = ["ANN", "S301", "S314", "N802"]
+
 "tests/*" = ["S101", "S105", "S106", "S108", "ANN", "PT011", "PT012", "PT018", "RUF012", "S603", "S607",
              "N802"]

@@ -68,6 +68,14 @@ Nothing has been published yet. Everything below is what a first release would c
   directories are no longer walked, and the count of files skipped is **reported** rather
   than silently applied. Measured on one demo project: 898 files and 5 false findings →
   18 files, 1 artifact, 1 OK.
+- **`examples/format_compatibility.py`** — writes an artifact in each of 30 formats through
+  runprov and reads it back with that format's real library, reporting pin placement, parse,
+  hash and digest stability. Skips (loudly) any format whose library is absent, so it is not
+  in the test suite. Measured: **25 round-tripped, 0 failed** — including Pickle, joblib,
+  cloudpickle, Parquet, Feather, `.npy`, `.npz`, `.mat`, PNG, TIFF, gzip and SQLite. It also
+  documents two honest limits: gzip is byte-unstable but content-stable (which is what
+  `content_digest` is for), and SciPy `.mat` is unstable in both because MATLAB stamps a
+  time into a binary header.
 - **A complete, runnable example.** `examples/summarise.py` is standard-library only and
   is executed by the suite, so it cannot quietly stop working — the README had **zero**
   whole scripts in 41 KB, every one a fragment with undefined names.
