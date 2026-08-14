@@ -865,6 +865,36 @@ def _header_for(root: pathlib.Path, src: pathlib.Path) -> str:
     return run.header()
 
 
+def test_the_history_carries_kind_when_it_is_a_finding(tmp_path):
+    """L-15. `kind` is how an entry says MISSING (registered, never written), UNHASHABLE
+    (present, no digest) or directory. `_append_history` dropped it, so
+    `staleness`'s `entry.get("kind") == "MISSING"` guard was dead for exactly the records
+    `show` reads — the history — and an artifact the run never wrote could read as `current`
+    once something else created that path.
+
+    `"file"` is still omitted, deliberately: it is the ordinary case, this file is appended
+    to forever, and `moved_since` already reads an absent kind as a file. Writing it would
+    add a constant to every entry of every line to say "nothing to report"."""
+    proj = _project(tmp_path)
+    (tmp_path / "in.tsv").write_text("id\n1\n", encoding="utf-8")
+    (tmp_path / "dir").mkdir()
+    (tmp_path / "dir" / "a.txt").write_text("a\n", encoding="utf-8")
+
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        run.input(tmp_path / "dir")
+        run.output(tmp_path / "never.tsv")  # registered and never written
+        (ok := run.output(tmp_path / "real.tsv")).write_text("x\n", encoding="utf-8")
+
+    rec = json.loads((tmp_path / "runs.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    by_name = {pathlib.Path(e["path"]).name: e for e in rec["inputs"] + rec["outputs"]}
+    assert by_name["never.tsv"]["kind"] == "MISSING", "a run that produced nothing must say so"
+    assert by_name["dir"]["kind"] == "directory", "a directory input cannot be stat-checked"
+    assert "kind" not in by_name["in.tsv"], "an ordinary file adds no key to a forever file"
+    assert "kind" not in by_name["real.tsv"]
+    assert ok.name == "real.tsv"
+
+
 def test_a_second_write_does_not_double_count_the_run(tmp_path):
     """One run is one history line, or every count taken from the history is wrong."""
     sink = runprov.MemorySink()
