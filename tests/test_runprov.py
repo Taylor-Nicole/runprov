@@ -5979,6 +5979,53 @@ def test_verify_cli_exits_non_zero_and_says_so_when_it_checked_nothing(tmp_path,
     assert "NOTHING CHECKED" in err and "not 'nothing is wrong'" in err
 
 
+def _unverifiable_artifact(tmp_path, monkeypatch, name="out.tsv"):
+    """An artifact whose only pinned input sits OUTSIDE the project root, so the pin reads
+    `<external>/…` — deliberately not a path, and so not comparable."""
+    proj = tmp_path / "proj"
+    proj.mkdir(exist_ok=True)
+    (tmp_path / "outside.tsv").write_text("outside\n", encoding="utf-8")
+    monkeypatch.chdir(proj)
+    runprov.configure(root=proj, run_log=proj / "provenance" / "runs.jsonl")
+    with runprov.Run("s", {}, provenance=proj / f"{name}.prov.json") as run:
+        run.input(tmp_path / "outside.tsv")
+        with run.open_output(proj / name) as fh:
+            fh.write("id\n1\n")
+    return proj
+
+
+def test_verify_exits_non_zero_when_every_pin_was_unverifiable(tmp_path, monkeypatch, capsys):
+    """L-17. The existing guard catches "no artifact carries a pin". This catches the other
+    way to check nothing: every pin was unreadable — an input outside the root, an escaped
+    name, a digest the run never recorded. Zero comparisons happened either way, but
+    `FAILING = (STALE, GONE)` excluded UNVERIFIABLE, so the zero-pins case exited 1 and the
+    zero-checks case exited 0. `verify.py`'s own docstring says "Green must mean checked"
+    and "AND IT WILL NOT PASS HAVING CHECKED NOTHING"."""
+    proj = _unverifiable_artifact(tmp_path, monkeypatch)
+    rc = runprov.__main__.main(["verify", str(proj), "--root", str(proj)])
+    err = capsys.readouterr().err
+    assert "0 OK" in err and "1 UNVERIFIABLE" in err, "the premise: nothing was comparable"
+    assert rc == 1, "a gate that goes green having compared nothing is worse than no gate"
+    assert "NOTHING CHECKED" in err and "not one" in err
+
+
+def test_verify_still_passes_when_something_was_actually_checked(tmp_path, monkeypatch, capsys):
+    """The other side, or the fix would turn every mixed report red. One artifact verified
+    is a real answer, and the count of the rest is on the summary line where a reader sees
+    it."""
+    proj = _unverifiable_artifact(tmp_path, monkeypatch)
+    (proj / "in2.tsv").write_text("id\n1\n", encoding="utf-8")
+    with runprov.Run("s2", {}, provenance=proj / "p2.json") as run:
+        run.input(proj / "in2.tsv")
+        with run.open_output(proj / "out2.tsv") as fh:
+            fh.write("id\n2\n")
+
+    rc = runprov.__main__.main(["verify", str(proj), "--root", str(proj)])
+    err = capsys.readouterr().err
+    assert "1 OK" in err and "1 UNVERIFIABLE" in err
+    assert rc == 0, "something was checked, and the unverifiable count is reported"
+
+
 def test_verify_cli_reports_text_and_json_and_sets_the_exit_code(tmp_path, monkeypatch, capsys):
     src, results = _chain(tmp_path, monkeypatch)
 
