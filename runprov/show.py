@@ -242,6 +242,10 @@ def staleness(
             producer[_name(o)] = {"record": rec, "entry": o}
 
     detailed: dict[int, dict[str, typing.Any] | None] = {}
+    # ONE DIGEST MEMO FOR THE WHOLE PAGE, beside the sidecar memo above and for the same
+    # reason: the artifacts on a page share their inputs, so the redundancy is across
+    # artifacts rather than inside one. See `_by_digest`.
+    digests: dict[pathlib.Path, str | None] = {}
     out: dict[str, str] = {}
     for path, made in producer.items():
         rec, entry = made["record"], made["entry"]
@@ -253,7 +257,7 @@ def staleness(
             continue
 
         if rehash:
-            out[path] = _by_digest(rec, entry, target, base)
+            out[path] = _by_digest(rec, entry, target, base, digests)
             continue
 
         key = id(rec)
@@ -306,15 +310,37 @@ def _by_digest(
     entry: dict[str, typing.Any],
     target: pathlib.Path,
     base: pathlib.Path | None,
+    digests: dict[pathlib.Path, str | None],
 ) -> str:
-    """The thorough check: re-derive every digest. No stat resolution limit, and no cheap."""
+    """The thorough check: re-derive every digest. No stat resolution limit, and no cheap.
+
+    `digests` MEMOISES BY PATH across the whole page, mirroring the `detailed` sidecar cache
+    one level up. The stat path deliberately caches -- and its docstring and test say so --
+    while this path had no cache of ANY kind, so a shared input was re-read once per artifact
+    that used it. Measured on 200 artifacts drawing from 10 shared inputs: 2,200 reads over
+    210 distinct files, with one input read 200 times.
+
+    `--rehash` is documented as the answer for anyone who cannot accept the stat check's
+    one-second resolution -- the mode you reach for when correctness matters -- so it is the
+    worst place for the redundancy. On 20-byte fixtures it is pure syscall overhead; on a
+    2 GB input shared by 300 artifacts it is 600 GB of reads for one page.
+    """
+
+    # REQUIRED, not an optional convenience. A `digests=None` default would be a branch no
+    # caller takes -- `staleness` always has a memo to pass -- and an unreachable guard is
+    # the thing this audit keeps finding. The coverage gate caught it as line 331.
+    def now(p: pathlib.Path) -> str | None:
+        if p not in digests:
+            digests[p] = _digest_now(p)
+        return digests[p]
+
     for i in rec.get("inputs") or []:
-        fresh = _digest_now(_resolve(_name(i), str(base) if base else None))
+        fresh = now(_resolve(_name(i), str(base) if base else None))
         if fresh is None:
             return UNKNOWN
         if fresh != _short(i):
             return STALE
-    fresh = _digest_now(target)
+    fresh = now(target)
     if fresh is None:
         return UNKNOWN
     # Not stale: the ARTIFACT is not what was recorded. A different repair entirely.
