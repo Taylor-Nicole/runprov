@@ -2119,6 +2119,10 @@ class Run:
                     "path": i["path"],
                     "sha256": i.get("sha256") or i.get("sha256_tree"),
                     "content_sha256": i.get("content_sha256"),
+                    # Same rule as `outputs` below, and it matters most here: a DIRECTORY
+                    # input is the case `show --stale` cannot stat, and it could not even
+                    # tell one apart from a file.
+                    **({"kind": i["kind"]} if i.get("kind", "file") != "file" else {}),
                 }
                 for i in r["inputs"]
             ],
@@ -2127,6 +2131,20 @@ class Run:
                     "path": o["path"],
                     "sha256": o.get("sha256") or o.get("sha256_tree"),
                     "content_sha256": o.get("content_sha256"),
+                    # `kind` TRAVELS WHEN IT IS A FINDING. It is how an entry says MISSING
+                    # (registered and never written), UNHASHABLE (present, no digest) or
+                    # directory, and dropping it left `show --stale`'s
+                    # `entry.get("kind") == "MISSING"` guard dead for exactly the records
+                    # `show` reads -- the history. A run that produced nothing was then
+                    # indistinguishable from one whose digest happened to be null, and an
+                    # artifact the run never wrote could read as `current`.
+                    #
+                    # `"file"` IS OMITTED, because it is the ordinary case and this file is
+                    # appended to forever: carrying it would add a constant to every entry of
+                    # every line to say "nothing to report". `moved_since` already reads an
+                    # absent kind as a file (`kind not in ("file", None)`), so omitting it
+                    # and writing it are the same statement -- one of them is just smaller.
+                    **({"kind": o["kind"]} if o.get("kind", "file") != "file" else {}),
                 }
                 for o in r["outputs"]
             ],
