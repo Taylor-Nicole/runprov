@@ -7828,6 +7828,59 @@ def test_a_version_printed_to_stderr_is_still_a_version(tmp_path, monkeypatch):
     assert got["version"] == "noisytool 2.1" and got["exit_code"] == 1
 
 
+def test_a_version_banner_that_is_not_utf8_does_not_kill_the_run(tmp_path, monkeypatch):
+    """L-14. A version banner is not required to be UTF-8 — a latin-1 `ç` in a vendor's
+    copyright line is enough. Strict decoding raised `UnicodeDecodeError`, which is a
+    `ValueError` and so walked past the `(OSError, SubprocessError)` guard, left `tool()`,
+    and reached the caller. The run was then recorded `status: failed` with a decode error:
+    a record that says the WORK failed when only the description of it did. `tool()`'s own
+    docstring says provenance must not be the reason a pipeline stops.
+
+    Fifth instance of the wrong-exception-family defect — see L-98's test."""
+    monkeypatch.chdir(tmp_path)
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    noisy = fake / "latin1tool"
+    # `ç` and `Ã` as raw latin-1 bytes: valid output, invalid UTF-8.
+    noisy.write_bytes(b'#!/bin/sh\nprintf "latin1tool 2.1 \xc3(c) Fran\xe7ois\\n"\nexit 0\n')
+    noisy.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake), prepend=os.pathsep)
+
+    with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "p.json") as run:
+        got = run.tool("latin1tool")
+
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["status"] == "ok", "the run did not fail; only its version probe was awkward"
+    assert got["version"] is not None, "a replaceable byte is not a reason to lose the version"
+    assert got["version"].startswith("latin1tool 2.1"), got["version"]
+    assert "�" in got["version"], "the undecodable bytes are replaced, not dropped"
+    assert got["exit_code"] == 0
+
+
+def test_exec_runs_a_command_whose_version_banner_is_not_utf8(tmp_path, monkeypatch, capfd):
+    """The consequence that makes L-14 more than cosmetic: `_exec` probes `argv[0]` with
+    `tool()` BEFORE running anything, so the decode error meant the wrapped command never
+    executed at all — a wrapper that stopped the pipeline it was meant to record."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    tool = fake / "latin1echo"
+    tool.write_bytes(
+        b"#!/bin/sh\n"
+        b'if [ "$1" = "--version" ]; then printf "latin1echo 1.0 Fran\xe7ois\\n"; exit 0; fi\n'
+        b'echo "DID RUN: $*"\n'
+    )
+    tool.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake), prepend=os.pathsep)
+
+    rc = runprov.__main__.main(
+        ["exec", "--name", "e", "--provenance", str(tmp_path / "p.json"), "--", "latin1echo", "x"]
+    )
+    assert rc == 0
+    assert "DID RUN: x" in capfd.readouterr().out, "the command must actually execute"
+
+
 def test_code_registers_a_script_in_another_language_into_the_same_digest(tmp_path, monkeypatch):
     """An R script or a shell wrapper is code that ran, and `sys.modules` will never know
     about it — the interpreter that ran it was a subprocess. Declared, then treated
