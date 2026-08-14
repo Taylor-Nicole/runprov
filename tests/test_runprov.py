@@ -6033,6 +6033,81 @@ def test_an_ordinary_json_document_is_not_mistaken_for_a_pin(tmp_path):
         assert runprov.verify.read_pins(p) == [], body
 
 
+def test_verify_hashes_each_distinct_input_once_however_many_artifacts_pin_it(
+    tmp_path, monkeypatch
+):
+    """L-19. `check_input` re-derived every pinned input's digest once per artifact that
+    pinned it, so `verify` was quadratic in (artifacts x shared inputs). The inputs a
+    scientific artifact pins are the expensive files — a reference genome, a BAM, a 40 GB
+    matrix — and a fan-out of N artifacts from one input meant N full reads of it. Measured
+    on 2,000 artifacts sharing 20 inputs: 40,000 reads over 20 distinct files, 22.5 s.
+
+    COUNTED, not timed. The defect is a number of reads, and asserting on the number is
+    exact where a stopwatch would be a test of the machine — which is the flaw the flaky
+    timing test in the perf section has."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "provenance" / "runs.jsonl")
+    (tmp_path / "data").mkdir()
+    shared = []
+    for i in range(3):
+        (p := tmp_path / "data" / f"in_{i}.tsv").write_text(f"id\n{i}\n", encoding="utf-8")
+        shared.append(p)
+
+    for k in range(5):  # five artifacts, each pinning all three inputs
+        with runprov.Run(f"s{k}", {}, provenance=tmp_path / f"p{k}.json") as run:
+            for p in shared:
+                run.input(p)
+            with run.open_output(tmp_path / f"out_{k}.tsv") as fh:
+                fh.write("id\n1\n")
+
+    calls = []
+    real = runprov.verify.describe
+    monkeypatch.setattr(runprov.verify, "describe", lambda p, *a, **kw: (
+        calls.append(pathlib.Path(p)), real(p, *a, **kw))[1])  # fmt: skip
+
+    report = runprov.verify.verify([tmp_path], tmp_path)
+    assert report["ok"] == 5 and report["stale"] == 0, "the premise: five artifacts verify"
+    assert len(calls) == len(set(calls)) == 3, (
+        f"{len(calls)} reads over {len(set(calls))} distinct inputs — one each is the point"
+    )
+
+
+def test_the_verify_cache_does_not_change_what_is_reported(tmp_path, monkeypatch):
+    """A memo that alters the verdict is worse than the cost it saves. Two artifacts sharing
+    one input must BOTH go stale when it moves, from a single re-read."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "provenance" / "runs.jsonl")
+    (src := tmp_path / "ref.tsv").write_text("id\n1\n", encoding="utf-8")
+    for k in range(2):
+        with runprov.Run(f"s{k}", {}, provenance=tmp_path / f"p{k}.json") as run:
+            run.input(src)
+            with run.open_output(tmp_path / f"out_{k}.tsv") as fh:
+                fh.write("id\n1\n")
+
+    assert runprov.verify.verify([tmp_path], tmp_path)["ok"] == 2
+    src.write_text("id\n1\n2\n3\n", encoding="utf-8")
+    report = runprov.verify.verify([tmp_path], tmp_path)
+    assert report["stale"] == 2 and report["ok"] == 0, "both, from one re-read"
+
+
+def test_an_unreadable_input_is_reported_for_every_artifact_that_pins_it(tmp_path, monkeypatch):
+    """Exceptions are cached too, so a failed read is not retried per artifact — but the
+    finding still has to reach every artifact's report, or caching would have turned a
+    per-artifact fact into a one-off."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "provenance" / "runs.jsonl")
+    (src := tmp_path / "ref.tsv").write_text("id\n1\n", encoding="utf-8")
+    for k in range(2):
+        with runprov.Run(f"s{k}", {}, provenance=tmp_path / f"p{k}.json") as run:
+            run.input(src)
+            with run.open_output(tmp_path / f"out_{k}.tsv") as fh:
+                fh.write("id\n1\n")
+
+    src.unlink()  # GONE, which every artifact pinning it must report
+    report = runprov.verify.verify([tmp_path], tmp_path)
+    assert report["gone"] == 2, "the finding belongs to each artifact, not to the cache"
+
+
 def test_a_json_pin_past_the_scan_bound_is_not_found_and_does_not_raise(tmp_path):
     """The bound is the same one the text reader has, and it is stated rather than hidden: a
     pin further into the file than `SCAN_BYTES` is not found. `write_json` writes the pin
