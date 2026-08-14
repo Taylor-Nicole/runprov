@@ -208,10 +208,21 @@ def staleness(
 
     A STAT BY DEFAULT, not a re-hash: `moved_since` compares the size and mtime the record
     already holds, which is one `stat` per input and no reading at all -- because a page
-    consulted many times a day must not cost what the build costs. Its resolution limit is
-    the one it documents: a rewrite inside the same second that preserves the byte count is
-    invisible. `rehash=True` re-derives every digest and has no such limit, and costs what
-    reading every input costs.
+    consulted many times a day must not cost what the build costs. `rehash=True` re-derives
+    every digest, has neither limit below, and costs what reading every input costs.
+
+    THE STAT CHECK HAS TWO LIMITS, and both are stated because a checker that narrows what
+    it looked at without saying so is the failure this package refuses:
+
+      1. RESOLUTION. `mtime_utc` is recorded to the second, so a rewrite inside the same
+         second that preserves the byte count is invisible.
+      2. DIRECTORIES CANNOT BE STAT-CHECKED AT ALL. A directory's size and mtime belong to
+         its inode: they move when an entry is added or removed and stay exactly where they
+         were when a file inside is edited in place. So an artifact with a directory input
+         reports `?` rather than `current` -- measured, a reference directory whose only
+         file was rewritten end to end used to report `current`, while `--rehash` on the
+         same history reported STALE. A definite finding still wins: a moved FILE input is
+         STALE and a rewritten artifact is MODIFIED regardless.
 
     The states answer different questions and imply different repairs:
 
@@ -221,8 +232,9 @@ def staleness(
                    something else wrote it, which is not the same as stale
         GONE       the artifact, or an input it needs, is not there any more
         ?          it cannot be told: the sidecar with the stat fields is missing or has
-                   been overwritten by a later run. Saying `current` there would be the
-                   reassuring lie this package exists to refuse
+                   been overwritten by a later run, or an input is a directory the stat
+                   check cannot speak for. Saying `current` there would be the reassuring
+                   lie this package exists to refuse -- use `--rehash` for a real answer
     """
     producer: dict[str, dict[str, typing.Any]] = {}
     for rec in records:
@@ -253,7 +265,23 @@ def staleness(
             continue
 
         state = CURRENT
+        # An input the STAT CHECK CANNOT SPEAK FOR. `moved_since` returns None for anything
+        # that is not a plain file, and None means "did not move" -- so a DIRECTORY input
+        # read as evidence of freshness. A directory's own size and mtime belong to its
+        # inode: they move when an entry is added or removed and stay exactly where they
+        # were when a file inside is edited in place. Measured: a reference directory whose
+        # only file was rewritten end to end reported `current`, while `--rehash` on the
+        # same history correctly reported STALE.
+        #
+        # `?`, not `current` and not STALE. We did not look, and saying so is the whole
+        # argument this package makes elsewhere -- `verify` reports UNVERIFIABLE for the
+        # same reason, and `git_status_captured: false` exists for it too. `--rehash` is
+        # the answer for anyone who needs a real one, and it re-derives the tree hash.
+        uncheckable = False
         for i in doc.get("inputs") or []:
+            if i.get("kind") not in ("file", None):
+                uncheckable = True
+                continue
             why = moved_since(i, base=base)
             if why:
                 state = GONE if why == "gone" else STALE
@@ -265,6 +293,10 @@ def staleness(
             mine = next((o for o in doc.get("outputs") or [] if _name(o) == _name(entry)), None)
             if mine is not None and moved_since(mine, base=base):
                 state = MODIFIED
+        # AFTER the artifact check, so a definite finding still wins: MODIFIED is something
+        # we established, and `?` is the absence of one.
+        if state is CURRENT and uncheckable:
+            state = UNKNOWN
         out[path] = state
     return out
 
