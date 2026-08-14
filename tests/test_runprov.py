@@ -7850,6 +7850,45 @@ def test_code_registers_a_script_in_another_language_into_the_same_digest(tmp_pa
     assert first["digest"] != second["digest"], "an R change moves the code digest"
 
 
+def test_one_unresolvable_module_does_not_erase_the_whole_code_section(tmp_path, monkeypatch):
+    """L-98, found by sweeping every narrow `except` around a `resolve()` after L-97.
+
+    `Path.resolve()` raises `RuntimeError` on a symlink loop, not `OSError`. Both guards in
+    `_imported_code` say "skip this one" — a `continue` and a `contextlib.suppress` — and
+    neither named `RuntimeError`, so it escaped to `_record_imported_code`'s catch-all and
+    the ENTIRE section became `{"error": ...}`. One module behind a looped path erased every
+    other module and every file declared with `code()`.
+
+    Fourth instance of the same defect: L-01 (`RecursionError` past `TypeError, ValueError`),
+    L-97 (`RuntimeError` past `OSError`), the `_pin_name` guard which had already learned it,
+    and this. The lesson is not about symlinks; it is that a guard naming the obvious
+    exception reads as careful and is not.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "real.py").write_text("X = 1\n", encoding="utf-8")
+    (tmp_path / "fit.R").write_text('cat("hi")\n', encoding="utf-8")
+    (tmp_path / "a").symlink_to(tmp_path / "b")
+    (tmp_path / "b").symlink_to(tmp_path / "a")
+    with pytest.raises(RuntimeError, match="Symlink loop"):
+        (tmp_path / "a" / "mod.py").resolve()  # the premise, asserted rather than assumed
+
+    good = types.ModuleType("goodmod_l98")
+    good.__file__ = str(tmp_path / "real.py")
+    bad = types.ModuleType("badmod_l98")
+    bad.__file__ = str(tmp_path / "a" / "mod.py")
+    monkeypatch.setitem(sys.modules, "goodmod_l98", good)
+    monkeypatch.setitem(sys.modules, "badmod_l98", bad)
+
+    with runprov.Run("s", project=_project(tmp_path), provenance=tmp_path / "p.json") as run:
+        run.code(tmp_path / "fit.R")
+
+    imported = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["code"]["imported"]
+    assert "error" not in imported, f"one bad path erased the section: {imported}"
+    paths = {f["path"] for f in imported["files"]}
+    assert "real.py" in paths, "a good module must survive a neighbour that cannot resolve"
+    assert "fit.R" in paths, "and so must a file the caller explicitly declared"
+
+
 def test_code_is_recorded_without_a_with_block(tmp_path, monkeypatch):
     """L-05. `__exit__` was the only place the code section was built, so `run.code(...)`
     followed by `run.write(...)` — the documented manual shape — recorded nothing at all

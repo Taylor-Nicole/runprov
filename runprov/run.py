@@ -1021,7 +1021,14 @@ class Run:
             try:
                 p = pathlib.Path(f).resolve()
                 rel = p.relative_to(root).as_posix()
-            except (ValueError, OSError):  # guards-ok: outside the root, or unresolvable
+            except (ValueError, OSError, RuntimeError):  # guards-ok: outside the root, or
+                # unresolvable. RuntimeError is `resolve()` on a SYMLINK LOOP and is not an
+                # OSError, so it escaped this `continue` -- which says "skip this module" --
+                # and was caught two frames up, where the whole section becomes
+                # {"error": ...}. ONE unresolvable module erased every other module and
+                # every file declared with `code()`. Measured before the fix: a project with
+                # a good `real.py` and one looped path recorded
+                # {"error": "Symlink loop from '.../a/mod.py'"} and nothing else.
                 continue
             # A virtualenv or an installed copy INSIDE the root is a dependency, not code.
             if any(part in _NOT_PROJECT_CODE for part in pathlib.Path(rel).parts):
@@ -1037,7 +1044,9 @@ class Run:
         # DECLARED code joins IMPORTED code, so the digest answers "did any code change"
         # for an R script exactly as it does for a Python module.
         for path, digest in self._extra_code.items():
-            with contextlib.suppress(ValueError, OSError):
+            # RuntimeError for the same reason as the walk above: skipping one declared file
+            # is the intent, losing the section is not.
+            with contextlib.suppress(ValueError, OSError, RuntimeError):
                 rel = pathlib.Path(path).resolve().relative_to(root).as_posix()
                 seen.setdefault(rel, digest)
         ordered = sorted(seen.items())
