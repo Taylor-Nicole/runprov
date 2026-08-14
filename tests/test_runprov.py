@@ -865,6 +865,58 @@ def _header_for(root: pathlib.Path, src: pathlib.Path) -> str:
     return run.header()
 
 
+def _dir_input_history(tmp_path):
+    """A run reading one DIRECTORY and one plain file, writing one artifact."""
+    proj = _project(tmp_path)
+    d = tmp_path / "refdir"
+    d.mkdir()
+    (d / "a.txt").write_text("original\n", encoding="utf-8")
+    (tmp_path / "plain.tsv").write_text("id\n1\n", encoding="utf-8")
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.json") as run:
+        run.input(d)
+        run.input(tmp_path / "plain.tsv")
+        (out := run.output(tmp_path / "art.tsv")).write_text("x\n", encoding="utf-8")
+    assert out.is_file()
+    return [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+
+
+def _one_state(rows, **kw):
+    return next(iter(runprov.show.staleness(rows, **kw).values()))
+
+
+def test_a_rewritten_directory_input_is_not_reported_as_current(tmp_path, monkeypatch):
+    """L-16. `moved_since` returns None for anything that is not a plain file, and None
+    means "did not move" — so a directory input read as EVIDENCE OF FRESHNESS. A directory's
+    size and mtime belong to its inode: they move when an entry is added or removed and stay
+    exactly where they were when a file inside is edited in place.
+
+    `?`, not `current` and not STALE. We did not look, and saying so is the argument this
+    package makes everywhere else. `--rehash` re-derives the tree hash and gets it right."""
+    monkeypatch.chdir(tmp_path)
+    rows = _dir_input_history(tmp_path)
+    (tmp_path / "refdir" / "a.txt").write_text("TOTALLY DIFFERENT\n", encoding="utf-8")
+
+    assert _one_state(rows) == runprov.show.UNKNOWN, "stat cannot speak for a directory"
+    assert _one_state(rows, rehash=True) == runprov.show.STALE, "rehash can, and does"
+
+
+def test_a_definite_finding_still_beats_the_unknown_from_a_directory(tmp_path, monkeypatch):
+    """`?` is the absence of a finding, so anything established must outrank it — otherwise
+    adding a directory input would silently hide a moved file or a hand-edited artifact."""
+    monkeypatch.chdir(tmp_path)
+
+    rows = _dir_input_history(tmp_path)
+    (tmp_path / "plain.tsv").write_text("id\n1\n2\n3\n4\n", encoding="utf-8")
+    assert _one_state(rows) == runprov.show.STALE, "a moved FILE input is still STALE"
+
+    shutil.rmtree(tmp_path / "refdir")
+    for name in ("runs.jsonl", "p.json", "art.tsv", "plain.tsv"):
+        (tmp_path / name).unlink()
+    rows = _dir_input_history(tmp_path)
+    (tmp_path / "art.tsv").write_text("EDITED BY HAND ENTIRELY\n", encoding="utf-8")
+    assert _one_state(rows) == runprov.show.MODIFIED, "a rewritten ARTIFACT is still MODIFIED"
+
+
 def test_the_history_carries_kind_when_it_is_a_finding(tmp_path):
     """L-15. `kind` is how an entry says MISSING (registered, never written), UNHASHABLE
     (present, no digest) or directory. `_append_history` dropped it, so
