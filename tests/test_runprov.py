@@ -884,6 +884,63 @@ def _one_state(rows, **kw):
     return next(iter(runprov.show.staleness(rows, **kw).values()))
 
 
+def _shared_input_history(tmp_path, artifacts=6, inputs=3):
+    """`artifacts` runs, each reading ALL of `inputs` shared files. Returns the records."""
+    proj = _project(tmp_path)
+    (tmp_path / "data").mkdir(exist_ok=True)
+    shared = []
+    for i in range(inputs):
+        (p := tmp_path / "data" / f"in_{i}.tsv").write_text(f"id\n{i}\n", encoding="utf-8")
+        shared.append(p)
+    for k in range(artifacts):
+        with runprov.Run(f"s{k}", project=proj, provenance=tmp_path / f"p{k}.json") as run:
+            for p in shared:
+                run.input(p)
+            (tmp_path / f"out_{k}.tsv").write_text("x\n", encoding="utf-8")
+            run.output(tmp_path / f"out_{k}.tsv")
+    return [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+
+
+def test_rehash_reads_each_distinct_file_once_across_the_whole_page(tmp_path, monkeypatch):
+    """L-20. The stat path deliberately caches — `detailed[key]`, with a docstring and a test
+    saying "the sidecar is read per RUN, not per artifact". The rehash path had no cache of
+    any kind, so a shared input was re-read once per artifact that used it. Measured on 200
+    artifacts drawing from 10 shared inputs: 2,200 reads over 210 distinct files, one input
+    read 200 times.
+
+    `--rehash` is documented as the answer for anyone who cannot accept the stat check's
+    resolution limit — the mode you reach for when correctness matters — so it is the worst
+    place for the redundancy. On 20-byte fixtures it is syscall overhead; on a 2 GB input
+    shared by 300 artifacts it is 600 GB of reads for one page."""
+    monkeypatch.chdir(tmp_path)
+    rows = _shared_input_history(tmp_path, artifacts=6, inputs=3)
+
+    calls = []
+    real = runprov.show._digest_now
+    monkeypatch.setattr(
+        runprov.show, "_digest_now", lambda p: (calls.append(pathlib.Path(p)), real(p))[1]
+    )
+    states = runprov.show.staleness(rows, rehash=True)
+
+    assert set(states.values()) == {runprov.show.CURRENT}, "the premise: nothing has moved"
+    assert len(calls) == len(set(calls)), (
+        f"{len(calls)} reads over {len(set(calls))} distinct files — one each is the point"
+    )
+    assert len(set(calls)) == 3 + 6, "three shared inputs plus one artifact per run"
+
+
+def test_the_rehash_cache_does_not_change_what_is_reported(tmp_path, monkeypatch):
+    """A memo that alters the verdict is worse than the cost it saves: every artifact sharing
+    a moved input must still go STALE, from a single re-read of it."""
+    monkeypatch.chdir(tmp_path)
+    rows = _shared_input_history(tmp_path, artifacts=4, inputs=2)
+    assert set(runprov.show.staleness(rows, rehash=True).values()) == {runprov.show.CURRENT}
+
+    (tmp_path / "data" / "in_0.tsv").write_text("id\n0\n1\n2\n", encoding="utf-8")
+    states = runprov.show.staleness(rows, rehash=True)
+    assert set(states.values()) == {runprov.show.STALE}, f"all four, from one re-read: {states}"
+
+
 def test_a_rewritten_directory_input_is_not_reported_as_current(tmp_path, monkeypatch):
     """L-16. `moved_since` returns None for anything that is not a plain file, and None
     means "did not move" — so a directory input read as EVIDENCE OF FRESHNESS. A directory's
