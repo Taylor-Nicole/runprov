@@ -1489,6 +1489,19 @@ class Run:
                 [resolved, *version_args],
                 capture_output=True,
                 text=True,
+                # `errors="replace"`, because a VERSION BANNER IS NOT REQUIRED TO BE UTF-8
+                # and this decode happens inside provenance capture. Strict decoding raised
+                # `UnicodeDecodeError` -- a `ValueError`, so it walked past the
+                # `(OSError, SubprocessError)` guard below, left `tool()`, and reached the
+                # caller: the run was recorded `status: failed` with a decode error, which
+                # says the work failed when only the description of it did. Through `_exec`,
+                # which probes `argv[0]` before running anything, the wrapped command never
+                # executed at all.
+                #
+                # Measured on a banner containing a latin-1 `ç`: strict decoding killed the
+                # run; replacing yields "noisytool 2.1 <U+FFFD>(c) Fran<U+FFFD>ois", which
+                # answers "which samtools was this" exactly as well.
+                errors="replace",
                 timeout=timeout,
                 check=False,
             )
@@ -1498,8 +1511,19 @@ class Run:
             first = next((ln.strip() for ln in blob.splitlines() if ln.strip()), "")
             rec["version"] = first[:200] or None
             rec["exit_code"] = proc.returncode
-        except (OSError, subprocess.SubprocessError) as exc:  # guards-ok: timeout, or a
-            # binary that cannot be executed. Recorded, never raised.
+        except Exception as exc:  # guards-ok: timeout, a binary that cannot be executed,
+            # or anything else this probe can provoke. Recorded, never raised.
+            #
+            # TOTAL, BECAUSE THE CONTRACT IS TOTAL. This method's docstring promises it never
+            # raises -- provenance must not be the reason a pipeline stops -- and a guard
+            # that enumerates `(OSError, SubprocessError)` is a promise about the exceptions
+            # somebody thought of. `UnicodeDecodeError` was not one of them, and it reached
+            # the caller. Where the intended behaviour is "skip this one", name the family;
+            # where it is "nothing gets out", say so. `_record_imported_code` is guarded the
+            # same way for the same reason.
+            #
+            # `Exception`, not `BaseException`: a SIGTERM arriving during the probe must
+            # still stop the run, which is why `Terminated` is a BaseException.
             rec["version"] = None
             rec["version_error"] = f"{type(exc).__name__}: {exc}"[:200]
 
