@@ -39,6 +39,7 @@ worse than no gate, because someone will trust it.
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import re
@@ -109,6 +110,57 @@ NO_PIN = "NO PIN"
 FAILING = (STALE, GONE)
 
 
+#: A top-level JSON key whose value could be a `write_json` pin: `"name": {`, at the start
+#: of the document. Not anchored to the default key name, because `write_json(key=...)` lets
+#: a caller choose one their readers ignore — a checker that only knew `_provenance` would
+#: silently stop recognising pins the moment somebody used that documented parameter.
+_JSON_KEY = re.compile(r'"([^"\\]{1,64})"\s*:\s*\{')
+
+
+def _json_pin(head: str) -> dict[str, typing.Any] | None:
+    """A `write_json` pin, read from the structure rather than from prose. None if absent.
+
+    `write_json` embeds the pin as a top-level KEY because JSON has no comment syntax — the
+    same `pin_digest` values as an in-band pin, stored as data so a consumer does not have to
+    parse prose out of a string. `read_pins` knew only the text anchor, so `verify` reported a
+    directory of `write_json` artifacts as carrying no pin at all and exited 1 with NOTHING
+    CHECKED. Two features added in the same session that could not see each other.
+
+    BOUNDED like the rest of this reader: only `head` is examined, and only top-level keys
+    near the start of it. `write_json` writes the pin first (`{key: pin, **payload}`), so a
+    pin that is not in the first `SCAN_BYTES` is a file this function is right not to trust.
+
+    Identified by SHAPE, not by name: a mapping carrying `script` and a list of
+    `[digest, name]` pairs under `inputs`. That is what makes a caller's own `key=` work, and
+    it is also what stops an ordinary JSON document with a `"config": {...}` key being read as
+    a pin.
+    """
+    if not head.lstrip().startswith("{"):
+        return None
+    decoder = json.JSONDecoder()
+    for m in _JSON_KEY.finditer(head):
+        try:
+            value, _ = decoder.raw_decode(head, m.end() - 1)
+        except ValueError:  # guards-ok: a value truncated by SCAN_BYTES, or not JSON at all
+            continue
+        if not isinstance(value, dict) or "script" not in value:
+            continue
+        entries = value.get("inputs")
+        if not isinstance(entries, list):
+            continue
+        pairs = [
+            (str(e[0]), str(e[1])) for e in entries if isinstance(e, (list, tuple)) and len(e) == 2
+        ]
+        if len(pairs) != len(entries):
+            continue
+        fields = {k: str(v) for k, v in value.items() if k in ("script", "generation", "commit")}
+        # `declared` is the length of the list itself, not a separate count. The in-band pin
+        # states a number so a truncated block can be caught; a JSON array cannot be
+        # truncated without the document failing to parse, so the two agree by construction.
+        return {"entries": pairs, "declared": len(pairs), "fields": fields}
+    return None
+
+
 def read_pins(path: pathlib.Path) -> list[dict[str, typing.Any]]:
     """EVERY pin block in an artifact's first `SCAN_BYTES`, in the order they appear.
 
@@ -128,6 +180,9 @@ def read_pins(path: pathlib.Path) -> list[dict[str, typing.Any]]:
             head = fh.read(SCAN_BYTES).decode("utf-8", errors="replace")
     except OSError:  # guards-ok: unreadable reads as unpinned; the caller reports the path
         return []
+
+    if (json_pin := _json_pin(head)) is not None:
+        return [json_pin]
 
     lines = head.splitlines()
     blocks: list[dict[str, typing.Any]] = []
