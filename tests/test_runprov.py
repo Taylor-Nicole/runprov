@@ -7977,6 +7977,45 @@ def test_exec_records_a_shell_command_as_a_run(tmp_path, monkeypatch, capsys):
     assert rec["outputs"][0]["sha256"], "the artifact the tool wrote is hashed like any other"
 
 
+def test_exec_passes_a_separator_through_to_the_command(tmp_path, monkeypatch, capfd):
+    """L-13. `nargs=REMAINDER` hands back the `--` that separates runprov's own flags from
+    the command, so one has to come off — but every `--` was being dropped, which rewrites
+    the command itself. `git log -- src/` means "what follows are paths"; `find . -- -x`
+    protects a leading dash. Both ran as something else, and `parameters.argv` recorded the
+    mangled list as though it were what ran, which is the one thing this wrapper exists to
+    get right: the record equals what executed."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+
+    rc = runprov.__main__.main(
+        ["exec", "--name", "e", "--provenance", str(tmp_path / "p.json"),
+         "--", "/bin/echo", "a", "--", "b"]
+    )  # fmt: skip
+    # capfd, NOT capsys: the child writes to the real file descriptor, which is the whole
+    # point of a wrapper that runs somebody else's program -- capsys only sees Python's own
+    # sys.stdout and reports an empty string here.
+    out = capfd.readouterr().out
+    assert rc == 0
+    assert "a -- b" in out, f"the separator reached the command: {out!r}"
+
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["parameters"]["argv"] == ["/bin/echo", "a", "--", "b"]
+
+
+def test_exec_accepts_a_command_with_no_leading_separator(tmp_path, monkeypatch, capfd):
+    """The leading `--` is optional — argparse only inserts it when the user typed it — so
+    stripping position 0 unconditionally would eat the program name instead."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+
+    rc = runprov.__main__.main(
+        ["exec", "--name", "e", "--provenance", str(tmp_path / "p.json"), "/bin/echo", "hi"]
+    )
+    assert rc == 0 and "hi" in capfd.readouterr().out
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["parameters"]["argv"] == ["/bin/echo", "hi"]
+
+
 def test_exec_returns_the_commands_own_exit_code_and_records_the_failure(tmp_path, monkeypatch):
     """It has to compose in a Makefile or a Snakemake `shell:` without changing what failure
     means — so the command's code is returned, and the run is recorded as failed."""
