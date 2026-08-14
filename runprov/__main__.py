@@ -686,7 +686,31 @@ def _verify(args: argparse.Namespace) -> int:
         f"{report['unverifiable']} UNVERIFIABLE",
         file=sys.stderr,
     )
-    return 1 if report["stale"] or report["gone"] else 0
+    if report["stale"] or report["gone"]:
+        return 1
+    if not report["ok"]:
+        # THE OTHER WAY TO CHECK NOTHING. The guard above catches "no artifact carries a
+        # pin"; this catches "every pin was unreadable" -- an input outside the root, an
+        # escaped name, a digest the run never recorded. Zero comparisons were made either
+        # way, and `FAILING = (STALE, GONE)` excluded UNVERIFIABLE, so the zero-pins case
+        # exited 1 while the zero-checks case exited 0. This module's own docstring says
+        # "Green must mean checked" and "AND IT WILL NOT PASS HAVING CHECKED NOTHING".
+        #
+        # A MIXED report still exits 0 deliberately: one artifact verified is a real answer,
+        # and the count of the rest is on the summary line above where a reader sees it.
+        # `ok` includes the NONE REGISTERED pin -- a run stating it read nothing is a
+        # checkable claim that checks out, which is why this tests `ok` and not the entries.
+        print(
+            f"# NOTHING CHECKED: {pinned} pinned artifact(s) under {root}, and not one "
+            f"could be compared.\n"
+            f"#   Every pin was UNVERIFIABLE -- see the reasons above. This is 'we could "
+            f"not look', not\n"
+            f"#   'nothing is wrong', and a gate that goes green on it is worse than no "
+            f"gate.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 def _prog() -> str:
