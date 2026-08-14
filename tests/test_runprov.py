@@ -884,6 +884,76 @@ def _one_state(rows, **kw):
     return next(iter(runprov.show.staleness(rows, **kw).values()))
 
 
+def test_staleness_does_not_keep_the_records_it_streams(tmp_path, monkeypatch):
+    """L-37. The loop streams — one history line at a time, never the file — and then kept
+    the WHOLE record per artifact, which put the history back in memory by the side door:
+    parameters, notes, every input and output, the git state and the terminal log, retained
+    so four values could be read back later. Measured on 40,000 runs: 4.4 MB with 2,000
+    distinct artifacts, 78.1 MB with 40,000.
+
+    One artifact per run is not a pathological shape — it is what a script writing one
+    output does, which over the years this history is meant to survive is the normal case.
+
+    MEASURED DURING THE WALK, for the reason L-04's test documents: `producer` is a local
+    that dies with the frame, so counting after `staleness` returns proves nothing and the
+    retaining version passes."""
+    import gc
+    import weakref
+
+    class Rec(dict):  # plain dicts cannot be weak-referenced; a subclass can
+        pass
+
+    seen: list[weakref.ref] = []
+    held: list[int] = []
+    n = 200
+
+    def stream():
+        for i in range(n):
+            rec = Rec(
+                script="s",
+                run_uid=f"{i:032x}",
+                cwd=str(tmp_path),
+                provenance_path=str(tmp_path / f"p{i}.json"),
+                parameters={"pad": "x" * 200},
+                outputs=[{"path": f"out_{i}.tsv", "sha256": "1" * 64}],
+            )
+            seen.append(weakref.ref(rec))
+            yield rec
+            del rec
+            if i == n - 1:
+                gc.collect()
+                held.append(sum(1 for w in seen if w() is not None))
+
+    runprov.show.staleness(stream())
+    assert held[0] <= 2, f"{held[0]} of {n} whole records held to read four fields from them"
+
+
+def test_the_sidecar_cache_survives_not_keeping_the_records(tmp_path, monkeypatch):
+    """The cache was keyed on `id(rec)`, which worked ONLY because every record was being
+    kept alive — CPython reuses an id once an object is freed, so the moment the records
+    stopped being retained two runs could collide on one id and the second would silently
+    read the first's sidecar. Keyed on the run instead: two runs writing the same sidecar
+    path with different uids must not share an answer."""
+    monkeypatch.chdir(tmp_path)
+    proj = _project(tmp_path)
+    (tmp_path / "in.tsv").write_text("id\n1\n", encoding="utf-8")
+
+    # Two runs, the SAME provenance path — the second overwrites the first's sidecar.
+    for k in range(2):
+        with runprov.Run(f"s{k}", project=proj, provenance=tmp_path / "shared.json") as run:
+            run.input(tmp_path / "in.tsv")
+            (tmp_path / f"out_{k}.tsv").write_text(f"{k}\n", encoding="utf-8")
+            run.output(tmp_path / f"out_{k}.tsv")
+
+    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    states = {pathlib.Path(k).name: v for k, v in runprov.show.staleness(rows).items()}
+    # The FIRST run's sidecar was overwritten, so its artifact cannot be judged and says so.
+    # The second's is still its own and verifies. Sharing one cache entry would give both the
+    # same answer, which is the confident nonsense `_sidecar`'s run_uid check exists to stop.
+    assert states["out_0.tsv"] == runprov.show.UNKNOWN, states
+    assert states["out_1.tsv"] == runprov.show.CURRENT, states
+
+
 def _shared_input_history(tmp_path, artifacts=6, inputs=3):
     """`artifacts` runs, each reading ALL of `inputs` shared files. Returns the records."""
     proj = _project(tmp_path)
