@@ -445,7 +445,15 @@ def _exec(args: argparse.Namespace) -> int:
     The command's own exit code is returned, so this composes in a Makefile or a Snakemake
     `shell:` directive without changing what failure means.
     """
-    argv = [a for a in args.command if a != "--"] if args.command else []
+    # ONLY THE LEADING SEPARATOR, and only if it is there. `nargs=REMAINDER` hands back the
+    # `--` that separates runprov's own flags from the command, so one has to come off --
+    # but dropping EVERY `--` rewrites the command itself. `git log -- src/` means "what
+    # follows are paths"; `find . -- -weird-name` protects a leading dash. Both ran as
+    # something else, and `parameters.argv` recorded the mangled list as though it were what
+    # ran, which is the one thing this wrapper exists to get right.
+    argv = list(args.command or [])
+    if argv and argv[0] == "--":
+        argv = argv[1:]
     if not argv:
         print(
             "runprov exec needs a command:  runprov exec -- samtools sort in.bam -o out.bam\n"
