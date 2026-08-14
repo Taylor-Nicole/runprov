@@ -5979,6 +5979,80 @@ def test_verify_cli_exits_non_zero_and_says_so_when_it_checked_nothing(tmp_path,
     assert "NOTHING CHECKED" in err and "not 'nothing is wrong'" in err
 
 
+def test_verify_reads_the_pin_write_json_embeds(tmp_path, monkeypatch, capsys):
+    """L-18. JSON has no comment syntax, so `write_json` puts the pin in a top-level KEY —
+    the same `pin_digest` values, stored as data so a consumer does not have to parse prose
+    out of a string. `read_pins` knew only the text anchor, so `verify` called a directory of
+    `write_json` artifacts unpinned and exited 1 with NOTHING CHECKED. Two features added in
+    the same session that could not see each other."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "provenance" / "runs.jsonl")
+    (tmp_path / "in.tsv").write_text("id\n1\n", encoding="utf-8")
+    with runprov.Run("s", {}, provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        run.write_json(tmp_path / "calls.json", {"variants": [1, 2, 3]})
+
+    rc = runprov.__main__.main(["verify", str(tmp_path), "--root", str(tmp_path)])
+    assert "1 OK" in capsys.readouterr().err
+    assert rc == 0
+
+    # And it goes STALE when the input moves, or it would be a pin that never fails.
+    (tmp_path / "in.tsv").write_text("id\n1\n2\n3\n", encoding="utf-8")
+    rc = runprov.__main__.main(["verify", str(tmp_path), "--root", str(tmp_path)])
+    assert "1 STALE" in capsys.readouterr().err
+    assert rc == 1
+
+
+def test_the_json_pin_is_found_by_shape_not_by_key_name(tmp_path, monkeypatch, capsys):
+    """`write_json(key=...)` is documented — "Pass a `key` your readers ignore" — so a checker
+    that only knew `_provenance` would silently stop recognising pins the moment anyone used
+    that parameter."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "provenance" / "runs.jsonl")
+    (tmp_path / "in.tsv").write_text("id\n1\n", encoding="utf-8")
+    with runprov.Run("s", {}, provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        run.write_json(tmp_path / "calls.json", {"variants": [1]}, key="__prov__")
+
+    rc = runprov.__main__.main(["verify", str(tmp_path), "--root", str(tmp_path)])
+    assert "1 OK" in capsys.readouterr().err and rc == 0
+
+
+def test_an_ordinary_json_document_is_not_mistaken_for_a_pin(tmp_path):
+    """Shape-matching has to be narrow or every config file in the tree becomes an artifact —
+    which is the false-positive class that made `verify` invent a GONE for a path existing
+    only in the README. A nested object is not a pin unless it carries `script` AND a list of
+    two-element input pairs."""
+    for body in (
+        '{"config": {"script": "run.sh", "inputs": "not-a-list"}}',
+        '{"config": {"inputs": [["abc", "x.tsv"]]}}',  # no `script`
+        '{"config": {"script": "s", "inputs": [{"path": "x"}]}}',  # not pairs
+        '{"config": {"name": "ordinary", "values": [1, 2]}}',
+    ):
+        (p := tmp_path / "doc.json").write_text(body, encoding="utf-8")
+        assert runprov.verify.read_pins(p) == [], body
+
+
+def test_a_json_pin_past_the_scan_bound_is_not_found_and_does_not_raise(tmp_path):
+    """The bound is the same one the text reader has, and it is stated rather than hidden: a
+    pin further into the file than `SCAN_BYTES` is not found. `write_json` writes the pin
+    first, so this only happens to a file somebody else assembled — and there the head cuts
+    through an object, `raw_decode` fails on the truncation, and the file must read as
+    unpinned rather than raise out of the checker."""
+    # The first key's value must be an OBJECT, so the key regex matches and `raw_decode` is
+    # actually attempted on a value the head cuts through. A first draft padded with a long
+    # STRING instead: the regex never matched, the loop never ran, and the test passed
+    # without reaching the guard it was written for. Coverage caught that, not the assertion.
+    big = json.dumps({"big": {"padding": "x" * (runprov.verify.SCAN_BYTES * 2)}})[:-1]
+    pin = '"_provenance": {"script": "s", "inputs": [["abcdef0123456789", "in.tsv"]]}'
+    (p := tmp_path / "late.json").write_text(f"{big}, {pin}}}", encoding="utf-8")
+
+    assert json.loads(p.read_text(encoding="utf-8"))["_provenance"]["script"] == "s", (
+        "the premise: the document is valid JSON and does carry a pin"
+    )
+    assert runprov.verify.read_pins(p) == [], "past the bound, so not found — and no raise"
+
+
 def _unverifiable_artifact(tmp_path, monkeypatch, name="out.tsv"):
     """An artifact whose only pinned input sits OUTSIDE the project root, so the pin reads
     `<external>/…` — deliberately not a path, and so not comparable."""
