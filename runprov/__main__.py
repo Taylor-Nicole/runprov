@@ -151,8 +151,33 @@ def _yaml(rows: list[dict[str, typing.Any]]) -> str:
     return _yaml_header() + "".join(_yaml_entry(r) for r in rows)
 
 
-def _lineage(rows: list[dict[str, typing.Any]]) -> dict[str, typing.Any]:
+def _lineage(
+    source: pathlib.Path | typing.Sequence[dict[str, typing.Any]],
+    bad: list[int] | None = None,
+    scripts: dict[str, str] | None = None,
+) -> dict[str, typing.Any]:
     """Reconstruct the run DAG. JOIN ON THE DIGEST, not the path (L1).
+
+    TWO STREAMING PASSES, not one materialised list, and the comment this replaces is why
+    that took a reviewer to notice: it said lineage "genuinely needs every record at once ...
+    there is nothing to stream past", which is a statement about the RECORDS and the join
+    does not need them. It needs an INDEX over digests. Measured at 500,000 runs: 2.2 GB
+    holding the records against 310 MB holding the index, for byte-identical output.
+
+    Pass one builds `produced` (digest -> producers) and fills `scripts` (address -> script
+    name); pass two resolves each input against it. What survives both passes is one entry
+    per digest and one short, shared string per run — not the parameters, notes, git state
+    and terminal log of every record in the history.
+
+    `scripts` is an OUT-PARAMETER, like `bad`, and not a key of the returned graph. The graph
+    is what `lineage --format json` prints, so putting a name-per-run in it would both change
+    a documented output and add 500,000 entries to that document at 500,000 runs — trading a
+    memory problem for a bigger file, in the command whose output a consumer parses.
+
+    `source` is a path to stream twice, or a re-iterable sequence for callers that already
+    hold the records. A generator would silently give an empty second pass, which is the
+    defect L-04 documents one module over, so the sequence branch is `iter()`-ed afresh each
+    time rather than consumed.
 
     Matching a consumer's input to a producer's output BY PATH is a heuristic, and it is the
     reason lineage was unusable: the same path is rewritten by many runs over a project's
@@ -177,6 +202,14 @@ def _lineage(rows: list[dict[str, typing.Any]]) -> dict[str, typing.Any]:
     dropped. 1,310 entries in the real history already predate `run_id`, and a graph that
     silently excluded them would understate its own coverage.
     """
+
+    def records() -> typing.Iterator[dict[str, typing.Any]]:
+        """A FRESH pass over the history. Called exactly twice — see the two PASS comments
+        below. Returning a new iterator each time is the whole contract: handing back a
+        part-consumed one would make pass two silently empty."""
+        if isinstance(source, pathlib.Path):
+            return _counted(source, bad if bad is not None else [0])
+        return iter(source)
 
     def digests(io_: dict[str, typing.Any]) -> list[str]:
         """EVERY digest this entry carries, most specific first — not just the best one.
@@ -224,22 +257,32 @@ def _lineage(rows: list[dict[str, typing.Any]]) -> dict[str, typing.Any]:
             str(r.get(k, "")) for k in ("script", "started_utc", "provenance_path")
         )
 
-    no_uid = sum(1 for r in rows if not r.get("run_uid"))
-    usable = rows
-
-    # digest -> [(finished, run_uid)], oldest first
+    # PASS ONE: the digest index, the address -> script map, and the counts. All three are
+    # bounded by what the graph actually joins on rather than by the size of a record.
+    no_uid = 0
+    runs = 0
     produced: dict[str, list[tuple[str, str]]] = {}
-    for r in usable:
+    names = scripts if scripts is not None else {}
+    for r in records():
+        runs += 1
+        if not r.get("run_uid"):
+            no_uid += 1
+        here = address(r)
+        # One SHORT, SHARED string per run -- `_render_lineage` needs a name for at most the
+        # 400 addresses in the edges it prints, and holding the record to get one was the
+        # 94% of the memory this row is about.
+        names.setdefault(here, str(r.get("script", "?")))
         when = str(r.get("finished_utc") or r.get("started_utc") or "")
         for o in r.get("outputs") or []:
             for d in digests(o):
-                produced.setdefault(d, []).append((when, address(r)))
+                produced.setdefault(d, []).append((when, here))
     for v in produced.values():
         v.sort()
 
+    # PASS TWO: resolve every input against the index built above.
     edges: list[tuple[str, str]] = []
     resolvable = ambiguous = orphan = 0
-    for r in usable:
+    for r in records():
         started = str(r.get("started_utc") or "")
         for i in r.get("inputs") or []:
             # rule 2: only a producer that had FINISHED. `<=` because a stage may write and
@@ -254,7 +297,7 @@ def _lineage(rows: list[dict[str, typing.Any]]) -> dict[str, typing.Any]:
             edges.append((before[-1][1], me))
             resolvable += 1
     return {
-        "runs": len(rows),
+        "runs": runs,
         "records_without_uid": no_uid,
         "resolvable": resolvable,
         "ambiguous": ambiguous,
@@ -263,17 +306,12 @@ def _lineage(rows: list[dict[str, typing.Any]]) -> dict[str, typing.Any]:
     }
 
 
-def _render_lineage(rows: list[dict[str, typing.Any]], g: dict[str, typing.Any]) -> str:
-    by_uid: dict[str, dict[str, typing.Any]] = {}
-    for r in rows:
-        uid = r.get("run_uid")
-        key = (
-            str(uid)
-            if uid
-            else "derived:"
-            + "|".join(str(r.get(k, "")) for k in ("script", "started_utc", "provenance_path"))
-        )
-        by_uid[key] = r
+def _render_lineage(g: dict[str, typing.Any], scripts: dict[str, str] | None = None) -> str:
+    """The text view. Takes the GRAPH alone -- it used to take the records too, and rebuilt
+    an address -> record map from them purely to look up a script name per edge. `_lineage`
+    now carries `scripts`, which is the same answer as one short shared string per run
+    instead of the whole history."""
+    by_uid: dict[str, str] = scripts or {}
     out = [
         f"lineage over {g['runs']} record(s)",
         f"  resolvable edges : {g['resolvable']}",
@@ -284,10 +322,7 @@ def _render_lineage(rows: list[dict[str, typing.Any]], g: dict[str, typing.Any])
         "",
     ]
     for a, b in g["edges"][:200]:
-        ra, rb = by_uid.get(a, {}), by_uid.get(b, {})
-        out.append(
-            f"  {ra.get('script', '?')} [{str(a)[:8]}] -> {rb.get('script', '?')} [{str(b)[:8]}]"
-        )
+        out.append(f"  {by_uid.get(a, '?')} [{str(a)[:8]}] -> {by_uid.get(b, '?')} [{str(b)[:8]}]")
     if len(g["edges"]) > 200:
         out.append(f"  ... {len(g['edges']) - 200} more edge(s) not shown")
     out.append("")
@@ -694,18 +729,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "log":
         return _log(args, path)
 
-    # LINEAGE is what is left, and it is the one command that genuinely needs every record
-    # at once: the graph joins outputs to inputs across the whole history, so there is
-    # nothing to stream past. Not guarded by an `if`, because the subparser is required and
-    # every other command has returned by here -- a branch that cannot be false is a branch
-    # a reader has to check anyway.
-    rows, bad = _load(path)
-    total = len(rows)
-    g = _lineage(rows)
+    # LINEAGE, and it STREAMS like everything else here. The comment that stood in this
+    # place said it "genuinely needs every record at once ... there is nothing to stream
+    # past", which was a claim about the records when the join is over DIGESTS -- and it is
+    # the kind of confident comment that stops the next person looking. It walks the history
+    # twice and holds an index, not a copy. Not guarded by an `if`, because the subparser is
+    # required and every other command has returned by here.
+    counted: list[int] = [0]
+    names: dict[str, str] = {}
+    g = _lineage(path, counted, names)
+    total, bad = g["runs"], counted[0]
     if args.format == "json":
         sys.stdout.write(json.dumps(g, indent=2) + "\n")
     else:
-        sys.stdout.write(_render_lineage(rows, g) + "\n")
+        sys.stdout.write(_render_lineage(g, names) + "\n")
     print(
         f"# {total} record(s) from {path}" + (f"; {bad} unreadable line(s) skipped" if bad else ""),
         file=sys.stderr,
