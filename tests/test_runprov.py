@@ -1074,6 +1074,116 @@ def test_the_history_carries_kind_when_it_is_a_finding(tmp_path):
     assert ok.name == "real.tsv"
 
 
+def _run_thrice(tmp_path, **projkw):
+    """Three real runs under one project. Returns the project."""
+    proj = runprov.Project(
+        root=tmp_path,
+        run_log=tmp_path / "provenance" / "runs.jsonl",
+        run_id=lambda: "r",
+        generation=lambda: "g",
+        **projkw,
+    )
+    (tmp_path / "in.tsv").write_text("id\tv\n1\ta\n", encoding="utf-8")
+    for i, mode in enumerate(("a", "b", "c")):
+        with runprov.Run(
+            "summarise", {"mode": mode}, project=proj, provenance=tmp_path / f"p{i}.prov.json"
+        ) as run:
+            run.input(tmp_path / "in.tsv")
+            with run.open_output(tmp_path / f"out_{i}.tsv") as fh:
+                fh.write("id\tv\n1\ta\n")
+            run.note("rows_kept", i * 10)
+    return proj
+
+
+def test_a_project_keeps_a_readable_transformation_log_beside_the_history(tmp_path):
+    """The file this package exists because of, written the way that file should have been.
+    `transformation_log.yml` is what a person opens to read the story of a project — and the
+    predecessor's copy is also the file that stopped parsing at line 14,547 of 24,300 and
+    grew eight repair scripts around it.
+
+    So: a VIEW, appended in step with the history, never the record of truth. Every scalar
+    is quoted, which is exactly the defect that killed the original — it quoted only what
+    its author thought needed quoting, and one hand-typed `Note:` ended the file."""
+    yaml = pytest.importorskip("yaml")
+    _run_thrice(tmp_path)
+
+    log = tmp_path / "provenance" / "transformation_log.yml"
+    assert log.is_file(), "written beside runs.jsonl without being asked for"
+
+    entries = yaml.safe_load(log.read_text(encoding="utf-8"))
+    assert isinstance(entries, list) and len(entries) == 3, "one entry per run, in one list"
+    assert [e["step"] for e in entries] == ["summarise"] * 3
+    assert [e["params"]["mode"] for e in entries] == ["a", "b", "c"], "in order, all three"
+    # TYPED, not stringified: `params` and `summary` are structures, and `date` is a string
+    # rather than a bare YAML timestamp. Both are why every scalar is quoted.
+    assert entries[2]["summary"] == {"rows_kept": 20}
+    assert isinstance(entries[0]["date"], str)
+
+    history = (tmp_path / "provenance" / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(history) == 3, "the record of truth is unchanged and still one line per run"
+
+
+def test_the_transformation_log_says_it_is_not_the_record(tmp_path):
+    """A banner that names the wrong origin is a small lie in the first line of the file.
+    This one is maintained continuously; `log --format yaml` renders on demand. A reader
+    asking how the file in front of them came to exist is asking a real question."""
+    _run_thrice(tmp_path)
+    head = (tmp_path / "provenance" / "transformation_log.yml").read_text(encoding="utf-8")
+    assert "MAINTAINED by runprov" in head and "one entry appended per run" in head
+    assert "VIEW" in head and "record of truth is the run history" in head
+    assert "log --format yaml" in head, "and how to rebuild it"
+
+
+def test_each_artifact_gets_both_a_json_and_a_yaml_sidecar(tmp_path):
+    """The JSON is what `verify` and every other tool reads; the YAML is what a person opens
+    beside an artifact. Written from the same record in the same call, so they cannot drift
+    — which is the failure mode a `--format` flag on a reader would have instead."""
+    yaml = pytest.importorskip("yaml")
+    _run_thrice(tmp_path)
+
+    for i in range(3):
+        js, yml = tmp_path / f"p{i}.prov.json", tmp_path / f"p{i}.prov.yml"
+        assert js.is_file() and yml.is_file(), f"both for run {i}"
+        assert (
+            yaml.safe_load(yml.read_text(encoding="utf-8"))["run_uid"]
+            == json.loads(js.read_text(encoding="utf-8"))["run_uid"]
+        ), "the same run, from the same record"
+
+
+def test_the_yaml_sidecar_does_not_eat_a_compound_suffix(tmp_path):
+    """`summary.prov.json` -> `summary.prov.yml`, and `calls.v2.json` -> `calls.v2.yml`.
+    `Path.with_suffix` would turn `calls.v2.json` into `calls.yml`, eating `.v2` — the
+    compound-suffix bug `_sidecar_name` already had to learn once."""
+    proj = _project(tmp_path)
+    with runprov.Run("s", project=proj, provenance=tmp_path / "calls.v2.json"):
+        pass
+    assert (tmp_path / "calls.v2.yml").is_file(), sorted(p.name for p in tmp_path.iterdir())
+    assert not (tmp_path / "calls.yml").exists(), "the version segment survives"
+
+
+def test_both_extra_views_can_be_turned_off(tmp_path):
+    """They are conveniences, and a convenience that cannot be declined is a tax. Turning
+    them off must leave the record itself untouched."""
+    proj = _run_thrice(tmp_path, write_transformation_log=False, write_yaml_sidecar=False)
+    assert not (tmp_path / "provenance" / "transformation_log.yml").exists()
+    assert not (tmp_path / "p0.prov.yml").exists()
+    assert (tmp_path / "p0.prov.json").is_file(), "the record is not a view"
+    assert len((tmp_path / "provenance" / "runs.jsonl").read_text().splitlines()) == 3
+    assert proj.write_transformation_log is False
+
+
+def test_a_supplied_sink_is_the_whole_story(tmp_path):
+    """The extension point exists so a lab can send records to one shared database, and
+    quietly writing a YAML file next to it would be this package deciding where somebody
+    else's records live."""
+    sink = runprov.MemorySink()
+    proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.prov.json"):
+        pass
+    assert len(sink.records) == 1
+    assert not (tmp_path / "provenance" / "transformation_log.yml").exists()
+
+
 def test_a_second_write_does_not_double_count_the_run(tmp_path):
     """One run is one history line, or every count taken from the history is wrong."""
     sink = runprov.MemorySink()
@@ -3882,6 +3992,52 @@ def test_a_record_appended_after_a_torn_line_survives(tmp_path):
     assert "C" in parsed, "the NEW record must survive a torn predecessor"
     assert "A" in parsed
     assert unreadable == 1, "exactly one record is lost — the one that was actually torn"
+
+
+def test_the_transformation_log_heals_a_torn_entry_the_same_way(tmp_path):
+    """The YAML view is appended forever too, so it inherits the same hazard and the same
+    repair: a process killed mid-append leaves a fragment, and `O_APPEND` would concatenate
+    the next entry onto it and lose both. One newline closes the fragment."""
+    yaml = pytest.importorskip("yaml")
+    p = tmp_path / "t.yml"
+    p.write_bytes(b'- step: "A"\n  date: "2026-01-01T00:00:00Z"\n- step: "B"\n  date: "2026')
+    runprov.sinks.YamlLogSink(p).append({"script": "C", "started_utc": "2026-01-02T00:00:00Z"})
+
+    body = p.read_text(encoding="utf-8")
+    assert body.count('- step: "C"') == 1
+    assert '  date: "2026- step: "C"' not in body, "the new entry is not glued to the torn one"
+
+    # AND THE HONEST HALF, asserted rather than hoped for: the torn entry leaves an
+    # unterminated quoted scalar, so the WHOLE document stops parsing — not just the entry
+    # that was torn. That is the difference between this file and the history, and it is the
+    # entire reason `runs.jsonl` is the record of truth: a torn line there costs one line.
+    # Testing this pins the trade-off in place, so nobody later reads the repair above and
+    # concludes the YAML is as durable as the JSONL.
+    with pytest.raises(yaml.YAMLError):
+        yaml.safe_load(body)
+
+
+def test_a_transformation_log_that_cannot_be_written_does_not_stop_the_run(tmp_path, capsys):
+    """A VIEW is never the reason a record is lost. The sink swallows and says so, exactly as
+    `JsonlSink` does — `sinks.py`'s own rule is that a sink which can abort a run gets
+    removed from the run."""
+    blocked = tmp_path / "as_a_directory.yml"
+    blocked.mkdir()
+    runprov.sinks.YamlLogSink(blocked).append({"script": "s", "started_utc": "2026-01-01"})
+    assert "could not append to the transformation log" in capsys.readouterr().err
+
+
+def test_a_yaml_sidecar_that_cannot_be_written_does_not_cost_the_json_one(tmp_path, capsys):
+    """Same rule one level down. `_persist` returns "the record is on disk", and the record
+    is the JSON; the YAML twin failing is worth a line on stderr and nothing more."""
+    proj = _project(tmp_path)
+    run = runprov.Run("s", project=proj)
+    (tmp_path / "p.prov.yml").mkdir()  # the twin's path is occupied by a directory
+    assert run.write(tmp_path / "p.prov.json") == tmp_path / "p.prov.json"
+
+    assert (tmp_path / "p.prov.json").is_file(), "the record itself is written"
+    assert json.loads((tmp_path / "p.prov.json").read_text(encoding="utf-8"))["script"] == "s"
+    assert "could not write the YAML sidecar" in capsys.readouterr().err
 
 
 def test_a_normal_append_gains_no_blank_line(tmp_path):
@@ -8759,6 +8915,26 @@ def test_appending_to_the_history_does_not_get_slower_as_it_grows(tmp_path):
     assert grown_cost < empty_cost * 8 + 5e-4, (
         f"appending to a 2,000-record history cost {grown_cost * 1e6:.0f}us against "
         f"{empty_cost * 1e6:.0f}us for an empty one — the append is reading the file"
+    )
+
+
+def test_appending_to_the_transformation_log_does_not_get_slower_as_it_grows(tmp_path):
+    """The same rule as the history beside it, and the reason this file is APPENDED rather
+    than regenerated. Rewriting the whole YAML after each run would read the entire history
+    to write one entry — O(n) per run and O(n^2) over a project, which is the cost that
+    surfaces in year two, on precisely the long-lived record this file is for."""
+    fresh = runprov.sinks.YamlLogSink(tmp_path / "fresh.yml")
+    grown = runprov.sinks.YamlLogSink(tmp_path / "grown.yml")
+    rec = {"script": "s", "started_utc": "2026-01-01T00:00:00Z", "parameters": {"pad": "x" * 400}}
+    for i in range(2000):
+        grown.append({**rec, "run_id": f"r{i}"})
+
+    empty_cost = min(_elapsed(fresh.append, rec) for _ in range(20))
+    grown_cost = min(_elapsed(grown.append, rec) for _ in range(20))
+
+    assert grown_cost < empty_cost * 8 + 5e-4, (
+        f"appending to a 2,000-entry transformation log cost {grown_cost * 1e6:.0f}us "
+        f"against {empty_cost * 1e6:.0f}us for an empty one — it is rewriting the file"
     )
 
 
