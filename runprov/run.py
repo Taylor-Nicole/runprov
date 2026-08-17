@@ -62,6 +62,7 @@ from .project import (
     is_configured,
     is_repository,
 )
+from .show import to_yaml
 from .terminal import Capture
 
 # The record format, named and versioned. A consumer -- a script, a dashboard, an agent
@@ -2039,10 +2040,37 @@ class Run:
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(text, encoding="utf-8")
-            return True
         except OSError as exc:
             diagnostic(f"  WARNING: could not write the provenance sidecar to {p}: {exc}")
             return False
+        self._persist_yaml(p)
+        return True
+
+    def _persist_yaml(self, p: pathlib.Path) -> None:
+        """The readable twin of the JSON sidecar, beside it. NEVER raises, never required.
+
+        `summary.prov.json` gets `summary.prov.yml`. Both, rather than one: the JSON is what
+        `verify` and every other tool reads, and the YAML is what a person opens next to an
+        artifact — the same argument as the project-wide transformation log, one artifact
+        down. Neither is derived from the other at read time; both are written from the same
+        record in the same call, so they cannot drift.
+
+        SEPARATE FROM `_persist`'s return value on purpose. That bool means "the record is on
+        disk", and the record is the JSON. A YAML view that could not be written is worth a
+        line on stderr and nothing more; making it able to report failure would invite a
+        caller to treat a missing convenience as a missing record.
+        """
+        if not self.project.write_yaml_sidecar:
+            return
+        # `.prov.json` -> `.prov.yml`, and `x.txt` -> `x.txt.yml`. Suffix REPLACEMENT only
+        # when the name ends in `.json`, because `Path.with_suffix` on `summary.prov.json`
+        # would give `summary.prov.yml` but on `calls.v2.json` it would eat `.v2` -- the
+        # compound-suffix bug `_sidecar_name` already had to learn.
+        name = p.name[: -len(".json")] + ".yml" if p.name.endswith(".json") else p.name + ".yml"
+        try:
+            (p.parent / name).write_text(to_yaml(_jsonable(self.record)), encoding="utf-8")
+        except OSError as exc:  # guards-ok: a view is never the reason a record is lost
+            diagnostic(f"  WARNING: could not write the YAML sidecar beside {p}: {exc}")
 
     def _append_history(self, prov_path: pathlib.Path) -> None:
         """Append the summary to the project's sink — one line per run, forever.

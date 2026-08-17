@@ -111,6 +111,88 @@ class JsonlSink:
             diagnostic(f"  WARNING: could not append to run history: {exc}")
 
 
+class YamlLogSink:
+    """The project-wide transformation log: one YAML entry per run, appended forever.
+
+    THE FILE THIS PACKAGE EXISTS BECAUSE OF, written the way that file should have been.
+    `transformation_log.yml` is what a person opens to read the story of a project, and the
+    predecessor's copy is also the file that stopped parsing at line 14,547 of 24,300 and
+    grew eight repair scripts around it. So this is a VIEW and not the record: `runs.jsonl`
+    stays the source of truth, and if this file is ever damaged it can be regenerated from
+    the history with `python -m runprov log --format yaml`.
+
+    APPENDED, NEVER REGENERATED, and that is the whole design. Rewriting the file after each
+    run would read the entire history to write one entry -- O(n) per run and O(n^2) over a
+    project, which is the cost that surfaces in year two, on exactly the long-lived history
+    this is for. One entry is appended, under the same lock and with the same torn-line
+    repair as `JsonlSink`, so the cost of recording run 10,000 is the cost of recording
+    run 1.
+
+    ENTRIES, NOT DOCUMENTS. The file is one YAML list -- `- step:` per run, the shape the
+    original transformation log used -- so `yaml.safe_load` returns every run in one list
+    and a reader needs no `safe_load_all`. Every scalar is quoted (see `show._q`), which is
+    precisely the defect that killed the predecessor: it quoted only what its author thought
+    needed quoting, and one hand-typed `Note:` inside a description ended the file.
+
+    A BAD ENTRY HERE COSTS THE YAML AND NOT THE RECORD. That is the reason the truth lives
+    in the JSONL: a corrupt line there costs one line, while a corrupt block in a single
+    YAML document costs everything after it. Both files are written; only one is trusted.
+    """
+
+    def __init__(self, path: pathlib.Path) -> None:
+        self.path = pathlib.Path(path)
+
+    def append(self, record: dict[str, typing.Any]) -> None:
+        from .show import _yaml_entry, _yaml_header  # local: `show` must not import sinks
+
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.path, "ab+") as fh:
+                with _exclusive(fh):
+                    fh.seek(0, os.SEEK_END)
+                    if not fh.tell():
+                        # The banner, once, when the file is created. It says what the file
+                        # is and -- more importantly -- what it is NOT: the record of truth.
+                        fh.write(
+                            _yaml_header(
+                                "MAINTAINED by runprov — one entry appended per run. This is a "
+                                "VIEW;\n# the record of truth is the run history beside it, and "
+                                "this file can be\n# rebuilt at any time with `python -m runprov "
+                                "log --format yaml`"
+                            ).encode("utf-8")
+                        )
+                    else:
+                        # Same torn-line repair as `JsonlSink`, for the same reason: a
+                        # process killed mid-append leaves a fragment, and O_APPEND would
+                        # concatenate the next entry onto it and lose both.
+                        fh.seek(-1, os.SEEK_END)
+                        if fh.read(1) != b"\n":
+                            fh.write(b"\n")
+                    fh.write(_yaml_entry(record).encode("utf-8"))
+                    fh.flush()
+                    os.fsync(fh.fileno())
+        except Exception as exc:  # never let recording break a run
+            diagnostic(f"  WARNING: could not append to the transformation log: {exc}")
+
+
+class TeeSink:
+    """Every record to each sink in turn. One run, several destinations.
+
+    Exists so the project can keep `runs.jsonl` as the record of truth AND maintain the
+    human-readable `transformation_log.yml` beside it, without either knowing about the
+    other. A failing sink does not stop the ones after it: each already swallows its own
+    errors and says so on stderr, and a YAML view that could not be written must not cost
+    the JSONL line that is the actual record.
+    """
+
+    def __init__(self, *sinks: RecordSink) -> None:
+        self.sinks = sinks
+
+    def append(self, record: dict[str, typing.Any]) -> None:
+        for sink in self.sinks:
+            sink.append(record)
+
+
 class MemorySink:
     """Collects records in a list. For tests, and for a caller assembling its own report.
 

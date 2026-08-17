@@ -26,7 +26,7 @@ import re
 import subprocess
 import typing
 
-from .sinks import JsonlSink, RecordSink
+from .sinks import JsonlSink, RecordSink, TeeSink, YamlLogSink
 
 # Packages whose version is recorded with every run. EMPTY BY DEFAULT, and that is the
 # considered answer rather than an omission.
@@ -326,6 +326,23 @@ class Project:
 
     root: pathlib.Path = dataclasses.field(default_factory=detect_root)
     run_log: pathlib.Path | None = None
+    # THE HUMAN-READABLE TWIN of `run_log`, appended in step with it: one `- step:` entry
+    # per run, the shape the original transformation log used, so the project has a file a
+    # person opens and reads rather than a JSONL a person greps. None puts it beside the
+    # history at `<root>/provenance/transformation_log.yml`.
+    #
+    # A VIEW, not the record. `runs.jsonl` remains the source of truth precisely because a
+    # single YAML document is what failed before -- a corrupt line costs one line there and
+    # everything after it here -- and this file can be regenerated at any time with
+    # `python -m runprov log --format yaml`. Set `write_transformation_log=False` to skip
+    # it; nothing else changes if you do.
+    transformation_log: pathlib.Path | None = None
+    write_transformation_log: bool = True
+    # The readable twin of each JSON sidecar: `summary.prov.json` gets `summary.prov.yml`.
+    # Both, because the JSON is what `verify` and other tools read and the YAML is what a
+    # person opens beside an artifact. Written from the same record in the same call, so
+    # they cannot drift. False writes only the JSON.
+    write_yaml_sidecar: bool = True
     # Where full environment snapshots go. None disables them; `environment.packages` in
     # each record still carries the tracked subset. Opt-in because a snapshot is only
     # worth writing where someone will look for it, and content-addressed so enabling it
@@ -382,8 +399,24 @@ class Project:
     def resolved_run_log(self) -> pathlib.Path:
         return self.run_log or (self.root / "provenance" / "runs.jsonl")
 
+    def resolved_transformation_log(self) -> pathlib.Path:
+        return self.transformation_log or (
+            self.resolved_run_log().parent / "transformation_log.yml"
+        )
+
     def resolved_sink(self) -> RecordSink:
-        return self.sink if self.sink is not None else JsonlSink(self.resolved_run_log())
+        """Where records go: the JSONL, and the YAML view beside it.
+
+        A SUPPLIED `sink` IS THE WHOLE STORY. The extension point exists so a lab can send
+        records to one shared database, and quietly writing a YAML file next to it would be
+        this package deciding where someone else's records live.
+        """
+        if self.sink is not None:
+            return self.sink
+        history = JsonlSink(self.resolved_run_log())
+        if not self.write_transformation_log:
+            return history
+        return TeeSink(history, YamlLogSink(self.resolved_transformation_log()))
 
     def history_destination(self) -> str:
         """WHERE the continuous history actually is, as one printable, recordable string.
