@@ -50,7 +50,7 @@ from .show import (
     _yaml_entry,
     _yaml_header,
     project_view,
-    render_project,
+    render_project_lines,
     render_run,
     run_view,
     select,
@@ -547,7 +547,10 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
     if args.format == "yaml":
         sys.stdout.write(_yaml_doc({**view, "state": states} if states else view))
     else:
-        sys.stdout.write(render_project(view, states))
+        # WRITELINES, not write: `render_project_lines` yields the page one line at a
+        # time precisely so the whole of it is never a single value. Joining here would
+        # rebuild the string the generator exists to avoid.
+        sys.stdout.writelines(render_project_lines(view, states))
     tally = ""
     if states:
         counts = collections.Counter(states.values())

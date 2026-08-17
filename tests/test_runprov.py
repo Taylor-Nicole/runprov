@@ -8918,6 +8918,74 @@ def test_appending_to_the_history_does_not_get_slower_as_it_grows(tmp_path):
     )
 
 
+def _big_view(n_artifacts, n_scripts=40):
+    return {
+        "runs": 100_000,
+        "scripts": {
+            f"step_{i:02d}": {
+                "runs": 100, "ok": 100, "failed": 0, "first": "A", "last": "B",
+                "script_file": f"src/step_{i:02d}.py",
+                "inputs": {f"data/in_{j}.tsv": ["a" * 16] for j in range(3)},
+                "outputs": {f"results/out_{j}.tsv": ["b" * 16] for j in range(3)},
+                "note_keys": ["rows"], "parameters": ["mode"],
+            }
+            for i in range(n_scripts)
+        },
+        "artifacts": {
+            f"results/out_{k:06d}.tsv": {
+                "by": f"step_{k % 40:02d}", "digest": "c" * 16,
+                "kind": "file", "when": "W", "status": "ok",
+            }
+            for k in range(n_artifacts)
+        },
+    }  # fmt: skip
+
+
+def test_the_project_page_is_never_built_as_one_string(tmp_path):
+    """L-39. The page was accumulated as a list of every line and joined at the end, so
+    rendering cost about six times the text it produced — 57.7 MB of peak to emit 9.6 MB at
+    100,000 artifacts. The waste scales with the artifact count, which is exactly the part
+    of this page that grows over the years the history is meant to survive.
+
+    `log` already learned this: `_timeline_entry` was split out so each record could be
+    written as it streamed. Same reasoning, and here the unbounded half is the artifacts."""
+    import tracemalloc
+
+    view = _big_view(20_000)
+    text = runprov.show.render_project(view)
+
+    class Sink(io.TextIOBase):
+        def writelines(self, lines):
+            for _ in lines:
+                pass
+
+    tracemalloc.start()
+    Sink().writelines(runprov.show.render_project_lines(view))
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+
+    assert len(text) > 1_000_000, "the premise: this page is megabytes of text"
+    assert peak < len(text) / 4, (
+        f"rendering held {peak / 1e6:.1f} MB to write {len(text) / 1e6:.1f} MB of text — "
+        f"the page is still being built before any of it is printed"
+    )
+
+
+def test_the_streamed_page_is_byte_for_byte_the_page(tmp_path, monkeypatch):
+    """A renderer split for memory must render the same thing, or the fix is a rewrite. The
+    string form is kept as a thin wrapper over the generator for exactly this reason: there
+    is one implementation, so the two cannot drift."""
+    rows = _history(tmp_path, monkeypatch)
+    view = runprov.show.project_view(rows)
+    states = runprov.show.staleness(rows)
+    joined = "".join(runprov.show.render_project_lines(view, states))
+    assert joined == runprov.show.render_project(view, states)
+    assert joined.endswith("\n") and "project notebook" in joined
+    assert all(ln.endswith("\n") for ln in runprov.show.render_project_lines(view, states)), (
+        "lines carry their own newline so a caller can writelines() them unchanged"
+    )
+
+
 def test_lineage_does_not_hold_the_records_it_walks(tmp_path):
     """L-38. The comment here said lineage "genuinely needs every record at once ... there is
     nothing to stream past". That was a claim about the RECORDS, and the join is over
