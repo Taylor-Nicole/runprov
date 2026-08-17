@@ -6246,10 +6246,68 @@ def test_verify_does_not_walk_build_and_vcs_directories_but_counts_what_it_skipp
 
     found, skipped = runprov.verify.collect([tmp_path])
     assert [p.name for p in found] == ["out.tsv"]
-    assert skipped == 5, "one file in each skipped directory, counted rather than dropped"
+    assert skipped == 5, "five DIRECTORIES pruned, counted rather than dropped"
 
     named, _ = runprov.verify.collect([tmp_path / ".venv" / "noise.tsv"])
     assert [p.name for p in named] == ["noise.tsv"], "an explicit path is always examined"
+
+
+def test_the_skip_count_does_not_descend_into_what_it_skipped(tmp_path, monkeypatch):
+    """L-43, half one. The count used to be `rglob("*")` over each pruned tree — walking
+    exactly what `SKIP_DIRS` exists not to walk, so the pruning saved the pin reads and not
+    the traversal. The cost was proportional to the size of the tree the function had just
+    declared it would not look at, and that tree is the one thing on a machine guaranteed to
+    be large. Measured on 2,000 real files beside an 18,000-entry `.venv`: 180 ms against
+    71 ms; on this package's own repo, 60 ms against 3 ms.
+
+    It also counted DIRECTORIES AS FILES, because `rglob("*")` yields both."""
+    (tmp_path / "results").mkdir()
+    (tmp_path / "results" / "out.tsv").write_text("x\n", encoding="utf-8")
+    venv = tmp_path / ".venv" / "lib" / "site-packages" / "pkg"
+    venv.mkdir(parents=True)
+    for i in range(50):
+        (venv / f"m{i}.py").write_text("x\n", encoding="utf-8")
+
+    walked: list[str] = []
+    real_walk = runprov.verify.os.walk
+    monkeypatch.setattr(
+        runprov.verify.os,
+        "walk",
+        lambda p, *a, **k: (walked.append(str(p)), real_walk(p, *a, **k))[1],
+    )
+    found, skipped = runprov.verify.collect([tmp_path])
+
+    assert [p.name for p in found] == ["out.tsv"]
+    assert skipped == 1, "ONE directory pruned, not the 54 entries inside it"
+    assert not any(".venv" in w for w in walked), f"it descended into a skipped tree: {walked}"
+
+
+def test_the_skip_count_reaches_both_the_report_and_the_summary(tmp_path, capsys):
+    """L-43, half two, and the reason halves one and three survived: the string
+    `files_skipped` appeared NOWHERE in this suite, so the number carrying the module's
+    honesty claim could be zeroed — or wrong by every subdirectory — without a test noticing.
+
+    The docstring's whole argument is that the count is REPORTED, never merely applied: a
+    checker that quietly narrows what it looked at reads as "everything is fine" when it
+    means "I did not look there"."""
+    monkey = tmp_path / "results"
+    monkey.mkdir()
+    runprov.configure(root=tmp_path, run_log=tmp_path / "provenance" / "runs.jsonl")
+    (tmp_path / "in.tsv").write_text("id\n1\n", encoding="utf-8")
+    with runprov.Run("s", {}, provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(monkey / "out.tsv") as fh:
+            fh.write("id\n1\n")
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "noise.tsv").write_text("noise\n", encoding="utf-8")
+
+    rc = runprov.__main__.main(
+        ["verify", str(tmp_path), "--root", str(tmp_path), "--format", "json"]
+    )
+    out, err = capsys.readouterr()
+    assert rc == 0
+    assert json.loads(out)["directories_skipped"] == 1, "it survives into the JSON report"
+    assert "1 build/vcs/venv directory not walked" in err, f"and onto the summary line: {err}"
 
 
 def test_verify_cli_exits_non_zero_and_says_so_when_it_checked_nothing(tmp_path, capsys):
