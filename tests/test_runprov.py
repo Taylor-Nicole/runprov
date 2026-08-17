@@ -8918,6 +8918,91 @@ def test_appending_to_the_history_does_not_get_slower_as_it_grows(tmp_path):
     )
 
 
+def test_lineage_does_not_hold_the_records_it_walks(tmp_path):
+    """L-38. The comment here said lineage "genuinely needs every record at once ... there is
+    nothing to stream past". That was a claim about the RECORDS, and the join is over
+    DIGESTS: it needs an index, not a copy of the history. Measured at 40,000 chained runs,
+    166 MB against 58 MB, for byte-identical output.
+
+    The confident comment is the reason this survived review — it told the next person not to
+    look. Counting reachable records DURING the walk is the same technique L-04 and L-37 use,
+    and for the same reason: the list would die with the frame and prove nothing after."""
+    import gc
+    import weakref
+
+    class Rec(dict):
+        pass
+
+    seen: list[weakref.ref] = []
+    held: list[int] = []
+    n = 200
+
+    def stream():
+        prev = None
+        for i in range(n):
+            d = f"{i:064x}"
+            rec = Rec(
+                script=f"s{i}",
+                run_uid=f"{i:032x}",
+                # MONOTONIC, not `i % 60`: rule 2 says a producer must have finished before
+                # its consumer started, so a wrapping clock makes some producers look later
+                # than the runs that read them and silently drops those edges.
+                started_utc=f"2026-08-01T{i // 3600:02d}:{i // 60 % 60:02d}:{i % 60:02d}Z",
+                finished_utc=f"2026-08-01T{i // 3600:02d}:{i // 60 % 60:02d}:{i % 60:02d}Z",
+                parameters={"pad": "x" * 300},
+                inputs=([{"path": "a", "sha256": prev}] if prev else []),
+                outputs=[{"path": "a", "sha256": d}],
+            )
+            prev = d
+            seen.append(weakref.ref(rec))
+            yield rec
+            del rec
+            if i == n - 1:
+                gc.collect()
+                held.append(sum(1 for w in seen if w() is not None))
+
+    # Two passes, so the source must be re-iterable — a generator would give an empty second
+    # pass. This shim hands `_lineage` a fresh generator on each `__iter__`, which is exactly
+    # the contract `records()` depends on.
+    class Reiterable:
+        def __iter__(self):
+            return stream()
+
+    cli = runprov.__main__
+    g = cli._lineage(Reiterable())
+    assert g["runs"] == n and g["resolvable"] == n - 1, g
+    assert held[0] <= 2, f"{held[0]} of {n} records held to join on digests"
+
+
+def test_the_lineage_json_gains_no_new_key(tmp_path):
+    """`lineage --format json` is a documented output somebody parses. The script-name map
+    that replaced the records is an OUT-PARAMETER precisely so it does not land in that
+    document — putting it there would trade a memory problem for a bigger file, adding one
+    entry per run to the thing a consumer reads."""
+    cli = runprov.__main__
+    rows = [
+        {
+            "script": "a",
+            "run_uid": "u1",
+            "started_utc": "2026-01-01T00:00:00Z",
+            "finished_utc": "2026-01-01T00:00:00Z",
+            "outputs": [{"path": "x", "sha256": "d1"}],
+        },
+        {
+            "script": "b",
+            "run_uid": "u2",
+            "started_utc": "2026-01-01T00:00:01Z",
+            "inputs": [{"path": "x", "sha256": "d1"}],
+        },
+    ]
+    names: dict[str, str] = {}
+    g = cli._lineage(rows, None, names)
+    assert set(g) == {"runs", "records_without_uid", "resolvable", "ambiguous", "orphan", "edges"}
+    assert g["edges"] == [("u1", "u2")] and g["resolvable"] == 1
+    assert names == {"u1": "a", "u2": "b"}, "the names come back beside the graph, not inside it"
+    assert "a [u1" in cli._render_lineage(g, names), "and the text view still names the scripts"
+
+
 def test_appending_to_the_transformation_log_does_not_get_slower_as_it_grows(tmp_path):
     """The same rule as the history beside it, and the reason this file is APPENDED rather
     than regenerated. Rewriting the whole YAML after each run would read the entire history
