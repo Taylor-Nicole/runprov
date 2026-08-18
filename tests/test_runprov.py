@@ -6967,6 +6967,83 @@ def test_the_readme_documents_the_in_band_allowlist_exactly():
     )
 
 
+def test_the_binary_refusal_names_the_mode_not_a_comment_syntax(tmp_path):
+    """L-50. The message came from `PIN_UNSAFE`, and 25 of the 40 binary suffixes are not in
+    that table — `.pkl` `.pt` `.rds` `.feather` and the rest — so they fell to its default and
+    told a caller writing a pickle that "the format is not known to accept a `#` comment".
+
+    True and irrelevant: the handle is TEXT, so the format could accept `#` gladly and this
+    would still be the wrong call. A message naming the wrong cause sends someone looking for
+    a pin setting that does not exist."""
+    proj = _project(tmp_path)
+    run = runprov.Run("s", project=proj)
+    outside = sorted(set(runprov.run.PIN_BINARY) - set(runprov.run.PIN_UNSAFE))
+    assert len(outside) > 20, f"the premise: most binary suffixes are not in PIN_UNSAFE ({outside})"
+
+    for suffix in (".pkl", ".pt", ".rds", ".feather", ".png"):
+        with pytest.raises(ValueError) as caught:
+            with run.open_output(tmp_path / f"f{suffix}"):
+                pass
+        message = str(caught.value)
+        assert "TEXT handle" in message, f"{suffix}: {message}"
+        assert "not known to accept" not in message, f"{suffix} still blames the comment syntax"
+        assert "pin_sidecar" in message, f"{suffix}: the message must name the way that works"
+
+
+def test_the_history_carries_the_omitted_count_beside_the_code_digest(tmp_path, monkeypatch):
+    """L-51. Past `imported_code_max` the digest covers only the kept PREFIX of the sorted
+    file list, so it silently changes meaning — and the history carried the digest without
+    the one number that reveals it. Two runs whose digests differ would look like a code
+    change when the truth may be that a 201st file appeared and pushed a different 200 into
+    the hash. A digest whose scope is unstated is not a digest."""
+    monkeypatch.chdir(tmp_path)
+    proj = runprov.Project(
+        root=tmp_path, run_log=tmp_path / "runs.jsonl", run_id=lambda: "r",
+        generation=lambda: "g", imported_code_max=2,
+    )  # fmt: skip
+    for i in range(5):
+        (tmp_path / f"m{i}.R").write_text(f"# {i}\n", encoding="utf-8")
+
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.json") as run:
+        for i in range(5):
+            run.code(tmp_path / f"m{i}.R")
+
+    line = json.loads((tmp_path / "runs.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    ic = line["imported_code"]
+    assert ic["count"] == 5 and ic["omitted"] == 3, ic
+    assert ic["digest"], "the digest is still there — it is its SCOPE that needed stating"
+
+
+def test_the_yaml_view_survives_a_record_json_accepts(tmp_path):
+    """L-72. `to_yaml` recurses once per nesting level, so `show <target> --format yaml` died
+    with an uncaught `RecursionError` on a record `json.loads` accepts without complaint —
+    measured, fine at depth 900 and dead at 1,000, while `log`, `log --format yaml`, `show`
+    and `lineage` all survived the same record. The READER was strictly narrower than the
+    writer, in a module whose founding story is a log that stopped being readable because one
+    record defeated its reader.
+
+    Past the cap it switches to flow style, which IS valid YAML (1.2 is a JSON superset), so
+    nothing is lost or renamed — only the block layout stops."""
+    yaml = pytest.importorskip("yaml")
+
+    def nest(n):
+        v = "leaf"
+        for _ in range(n):
+            v = {"k": v}
+        return v
+
+    for depth in (50, 900, 1_000, 5_000):
+        rendered = runprov.show.to_yaml(nest(depth))
+        assert yaml.safe_load(rendered) is not None, f"depth {depth} rendered unparseable YAML"
+
+    # The value survives the switch: walk down to where flow style takes over and the rest is
+    # still there as a JSON string rather than a marker.
+    deep = yaml.safe_load(runprov.show.to_yaml(nest(5_000)))
+    for _ in range(runprov.show.YAML_MAX_DEPTH):
+        deep = deep["k"]
+    assert "leaf" in json.dumps(deep), "the tail must be the VALUE, not a placeholder"
+
+
 def test_binary_formats_are_still_refused_because_the_MODE_is_wrong(tmp_path):
     """Not about the pin at all: this method opens in text mode, so a caller cannot write a
     PNG or a BAM through the handle whatever happens to the provenance. The message points
@@ -8877,7 +8954,10 @@ def test_the_history_line_carries_the_summary_and_not_every_file(tmp_path, monke
         _forget_src()
 
     line = json.loads((tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip())
-    assert sorted(line["imported_code"]) == ["count", "digest"]
+    # `omitted` joined `count` and `digest` for L-51: past `imported_code_max` the digest
+    # covers only the kept prefix, so its SCOPE has to travel with it. The file LIST still
+    # belongs in the sidecar -- that is what this test is about.
+    assert sorted(line["imported_code"]) == ["count", "digest", "omitted"]
     assert "files" not in line["imported_code"], "the list belongs in the sidecar"
     sidecar = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
     assert line["imported_code"]["digest"] == sidecar["code"]["imported"]["digest"]
@@ -8915,9 +8995,13 @@ def test_hashing_imported_code_can_be_turned_off(tmp_path, monkeypatch):
         pass
     rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
     assert "imported" not in rec["code"]
+    # All three None, not the key absent: the history line's shape is fixed so a reader never
+    # has to ask whether a missing key means "no code" or "an older record". `omitted` joined
+    # the other two for L-51.
     assert json.loads((tmp_path / "runs.jsonl").read_text().strip())["imported_code"] == {
         "count": None,
         "digest": None,
+        "omitted": None,
     }
 
 
