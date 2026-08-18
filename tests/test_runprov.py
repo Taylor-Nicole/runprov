@@ -3107,6 +3107,60 @@ def test_uncommitted_code_outside_the_default_code_paths_is_not_reported_as_clea
     assert code["code_paths"] == list(runprov.DEFAULT_CODE_PATHS)
 
 
+def test_the_dirty_other_files_list_is_capped_and_says_how_much_it_dropped(tmp_path):
+    """L-57. `git_other_files_omitted == 0` is the `0 == 0` shape: the neighbouring fixture
+    dirties TWO files against a cap of 50, so the cap and its counter are asserted with no
+    tail to omit. Raising `OTHER_FILES_KEPT` to 5000 left the whole suite green.
+
+    The cap exists because "a repository with a 273 MB report tree can have thousands of
+    untracked files, and a provenance record must not become one". Removing it makes every
+    history line as large as the dirty tree — unbounded growth in the append-only file,
+    invisible until a real repository hits it. `git_other_files_omitted` is the field that
+    would say so, and it was only ever observed at zero.
+
+    This dirties `OTHER_FILES_KEPT + 5` files, so the list is capped AND the counter is
+    non-zero — which is the pair the record needs to stay honest about its own truncation."""
+    extra = 5
+    repo = _repo_with(tmp_path, "pkg")
+    # AT THE ROOT, not inside a new directory: `git status --porcelain` collapses a wholly
+    # untracked directory into ONE `?? churn/` line, so 55 files there produce 55 files and
+    # a single status line -- and the cap would never be reached. The record is built from
+    # status LINES, so the fixture has to produce that many of them.
+    for i in range(runprov.project.OTHER_FILES_KEPT + extra):
+        (repo / f"out_{i:04d}.tsv").write_text(f"{i}\n", encoding="utf-8")
+
+    code = runprov.Run("t", project=runprov.Project(root=repo, sink=runprov.MemorySink())).record[
+        "code"
+    ]
+    kept = code["git_dirty_other_files"]
+    assert code["git_code_dirty"] is False, "churn under `churn/` is not code"
+    assert code["git_tree_dirty"] is True
+    assert len(kept) == runprov.project.OTHER_FILES_KEPT, (
+        f"kept {len(kept)} lines; the cap is {runprov.project.OTHER_FILES_KEPT} and a record "
+        f"that grows with the dirty tree is the thing the cap exists to prevent"
+    )
+    assert code["git_other_files_omitted"] > 0, "silently truncating is the defect, not the cap"
+    # The count is what was DROPPED, not what was seen: kept + omitted is the whole list, so
+    # a reader can reconstruct the size of the omission rather than guess at it.
+    assert len(kept) + code["git_other_files_omitted"] == code["git_other_changes"]
+
+
+def test_the_dirty_other_files_cap_is_small_enough_to_be_a_cap(tmp_path):
+    """The bound the test above cannot state, and the reason it cannot. That test sizes its
+    fixture from `OTHER_FILES_KEPT`, so raising the constant raises the fixture with it and
+    the mutation `OTHER_FILES_KEPT = 5000` passes — it proves the cap is APPLIED, never that
+    it caps anything. Measured: with the cap at 5000 the whole suite stays green.
+
+    So the value gets its own assertion, exactly as `_CARRY` did. The cap exists because "a
+    repository with a 273 MB report tree can have thousands of untracked files, and a
+    provenance record must not become one" — a cap of 5000 satisfies the mechanism and
+    abandons the purpose, letting every history line grow with the dirty tree."""
+    assert 0 < runprov.project.OTHER_FILES_KEPT <= 200, (
+        f"OTHER_FILES_KEPT is {runprov.project.OTHER_FILES_KEPT}; a record that keeps that "
+        f"many change lines per run is the unbounded growth the cap was added to stop"
+    )
+
+
 def test_data_churn_alone_still_does_not_report_the_code_as_dirty(tmp_path):
     """The other half, and the reason `git_code_dirty` is not simply the whole-tree state:
     a pipeline dirties its own output tree on every run, and a boolean that is red forever
