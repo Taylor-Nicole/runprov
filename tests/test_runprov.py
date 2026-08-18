@@ -8048,6 +8048,29 @@ def test_rehash_catches_what_a_stat_cannot(tmp_path, monkeypatch):
     assert _state_of(runprov.show.staleness(rows, rehash=True), "mid.tsv") == "STALE"
 
 
+def test_an_artifact_whose_INPUT_is_gone_says_GONE_not_STALE(tmp_path, monkeypatch):
+    """L-31. The existing `GONE` assertion deletes the ARTIFACT, so it is answered by the
+    earlier `not target.exists()` branch and never reaches `GONE if why == "gone" else
+    STALE` inside the input loop. That line was executed on every page and its VALUE was
+    never observed: collapsing it to `STALE` left the suite green.
+
+    The module docstring makes the distinction load-bearing — "a stale artifact is rebuilt,
+    a gone input is FOUND" — and they are genuinely different repairs. Reported as STALE, the
+    page tells you to rebuild an artifact whose input no longer exists, so the rebuild fails
+    for a reason the page had the information to state."""
+    rows = _staleable(tmp_path, monkeypatch)
+
+    # The INPUT, with its artifact left exactly where it is.
+    (tmp_path / "data" / "ref.tsv").unlink()
+    assert (tmp_path / "out" / "aux.bin").is_file(), "the premise: the artifact is still there"
+
+    states = runprov.show.staleness(rows)
+    assert _state_of(states, "aux.bin") == "GONE", (
+        "an input that is not there cannot be compared, and rebuilding will not find it"
+    )
+    assert _state_of(states, "mid.tsv") == "current", "the other artifact is unaffected"
+
+
 def test_rehash_reports_MODIFIED_for_an_artifact_someone_rewrote(tmp_path, monkeypatch):
     """L-30. `MODIFIED` was asserted only on the STAT path — a different function — so
     `_by_digest`'s final line could return `CURRENT` unconditionally and every rehash test
