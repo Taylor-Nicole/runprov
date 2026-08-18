@@ -1059,11 +1059,24 @@ class Run:
         # DECLARED code joins IMPORTED code, so the digest answers "did any code change"
         # for an R script exactly as it does for a Python module.
         for path, digest in self._extra_code.items():
-            # RuntimeError for the same reason as the walk above: skipping one declared file
-            # is the intent, losing the section is not.
-            with contextlib.suppress(ValueError, OSError, RuntimeError):
-                rel = pathlib.Path(path).resolve().relative_to(root).as_posix()
-                seen.setdefault(rel, digest)
+            # DECLARED CODE OUTSIDE THE ROOT IS STILL CODE. `relative_to` raises for it, and
+            # inside a bare `suppress` that dropped the entry entirely -- so
+            # `run.code("/opt/pipeline/fit.R")` recorded NOTHING while returning the path, and
+            # tracking a script that lives outside the tree is exactly what `code()` was added
+            # for. Discovery may skip what it cannot place; an explicit call may not.
+            #
+            # `<external>/<name>`, the same spelling the PIN uses for an input outside the
+            # root, and for the same reason: an absolute path would put this machine's layout
+            # into a digest whose whole purpose is to compare across machines.
+            try:
+                resolved = pathlib.Path(path).resolve()
+            except (OSError, RuntimeError):  # guards-ok: unresolvable, see the walk above
+                continue
+            try:
+                rel = resolved.relative_to(root).as_posix()
+            except ValueError:
+                rel = f"<external>/{resolved.name}"
+            seen.setdefault(rel, digest)
         ordered = sorted(seen.items())
         kept = ordered[: self.project.imported_code_max]
         body = "\n".join(f"{h}  {r}" for r, h in kept)
@@ -1831,9 +1844,20 @@ class Run:
         appended exactly once, at exit, with the true status. It is `write()` as a
         SUBSTITUTE for `provenance=` that loses the run, not `write()` itself.
 
+        `sidecar_per_run` APPLIES HERE TOO. It was honoured only for the `provenance=`
+        kwarg, so two `write()` calls to one path overwrote each other exactly as they did
+        before the setting existed -- and overwriting is the thing it exists to prevent. Two
+        of the three documented ways to get a sidecar ignored it.
+
+        Not applied to `self.provenance_path`, which `__init__` has already stamped:
+        `_finish()` hands that same path back here at exit, and stamping a stamped name
+        produces `summary.<t>.<uid>.<t>.<uid>.prov.json`.
+
         Returns the path written, so a caller can register or log it.
         """
         p = pathlib.Path(path)
+        if p != self.provenance_path:
+            p = self._sidecar_name(p)
         if (
             self.project.env_snapshot_dir is not None
             and "snapshot" not in self.record["environment"]

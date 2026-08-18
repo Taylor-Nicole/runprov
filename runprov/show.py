@@ -335,8 +335,13 @@ def _sidecar(rec: dict[str, typing.Any]) -> dict[str, typing.Any] | None:
     path = rec.get("provenance_path")
     if not path:
         return None
+    # AGAINST THE RUN'S RECORDED CWD, exactly as `staleness` resolves every artifact path.
+    # This opened the recorded string verbatim, so a run that used the natural relative
+    # spelling -- `provenance="out/mid.prov.json"` -- was readable only from its own working
+    # directory. Measured: `current` from there, `?` from anywhere else, for every artifact
+    # at once. A page whose answers depend on the reader's shell is not a page.
     try:
-        doc = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+        doc = json.loads(_resolve(str(path), rec.get("cwd")).read_text(encoding="utf-8"))
     except (OSError, ValueError):  # guards-ok: no sidecar is "cannot tell", not "current"
         return None
     if rec.get("run_uid") and doc.get("run_uid") != rec.get("run_uid"):
