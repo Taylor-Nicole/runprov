@@ -632,6 +632,7 @@ class Run:
         self._extra_code: dict[str, str] = {}
         self.provenance_path = self._sidecar_name(provenance) if provenance else None
         self._written = False
+        self._code_recorded = False
         self._warned_cwd_moved = False
         # Inside a `with` block the run is NOT over when write() is called -- the work can
         # still fail afterwards. The sidecar is written eagerly (a caller may want it on
@@ -938,8 +939,16 @@ class Run:
         Guarded because provenance must not be what ends the run -- a partial answer in the
         record beats a lost record, which is the rule `_jsonable` follows for values.
         """
+        # ONCE PER RUN. `__exit__` calls this, then `_finish()` -> `write()` calls it again
+        # because `_in_context` is False by then -- so every first-party file in the project
+        # was hashed TWICE on every recorded run, in the code path that executes at the end
+        # of all of them. Introduced by the L-05 fix and found by L-79's read counter, which
+        # is the whole argument for counting reads rather than entries.
+        if self._code_recorded:
+            return
         if not (self.project.hash_imported_code or self._extra_code):
             return
+        self._code_recorded = True
         try:
             self.record["code"]["imported"] = self._imported_code()
         except Exception as exc:  # guards-ok: a partial answer beats a lost record

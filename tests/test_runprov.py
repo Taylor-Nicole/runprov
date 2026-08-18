@@ -8886,6 +8886,20 @@ def test_two_names_for_one_module_file_are_hashed_once(tmp_path, monkeypatch):
     import src.helper
 
     monkeypatch.setitem(sys.modules, "an_alias_for_helper", src.helper)
+
+    # L-79. COUNT THE READS, not the entries. `paths.count(...) == 1` is what the `seen`
+    # dict gives for free -- `seen[rel] = sha256(p)` overwrites, so there is one entry
+    # whichever way -- and the guard this test is named for is `if rel in seen: continue`,
+    # whose job is to avoid HASHING the file a second time. Deleting it left the suite green.
+    #
+    # The cost is per RUN, in a code path that executes at the end of every recorded run: an
+    # aliased module is hashed once per alias, so a package imported under two names doubles
+    # its share of the work, quietly, forever.
+    hashed: list[str] = []
+    real_sha256 = runprov.run.sha256
+    monkeypatch.setattr(
+        runprov.run, "sha256", lambda p, *a, **kw: (hashed.append(str(p)), real_sha256(p))[1]
+    )
     try:
         with runprov.Run("s", project=proj, provenance=tmp_path / "p.json"):
             pass
@@ -8897,6 +8911,12 @@ def test_two_names_for_one_module_file_are_hashed_once(tmp_path, monkeypatch):
     ]
     paths = [f["path"] for f in files]
     assert paths.count("src/helper.py") == 1, paths
+
+    reads = [p for p in hashed if p.endswith("helper.py")]
+    assert len(reads) == 1, (
+        f"helper.py was read {len(reads)} times for {len(reads)} names of one file — the "
+        f"digest is the same either way, so the extra read buys nothing and costs a run"
+    )
 
 
 def test_a_failure_while_hashing_imports_is_recorded_not_raised(tmp_path, monkeypatch):
