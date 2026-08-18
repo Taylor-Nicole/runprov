@@ -116,10 +116,13 @@ Nothing has been published yet. Everything below is what a first release would c
   directories are no longer walked, and the count of files skipped is **reported** rather
   than silently applied. Measured on one demo project: 898 files and 5 false findings →
   18 files, 1 artifact, 1 OK.
-- **`examples/format_compatibility.py`** — writes an artifact in each of 30 formats through
+- **`examples/format_compatibility.py`** — writes an artifact in each of 60 formats through
   runprov and reads it back with that format's real library, reporting pin placement, parse,
   hash and digest stability. Skips (loudly) any format whose library is absent, so it is not
-  in the test suite. Measured: **60 round-tripped, 0 failed, 0 skipped** — including Pickle, joblib,
+  in the test suite. Measured with every optional library installed: **60 round-tripped,
+  0 failed, 0 skipped**. Without them it says so rather than passing quietly — on a bare
+  install it reports `18 format(s) round-tripped, 0 failed, 42 skipped for a missing
+  library`. Including Pickle, joblib,
   cloudpickle, Parquet, Feather, HDF5, AnnData `.h5ad`, Zarr, NetCDF, `.xlsx`, BAM, CRAM,
   bgzipped VCF, R `.rds`, ONNX, safetensors, PyTorch `.pt`, `.npy`, `.npz`, `.mat`, PNG, TIFF, gzip and
   SQLite. It also

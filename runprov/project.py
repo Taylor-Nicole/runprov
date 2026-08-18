@@ -239,9 +239,16 @@ def classify_status(status: str | None, code_paths: typing.Sequence[str]) -> Dir
 
     ONE unscoped `git status` is the source of truth and `code_paths` filters its output,
     rather than `code_paths` being the pathspec that decides what git is allowed to see.
-    Measured on the host repository (2,994 tracked files, 273 MB of reports): scoped
-    12.2 ms, unscoped 16.5 ms — and the module already ran BOTH on every `Run`, so reading
-    the whole tree and filtering in Python is 19.2 ms → 14.1 ms, a fix that is also faster.
+    Measured 2026-08-18 on `hcv-genotyping-release` (3,058 tracked files, 2.9 GB working
+    tree), best of seven, warm: unscoped `git status --porcelain` 35.3 ms, scoped 23.8 ms.
+    The module used to run BOTH on every `Run` — 59.2 ms — so running the unscoped one and
+    filtering in Python is 59.2 ms → 35.3 ms, a fix that is also faster.
+
+    An earlier version of this note gave "scoped 12.2, unscoped 16.5, so 19.2 → 14.1", which
+    cannot be true of any measurement: two calls cost their sum (28.7, not 19.2), and an
+    "after" of 14.1 is less than the single call it consists of. Both figures are a snapshot
+    of a repository that grows; the durable claim is the SHAPE — two calls became one, and
+    the one that survived is the more expensive of the two, which is still a saving.
     """
     if status is None:
         return DirtyState(captured=False)

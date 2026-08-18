@@ -539,7 +539,8 @@ class Run:
         # ONE unscoped status, classified in Python. This was TWO calls -- a scoped one
         # for the boolean and an unscoped one for a bare count -- so the whole-tree cost
         # was already being paid, and paid twice, to reach a NARROWER answer. Measured on
-        # the host repo (2,994 tracked files, 2.6 GB): two calls 19.2 ms, one call 14.1 ms.
+        # `hcv-genotyping-release` (3,058 tracked files, 2.9 GB), 2026-08-18, best of seven:
+        # two calls 59.2 ms, one call 35.3 ms. See `project.classify_status` for the full note.
         everything = git(root, "status", "--porcelain")
         state = classify_status(everything, self.project.code_paths)
         dirty = "\n".join(state.code)
