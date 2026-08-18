@@ -6942,6 +6942,31 @@ def test_the_sidecar_suffix_has_one_definition(tmp_path):
     assert runprov.run.PIN_SIDECAR_SUFFIX is runprov.hashing.PIN_SIDECAR_SUFFIX
 
 
+def test_the_readme_documents_the_in_band_allowlist_exactly():
+    """L-60. The format table's in-band row read "TSV, CSV, BED, YAML, Markdown, SQL" and
+    omitted GFF3 — while the allowlist includes `.gff3` and the prose 800 lines further down
+    says `#` IS a comment in a GFF3. So the document contradicted itself, and a
+    bioinformatics reader checking the table was told their GFF3 gets a sidecar when the pin
+    goes in the file.
+
+    A prose list of a constant drifts the moment the constant changes, which is what
+    happened. This asserts the two agree, so the next suffix added to `PIN_INLINE` fails
+    here until the README learns about it."""
+    readme = pathlib.Path(__file__).resolve().parent.parent / "README.md"
+    if not readme.is_file():  # pragma: no cover - the sdist ships it; a bare checkout may not
+        pytest.skip("README.md not present")
+    row = next(
+        line for line in readme.read_text(encoding="utf-8").splitlines()
+        if line.startswith("| in-band |")
+    )  # fmt: skip
+    documented = set(re.findall(r"`(\.[a-z0-9]+)`", row))
+    assert documented == set(runprov.run.PIN_INLINE), (
+        f"README in-band row and PIN_INLINE disagree — "
+        f"only in the code: {sorted(set(runprov.run.PIN_INLINE) - documented)}, "
+        f"only in the README: {sorted(documented - set(runprov.run.PIN_INLINE))}"
+    )
+
+
 def test_binary_formats_are_still_refused_because_the_MODE_is_wrong(tmp_path):
     """Not about the pin at all: this method opens in text mode, so a caller cannot write a
     PNG or a BAM through the handle whatever happens to the provenance. The message points
