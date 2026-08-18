@@ -3665,6 +3665,63 @@ def test_a_gzipped_binary_still_falls_back_to_the_raw_digest(tmp_path):
     assert runprov.content_digest(p), "it must produce a digest rather than raising"
 
 
+def test_the_tree_hash_does_not_depend_on_the_order_the_filesystem_yields(tmp_path, monkeypatch):
+    """L-29. `files.sort()` is what makes `sha256_tree` reproducible, and removing it left
+    the ENTIRE suite green — the two existing tests could not see it. One hashes a two-file
+    tree and only checks the digest CHANGES when a file changes; the other uses a single-file
+    tree, where there is no order to get wrong.
+
+    Without the sort the digest is a property of the filesystem's readdir order, so the same
+    untouched directory hashes differently after a copy, a remount, or on another machine —
+    and `verify` reports STALE for a tree nobody touched. That is the permanently-red check
+    this module exists to end."""
+    # NAMES CHOSEN SO FULL-PATH ORDER AND BASENAME ORDER DISAGREE: by path `a/z.txt` comes
+    # before `b.txt`, by basename it comes after. A first fixture used `a.txt`, `sub/b.txt`,
+    # `z.txt`, where the two orders coincide — so sorting by the wrong key passed, which is
+    # the fixture-too-small shape this audit keeps finding.
+    d = tmp_path / "tree"
+    (d / "a").mkdir(parents=True)
+    (d / "a" / "z.txt").write_text("z", encoding="utf-8")
+    (d / "b.txt").write_text("b", encoding="utf-8")
+    (d / "m.txt").write_text("m", encoding="utf-8")
+
+    forwards = runprov.describe(d)["sha256_tree"]
+
+    # The SAME tree, walked in the opposite order. `os.walk` yields whatever the filesystem
+    # gives it; nothing guarantees that is stable across machines or copies.
+    real_walk = runprov.hashing.os.walk
+    monkeypatch.setattr(
+        runprov.hashing.os,
+        "walk",
+        lambda *a, **k: (
+            (root, list(reversed(dirs)), list(reversed(files)))
+            for root, dirs, files in real_walk(*a, **k)
+        ),
+    )
+    backwards = runprov.describe(d)["sha256_tree"]
+    assert backwards == forwards, "the tree digest changed when only the walk order did"
+
+
+def test_the_tree_hash_is_the_sorted_relpath_and_digest_stream(tmp_path):
+    """The other half, and the stronger one: an INDEPENDENT recomputation. Order-invariance
+    alone would also hold for a digest that ignored names entirely, so this pins the actual
+    construction — sorted relative POSIX paths, each followed by its file digest, each
+    NUL-terminated."""
+    d = tmp_path / "tree"
+    (d / "a").mkdir(parents=True)
+    (d / "a" / "z.txt").write_text("z", encoding="utf-8")
+    (d / "b.txt").write_text("b", encoding="utf-8")
+
+    # Sorted as PATHS, which is what the code does — `Path.__lt__` compares parts, and that
+    # is not always the same as comparing the rendered strings. Same fixture as above, so
+    # sorting by basename instead of by path produces a different stream and fails here.
+    expected = hashlib.sha256()
+    for full in sorted([d / "a" / "z.txt", d / "b.txt"]):
+        expected.update(full.relative_to(d).as_posix().encode() + b"\0")
+        expected.update(runprov.sha256(full).encode() + b"\0")
+    assert runprov.describe(d)["sha256_tree"] == expected.hexdigest()
+
+
 def test_the_tree_hash_separates_a_name_from_its_digest(tmp_path):
     """R9. `name || hex-digest` with no separator is not injective by construction. The
     review called the second preimage 'trivial'; it is not — it needs a preimage attack on
