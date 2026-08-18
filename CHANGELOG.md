@@ -279,7 +279,7 @@ Nothing has been published yet. Everything below is what a first release would c
 
 ### Verified
 
-524 tests, 100% statement *and* branch coverage, on Linux 3.10–3.13 and macOS 3.12.
+525 tests, 100% statement *and* branch coverage, on Linux 3.10–3.13 and macOS 3.12.
 
 Windows 3.12 runs the same suite **minus 22 tests and without the coverage floor**, and the
 distinction is the point: those 22 build a fixture Windows cannot build — a FIFO
