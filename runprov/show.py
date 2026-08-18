@@ -318,9 +318,14 @@ def _sidecar(rec: dict[str, typing.Any]) -> dict[str, typing.Any] | None:
     """The producing run's full record, or None if it cannot be had.
 
     The history line trims an input to path and digests -- deliberately, because it is
-    appended forever and four extra fields cost 15.6% of the file. The SIDECAR keeps the
-    whole `describe()` output, including `size_bytes` and `mtime_utc`, which is what makes a
-    stat-only check possible at all.
+    appended forever and the THREE fields `describe()` also carries (`symlink`, `size_bytes`,
+    `mtime_utc`) cost 19.3% of the file. Measured 2026-08-18 by re-serialising a real
+    2,453-record history with 17,149 input/output entries: 6.39 MB against 7.62 MB.
+    (An earlier note here said "four extra fields cost 15.6%". The 15.6% is real but belongs
+    to a different measurement -- the YAML rendering growing 5.14 MB to 5.94 MB when four
+    FIELDS were added to it -- and had been borrowed for a quantity it does not describe.)
+    The SIDECAR keeps the whole `describe()` output, including `size_bytes` and `mtime_utc`,
+    which is what makes a stat-only check possible at all.
 
     The run_uid is checked, and that is not paranoia: a sidecar is overwritten by the next
     run that writes to the same path, so the file sitting there may describe a DIFFERENT

@@ -585,7 +585,9 @@ this walks the run that produced the artifact and re-checks *that run's* inputs.
 **Off unless asked, because the page is free and the check is not.** `--stale` is one
 `stat` per input and reads no input bytes — there is a test asserting that. It gets the
 sizes and mtimes from the producing run's sidecar, since the history line trims those
-fields deliberately (they would cost 15.6% of an append-forever file). If that sidecar is
+fields deliberately — `symlink`, `size_bytes` and `mtime_utc` would cost **19.3%** of an
+append-forever file, measured 2026-08-18 by re-serialising a real 2,453-record history
+(17,149 input/output entries): 6.39 MB trimmed against 7.62 MB with them kept. If that sidecar is
 missing, or a later run has overwritten it, the answer is `?` rather than `current`:
 digests from one run compared against stats from another would be confident nonsense.
 
