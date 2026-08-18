@@ -398,7 +398,7 @@ class Project:
     #: every run would cost far more than it says.
     hash_imported_code: bool = True
     #: How many imported modules are hashed before the rest are counted instead. A record
-    #: must not become the repository it describes; `imported_code_omitted` states the tail.
+    #: must not become the repository it describes; `code.imported.omitted` states the tail.
     imported_code_max: int = 200
     run_id: typing.Callable[[], str] = default_run_id
     generation: typing.Callable[[], str] = default_generation
