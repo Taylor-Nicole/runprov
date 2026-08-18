@@ -250,7 +250,15 @@ def _yaml_entry(r: dict[str, typing.Any]) -> str:
     out.append(f"  cwd: {_q(r.get('cwd', '?'))}")
     out.append(f"  run_id: {_q(r.get('run_id', '?'))}")
     out.append(f"  generation: {_q(r.get('generation', '?'))}")
-    out.append(f"  git_commit: {_q(r.get('git_commit', '?'))}")
+    # BOTH SHAPES, exactly as `script_file` above and for the same measured reason. The
+    # history line flattens this from `code.git_commit_short`; the live record and the
+    # SIDECAR keep it nested. Reading only the flat one made `runprov.to_yaml(run.record)`
+    # render `git_commit: "?"` where `log --format yaml` -- the SAME renderer, the same run,
+    # from the history -- rendered `git_commit: ""`. Two views of one run disagreeing is the
+    # failure this renderer exists to prevent, and `script_file` had already taught it once.
+    code = r.get("code") or {}
+    commit = r.get("git_commit") or code.get("git_commit_short") or code.get("git_commit")
+    out.append(f"  git_commit: {_q(commit if commit is not None else '?')}")
     out.append(f"  status: {_q(r.get('status', 'ok'))}")
     # `params` and `summary` are the old log's names for these. What changed is where
     # the values come from: `params` is what argparse actually parsed rather than a
