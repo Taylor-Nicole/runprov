@@ -7735,6 +7735,23 @@ def test_the_project_page_says_which_script_expects_which_input(tmp_path, monkey
     made_by = {pathlib.Path(p).name: a["by"] for p, a in view["artifacts"].items()}
     assert made_by["mid.tsv"] == "build" and made_by["final.txt"] == "report"
 
+    # L-52. LAST WRITER WINS, and until now nothing checked it: `mid.tsv` is written twice
+    # and BOTH writes come from `build`, so `made_by` above reads the same either way and
+    # first-writer-wins passed the whole suite.
+    #
+    # ON THE DIGEST, not on `when`. The two runs can finish inside one second, so their
+    # timestamps may be equal and an assertion on them would be true whichever entry
+    # survived — the `0 == 0` shape this audit keeps finding. The digests always differ,
+    # because the runs wrote different bytes.
+    entry = next(a for p, a in view["artifacts"].items() if pathlib.Path(p).name == "mid.tsv")
+    writes = [runprov.show._short(o) for r in rows for o in r.get("outputs") or []
+              if pathlib.Path(o["path"]).name == "mid.tsv"]  # fmt: skip
+    assert len(writes) == 2 and writes[0] != writes[1], "the premise: two different writes"
+    assert entry["digest"] == writes[-1], (
+        "the index must name the run that produced what is on disk NOW; showing a superseded "
+        "run's digest beside a file that no longer has those bytes is authoritative and wrong"
+    )
+
 
 def test_the_project_page_is_rendered_without_needing_a_second_document(tmp_path, monkeypatch):
     """One page. The point is not to open several files and reconstruct the history."""
