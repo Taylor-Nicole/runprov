@@ -116,8 +116,8 @@ emits **2.5**. Measured against this wheel:
 |---|---|
 | 1.9.6 | `None` |
 | 1.10.0 | `None` |
-| 1.11.0 | `'runprov'` — warns `NewMetadataVersion`, then parses |
-| 1.12.1.2 | `'runprov'` |
+| 1.11.0 | `'runprov'` — warns `NewMetadataVersion`, then parses as 2.3 |
+| 1.12.1.2 | `'runprov'` — warns `NewMetadataVersion` too, then parses as 2.4 |
 
 **The predicate is the installed `pkginfo`, not the Poetry version**, and an earlier draft of
 this table got that wrong. Poetry declares only a lower bound, so what breaks is an
@@ -561,7 +561,15 @@ grep across three years of history:
 | `tool_version` | what a subprocess reported about itself |
 
 Anything JSON-able works — `note()` takes `Any` and normalises numpy and pandas scalars, so
-`run.note("n", df.shape[0])` records `118` and not `"<scalar 118>"`.
+`run.note("n", df["v"].sum())` records `6` and not the STRING `"6"`. That example is chosen
+carefully: `df.shape[0]` is already a plain `int`, so it would demonstrate nothing.
+`numpy.float64` subclasses `float` and survives anyway, but `numpy.int64` and `numpy.bool_`
+subclass neither `int` nor `bool`, and without normalisation they fall through to the
+record's `default=str` — a count recorded as `"6"` compares unequal to `6` in every
+downstream check and renders quoted in the YAML view. `.sum()`, `.nunique()` and
+`(s > 1).any()` are the ordinary spellings, so this is the common case rather than an exotic
+one. Duck-typed on `.item()` rather than importing numpy, because this package has no
+dependencies and must not acquire one to describe a caller's data.
 
 ### Do I need to run this again?
 
@@ -659,10 +667,21 @@ worse than no gate, because someone will trust it — the same rule that makes
 Exit status is 0 when every pinned artifact verifies, 1 on any `STALE`, `GONE`, or nothing
 checked — so `python -m runprov verify results/` is a CI step as it stands.
 
-Two stated limits. The pin is looked for in the **first 64 KiB** only, because reading
+Three stated limits. The pin is looked for in the **first 64 KiB** only, because reading
 every byte of a 50 GB BAM to learn it has no pin is the cost that gets a checker deleted;
-and the comment marker is whatever precedes the anchor on its line, so a pin written with
-`header("## ")` for a VCF reads back exactly like one written with `# `.
+the comment marker is whatever precedes the anchor on its line, so a pin written with
+`header("## ")` for a VCF reads back exactly like one written with `# `; and the first pin
+block must **begin within the first 4 lines** (`PIN_STARTS_WITHIN`), so a file that merely
+MENTIONS the format is not mistaken for an artifact — without it, `verify` over a project
+reported this package's own source, its `.pyc` files and the wheel METADATA as artifacts,
+and invented a `GONE` for a path that exists only in documentation.
+
+That third one has a consequence worth stating plainly rather than leaving to be
+discovered: **a pin placed by hand more than four lines down reads as NO PIN**, not as a
+damaged one. `open_output()` writes it first, so this only bites a caller placing
+`header()` themselves — a shebang and an encoding declaration above it are fine, a page of
+preamble is not. An INHERITED pin further down is still read; it just cannot be the one
+that makes the file count as an artifact.
 
 ## Every run records the command that produced it
 

@@ -1,8 +1,16 @@
 [build-system]
-requires = ["hatchling>=1.27"]   # 1.26.3 SILENTLY emits Metadata-Version 2.3 and
+requires = ["hatchling>=1.27,<2"]  # 1.26.3 SILENTLY emits Metadata-Version 2.3 and
                                 # a plain `License:` — it does not fail, it is just
                                 # wrong. 1.25.0 rejects the PEP 639 license-files
                                 # array outright. Both tested.
+                                #
+                                # UPPER BOUND, because this backend decides the
+                                # Metadata-Version and that is a compatibility
+                                # surface, not a detail: 1.32.0 emits 2.5, which
+                                # pkginfo below 1.11 reads as `name = None` --
+                                # measured. An unbounded requirement lets a
+                                # future major pick that for us on tag day, in a
+                                # build that cannot be re-uploaded.
 build-backend = "hatchling.build"
 
 [project]
