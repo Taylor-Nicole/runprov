@@ -276,6 +276,6 @@ Nothing has been published yet. Everything below is what a first release would c
 
 ### Verified
 
-288 tests, 100% statement *and* branch coverage, on Linux 3.10–3.13, macOS and Windows.
+492 tests, 100% statement *and* branch coverage, on Linux 3.10–3.13, macOS and Windows.
 Coverage is a floor, not the argument: every fix above was mutation-tested — the defect
 reintroduced, the suite required to fail.

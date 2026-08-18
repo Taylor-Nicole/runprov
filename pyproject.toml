@@ -95,7 +95,7 @@ addopts = "-q"
 # for. The gate is not weakened: `ci.py test` passes the same flags, and CI calls ci.py.
 testpaths = ["tests"]
 
-# 100, and it is reachable here: the package is 621 statements and 176 branches with no I/O
+# 100, and it is reachable here: the package is 2,123 statements and 762 branches with no I/O
 # it cannot fake. 100 is the only threshold that does not need defending -- any other number
 # is an argument about which lines deserve a test, held once and then never revisited. The
 # earlier 80 was set because the suite achieved 85.68; that is the wrong direction of
