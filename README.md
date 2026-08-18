@@ -1386,15 +1386,16 @@ it is better than leaving silence to be read as abandonment:
 
 ## Tests
 
-`tests/test_runprov.py`, 288 tests, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, 492 tests, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
-There are **no mocks**: not one `unittest.mock` import in the suite. Substitution is either a
-real thing (898 uses of `tmp_path` — actual files, actual JSONL, actual `Run` objects) or a
+There is **one** `unittest.mock` use in the whole suite (`tests/test_runprov.py:3534`), to
+assert a call ORDER that no returned value can show. Everything else is substituted by a real
+thing — 1,913 uses of `tmp_path`, actual files, actual JSONL, actual `Run` objects — or by a
 narrow simulation of an environment this machine is not (`sys.platform` for Windows,
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
 stubs the subject to make it agree with the test.
 
-Coverage is **100%** of 1,282 statements **and 424 branches**, and the gate is set there with
+Coverage is **100%** of 2,123 statements **and 762 branches**, and the gate is set there with
 `--cov-branch`. The branch half was added 2026-08-11 and was not decoration: statement
 coverage read 100% while five conditions had never been evaluated both ways — including the
 `with` block that records nothing, which is a *known* documented gap that no test held. Each
