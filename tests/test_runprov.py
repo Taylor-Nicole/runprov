@@ -8075,6 +8075,33 @@ def test_a_run_page_shows_seeds_and_the_terminal_log_when_there_are_any():
     assert "DIRTY" in text, "a dirty tree is the most consequential line on the page"
 
 
+def test_the_run_page_shows_a_usable_run_uid_handle():
+    """L-75. `run_uid` on the run page was never asserted — neither that it appears nor how
+    much of it. Two mutations survived the whole suite: truncating to `[:6]`, and never
+    printing the line at all.
+
+    The width is not cosmetic. `select()` accepts a PREFIX of the uid, so the page's job is
+    to show a handle long enough to be unique — and it is also how a reader ties a page back
+    to the `.prov.json` sidecar beside an artifact. Six hex characters is 24 bits: a
+    thousand-run project has a coin-flip chance of a collision, and the page would be
+    handing out an ambiguous identifier while looking exactly as authoritative.
+    """
+    uid = "abcdef123456789abc"
+    view = runprov.show.run_view({"script": "train", "status": "ok", "run_uid": uid})
+    text = runprov.show.render_run(view)
+
+    assert view["run_uid"] == uid[:12], f"the view carries 12 characters, not {view['run_uid']!r}"
+    assert "abcdef123456" in text, "the handle must be ON the page, not merely in the view"
+    assert "abcdef1234567" not in text, "13 characters would be a different, wider handle"
+
+    # The handle is a genuine prefix of the real uid, so `show <handle>` finds this run.
+    assert uid.startswith(view["run_uid"])
+    rows = [{"script": "train", "run_uid": uid}, {"script": "other", "run_uid": "999" * 6}]
+    assert runprov.show.select(iter(rows), view["run_uid"]) == [rows[0]], (
+        "the identifier the page prints must be one the reader can hand back to `show`"
+    )
+
+
 def test_many_versions_of_one_input_are_counted_rather_than_listed():
     """A script that has read forty versions of one file has a fact worth stating and a list
     not worth printing. The count is the finding."""
