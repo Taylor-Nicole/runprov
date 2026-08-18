@@ -7908,8 +7908,26 @@ def test_show_cli_renders_both_pages_and_says_when_nothing_matches(tmp_path, mon
     assert runprov.__main__.main(["show", "--log", log]) == 0
     assert "project notebook" in capsys.readouterr().out
 
+    # L-55. WHICH run, not just that one rendered. `"inputs (1)"` is true of either build
+    # run, so `matched[: args.limit]` -- first-N instead of last-N -- passed. `log --limit`
+    # has been properly guarded all along (`test_cli_limit_takes_the_last_n` asserts s4/s3 in
+    # and s0 out); this was the untested half of the same flag.
+    #
+    # `--limit` is documented as "the last N matching runs", and the reason is stated:
+    # "the last one is the state you are in". Showing the FIRST N hands a reader the oldest
+    # run of a chain while the summary line says N of M -- a page that is wrong about which
+    # run it is describing, with nothing on it to say so.
     assert runprov.__main__.main(["show", "build", "--log", log, "--limit", "1"]) == 0
-    assert "inputs (1)" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "inputs (1)" in out
+    assert 'mode "b"' in out, f"--limit 1 rendered the FIRST build run, not the last: {out}"
+    assert 'mode "a"' not in out, "only one run should be on the page"
+
+    # Without the flag, both are there -- so the assertion above is about `--limit` and not
+    # about the fixture only ever having one run to show.
+    assert runprov.__main__.main(["show", "build", "--log", log]) == 0
+    both = capsys.readouterr().out
+    assert 'mode "a"' in both and 'mode "b"' in both
 
     assert runprov.__main__.main(["show", "--log", log, "--format", "yaml"]) == 0
     assert '"scripts"' in capsys.readouterr().out
