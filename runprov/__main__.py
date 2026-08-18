@@ -111,13 +111,19 @@ def _load(path: pathlib.Path) -> tuple[list[dict[str, typing.Any]], int]:
 
 
 def _timeline(rows: typing.Iterable[dict[str, typing.Any]]) -> str:
-    return "".join(_timeline_entry(r) for r in rows)
+    return "".join(_timeline_entry(r, separator=i > 0) for i, r in enumerate(rows))
 
 
-def _timeline_entry(r: dict[str, typing.Any]) -> str:
+def _timeline_entry(r: dict[str, typing.Any], *, separator: bool = True) -> str:
     """ONE run, rendered alone. Split out of `_timeline` so `log` can write each record
-    as it streams past instead of building every line before printing any of them."""
-    out: list[str] = []
+    as it streams past instead of building every line before printing any of them.
+
+    `separator` LEADS the entry, for the reason spelled out in `show._yaml_entry`: a
+    trailing blank line is also emitted after the last record, so the refactor ended the
+    output with one. The caller passes False for the first record it writes -- which a
+    streaming writer always knows, unlike which record is last (L-74).
+    """
+    out: list[str] = [""] if separator else []
     status = r.get("status", "ok")
     mark = "  " if status == "ok" else "!!"
     out.append(f"{mark} {r.get('started_utc', '?'):20} {r.get('script', '?')}")
@@ -149,7 +155,6 @@ def _timeline_entry(r: dict[str, typing.Any]) -> str:
         out.append(f"     history    {r['history_destination']}")
     if r.get("seeds"):
         out.append(f"     seeds      {r['seeds']}")
-    out.append("")
     return "\n".join(out) + "\n"
 
 
@@ -510,7 +515,9 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
         elif args.format == "jsonl":
             sys.stdout.write(json.dumps(r) + "\n")
         else:
-            sys.stdout.write(_timeline_entry(r))
+            # `shown` was incremented above, so this is False for the first record written
+            # and True after -- the streaming equivalent of `_timeline`'s `i > 0`.
+            sys.stdout.write(_timeline_entry(r, separator=shown > 1))
 
     if args.format == "yaml":
         # ONCE, by the command rather than the renderer: streaming writes each record as

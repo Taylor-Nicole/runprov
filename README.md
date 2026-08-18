@@ -2,10 +2,12 @@
 
 Record what a script read, wrote and ran as — in a form a checker can verify.
 
-A **whole script**, standard library only, that you can paste into a file and run. It is
-also shipped as
+A **whole script**, standard library only, that you can paste into a file and run. A test
+extracts this block from this README and runs it, so the block below cannot quietly
+stop working. A fuller variant — the same four calls with `main()`, repo-relative defaults
+and a `columns` note — is shipped as
 [`examples/summarise.py`](https://github.com/Taylor-Nicole/runprov/blob/main/examples/summarise.py),
-and a test runs it, so it cannot quietly stop working:
+and a second test runs that one:
 
 ```python
 import argparse, csv, pathlib
@@ -413,113 +415,6 @@ Two digests beside one input path means that file has been read at **two differe
 versions** — which is the fact, and a script that has read forty is summarised as
 `[40 versions]` rather than printed. An artifact produced by a run that failed says so.
 
-### What code actually ran
-
-`git_commit` identifies the code **only when the tree is clean**, and during development it
-never is. `script_sha256` pins the entry point and nothing it calls. So a run whose numbers
-moved because `src/utils/stats.py` moved recorded a commit, a clean-looking entry script,
-and no trace of the file that did it.
-
-Every run now hashes the project's **own modules that it actually imported**:
-
-```json
-"code": {"imported": {
-  "count": 4, "omitted": 0, "digest": "137dc9cf…",
-  "files": [{"path": "analyse.py",          "sha256": "b56f3e28…"},
-            {"path": "src/utils/stats.py",  "sha256": "99602c77…"}]}}
-```
-
-Measured: edit `src/utils/stats.py`, leave the entry script alone, and the digest moves
-from `137dc9cf…` to `2e62cd07…` while `script_sha256` is unchanged. That is the gap.
-
-**Read at exit**, so a module imported halfway through the work is still counted. **Under
-the project root only** — third-party packages are answered by `packages` and
-`env_snapshot_dir`, and hashing site-packages every run would cost far more than it says,
-so a virtualenv living inside the root is excluded too.
-
-The **history line carries a summary**, not the list: one `digest` and a `count`. That
-answers "did any first-party code change between these two runs" — the question a history
-is asked — without multiplying an append-forever file by fifty modules. The per-file hashes
-are in the sidecar.
-
-`configure(hash_imported_code=False)` turns it off; `imported_code_max` caps the list, and
-`omitted` states the tail. `run.module(m)` remains the sharper tool when you want to know
-where one specific import *resolved from*, which is a different question.
-
-### The work that is not Python
-
-For a pipeline whose real work is `samtools`, `bwa`, `Rscript` or a shell wrapper, the
-Python environment answers almost nothing: `packages` lists what pip installed, and the
-thing that made the BAM is not in it.
-
-```python
-with Run("call_variants", vars(args), provenance=PROV) as run:
-    run.tool("samtools")  # which one, and what version
-    run.tool("bcftools")
-    script = run.code(SCRIPTS / "fit.R")  # code that ran, in another language
-    subprocess.run(["Rscript", script, run.input(BAM)], check=True)
-```
-
-```json
-"tools": [{"name": "samtools", "found": true, "version": "samtools 1.20",
-           "path": "/home/…/envs/bcftools_env/bin/samtools", "sha256": "e2ff5f14…"}]
-```
-
-**The path matters as much as the version.** When a conda env and `/usr/bin` both have a
-`samtools`, the environment decides which one ran and the version string cannot tell you.
-The binary's own `sha256` settles the case where two builds call themselves `1.20`.
-
-`tool()` **runs the tool** with `--version` — a side effect, which is why it is a call you
-make rather than something that happens to every run. Bounded by `timeout` and never
-raising: a tool that hangs or is missing is *recorded* as such, because provenance must not
-be why a pipeline stops. A version printed to **stderr** with a non-zero exit still counts —
-that is `samtools --version` exactly. A tool that is not found is recorded `found: false`
-rather than omitted: "we looked and it was not there" is a fact; silence is not.
-
-`code()` registers an R script, a shell wrapper, a Snakefile — anything `sys.modules` will
-never see, because the interpreter that ran it was a subprocess. It hashes into the **same
-digest** as the Python, so *"did any code change between these two runs"* stays one
-comparison whatever language the code is in. It returns the path, so registering is how you
-pass it. It is deliberately **not** `input()`: a new column in a data file and a rewritten
-model are the same event to a reader who has only one list.
-
-The history line carries `tools` as a compact `name → version` map; the paths and binary
-hashes stay in the sidecar.
-
-### A pipeline with no Python in it: `runprov exec`
-
-`tool()` and `code()` are calls someone has to make, and nothing detects an unregistered
-`subprocess.run([...])`. A Makefile, a Snakefile or a shell script has no Python to put them
-in at all — so the recording is something you put **in front of** the command:
-
-```bash
-runprov exec --name sort_rows --input in.tsv --output sorted.tsv \
-  -- sort -k2,2nr in.tsv -o sorted.tsv
-```
-
-```json
-"status": "ok",
-"parameters": {"argv": ["sort", "-k2,2nr", "in.tsv", "-o", "sorted.tsv"]},
-"tools":   [{"name": "sort", "version": "sort (GNU coreutils) 8.32", "path": "/usr/bin/sort"}],
-"inputs":  [{"path": "in.tsv",     "sha256": "edb6e61a…"}],
-"outputs": [{"path": "sorted.tsv", "sha256": "e7705a08…"}],
-"notes":   {"exit_code": 0}
-```
-
-**It returns the command's own exit code**, so it drops into a Makefile rule or a Snakemake
-`shell:` without changing what failure means. A non-zero exit is *also* recorded — `status:
-"failed"`, the exit code in the notes — and a program that does not exist is recorded with
-`found: false` rather than a traceback.
-
-The recorded `command` is the `runprov exec` invocation, which is deliberate: it is what
-actually ran, **and re-running it re-runs the tool and records the rerun**. The wrapped argv
-sits in `parameters` where a reader sees it directly.
-
-Inputs and outputs are **declared**, because they cannot be inferred without tracing every
-syscall the tool makes — the same bargain `run.input()` strikes in Python. `--capture FILE`
-tees the command's output, and because that works at file-descriptor level it sees a
-subprocess's output, which Python-level capture cannot.
-
 ### When did I add that column?
 
 The digest tells you an artifact changed on 12 March and which run and command changed it.
@@ -620,6 +515,113 @@ disk are identical before and after.
 Text by default and YAML with `--format yaml`, deliberately not HTML: this gets read in the
 terminal beside the work, many times a day. The YAML quotes **every scalar**, for the reason
 the section above gives — the predecessor's log dies on a `Note:` somebody typed.
+
+## What code actually ran
+
+`git_commit` identifies the code **only when the tree is clean**, and during development it
+never is. `script_sha256` pins the entry point and nothing it calls. So a run whose numbers
+moved because `src/utils/stats.py` moved recorded a commit, a clean-looking entry script,
+and no trace of the file that did it.
+
+Every run now hashes the project's **own modules that it actually imported**:
+
+```json
+"code": {"imported": {
+  "count": 4, "omitted": 0, "digest": "137dc9cf…",
+  "files": [{"path": "analyse.py",          "sha256": "b56f3e28…"},
+            {"path": "src/utils/stats.py",  "sha256": "99602c77…"}]}}
+```
+
+Measured: edit `src/utils/stats.py`, leave the entry script alone, and the digest moves
+from `137dc9cf…` to `2e62cd07…` while `script_sha256` is unchanged. That is the gap.
+
+**Read at exit**, so a module imported halfway through the work is still counted. **Under
+the project root only** — third-party packages are answered by `packages` and
+`env_snapshot_dir`, and hashing site-packages every run would cost far more than it says,
+so a virtualenv living inside the root is excluded too.
+
+The **history line carries a summary**, not the list: one `digest` and a `count`. That
+answers "did any first-party code change between these two runs" — the question a history
+is asked — without multiplying an append-forever file by fifty modules. The per-file hashes
+are in the sidecar.
+
+`configure(hash_imported_code=False)` turns it off; `imported_code_max` caps the list, and
+`omitted` states the tail. `run.module(m)` remains the sharper tool when you want to know
+where one specific import *resolved from*, which is a different question.
+
+## The work that is not Python
+
+For a pipeline whose real work is `samtools`, `bwa`, `Rscript` or a shell wrapper, the
+Python environment answers almost nothing: `packages` lists what pip installed, and the
+thing that made the BAM is not in it.
+
+```python
+with Run("call_variants", vars(args), provenance=PROV) as run:
+    run.tool("samtools")  # which one, and what version
+    run.tool("bcftools")
+    script = run.code(SCRIPTS / "fit.R")  # code that ran, in another language
+    subprocess.run(["Rscript", script, run.input(BAM)], check=True)
+```
+
+```json
+"tools": [{"name": "samtools", "found": true, "version": "samtools 1.20",
+           "path": "/home/…/envs/bcftools_env/bin/samtools", "sha256": "e2ff5f14…"}]
+```
+
+**The path matters as much as the version.** When a conda env and `/usr/bin` both have a
+`samtools`, the environment decides which one ran and the version string cannot tell you.
+The binary's own `sha256` settles the case where two builds call themselves `1.20`.
+
+`tool()` **runs the tool** with `--version` — a side effect, which is why it is a call you
+make rather than something that happens to every run. Bounded by `timeout` and never
+raising: a tool that hangs or is missing is *recorded* as such, because provenance must not
+be why a pipeline stops. A version printed to **stderr** with a non-zero exit still counts —
+that is `samtools --version` exactly. A tool that is not found is recorded `found: false`
+rather than omitted: "we looked and it was not there" is a fact; silence is not.
+
+`code()` registers an R script, a shell wrapper, a Snakefile — anything `sys.modules` will
+never see, because the interpreter that ran it was a subprocess. It hashes into the **same
+digest** as the Python, so *"did any code change between these two runs"* stays one
+comparison whatever language the code is in. It returns the path, so registering is how you
+pass it. It is deliberately **not** `input()`: a new column in a data file and a rewritten
+model are the same event to a reader who has only one list.
+
+The history line carries `tools` as a compact `name → version` map; the paths and binary
+hashes stay in the sidecar.
+
+## A pipeline with no Python in it: `runprov exec`
+
+`tool()` and `code()` are calls someone has to make, and nothing detects an unregistered
+`subprocess.run([...])`. A Makefile, a Snakefile or a shell script has no Python to put them
+in at all — so the recording is something you put **in front of** the command:
+
+```bash
+runprov exec --name sort_rows --input in.tsv --output sorted.tsv \
+  -- sort -k2,2nr in.tsv -o sorted.tsv
+```
+
+```json
+"status": "ok",
+"parameters": {"argv": ["sort", "-k2,2nr", "in.tsv", "-o", "sorted.tsv"]},
+"tools":   [{"name": "sort", "version": "sort (GNU coreutils) 8.32", "path": "/usr/bin/sort"}],
+"inputs":  [{"path": "in.tsv",     "sha256": "edb6e61a…"}],
+"outputs": [{"path": "sorted.tsv", "sha256": "e7705a08…"}],
+"notes":   {"exit_code": 0}
+```
+
+**It returns the command's own exit code**, so it drops into a Makefile rule or a Snakemake
+`shell:` without changing what failure means. A non-zero exit is *also* recorded — `status:
+"failed"`, the exit code in the notes — and a program that does not exist is recorded with
+`found: false` rather than a traceback.
+
+The recorded `command` is the `runprov exec` invocation, which is deliberate: it is what
+actually ran, **and re-running it re-runs the tool and records the rerun**. The wrapped argv
+sits in `parameters` where a reader sees it directly.
+
+Inputs and outputs are **declared**, because they cannot be inferred without tracing every
+syscall the tool makes — the same bargain `run.input()` strikes in Python. `--capture FILE`
+tees the command's output, and because that works at file-descriptor level it sees a
+subprocess's output, which Python-level capture cannot.
 
 ## Verify: is this artifact still made from what it says it is?
 
@@ -1449,7 +1451,7 @@ it is better than leaving silence to be read as abandonment:
 
 ## Tests
 
-`tests/test_runprov.py`, 517 tests, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, 522 tests, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite (`tests/test_runprov.py:3534`), to
 assert a call ORDER that no returned value can show. Everything else is substituted by a real
@@ -1458,13 +1460,13 @@ narrow simulation of an environment this machine is not (`sys.platform` for Wind
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
 stubs the subject to make it agree with the test.
 
-Twenty-two of the 517 need something of the filesystem itself — a FIFO, a symlink, a file
+Twenty-two of the 522 need something of the filesystem itself — a FIFO, a symlink, a file
 `chmod(0o000)` really makes unreadable — and they skip where that is unavailable. The
 condition is a PROBE, not `sys.platform`: symlinks work on a Windows machine with Developer
 Mode enabled, and `chmod(0o000)` denies nothing to root, so a platform check both skipped
 tests that would have run and ran tests that could not fail. Asking the filesystem answers
-for the machine in front of you. Windows CI therefore runs 495 of them and does not assert
-the coverage floor, which no leg but that one may lower.
+for the machine in front of you. The Windows leg therefore skips 22 more than any other
+and does not assert the coverage floor, which no leg but that one may lower.
 
 Coverage is **100%** of 2,151 statements **and 772 branches**, and the gate is set there with
 `--cov-branch`. The branch half was added 2026-08-11 and was not decoration: statement
