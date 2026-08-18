@@ -1168,9 +1168,12 @@ announced on stderr, and a torn line costs **one record, never the file**.
 
 The history append takes an advisory `flock`, and it is a **portability** property rather
 than a Linux one. The bound usually cited for it — POSIX guarantees an `O_APPEND` write is
-atomic below `PIPE_BUF`, 4,096 bytes, and the source project's history has median line
-2,017 bytes, max 7,274, with 107 of 2,086 lines over that (measured 2026-08-10; the file is
-still being appended to, so these are a snapshot) — is not what bites in practice:
+atomic below `PIPE_BUF`, 4,096 bytes, and the source project's history routinely exceeds it
+— measured 2026-08-18 on `hcv-genotyping-release/reports/audit/runs.jsonl`: 2,453 lines,
+median 2,149 bytes, max 10,661, with **205 over 4,096**. That file is appended to daily, so
+those are a snapshot and re-measuring gives different numbers; the durable claim is that
+some lines exceed `PIPE_BUF`, which has been true at every measurement — is not what bites
+in practice:
 measured with locking disabled entirely on Linux ext4, 8 processes × 20 appends of 9 KB
 produced 160/160 intact records, because Linux holds the inode lock across the whole
 `write()`. The lock still earns its place, on NFS and CIFS which do not honour the
@@ -1178,8 +1181,11 @@ guarantee at all, and on Windows which has no `O_APPEND` semantics of this kind 
 caught 24 concurrent appends producing 23 lines before the `msvcrt` branch existed. With
 the lock in place, the same 8 × 20 × 9 KB test gives 160 lines, 160 of which parse as JSON.
 
-Where locking is unavailable the append still happens, unlocked. **It is only announced on
-Windows** — see the finding below.
+Where locking is unavailable the append still happens, unlocked — **and it is announced,
+on every platform**. The notice sits outside the platform branches, so an NFS or CIFS mount
+whose `flock` raises `ENOLCK`, or a container without the syscall, says so on stderr rather
+than degrading quietly. Those filesystems are the lock's entire justification, which makes
+that the one case that most deserved announcing.
 
 ## The pin is not a comment everywhere, so `open_output` refuses 15 formats and gives 23 a sidecar
 
@@ -1375,13 +1381,6 @@ reimplemented as control flow. It records; it does not audit. The checker that f
 build when a script reads or writes something it never registered is a separate tool
 (`scripts/audit/check_declared_writes.py` in the source project), and it is the half that
 makes the record trustworthy rather than merely present.
-
-**A locking downgrade is silent on POSIX.** If `flock` raises — an NFS or CIFS mount, a
-container without the syscall — `_exclusive()` falls through to an unlocked append and
-prints nothing, because the notice sits inside the branch that only runs on `win32`.
-Verified by stubbing `fcntl.flock` to raise `OSError`: the line is written, no notice
-appears. The lock's whole justification is the filesystems where this happens, so this is
-the case that most deserves to be announced.
 
 ## Versioning, compatibility, and what is promised
 
