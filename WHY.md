@@ -168,6 +168,59 @@ it is most of the answer to "why did this run differ".
   record trustworthy is a separate checker that fails the build on an unregistered read.
 * **It does not version your data.** That is DVC's job, and they compose fine.
 
+## Where it sits relative to Snakemake, Nextflow, Prefect and Dagster
+
+The question every reviewer asks, and "it is smaller" is not the answer. Three differences
+are in kind rather than in degree, and only the third is about cost.
+
+**1. A workflow engine records what a rule DECLARED. This records what the process DID.**
+Snakemake knows the `input:` you wrote; Nextflow knows the channel it staged. If a script
+opens something the declaration does not mention — a lookup table, a config, a path somebody
+hardcoded in March — the engine cannot see it, and will cache, resume and report success
+anyway. `run.input(p)` is observed at the `open()`.
+
+This is the same shape as the defect that produced this package. `append_log(entry)` recorded
+what its author BELIEVED the step read. A rule declaration is a far better statement of
+intent than a hand-typed dict — it is checked, it is versioned, the engine acts on it — but
+it is still a statement of intent. Declared and actual diverge silently in both.
+
+**2. The engine's record lives beside the pipeline. The pin lives inside the artifact.**
+`.snakemake/`, `work/`, a Prefect or Dagster database: all of it stays home when the file
+leaves. Email a TSV to a collaborator, upload a matrix to Zenodo, attach a supplementary
+file to a submission — the provenance does not travel with any of them. A header naming the
+script, the commit and the SHA-256 of every input does. That is the moment provenance is most
+needed and least available, and it is the reason the pin is in-band rather than only in a
+sidecar (property 1 above, which came from a locked evaluation set that could not say what it
+was drawn from).
+
+**3. An engine needs the DAG to exist. Exploration is where the shape is the unknown.**
+You cannot declare a graph for an analysis you have not worked out yet — and the exploratory
+phase is exactly where nothing is recorded and where a wrong number enters a manuscript. By
+the time a Snakefile exists, the decisions that need explaining have already been made. So
+this is adoptable EARLIER, and nothing is wasted at the migration: records written during
+exploration stay valid and readable afterwards, and `runprov exec` returns the wrapped
+command's own exit code so it drops inside a Snakemake rule or a Nextflow process without
+becoming a second provenance system.
+
+The cost argument is real but secondary, and worth stating precisely. The binding constraint
+is usually ADOPTION rather than RAM: restructuring code into rules, making everything
+file-driven and re-runnable, and everyone agreeing to work that way. Where the resource point
+does bite is the shared login node and the locked-down institutional VM — Nextflow needs a
+JVM, Prefect and Dagster want a server or daemon — and there the obstacle is often permission
+rather than performance. This is the standard library and one import.
+
+**Say the limitation first, because a reviewer will.** It does not execute, schedule,
+parallelise or submit to a cluster, and it offers no re-execution guarantee: a workflow engine
+makes what happens REPEATABLE, this gives an ACCOUNT of what happened. Both are worth having,
+and they compose. If you already run Snakemake with conda environments and reports, you have
+much of this — the remaining difference is the in-artifact pin and observed-versus-declared
+reads.
+
+(Check the tool specifics against current documentation before citing them in a paper.
+Nextflow, for one, does hash inputs for `-resume`, so "they do not hash" would be wrong. The
+three claims above are about WHAT is observed, WHERE the record lives, and WHEN it can be
+adopted.)
+
 ## Why it matters for a thesis or a paper specifically
 
 A Methods section that says "all analyses are reproducible" is an assertion. A reviewer
