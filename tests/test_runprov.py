@@ -476,6 +476,59 @@ NASTY = [
 ]
 
 
+def test_the_rendered_separator_leads_each_entry_rather_than_trailing_it():
+    """L-74. Splitting `_yaml`/`_timeline` into per-record functions moved the blank line
+    from between the entries to after each one, which is not the same place: the banner lost
+    its separation from the first record, and both renderers grew a trailing blank line
+    because the last entry emits a separator it has nothing to separate from.
+
+    Only whitespace — both forms parse — but it is a real byte delta from a refactor, and a
+    golden-file diff or a downstream `diff` against pre-refactor output fails for a reason
+    that has nothing to do with content. Asserted here in both directions, so neither the
+    leading blank nor the trailing one can come back unnoticed."""
+    recs = [
+        {"script": "a", "started_utc": "2026-01-01T00:00:00Z", "status": "ok"},
+        {"script": "b", "started_utc": "2026-01-02T00:00:00Z", "status": "ok"},
+    ]
+    y, timeline = cli._yaml(recs), cli._timeline(recs)
+
+    assert y.endswith('status: "ok"\n'), "the last entry must end the output"
+    assert not y.endswith("\n\n"), "no trailing blank line"
+    assert '\n\n- step: "a"' in y, "the banner is separated from the first entry"
+    assert 'status: "ok"\n\n- step: "b"' in y, "and the entries from each other"
+
+    assert not timeline.startswith("\n"), "the first record must not be preceded by a blank"
+    assert not timeline.endswith("\n\n"), "no trailing blank line"
+    assert "\n\n   2026-01-02" in timeline, "records are still separated"
+
+    # The property that makes the placement correct rather than merely different: N records
+    # carry N-1 separators, so rendering one record is one record.
+    one = cli._timeline(recs[:1])
+    assert one.count("\n\n") == 0 and cli._timeline(recs).count("\n\n") == 1
+
+    yaml = pytest.importorskip("yaml")
+    assert len(yaml.safe_load(y)) == 2, "and it is still one YAML list of two runs"
+
+
+def test_the_streaming_renderers_lay_out_exactly_what_the_batch_ones_do(tmp_path, capsys):
+    """L-74. Two producers of the same bytes: `log` streams entry by entry while `_yaml` and
+    `_timeline` build the whole string. The streaming path is the one that cannot see the
+    last record — which is why the separator leads — so it is the one that has to be
+    compared against the batch output rather than assumed equal to it."""
+    recs = [
+        {"script": "a", "started_utc": "2026-01-01T00:00:00Z", "status": "ok", "run_id": "r1"},
+        {"script": "b", "started_utc": "2026-01-02T00:00:00Z", "status": "ok", "run_id": "r2"},
+    ]
+    log = tmp_path / "h.jsonl"
+    log.write_text("".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8")
+
+    assert cli.main(["log", "--log", str(log), "--format", "yaml"]) == 0
+    assert capsys.readouterr().out == cli._yaml(recs)
+
+    assert cli.main(["log", "--log", str(log)]) == 0
+    assert capsys.readouterr().out == cli._timeline(recs)
+
+
 def test_rendered_yaml_parses_with_nasty_values():
     """The renderer must not hand-roll quoting. The predecessor's log is unreadable —
     `yaml.safe_load_all` raises at line 14,575 — because its writer was correct only for
@@ -7226,6 +7279,58 @@ def test_the_pre_commit_ruff_matches_the_one_the_gate_enforces():
     )
 
 
+def _readme_headings():
+    """(level, text) for every ATX heading, in document order."""
+    out = []
+    for line in (_repo_root() / "README.md").read_text(encoding="utf-8").splitlines():
+        if line.startswith("#"):
+            hashes = len(line) - len(line.lstrip("#"))
+            if line[hashes : hashes + 1] == " ":
+                out.append((hashes, line[hashes + 1 :].strip()))
+    return out
+
+
+def test_no_cli_subcommand_is_documented_inside_another_ones_section():
+    """L-70. `runprov exec` is a top-level subcommand and sat as an H3 CHILD of "The
+    notebook: `show`" — a section about a read-only viewer. A reader scanning the rendered
+    outline for `exec` finds it filed under something it has nothing to do with, and PyPI
+    renders that outline from the same file, permanently, at upload.
+
+    Asserted structurally rather than by line number: any heading that introduces
+    `runprov <sub>` must not sit under the section of a DIFFERENT subcommand."""
+    subs = ["log", "lineage", "show", "exec", "verify"]
+    named, current = [], None
+    for level, text in _readme_headings():
+        here = [s for s in subs if f"runprov {s}`" in text or f"`{s}`" in text]
+        if level <= 2:
+            current = here[0] if here else None
+        elif here and current and here[0] != current:
+            named.append((current, here[0], text))
+    assert not named, (
+        f"a subcommand is documented inside another's section: {named} — promote the "
+        f"heading to H2 so the outline matches `python -m runprov --help`"
+    )
+
+
+def test_the_sections_that_are_not_about_show_are_not_filed_under_it():
+    """L-70, the other half: `tool()` and `code()` are RECORDING APIs, and both were H3
+    children of the viewer's section too. They name no subcommand, so the structural check
+    above cannot see them — this one names them, because being specific about the three
+    headings that moved is better than a rule that would have to guess."""
+    levels = {text: level for level, text in _readme_headings()}
+    for heading in (
+        "What code actually ran",
+        "The work that is not Python",
+        "A pipeline with no Python in it: `runprov exec`",
+    ):
+        assert heading in levels, f"{heading!r} is gone; if it was renamed, update this test"
+        assert levels[heading] == 2, f"{heading!r} is not about `show` and must not nest under it"
+    # And the two that ARE about `show` stay under it, so this cannot be satisfied by
+    # flattening every heading in the file.
+    assert levels["When did I add that column?"] == 3
+    assert levels["Do I need to run this again?"] == 3
+
+
 def test_the_readme_documents_the_in_band_allowlist_exactly():
     """L-60. The format table's in-band row read "TSV, CSV, BED, YAML, Markdown, SQL" and
     omitted GFF3 — while the allowlist includes `.gff3` and the prose 800 lines further down
@@ -7975,6 +8080,54 @@ def test_the_shipped_example_runs_and_produces_a_verifiable_artifact(tmp_path):
 
     report = runprov.verify.verify([out], tmp_path)
     assert report["ok"] == 1 and report["stale"] == 0
+
+
+def test_the_front_page_block_runs_as_printed(tmp_path):
+    """L-71. The README says of the block on its front page: "It is also shipped as
+    `examples/summarise.py`, and a test runs it, so it cannot quietly stop working." The
+    test ran the SHIPPED FILE, which is a different file — a fuller variant with `main()`,
+    repo-relative defaults and an extra note. So the guarantee was made about the thirty
+    lines the reader is looking at and held for a file they are not.
+
+    Rather than forcing the two to be one file — the paste-and-run block and the complete
+    example are not the same document — this executes the block ITSELF, extracted from the
+    README, in a directory with nothing else in it. The sentence is now true of both."""
+    readme = (_repo_root() / "README.md").read_text(encoding="utf-8")
+    block = re.search(r"```python\n(.*?)```", readme, re.S)
+    assert block, "the front-page python block is gone; the claim above it must go too"
+    src = block.group(1)
+    assert "with Run(" in src and "run.open_output(" in src, (
+        f"the first python block is no longer the whole script: {src[:120]!r}"
+    )
+    (tmp_path / "summarise.py").write_text(src, encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "measurements.tsv").write_text(
+        "sample\tvalue\na\t9\nb\t2\nc\t7\nd\t5\n", encoding="utf-8"
+    )
+
+    proc = subprocess.run(
+        [sys.executable, str(tmp_path / "summarise.py")],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(REPO)},
+        cwd=tmp_path,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    # The three claims the block makes about itself, in the order it makes them.
+    out = tmp_path / "results" / "summary.tsv"
+    assert out.is_file(), "`open_output` must create the directory the block never makes"
+    body = out.read_text(encoding="utf-8")
+    assert body.startswith("# provenance"), "the artifact carries its own pin"
+    assert "data/measurements.tsv" in body, "and names what it was made from"
+    assert len(body.strip().splitlines()) - body.count("#") == 4, "header + the 3 kept rows"
+
+    history = tmp_path / "provenance" / "runs.jsonl"
+    assert history.is_file(), "`configure(root=...)` must write where the CLI looks"
+    rec = json.loads(history.read_text(encoding="utf-8").strip())
+    assert rec["status"] == "ok"
+    assert rec["notes"] == {"rows_read": 4, "rows_kept": 3}
+    assert (tmp_path / "results" / "summary.prov.json").is_file(), "provenance= writes a sidecar"
 
 
 def test_the_cli_answers_version_which_is_the_first_thing_a_bug_report_asks(capsys):
