@@ -71,6 +71,18 @@ def _stream(path: pathlib.Path) -> typing.Iterator[dict[str, typing.Any] | None]
 
     That is the same defect `content_digest` had and for the same reason: a convenient
     whole-file read, in the function that meets the biggest file.
+
+    THE BOUND IS THE LARGEST RECORD, NOT A CONSTANT, and saying so is the point: "one at a
+    time" is true and is not the same as bounded. Measured at 2.01x the largest record, at
+    both 5 MB and 20 MB, so a three-run history holding one enormous note costs twice that
+    note however few runs it has.
+
+    `run.py` caps most of what it writes -- `OTHER_FILES_KEPT` at 50, `imported_code_max` at
+    200 -- but `notes` and `parameters` are uncapped caller data: `run.note("scores", <a
+    value per row>)` on a million-row frame is one line. One such record then makes every
+    read of the history cost twice that record, forever, in a file designed never to be
+    trimmed. Whether to cap what a note may serialise is a design decision about someone
+    else's data and is not made here; the cost of not capping is stated instead.
     """
     with path.open(encoding="utf-8", errors="replace") as fh:
         for line in fh:

@@ -9816,6 +9816,50 @@ def test_reading_the_history_streams_rather_than_slurping(tmp_path):
     )
 
 
+def test_the_streaming_peak_is_bounded_by_the_largest_RECORD_not_the_file(tmp_path):
+    """L-73. The test above varies the record COUNT at a fixed record size, so it cannot see
+    that `_stream`'s peak is bounded by the largest RECORD rather than by a constant — the
+    exact blind spot `test_content_digest_streams_files_whose_LINES_are_long` was written to
+    close for `content_digest`, left open for the history reader one module over.
+
+    `_stream`'s docstring promises "every line of the history, parsed, one at a time", which
+    is true and is NOT the same as bounded. A three-run history containing one enormous note
+    costs twice that note, however few runs there are.
+
+    Measured, and the ratio is stable rather than a fixture artefact: 2.01x the largest
+    record at 5 MB and 2.01x at 20 MB. The bound asserted here is 3x, which states the real
+    guarantee with room for the parse, and would fail a reader that held the whole file."""
+    import tracemalloc
+
+    # ONE big record, ISOLATED. A first draft used two adjacent large records to make
+    # buffering visible and measured 4.0x rather than 2.0x -- because the consumer still
+    # holds the record it is on while the next line is read and parsed, so two large records
+    # side by side are both alive at once. That is a true and looser bound; the tight one is
+    # per-record, and this test asserts the tight one. See `_stream` for both numbers.
+    target = tmp_path / "runs.jsonl"
+    with target.open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"i": 0, "pad": "small"}) + "\n")
+        fh.write(json.dumps({"i": 1, "note": "y" * 5_000_000}) + "\n")
+        fh.write(json.dumps({"i": 2, "pad": "small"}) + "\n")
+
+    lines = target.read_text(encoding="utf-8").splitlines()
+    largest = max(len(ln) for ln in lines)
+    assert len(lines) == 3, "the premise: a SHORT history, so record count cannot explain it"
+
+    tracemalloc.start()
+    try:
+        count = sum(1 for rec in runprov.__main__._stream(target) if rec is not None)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert count == 3
+    assert peak < largest * 3, (
+        f"peak {peak / 1e6:.1f} MB for a largest record of {largest / 1e6:.1f} MB — the "
+        f"reader is holding more than the record it is on"
+    )
+
+
 def test_an_unreadable_line_is_still_counted_when_streaming(tmp_path):
     """The count is what stops a corrupt line from being silently dropped, and it has to
     survive the switch from a list to a generator."""
