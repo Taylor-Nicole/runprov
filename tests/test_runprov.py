@@ -8418,6 +8418,72 @@ def _forget_src():
     importlib.invalidate_caches()
 
 
+def _imported_in_order(tmp_path, monkeypatch, names):
+    """Build `src/<name>.py` for each name, import them IN THE GIVEN ORDER, run, and return
+    the run's `code.imported` section.
+
+    The import order is the point. `sys.modules` is insertion-ordered, so a set built by
+    walking it comes out in the order things were imported — which is the order the sort
+    exists to erase.
+    """
+    (tmp_path / "src").mkdir(exist_ok=True)
+    (tmp_path / "src" / "__init__.py").write_text("", encoding="utf-8")
+    for n in names:
+        (tmp_path / "src" / f"{n}.py").write_text(f"NAME = {n!r}\n", encoding="utf-8")
+    proj = _project(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _forget_src()
+    try:
+        for n in names:
+            importlib.import_module(f"src.{n}")
+        with runprov.Run("s", project=proj, provenance=tmp_path / f"{names[0]}.json"):
+            pass
+        rec = json.loads((tmp_path / f"{names[0]}.json").read_text(encoding="utf-8"))
+        return rec["code"]["imported"]
+    finally:
+        _forget_src()
+
+
+def test_the_imported_code_list_is_sorted_not_in_import_order(tmp_path, monkeypatch):
+    """L-54. `sorted()` is what makes two runs over unchanged code produce the same list and
+    therefore the same `digest`, and removing it left the whole suite green — both existing
+    digest tests compare two runs INSIDE ONE PROCESS, where `sys.modules` insertion order is
+    already stable, so sorting is never the reason they agree.
+
+    The fixture imports `zeta` BEFORE `alpha`, so insertion order and alphabetical order
+    disagree. Without that they coincide and `list(seen.items())` passes — the same
+    fixture-cannot-see-it shape as L-29's sort key."""
+    monkeypatch.chdir(tmp_path)
+    imported = _imported_in_order(tmp_path, monkeypatch, ["zeta", "alpha"])
+
+    paths = [f["path"] for f in imported["files"]]
+    assert {"src/zeta.py", "src/alpha.py"} <= set(paths), paths
+    assert paths == sorted(paths), (
+        f"the list is in import order, not sorted: {paths} — the digest is then a function "
+        f"of which module happened to be imported first"
+    )
+
+
+def test_the_code_digest_is_the_same_whichever_order_the_modules_were_imported(
+    tmp_path, monkeypatch
+):
+    """The property the sort exists for, stated directly. `imported.digest` is the one field
+    answering "did any first-party code change between these two runs" in a single string
+    comparison. Without a deterministic order it becomes a function of import order, so two
+    runs of the SAME unchanged code — from different entry points, or after an import moved
+    — report a code change that did not happen. That is the false-positive twin of the
+    failure `script_sha256` could not see, and it is worse than a missed change: it teaches
+    a reader that the field is noise."""
+    monkeypatch.chdir(tmp_path)
+    forwards = _imported_in_order(tmp_path, monkeypatch, ["alpha", "zeta"])
+    backwards = _imported_in_order(tmp_path, monkeypatch, ["zeta", "alpha"])
+
+    assert forwards["digest"] is not None
+    assert forwards["digest"] == backwards["digest"], (
+        "the same code, imported in a different order, reported a different code digest"
+    )
+
+
 def _project_with_module(tmp_path, body="X = 1\n"):
     (tmp_path / "src").mkdir(exist_ok=True)
     (tmp_path / "src" / "__init__.py").write_text("", encoding="utf-8")
