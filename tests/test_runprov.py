@@ -3560,17 +3560,34 @@ def test_a_whole_run_end_to_end_reads_back_consistently(tmp_path, monkeypatch):
 
 
 # ============================================ ADR-029: the digest migration (R1 R2 R3 R9)
-def test_a_volatile_stamp_spanning_a_block_boundary_is_still_stripped(tmp_path):
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_a_volatile_stamp_spanning_a_block_boundary_is_still_stripped(tmp_path, offset):
     """R1. The substitution ran per 8,192-line block, so a `"started_utc": "..."` split
     across a boundary was never matched — and the artifact oscillated forever, which is the
-    one thing `content_digest` exists to prevent."""
+    one thing `content_digest` exists to prevent.
+
+    THE PLACEMENT IS DERIVED, NOT TYPED. The original fixture padded with a literal 8,190
+    lines, which puts the key at the START of block two — the whole match inside one block,
+    so `_CARRY` was never needed and the R1 defect it is named for went unguarded. Measured:
+    with `_CARRY` cut to 8, the digest is stable at every pad count from 8,185 to 8,194
+    EXCEPT 8,189 — the one where the key lands on the last line of a block. The fixture sat
+    at 8,190 and missed it by a line.
+
+    So the pad count is computed from `chunk_lines` (the file opens with `{` and the schema
+    line, then the pads, then the key), and the case is run either side of the boundary as
+    well as on it. A change to `chunk_lines`, to the block loop, or to `_CARRY` now moves
+    the fixture with it instead of silently stepping past the case."""
+    # `{`, `"schema"`, then `pads` lines, then the `"started_utc":` key line. For that key
+    # to be the LAST line of the first block, pads = chunk_lines - 3.
+    chunk_lines = 8192
+    pads = chunk_lines - 3 + offset
 
     def build(stamp):
-        p = tmp_path / f"big_{stamp[:4]}.json"
+        p = tmp_path / f"big_{pads}_{stamp[:4]}.json"
         # It must be RUNPROV'S OWN record, because R2 scopes the stripping to those. The
         # two fixes interact and this test failed until it said so — which is the scoping
         # working, not a defect.
-        pad = "".join(f'  "pad{i}": {i},\n' for i in range(8190))
+        pad = "".join(f'  "pad{i}": {i},\n' for i in range(pads))
         p.write_text(
             '{\n  "schema": "runprov.run.v2",\n' + pad + f'  "started_utc":\n    "{stamp}"\n}}\n',
             encoding="utf-8",
@@ -3579,7 +3596,21 @@ def test_a_volatile_stamp_spanning_a_block_boundary_is_still_stripped(tmp_path):
 
     a, b = build("2026-01-01T00:00:00Z"), build("2099-12-31T23:59:59Z")
     assert runprov.content_digest(a) == runprov.content_digest(b), (
-        "two runs differing only in a boundary-spanning stamp must pin identically"
+        f"two runs differing only in a stamp at block-boundary offset {offset:+d} "
+        f"must pin identically"
+    )
+
+
+def test_the_carry_window_covers_the_longest_volatile_match(tmp_path):
+    """The bound behind the test above, stated rather than assumed. `_CARRY` is how much of
+    the previous block is held back so a match straddling the boundary can still be seen, so
+    it has to exceed the longest thing `VOLATILE_JSON` can match. A `_CARRY` smaller than
+    that is the R1 defect returning, and the parametrised test above only catches it at the
+    offsets it happens to try."""
+    longest = len('  "environment_snapshot_started_utc":\n    "2026-01-01T00:00:00.000000+00:00",')
+    assert runprov.hashing._CARRY > longest * 4, (
+        f"_CARRY is {runprov.hashing._CARRY}; a volatile key/value pair can run to about "
+        f"{longest} characters and the window must clear it with room for the next one"
     )
 
 
