@@ -173,16 +173,40 @@ it is most of the answer to "why did this run differ".
 The question every reviewer asks, and "it is smaller" is not the answer. Three differences
 are in kind rather than in degree, and only the third is about cost.
 
-**1. A workflow engine records what a rule DECLARED. This records what the process DID.**
-Snakemake knows the `input:` you wrote; Nextflow knows the channel it staged. If a script
-opens something the declaration does not mention — a lookup table, a config, a path somebody
-hardcoded in March — the engine cannot see it, and will cache, resume and report success
-anyway. `run.input(p)` is observed at the `open()`.
+**1. A workflow engine records what a rule DECLARED. This records the read where it happens.**
+Measured, not argued — Snakemake **9.25.2**, 2026-08-18, and the experiment is in the suite
+as `test_a_workflow_engine_cannot_see_an_undeclared_read` (it skips when `snakemake` is not
+on `PATH`, so you can re-run it against whatever version you have):
 
-This is the same shape as the defect that produced this package. `append_log(entry)` recorded
-what its author BELIEVED the step read. A rule declaration is a far better statement of
-intent than a hand-typed dict — it is checked, it is versioned, the engine acts on it — but
-it is still a statement of intent. Declared and actual diverge silently in both.
+```
+rule build: input "declared.tsv" -> output "out.tsv", running a script that ALSO
+            opens "lookup.csv", which the rule does not mention
+
+lookup.csv edited (ALPHA -> OMEGA), then `snakemake --cores 1`:
+    "Nothing to be done (all requested files are present and up to date)"
+    out.tsv still says ALPHA
+```
+
+The artifact is stale and the pipeline reports itself up to date. It corrected itself only
+later, by accident, when an unrelated change to the DECLARED input forced a re-run.
+
+**Snakemake does hash** — its metadata holds
+`input_checksums: {'declared.tsv': 'sha256:6edd1748…'}` — so "workflow engines do not hash"
+is false and should never be said. It hashes what was declared. `lookup.csv` appears nowhere.
+
+**And the honest limit, which belongs in the same breath: runprov does not see that read
+either.** Measured the same way — an unregistered `open("lookup.csv")` is absent from both
+the artifact header and the history. Anyone claiming otherwise is selling something.
+
+The difference is WHERE THE DECLARATION SITS. A Snakefile states the inputs in a file
+separate from the code that reads them, so the two drift apart silently and nothing connects
+them. `run.input(p)` sits inside the read itself — `open(run.input(p))` — so the record and
+the act are one expression, an omission is visible in the diff of the code rather than in a
+second file nobody re-reads, and a checker can fail the build on the reads that bypassed it.
+Same shape as the defect that produced this package: `append_log(entry)` recorded what its
+author BELIEVED the step read. A rule declaration is a far better statement of intent than a
+hand-typed dict — checked, versioned, acted on — but it is a statement of intent, and this
+one is a record of an act.
 
 **2. The engine's record lives beside the pipeline. The pin lives inside the artifact.**
 `.snakemake/`, `work/`, a Prefect or Dagster database: all of it stays home when the file
