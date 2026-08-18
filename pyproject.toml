@@ -137,8 +137,16 @@ artifacts = ["runprov/py.typed"]
 # hash-pinned fixtures `-text`, and the tarball already preserves their bytes exactly), and
 # the second is CI configuration for THIS repository, which a downstream rebuild does not
 # run and cannot use.
-include = ["runprov", "tests", "examples", "ci.py", "README.md", "PUBLISHING.md", "WHY.md",
-           "LICENSING.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "DCO.txt", "LICENSE",
+#
+# PUBLISHING.md AND LICENSING.md ARE NOT HERE, and their absence is the deliberate half of
+# this list. Both are internal working documents addressed to one person -- "that decision,
+# and the account it happens under, are yours" -- and both carry superseded reasoning kept
+# on purpose (PUBLISHING.md recommends MIT; the licence has been CeCILL-B since 2026-08-07,
+# and the file says so a section later). Inside the sdist that reads as the project's
+# position rather than as somebody's notes, and it travels beside a README that PyPI freezes
+# forever. They stay in the repository, where the audience is the person they address.
+include = ["runprov", "tests", "examples", "ci.py", "README.md", "WHY.md",
+           "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "DCO.txt", "LICENSE",
            "CITATION.cff", "CHANGELOG.md", "SECURITY.md", ".ruff.toml",
            ".pre-commit-config.yaml"]
 # `examples` is here because a test runs it: shipping the suite without the file it
