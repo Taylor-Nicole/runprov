@@ -9322,12 +9322,40 @@ def test_appending_to_the_transformation_log_does_not_get_slower_as_it_grows(tmp
     )
 
 
-def test_the_project_page_is_linear_in_the_number_of_runs(tmp_path):
-    """`show` is the page a developer opens many times a day, over a history that only ever
-    grows. Quadratic aggregation would be invisible at 100 runs and unusable at 10,000."""
+def test_the_project_page_does_a_fixed_amount_of_work_per_record(tmp_path):
+    """L-40. This REPLACES a wall-clock ratio test (`large < small * 9`), which was the only
+    timing test in this section with no absolute slack term and the only one that flaked.
 
-    def rows(n):
-        return [
+    THE SHAPE WAS UNFIXABLE, NOT THE CONSTANTS, and that was established by measurement
+    rather than assumed. On 8 cores under 12-way load the original failed twice in eight runs
+    at 16.7x and 9.1x. Adding the missing floor, raising the repeats from 3 to 7 and scaling
+    the fixtures up did not fix it. Widening the sizes from 4x to 10x made it worse — ratios
+    ranged 1.79 to 104.97 — because `min()` over repeats can find a clean run for the SMALL
+    measurement, which fits inside a scheduling quantum, and cannot for the large one. The
+    ratio then inflates without bound. At 4x sizing linear is 4x and quadratic is 16x, so the
+    bound must sit between them, and under contention the noise alone spans that entire gap:
+    no threshold separates the two hypotheses. Both reviewers proposed widening to ~12x,
+    which would have stopped catching quadratic altogether (16x > 12x).
+
+    A ratio is also blind to a CONSTANT FACTOR by construction: a change that doubles the
+    cost at every size leaves it exactly where it was. Simulated during the audit, a 2x
+    regression scored 5.58 against a threshold of 9 and passed the whole performance section.
+    Reproduced here: a 2x-per-entry regression passes the ratio test and fails this one.
+
+    COUNTING IS DETERMINISTIC. Two counters, and between them they cover what the clock was
+    supposed to:
+
+      * `records consumed` catches re-walking the input, which is the classic quadratic —
+        the page must touch each record exactly once, however many it is given;
+      * `_short`/`_name` calls per record catches extra work per entry — exactly 6.00 at
+        every size, because they run once per input and once per output.
+
+    Neither can be moved by CPU load, an allocator or a slow disk, which is what the section
+    header has always asked for: shapes, never absolute numbers."""
+    per_record = 6  # 3 inputs+outputs x 2 helpers, per record — see the docstring
+
+    def calls(n):
+        rows = [
             {
                 "script": f"s{i % 20}",
                 "status": "ok",
@@ -9337,15 +9365,35 @@ def test_the_project_page_is_linear_in_the_number_of_runs(tmp_path):
             }
             for i in range(n)
         ]
+        counted = [0]
+        consumed = [0]
 
-    small = min(_elapsed(runprov.show.project_view, rows(2000)) for _ in range(3))
-    large = min(_elapsed(runprov.show.project_view, rows(8000)) for _ in range(3))
+        def once():
+            """The records, yielded one at a time and COUNTED. An implementation that walks
+            the history twice — or that indexes back into it — consumes more than `n`."""
+            for r in rows:
+                consumed[0] += 1
+                yield r
 
-    # 4x the input. Linear would be ~4x; the bound catches quadratic (~16x) with room for
-    # allocator noise on a busy machine.
-    assert large < small * 9, (
-        f"4x the runs cost {large / small:.1f}x the time — project_view is not linear"
-    )
+        real_short, real_name = runprov.show._short, runprov.show._name
+        runprov.show._short = lambda e: (counted.__setitem__(0, counted[0] + 1), real_short(e))[1]
+        runprov.show._name = lambda e: (counted.__setitem__(0, counted[0] + 1), real_name(e))[1]
+        try:
+            runprov.show.project_view(once())
+        finally:
+            runprov.show._short, runprov.show._name = real_short, real_name
+        return counted[0], consumed[0]
+
+    for n in (500, 2000, 8000):
+        ops, seen = calls(n)
+        assert seen == n, (
+            f"the page consumed {seen} records to render {n} — it is walking the history "
+            f"more than once, which is the classic quadratic"
+        )
+        assert ops == per_record * n, (
+            f"{ops / n:.2f} operations per record at n={n}, not {per_record} — "
+            f"the page is doing more work per run than it used to"
+        )
 
 
 def test_reading_a_pin_does_not_read_the_whole_artifact(tmp_path):
