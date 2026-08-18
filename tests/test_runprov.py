@@ -8048,6 +8048,38 @@ def test_rehash_catches_what_a_stat_cannot(tmp_path, monkeypatch):
     assert _state_of(runprov.show.staleness(rows, rehash=True), "mid.tsv") == "STALE"
 
 
+def test_rehash_reports_MODIFIED_for_an_artifact_someone_rewrote(tmp_path, monkeypatch):
+    """L-30. `MODIFIED` was asserted only on the STAT path — a different function — so
+    `_by_digest`'s final line could return `CURRENT` unconditionally and every rehash test
+    stayed green. That regression makes the THOROUGH check report `current` for a
+    hand-edited artifact, while `--rehash` is documented as the answer for anyone who cannot
+    accept the stat check's one-second resolution. A user reaching for the stricter mode
+    would get a worse answer than the default, and be told it was stricter.
+
+    STALE and MODIFIED are different repairs, which is why they are different words: a stale
+    artifact is rebuilt from moved inputs, a modified one was overwritten by something that
+    is not this pipeline and rebuilding it silently discards whatever that was."""
+    rows = _staleable(tmp_path, monkeypatch)
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "mid.tsv") == "current", (
+        "the premise: nothing has moved yet"
+    )
+
+    # The ARTIFACT, not its input. Its inputs are untouched, so `STALE` would be wrong.
+    (tmp_path / "out" / "mid.tsv").write_text("EDITED BY HAND ENTIRELY\n", encoding="utf-8")
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "mid.tsv") == "MODIFIED"
+
+
+def test_a_moved_input_outranks_a_rewritten_artifact_under_rehash(tmp_path, monkeypatch):
+    """When both are true the input wins, and that ordering is the useful one: rebuilding
+    fixes a moved input, and cannot fix an artifact something else is writing. Asserting it
+    also stops `MODIFIED` being reported for an artifact that a rebuild would legitimately
+    replace anyway."""
+    rows = _staleable(tmp_path, monkeypatch)
+    (tmp_path / "out" / "mid.tsv").write_text("EDITED BY HAND\n", encoding="utf-8")
+    (tmp_path / "data" / "in.tsv").write_text("id\tv\n1\tCHANGED\n", encoding="utf-8")
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "mid.tsv") == "STALE"
+
+
 def test_a_missing_or_overwritten_sidecar_reports_unknown_not_current(tmp_path, monkeypatch):
     """The stat fields live in the sidecar because the history line trims them. A sidecar
     that is gone, or that a later run has overwritten, cannot answer for THIS run — and
