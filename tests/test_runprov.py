@@ -1363,6 +1363,36 @@ def test_cli_timeline_shows_seeds_when_a_run_declared_them():
     assert "seeds      [42, 43]" in out
 
 
+def test_the_timeline_prints_the_same_digest_width_as_the_pin():
+    """L-78. The timeline's `[:16]` was never asserted — timeline tests check the script
+    name, run_id, seeds and counts, never the rendered digest — so narrowing it to `[:8]`
+    left the whole suite green.
+
+    Sixteen is the width `show`, the PIN and `verify` all agree on, precisely so a digest
+    read in one view can be matched by eye against a digest read in another. A drift breaks
+    that silently: nothing errors, the columns simply stop lining up with the artifact's own
+    pin, and the reader concludes the file is not the one they made.
+
+    So the timeline now slices with `SHORT` rather than a third literal 16, and the
+    agreement between `SHORT` and `PIN_DIGEST_CHARS` is asserted rather than assumed —
+    two constants that must be equal, in different modules, are a drift waiting to happen."""
+    digest = "0123456789abcdef" + "f" * 48
+    assert len(digest) == 64, "the premise: a full sha256, which is what a record carries"
+
+    out = cli._timeline(
+        [{"script": "s", "inputs": [{"path": "in.tsv", "sha256": digest}],
+          "outputs": [{"path": "out.tsv", "sha256": digest}]}]
+    )  # fmt: skip
+
+    assert out.count("0123456789abcdef") == 2, "both the input and the output line"
+    assert "0123456789abcdeff" not in out, "17 characters would be a wider handle"
+    assert runprov.show.SHORT == runprov.hashing.PIN_DIGEST_CHARS, (
+        f"the views disagree: show renders {runprov.show.SHORT} characters and the pin "
+        f"carries {runprov.hashing.PIN_DIGEST_CHARS} — a digest read in one cannot be "
+        f"matched against a digest read in the other"
+    )
+
+
 def test_cli_filters_by_run_id(tmp_path, capsys):
     p = tmp_path / "runs.jsonl"
     p.write_text(
