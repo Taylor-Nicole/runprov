@@ -1085,16 +1085,45 @@ the terminal is quieter, and only where quiet is honest.
 
 ### A long history is the point, so it was measured on one
 
-A history that runs for years is the goal, not an edge case. Measured on a realistic
-**100,000-run, 91 MB** history — 40 scripts, 5,000 artifacts, notes and parameters on every
-record:
+A history that runs for years is the goal, not an edge case, so it was measured on one.
+
+**The fixture, stated so the numbers can be checked rather than believed.** An earlier
+version of this table cited a history nobody could rebuild, and its figures could not be
+reproduced or refuted. Every number below comes from a JSONL history of exactly:
 
 | | |
 |---|---|
-| append one run | **546 µs**, and flat — the same at 0 records and at 100,000 |
-| `runprov show` (the whole project page) | **1.6 s**, **33 MB** peak RSS for the process |
-| `runprov log --limit 5` | **1.2 s**, **24 MB** — the same at any history length |
-| `show <script>` / `show <artifact>` | 0.01 s |
+| runs | 100,000 |
+| bytes | 74,926,704 (75 MB) |
+| distinct scripts | 40 |
+| distinct artifacts | 5,000 |
+| distinct inputs | 500 |
+| per record | one input, one output, `parameters` and `notes` on every one |
+
+Machine: 8 cores, 15 GB RAM, CPython 3.12.13, ext4 on an external SSD, warm page cache.
+Time is wall clock; memory is peak RSS of the whole process (`/usr/bin/time -f "%e %M"`), so
+it includes the interpreter's own ~14 MB.
+
+| | time | peak RSS |
+|---|---|---|
+| append one run | **711 µs**, and flat — 735 µs at 0 records, 711 µs at 100,000 | — |
+| `runprov log` (the timeline) | 3.1 s | 24 MB |
+| `runprov log --limit 5` | 2.5 s | 25 MB |
+| `runprov log --format yaml` | 9.0 s | 24 MB |
+| `runprov show` (the whole project page) | 4.1 s | 29 MB |
+| `runprov show --stale` | 6.9 s | 33 MB |
+| `show <script>` (2,500 matching runs) | 5.8 s | 46 MB |
+| `show <artifact>` (20 matching runs) | 5.5 s | 25 MB |
+| `runprov lineage` | 7.3 s | 54 MB |
+
+**MEMORY is the flat one, not time.** Every reader here streams, so peak RSS barely moves
+with the history: 24–54 MB against a 75 MB file, and the same at 500,000 runs. Time is
+linear in the records read, and says so — an earlier table claimed `log --limit 5` cost
+"the same at any history length", which is true of the memory and false of the clock. `--limit`
+cannot make the read shorter; it bounds what is HELD, not what is walked.
+
+A previous version of this table also gave `show <script>` as **0.01 s**. It is 5.8 s: the
+command reads the whole history to find what matches, and always did.
 
 **`--limit` is a view, never a trim.** `log` reads the history; it has never written to
 it. Asking for the last five shows five and leaves the other 99,995 exactly where they
