@@ -2237,6 +2237,95 @@ def _first_python_block(text: str) -> str:
 _NOT_FOR_DISTRIBUTION = ("PUBLISHING.md", "LICENSING.md")
 
 
+#: Written to disk verbatim, so it is a RAW string: `\t` and `\n` have to survive into the
+#: generated file as escape sequences rather than becoming real characters here, which would
+#: break the f-string across lines.
+_SMK_STEP = r"""import csv, pathlib
+rows = list(csv.DictReader(open("declared.tsv"), delimiter="\t"))
+label = list(csv.DictReader(open("lookup.csv")))[0]["label"]   # UNDECLARED read
+pathlib.Path("out.tsv").write_text(f"label\t{label}\nn\t{len(rows)}\n", encoding="utf-8")
+"""
+
+_SMK_FILE = """rule build:
+    input: "declared.tsv"
+    output: "out.tsv"
+    shell: "python step.py"
+"""
+
+
+def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
+    """WHY.md and the README both claim a workflow engine records what a rule DECLARED while
+    this records the read where it happens. That is a claim about somebody else's tool, in
+    the section a reviewer reads first, so it is measured rather than asserted — and it is
+    measured HERE so it cannot quietly become false when Snakemake changes.
+
+    Skips unless `snakemake` is on PATH (or `RUNPROV_SNAKEMAKE` points at it), which is the
+    honest state on a machine that does not have it: an unrunnable comparison is not a
+    passing one. Measured first on **9.25.2**, 2026-08-18.
+
+    Note what is NOT claimed. Snakemake hashes — its metadata carries `input_checksums` with
+    a sha256 — so "workflow engines do not hash" would be false. It hashes what was declared.
+    And runprov does not see the undeclared read either; the difference is that its
+    declaration sits inside the read expression rather than in a separate file. The test
+    asserts exactly that pair, so neither half can be quoted without the other."""
+    smk = os.environ.get("RUNPROV_SNAKEMAKE") or shutil.which("snakemake")
+    if not smk:  # pragma: no cover - absent on CI and on most machines
+        pytest.skip("snakemake is not on PATH; set RUNPROV_SNAKEMAKE to run this comparison")
+
+    (tmp_path / "declared.tsv").write_text("sample\tvalue\na\t9\nb\t2\n", encoding="utf-8")
+    (tmp_path / "lookup.csv").write_text("code,label\n1,ALPHA\n", encoding="utf-8")
+    (tmp_path / "step.py").write_text(_SMK_STEP, encoding="utf-8")
+    (tmp_path / "Snakefile").write_text(_SMK_FILE, encoding="utf-8")
+
+    def snakemake():
+        return subprocess.run([smk, "--cores", "1"], capture_output=True, text=True, cwd=tmp_path)
+
+    first = snakemake()
+    assert first.returncode == 0, first.stderr
+    out = tmp_path / "out.tsv"
+    assert "ALPHA" in out.read_text(encoding="utf-8"), "the premise: the script read the lookup"
+
+    # The undeclared input changes. Nothing else does.
+    (tmp_path / "lookup.csv").write_text("code,label\n1,OMEGA\n", encoding="utf-8")
+    os.utime(tmp_path / "lookup.csv", (time.time() + 5, time.time() + 5))
+    second = snakemake()
+    assert second.returncode == 0, second.stderr
+    assert "Nothing to be done" in second.stdout + second.stderr, (
+        "the claim is that the engine sees no reason to re-run; it apparently did re-run, "
+        "so the section in WHY.md and the README needs remeasuring against this version"
+    )
+    assert "ALPHA" in out.read_text(encoding="utf-8"), "and the artifact is stale meanwhile"
+
+    # THE PREMISE, asserted rather than assumed, and it is not optional: without this the
+    # test passes against a script that never reads the lookup at all — nothing changed that
+    # the engine tracks, so "Nothing to be done" is true for the wrong reason and the stale
+    # ALPHA is a coincidence. Forcing the rule proves the read is real and that the earlier
+    # value was genuinely out of date. (Found by mutation: deleting the read left this green.)
+    forced = subprocess.run(
+        [smk, "--cores", "1", "--forceall"], capture_output=True, text=True, cwd=tmp_path
+    )
+    assert forced.returncode == 0, forced.stderr
+    assert "OMEGA" in out.read_text(encoding="utf-8"), (
+        "the script does not actually depend on the undeclared file, so this experiment "
+        "demonstrates nothing"
+    )
+
+    # It DOES hash — what was declared. Saying otherwise would be false and checkable.
+    meta = [
+        json.loads(f.read_text(encoding="utf-8"))
+        for f in (tmp_path / ".snakemake" / "metadata").rglob("*")
+        if f.is_file()
+    ]
+    checksums = {k: v for m in meta for k, v in (m.get("input_checksums") or {}).items()}
+    assert any(v.startswith("sha256:") for v in checksums.values()), (
+        f"Snakemake no longer records input checksums; WHY.md says it does: {meta}"
+    )
+    assert "lookup.csv" not in checksums, "the undeclared read is what it cannot see"
+
+    # And the artifact carries nothing about its own origins — claim 2, same experiment.
+    assert "declared.tsv" not in out.read_text(encoding="utf-8")
+
+
 def test_the_exported_name_count_in_why_md_is_the_real_one():
     """WHY.md is the positioning document — the file you hand someone who asks how this is
     different — and its differentiator bullet cited **514 statements** and **21 exported

@@ -189,6 +189,67 @@ not identify the code; and the env snapshot function is defined and never called
 to open a file is the recorded way, and a read that skips registration is a visible
 omission an AST check can find.
 
+## Isn't this what Snakemake, Nextflow, Prefect or Dagster are for?
+
+They overlap, they compose, and the difference is worth stating precisely — because two of
+the three ways people phrase it are wrong.
+
+**Not "they don't hash".** Snakemake 9.25.2 records
+`input_checksums: {'declared.tsv': 'sha256:6edd1748…'}`; Nextflow hashes inputs to decide
+what `-resume` can skip. Anyone who uses these tools will know that, and the claim would cost
+you the argument.
+
+**Not "they're heavyweight" either**, at least not first. That is true of a JVM on a shared
+login node and of a Prefect or Dagster daemon on a locked-down institutional VM — where the
+obstacle is often *permission* rather than performance — but Snakemake is pure Python and the
+real cost of adopting an engine is restructuring your code into rules, not RAM.
+
+The three differences that hold up:
+
+**1. An engine records what a rule DECLARED. This records the read where it happens.**
+Measured, not argued — a rule declaring `declared.tsv`, running a script that also opens an
+undeclared `lookup.csv`:
+
+```
+$ # lookup.csv edited: ALPHA -> OMEGA
+$ snakemake --cores 1
+Nothing to be done (all requested files are present and up to date).
+$ cat out.tsv
+label   ALPHA          # the artifact is stale; the pipeline reports itself up to date
+```
+
+It hashes what was declared. `lookup.csv` appears nowhere in its metadata. The experiment is
+in the test suite and skips unless `snakemake` is on your `PATH`, so you can re-run it against
+your own version rather than trusting this paragraph.
+
+**And the honest half: runprov does not see that read either** — an unregistered
+`open("lookup.csv")` is absent from the artifact and the history both. The difference is
+*where the declaration sits*. A Snakefile names the inputs in a file separate from the code
+that reads them, so the two drift apart with nothing connecting them. `run.input(p)` sits
+inside the read — `open(run.input(p))` — so the record and the act are one expression, an
+omission shows up in the diff of the code rather than in a second file nobody re-reads, and
+an AST check can fail the build on the reads that bypassed it.
+
+**2. The engine's record lives beside the pipeline; the pin lives inside the artifact.**
+`.snakemake/`, `work/`, a Prefect database — none of it travels when the file is emailed to a
+collaborator, uploaded to Zenodo or attached to a submission. That is when provenance is most
+needed and least available. A header naming the script, the commit and the SHA-256 of every
+input travels with the file, and `runprov verify` reports `STALE` from the artifact alone,
+without the pipeline, the engine or a re-run.
+
+**3. An engine needs the DAG to exist.** Exploratory work is where the shape of the analysis
+is the unknown — and it is also where nothing gets recorded and where a wrong number enters a
+manuscript. By the time a Snakefile exists, the decisions that need explaining have already
+been made. So this is adoptable earlier, and nothing is wasted at the migration: records
+written during exploration stay valid and readable, and `runprov exec` returns the wrapped
+command's own exit code so it drops inside a rule without becoming a second system.
+
+**What it does not do, said before you find out.** It does not execute, schedule, parallelise
+or submit to a cluster, and it offers no re-execution guarantee. An engine makes what happens
+**repeatable**; this gives an **account of what happened**. If you already run Snakemake with
+conda environments, you have much of this — the remainder is the in-artifact pin and
+observed-versus-declared reads.
+
 ## The three properties, and the defect each one prevents
 
 | property | what its absence caused |
@@ -1462,7 +1523,7 @@ it is better than leaving silence to be read as abandonment:
 
 ## Tests
 
-`tests/test_runprov.py`, 525 tests, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, 526 tests, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite (`tests/test_runprov.py:3534`), to
 assert a call ORDER that no returned value can show. Everything else is substituted by a real
@@ -1471,7 +1532,7 @@ narrow simulation of an environment this machine is not (`sys.platform` for Wind
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
 stubs the subject to make it agree with the test.
 
-Twenty-two of the 525 need something of the filesystem itself — a FIFO, a symlink, a file
+Twenty-two of the 526 need something of the filesystem itself — a FIFO, a symlink, a file
 `chmod(0o000)` really makes unreadable — and they skip where that is unavailable. The
 condition is a PROBE, not `sys.platform`: symlinks work on a Windows machine with Developer
 Mode enabled, and `chmod(0o000)` denies nothing to root, so a platform check both skipped
