@@ -7753,6 +7753,40 @@ def test_the_project_page_says_which_script_expects_which_input(tmp_path, monkey
     )
 
 
+def test_the_project_page_reports_when_a_script_first_and_last_ran(tmp_path):
+    """L-56. `first` and `last` were never asserted, so `s["last"] = s["last"]` — making
+    `last` permanently equal `first` — left the whole suite green. "When did this last run"
+    is one of the few facts on the page a reader cannot get anywhere else in a glance, and
+    a page that always shows the first run's time as the last is silently wrong on every
+    line of it.
+
+    SYNTHETIC RECORDS, with times chosen here. The `_history` fixture's runs complete inside
+    one second and genuinely share a `started_utc` — measured — so on that fixture `first`
+    and `last` are equal for the right reason, and any assertion comparing them is true
+    whichever value survived. That is the `0 == 0` shape, and it is why this row existed."""
+    rows = [
+        {"script": "build", "status": "ok", "started_utc": "2026-01-01T00:00:00Z"},
+        {"script": "other", "status": "ok", "started_utc": "2026-02-02T00:00:00Z"},
+        {"script": "build", "status": "ok", "started_utc": "2026-03-03T00:00:00Z"},
+        {"script": "build", "status": "ok", "started_utc": "2026-04-04T00:00:00Z"},
+    ]
+    view = runprov.show.project_view(rows)
+
+    build = view["scripts"]["build"]
+    assert build["first"] == "2026-01-01T00:00:00Z", "the first run of this script, not of the log"
+    assert build["last"] == "2026-04-04T00:00:00Z", "the last run of this script"
+    assert build["first"] != build["last"], "the premise: this fixture can tell them apart"
+
+    # A script that ran once has first == last, which is correct and is NOT what the
+    # mutation produces -- stating it stops a future fix from special-casing the wrong thing.
+    once = view["scripts"]["other"]
+    assert once["first"] == once["last"] == "2026-02-02T00:00:00Z"
+
+    # And it reaches the page, which is where a reader meets it.
+    page = runprov.show.render_project(view)
+    assert "last 2026-04-04T00:00:00Z    first 2026-01-01T00:00:00Z" in page, page
+
+
 def test_the_project_page_is_rendered_without_needing_a_second_document(tmp_path, monkeypatch):
     """One page. The point is not to open several files and reconstruct the history."""
     rows = _history(tmp_path, monkeypatch)
