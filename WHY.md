@@ -48,7 +48,7 @@ no hashes, so two runs on different data are indistinguishable. There is no comm
 entry does not identify the code. The environment-snapshot function is defined and called
 from nowhere. Only successful runs are appended, so "300 runs" means 300 *completed* runs
 with an unknown denominator. The resulting log does not parse: `yaml.safe_load_all` raises
-at line 14,554 (and `safe_load` at 14,547, on the `---` documents), and **eleven** repair scripts exist to heal it — one of which is itself a
+at line 14,554 (and `safe_load` at 14,547, on the `---` documents), and **nine** repair scripts exist to heal it — one of which is itself a
 step in the pipeline it documents.
 
 **Universal adoption did not produce a trustworthy record.** That is the whole finding.
@@ -133,7 +133,7 @@ the mechanism originally cited for it was not the one that fails.
 **5. The history is one continuous file, and it can be read back.**
 Created once, appended forever, never rewritten — the property the predecessor had and
 deserves to keep. What it did not have was durability: its writer appended YAML documents
-into a file that began as a list, so the whole record became unparseable and eleven repair
+into a file that began as a list, so the whole record became unparseable and nine repair
 scripts grew around it. JSONL degrades one line at a time. `python -m runprov log --format
 yaml` renders it back in the old file's own field names, so nothing is lost in the move;
 measured on the current history, 2,079 runs render to 5.0 MB that `yaml.safe_load` parses in
