@@ -681,6 +681,12 @@ def render_project_lines(
             yield line(f"  {' ' * (SHORT + len(mark))}  by {a['by']}  {a['when']}{flag}")
 
 
+#: How deep `to_yaml` will indent before switching to flow style. Not a style preference:
+#: this renderer recurses once per level, so a record nested past CPython's limit killed it
+#: with an uncaught `RecursionError` -- measured, fine at 900 and dead at 1,000.
+YAML_MAX_DEPTH = 100
+
+
 def to_yaml(obj: object, indent: int = 0) -> str:
     """A nested structure as YAML, with EVERY scalar quoted.
 
@@ -688,7 +694,23 @@ def to_yaml(obj: object, indent: int = 0) -> str:
     log quoted only what its author thought needed quoting, and one hand-written
     `Note:` inside a description is where `yaml.safe_load_all` dies on the real file — line
     14,554 of 24,300. A quoting rule with exceptions is correct until someone types a colon.
+
+    PAST `YAML_MAX_DEPTH` IT SWITCHES TO FLOW STYLE rather than recursing further. This
+    recurses once per nesting level, so `show <target> --format yaml` died with an uncaught
+    `RecursionError` on a record `json.loads` accepts without complaint -- measured, fine at
+    depth 900 and dead at 1,000, while `log`, `log --format yaml`, `show` and `lineage` all
+    survived the same record. That made the READER strictly narrower than the writer, in a
+    module whose founding story is a predecessor log that stopped being readable because one
+    record defeated its reader.
+
+    Flow style, not a marker: `json.dumps` of the remaining value IS valid YAML (YAML 1.2 is
+    a JSON superset), so nothing is lost or renamed -- only the block layout stops. The value
+    is still there, still quoted, still parseable. `_jsonable` caps writing at 100 levels for
+    the same reason, so this is belt-and-braces for records written by older versions, which
+    is where it earns its place.
     """
+    if indent > YAML_MAX_DEPTH:
+        return "  " * indent + _scalar(json.dumps(obj, default=str)) + "\n"
     pad = "  " * indent
     if isinstance(obj, dict):
         if not obj:

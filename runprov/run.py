@@ -1302,14 +1302,26 @@ class Run:
         artifact as `MISSING` rather than losing it.
         """
         suffix = pathlib.Path(path).suffix.lower()
-        why = PIN_UNSAFE.get(suffix, "the format is not known to accept a `#` comment")
+        # `PIN_UNSAFE`'s reason strings are DOCUMENTATION, not a message source: the binary
+        # branch below states the mode (which is the actual cause), and the 23 text suffixes
+        # get a sidecar without comment because that is the ordinary outcome rather than a
+        # refusal. The table is rendered in the README, where a reader can see all of it at
+        # once instead of one row at a time in an exception.
         # BINARY IS A REFUSAL, and it is not about the pin: this method opens in text mode,
         # so a caller cannot write a PNG or a BAM through the handle it returns whatever
         # the pin does. `output()` plus `pin_sidecar()` is the route for those.
         if suffix in PIN_BINARY:
+            # THE REASON IS THE MODE, and it says so. This used `why` from `PIN_UNSAFE`, and
+            # 25 of the 40 binary suffixes are not in that table -- `.pkl` `.pt` `.rds`
+            # `.feather` and the rest -- so they fell to its default and told a caller
+            # writing a pickle that "the format is not known to accept a `#` comment". That
+            # is true and irrelevant: the handle is text, so the format could accept `#`
+            # gladly and this would still be the wrong call. A message that names the wrong
+            # cause sends someone to look for a pin setting that does not exist.
             raise ValueError(
                 f"{self.record['script']}: cannot open {pathlib.Path(path).name} here — "
-                f"{why}.\n"
+                f"it is binary or compressed, and `open_output` returns a TEXT handle, so it "
+                f"cannot be written through this call whatever the pin does.\n"
                 f"    Use `p = run.output(path)`, write it with whatever library owns the "
                 f"format, and call `run.pin_sidecar(p)` for the provenance beside it."
             )
@@ -2149,6 +2161,13 @@ class Run:
             "imported_code": {
                 "count": (r["code"].get("imported") or {}).get("count"),
                 "digest": (r["code"].get("imported") or {}).get("digest"),
+                # `omitted` TRAVELS WITH THE DIGEST. Past `imported_code_max` the digest
+                # covers only the kept PREFIX of the sorted file list, so it silently changes
+                # meaning -- and the history carried the digest without the one number that
+                # reveals it. Two runs whose digests differ would look like a code change
+                # when the truth may be that a 201st file appeared and pushed a different
+                # 200 into the hash. A digest whose scope is unstated is not a digest.
+                "omitted": (r["code"].get("imported") or {}).get("omitted"),
             },
             "git_code_dirty": r["code"]["git_code_dirty"],
             "git_status_captured": r["code"]["git_status_captured"],
