@@ -318,6 +318,15 @@ def _lineage(
     }
 
 
+#: How many edges the TEXT view prints before summarising. The graph itself is complete --
+#: `--format json` carries every edge -- and a terminal is not where 40,000 of them are read.
+#:
+#: ONE constant, because the slice and the "N more" line have to agree. They were two
+#: literal 200s, and a change to either would have left the message stating a number the
+#: page had not truncated at.
+EDGES_SHOWN = 200
+
+
 def _render_lineage(g: dict[str, typing.Any], scripts: dict[str, str] | None = None) -> str:
     """The text view. Takes the GRAPH alone -- it used to take the records too, and rebuilt
     an address -> record map from them purely to look up a script name per edge. `_lineage`
@@ -333,10 +342,10 @@ def _render_lineage(g: dict[str, typing.Any], scripts: dict[str, str] | None = N
         f"sidecar path + start time, not by a recorded uid)",
         "",
     ]
-    for a, b in g["edges"][:200]:
+    for a, b in g["edges"][:EDGES_SHOWN]:
         out.append(f"  {by_uid.get(a, '?')} [{str(a)[:8]}] -> {by_uid.get(b, '?')} [{str(b)[:8]}]")
-    if len(g["edges"]) > 200:
-        out.append(f"  ... {len(g['edges']) - 200} more edge(s) not shown")
+    if len(g["edges"]) > EDGES_SHOWN:
+        out.append(f"  ... {len(g['edges']) - EDGES_SHOWN} more edge(s) not shown")
     out.append("")
     out.append(f"{len(g['edges'])} edge(s)")
     return "\n".join(out)

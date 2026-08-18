@@ -4134,7 +4134,28 @@ def test_lineage_handles_an_output_with_no_digest_and_a_truncated_render(tmp_pat
 
     assert cli.main(["lineage", "--log", str(p)]) == 0
     text = capsys.readouterr().out
-    assert "more edge(s) not shown" in text, "the text view must say what it truncated"
+
+    # L-76. COUNT the lines, do not just look for the footnote. `"more edge(s) not shown" in
+    # text` is true of a cap of 2 as easily as 200, so a silent shrink turned a usable graph
+    # into two lines plus a note while the assertion that was meant to guard the truncation
+    # stayed green.
+    shown = cli.EDGES_SHOWN
+    assert text.count(" -> ") == shown, (
+        f"{text.count(' -> ')} edges printed, expected {shown} — the cap moved and the "
+        f"footnote below would still have read as correct"
+    )
+    assert f"... {210 - shown} more edge(s) not shown" in text, (
+        "the omission is stated with its SIZE; a reader cannot size it from a bare footnote"
+    )
+    assert "210 edge(s)" in text, "and the true total is still reported"
+    # The count above reads `EDGES_SHOWN`, so it adapts to the constant and cannot see the
+    # constant CHANGE -- verified: shrinking the cap to 2 leaves it green. Same shape as
+    # L-57's cap, and the same remedy: the value gets its own bound. A handful of edges is
+    # not a graph view, and printing tens of thousands is not a terminal view.
+    assert 50 <= cli.EDGES_SHOWN <= 2000, (
+        f"EDGES_SHOWN is {cli.EDGES_SHOWN}; below ~50 the text view stops being a graph, "
+        f"above ~2000 it stops being readable in a terminal"
+    )
 
     assert cli.main(["lineage", "--log", str(p), "--format", "json"]) == 0
     parsed = json.loads(capsys.readouterr().out)
