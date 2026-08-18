@@ -6742,6 +6742,46 @@ def test_verify_renders_nothing_for_an_empty_report():
     assert runprov.verify.render({"artifacts": []}) == ""
 
 
+def test_a_pin_entry_of_the_wrong_digest_width_is_not_an_entry(tmp_path):
+    """L-77. `_ENTRY`'s exact-length hex group was unguarded: relaxed to `[0-9a-f]+`, the
+    whole suite stayed green. No test ever fed `read_pins` a body line whose hex field was
+    longer or shorter than `PIN_DIGEST_CHARS`.
+
+    The width is the shared contract between `header()` and this reader — the module
+    docstring's whole argument for `pin_digest` being ONE function is that the two must not
+    drift. A relaxed reader accepts a truncated or hand-edited pin as valid and then compares
+    16 characters of the recorded digest against a different number of characters, which
+    reads as STALE or, worse, as OK.
+
+    A 64-character field is the realistic case: it is a full `sha256`, which is exactly what
+    someone pasting "the digest" by hand would reach for."""
+    src = tmp_path / "kept.tsv"
+    src.write_text("x\n", encoding="utf-8")
+    good = runprov.hashing.pin_digest(runprov.describe(src))
+    assert len(good) == runprov.hashing.PIN_DIGEST_CHARS, "the premise: the pin width"
+
+    art = tmp_path / "a.tsv"
+    art.write_text(
+        f"# {runprov.verify.ANCHOR}\n"
+        "#   script     : s\n"
+        "#   inputs (3), sha256:\n"
+        f"#     {good}  kept.tsv\n"
+        f"#     {'a' * 64}  full_sha256.tsv\n"
+        f"#     {'b' * 8}  truncated.tsv\n"
+        "id\n1\n",
+        encoding="utf-8",
+    )
+
+    rep = runprov.verify.verify_artifact(art, tmp_path)
+    assert [i["name"] for i in rep["inputs"]] == ["kept.tsv"], (
+        f"only the correctly-sized entry is one: {[i['name'] for i in rep['inputs']]}"
+    )
+    # And the pin does not pass quietly: it DECLARED three and carries one, which is the
+    # truncation finding -- a reader that silently accepted the other two would report OK.
+    assert rep["pin_truncated"], "declaring 3 and carrying 1 is a fact about the pin"
+    assert rep["status"] != "OK"
+
+
 def test_verify_walks_past_a_comment_line_that_is_not_part_of_the_pin(tmp_path):
     """An artifact's own comments sit beside the pin, and a reader that stopped at the
     first unrecognised marker line would drop every entry after them.
