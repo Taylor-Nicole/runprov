@@ -3973,6 +3973,36 @@ def test_a_producer_that_finished_after_the_consumer_started_is_not_one(tmp_path
     assert g["ambiguous"] == 0
 
 
+def test_the_latest_producer_wins_when_several_finished_in_time(tmp_path):
+    """L-32. The rule is "the latest such producer wins", and no fixture had TWO producers
+    that both finished before the consumer started — the neighbouring test has exactly one
+    valid candidate, so `before[-1]` and `before[0]` are the same element. Inverting the
+    tie-break left the suite green.
+
+    Inverted, a rebuild that reproduces byte-identical output makes every downstream edge
+    point at the ORIGINAL run rather than the one that actually produced the bytes on disk:
+    a lineage graph that is confidently wrong about provenance, which is worse than one that
+    reports ambiguity. The docstring claims `ambiguous` is 0 "by construction rather than by
+    luck" — this is the construction.
+
+    THE NAMES RUN OPPOSITE TO THE TIMES on purpose. `before` is sorted over
+    `(finished, address)` pairs, so naming the earlier producer `ZZZ` and the later one
+    `AAA` means picking by address instead of by time also fails here. A fixture whose two
+    orderings agree would pass for either rule."""
+    rows = [
+        _rec("ZZZ", "build", "2026-01-01T00:00:00Z", outs=[("x", "c" * 64)]),
+        _rec("AAA", "rebuild", "2026-01-02T00:00:00Z", outs=[("x", "c" * 64)]),
+        _rec("READER", "use", "2026-01-03T00:00:00Z", ins=[("x", "c" * 64)]),
+    ]
+    g = cli._lineage([json.loads(x) for x in _hist(tmp_path, rows).read_text().splitlines()])
+
+    assert ("AAA", "READER") in g["edges"], "the LATER producer made the bytes on disk"
+    assert ("ZZZ", "READER") not in g["edges"], "the superseded run is not the source"
+    assert g["resolvable"] == 1 and g["ambiguous"] == 0, (
+        "one edge, chosen deterministically — not two, and not an ambiguity report"
+    )
+
+
 def test_an_input_nobody_produced_is_an_orphan_and_is_counted(tmp_path):
     """An orphan is not a failure — a corpus downloaded outside the history is legitimately
     one. It is a COUNT, because 'every edge resolved' over a graph with no edges is the
