@@ -82,7 +82,9 @@ The run is still recorded and hashed; only the in-artifact pin is given up.
 
 `encoding="utf-8"` is not decoration either. Without it the artifact is written in the
 machine's locale encoding, and `header()` contains an em dash. Measured on one header: 189
-bytes under UTF-8, 187 under cp1252 — different bytes, so a different SHA-256 for the same
+bytes under UTF-8, 187 under cp1252 — one em dash, three bytes against one. A header with
+TWO of them measures 253 against 249. The exact figures depend on the header, which is why
+the durable statement is the one that follows: different bytes, so a different SHA-256 for the same
 artifact — and `UnicodeEncodeError` outright under cp932 or ascii. A provenance package
 whose artifact hashes depend on the writer's locale has one job and does not do it, which is
 why every file `runprov` writes itself pins UTF-8.
@@ -305,12 +307,14 @@ produced exactly where they were produced. Two rules make it total:
    identical content is ordinary (a rebuild that reproduces), so the digest alone can have
    several candidates; time settles it, and the latest such producer wins.
 
-Measured on this project's real history — **2,196 records**:
+Measured 2026-08-18 on a real history — `hcv-genotyping-release/reports/audit/runs.jsonl`,
+**2,453 records**. That file is appended to daily, so re-measuring moves every number; what
+does not move is the `ambiguous` column:
 
 | | resolvable | ambiguous | orphan |
 |---|---:|---:|---:|
-| join on the path *(the heuristic)* | 282 | **3,444** | 4,188 |
-| join on the digest *(this)* | **3,657** | **0** | 4,257 |
+| join on the path *(the heuristic)* | 3,773 | **3,271** | 4,864 |
+| join on the digest *(this)* | **3,781** | **0** | 4,856 |
 
 `ambiguous` is 0 **by construction** rather than by luck — and it is still printed, because
 a count that can only be zero is one nobody should trust without seeing it.
