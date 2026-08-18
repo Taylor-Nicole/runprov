@@ -9463,41 +9463,80 @@ def test_constructing_a_run_does_not_scale_with_the_history(tmp_path, monkeypatc
     )
 
 
-def test_the_project_page_does_not_hold_the_history_in_memory(tmp_path):
-    """The page a developer opens many times a day, over a file that only ever grows.
+def _project_view_peak(runs, artifacts, scripts=20):
+    """Peak allocation while aggregating `runs` records naming `artifacts` distinct outputs.
 
-    Measured on a realistic 100,000-run, 91 MB history: materialising every record cost
-    392 MB, streaming it costs 3. So `project_view` consumes an ITERABLE and counts as it
-    goes -- asking for `len(records)` would materialise the history this exists not to hold.
-
-    A ratio, not a threshold: 4x the runs must not cost 4x the memory. The aggregate is a
-    handful of scripts and artifacts however long the history is.
+    The two are separated on purpose. `project_view`'s memory is driven by the size of the
+    AGGREGATE — distinct scripts and distinct artifact paths — and not by how many records
+    streamed past to build it. A fixture that moves both at once cannot tell which.
     """
     import tracemalloc
 
-    def peak_for(n):
-        def stream():
-            for i in range(n):
-                yield {
-                    "script": f"s{i % 20}",
-                    "status": "ok",
-                    "started_utc": "2026-01-01T00:00:00Z",
-                    "inputs": [{"path": f"in/{i % 50}.tsv", "sha256": f"{i:064x}"}],
-                    "outputs": [{"path": f"out/{i % 100}.tsv", "sha256": f"{i:064x}"}],
-                }
+    def stream():
+        for i in range(runs):
+            yield {
+                "script": f"s{i % scripts}",
+                "status": "ok",
+                "started_utc": "2026-01-01T00:00:00Z",
+                # `run_uid` IS PRESENT, and it is per-run and distinct. Without it the
+                # records here were unlike every real record, and a mutation that hoarded
+                # one value per run into the aggregate accumulated 20,000 `None`s -- a few
+                # bytes each, under the bound, invisible. The fixture has to carry the
+                # fields a regression would plausibly hoard.
+                "run_uid": f"{i:032x}",
+                "inputs": [{"path": f"in/{i % 50}.tsv", "sha256": f"{i:064x}"}],
+                "outputs": [{"path": f"out/{i % artifacts}.tsv", "sha256": f"{i:064x}"}],
+            }
 
-        tracemalloc.start()
-        try:
-            view = runprov.show.project_view(stream())
-            assert view["runs"] == n
-            return tracemalloc.get_traced_memory()[1]
-        finally:
-            tracemalloc.stop()
+    tracemalloc.start()
+    try:
+        view = runprov.show.project_view(stream())
+        assert view["runs"] == runs
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
 
-    small, large = peak_for(5_000), peak_for(20_000)
+
+def test_the_project_page_does_not_grow_with_the_number_of_RUNS(tmp_path):
+    """L-41. This test was called "does not hold the history in memory", which is a stronger
+    claim than it checks — and its fixture pinned artifacts at `i % 100` and scripts at 20,
+    so the aggregate was CONSTANT BY CONSTRUCTION and the measurement flat whatever `n` was:
+    0.12 MB at 5,000 runs, 0.11 MB at 20,000, 0.11 MB at 80,000. The same numbers would
+    appear for an implementation that held everything except the artifact index.
+
+    What it genuinely guards is worth keeping and is now what it is named for: nothing
+    proportional to the RUN COUNT survives the aggregation. The artifact count is held fixed
+    so that is the only variable, and the growth it cannot see is asserted by the test below
+    rather than left to be discovered at 100,000 artifacts.
+
+    Measured on a realistic 100,000-run, 91 MB history: materialising every record cost
+    392 MB, streaming it costs 3. `project_view` consumes an ITERABLE and counts as it goes;
+    asking for `len(records)` would materialise the history this exists not to hold."""
+    small, large = _project_view_peak(5_000, 1_000), _project_view_peak(20_000, 1_000)
     assert large < small * 2, (
-        f"4x the runs took {large / small:.1f}x the memory — project_view is holding the "
-        f"history rather than aggregating it"
+        f"4x the runs took {large / small:.1f}x the memory at a FIXED artifact count — "
+        f"project_view is keeping something per record"
+    )
+
+
+def test_the_project_page_grows_with_the_ARTIFACT_count_and_only_linearly(tmp_path):
+    """The other half, and the one that was invisible. The aggregate IS an index of every
+    distinct artifact, so it grows — that is the design, not a defect, and the cost is
+    stated here rather than found later: 3.35 MB at 5,000 artifacts, 13.29 MB at 20,000,
+    53.59 MB at 80,000, which is linear and is what a project writing one artifact per run
+    actually pays.
+
+    Asserting it BOTH grows and grows only linearly is what makes this a test rather than a
+    number: a fixture that could not see the growth would satisfy the upper bound trivially,
+    which is exactly how the test above came to certify more than it checked."""
+    small, large = _project_view_peak(20_000, 5_000), _project_view_peak(80_000, 20_000)
+    assert large > small * 2, (
+        f"4x the artifacts took only {large / small:.1f}x the memory — the fixture is not "
+        f"exercising the artifact index, so the bound below proves nothing"
+    )
+    assert large < small * 6, (
+        f"4x the artifacts took {large / small:.1f}x the memory — the index is growing "
+        f"faster than the thing it indexes"
     )
 
 
