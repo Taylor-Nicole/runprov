@@ -279,6 +279,22 @@ Nothing has been published yet. Everything below is what a first release would c
 
 ### Verified
 
-492 tests, 100% statement *and* branch coverage, on Linux 3.10–3.13, macOS and Windows.
+517 tests, 100% statement *and* branch coverage, on Linux 3.10–3.13 and macOS 3.12.
+
+Windows 3.12 runs the same suite **minus 22 tests and without the coverage floor**, and the
+distinction is the point: those 22 build a fixture Windows cannot build — a FIFO
+(`os.mkfifo` does not exist), a symlink (blocked without Developer Mode or admin), or a file
+`chmod(0o000)` genuinely makes unreadable — so they skip, their lines go unmeasured, and
+100% stops being reachable there by construction. They are skipped by PROBE rather than by
+platform name, which also fixes the reverse error: `chmod(0o000)` denies nothing to root
+either, so those tests could not fail inside a root container and a `win32` check called
+that a pass.
+
+This section previously read "on Linux 3.10–3.13, macOS and Windows", which the Windows job
+could not have supported: all 22 failed in setup. What is verified from Linux is that the
+suite has no failures when those four constructs are unavailable; whether Windows agrees
+about path separators, line endings and open-file deletion is answered by the job, not from
+here.
+
 Coverage is a floor, not the argument: every fix above was mutation-tested — the defect
 reintroduced, the suite required to fail.

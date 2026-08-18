@@ -7,8 +7,11 @@
     python ci.py            everything, in the order CI runs it
     python ci.py lint       ruff format --check, ruff check, mypy
     python ci.py test       pytest with the coverage gate
-    python ci.py build      build, twine check --strict, install the wheel and import it
+    python ci.py build      release-check, build, twine check --strict, install the wheel
     python ci.py setup      install the dev extras and the pre-commit hooks
+    python ci.py release-check   the version copies, the tag and the citation's year
+                            (run by `build`; set RUNPROV_RELEASE_TAG=vX.Y.Z to rehearse
+                            what a tag push would check)
 
 Why a script rather than a list of steps in the workflow
 --------------------------------------------------------
@@ -23,6 +26,8 @@ the output rather than by reading this file.
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -53,20 +58,38 @@ def lint() -> None:
     run(PY, "-m", "mypy", "runprov/")
 
 
-def test() -> None:
+def _coverage_args() -> list[str]:
+    """The pytest coverage flags, and whether the 100% floor is among them.
+
+    A function of its own so the decision is testable without running the suite: the one
+    thing that must never happen quietly is the floor going away.
+    """
     # The coverage gate lives HERE and not in pyproject's `addopts`, so a bare `pytest`
     # still works for a downstream packager without pytest-cov installed. --cov-branch is
     # the gate: statement coverage read 100% while five conditions had never been evaluated
     # both ways.
-    run(
-        PY,
-        "-m",
-        "pytest",
-        "--cov=runprov",
-        "--cov-branch",
-        "--cov-report=term-missing",
-        "--cov-fail-under=100",
-    )
+    cov = ["--cov=runprov", "--cov-branch", "--cov-report=term-missing"]
+    # THE FLOOR IS ON BY DEFAULT, and off only where it is unreachable by construction
+    # rather than by regression: 22 tests need a FIFO, a symlink or a file `chmod(0o000)`
+    # actually makes unreadable, and Windows provides none of the three, so they skip and
+    # the lines they cover go unmeasured. The Windows matrix leg in `test.yml` sets this,
+    # and nothing else does -- a floor that quietly lowered itself by sniffing the platform
+    # would be the same failure this repository keeps finding, so it has to be asked for in
+    # a file a reader can see.
+    if os.environ.get("RUNPROV_COVERAGE_FLOOR", "").lower() == "off":
+        print(
+            "\n!! coverage FLOOR DISABLED by RUNPROV_COVERAGE_FLOOR=off. The suite still\n"
+            "!! runs and coverage is still reported -- but 100% is asserted only where the\n"
+            "!! whole suite can run. If you are not the Windows CI leg, unset this.\n",
+            flush=True,
+        )
+    else:
+        cov.append("--cov-fail-under=100")
+    return cov
+
+
+def test() -> None:
+    run(PY, "-m", "pytest", *_coverage_args())
 
 
 #: Written and run inside the clean venv: the installed wheel must be able to RECORD a run,
@@ -83,7 +106,75 @@ _RECORD_ONE_RUN = (
 )
 
 
+#: Every place the version is written. FOUR copies, and until this existed nothing failed
+#: when they drifted -- a mismatch would have been found at release, in the one build that
+#: cannot be re-uploaded, and it makes the citation cite a version that was never published.
+_VERSION_SOURCES = {
+    "pyproject.toml": r'^version = "([^"]+)"',
+    "runprov/__init__.py": r'^__version__ = "([^"]+)"',
+    "CITATION.cff": r"^version: (\S+)",
+    "CHANGELOG.md": r"^## \[[^\]]+\] — (\S+)",
+}
+
+
+def release_check() -> None:
+    """Refuse to build anything a release cannot honestly claim.
+
+    Run as part of `build`, so it guards the local gate, `test.yml` and `publish.yml`
+    alike. The tag comes from the environment because the step loop consumes argv:
+    `RUNPROV_RELEASE_TAG` locally, `GITHUB_REF_NAME` in Actions -- which is why the tag
+    half of this only engages where a tag actually exists.
+
+    Three things a tag can get wrong and no human reliably catches:
+
+    * The four version copies disagree, so the wheel, the import and the citation name
+      different versions of the same upload.
+    * The TAG disagrees with all of them. `git tag v0.2.0` on a tree that still says
+      0.1.0 publishes 0.1.0 -- and `v0.2.0` can never be published, because PyPI has
+      the file name now.
+    * The version is announced while the CHANGELOG still says `[Unreleased]` and
+      `CITATION.cff` has no `date-released`, so the citation this project ships has no
+      year in it.
+    """
+    found: dict[str, str] = {}
+    for name, pattern in _VERSION_SOURCES.items():
+        text = (ROOT / name).read_text(encoding="utf-8")
+        m = re.search(pattern, text, re.M)
+        if m is None:
+            raise SystemExit(f"no version found in {name} (looked for {pattern!r})")
+        found[name] = m.group(1)
+    if len(set(found.values())) != 1:
+        raise SystemExit(f"the version copies disagree: {found}")
+    version = next(iter(found.values()))
+
+    tag = os.environ.get("RUNPROV_RELEASE_TAG") or os.environ.get("GITHUB_REF_NAME", "")
+    tagged = bool(re.fullmatch(r"v\d.*", tag))
+    if tagged and tag != f"v{version}":
+        raise SystemExit(
+            f"tag {tag} does not match version {version}; PyPI would receive {version} "
+            f"and {tag} could never be published afterwards"
+        )
+
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    heading = re.search(r"^## \[([^\]]+)\]", changelog, re.M)
+    unreleased = heading is not None and heading.group(1).lower() == "unreleased"
+    if tagged and unreleased:
+        raise SystemExit(
+            f"{tag} is a release tag, but CHANGELOG.md still heads {version} as "
+            f"[Unreleased]; date the section before tagging"
+        )
+    if not unreleased and not re.search(
+        r"^date-released:", (ROOT / "CITATION.cff").read_text("utf-8"), re.M
+    ):
+        raise SystemExit(
+            f"CHANGELOG.md presents {version} as released, but CITATION.cff has no "
+            f"date-released, so the citation this project ships has no year in it"
+        )
+    print(f"release-check ok — {version}" + (f", tag {tag}" if tagged else ", untagged build"))
+
+
 def build() -> None:
+    release_check()
     if (ROOT / "dist").is_dir():
         shutil.rmtree(ROOT / "dist")  # never check a stale artifact
     run(PY, "-m", "build")
@@ -184,7 +275,13 @@ def setup() -> None:
     print("\nhooks installed. `python ci.py` runs everything CI runs.")
 
 
-STEPS = {"lint": lint, "test": test, "build": build, "setup": setup}
+STEPS = {
+    "lint": lint,
+    "test": test,
+    "build": build,
+    "setup": setup,
+    "release-check": release_check,
+}
 
 if __name__ == "__main__":
     wanted = sys.argv[1:] or ["lint", "test", "build"]

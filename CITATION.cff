@@ -21,6 +21,12 @@ abstract: >-
   itself rather than only into a sidecar, and the pin is deterministic so that a changed
   header means changed inputs. Zero runtime dependencies.
 version: 0.1.0
+# NO `date-released` YET, and that is a statement rather than an omission: this version has
+# not been released. Zenodo and GitHub render a citation without a year until it is set, and
+# a citation without a year is a poor one -- so `ci.py build` refuses to package a version
+# whose CHANGELOG says released while this field is missing, and the release checklist in
+# PUBLISHING.md sets it at tag time. Inventing a date for an unreleased package would be the
+# same class of error as the placeholder ORCID this file already refuses.
 license: CECILL-B
 repository-code: "https://github.com/Taylor-Nicole/runprov"
 keywords:
