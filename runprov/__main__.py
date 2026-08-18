@@ -363,6 +363,15 @@ def _render_lineage(g: dict[str, typing.Any], scripts: dict[str, str] | None = N
     return "\n".join(out)
 
 
+class UsageError(Exception):
+    """A mistake in the command line, reported as a message rather than a traceback.
+
+    `runprov exec --input no_such.tsv` used to end in `FileNotFoundError` and a stack, while
+    every other user error in this CLI prints a line and exits non-zero. The message was
+    already the right message; the traceback was the problem, because it buries it.
+    """
+
+
 class CommandFailedError(Exception):
     """The wrapped command exited non-zero.
 
@@ -431,8 +440,16 @@ def _exec(args: argparse.Namespace) -> int:
             script_path=pathlib.Path(argv[0]),
         ) as run:
             run.tool(argv[0])
+            # `input()` RAISES for a path that is not there, deliberately -- a registered
+            # input is hashed and pinned, so it must exist at registration. Through the CLI
+            # that arrived as a raw Python traceback, which no other user error here does:
+            # a mistyped `--input` is a usage mistake, not a crash, and a traceback buries
+            # the message that says exactly what to fix.
             for i in args.input:
-                run.input(i)
+                try:
+                    run.input(i)
+                except OSError as exc:
+                    raise UsageError(str(exc)) from exc
             for o in args.output:
                 run.output(o)
             try:
@@ -446,6 +463,11 @@ def _exec(args: argparse.Namespace) -> int:
             run.note("exit_code", returncode)
             if returncode != 0:
                 raise CommandFailedError(f"{argv[0]} exited {returncode}")
+    except UsageError as exc:
+        # A MESSAGE, not a traceback. The run is still recorded as failed by `__exit__` --
+        # the mistake happened inside the block -- so the history says what was attempted.
+        print(f"  runprov exec: {exc}", file=sys.stderr)
+        return 2
     except CommandFailedError as exc:
         print(f"  runprov exec: recorded a FAILED run — {exc}", file=sys.stderr)
         return returncode if returncode else 1
@@ -540,6 +562,19 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
     state you are in.
     """
     bad = [0]
+    if args.target and (args.stale or args.rehash):
+        # ANNOUNCED, not ignored. These are parsed for every `show` but only applied to the
+        # project page, because the staleness column belongs to the ARTIFACT INDEX and a
+        # target renders runs. Accepting a flag and doing nothing is the silence this
+        # package refuses everywhere else -- a reader who passed it is entitled to know it
+        # had no effect rather than to conclude the artifacts are fine.
+        flags = " ".join(f for f, on in (("--stale", args.stale), ("--rehash", args.rehash)) if on)
+        print(
+            f"# NOTE: {flags} applies to the project page and is ignored with a target.\n"
+            f"#   `python -m runprov show` with no target renders the artifact index, which "
+            f"is where\n#   the staleness column lives.",
+            file=sys.stderr,
+        )
     if args.target:
         # A TARGET IS A FILTER, and now genuinely is one: `select` fills its four buckets
         # in a single streaming pass, so what is held is what matches -- a handful of runs,
@@ -606,6 +641,13 @@ def _verify(args: argparse.Namespace) -> int:
     depend on the one file the pin exists to survive.
     """
     root = pathlib.Path(args.root) if args.root else active().root
+    if getattr(args, "log", None):
+        print(
+            "# NOTE: --log is accepted for uniformity and ignored by `verify`, which reads "
+            "the pin\n#   inside each artifact and never the history — that is why the pin "
+            "is in the bytes.",
+            file=sys.stderr,
+        )
     report = verify([pathlib.Path(p) for p in args.paths] or [root], root)
 
     if args.format == "json":
@@ -734,7 +776,11 @@ def main(argv: list[str] | None = None) -> int:
     vf = sub.add_parser("verify", help="do artifacts still match the inputs they pin?")
     vf.add_argument("paths", nargs="*", help="artifacts or directories (default: the root)")
     vf.add_argument("--root", default=None, help="what pinned names are relative to")
-    vf.add_argument("--log", default=None, help=argparse.SUPPRESS)  # unused; keeps --log uniform
+    # ACCEPTED SO `runprov <cmd> --log X` stays uniform across the subcommands, and
+    # ANNOUNCED because `verify` genuinely cannot use it: it reads the pin inside the
+    # artifact and nothing else, which is the whole reason the pin is in the bytes. Declared
+    # with SUPPRESS and never read, it was a flag that did nothing and said nothing.
+    vf.add_argument("--log", default=None, help=argparse.SUPPRESS)
     vf.add_argument("--format", choices=("text", "json"), default="text")
     args = ap.parse_args(argv)
 

@@ -8144,6 +8144,44 @@ def test_show_cli_renders_both_pages_and_says_when_nothing_matches(tmp_path, mon
     assert "nothing in" in err and "script name, a run_uid prefix" in err
 
 
+def test_the_same_run_renders_identically_from_the_record_and_from_the_history(tmp_path):
+    """L-46. `runprov.to_yaml(run.record)` and `log --format yaml` are documented as "this
+    same function" over one run and over a history. They disagreed: the live record rendered
+    `git_commit: "?"` where the history rendered `git_commit: ""`, because the history line
+    FLATTENS it from `code.git_commit_short` while the record keeps it nested.
+
+    `script_file` had already taught the renderer this lesson and carries a both-shapes read
+    with a comment explaining why; `git_commit` did not. Two views of one run disagreeing is
+    the failure this renderer exists to prevent.
+
+    COMPARES THE WHOLE RENDERING rather than the one field, so the next field with the same
+    asymmetry fails here instead of being found by a reviewer."""
+    proj = _project(tmp_path)
+    (tmp_path / "in.tsv").write_text("id\n1\n", encoding="utf-8")
+    with runprov.Run("s", {"m": "a"}, project=proj, provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        run.note("rows", 1)
+
+    # AFTER the block, which is what `to_yaml`'s own docstring instructs: `__exit__` is where
+    # outputs are hashed and the status becomes known.
+    from_record = runprov.to_yaml(run.record)
+    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    from_history = runprov.to_yaml(rows)
+
+    body = lambda s: [ln for ln in s.splitlines() if ln.startswith(("- ", "  "))]  # noqa: E731
+    assert body(from_record) == body(from_history), (
+        "the same renderer, the same run, two sources — and they disagree:\n"
+        + "\n".join(
+            f"  record: {a}\n  history: {b}"
+            # strict=False deliberately: when this FAILS the two may differ in length,
+            # and a diagnostic that raises instead of printing is no diagnostic.
+            for a, b in zip(body(from_record), body(from_history), strict=False)
+            if a != b
+        )
+    )
+    assert any("git_commit" in ln for ln in body(from_record)), "the field is actually rendered"
+
+
 def test_the_yaml_emitter_handles_empty_and_scalar_shapes(tmp_path):
     """Small shapes it must not choke on, since a record can legitimately hold any of them."""
     yaml = pytest.importorskip("yaml")
@@ -9393,6 +9431,54 @@ def test_exec_records_a_shell_command_as_a_run(tmp_path, monkeypatch, capsys):
     assert [pathlib.Path(i["path"]).name for i in rec["inputs"]] == ["in.tsv"]
     assert [pathlib.Path(o["path"]).name for o in rec["outputs"]] == ["out.tsv"]
     assert rec["outputs"][0]["sha256"], "the artifact the tool wrote is hashed like any other"
+
+
+def test_exec_reports_a_missing_input_as_a_message_not_a_traceback(tmp_path, monkeypatch, capsys):
+    """L-82. `input()` raises for a path that is not there, deliberately — a registered input
+    is hashed and pinned, so it must exist at registration. Through the CLI that arrived as a
+    raw `FileNotFoundError` and a stack, which no other user error here does: a mistyped
+    `--input` is a usage mistake, and a traceback buries the message that says what to fix."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    rc = runprov.__main__.main(["exec", "--input", "no_such.tsv", "--", "/bin/echo", "hi"])
+    err = capsys.readouterr().err
+    assert rc == 2, "a usage mistake, distinct from the wrapped command's own exit code"
+    assert "cannot register input no_such.tsv" in err, err
+    assert "Traceback" not in err and "FileNotFoundError" not in err
+
+
+def test_show_says_when_stale_and_rehash_are_ignored(tmp_path, monkeypatch, capsys):
+    """L-48. Both flags are parsed for every `show` and applied only to the project page,
+    because the staleness column belongs to the ARTIFACT INDEX and a target renders runs.
+    Accepting a flag and doing nothing is the silence this package refuses everywhere else —
+    a reader who passed it is entitled to know it had no effect, rather than to conclude the
+    artifacts are fine."""
+    rows = _history(tmp_path, monkeypatch)
+    log = str(tmp_path / "runs.jsonl")
+    assert rows
+
+    assert runprov.__main__.main(["show", "build", "--log", log, "--stale"]) == 0
+    err = capsys.readouterr().err
+    assert "--stale applies to the project page and is ignored with a target" in err, err
+
+    # The project page still applies it, and says nothing.
+    assert runprov.__main__.main(["show", "--log", log, "--stale"]) == 0
+    assert "is ignored with a target" not in capsys.readouterr().err
+
+
+def test_verify_says_when_log_is_ignored(tmp_path, monkeypatch, capsys):
+    """The other half of L-48. `--log` is accepted so `runprov <cmd> --log X` stays uniform
+    across subcommands, but `verify` genuinely cannot use it: it reads the pin inside each
+    artifact and never the history, which is the whole reason the pin is in the bytes.
+    Declared with `SUPPRESS` and never read, it was a flag that did nothing and said
+    nothing."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "plain.tsv").write_text("id\n1\n", encoding="utf-8")
+    runprov.__main__.main(["verify", str(tmp_path), "--root", str(tmp_path), "--log", "x.jsonl"])
+    assert "--log is accepted for uniformity and ignored by `verify`" in capsys.readouterr().err
+
+    runprov.__main__.main(["verify", str(tmp_path), "--root", str(tmp_path)])
+    assert "--log is accepted" not in capsys.readouterr().err, "silent when not passed"
 
 
 def test_exec_passes_a_separator_through_to_the_command(tmp_path, monkeypatch, capfd):
