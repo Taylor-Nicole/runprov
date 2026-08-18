@@ -2232,6 +2232,53 @@ def _first_python_block(text: str) -> str:
     return m.group(1)
 
 
+#: Internal working documents. They stay in the repository — the audience is the person they
+#: address — and they must not travel inside a release. L-08.
+_NOT_FOR_DISTRIBUTION = ("PUBLISHING.md", "LICENSING.md")
+
+
+def test_the_internal_drafts_are_not_packaged_and_not_linked():
+    """L-08. Both shipped inside the 0.1.0 sdist AND were linked from the README, which is
+    the `Description` PyPI freezes at upload.
+
+    They are addressed to one person — "that decision, and the account it happens under, are
+    yours" — and both keep superseded reasoning on purpose: PUBLISHING.md recommends MIT, and
+    the licence has been CeCILL-B since 2026-08-07, which the same file says a section later.
+    Read as a project's position rather than as somebody's notes, that is a package whose
+    release procedure argues for a licence it does not use.
+
+    Checked against the include LIST rather than a built tarball, so it costs nothing and
+    fails in the same run that introduces it; `ci.py build` unpacks the real sdist and checks
+    the other direction — that everything named IS present."""
+    pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
+    sdist = pyproject[pyproject.index("[tool.hatch.build.targets.sdist]") :]
+    include = sdist[sdist.index("include = [") : sdist.index("]", sdist.index("include = ["))]
+    readme = _readme()
+    for name in _NOT_FOR_DISTRIBUTION:
+        assert (_repo_root() / name).is_file(), f"{name} is gone; excluding it was not deleting it"
+        assert f'"{name}"' not in include, f"{name} is in the sdist include list"
+        assert f"]({name})" not in readme and f"/blob/main/{name})" not in readme, (
+            f"the README links {name}, and the README is the description PyPI freezes"
+        )
+    # The list is an EXPLICIT allowlist, so this test would also pass on an empty one.
+    assert '"README.md"' in include and '"LICENSE"' in include, "the list is still a real list"
+
+    # And nothing that DOES ship may send a reader to a file that no longer does — the sdist
+    # exists for a packager rebuilding from source, with no repository in reach.
+    shipped = [
+        n
+        for n in ("CITATION.cff", "CONTRIBUTING.md", "SECURITY.md", "WHY.md", "CHANGELOG.md")
+        if (_repo_root() / n).is_file()
+    ] + [str(f.relative_to(_repo_root())) for f in sorted((_repo_root() / "runprov").glob("*.py"))]
+    dangling = [
+        (n, name)
+        for n in shipped
+        for name in _NOT_FOR_DISTRIBUTION
+        if name in (_repo_root() / n).read_text(encoding="utf-8")
+    ]
+    assert not dangling, f"shipped file(s) cite a file that is not in the sdist: {dangling}"
+
+
 def test_the_readme_has_no_relative_links_because_it_is_the_pypi_page():
     """The README becomes `Description` in METADATA, and PyPI does not rewrite relative
     links: they resolve against `https://pypi.org/project/runprov/` and dead-end.

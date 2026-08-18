@@ -102,10 +102,27 @@ once at <https://pypi.org/manage/account/publishing/> with owner, repo, workflow
 git tag v0.1.0 && git push --tags
 ```
 
+## Before the tag — the four things a release cannot take back
+
+`python ci.py release-check` refuses the build unless all of these hold, so this is a
+description of a check rather than a checklist to remember. `RUNPROV_RELEASE_TAG=v0.1.0
+python ci.py release-check` rehearses tag day without tagging anything.
+
+1. **The four copies of the version agree** — `pyproject.toml`, `runprov/__init__.py`,
+   `CITATION.cff` and the CHANGELOG's top heading. Nothing enforced this until 2026-08-18;
+   they agreed by luck.
+2. **The tag matches them.** `git tag v0.2.0` on a tree that still says `0.1.0` publishes
+   `0.1.0`, and `v0.2.0` can then never be published — PyPI has the filename.
+3. **The CHANGELOG section is dated**, not `[Unreleased]`.
+4. **`CITATION.cff` has `date-released`.** It is deliberately absent until then: this version
+   is not released, and a made-up date would be the same error as the placeholder ORCID that
+   file already refuses. Set it to the tag date, in `YYYY-MM-DD`.
+
 ## Version discipline
 
-`runprov/__init__.py` holds `__version__`; the extraction script reads it and fails if the
-distribution disagrees. Keep them one string.
+`runprov/__init__.py` holds `__version__`, and the check above is what keeps every other
+copy equal to it. (This used to say the extraction script enforced it — that script belongs
+to the monorepo this package was extracted FROM, and nothing in this repository ran it.)
 
 Start at **0.1.0**, not 1.0.0. `0.x` says the API may still move, which is honest — the
 `with`-block failure recording arrived after the first version of this package existed, and
