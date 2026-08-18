@@ -183,9 +183,13 @@ PIN_INLINE = frozenset(
      ".md", ".properties", ".tab", ".toml", ".tsv", ".txt", ".yaml", ".yml"}
 )  # fmt: skip
 
-#: Of the above, the ones that are BINARY or COMPRESSED. `open_output` opens in text mode,
-#: so these are refused whatever happens to the pin -- the mode is the problem, not the
-#: comment. Everything else in `PIN_UNSAFE` is text and gets a SIDECAR instead.
+#: EVERY suffix that is BINARY or COMPRESSED -- not a subset of `PIN_UNSAFE`, which is what
+#: this comment used to claim. Measured: 40 entries here against 38 there, and 25 of these
+#: (`.arrow` `.feather` `.pickle` `.pt` `.rds` `.sqlite` and the rest) are in neither the
+#: allowlist nor `PIN_UNSAFE` -- they reach `open_output` as unknown suffixes.
+#:
+#: `open_output` opens in text mode, so these cannot be written through it whatever happens
+#: to the pin -- the mode is the problem, not the comment.
 #: Naming them buys a better MESSAGE, not the protection -- the allowlist already sends an
 #: unknown suffix to the sidecar. These get "you cannot write this through a text handle"
 #: instead, which is the actual problem for a caller holding a `pickle.dump`.
