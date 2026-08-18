@@ -216,13 +216,24 @@ def _lineage(
     silently excluded them would understate its own coverage.
     """
 
+    counted_once = [False]
+
     def records() -> typing.Iterator[dict[str, typing.Any]]:
         """A FRESH pass over the history. Called exactly twice — see the two PASS comments
         below. Returning a new iterator each time is the whole contract: handing back a
-        part-consumed one would make pass two silently empty."""
-        if isinstance(source, pathlib.Path):
-            return _counted(source, bad if bad is not None else [0])
-        return iter(source)
+        part-consumed one would make pass two silently empty.
+
+        UNREADABLE LINES ARE COUNTED ON THE FIRST PASS ONLY. The file is walked twice and
+        `bad` accumulates, so counting on both reported every damaged line twice — measured,
+        a history with 2 torn lines said "4 unreadable line(s) skipped". A reader who cannot
+        trust the count of what was lost is worse off than one given no count, because the
+        number looks like evidence."""
+        if not isinstance(source, pathlib.Path):
+            return iter(source)
+        if counted_once[0]:
+            return _counted(source, [0])
+        counted_once[0] = True
+        return _counted(source, bad if bad is not None else [0])
 
     def digests(io_: dict[str, typing.Any]) -> list[str]:
         """EVERY digest this entry carries, most specific first — not just the best one.

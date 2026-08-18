@@ -67,7 +67,7 @@ class JsonlSink:
     """One JSON object per line, appended under an exclusive lock, fsync'd.
 
     JSONL rather than a single YAML/JSON document because the predecessor's single-document
-    log became unparseable and eleven repair scripts grew around it. Here a corrupt line
+    log became unparseable and nine repair scripts grew around it. Here a corrupt line
     costs one record and the reader counts what it skipped.
     """
 

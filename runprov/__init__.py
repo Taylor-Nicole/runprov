@@ -120,7 +120,7 @@ def to_yaml(records: typing.Any) -> str:  # noqa: ANN401 - one record or an iter
 
     What it does NOT do is append `---` documents to a shared file. That is not an
     oversight: the predecessor's writer appended `---` into a file that began as a list,
-    `yaml.safe_load_all` raises partway through the result, and eleven
+    `yaml.safe_load_all` raises partway through the result, and nine
     `fix_transformation_log_*.py` repair scripts exist because of it. The append-only
     history is JSONL for exactly that reason, and this renders a VIEW of it.
     """

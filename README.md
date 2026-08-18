@@ -163,7 +163,7 @@ appended exactly once, at exit, with the true status. It is `write()` **instead 
 
 The obvious thing already existed. `hcv_genotyping/src/utils/log_transformation.py`
 exposes `append_log(entry: dict)` and **248 files import it.** It still produced a
-provenance log that needs a tolerant line-wise recovery parser and eleven
+provenance log that needs a tolerant line-wise recovery parser and nine
 `fix_transformation_log_*.py` heal scripts — one of which is itself a step in the pipeline
 it was meant to document.
 
@@ -1009,7 +1009,7 @@ MANIFEST.write_text(runprov.to_yaml(run.record), encoding="utf-8")
 
 After the block, deliberately: `__exit__` is where outputs are hashed and the status becomes
 known. What it will **not** do is append `---` documents to a shared log — that is the
-defect that left the predecessor's file unreadable partway through and spawned eleven
+defect that left the predecessor's file unreadable partway through and spawned nine
 `fix_transformation_log_*.py` repair scripts. The append-only history is JSONL for that
 reason, and this renders a view of it.
 

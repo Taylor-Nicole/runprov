@@ -9603,6 +9603,31 @@ def test_the_streamed_page_is_byte_for_byte_the_page(tmp_path, monkeypatch):
     )
 
 
+def test_lineage_counts_each_unreadable_line_once(tmp_path, capsys):
+    """`lineage` walks the history TWICE (L-38), and `bad` accumulates across both — so a
+    history with two torn lines reported "4 unreadable line(s) skipped". `log` and `show`
+    read once and said 2, so the three commands disagreed about the same file.
+
+    A reader who cannot trust the count of what was lost is worse off than one given no
+    count at all, because the number looks like evidence. Introduced by the streaming
+    rewrite and found by using the tool rather than by a ledger row."""
+    p = tmp_path / "runs.jsonl"
+    good = lambda i: json.dumps({"script": f"s{i}", "started_utc": f"2026-01-0{i}T00:00:00Z"})  # noqa: E731
+    p.write_text(
+        "\n".join([good(1), '{"script": "TORN", "pad": "xxx', good(2), "not json at all"]) + "\n",
+        encoding="utf-8",
+    )
+
+    assert runprov.__main__.main(["lineage", "--log", str(p)]) == 0
+    err = capsys.readouterr().err
+    assert "2 unreadable line(s) skipped" in err, err
+    assert "4 unreadable" not in err, "each damaged line is counted once, not once per pass"
+
+    # And it agrees with the readers that walk the file once.
+    assert runprov.__main__.main(["log", "--log", str(p)]) == 0
+    assert "2 unreadable line(s) skipped" in capsys.readouterr().err
+
+
 def test_lineage_does_not_hold_the_records_it_walks(tmp_path):
     """L-38. The comment here said lineage "genuinely needs every record at once ... there is
     nothing to stream past". That was a claim about the RECORDS, and the join is over
