@@ -345,7 +345,7 @@ Measured here, **60 formats, 0 failures, nothing skipped**:
 
 | pin placement | formats |
 |---|---|
-| in-band | TSV, CSV, BED, YAML, Markdown, SQL (`-- `) |
+| in-band | the whole allowlist: `.tsv` `.csv` `.tab` `.txt` `.md` `.bed` `.bedgraph` **`.gff` `.gff3` `.gtf`** `.yaml` `.yml` `.toml` `.ini` `.cfg` `.conf` `.properties` — plus SQL and TeX on request, which comment with `-- ` and `%` |
 | in the document | JSON (`write_json`, a top-level key) |
 | sidecar | everything else — FASTA, FASTQ, GenBank, PDB, Stockholm, PHYLIP, Nexus, Matrix Market, JSONL, VCF, BCF, BAM, CRAM, bigWig, PLINK, mzML, SVG, Newick, Parquet (file *and* partitioned directory), Feather/Arrow, ORC, Avro, Pickle, joblib, cloudpickle, `.npy`, `.npz`, HDF5, AnnData `.h5ad`, Zarr, NetCDF, `.xlsx`, Stata, SPSS, R `.rds`, DuckDB, SQLite, MessagePack, **GGUF**, ONNX, safetensors, PyTorch `.pt`, XGBoost, LightGBM, a SavedModel-shaped **directory**, `.mat`, PNG, TIFF, gzip |
 
@@ -1181,7 +1181,7 @@ the lock in place, the same 8 × 20 × 9 KB test gives 160 lines, 160 of which p
 Where locking is unavailable the append still happens, unlocked. **It is only announced on
 Windows** — see the finding below.
 
-## The pin is not a comment everywhere, so `open_output` refuses some formats
+## The pin is not a comment everywhere, so `open_output` refuses 15 formats and gives 23 a sidecar
 
 `#` is a comment in a TSV, a CSV, a GFF3 and a Makefile. It is not one in a FASTQ, and in a
 Newick tree it is worse than not-a-comment: the file still **parses**, and the pin's own
@@ -1198,21 +1198,31 @@ No exception, no warning. `default` and `yet` are pieces of the pin's prose —
 clade assignment consumes that tree without complaint. That is the silent wrongness this
 package exists to refuse, produced by the method advertised as the safe default.
 
-So `open_output()` now **refuses** rather than leaving "`#` is not a comment everywhere" as
-a caveat the caller cannot see the consequence of. `run.PIN_UNSAFE` is the table, with the
-reason each format fails:
+So `open_output()` stopped leaving "`#` is not a comment everywhere" as a caveat the caller
+cannot see the consequence of. **What it does depends on the format, and the split is not
+even:**
 
-| | |
-|---|---|
-| `.nwk` `.newick` `.nh` `.tree` | **silently wrong** — the pin parses as taxon names |
-| `.fastq` `.fq` | no comment syntax at all; a record must begin with `@` |
-| `.fasta` `.fa` `.fna` `.faa` `.ffn` | breaks `samtools faidx`; `Bio.SeqIO` warns it will become a `ValueError`. FASTA's only spec-legal comment is `;` |
-| `.vcf` | `##fileformat` must be the first line — `bcftools` says `unknown file type` even when the pin uses `##` |
-| `.sam` | `@provenance` is not a valid header record type; only `@CO` is |
-| `.svg` `.xml` `.html` `.htm` `.xhtml` | XML has no comment syntax — measured: the file is written, then `ET.parse` fails at line 1, column 1 |
-| `.json` `.jsonl` `.geojson` `.ipynb` | JSON has no comment syntax — measured: `json.loads` fails at char 0 |
-| `.tex` | TeX comments with `%`; `#` is a macro parameter character |
-| `.bam` `.cram` `.parquet` `.h5` `.npy` `.xlsx` `.gz` `.zst` `.zip` `.png` `.pdf` | binary or compressed; `open_output` is text mode |
+- **15 suffixes RAISE** — every binary or compressed one. Not because of the pin at all:
+  `open_output` returns a TEXT handle, so a caller cannot write a PNG or a parquet through
+  it whatever the provenance. The message says so and names `output()` + `pin_sidecar()`.
+- **23 suffixes are WRITTEN UNTOUCHED, with the pin beside them** in `<artifact>.prov.txt` —
+  FASTA, FASTQ, JSON, JSONL, Newick, SAM, VCF, SVG, XML and the rest. Nothing is refused
+  here; the artifact is exactly the bytes you wrote.
+
+`runprov.run.PIN_UNSAFE` is the table (a MODULE constant, not an attribute of a `Run`), with
+the reason each format cannot take an in-band `#`:
+
+| suffix | why `#` fails | `open_output` |
+|---|---|---|
+| `.nwk` `.newick` `.nh` `.tree` | **silently wrong** — the pin parses as taxon names | sidecar |
+| `.fastq` `.fq` | no comment syntax at all; a record must begin with `@` | sidecar |
+| `.fasta` `.fa` `.fna` `.faa` `.ffn` | breaks `samtools faidx`; `Bio.SeqIO` warns it will become a `ValueError`. FASTA's only spec-legal comment is `;` | sidecar |
+| `.vcf` | `##fileformat` must be the first line — `bcftools` says `unknown file type` even when the pin uses `##` | sidecar |
+| `.sam` | `@provenance` is not a valid header record type; only `@CO` is | sidecar |
+| `.svg` `.xml` `.html` `.htm` `.xhtml` | XML has no comment syntax — measured: the file is written, then `ET.parse` fails at line 1, column 1 | sidecar |
+| `.json` `.jsonl` `.geojson` `.ipynb` | JSON has no comment syntax — measured: `json.loads` fails at char 0 | sidecar |
+| `.tex` | TeX comments with `%`; `#` is a macro parameter character | sidecar |
+| `.bam` `.cram` `.parquet` `.h5` `.npy` `.xlsx` `.gz` `.zst` `.zip` `.png` `.pdf` | binary or compressed; `open_output` is text mode | **raises** |
 
 The text formats are the trap in that table: `open_output` writes them happily and the
 result does not look damaged until something parses it. `#` really is a comment in a
