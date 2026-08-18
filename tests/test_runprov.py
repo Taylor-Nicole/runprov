@@ -9145,6 +9145,129 @@ def test_one_unresolvable_module_does_not_erase_the_whole_code_section(tmp_path,
     assert "fit.R" in paths, "and so must a file the caller explicitly declared"
 
 
+def test_declared_code_outside_the_project_root_is_still_recorded(tmp_path, monkeypatch):
+    """L-27. `relative_to(root)` raises for a path outside the tree, and inside a bare
+    `suppress` that dropped the entry entirely — so `run.code("/opt/pipeline/fit.R")`
+    recorded NOTHING while returning the path, with no warning. Tracking a script that lives
+    outside the tree is exactly what `code()` was added for.
+
+    Discovery may skip what it cannot place; an EXPLICIT call may not. Recorded as
+    `<external>/<name>`, the same spelling the pin uses for an input outside the root and for
+    the same reason: an absolute path would put this machine's layout into a digest whose
+    whole purpose is to compare across machines."""
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (script := outside / "fit.R").write_text('cat("hi")\n', encoding="utf-8")
+    root = tmp_path / "project"
+    root.mkdir()
+    monkeypatch.chdir(root)
+    proj = runprov.Project(
+        root=root, run_log=root / "runs.jsonl", run_id=lambda: "r", generation=lambda: "g"
+    )
+
+    with runprov.Run("s", project=proj, provenance=root / "p.json") as run:
+        run.code(script)
+
+    imported = json.loads((root / "p.json").read_text(encoding="utf-8"))["code"]["imported"]
+    assert [f["path"] for f in imported["files"]] == ["<external>/fit.R"]
+    assert imported["digest"], "and it reaches the digest, which is the point of declaring it"
+
+
+def test_a_relative_provenance_path_is_readable_from_anywhere(tmp_path, monkeypatch):
+    """L-42. `_sidecar` opened the recorded `provenance_path` verbatim while `staleness`
+    resolves every artifact path against the run's recorded cwd — so a run that used the
+    natural relative spelling, `provenance="out/mid.prov.json"`, was readable only from its
+    own working directory.
+
+    Measured before the fix: `current` from there, `?` from anywhere else, for every
+    artifact at once. A page whose answers depend on the reader's shell is not a page."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "out").mkdir()
+    (tmp_path / "in.tsv").write_text("id\n1\n", encoding="utf-8")
+    proj = _project(tmp_path)
+    with runprov.Run("b", project=proj, provenance="out/mid.prov.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out" / "mid.tsv") as fh:
+            fh.write("a\n")
+
+    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    assert rows[0]["provenance_path"] == "out/mid.prov.json", "the premise: a relative path"
+    assert _state_of(runprov.show.staleness(rows), "mid.tsv") == "current"
+
+    monkeypatch.chdir(tmp_path.parent)  # any other directory
+    assert _state_of(runprov.show.staleness(rows), "mid.tsv") == "current", (
+        "the same history read from elsewhere must give the same answer"
+    )
+
+
+def test_sidecar_per_run_applies_to_write_as_well_as_the_kwarg(tmp_path):
+    """L-45. `sidecar_per_run` was honoured only for the `provenance=` kwarg, so two
+    `write()` calls to one path overwrote each other exactly as they did before the setting
+    existed — and overwriting is the thing it exists to prevent. Two of the three documented
+    ways to get a sidecar ignored it."""
+    proj = runprov.Project(
+        root=tmp_path, run_log=tmp_path / "runs.jsonl", run_id=lambda: "r",
+        generation=lambda: "g", sidecar_per_run=True,
+    )  # fmt: skip
+    for i in range(2):
+        runprov.Run(f"w{i}", project=proj).write(tmp_path / "out.prov.json")
+
+    written = sorted(p.name for p in tmp_path.iterdir() if p.name.endswith(".prov.json"))
+    assert len(written) == 2, f"one run overwrote the other: {written}"
+    assert all(n.startswith("out.") and n.endswith(".prov.json") for n in written), written
+    assert "out.prov.json" not in written, "the stamp goes in, or the setting did nothing"
+
+
+def test_the_constructors_sidecar_is_not_stamped_twice(tmp_path):
+    """The interaction the fix has to avoid. `__init__` stamps `provenance_path`, and
+    `_finish()` hands that same path back to `write()` at exit — so stamping unconditionally
+    there produces `summary.<t>.<uid>.<t>.<uid>.prov.json`."""
+    proj = runprov.Project(
+        root=tmp_path, run_log=tmp_path / "runs.jsonl", run_id=lambda: "r",
+        generation=lambda: "g", sidecar_per_run=True,
+    )  # fmt: skip
+    with runprov.Run("a", project=proj, provenance=tmp_path / "summary.prov.json"):
+        pass
+
+    names = [p.name for p in tmp_path.iterdir() if p.name.endswith(".prov.json")]
+    assert len(names) == 1, names
+    assert names[0].count(".prov.json") == 1 and names[0].count("Z.") == 1, (
+        f"stamped twice: {names[0]}"
+    )
+
+
+def test_declared_code_that_becomes_unresolvable_is_skipped_not_fatal(tmp_path, monkeypatch):
+    """The guard under L-27's fix, and it is reachable rather than defensive. `code()`
+    validates the file at REGISTRATION; the record is built at EXIT, and a staging step can
+    replace a path in between. `Path.resolve()` then raises `RuntimeError` for a symlink
+    loop — not `OSError`, which is L-97 and L-98's lesson — and losing the whole code section
+    over one declared file would be L-98 again.
+
+    Skipping one entry is the intent. The run, the record and the other declared files all
+    survive."""
+    monkeypatch.chdir(tmp_path)
+    (good := tmp_path / "keep.R").write_text('cat("keep")\n', encoding="utf-8")
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (doomed := staged / "fit.R").write_text('cat("fit")\n', encoding="utf-8")
+
+    proj = _project(tmp_path)
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.json") as run:
+        run.code(good)
+        run.code(doomed)
+        # The staging directory is replaced by a symlink loop before the run ends.
+        doomed.unlink()
+        staged.rmdir()
+        (tmp_path / "staged").symlink_to(tmp_path / "loop")
+        (tmp_path / "loop").symlink_to(tmp_path / "staged")
+        with pytest.raises(RuntimeError, match="Symlink loop"):
+            doomed.resolve()  # the premise, asserted rather than assumed
+
+    imported = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["code"]["imported"]
+    assert "error" not in imported, f"one bad path cost the whole section: {imported}"
+    assert "keep.R" in {f["path"] for f in imported["files"]}, "the other declared file survives"
+
+
 def test_code_is_recorded_without_a_with_block(tmp_path, monkeypatch):
     """L-05. `__exit__` was the only place the code section was built, so `run.code(...)`
     followed by `run.write(...)` — the documented manual shape — recorded nothing at all
