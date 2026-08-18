@@ -56,6 +56,13 @@ jobs:
             python: "3.12"
           - os: windows-latest
             python: "3.12"
+            # 22 tests build a fixture Windows cannot build — a FIFO, a symlink, a file
+            # `chmod(0o000)` genuinely makes unreadable — and they skip there (see the
+            # probes at the top of the suite). Skipped tests leave their lines unmeasured,
+            # so the 100% floor is unreachable HERE by construction, not by regression.
+            # Every other leg still asserts it; this is the only place the word `off`
+            # appears, on purpose.
+            coverage_floor: "off"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -68,6 +75,8 @@ jobs:
       # time, in publish.yml. Coverage could have fallen on every push for the life of the
       # project and the release would have been the first thing to notice.
       - run: python ci.py test
+        env:
+          RUNPROV_COVERAGE_FLOOR: "${{ matrix.coverage_floor }}"
 
   build:
     # On every push, not only on a tag. A README that PyPI refuses to render is unfixable

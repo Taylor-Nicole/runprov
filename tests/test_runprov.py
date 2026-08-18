@@ -24,6 +24,7 @@ import gzip
 import hashlib
 import importlib
 import importlib.metadata
+import importlib.util
 import inspect
 import io
 import itertools
@@ -37,6 +38,7 @@ import signal
 import subprocess
 import sys
 import tarfile
+import tempfile
 import textwrap
 import threading
 import time
@@ -53,6 +55,63 @@ import runprov.__main__ as cli  # noqa: E402
 import runprov._report  # noqa: E402
 import runprov.environment  # noqa: E402
 import runprov.terminal  # noqa: E402
+
+# ------------------------------------------------- what the platform can be asked to build
+#
+# L-26. `test.yml` runs this suite on windows-latest, and 22 tests here build a fixture
+# Windows cannot build: a FIFO (`os.mkfifo` does not exist), a symlink (blocked without
+# Developer Mode or admin, which a GitHub runner does not grant), an unreadable file
+# (`chmod(0o000)` clears the read-only bit and nothing more, so the file stays readable),
+# or `fcntl`. Every one of them fails in SETUP, before it asserts anything -- so the
+# "on Linux 3.10-3.13, macOS and Windows" claim was made by a job that could not have
+# been green.
+#
+# PROBED, NOT ASKED. `sys.platform == "win32"` is the wrong condition twice over: symlinks
+# work on a Windows machine with Developer Mode on, and `chmod(0o000)` does not deny read
+# TO ROOT, so the unreadable-file tests fail inside a root container on Linux -- which is
+# most Docker CI -- and a platform check would have called that Windows-only. Asking the
+# filesystem answers for the machine actually running.
+
+
+def _can_symlink() -> bool:
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            (pathlib.Path(d) / "l").symlink_to(pathlib.Path(d) / "t")
+        except (OSError, NotImplementedError):
+            return False
+        return True
+
+
+def _chmod_denies_read() -> bool:
+    """Whether `chmod(0o000)` actually makes a file unreadable HERE. False on Windows, and
+    false for root on POSIX."""
+    with tempfile.TemporaryDirectory() as d:
+        f = pathlib.Path(d) / "f"
+        f.write_text("x", encoding="utf-8")
+        try:
+            f.chmod(0o000)
+            f.read_text(encoding="utf-8")
+        except OSError:
+            return True
+        finally:
+            f.chmod(0o644)
+        return False
+
+
+requires_fifo = pytest.mark.skipif(
+    not hasattr(os, "mkfifo"), reason="os.mkfifo does not exist on this platform (Windows)"
+)
+requires_symlinks = pytest.mark.skipif(
+    not _can_symlink(),
+    reason="cannot create a symlink here (Windows without Developer Mode or admin)",
+)
+requires_unreadable_files = pytest.mark.skipif(
+    not _chmod_denies_read(),
+    reason="chmod(0o000) does not deny read here (Windows, or running as root)",
+)
+requires_fcntl = pytest.mark.skipif(
+    importlib.util.find_spec("fcntl") is None, reason="fcntl is POSIX-only"
+)
 
 
 # --------------------------------------------------------------------- hashing
@@ -209,6 +268,7 @@ def test_run_records_a_registered_output_that_was_never_written(tmp_path):
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFO needed to make one")
+@requires_fifo
 def test_an_output_that_cannot_be_hashed_is_recorded_and_does_not_destroy_the_run(tmp_path, capsys):
     """The whole record used to be lost for ONE awkward output, and that is the opposite of
     this package's job.
@@ -1242,6 +1302,7 @@ def test_one_file_named_two_ways_is_one_sidecar(tmp_path):
     assert len(log.records) == 1
 
 
+@requires_symlinks
 def test_a_sidecar_path_through_a_symlink_loop_does_not_end_the_run(tmp_path):
     """L-02, the guard under it. `Path.resolve()` raises `RuntimeError` for a cyclic link,
     not `OSError` — so an `except OSError` around it reads as careful and is not, which is
@@ -2007,6 +2068,7 @@ NO_FIFO = pytest.mark.skipif(
 
 
 @NO_FIFO
+@requires_fifo
 def test_registering_a_fifo_fails_instead_of_hanging(tmp_path):
     """R15. `open()` on a FIFO blocks until a writer appears, so registering one hangs the
     run FOREVER — with no message, in provenance capture, before the work starts. A
@@ -2022,6 +2084,7 @@ def test_registering_a_fifo_fails_instead_of_hanging(tmp_path):
 
 
 @NO_FIFO
+@requires_fifo
 def test_a_run_refuses_a_fifo_input_by_name(tmp_path, monkeypatch):
     """The same guard where a caller meets it, and it must say WHICH script and WHICH path
     — the bare hang gave neither."""
@@ -2069,11 +2132,9 @@ def test_a_non_finite_note_still_produces_strict_json(tmp_path, monkeypatch):
     )
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="chmod(0o000) does not deny directory traversal on Windows, so the condition "
-    "under test cannot be created there",
-)
+# Was `sys.platform == "win32"`, which is the wrong question: root on POSIX also traverses
+# a 0o000 directory, so inside a root container this ran and could not fail.
+@requires_unreadable_files
 def test_an_unreadable_subdirectory_is_reported_not_silently_dropped(tmp_path):
     """R8. `rglob` skips a directory it cannot enter and says nothing, so the tree hash
     changed while the tree did not — the silent-skip class, in the function whose job is
@@ -3407,6 +3468,7 @@ def test_a_diagnostic_survives_a_console_that_cannot_encode_it(monkeypatch, caps
 
 
 @NO_FIFO
+@requires_fifo
 def test_a_non_regular_file_inside_a_tree_is_counted_not_silently_dropped(tmp_path):
     """The other half of R8, in the same shape. A FIFO inside a directory cannot be hashed
     — opening it is the hang `describe` refuses at the top — but dropping it without a word
@@ -4376,6 +4438,7 @@ def test_a_carriage_return_cannot_overwrite_the_pin_either(tmp_path, monkeypatch
     assert "\\r" in pin
 
 
+@requires_symlinks
 def test_a_symlink_records_that_it_is_one_and_what_it_points_at(tmp_path, monkeypatch):
     """A record that cannot tell a file from a link to it is incomplete in a way that
     matters: the link can be repointed afterwards, and every hash in the record stays valid
@@ -4395,6 +4458,7 @@ def test_a_symlink_records_that_it_is_one_and_what_it_points_at(tmp_path, monkey
     assert runprov.describe(real).get("symlink") is False, "a plain file says so too"
 
 
+@requires_symlinks
 def test_a_broken_symlink_is_refused_by_name(tmp_path, monkeypatch):
     """`stat()` on a dangling link raises a bare FileNotFoundError naming neither the run
     nor what was wrong with it. Registering it must say both."""
@@ -5942,6 +6006,7 @@ def test_moved_since_does_not_claim_a_change_it_cannot_see(tmp_path):
     assert runprov.hashing.moved_since({}) is None, "and an entry with no path is not a claim"
 
 
+@requires_unreadable_files
 def test_an_input_that_exists_but_cannot_be_read_names_the_script(tmp_path, monkeypatch):
     """`exists()` is TRUE for a file with no read permission — `stat` works, `open` does
     not — so the missing-input check passes and the failure surfaces from inside `sha256`
@@ -5964,6 +6029,7 @@ def test_an_input_that_exists_but_cannot_be_read_names_the_script(tmp_path, monk
     assert "could not be read" in str(caught.value)
 
 
+@requires_unreadable_files
 def test_moved_since_is_silent_when_the_stat_itself_fails(tmp_path):
     """A `stat` can fail for reasons other than the file being gone — here, a parent
     directory that can no longer be entered. Reporting "changed" from that would be
@@ -6327,6 +6393,7 @@ def test_verify_refuses_to_guess_rather_than_reporting_a_green_it_cannot_justify
         assert expected in got["reason"]
 
 
+@requires_fifo
 def test_verify_reports_an_input_it_cannot_hash_now_as_unverifiable(tmp_path):
     """`describe` refuses a FIFO rather than blocking. That is not evidence of a change,
     and calling it STALE would be the overstatement the hashing module avoids."""
@@ -6390,13 +6457,21 @@ def test_verify_does_not_read_a_whole_binary_looking_for_a_pin(tmp_path):
     assert runprov.verify.verify_artifact(art, tmp_path)["status"] == "NO PIN"
 
 
-def test_verify_treats_an_unreadable_or_undecodable_file_as_unpinned(tmp_path):
-    """Neither raises. A non-UTF-8 file cannot contain the anchor, and a pin recovered
-    from a mis-decoded artifact would carry digests we could not trust anyway."""
+def test_verify_treats_an_undecodable_file_as_unpinned(tmp_path):
+    """Does not raise. A non-UTF-8 file cannot contain the anchor, and a pin recovered from
+    a mis-decoded artifact would carry digests we could not trust anyway.
+
+    Split from the unreadable-file case below (L-26) so that this half — which needs nothing
+    of the platform — still runs where `chmod(0o000)` denies nothing."""
     latin = tmp_path / "l.tsv"
     latin.write_bytes(f"# {runprov.verify.ANCHOR}\n".encode("cp1252"))  # em dash -> 0x97
     assert runprov.verify.read_pins(latin) == []
 
+
+@requires_unreadable_files
+def test_verify_treats_an_unreadable_file_as_unpinned(tmp_path):
+    """The other half: an OSError on open is not an exception the caller should have to
+    handle, because a file we cannot read cannot be shown to carry a pin either way."""
     locked = tmp_path / "locked.tsv"
     locked.write_text("x\n", encoding="utf-8")
     locked.chmod(0o000)
@@ -6942,6 +7017,215 @@ def test_the_sidecar_suffix_has_one_definition(tmp_path):
     assert runprov.run.PIN_SIDECAR_SUFFIX is runprov.hashing.PIN_SIDECAR_SUFFIX
 
 
+def _repo_root():
+    return pathlib.Path(__file__).resolve().parent.parent
+
+
+def _release_tree(
+    tmp_path, *, version="0.1.0", citation_version=None, heading="Unreleased", date_released=False
+):
+    """A four-file tree `ci.py release-check` can read, and nothing else.
+
+    `ROOT` is `ci.py`'s own directory, so copying the script beside these fixtures is what
+    lets the real check run against a version state this repository does not have.
+    """
+    shutil.copy(_repo_root() / "ci.py", tmp_path / "ci.py")
+    (tmp_path / "runprov").mkdir()
+    (tmp_path / "pyproject.toml").write_text(f'version = "{version}"\n', encoding="utf-8")
+    (tmp_path / "runprov/__init__.py").write_text(f'__version__ = "{version}"\n', encoding="utf-8")
+    cff = f"version: {citation_version or version}\n"
+    if date_released:
+        cff += "date-released: 2026-08-18\n"
+    (tmp_path / "CITATION.cff").write_text(cff, encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text(f"## [{heading}] — {version}\n", encoding="utf-8")
+    return tmp_path
+
+
+def _release_check(tree, tag=None):
+    env = {**os.environ, "RUNPROV_RELEASE_TAG": tag} if tag else os.environ
+    return subprocess.run(
+        [sys.executable, str(tree / "ci.py"), "release-check"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tree,
+    )
+
+
+def test_release_check_passes_on_an_untagged_tree_whose_copies_agree(tmp_path):
+    """L-34/L-68. The baseline, so the failures below are the check firing rather than the
+    check being broken."""
+    r = _release_check(_release_tree(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "release-check ok" in r.stdout and "untagged" in r.stdout
+
+
+def test_release_check_refuses_a_tag_that_disagrees_with_the_version(tmp_path):
+    """L-34. `git tag v0.2.0` on a tree that still says 0.1.0 uploaded 0.1.0, and 0.1.0
+    could never be re-uploaded to correct it. Nothing in the release path compared the two."""
+    r = _release_check(_release_tree(tmp_path, version="0.1.0"), tag="v0.2.0")
+    assert r.returncode != 0
+    assert "does not match" in r.stdout + r.stderr
+
+
+def test_release_check_refuses_a_tag_while_the_changelog_says_unreleased(tmp_path):
+    """L-36. A tag means released; `[Unreleased]` means it is not. Publishing with both is
+    how a version reaches PyPI with no dated section to attribute it to."""
+    r = _release_check(_release_tree(tmp_path, heading="Unreleased"), tag="v0.1.0")
+    assert r.returncode != 0
+    assert "[Unreleased]" in r.stdout + r.stderr
+
+
+def test_release_check_refuses_a_released_version_with_no_citation_year(tmp_path):
+    """L-36. `CITATION.cff` exists so a reader does not have to guess a citation — and
+    without `date-released` the citation it hands them has no year in it."""
+    tree = _release_tree(tmp_path, heading="0.1.0 — 2026-08-18", date_released=False)
+    r = _release_check(tree)
+    assert r.returncode != 0
+    assert "date-released" in r.stdout + r.stderr
+
+    (tree / "CITATION.cff").write_text(
+        "version: 0.1.0\ndate-released: 2026-08-18\n", encoding="utf-8"
+    )
+    ok = _release_check(tree, tag="v0.1.0")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+
+
+def test_release_check_refuses_copies_that_disagree(tmp_path):
+    """L-68. The four copies agree today, which is exactly when to assert it: drift is
+    otherwise found at release, in the one build that cannot be re-uploaded."""
+    r = _release_check(_release_tree(tmp_path, version="0.1.0", citation_version="0.9.9"))
+    assert r.returncode != 0
+    assert "disagree" in r.stdout + r.stderr and "CITATION.cff" in r.stdout + r.stderr
+
+
+def test_release_check_reports_a_version_it_cannot_find(tmp_path):
+    """A silent pass on an unreadable file would be worse than no check: the message has to
+    name the file, because the patterns here are the thing most likely to rot."""
+    tree = _release_tree(tmp_path)
+    (tree / "CITATION.cff").write_text("# nothing here\n", encoding="utf-8")
+    r = _release_check(tree)
+    assert r.returncode != 0
+    assert "no version found in CITATION.cff" in r.stdout + r.stderr
+
+
+def test_build_runs_the_release_check_first(tmp_path):
+    """The guard is only a guard if `build` calls it — and `ci.py build` takes minutes, so
+    this reads the wiring rather than running it. Deleting the call is the whole regression."""
+    src = (_repo_root() / "ci.py").read_text(encoding="utf-8")
+    assert re.search(r"def build\(\) -> None:\n    release_check\(\)", src), (
+        "ci.py build must call release_check() before it builds anything"
+    )
+
+
+def _ci_module():
+    spec = importlib.util.spec_from_file_location("_ci_under_test", _repo_root() / "ci.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_coverage_floor_is_on_unless_it_is_asked_off(monkeypatch):
+    """L-26. The floor has to be OFF for the Windows leg — 22 tests skip there, so their
+    lines go unmeasured and 100% is unreachable by construction. That is exactly the shape
+    of change that quietly becomes permanent, so: on by default, off only for the literal
+    value, and every other value including the empty string an Actions expression produces
+    for a leg that sets nothing leaves it on."""
+    ci = _ci_module()
+    monkeypatch.delenv("RUNPROV_COVERAGE_FLOOR", raising=False)
+    assert "--cov-fail-under=100" in ci._coverage_args()
+    for value in ("", "no", "0", "false", "OFFF"):
+        monkeypatch.setenv("RUNPROV_COVERAGE_FLOOR", value)
+        assert "--cov-fail-under=100" in ci._coverage_args(), f"{value!r} must not lower it"
+    for value in ("off", "OFF", "Off"):
+        monkeypatch.setenv("RUNPROV_COVERAGE_FLOOR", value)
+        assert "--cov-fail-under=100" not in ci._coverage_args()
+        assert "--cov=runprov" in ci._coverage_args(), "coverage is still MEASURED, just not gated"
+
+
+def test_only_the_windows_leg_turns_the_coverage_floor_off():
+    """L-26. If a second leg picked this up the gate would be gone on Linux and the suite
+    would still be green — which is the failure mode this whole audit keeps finding."""
+    yaml = pytest.importorskip("yaml")
+    wf = _repo_root() / ".github/workflows/test.yml"
+    if not wf.is_file():  # pragma: no cover - not shipped in the sdist
+        pytest.skip("test.yml not present")
+    matrix = yaml.safe_load(wf.read_text(encoding="utf-8"))["jobs"]["test"]["strategy"]["matrix"]
+    off = [leg for leg in matrix["include"] if leg.get("coverage_floor") == "off"]
+    assert [leg["os"] for leg in off] == ["windows-latest"], (
+        f"exactly one leg may lower the floor; found {off}"
+    )
+    assert matrix["os"] == ["ubuntu-latest"], "the base matrix must carry no floor override"
+
+
+def test_the_publish_workflow_declares_least_privilege(tmp_path):
+    """L-34. With no top-level `permissions`, every job inherits the repository default —
+    write-all on older repositories — so `build` and `test` ran a release with push rights
+    they never needed. A job-level block REPLACES the top-level one, which is why `publish`
+    has to repeat `contents: read` beside the id-token it needs for trusted publishing."""
+    yaml = pytest.importorskip("yaml")
+    wf = _repo_root() / ".github/workflows/publish.yml"
+    if not wf.is_file():  # pragma: no cover - not shipped in the sdist
+        pytest.skip("publish.yml not present")
+    d = yaml.safe_load(wf.read_text(encoding="utf-8"))
+    assert d["permissions"] == {"contents": "read"}
+    assert d["jobs"]["publish"]["permissions"] == {"id-token": "write", "contents": "read"}
+
+
+def test_every_copy_of_the_version_agrees():
+    """L-68. The version is written in FOUR places — `pyproject.toml`, `__init__.__version__`,
+    `CITATION.cff` and the CHANGELOG's top heading — and nothing failed if they drifted. They
+    agree today, which is exactly when to assert it: a mismatch is discovered at release, in
+    the one build that cannot be re-uploaded, and it makes the citation cite a version that
+    was never published."""
+    root = _repo_root()
+    for name in ("pyproject.toml", "runprov/__init__.py", "CITATION.cff", "CHANGELOG.md"):
+        if not (root / name).is_file():  # pragma: no cover - sdist ships them; a bare tree may not
+            pytest.skip(f"{name} not present")
+
+    found = {
+        "pyproject.toml": re.search(
+            r'^version = "([^"]+)"', (root / "pyproject.toml").read_text(encoding="utf-8"), re.M
+        ),
+        "__init__.py": re.search(
+            r'^__version__ = "([^"]+)"',
+            (root / "runprov/__init__.py").read_text(encoding="utf-8"),
+            re.M,
+        ),
+        "CITATION.cff": re.search(
+            r"^version: (\S+)", (root / "CITATION.cff").read_text(encoding="utf-8"), re.M
+        ),
+        "CHANGELOG.md": re.search(
+            r"^## \[[^\]]+\] — (\S+)", (root / "CHANGELOG.md").read_text(encoding="utf-8"), re.M
+        ),
+    }
+    missing = [k for k, m in found.items() if m is None]
+    assert not missing, f"no version found in {missing}"
+    versions = {k: m.group(1) for k, m in found.items()}
+    assert len(set(versions.values())) == 1, f"the copies disagree: {versions}"
+    assert versions["__init__.py"] == runprov.__version__
+
+
+def test_the_pre_commit_ruff_matches_the_one_the_gate_enforces():
+    """L-69. The hook pinned ruff v0.6.9 against a gate on 0.16.2, ten minor versions apart —
+    and with `--fix` that is worse than a skew: the hook REWRITES code to satisfy an old ruff,
+    then CI rejects it with the new one, so the tool that exists to catch a failure early
+    creates one."""
+    root = _repo_root()
+    if not (root / ".pre-commit-config.yaml").is_file():  # pragma: no cover - not in the sdist
+        pytest.skip(".pre-commit-config.yaml not present")
+
+    hook = re.search(
+        r"ruff-pre-commit\n\s+rev: v(\S+)", (root / ".pre-commit-config.yaml").read_text("utf-8")
+    )
+    gate = re.search(r'"ruff==(\S+?)"', (root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert hook and gate, "could not find both pins"
+    assert hook.group(1) == gate.group(1), (
+        f"pre-commit runs ruff {hook.group(1)} while the gate enforces {gate.group(1)}; with "
+        f"`--fix` the hook will rewrite code that CI then rejects"
+    )
+
+
 def test_the_readme_documents_the_in_band_allowlist_exactly():
     """L-60. The format table's in-band row read "TSV, CSV, BED, YAML, Markdown, SQL" and
     omitted GFF3 — while the allowlist includes `.gff3` and the prose 800 lines further down
@@ -7420,6 +7704,7 @@ def test_the_byte_bound_does_not_move_any_digest(tmp_path):
 
 
 # ===================== a symlinked data directory is the normal layout, not a foreign file
+@requires_symlinks
 def test_a_symlinked_directory_inside_the_root_pins_as_repository_data(tmp_path):
     """`data/ -> /mnt/bigdisk/data` is the standard bioinformatics layout, and every
     Nextflow or Snakemake work directory stages its inputs as symlinks.
@@ -7450,6 +7735,7 @@ def test_a_symlinked_directory_inside_the_root_pins_as_repository_data(tmp_path)
     assert rep["ok"] == 1 and rep["unverifiable"] == 0
 
 
+@requires_symlinks
 def test_a_root_reached_through_a_link_still_resolves(tmp_path):
     """The other direction, and why `resolve()` is kept as the second attempt: macOS `/tmp`
     is `/private/tmp`, and plenty of clusters mount home directories through a link. There
@@ -7480,6 +7766,7 @@ def test_a_path_that_is_genuinely_outside_still_pins_as_external(tmp_path):
     assert "<external>/elsewhere.tsv" in run.header()
 
 
+@requires_symlinks
 def test_a_dotdot_through_a_link_declines_the_cheap_answer(tmp_path):
     """`link/../x` normalises to the parent of the LINK, while on disk it means the parent
     of its TARGET. The cheap normalisation would name a file that is not the one hashed, so
@@ -7501,6 +7788,7 @@ def test_a_dotdot_through_a_link_declines_the_cheap_answer(tmp_path):
     assert "repo/sibling.tsv" not in header
 
 
+@requires_symlinks
 def test_a_symlink_loop_pins_as_external_instead_of_killing_the_run(tmp_path):
     """`resolve()` on a loop raises RuntimeError, which is NOT an OSError — so it was not
     caught here, escaped `_pin_name`, escaped `header()`, and killed the run at the moment
@@ -8668,6 +8956,7 @@ def test_two_artifacts_from_one_run_read_that_run_s_sidecar_once(tmp_path, monke
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFO needed to make one")
+@requires_fifo
 def test_rehash_reports_unknown_when_the_ARTIFACT_cannot_be_read(tmp_path, monkeypatch):
     """`describe` refuses a FIFO rather than blocking on it, and an artifact that cannot be
     hashed now is a question that cannot be answered — not an artifact that is current."""
@@ -9228,6 +9517,7 @@ def test_code_registers_a_script_in_another_language_into_the_same_digest(tmp_pa
     assert first["digest"] != second["digest"], "an R change moves the code digest"
 
 
+@requires_symlinks
 def test_one_unresolvable_module_does_not_erase_the_whole_code_section(tmp_path, monkeypatch):
     """L-98, found by sweeping every narrow `except` around a `resolve()` after L-97.
 
@@ -9358,6 +9648,7 @@ def test_the_constructors_sidecar_is_not_stamped_twice(tmp_path):
     )
 
 
+@requires_symlinks
 def test_declared_code_that_becomes_unresolvable_is_skipped_not_fatal(tmp_path, monkeypatch):
     """The guard under L-27's fix, and it is reachable rather than defensive. `code()`
     validates the file at REGISTRATION; the record is built at EXIT, and a staging step can
@@ -9710,6 +10001,7 @@ def _append_many(target, n, size, tag):
         sink.append({"tag": tag, "i": i, "pad": "x" * size})
 
 
+@requires_fcntl
 def test_concurrent_appends_survive_when_locking_is_UNAVAILABLE(tmp_path, monkeypatch):
     """The NFS case, forced rather than waited for.
 
@@ -9738,6 +10030,7 @@ def test_concurrent_appends_survive_when_locking_is_UNAVAILABLE(tmp_path, monkey
     assert bad == 0 or len(rows) >= 160 - bad, "a torn line must cost one record, never more"
 
 
+@requires_fcntl
 def test_the_downgrade_to_no_locking_is_ANNOUNCED(tmp_path, monkeypatch, capsys):
     """The notice used to sit inside a win32-only branch, so a POSIX `flock` that raised --
     an NFS or CIFS mount, a container without the syscall -- degraded silently. Those
@@ -9797,6 +10090,7 @@ def test_network_fs_concurrent_appends_do_not_lose_records():
 
 
 @pytest.mark.skipif(not NETWORK_FS, reason="set RUNPROV_NETWORK_FS_DIR to a real NFS/Lustre path")
+@requires_fcntl
 def test_network_fs_reports_whether_locking_is_actually_available():
     """Not an assertion, a MEASUREMENT: does `flock` work on this mount at all?
 

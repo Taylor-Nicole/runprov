@@ -1,8 +1,13 @@
 # Same checks as CI, run locally. `pre-commit install` once, then a failing push is
 # something you find in a second rather than in a queue.
 repos:
+  # PINNED TO THE VERSION THE GATE ENFORCES, and it has to stay that way. This said v0.6.9
+  # against a gate on 0.16.2 -- ten minor versions apart -- and with `--fix` that is worse
+  # than a version skew: the hook REWRITES code to satisfy an old ruff, then CI rejects it
+  # with the new one, so the tool that exists to catch a failure early creates one. There is
+  # a test asserting these two agree.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
+    rev: v0.16.2
     hooks:
       - id: ruff
         args: [--fix]

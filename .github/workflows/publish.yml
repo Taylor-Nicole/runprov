@@ -8,6 +8,13 @@ on:
   push:
     tags: ["v*"]
 
+# LEAST PRIVILEGE, DECLARED AT THE TOP. Without this block every job inherits the
+# repository default, which for older repositories is write-all -- so a compromised
+# dependency of `build` or `test` could push to the repository during a release. Only
+# `publish` needs anything more, and it says so itself.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -24,6 +31,14 @@ jobs:
       # skipped the py.typed check that PUBLISHING.md itself calls invisible (the source
       # tree type-checks, the wheel installs, and every consumer silently gets an untyped
       # package), on a version that can never be re-uploaded.
+      #
+      # It also runs `release-check` (see ci.py), and THIS is the job where that matters:
+      # `GITHUB_REF_NAME` is the tag here, so tagging v0.2.0 on a tree that still says
+      # 0.1.0 fails before anything is uploaded. Nothing checked that before -- PyPI would
+      # have received 0.1.0 under a v0.2.0 tag, and 0.1.0 can never be re-uploaded to fix
+      # it. It equally refuses a tag whose CHANGELOG section is still `[Unreleased]` or
+      # whose CITATION.cff has no `date-released`, so a published version cannot be cited
+      # without a year.
       #
       # It still runs twine check --strict — which catches a README PyPI refuses to
       # render — and adds: py.typed inside the wheel, the wheel installed into a clean
@@ -58,8 +73,12 @@ jobs:
     needs: [build, test]
     runs-on: ubuntu-latest
     environment: pypi
+    # A job-level block REPLACES the top-level one rather than adding to it, so
+    # `contents: read` is repeated here on purpose -- omit it and this job runs with
+    # id-token and nothing else.
     permissions:
       id-token: write        # required for trusted publishing
+      contents: read
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
