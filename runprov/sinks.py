@@ -219,9 +219,12 @@ def _exclusive(fh: typing.IO[typing.Any]) -> typing.Iterator[None]:
     unlocked append, and a record was lost silently. Documenting a fallback is not the same
     as having one that works.
 
-    Measured on the project this came from: history lines median 2,032 bytes, max 7,274,
-    and 65 of 1,908 over 4,096 -- the size below which POSIX *guarantees* an O_APPEND write
-    is atomic.
+    Measured on the project this came from -- `hcv-genotyping-release/reports/audit/runs.jsonl`,
+    2026-08-18: 2,453 lines, median 2,149 bytes, max 10,661, and 205 over 4,096, the size
+    below which POSIX *guarantees* an O_APPEND write is atomic. That file is appended to
+    daily, so this is a SNAPSHOT and re-measuring gives different numbers; an earlier
+    reading here said 1,908 lines and 65 over, which is the same file three weeks younger.
+    The durable claim is that some lines exceed PIPE_BUF, true at every measurement.
 
     CORRECTION, because the first version of this comment overstated the case: on Linux
     ext4 that bound is not what bites. With locking disabled entirely, 8 processes x 20
