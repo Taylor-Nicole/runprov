@@ -7290,6 +7290,125 @@ def _readme_headings():
     return out
 
 
+#: The predecessor log the README's central worked example measures. NOT in this repository
+#: and it must never be: it is 2.1 MB of somebody's real research history. Point
+#: `RUNPROV_PREDECESSOR_LOG` at it to check the README's numbers against the actual file.
+_PREDECESSOR_LOG_SHA = "bc0a72ca0dcea3fc25c32fbdd960349e66f44f31a852b440bd102c9a722e3c71"
+
+
+def test_the_predecessor_log_numbers_are_reproducible_from_the_named_file():
+    """L-49. The README's worked example cited measurements against a file it never
+    identified — and SEVERAL copies of that file exist, with different line counts, different
+    entry counts and different failure offsets. A reviewer holding a different copy produced
+    three confident, wrong corrections to the section. That is precisely the failure this
+    package exists to prevent, in its own front matter.
+
+    So the file is now named and pinned by digest in the README, and this re-derives every
+    figure from it. SKIPPED when the file is not reachable, which is the honest state on any
+    machine but one: an unreachable file is not a passing test, and the digest check means a
+    different copy skips rather than silently 'passing' against the wrong numbers."""
+    raw = os.environ.get("RUNPROV_PREDECESSOR_LOG")
+    if not raw:  # pragma: no cover - set only where the file exists
+        pytest.skip("set RUNPROV_PREDECESSOR_LOG to the predecessor transformation_log.yml")
+    path = pathlib.Path(raw)
+    if not path.is_file():  # pragma: no cover - the drive it lives on is removable
+        pytest.skip(f"{path} is not reachable")
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != _PREDECESSOR_LOG_SHA:  # pragma: no cover
+        pytest.skip("a DIFFERENT copy of the log — this is the defect the row is about")
+
+    readme = (_repo_root() / "README.md").read_text(encoding="utf-8")
+    assert _PREDECESSOR_LOG_SHA in readme, "the README must name the digest it measured"
+    section = readme[
+        readme.index("It is JSONL rather than YAML") : readme.index("Read it back with the CLI")
+    ]
+
+    lines = data.decode("utf-8", "replace").splitlines()
+    entries = [i for i, line in enumerate(lines) if line.startswith("- step:")]
+    yaml = pytest.importorskip("yaml")
+
+    measured = {
+        "bytes": len(data),
+        "lines": len(lines),
+        "entries": len(entries),
+        "documents": sum(1 for line in lines if line.rstrip() == "---"),
+        "longest_entry": max(
+            b - a for a, b in zip(entries, [*entries[1:], len(lines)], strict=True)
+        ),
+    }
+    assert measured == {
+        "bytes": 2_147_154,
+        "lines": 24_300,
+        "entries": 295,
+        "documents": 252,
+        "longest_entry": 6_544,
+    }, measured
+    # Measured, then required to be WHAT THE README SAYS — IN CONTEXT. Asserting the literals
+    # alone would leave the prose free to drift away from the file it names, which is the
+    # row's defect one level up; asserting a bare `"295" in section` is not enough either,
+    # since the same digits appear in the recovery claim and a wrong entry count survived it.
+    for name, phrase in {
+        "bytes": f"bytes   {measured['bytes']:,}",
+        "lines": f"{measured['lines']:,} lines)",
+        "entries": f"**{measured['entries']} entries**",
+        "documents": f"**{measured['documents']}** of them",
+        "longest_entry": f"**{measured['longest_entry']:,}\nlines**",
+    }.items():
+        assert phrase in section, f"the README does not state {name} as {phrase!r}"
+
+    # The two failure offsets, which are the numbers a reader is most likely to check.
+    with pytest.raises(yaml.YAMLError) as single:
+        yaml.safe_load(data.decode("utf-8", "replace"))
+    assert "line 14547" in str(single.value).replace(",", "")
+    with pytest.raises(yaml.YAMLError) as stream:
+        list(yaml.safe_load_all(data.decode("utf-8", "replace")))
+    assert "line 14554" in str(stream.value).replace(",", "")
+
+    # "A tolerant line-wise recovery gets 293 of 295 entries back" — the claim that carries
+    # the argument for JSONL, so it is derived here rather than quoted.
+    recovered = 0
+    for a, b in zip(entries, [*entries[1:], len(lines)], strict=True):
+        block = "\n".join(line for line in lines[a:b] if line.rstrip() != "---")
+        try:
+            recovered += bool(yaml.safe_load(block))
+        except yaml.YAMLError:
+            pass
+    assert recovered == 293, recovered
+    assert f"**{recovered} of {measured['entries']}**" in section, (
+        "the recovery claim must state both halves, and both must be the measured ones"
+    )
+    for offset in (14547, 14554):
+        assert f"{offset:,}" in section, f"the README does not state the failure at {offset:,}"
+
+
+def test_every_statement_of_the_repair_script_count_agrees():
+    """L-59 was fixed once and drifted twice. The predecessor's `fix_transformation_log_*.py`
+    scripts are cited in eight places across four files as the reason this package exists,
+    and the number has been written as eleven, nine and eight — three values for one fact, in
+    a package whose subject is claims that stopped being true.
+
+    The COUNT cannot be checked from here: the scripts live in the sibling project, outside
+    this repository. What can be checked is that every statement of it agrees, which is the
+    same treatment the four version copies get — a fact nothing verified is at least not
+    allowed to contradict itself."""
+    pat = re.compile(r"(\w+)\s+(?:`fix_transformation_log_\*\.py`\s+)?(?:repair|heal) scripts")
+    root = _repo_root()
+    found = {}
+    for name in [
+        "README.md",
+        "WHY.md",
+        "CHANGELOG.md",
+        *sorted(str(p.relative_to(root)) for p in (root / "runprov").glob("*.py")),
+    ]:
+        f = root / name
+        if not f.is_file():  # pragma: no cover - WHY.md is not in the sdist
+            continue
+        for m in pat.finditer(f.read_text(encoding="utf-8").replace("\n", " ")):
+            found.setdefault(m.group(1).lower(), []).append(name)
+    assert found, "the citation is gone entirely; if that is deliberate, delete this test"
+    assert len(found) == 1, f"one fact, {len(found)} different numbers: {found}"
+
+
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():
     """L-70. `runprov exec` is a top-level subcommand and sat as an H3 CHILD of "The
     notebook: `show`" — a section about a read-only viewer. A reader scanning the rendered
