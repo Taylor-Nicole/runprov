@@ -10,7 +10,7 @@ ever recorded, in order, one JSON object per line. That is the same thing the pr
 predecessor's file **stopped being readable**. Its writer appended `---` documents into a
 file that began as a list. Measured on the real 24,300-line file: `safe_load` dies at line
 14,547 on those `---` documents, and `safe_load_all` dies at 14,554 on something else
-entirely -- an unquoted `Note:` inside a hand-written description. Eleven repair scripts
+entirely -- an unquoted `Note:` inside a hand-written description. Nine repair scripts
 exist to heal it, one of which is itself a step in the pipeline it documents.
 
 JSONL cannot fail that way. Each line stands alone: a corrupt line costs one record, never

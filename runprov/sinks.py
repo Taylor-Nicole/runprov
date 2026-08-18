@@ -117,7 +117,7 @@ class YamlLogSink:
     THE FILE THIS PACKAGE EXISTS BECAUSE OF, written the way that file should have been.
     `transformation_log.yml` is what a person opens to read the story of a project, and the
     predecessor's copy is also the file that stopped parsing at line 14,547 of 24,300 and
-    grew eight repair scripts around it. So this is a VIEW and not the record: `runs.jsonl`
+    grew nine repair scripts around it. So this is a VIEW and not the record: `runs.jsonl`
     stays the source of truth, and if this file is ever damaged it can be regenerated from
     the history with `python -m runprov log --format yaml`.
 

@@ -225,8 +225,23 @@ this project has ever recorded, in order, never rewritten. That is the same job 
 project's `transformation_log.yml` did, and the continuity is the property worth keeping.
 
 It is JSONL rather than YAML because the predecessor's file **stopped being readable**.
-Measured on the real 2.1 MB, 24,300-line file, which holds only **295 entries** because a
-single hand-written `description:` runs to 6,544 lines:
+
+Every number below is measured on ONE named file, because that turned out to matter: several
+copies of this log exist on the machine it came from, with different line counts and
+different failure offsets, and a reviewer holding a different copy produced three confident,
+wrong corrections to this section. Naming the file is the same discipline the package is
+about — a measurement that does not say what it measured is not checkable.
+
+```
+path    hcv_genotyping/transformation_log.yml   (flaviviridae_20260424_FULL)
+bytes   2,147,154                               (2.1 MB, 24,300 lines)
+sha256  bc0a72ca0dcea3fc25c32fbdd960349e66f44f31a852b440bd102c9a722e3c71
+```
+
+It holds **295 entries** — lines beginning `- step:` — and one of them runs to **6,544
+lines**, because a repair script (`- step: fix_transformation_log_hybrid_heal_plus_env`)
+appended 243 further records **without their `- ` list markers**, so YAML reads them as more
+keys of the entry above rather than as records of their own. The repair is what did that.
 
 | | |
 |---|---|
@@ -237,7 +252,7 @@ Two different defects, and the second is the one that matters here: it is not th
 document problem at all. It is a hand-written value that happened to contain `: `, in a
 writer whose quoting was correct only for the values its author had thought of. That is why
 `_yaml` in this package quotes **every scalar unconditionally** rather than sniffing for
-characters that need it — and why the same string round-trips through it cleanly. Eleven
+characters that need it — and why the same string round-trips through it cleanly. Nine
 `fix_transformation_log_*.py` repair scripts exist because of all this, one of which is
 itself a step in the pipeline the log documents.
 
@@ -1451,7 +1466,7 @@ it is better than leaving silence to be read as abandonment:
 
 ## Tests
 
-`tests/test_runprov.py`, 522 tests, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, 523 tests, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite (`tests/test_runprov.py:3534`), to
 assert a call ORDER that no returned value can show. Everything else is substituted by a real
@@ -1460,7 +1475,7 @@ narrow simulation of an environment this machine is not (`sys.platform` for Wind
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
 stubs the subject to make it agree with the test.
 
-Twenty-two of the 522 need something of the filesystem itself — a FIFO, a symlink, a file
+Twenty-two of the 523 need something of the filesystem itself — a FIFO, a symlink, a file
 `chmod(0o000)` really makes unreadable — and they skip where that is unavailable. The
 condition is a PROBE, not `sys.platform`: symlinks work on a Windows machine with Developer
 Mode enabled, and `chmod(0o000)` denies nothing to root, so a platform check both skipped
