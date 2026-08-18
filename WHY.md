@@ -151,11 +151,18 @@ it is most of the answer to "why did this run differ".
 
 * **It is not novel, and the pitch should not claim it is.** `sumatra`, `recipy`,
   `provenance` and `dvc` all address versions of this. The honest positioning: *the smallest
-  possible one — zero runtime dependencies, 514 statements, and a quickstart that uses two
-  of the 21 exported names — with each design choice traceable to a specific failure in a
-  real project.* Most of the alternatives ask you to run a
-  daemon, adopt a workflow engine, or restructure your pipeline. This one asks you to change
-  `open(p)` to `open(run.input(p))`.
+  possible one, with each design choice traceable to a specific failure in a real project.*
+  Most of the alternatives ask you to run a daemon, adopt a workflow engine, or restructure
+  your pipeline. This one asks you to change `open(p)` to `open(run.input(p))`.
+
+  Zero runtime dependencies, and the quickstart uses two of the 27 exported names. On size,
+  the honest figure is where the statements sit rather than the total: **1,371 record**
+  (`run`, `hashing`, `project`, `sinks`, `environment`, `terminal`) and **778 read the record
+  back** (`show`, `__main__`, `verify`). Adopting it costs you the first number; the second is
+  a CLI you can ignore. This bullet claimed **514 statements** until 2026-08-18 — measured
+  before `show`, `verify`, `exec` and the terminal capture existed, which made a stale number
+  the evidence in the sentence about smallness.
+
 * **It records; it does not audit.** It cannot tell you a registered read was the read that
   *mattered*, and it cannot see a rule reimplemented as control flow. The half that makes the
   record trustworthy is a separate checker that fails the build on an unregistered read.

@@ -1462,7 +1462,7 @@ it is better than leaving silence to be read as abandonment:
 
 ## Tests
 
-`tests/test_runprov.py`, 524 tests, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, 525 tests, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite (`tests/test_runprov.py:3534`), to
 assert a call ORDER that no returned value can show. Everything else is substituted by a real
@@ -1471,7 +1471,7 @@ narrow simulation of an environment this machine is not (`sys.platform` for Wind
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
 stubs the subject to make it agree with the test.
 
-Twenty-two of the 524 need something of the filesystem itself — a FIFO, a symlink, a file
+Twenty-two of the 525 need something of the filesystem itself — a FIFO, a symlink, a file
 `chmod(0o000)` really makes unreadable — and they skip where that is unavailable. The
 condition is a PROBE, not `sys.platform`: symlinks work on a Windows machine with Developer
 Mode enabled, and `chmod(0o000)` denies nothing to root, so a platform check both skipped
@@ -1479,7 +1479,7 @@ tests that would have run and ran tests that could not fail. Asking the filesyst
 for the machine in front of you. The Windows leg therefore skips 22 more than any other
 and does not assert the coverage floor, which no leg but that one may lower.
 
-Coverage is **100%** of 2,151 statements **and 772 branches**, and the gate is set there with
+Coverage is **100%** of 2,149 statements **and 772 branches**, and the gate is set there with
 `--cov-branch`. The branch half was added 2026-08-11 and was not decoration: statement
 coverage read 100% while five conditions had never been evaluated both ways — including the
 `with` block that records nothing, which is a *known* documented gap that no test held. Each

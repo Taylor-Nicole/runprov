@@ -2237,6 +2237,29 @@ def _first_python_block(text: str) -> str:
 _NOT_FOR_DISTRIBUTION = ("PUBLISHING.md", "LICENSING.md")
 
 
+def test_the_exported_name_count_in_why_md_is_the_real_one():
+    """WHY.md is the positioning document — the file you hand someone who asks how this is
+    different — and its differentiator bullet cited **514 statements** and **21 exported
+    names** while the package had 2,149 and 27. A stale number is bad anywhere; in the
+    sentence claiming smallness it is the evidence.
+
+    The statement counts are not asserted here — coverage measures those, and pinning them in
+    a test would mean editing it on every commit that adds a line. The name count is
+    different: `__all__` is the public surface, it changes rarely, and a claim about it is
+    checkable in one expression."""
+    why = _repo_root() / "WHY.md"
+    if not why.is_file():  # pragma: no cover - shipped, but a bare tree may not have it
+        pytest.skip("WHY.md not present")
+    text = why.read_text(encoding="utf-8")
+    assert f"two of the {len(runprov.__all__)} exported names" in text, (
+        f"WHY.md does not say there are {len(runprov.__all__)} exported names"
+    )
+    # And the claim beside it: the quickstart really does use two of them.
+    block = _first_python_block(_readme())
+    used = {n for n in runprov.__all__ if re.search(rf"\b{n}\b", block)}
+    assert used == {"Run", "configure"}, f"the quickstart now uses {sorted(used)}"
+
+
 def test_the_internal_drafts_are_not_packaged_and_not_linked():
     """L-08. Both shipped inside the 0.1.0 sdist AND were linked from the README, which is
     the `Description` PyPI freezes at upload.
