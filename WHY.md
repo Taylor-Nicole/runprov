@@ -226,6 +226,13 @@ exploration stay valid and readable afterwards, and `runprov exec` returns the w
 command's own exit code so it drops inside a Snakemake rule or a Nextflow process without
 becoming a second provenance system.
 
+Say PHASE and never SIZE. "Engines are for big teams with infrastructure" is false — plenty
+of three-person labs run Nextflow, `nf-core` is excellent, and the first bioinformatician who
+reads it will say so. The defensible form: nobody writes a Nextflow pipeline to try an idea
+on a Tuesday afternoon, including the people whose production pipeline is Nextflow. `nf-core`
+exists for the analyses that have SETTLED; the unsettled ones are where provenance is hardest
+to reconstruct afterwards, and where there is currently nothing.
+
 The cost argument is real but secondary, and worth stating precisely. The binding constraint
 is usually ADOPTION rather than RAM: restructuring code into rules, making everything
 file-driven and re-runnable, and everyone agreeing to work that way. Where the resource point
@@ -244,6 +251,29 @@ reads.
 Nextflow, for one, does hash inputs for `-resume`, so "they do not hash" would be wrong. The
 three claims above are about WHAT is observed, WHERE the record lives, and WHEN it can be
 adopted.)
+
+### And Jupyter?
+
+A notebook records the NARRATIVE — cell source, the outputs those cells produced, an
+`execution_count`, a kernel name. It does not record the DEPENDENCY: no hash, no statement of
+which file `pd.read_csv("data.csv")` read or what was in it, no package versions, no commit,
+and nothing about a previous session, since re-running a cell overwrites yesterday's output.
+There is no append-only record to read back.
+
+The export is where it gets worse rather than better. `df.to_csv("results.csv")` leaves the
+notebook entirely: the notebook keeps its inline copy, the file a collaborator receives
+carries nothing. The figure in the manuscript came from a file that cannot say what made it.
+
+Notebooks also have a reproducibility problem of their own, unrelated to provenance: cells run
+out of order, so the saved outputs may be unreachable from a top-to-bottom re-run. (Pimentel
+et al., *A Large-Scale Study About Quality and Reproducibility of Jupyter Notebooks*, MSR
+2019. Read the figures there; do not quote anyone's recollection of them, including mine.)
+
+It works inside a notebook, which is the point rather than a caveat: exploration is what
+notebooks are for, so they are the strongest case for adopting this before any DAG exists.
+Checked with no `__file__` and an `ipykernel`-shaped `argv` — inputs hashed, outputs pinned,
+`script_file` recorded as `None` with the stated fallback rather than an invented path. The
+one wrinkle: `command` records the kernel launch and not your cell, so name the run yourself.
 
 ## Why it matters for a thesis or a paper specifically
 

@@ -244,11 +244,53 @@ been made. So this is adoptable earlier, and nothing is wasted at the migration:
 written during exploration stay valid and readable, and `runprov exec` returns the wrapped
 command's own exit code so it drops inside a rule without becoming a second system.
 
+**This is about the phase, not the size of the group.** Plenty of three-person labs run
+Nextflow — `nf-core` exists and is excellent — so "engines are for big teams with
+infrastructure" is not the argument and will be contradicted by the first bioinformatician
+who reads it. The argument is that nobody writes a Nextflow pipeline to try an idea on a
+Tuesday afternoon, including the people whose production pipeline is Nextflow. `nf-core`
+exists for the analyses that have *settled*. The unsettled ones are where provenance is
+hardest to reconstruct afterwards and where there is currently nothing.
+
 **What it does not do, said before you find out.** It does not execute, schedule, parallelise
 or submit to a cluster, and it offers no re-execution guarantee. An engine makes what happens
 **repeatable**; this gives an **account of what happened**. If you already run Snakemake with
 conda environments, you have much of this — the remainder is the in-artifact pin and
 observed-versus-declared reads.
+
+### Doesn't Jupyter already do this?
+
+A notebook records the **narrative**; it does not record the **dependency**. Both are useful
+and they are not substitutes.
+
+What the `.ipynb` holds is cell source, the outputs those cells produced, an
+`execution_count` per cell, and a kernel name. What it does not hold: any hash, any statement
+of *which file* `pd.read_csv("data.csv")` actually read or what was in it at the time, the
+package versions, the commit, or anything at all about a previous session — re-run a cell and
+yesterday's output is overwritten. There is no append-only record to read back.
+
+The export is where it gets worse rather than better. `df.to_csv("results.csv")` leaves the
+notebook entirely: the notebook keeps its inline copy, and the file you send a collaborator
+carries nothing. That is the in-artifact pin argument again, one notch sharper — the figure in
+the manuscript came from a file that cannot say what made it.
+
+And notebooks have a reproducibility problem of their own that has nothing to do with
+provenance: cells run out of order, so `execution_count` is routinely non-linear and the saved
+outputs may be unreachable from a top-to-bottom re-run. (Pimentel et al., *A Large-Scale Study
+About Quality and Reproducibility of Jupyter Notebooks*, MSR 2019, is the standard reference;
+read the figures there rather than quoting anyone's recollection of them.)
+
+**It works inside a notebook**, and that is the point rather than a caveat — exploration is
+what notebooks are for, which makes them the strongest case for adopting this before any DAG
+exists. Checked with no `__file__` and an `ipykernel`-shaped `argv`: inputs are hashed,
+outputs pinned, and `script_file` records `None` with the stated fallback rather than
+inventing a path. One thing to know — `command` records the *kernel launch*, not your cell,
+so name the run yourself:
+
+```python
+with Run("explore_thresholds", {"cutoff": 5}, provenance=OUT.with_suffix(".prov.json")) as run:
+    df = pd.read_csv(run.input(RAW))
+```
 
 ## The three properties, and the defect each one prevents
 
