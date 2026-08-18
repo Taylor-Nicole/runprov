@@ -8038,6 +8038,65 @@ def _state_of(states, name):
     return next(v for k, v in states.items() if pathlib.Path(k).name == name)
 
 
+def _rebuilt_from_a_different_input(tmp_path, monkeypatch):
+    """One artifact path, written twice, by two runs reading DIFFERENT inputs.
+
+    `_staleable` gives every artifact exactly one producing run, so the overwrite semantics
+    of `staleness`'s producer map are never exercised there — which is L-53. This is the
+    smallest history that can tell first-writer-wins from last-writer-wins.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "out").mkdir()
+    first = tmp_path / "data" / "first.tsv"
+    second = tmp_path / "data" / "second.tsv"
+    first.write_text("one\n", encoding="utf-8")
+    second.write_text("two\n", encoding="utf-8")
+    proj = _project(tmp_path)
+
+    for name, src in (("build", first), ("rebuild", second)):
+        with runprov.Run(
+            name, project=proj, provenance=tmp_path / "out" / f"{name}.prov.json"
+        ) as r:
+            r.input(src)
+            with r.open_output(tmp_path / "out" / "shared.tsv") as fh:
+                fh.write(f"from {name}\n")
+
+    return [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+
+
+def test_staleness_checks_the_run_that_wrote_the_artifact_last(tmp_path, monkeypatch):
+    """L-53. The same defect as L-52, one function along: `staleness`'s producer map is also
+    last-writer-wins and was also unguarded, because `_staleable` gives every artifact
+    exactly one producing run.
+
+    First-writer-wins checks the artifact against the inputs of an OLD run, so a file rebuilt
+    from new inputs reads `current` — the inputs of a superseded run have not moved, and they
+    are not the ones it was made from. That is the reassuring lie the `?` state exists to
+    avoid, arriving through the state that looks most trustworthy."""
+    rows = _rebuilt_from_a_different_input(tmp_path, monkeypatch)
+    assert _state_of(runprov.show.staleness(rows), "shared.tsv") == "current", "the premise"
+
+    # The LATEST producer's input. Bigger, so the size check sees it without waiting a second.
+    (tmp_path / "data" / "second.tsv").write_text("two, and then some more\n", encoding="utf-8")
+    assert _state_of(runprov.show.staleness(rows), "shared.tsv") == "STALE", (
+        "the artifact was made from second.tsv, and second.tsv moved"
+    )
+
+
+def test_a_superseded_runs_input_does_not_make_an_artifact_stale(tmp_path, monkeypatch):
+    """The converse, and the sharper half: touching the input of the run that was REPLACED
+    must change nothing. Without it, a test could pass by treating every historical input of
+    a path as current — reporting STALE for work that is perfectly up to date, which sends a
+    developer to rebuild something that does not need it."""
+    rows = _rebuilt_from_a_different_input(tmp_path, monkeypatch)
+
+    (tmp_path / "data" / "first.tsv").write_text("one, edited long afterwards\n", encoding="utf-8")
+    assert _state_of(runprov.show.staleness(rows), "shared.tsv") == "current", (
+        "first.tsv is not what the artifact on disk was made from"
+    )
+
+
 def test_the_artifact_index_says_which_artifacts_need_rebuilding(tmp_path, monkeypatch):
     """The question the page exists to answer in one glance, when a build costs hours.
 
