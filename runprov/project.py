@@ -322,7 +322,21 @@ def default_generation() -> str:
     return os.environ.get("RUNPROV_GENERATION") or "(default)"
 
 
-@dataclasses.dataclass(frozen=True)
+# KEYWORD-ONLY, so field ORDER is not part of the API. Without `kw_only=True` a frozen
+# dataclass accepts positional arguments, and 16 fields of a released package would freeze
+# their order forever: inserting one beside its logical neighbour would be a breaking change
+# rather than an addition.
+#
+# It is not hypothetical. `warn_unregistered_reads` was added at index 5 on 2026-08-19, which
+# shifted `env_snapshot_dir` from 5 to 6 and `terminal_log_dir` from 6 to 7. A caller who had
+# written `Project(root, run_log, transformation_log, True, True, SNAPDIR)` would now bind a
+# `Path` to a BOOL field and get `env_snapshot_dir = None` -- measured, and it raises nothing,
+# because indices 1/2 and 6/7 are all `Path | None` and 3/4/5 are all `bool`. A silent
+# mis-binding in the object that decides where every record goes.
+#
+# `kw_only=True` needs Python 3.10, which is already the floor. Free today; a breaking change
+# the day after PyPI.
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class Project:
     """Everything `Run` needs to know about its surroundings.
 
