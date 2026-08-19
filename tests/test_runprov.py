@@ -8340,18 +8340,18 @@ def test_verify_cli_exits_non_zero_and_says_so_when_it_checked_nothing(tmp_path,
     assert "NOTHING CHECKED" in err and "not 'nothing is wrong'" in err
 
 
-def test_verify_reads_the_pin_write_json_embeds(tmp_path, monkeypatch, capsys):
-    """L-18. JSON has no comment syntax, so `write_json` puts the pin in a top-level KEY —
+def test_verify_reads_the_pin_output_json_embeds(tmp_path, monkeypatch, capsys):
+    """L-18. JSON has no comment syntax, so `output_json` puts the pin in a top-level KEY —
     the same `pin_digest` values, stored as data so a consumer does not have to parse prose
     out of a string. `read_pins` knew only the text anchor, so `verify` called a directory of
-    `write_json` artifacts unpinned and exited 1 with NOTHING CHECKED. Two features added in
+    `output_json` artifacts unpinned and exited 1 with NOTHING CHECKED. Two features added in
     the same session that could not see each other."""
     monkeypatch.chdir(tmp_path)
     runprov.configure(root=tmp_path, run_log=tmp_path / "provenance" / "runs.jsonl")
     (tmp_path / "in.tsv").write_text("id\n1\n", encoding="utf-8")
     with runprov.Run("s", {}, provenance=tmp_path / "p.json") as run:
         run.input(tmp_path / "in.tsv")
-        run.write_json(tmp_path / "calls.json", {"variants": [1, 2, 3]})
+        run.output_json(tmp_path / "calls.json", {"variants": [1, 2, 3]})
 
     rc = runprov.__main__.main(["verify", str(tmp_path), "--root", str(tmp_path)])
     assert "1 OK" in capsys.readouterr().err
@@ -8365,7 +8365,7 @@ def test_verify_reads_the_pin_write_json_embeds(tmp_path, monkeypatch, capsys):
 
 
 def test_the_json_pin_is_found_by_shape_not_by_key_name(tmp_path, monkeypatch, capsys):
-    """`write_json(key=...)` is documented — "Pass a `key` your readers ignore" — so a checker
+    """`output_json(key=...)` is documented — "Pass a `key` your readers ignore" — so a checker
     that only knew `_provenance` would silently stop recognising pins the moment anyone used
     that parameter."""
     monkeypatch.chdir(tmp_path)
@@ -8373,7 +8373,7 @@ def test_the_json_pin_is_found_by_shape_not_by_key_name(tmp_path, monkeypatch, c
     (tmp_path / "in.tsv").write_text("id\n1\n", encoding="utf-8")
     with runprov.Run("s", {}, provenance=tmp_path / "p.json") as run:
         run.input(tmp_path / "in.tsv")
-        run.write_json(tmp_path / "calls.json", {"variants": [1]}, key="__prov__")
+        run.output_json(tmp_path / "calls.json", {"variants": [1]}, key="__prov__")
 
     rc = runprov.__main__.main(["verify", str(tmp_path), "--root", str(tmp_path)])
     assert "1 OK" in capsys.readouterr().err and rc == 0
@@ -8471,7 +8471,7 @@ def test_an_unreadable_input_is_reported_for_every_artifact_that_pins_it(tmp_pat
 
 def test_a_json_pin_past_the_scan_bound_is_not_found_and_does_not_raise(tmp_path):
     """The bound is the same one the text reader has, and it is stated rather than hidden: a
-    pin further into the file than `SCAN_BYTES` is not found. `write_json` writes the pin
+    pin further into the file than `SCAN_BYTES` is not found. `output_json` writes the pin
     first, so this only happens to a file somebody else assembled — and there the head cuts
     through an object, `raw_decode` fails on the truncation, and the file must read as
     unpinned rather than raise out of the checker."""
@@ -9394,7 +9394,7 @@ def test_pin_sidecar_is_callable_for_a_file_another_library_wrote(tmp_path):
     ]
 
 
-def test_write_json_puts_the_pin_in_the_document_as_structure(tmp_path):
+def test_output_json_puts_the_pin_in_the_document_as_structure(tmp_path):
     """JSON has no comments but it has structure, and a top-level key is a place every
     parser will read and none will choke on. It cannot go through a file handle — it means
     serialising the whole document — so it is its own method, and opt-in because it changes
@@ -9404,7 +9404,7 @@ def test_write_json_puts_the_pin_in_the_document_as_structure(tmp_path):
     src.write_text("x\n", encoding="utf-8")
     with runprov.Run("s", project=proj, provenance=tmp_path / "p.json") as run:
         run.input(src)
-        out = run.write_json(tmp_path / "summary.json", {"variants": 12, "sample": "A"})
+        out = run.output_json(tmp_path / "summary.json", {"variants": 12, "sample": "A"})
 
     doc = json.loads(out.read_text(encoding="utf-8"))
     assert doc["variants"] == 12 and doc["sample"] == "A", "the payload is untouched"
@@ -9414,15 +9414,15 @@ def test_write_json_puts_the_pin_in_the_document_as_structure(tmp_path):
     assert pin["inputs"] == [[runprov.hashing.pin_digest(run.record["inputs"][0]), "in.tsv"]]
 
 
-def test_write_json_refuses_to_restructure_or_overwrite(tmp_path):
+def test_output_json_refuses_to_restructure_or_overwrite(tmp_path):
     """A JSON array has nowhere to put a key, and wrapping it in an object would change what
     the document IS rather than annotate it. An existing key is the caller's."""
     proj = _project(tmp_path)
     run = runprov.Run("s", project=proj)
     with pytest.raises(TypeError, match="needs a mapping"):
-        run.write_json(tmp_path / "a.json", [1, 2, 3])
+        run.output_json(tmp_path / "a.json", [1, 2, 3])
     with pytest.raises(ValueError, match="already in the payload"):
-        run.write_json(tmp_path / "b.json", {"_provenance": "mine"})
+        run.output_json(tmp_path / "b.json", {"_provenance": "mine"})
 
 
 def test_open_output_still_pins_the_formats_that_can_hold_one(tmp_path):

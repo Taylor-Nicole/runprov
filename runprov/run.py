@@ -1649,7 +1649,7 @@ class Run:
         self.output(side)
         return side
 
-    def write_json(
+    def output_json(
         self, path: str | pathlib.Path, payload: dict[str, typing.Any], key: str = "_provenance"
     ) -> pathlib.Path:
         """Write a JSON artifact with the pin embedded as a KEY, registered and hashed.
@@ -1671,11 +1671,18 @@ class Run:
         to make room would change what the document IS rather than annotate it -- so that
         raises here, where the caller can see it, rather than silently restructuring.
 
-            run.write_json(OUT / "calls.json", {"variants": rows})
+            run.output_json(OUT / "calls.json", {"variants": rows})
+
+        NAMED FOR WHAT IT PRODUCES: `output`, `open_output` and `output_json` all write YOUR
+        DATA; `write()` writes THE RECORD. It was `write_json` until 2026-08-19, which shared
+        a verb with `write()` and so read as "write, but as JSON" -- the opposite of what it
+        does. The pair is the first two methods a reader meets, and a user who had learned
+        `run.write(PROV)` would reasonably type `run.write_json(PROV)` and get the wrong file
+        entirely (ledger L-21).
         """
         if not isinstance(payload, dict):
             raise TypeError(
-                f"{self.record['script']}: write_json needs a mapping to add {key!r} to, "
+                f"{self.record['script']}: output_json needs a mapping to add {key!r} to, "
                 f"not {type(payload).__name__}. Wrapping it would change what the document "
                 f"is; use `run.output(path)` and `run.pin_sidecar(path)` instead."
             )

@@ -525,7 +525,7 @@ Measured here, **60 formats, 0 failures, nothing skipped**:
 | pin placement | formats |
 |---|---|
 | in-band | the whole allowlist: `.tsv` `.csv` `.tab` `.txt` `.md` `.bed` `.bedgraph` **`.gff` `.gff3` `.gtf`** `.yaml` `.yml` `.toml` `.ini` `.cfg` `.conf` `.properties` — plus SQL and TeX on request, which comment with `-- ` and `%` |
-| in the document | JSON (`write_json`, a top-level key) |
+| in the document | JSON (`output_json`, a top-level key) |
 | sidecar | everything else — FASTA, FASTQ, GenBank, PDB, Stockholm, PHYLIP, Nexus, Matrix Market, JSONL, VCF, BCF, BAM, CRAM, bigWig, PLINK, mzML, SVG, Newick, Parquet (file *and* partitioned directory), Feather/Arrow, ORC, Avro, Pickle, joblib, cloudpickle, `.npy`, `.npz`, HDF5, AnnData `.h5ad`, Zarr, NetCDF, `.xlsx`, Stata, SPSS, R `.rds`, DuckDB, SQLite, MessagePack, **GGUF**, ONNX, safetensors, PyTorch `.pt`, XGBoost, LightGBM, a SavedModel-shaped **directory**, `.mat`, PNG, TIFF, gzip |
 
 Everything above round-trips: written through runprov, read back by `h5py`, `anndata`,
@@ -1470,11 +1470,11 @@ Two opt-ins, because a measured trade is the caller's to make and must not be ma
 ```python
 run.open_output(REF, comment="; ")  # FASTA: Biopython reads it, samtools faidx REJECTS it
 run.open_output(Q, comment="-- ")  # SQL, TeX (`% `): no trade, just the right marker
-run.write_json(OUT, {"variants": 12})  # JSON: pin as a top-level key — changes your schema
+run.output_json(OUT, {"variants": 12})  # JSON: pin as a top-level key — changes your schema
 ```
 
 `open_output` cannot write JSON's pin, because that means serialising the whole document
-rather than prepending a line, so `write_json` is its own method. It refuses a list (there is
+rather than prepending a line, so `output_json` is its own method. It refuses a list (there is
 nowhere to put a key, and wrapping it would change what the document *is*) and refuses to
 overwrite a key you already use. **JSONL has no opt-in**: a leading provenance line parses,
 and measured, `pd.read_json(lines=True)` then reports 3 rows for a 2-row file — the Newick
