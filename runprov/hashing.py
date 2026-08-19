@@ -468,6 +468,25 @@ PIN_DIGEST_CHARS = 16
 #: defect deferred -- the same argument that keeps `PIN_DIGEST_CHARS` in one place.
 PIN_SIDECAR_SUFFIX = ".prov.txt"
 
+#: The first line of every pin, and the ONLY thing that identifies one.
+#:
+#: Here for the reason stated directly above: `run.header()` wrote this sentence as a
+#: literal and `verify` held its own copy under a different name, so the one string that
+#: says "this file is an artifact" existed twice, in the writer and in the reader, with
+#: nothing holding them equal. Drift in either direction makes every artifact ever written
+#: stop being recognised as one — silently, because an unrecognised pin is not an error, it
+#: is NO PIN.
+#:
+#: The suite does catch the drift today, since end-to-end tests write a real pin and read it
+#: back — measured, an em dash changed to a hyphen in the writer alone fails 20 tests. That
+#: is a reason this was not urgent, not a reason for two copies: the tests build their
+#: fixtures from the READER's constant, so they prove the round trip agrees with itself and
+#: never that the writer's sentence is the one the reader expects.
+#:
+#: Matched as a SUBSTRING by the reader, so the caller's comment marker — `# `, `## `, `; `,
+#: whatever the format needs — is whatever precedes it on that line.
+PIN_ANCHOR = "provenance — this artifact and what produced it"
+
 
 def pin_digest(entry: dict[str, typing.Any]) -> str:
     """The digest a PIN carries for one described file — exactly as `header()` renders it.
