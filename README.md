@@ -1565,7 +1565,7 @@ it is better than leaving silence to be read as abandonment:
 
 ## Tests
 
-`tests/test_runprov.py`, 526 tests, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, 530 tests, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite (`tests/test_runprov.py:3534`), to
 assert a call ORDER that no returned value can show. Everything else is substituted by a real
@@ -1574,7 +1574,7 @@ narrow simulation of an environment this machine is not (`sys.platform` for Wind
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
 stubs the subject to make it agree with the test.
 
-Twenty-two of the 526 need something of the filesystem itself — a FIFO, a symlink, a file
+Twenty-two of the 530 need something of the filesystem itself — a FIFO, a symlink, a file
 `chmod(0o000)` really makes unreadable — and they skip where that is unavailable. The
 condition is a PROBE, not `sys.platform`: symlinks work on a Windows machine with Developer
 Mode enabled, and `chmod(0o000)` denies nothing to root, so a platform check both skipped

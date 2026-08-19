@@ -279,7 +279,15 @@ Nothing has been published yet. Everything below is what a first release would c
 
 ### Verified
 
-526 tests, 100% statement *and* branch coverage, on Linux 3.10–3.13 and macOS 3.12.
+530 tests, 100% statement *and* branch coverage.
+
+**Run locally on CPython 3.10.12, 3.11.1 and 3.12.13** (Linux); the CI matrix additionally
+covers 3.13 and macOS 3.12, which are unverified from here. Running 3.10 for the first time on
+2026-08-19 found a real defect that the 3.12-only gate could not have: `show --format yaml`'s
+depth guard hands the remainder to `json.dumps`, which is itself recursive, so a 1,000-deep
+record rendered on 3.12 and raised `RecursionError` on 3.10 — a reader narrower than its
+writer, on the version `requires-python` names as the floor. Fixed, and the suite no longer
+asserts any depth that is a property of the interpreter rather than of the code.
 
 Windows 3.12 runs the same suite **minus 22 tests and without the coverage floor**, and the
 distinction is the point: those 22 build a fixture Windows cannot build — a FIFO
