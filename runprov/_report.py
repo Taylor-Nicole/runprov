@@ -81,12 +81,33 @@ def _write(line: str) -> None:
     package exists to prevent, so the message degrades instead: unencodable characters
     become the target encoding's replacement and the warning still arrives.
     """
+    stream = sys.stderr
+    # NO STDERR IS NOT A REASON TO USE STDOUT. `print(..., file=None)` falls back to stdout
+    # by CPython's own rule, and `sys.stderr is None` is the documented state under
+    # `pythonw.exe`, embedded interpreters and windowed frozen builds. Measured: with
+    # `sys.stderr = None`, a run put 725 bytes of provenance chatter into the caller's data
+    # channel and 0 into stderr -- the exact defect the docstring above opens with, arriving
+    # through the fallback rather than through a bare `print`. Silence is the correct
+    # degradation: the record is still written to disk, and the only thing lost is a message.
+    if stream is None or not hasattr(stream, "write"):
+        return
     try:
-        print(line, file=sys.stderr, flush=True)
+        print(line, file=stream, flush=True)
     except UnicodeEncodeError:
-        enc = getattr(sys.stderr, "encoding", None) or "ascii"
-        sys.stderr.write(line.encode(enc, "replace").decode(enc, "replace") + "\n")
-        sys.stderr.flush()
+        try:
+            enc = getattr(stream, "encoding", None) or "ascii"
+            stream.write(line.encode(enc, "replace").decode(enc, "replace") + "\n")
+            stream.flush()
+        except Exception as exc:  # guards-ok: see below -- the fallback can fail the same way
+            del exc
+    except Exception as exc:  # guards-ok: and this is the one that mattered.
+        # ONLY `UnicodeEncodeError` WAS CAUGHT, so an stderr that cannot be WRITTEN TO killed
+        # the run. Measured: `python step.py 2>/dev/full` (ENOSPC on every write) exited 120
+        # with no artifact, no sidecar and no history line -- the reporting mechanism
+        # destroying the run it was describing, which is the failure this docstring names.
+        # A full disk, a closed pipe (EPIPE, `... | head`) and a detached console all reach
+        # it. A message is worth less than the run it is about, so the message is dropped.
+        del exc
 
 
 def diagnostic(*lines: str) -> None:
