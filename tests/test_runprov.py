@@ -2352,6 +2352,74 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
     assert "declared.tsv" not in out.read_text(encoding="utf-8")
 
 
+@requires_symlinks
+def test_a_symlinked_subdirectory_is_counted_not_silently_dropped(tmp_path):
+    """Council C-23. `os.walk` does not follow a directory symlink, which is deliberate and
+    documented in SECURITY.md — following one would pull an unbounded amount of somebody
+    else's disk into a hash. **The silence was the defect.** `_dirs` was discarded, so a
+    linked subtree appeared in NO count, and adding a whole new file inside it left
+    `sha256_tree` IDENTICAL. Measured before the fix.
+
+    The code's own `skipped` counter makes the argument: "dropping it without a word is the
+    same silent skip as the unreadable directory above." `data/ref -> /shared/references` is
+    the ordinary layout in the domain this package came from, so this is the common case."""
+    tree = tmp_path / "tree"
+    elsewhere = tmp_path / "elsewhere"
+    tree.mkdir()
+    elsewhere.mkdir()
+    (tree / "a.txt").write_text("a\n", encoding="utf-8")
+    (elsewhere / "one.txt").write_text("e\n", encoding="utf-8")
+    (tree / "linkdir").symlink_to(elsewhere, target_is_directory=True)
+
+    before = runprov.describe(tree)
+    assert before["n_symlinked_dirs_not_followed"] == 1
+    assert [pathlib.Path(x).name for x in before["symlinked_dirs_not_followed"]] == ["linkdir"]
+
+    # The premise the count exists to disclose: the subtree really is outside the hash.
+    (elsewhere / "two.txt").write_text("brand new\n", encoding="utf-8")
+    after = runprov.describe(tree)
+    assert after["sha256_tree"] == before["sha256_tree"], (
+        "not following is the documented behaviour; if this changes, the count is the wrong fix"
+    )
+    assert after["n_symlinked_dirs_not_followed"] == 1, "and the omission is still stated"
+
+
+def test_a_tree_with_no_symlinked_directories_says_nothing_about_them(tmp_path):
+    """Omitted, not defaulted — the rule every optional field in the record follows. A count
+    that appears on every tree is noise, and the named list is what a reader acts on."""
+    tree = tmp_path / "plain"
+    tree.mkdir()
+    (tree / "f.txt").write_text("x\n", encoding="utf-8")
+
+    rec = runprov.describe(tree)
+    assert rec["n_symlinked_dirs_not_followed"] == 0
+    assert "symlinked_dirs_not_followed" not in rec
+
+
+@requires_symlinks
+def test_the_two_symlink_asymmetries_are_what_they_are(tmp_path):
+    """Both surprised the reviewer and neither is changed: a symlinked FILE inside the tree IS
+    hashed, and a symlink to a directory passed as the TOP-LEVEL path IS followed — it is what
+    the caller named. Only a directory link found DURING the walk is left out.
+
+    Asserted so that changing either becomes a decision rather than a side effect."""
+    tree = tmp_path / "tree"
+    elsewhere = tmp_path / "elsewhere"
+    tree.mkdir()
+    elsewhere.mkdir()
+    (elsewhere / "one.txt").write_text("e\n", encoding="utf-8")
+    (tree / "linkfile.txt").symlink_to(elsewhere / "one.txt")
+    (tree / "linkdir").symlink_to(elsewhere, target_is_directory=True)
+
+    inside = runprov.describe(tree)
+    assert inside["n_files"] == 1, "the symlinked FILE is followed and counted"
+    assert inside["n_symlinked_dirs_not_followed"] == 1, "the symlinked DIRECTORY is not"
+
+    top = runprov.describe(tree / "linkdir")
+    assert top["kind"] == "directory" and top["symlink"] is True
+    assert top["n_files"] == 1, "a link named AS the target is followed — bounded by the ask"
+
+
 def test_an_unhonoured_snapshot_request_is_recorded_not_swallowed(tmp_path, monkeypatch, capsys):
     """Council C-22. `environment_snapshot()` returned None, recorded nothing and warned
     nothing when no directory was configured — while the caller was unambiguously asking for a

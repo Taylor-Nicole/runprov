@@ -376,9 +376,30 @@ def describe(path: pathlib.Path) -> dict[str, typing.Any]:
         unreadable: list[str] = []
         skipped: list[str] = []
         files: list[pathlib.Path] = []
-        for root, _dirs, names in os.walk(
+        linked_dirs: list[str] = []
+        for root, dirs, names in os.walk(
             path, onerror=lambda e: unreadable.append(str(getattr(e, "filename", e)))
         ):
+            # NOT FOLLOWED, AND NO LONGER SILENT. `os.walk` does not follow a directory
+            # symlink by default, and not following is deliberate -- SECURITY.md says so, and
+            # it is what stops a link out of the tree pulling an unbounded amount of somebody
+            # else's disk into a hash. What was wrong is that the subtree vanished from the
+            # record entirely: `_dirs` was discarded, so a linked directory appeared in NO
+            # count, and adding a whole new file inside it left `sha256_tree` IDENTICAL --
+            # measured. `data/ref -> /shared/references` is the ordinary layout in the domain
+            # this package came from, so this is the common case, not an exotic one.
+            #
+            # The same argument the `skipped` counter below already makes: dropping it
+            # without a word is the same silent skip as an unreadable directory. Counted, so
+            # the tree hash's population is stated rather than assumed.
+            # TWO ASYMMETRIES, stated because they are surprising and neither is changed
+            # here: a symlinked FILE inside the tree IS followed and hashed, and a symlink to
+            # a directory passed as the TOP-LEVEL path IS followed -- it is what the caller
+            # named. Only a directory link found DURING the walk is left out. Following the
+            # first is bounded by one file; following the last would be unbounded.
+            linked_dirs += [
+                str(pathlib.Path(root) / d) for d in dirs if (pathlib.Path(root) / d).is_symlink()
+            ]
             for n in names:
                 fp = pathlib.Path(root) / n
                 if fp.is_file():
@@ -395,6 +416,9 @@ def describe(path: pathlib.Path) -> dict[str, typing.Any]:
         rec["n_files"] = len(files)
         rec["n_unreadable_dirs"] = len(unreadable)
         rec["n_skipped_nonregular"] = len(skipped)
+        rec["n_symlinked_dirs_not_followed"] = len(linked_dirs)
+        if linked_dirs:
+            rec["symlinked_dirs_not_followed"] = sorted(linked_dirs)
         if skipped:
             rec["skipped_nonregular"] = sorted(skipped)
         if unreadable:
