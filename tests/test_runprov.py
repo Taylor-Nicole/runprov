@@ -2298,7 +2298,10 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
     asserts exactly that pair, so neither half can be quoted without the other."""
     smk = os.environ.get("RUNPROV_SNAKEMAKE") or shutil.which("snakemake")
     if not smk:  # pragma: no cover - absent on CI and on most machines
-        pytest.skip("snakemake is not on PATH; set RUNPROV_SNAKEMAKE to run this comparison")
+        pytest.skip(
+            "snakemake is not on PATH; `pipx install snakemake` or set RUNPROV_SNAKEMAKE. "
+            "Expected to skip: snakemake is not a dependency of this package."
+        )
 
     (tmp_path / "declared.tsv").write_text("sample\tvalue\na\t9\nb\t2\n", encoding="utf-8")
     (tmp_path / "lookup.csv").write_text("code,label\n1,ALPHA\n", encoding="utf-8")
@@ -9022,7 +9025,11 @@ def test_the_predecessor_log_numbers_are_reproducible_from_the_named_file():
     different copy skips rather than silently 'passing' against the wrong numbers."""
     raw = os.environ.get("RUNPROV_PREDECESSOR_LOG")
     if not raw:  # pragma: no cover - set only where the file exists
-        pytest.skip("set RUNPROV_PREDECESSOR_LOG to the predecessor transformation_log.yml")
+        pytest.skip(
+            "set RUNPROV_PREDECESSOR_LOG to the transformation_log.yml the README pins by "
+            "sha256. FIVE files of that name exist with different contents, which is why the "
+            "digest is checked below rather than the path trusted."
+        )
     path = pathlib.Path(raw)
     if not path.is_file():  # pragma: no cover - the drive it lives on is removable
         pytest.skip(f"{path} is not reachable")
@@ -9313,7 +9320,17 @@ def test_the_yaml_view_says_so_when_even_flow_style_is_too_deep():
         return False
 
     if not with_small_budget(probe):  # pragma: no cover - CPython 3.12 and later
-        pytest.skip("this interpreter's json encoder does not consume Python frames")
+        # NAMES THE INTERPRETER, because the skip is per-VERSION and not per-run, and the
+        # bare message did not say so: the suite reports 4 skipped on 3.10/3.11 and 5 on
+        # 3.12+, `ci.py` runs whichever Python invoked it, and a reader comparing two gate
+        # logs concluded the count was unstable. Measured: 3.10 and 3.11 raise here, 3.12
+        # does not, ten runs out of ten.
+        v = ".".join(str(n) for n in sys.version_info[:2])
+        pytest.skip(
+            f"CPython {v}: this interpreter's json encoder does not consume Python frames, "
+            "so the recursion branch cannot be reached honestly. Expected on 3.12 and later; "
+            "the assertion runs on 3.10 and 3.11."
+        )
 
     rendered = with_small_budget(lambda: runprov.show.render_yaml(_nest(5_000)))
     assert runprov.show.YAML_TOO_DEEP in rendered, "it must SAY it stopped, not stop silently"

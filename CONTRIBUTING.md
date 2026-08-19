@@ -95,6 +95,43 @@ temporary directories. If a test needs the ambient environment, it is testing th
 thing — `test_detect_root_finds_the_git_toplevel` used to assert against whatever repository
 happened to contain it, and failed the moment the package moved.
 
+## What the suite skips, and how to un-skip it
+
+**A green run is not a complete run**, and the count is printed so you can tell the
+difference. `pytest -rs` lists every skip with its reason. There are five, and four of them
+are things this machine cannot honestly do rather than things left undone:
+
+| skip | how to run it |
+|---|---|
+| the Snakemake comparison | `pipx install snakemake`, or `RUNPROV_SNAKEMAKE=/path/to/snakemake` |
+| the predecessor-log figures | `RUNPROV_PREDECESSOR_LOG=/path/to/transformation_log.yml` |
+| two network-filesystem tests | `RUNPROV_NETWORK_FS_DIR=/mnt/lustre/scratch/you` — see the README section |
+| the YAML recursion branch | **nothing to do.** See below. |
+
+```bash
+RUNPROV_PREDECESSOR_LOG=~/data/flaviviridae_20260424_FULL/hcv_genotyping/transformation_log.yml \
+RUNPROV_NETWORK_FS_DIR=/mnt/lustre/scratch/you \
+  python -m pytest -rs
+```
+
+The predecessor-log test **checks the file's sha256 before using it**, and skips rather than
+runs if it does not match. Five files of that name exist with different contents, and a
+reviewer holding the wrong one produced three confident, wrong corrections to the README.
+Pointing this at a different copy gets you a skip, not a false pass.
+
+**The count depends on your Python, and that is not a flake.** The YAML recursion test needs
+an interpreter whose JSON encoder consumes Python frames, which CPython stopped doing in
+3.12. So it runs on 3.10 and 3.11 and skips on 3.12 and later:
+
+```
+python3.11 ci.py test   ->  4 skipped
+python3.12 ci.py test   ->  5 skipped
+```
+
+`ci.py` uses `sys.executable`, so the gate follows whichever Python you invoked it with. Two
+gate logs with different skip counts are two different interpreters, not an unstable test —
+this is written down because the difference was once read the other way round.
+
 ## Reporting a bug
 
 Provenance bugs are usually **something that should have been recorded and was not**, which
