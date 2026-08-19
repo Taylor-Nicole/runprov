@@ -2352,6 +2352,99 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
     assert "declared.tsv" not in out.read_text(encoding="utf-8")
 
 
+def test_no_stderr_never_means_the_callers_stdout(tmp_path, monkeypatch, capsys):
+    """Council C-13. `print(..., file=None)` falls back to STDOUT by CPython's own rule, and
+    `sys.stderr is None` is the documented state under `pythonw.exe`, embedded interpreters
+    and windowed frozen builds. Measured: a run put 725 bytes of provenance chatter into the
+    caller's data channel and 0 into stderr — the exact defect `_report.py`'s docstring opens
+    with (`python step.py > result.tsv` showing provenance lines inside the data), arriving
+    through the fallback rather than through a bare `print`.
+
+    Silence is the right degradation. The RECORD is still written to disk; the only thing
+    lost is a message about it."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    monkeypatch.setattr(runprov._report.sys, "stderr", None)
+
+    with runprov.Run("step", provenance=tmp_path / "p.json") as run:
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("real\tdata\n")
+
+    captured = capsys.readouterr()
+    assert captured.out == "", f"provenance leaked into the data channel: {captured.out!r}"
+    assert (tmp_path / "out.tsv").is_file(), "and the work still happened"
+    assert (tmp_path / "p.json").is_file(), "and the record was still written"
+    assert run.record["status"] == "ok"
+
+
+def test_an_unwritable_stderr_does_not_destroy_the_run(tmp_path, monkeypatch):
+    """Council C-14, and the more serious half. `_write` caught `UnicodeEncodeError` alone,
+    so an stderr that cannot be WRITTEN TO killed the run: measured with
+    `python step.py 2>/dev/full` (ENOSPC on every write) — exit 120, **no artifact, no
+    sidecar, no history line**. The reporting mechanism destroyed the run it was describing,
+    which is the failure that same docstring names as the reason this module exists.
+
+    A full disk, a closed pipe (`... | head`, EPIPE) and a detached console all reach it. A
+    fake stream rather than `/dev/full`, so the guard is tested everywhere and not only on
+    Linux.
+
+    Note what is NOT claimed: the process may still exit 120, because CPython flushes stderr
+    at shutdown and that flush fails independently of anything here — `python -c
+    "sys.stderr.write('x')" 2>/dev/full` exits 120 too. What a library controls is whether
+    the user's work and record survive."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("x\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+
+    class FullDisk:
+        encoding = "utf-8"
+
+        def write(self, _text):
+            raise OSError(28, "No space left on device")
+
+        def flush(self):
+            raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(runprov._report.sys, "stderr", FullDisk())
+
+    with runprov.Run("step", provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("real\tdata\n")
+
+    assert (tmp_path / "out.tsv").is_file(), "the artifact must survive an unwritable stderr"
+    assert (tmp_path / "p.json").is_file(), "and the sidecar"
+    assert (tmp_path / "h.jsonl").is_file(), "and the history line"
+    assert run.record["status"] == "ok"
+
+
+def test_a_stderr_that_cannot_encode_still_degrades_rather_than_dying(tmp_path, monkeypatch):
+    """The pre-existing guard, kept honest: its fallback re-encodes and writes AGAIN, and
+    that second write can fail exactly like the first. Both paths must end in silence rather
+    than in an exception."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+
+    class HostileConsole:
+        encoding = "ascii"
+
+        def write(self, text):
+            if any(ord(ch) > 127 for ch in text):
+                raise UnicodeEncodeError("ascii", text, 0, 1, "hostile")
+            raise OSError(28, "and the fallback fails too")
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(runprov._report.sys, "stderr", HostileConsole())
+    runprov._report.diagnostic("an em dash — and a naïve café")  # must not raise
+
+    with runprov.Run("step", provenance=tmp_path / "p.json") as run:
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("x\n")
+    assert (tmp_path / "p.json").is_file()
+
+
 @pytest.mark.parametrize(
     ("field", "make"),
     [
