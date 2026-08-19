@@ -50,7 +50,10 @@ import typing
 from .project import active
 from .run import Run, Terminated
 from .show import (
+    GONE,
+    MODIFIED,
     SHORT,
+    STALE,
     _yaml_entry,
     _yaml_header,
     project_view,
@@ -648,6 +651,20 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
     state you are in.
     """
     bad = [0]
+    if args.exit_code and not (args.stale or args.rehash):
+        # A GATE THAT CHECKED NOTHING would exit 0 having looked at no artifact, which is
+        # the reassuring lie this package refuses -- `verify` has a guard for the same
+        # shape. Nothing to gate on is a usage error, not a pass.
+        raise UsageError("--exit-code needs --stale or --rehash; there is nothing to gate on")
+    if args.exit_code and args.target:
+        # REFUSED RATHER THAN OVERLOADED. `show <target>` already returns 1 for "nothing
+        # matched your target", so accepting both would make one exit code mean that AND
+        # "an artifact is stale" -- and the reader could not tell which. The staleness
+        # column belongs to the project page anyway (see the note below).
+        raise UsageError(
+            "--exit-code applies to the project page; `show <target>` already exits 1 for "
+            "'nothing matched', and one code cannot mean both"
+        )
     if args.target and (args.stale or args.rehash):
         # ANNOUNCED, not ignored. These are parsed for every `show` but only applied to the
         # project page, because the staleness column belongs to the ARTIFACT INDEX and a
@@ -715,6 +732,23 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
         + (f"; {bad[0]} unreadable line(s) skipped" if bad[0] else ""),
         file=sys.stderr,
     )
+    if args.exit_code:
+        # `?` IS NOT A FAILURE, and that is the whole reason it is a separate word. It means
+        # the check could not be made -- a missing sidecar, a directory input the stat check
+        # cannot speak for, a digest the run never recorded -- and failing a gate on it would
+        # make every project with one directory input permanently red. It is on the summary
+        # line above, where a reader sees it and can reach for `--rehash`.
+        #
+        # NOTHING CHECKED still exits 0 here, unlike `verify`. `show` reads the HISTORY, so
+        # an empty project page means the project has no runs, which is a true and unalarming
+        # answer -- not `verify`'s "these files exist and none of them carries a pin".
+        failing = sorted(k for k, v in (states or {}).items() if v in (STALE, GONE, MODIFIED))
+        if failing:
+            shown = ", ".join(failing[:5]) + (
+                f", and {len(failing) - 5} more" if len(failing) > 5 else ""
+            )
+            print(f"# FAILING ({len(failing)}): {shown}", file=sys.stderr)
+            return 1
     return 0
 
 
@@ -875,6 +909,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="with --stale, re-derive digests instead of comparing size and mtime (slower)",
     )
+    sh.add_argument(
+        "--exit-code",
+        action="store_true",
+        help="with --stale/--rehash, exit 1 if any artifact is STALE, GONE or MODIFIED",
+    )
     ex = sub.add_parser("exec", help="run a non-Python command AS a recorded run")
     ex.add_argument("--name", default=None, help="the step name (default: the program's)")
     ex.add_argument("--input", action="append", default=[], help="repeatable")
@@ -922,7 +961,15 @@ def main(argv: list[str] | None = None) -> int:
     # Measured on a 100,000-run, 91 MB history: 392 MB held to build the page, against 3 MB
     # to stream it. Every other command here genuinely needs all the records at once.
     if args.cmd == "show":
-        return _show(args, path)
+        try:
+            return _show(args, path)
+        except UsageError as exc:
+            # A MESSAGE, NOT A TRACEBACK — the reason the class exists, and it was caught in
+            # `exec` only, so the first `show` usage error to be raised printed a stack over
+            # its own message. Exit 2 matches `exec`'s usage failures and argparse's own, and
+            # is distinct from 1, which here means an artifact is failing.
+            print(f"  runprov show: {exc}", file=sys.stderr)
+            return 2
 
     if args.cmd == "log":
         return _log(args, path)

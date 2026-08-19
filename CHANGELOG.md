@@ -268,6 +268,33 @@ Nothing has been published yet. Everything below is what a first release would c
   the run it described; a corrupt gzip escaped `content_digest`; and a `.gz` rewritten from
   identical bytes never hashed the same twice.
 
+### The two staleness checkers now compose into a gate
+
+- **`show --stale --exit-code`.** The package shipped two commands that answer "is this
+  result still good?", and **the one that finds more problems was the one that exits 0**.
+  Measured on a throwaway project: with the input changed, `verify` said STALE and exited 1
+  while `show --stale` said STALE and exited 0; with the input restored and the RESULT
+  hand-edited, `verify` said `OK` and exited 0 while `show --rehash` said MODIFIED — and
+  exited 0. And over a BAM, which cannot carry a pin, `verify` could say nothing at all.
+
+  The considered fix was to merge them into one engine. It was designed, reviewed by five
+  independent adversarial lenses, and **abandoned on the evidence**: a pin lists the run's
+  INPUTS, so the artifact's own digest is not in it and cannot be — the pin lives inside the
+  file it would describe. An engine merging the two could not close the tampering case,
+  because the evidence `verify` reads does not contain the answer. The two commands share
+  about 12 executable lines of ~400; the rest is genuinely different work.
+
+  So the fix is composition, and the README now documents it as the gate:
+
+      python -m runprov verify results/ && \
+        python -m runprov show --stale --rehash --exit-code
+
+  `?` does not fail the gate — it means the check could not be made, and failing on it would
+  make any project with one directory input permanently red. Two shapes are refused with
+  exit 2 so exit 1 keeps one meaning: no `--stale`/`--rehash` (nothing to gate on), and a
+  `show <target>` argument (which already exits 1 for "nothing matched"). `verify`'s exit
+  codes are unchanged, and the exit-code VOCABULARY question is a separate open decision.
+
 ### Fixed before it could gate
 
 - **`show --rehash` called an artifact MODIFIED that it had never digested.** `_short`

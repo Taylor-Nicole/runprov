@@ -11006,6 +11006,97 @@ def test_rehash_will_not_call_an_undigested_input_STALE(tmp_path, monkeypatch):
     )
 
 
+def test_show_exit_code_gates_on_what_verify_structurally_cannot_see(tmp_path, monkeypatch, capsys):
+    """L-23. The defect: two staleness checkers, and **the one that finds more problems is
+    the one that exits 0**. `verify` reads the pin INSIDE an artifact, and a pin lists the
+    run's INPUTS — the artifact's own digest is not in it and cannot be, because the pin
+    lives inside the file it would be describing. So `verify` prints OK and exits 0 over a
+    hand-edited result, and `show --rehash`, which reads the history and does hold that
+    digest, said MODIFIED and exited 0 too. Neither could gate on the tampering case.
+
+    The fix is the exit code, not an architecture: an engine merging the two could not have
+    closed this, because the evidence `verify` reads does not contain the answer. Measured
+    on a throwaway project before any code moved, and again here.
+
+    `?` IS NOT FAILING, deliberately. It means the check could not be made — a missing
+    sidecar, a directory input the stat check cannot speak for, a digest the run never
+    recorded. Gating on it would make any project with one directory input permanently red,
+    and the count is on the summary line where a reader can reach for `--rehash`."""
+    _staleable(tmp_path, monkeypatch)
+    log = tmp_path / "runs.jsonl"
+    base = ["show", "--log", str(log), "--stale", "--rehash", "--exit-code"]
+    artifact = tmp_path / "out" / "mid.tsv"
+    # THE BYTES AS WRITTEN, pin header and all -- `open_output` puts the pin in the file, so
+    # "the content the script wrote" is not the content on disk and restoring the former
+    # would leave it MODIFIED for a second, unrelated reason.
+    original = artifact.read_bytes()
+
+    assert cli.main(base) == 0, "the premise: nothing has moved"
+
+    # THE ARTIFACT, not its inputs. This is the case `verify` cannot reach.
+    artifact.write_text("EDITED BY HAND\n", encoding="utf-8")
+    assert cli.main(base) == 1
+    err = capsys.readouterr().err
+    assert "FAILING (1)" in err and "mid.tsv" in err, err
+
+    # And it is not merely counting rows: restoring the bytes restores the exit code.
+    artifact.write_bytes(original)
+    assert cli.main(base) == 0
+
+
+def test_show_exit_code_refuses_the_two_shapes_that_would_overload_it(
+    tmp_path, monkeypatch, capsys
+):
+    """Both refusals exist so that exit 1 keeps ONE meaning.
+
+    With a target, `show` already returns 1 for "nothing matched your target"
+    (`__main__._show`), so accepting `--exit-code` there would make one code mean that AND
+    "an artifact is stale", with no way for the caller to tell which. Refusing removes the
+    overload instead of adding to it — and leaves ledger row L-81, the exit-code vocabulary,
+    untouched and still Taylor's.
+
+    Without `--stale` or `--rehash` there is nothing to gate on, and a gate that checked
+    nothing would exit 0 having looked at no artifact. `verify` has a guard for the same
+    shape and this package refuses that answer everywhere.
+
+    Exit 2, not 1: a usage mistake is not a failing artifact. It matches `exec`'s usage
+    failures and argparse's own convention."""
+    _staleable(tmp_path, monkeypatch)
+    log = str(tmp_path / "runs.jsonl")
+
+    assert cli.main(["show", "--log", log, "--exit-code"]) == 2
+    assert "nothing to gate on" in capsys.readouterr().err
+
+    assert cli.main(["show", "--log", log, "build", "--stale", "--exit-code"]) == 2
+    err = capsys.readouterr().err
+    assert "one code cannot mean both" in err, err
+    assert "Traceback" not in err, "a usage mistake is a message, not a stack"
+
+
+def test_show_exit_code_does_not_fail_on_a_state_it_could_not_determine(tmp_path, monkeypatch):
+    """`?` is the absence of a finding, and a gate must not treat it as one. The stat check
+    cannot speak for a DIRECTORY input — a directory's mtime moves when an entry is added and
+    stays put when a file inside is edited — so `--stale` reports `?` there by design. If
+    that failed the gate, every project with one reference directory would be red forever
+    and the honest state would have become the alarming one."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ref").mkdir()
+    (tmp_path / "ref" / "a.txt").write_text("a\n", encoding="utf-8")
+    (tmp_path / "out").mkdir()
+    proj = _project(tmp_path)
+    with runprov.Run("d", project=proj, provenance=tmp_path / "out" / "d.prov.json") as r:
+        r.input(tmp_path / "ref")
+        with r.open_output(tmp_path / "out" / "d.tsv") as fh:
+            fh.write("x\n")
+
+    log = str(tmp_path / "runs.jsonl")
+    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    assert _state_of(runprov.show.staleness(rows), "d.tsv") == "?", (
+        "the premise: a directory input cannot be stat-checked"
+    )
+    assert cli.main(["show", "--log", log, "--stale", "--exit-code"]) == 0
+
+
 def test_a_moved_input_outranks_a_rewritten_artifact_under_rehash(tmp_path, monkeypatch):
     """When both are true the input wins, and that ordering is the useful one: rebuilding
     fixes a moved input, and cannot fix an artifact something else is writing. Asserting it
