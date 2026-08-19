@@ -157,6 +157,7 @@ artifacts = ["runprov/py.typed"]
 # position rather than as somebody's notes, and it travels beside a README that PyPI freezes
 # forever. They stay in the repository, where the audience is the person they address.
 include = ["runprov", "tests", "examples", "ci.py", "README.md", "WHY.md",
+           "GETTING-STARTED.md", "docs",
            "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "DCO.txt", "LICENSE",
            "CITATION.cff", "CHANGELOG.md", "SECURITY.md", ".ruff.toml",
            ".pre-commit-config.yaml"]
