@@ -203,7 +203,7 @@ Nothing has been published yet. Everything below is what a first release would c
   faidx` indexes the FASTA, Biopython reads it, `pd.read_json(lines=True)` sees 2 rows not
   3. `run.pin_sidecar(p)` does the same for a file another library wrote (a figure, a BAM).
   Two measured opt-ins: `comment="; "` for FASTA (Biopython reads it, `samtools faidx`
-  rejects it — stated on stderr as the trade is made) and `run.write_json()`, which embeds
+  rejects it — stated on stderr as the trade is made) and `run.output_json()`, which embeds
   the pin as a top-level key. **JSONL gets no opt-in**: a leading provenance line makes
   pandas read 3 rows for a 2-row file, which is the Newick failure again.
 

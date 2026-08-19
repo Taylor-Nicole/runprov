@@ -114,24 +114,24 @@ NO_PIN = "NO PIN"
 FAILING = (STALE, GONE)
 
 
-#: A top-level JSON key whose value could be a `write_json` pin: `"name": {`, at the start
-#: of the document. Not anchored to the default key name, because `write_json(key=...)` lets
+#: A top-level JSON key whose value could be a `output_json` pin: `"name": {`, at the start
+#: of the document. Not anchored to the default key name, because `output_json(key=...)` lets
 #: a caller choose one their readers ignore — a checker that only knew `_provenance` would
 #: silently stop recognising pins the moment somebody used that documented parameter.
 _JSON_KEY = re.compile(r'"([^"\\]{1,64})"\s*:\s*\{')
 
 
 def _json_pin(head: str) -> dict[str, typing.Any] | None:
-    """A `write_json` pin, read from the structure rather than from prose. None if absent.
+    """A `output_json` pin, read from the structure rather than from prose. None if absent.
 
-    `write_json` embeds the pin as a top-level KEY because JSON has no comment syntax — the
+    `output_json` embeds the pin as a top-level KEY because JSON has no comment syntax — the
     same `pin_digest` values as an in-band pin, stored as data so a consumer does not have to
     parse prose out of a string. `read_pins` knew only the text anchor, so `verify` reported a
-    directory of `write_json` artifacts as carrying no pin at all and exited 1 with NOTHING
+    directory of `output_json` artifacts as carrying no pin at all and exited 1 with NOTHING
     CHECKED. Two features added in the same session that could not see each other.
 
     BOUNDED like the rest of this reader: only `head` is examined, and only top-level keys
-    near the start of it. `write_json` writes the pin first (`{key: pin, **payload}`), so a
+    near the start of it. `output_json` writes the pin first (`{key: pin, **payload}`), so a
     pin that is not in the first `SCAN_BYTES` is a file this function is right not to trust.
 
     Identified by SHAPE, not by name: a mapping carrying `script` and a list of
