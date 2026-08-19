@@ -1515,9 +1515,12 @@ def test_the_timeline_prints_the_same_digest_width_as_the_pin():
     that silently: nothing errors, the columns simply stop lining up with the artifact's own
     pin, and the reader concludes the file is not the one they made.
 
-    So the timeline now slices with `SHORT` rather than a third literal 16, and the
-    agreement between `SHORT` and `PIN_DIGEST_CHARS` is asserted rather than assumed —
-    two constants that must be equal, in different modules, are a drift waiting to happen."""
+    THERE IS NOW ONE CONSTANT, WHICH IS WHY THIS TEST CHANGED. `show.SHORT` was a second
+    spelling of `hashing.PIN_DIGEST_CHARS`, and this test used to assert the two were equal
+    — a test holding two constants in agreement is the defect deferred, not closed, and it
+    would have gone on passing right up to the commit that changed one of them. `SHORT` is
+    deleted; everything slices with `PIN_DIGEST_CHARS`, and there is nothing left to
+    disagree."""
     digest = "0123456789abcdef" + "f" * 48
     assert len(digest) == 64, "the premise: a full sha256, which is what a record carries"
 
@@ -1528,10 +1531,9 @@ def test_the_timeline_prints_the_same_digest_width_as_the_pin():
 
     assert out.count("0123456789abcdef") == 2, "both the input and the output line"
     assert "0123456789abcdeff" not in out, "17 characters would be a wider handle"
-    assert runprov.show.SHORT == runprov.hashing.PIN_DIGEST_CHARS, (
-        f"the views disagree: show renders {runprov.show.SHORT} characters and the pin "
-        f"carries {runprov.hashing.PIN_DIGEST_CHARS} — a digest read in one cannot be "
-        f"matched against a digest read in the other"
+    assert not hasattr(runprov.show, "SHORT"), (
+        "SHORT was a second spelling of PIN_DIGEST_CHARS; a second constant that must equal "
+        "the first is a drift waiting to happen, and asserting the equality only defers it"
     )
 
 
@@ -10422,7 +10424,10 @@ def test_a_run_page_carries_what_a_person_asks_about_a_run(tmp_path, monkeypatch
     for expected in ("started", "run_id", "parameters", "inputs (1)", "outputs", "notes"):
         assert expected in text, expected
     assert view["parameters"] == {"mode": "a"}
-    assert view["inputs"][0]["digest"] and len(view["inputs"][0]["digest"]) == runprov.show.SHORT
+    assert (
+        view["inputs"][0]["digest"]
+        and len(view["inputs"][0]["digest"]) == runprov.hashing.PIN_DIGEST_CHARS
+    )
 
 
 def test_a_failed_run_page_leads_with_the_failure(tmp_path, monkeypatch):

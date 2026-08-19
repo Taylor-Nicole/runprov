@@ -32,12 +32,8 @@ import json
 import pathlib
 import typing
 
-from .hashing import describe, moved_since, pin_digest
+from .hashing import PIN_DIGEST_CHARS, describe, moved_since, pin_digest
 from .verify import GONE, OK, STALE, UNVERIFIABLE
-
-#: How many characters of a digest identify an artifact version to a human. The same 16 the
-#: pin uses, so a digest read here can be matched against a digest read in an artifact.
-SHORT = 16
 
 #: How many distinct input versions to name before summarising. A script that has read forty
 #: versions of one file has a fact worth stating and a list not worth printing.
@@ -62,7 +58,7 @@ def _recorded(entry: dict[str, typing.Any]) -> str | None:
     for key in ("content_sha256", "sha256", "sha256_tree"):
         value = entry.get(key)
         if value:
-            return str(value)[:SHORT]
+            return str(value)[:PIN_DIGEST_CHARS]
     return None
 
 
@@ -739,7 +735,7 @@ def render_project_lines(
             # written as a number, so the next state added cannot reintroduce it.
             mark = f"{states.get(path, '')!s:<{STATE_COLUMN}}" if states else ""
             yield line(f"  {mark}{a['digest']}  {path}{kind}")
-            yield line(f"  {' ' * (SHORT + len(mark))}  by {a['by']}  {a['when']}{flag}")
+            yield line(f"  {' ' * (PIN_DIGEST_CHARS + len(mark))}  by {a['by']}  {a['when']}{flag}")
 
 
 #: How deep `to_yaml` will indent before switching to flow style. Not a style preference:

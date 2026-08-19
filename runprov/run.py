@@ -298,14 +298,6 @@ class Terminated(BaseException):
         super().__init__(f"terminated by {self.name} ({signum})")
 
 
-#: What "this value cannot be written down" looks like when it is raised rather than
-#: returned. `TypeError` and `ValueError` are the documented `json.dumps` failures;
-#: `RecursionError` is not documented as one and is why this tuple exists — it subclasses
-#: `RuntimeError`, so it fell past a two-name `except` that had been correct for years and
-#: took the whole record with it. Anything that can only be raised by describing a caller's
-#: value belongs here: the record degrades one entry, it does not disappear.
-SERIALISATION_ERRORS = (TypeError, ValueError, RecursionError)
-
 #: How deep `_jsonable` will walk before it stops and says so. A record nested past this is
 #: not a record anybody reads; a walk that does not stop is a `RecursionError` INSIDE
 #: provenance capture, which cost the entire run its history line and its sidecar while the
@@ -2397,7 +2389,7 @@ class Run:
     def _encode(self) -> str:
         """Serialise the record. Total, because `_jsonable` is.
 
-        This used to catch `SERIALISATION_ERRORS` and repair `notes`/`parameters` in place
+        This used to catch a `SERIALISATION_ERRORS` tuple and repair `notes`/`parameters` in place
         on the way past. That fallback protected the SIDECAR ONLY: the history line is
         dumped separately by the sink, so a value that could not encode still cost the
         history entry -- measured, and it cost the sidecar too when the failure came from a

@@ -47,11 +47,11 @@ import subprocess
 import sys
 import typing
 
+from .hashing import PIN_DIGEST_CHARS
 from .project import active
 from .run import Run, Terminated
 from .show import (
     MODIFIED,
-    SHORT,
     _yaml_entry,
     _yaml_header,
     project_view,
@@ -149,9 +149,13 @@ def _timeline_entry(r: dict[str, typing.Any], *, separator: bool = True) -> str:
     )
     ins, outs = r.get("inputs") or [], r.get("outputs") or []
     for i in ins:
-        out.append(f"     in   {str(i.get('sha256') or '')[:SHORT]}  {i.get('path', '?')}")
+        out.append(
+            f"     in   {str(i.get('sha256') or '')[:PIN_DIGEST_CHARS]}  {i.get('path', '?')}"
+        )
     for o in outs:
-        out.append(f"     out  {str(o.get('sha256') or '')[:SHORT]}  {o.get('path', '?')}")
+        out.append(
+            f"     out  {str(o.get('sha256') or '')[:PIN_DIGEST_CHARS]}  {o.get('path', '?')}"
+        )
     if status != "ok":
         f = r.get("failure") or {}
         out.append(f"     FAILED     {f.get('type', '?')}: {str(f.get('message', ''))[:160]}")
