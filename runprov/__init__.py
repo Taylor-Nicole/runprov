@@ -123,6 +123,15 @@ def to_yaml(records: typing.Any) -> str:  # noqa: ANN401 - one record or an iter
     `yaml.safe_load_all` raises partway through the result, and nine
     `fix_transformation_log_*.py` repair scripts exist because of it. The append-only
     history is JSONL for exactly that reason, and this renders a VIEW of it.
+
+    NOT `runprov.show.to_yaml`, which is a different function with the same name: that one
+    renders any nested structure as indented YAML, this one renders RUN RECORDS in the
+    transformation-log shape. Both are reachable and neither raises on the other's input, so
+    the wrong import produces a plausible file of the wrong shape rather than an error. See
+    L-47 in the audit ledger.
+
+    This one also normalises with `_jsonable` first, which the other does not — that is what
+    keeps a manifest written here byte-comparable with the sidecar written by `run.write()`.
     """
     from .__main__ import _yaml  # local: keeps the CLI module off the package import path
     from .run import _jsonable

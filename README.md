@@ -777,7 +777,9 @@ runprov exec --name sort_rows --input in.tsv --output sorted.tsv \
 "notes":   {"exit_code": 0}
 ```
 
-**It returns the command's own exit code**, so it drops into a Makefile rule or a Snakemake
+**It returns the command's own exit code** — including **128+N for a signal-killed child**,
+which is what a shell returns, so an OOM check looking for 137 still sees 137 — so it drops
+into a Makefile rule or a Snakemake
 `shell:` without changing what failure means. A non-zero exit is *also* recorded — `status:
 "failed"`, the exit code in the notes — and a program that does not exist is recorded with
 `found: false` rather than a traceback.
@@ -1652,7 +1654,7 @@ constraint for standard runners, and is the one action that closes this.
 
 ## Tests
 
-`tests/test_runprov.py`, 581 tests, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, 592 tests, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite — in
 `test_size_is_stat_ed_after_the_hash_not_before` — to
@@ -1663,7 +1665,7 @@ narrow simulation of an environment this machine is not (`sys.platform` for Wind
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
 stubs the subject to make it agree with the test.
 
-Twenty-two of the 581 need something of the filesystem itself — a FIFO, a symlink, a file
+Twenty-two of the 592 need something of the filesystem itself — a FIFO, a symlink, a file
 `chmod(0o000)` really makes unreadable — and they skip where that is unavailable. The
 condition is a PROBE, not `sys.platform`: symlinks work on a Windows machine with Developer
 Mode enabled, and `chmod(0o000)` denies nothing to root, so a platform check both skipped
