@@ -703,6 +703,12 @@ class Run:
         # `_in_context` and goes back to False at exit. See `__enter__` for why re-entry is
         # refused rather than tolerated.
         self._entered = False
+        # Whether `__exit__` is currently writing the record. `_in_context` is ALREADY False
+        # by then, deliberately -- `_note_unregistered_reads` relies on it to avoid hashing
+        # every first-party file twice -- so the after-exit guard cannot use it alone without
+        # firing on our own teardown. `_finish` -> `write` -> `environment_snapshot`, and
+        # `_record_imported_code` -> `code`, are all guarded methods called from `__exit__`.
+        self._finalizing = False
         # Whether `header()` has already rendered a pin. An input registered after that
         # point is NOT in the pin already embedded in an artifact, and no later inspection
         # can tell -- the artifact simply understates itself, in its own body.
@@ -857,6 +863,7 @@ class Run:
         error, no warning, and nothing downstream able to tell." It survived in this one
         method because the method predates the guard.
         """
+        self._refuse_after_exit("terminal_log()")
         p = self._anchor(pathlib.Path(path))
         self.record["terminal_log"] = {"path": str(p), "capture": "caller"}
         self._pending.append(p)
@@ -971,6 +978,41 @@ class Run:
             attach(self)
         return self
 
+    def _refuse_after_exit(self, call: str) -> None:
+        """Refuse a recording call made after the block has closed.
+
+        Everything called after `__exit__` used to be accepted, mutate `run.record`, return
+        normally, and reach no file. Measured: `note`, `seeds`, `output` and `input` after the
+        block left the live record holding values that the sidecar and the history did not,
+        **and said nothing at all**.
+
+        It matters more than "do not do that", because THIS PACKAGE'S OWN DOCS send callers to
+        the run object after the block: `to_yaml`'s docstring says "AFTER the block,
+        deliberately" and shows `MANIFEST.write_text(runprov.to_yaml(run.record))`. A reader
+        taught the object is live there will reasonably call `run.note(...)` too.
+
+        READING stays legal and always was -- `run.record` is a plain dict and `to_yaml(...)`
+        of it is the documented shape. Only RECORDING is refused.
+
+        It also removes a second defect at the root rather than patching it: `write()` after
+        the block re-persists the sidecar while the history line, already appended, is not
+        corrected. That produced one `run_uid` with two persisted records disagreeing about
+        notes, seeds and outputs -- breaking the invariant `to_yaml`'s own docstring states,
+        "Two renderings of the same record must not disagree, which is the whole claim here."
+        If nothing can CHANGE the record after exit, a later `write()` re-persists an
+        identical one and the two files agree by construction.
+
+        Raising costs nothing that was not already lost: the record is on disk by the time
+        this can fire, and the call it refuses was reaching no file anyway.
+        """
+        if self._entered and not self._in_context and not self._finalizing:
+            raise RuntimeError(
+                f"{call} was called after the `with` block closed, and the record for "
+                f"Run({self.record['script']!r}) is already written — the call would change "
+                f"only the in-memory copy and reach no file. Move it inside the block. "
+                f"(Reading `run.record` out here is fine and is what the docs show.)"
+            )
+
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
@@ -997,6 +1039,13 @@ class Run:
                 "traceback": "".join(traceback.format_exception(exc_type, exc, tb))[-4000:],
             }
         self._in_context = False
+        # FROM HERE TO THE END OF `__exit__`, calls into guarded methods are OURS, not the
+        # caller's. Without this the guard fired on `_finish` -> `write` ->
+        # `environment_snapshot` and the record was never written at all -- the mechanism for
+        # refusing a call that reaches no file became the reason nothing reached a file.
+        # Cleared in the `finally` below, so a CALLER reaching in after the block is still
+        # refused -- which is the whole point of the guard.
+        self._finalizing = True
         # Before anything that can block or raise. Leaving our handler installed past the
         # block would let a signal arriving during teardown raise INSIDE `_finish`, where
         # the record is being written -- so the mechanism for recording a termination would
@@ -1018,6 +1067,11 @@ class Run:
             self._finish()
         except Exception as exc:  # never replace the exception being recorded
             diagnostic(f"  WARNING: provenance capture failed during exit: {exc}")
+        finally:
+            # `finally`, so a raising `_finish` cannot leave the window open. If it did, every
+            # later call would be treated as ours and silently reach no file -- the exact
+            # defect the guard exists to prevent, re-created by its own escape hatch.
+            self._finalizing = False
         return False  # NEVER swallow the caller's exception.
 
     def _note_unregistered_reads(self) -> None:
@@ -1342,6 +1396,7 @@ class Run:
 
     def input(self, path: str | pathlib.Path) -> pathlib.Path:
         """Hash and record a read. RETURNS the path, so registering is the easy path."""
+        self._refuse_after_exit("input()")
         p = self._anchor(pathlib.Path(path))
         if not p.exists():
             # A bare FileNotFoundError from inside os.stat names neither the script nor
@@ -1397,6 +1452,7 @@ class Run:
         The path is anchored HERE rather than in `write()`, so that a `chdir` between the
         two cannot move which file gets hashed. See `_anchor`.
         """
+        self._refuse_after_exit("output()")
         p = self._anchor(pathlib.Path(path))
         self._pending.append(p)
         return p
@@ -1619,6 +1675,7 @@ class Run:
         "what changed" -- a new column in a data file and a rewritten model are the same
         event to a reader who only has one list.
         """
+        self._refuse_after_exit("code()")
         p = pathlib.Path(path)
         anchored = self._anchor(p)
         try:
@@ -1660,6 +1717,7 @@ class Run:
         A tool that is NOT found is recorded with `found: false` rather than omitted. "We
         looked and it was not there" is a fact about the run; silence is not.
         """
+        self._refuse_after_exit("tool()")
         rec: dict[str, typing.Any] = {"name": name}
         resolved = shutil.which(name)
         rec["found"] = resolved is not None
@@ -1729,8 +1787,19 @@ class Run:
         in the same environment reference one file and a changed environment is visible as
         a changed digest rather than as a diff across timestamped filenames.
 
-        Called automatically by `write()` when the project configures a directory.
+        Called automatically by `write()` when the project configures a directory -- through
+        `_environment_snapshot` rather than through here, because `write()` legitimately runs
+        AFTER `__exit__` and must not be refused by the guard below. Splitting the guard from
+        the work is the whole reason the private half exists: the first version of that guard
+        broke three tests by refusing the package's own internal call.
         """
+        self._refuse_after_exit("environment_snapshot()")
+        return self._environment_snapshot(directory)
+
+    def _environment_snapshot(
+        self, directory: str | pathlib.Path | None = None
+    ) -> dict[str, typing.Any] | None:
+        """The work, unguarded. See `environment_snapshot` for what it does and why."""
         d = directory or self.project.env_snapshot_dir
         if d is None:
             return None
@@ -1764,10 +1833,12 @@ class Run:
         record can be read back from, and a value that is not seed-shaped fails HERE, where
         the caller can see which one it was.
         """
+        self._refuse_after_exit("seeds()")
         self.record["seeds"] = [int(s) for s in seeds]
 
     def note(self, key: str, value: typing.Any) -> None:  # noqa: ANN401
         """Any, deliberately: a note is whatever number or string the script wants recorded."""
+        self._refuse_after_exit("note()")
         self.record.setdefault("notes", {})[key] = value
 
     def module(self, module: types.ModuleType) -> None:
@@ -1779,6 +1850,7 @@ class Run:
         run to code that never executed. Recording the resolved `__file__` and its hash is
         what makes that case detectable at all.
         """
+        self._refuse_after_exit("module()")
         f = getattr(module, "__file__", None)
         rec: dict[str, typing.Any] = {
             "module": getattr(module, "__name__", str(module)),
@@ -2041,7 +2113,7 @@ class Run:
             self.project.env_snapshot_dir is not None
             and "snapshot" not in self.record["environment"]
         ):
-            self.environment_snapshot()
+            self._environment_snapshot()
         # THE UNCLOSED HALF OF R10. `unstable_during_hash` catches a file rewritten WHILE it
         # was read; nothing caught one rewritten a second later, so a run could pin
         # `sha256: abc...` and finish beside a file that no longer had those bytes. A stat
