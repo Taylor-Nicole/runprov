@@ -3667,19 +3667,40 @@ def test_a_run_that_registers_everything_says_nothing_at_all(tmp_path, monkeypat
     assert "UNREGISTERED READ" not in capsys.readouterr().err
 
 
-def test_the_provenance_files_are_never_reported_as_unregistered(tmp_path, monkeypatch):
+@pytest.mark.parametrize("suffix", [".prov.json", ".prov", ".txt", ".v2.json"])
+def test_the_provenance_files_are_never_reported_as_unregistered(tmp_path, monkeypatch, suffix):
     """The package's own records are not the user's data. Reporting the history, the YAML
-    view or a sidecar would make every run noisy about files the user never opened."""
+    view or a sidecar would make every run noisy about files the user never opened.
+
+    PARAMETRISED BECAUSE THE UNPARAMETRISED VERSION PASSED OVER A LIVE BUG. It only ever
+    used `.prov.json`, and `.json` is the one ending for which the two spellings of the
+    sidecar's YAML twin agree: `_persist_yaml` APPENDS `.yml` unless the name ends in
+    `.json`, while the exclusion list used `Path.with_suffix(".yml")`, which REPLACES.
+    So `out.prov` was written as `out.prov.yml` and excluded as `out.yml`, the package
+    read a file it had just written, did not recognise it, and told the user THEY had
+    left it unregistered — on the first run of any project not using the `.json` spelling.
+
+    A warning that fires on the package's own internals is worse than no warning: it is
+    the one that teaches people to ignore the next one. `.v2.json` is here for the
+    compound-suffix half — `with_suffix` eats the `.v2`."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
     runprov.configure(root=tmp_path)  # default provenance/ dir, YAML view and sidecar on
 
-    with runprov.Run("s", provenance=tmp_path / "out.prov.json") as run:
+    # `write()` INSIDE the block, which is what makes this reproduce: `__exit__` writes the
+    # sidecar AFTER the unregistered-read check, so a run that only passes `provenance=`
+    # never has its own YAML twin among the files it opened and the exclusion list is never
+    # consulted. An explicit `run.write(...)` mid-run does, and that is the shape the ledger
+    # row was found in. The first version of this test used `provenance=` alone and passed
+    # with the bug still in place.
+    with runprov.Run("s") as run:
         run.input(tmp_path / "in.tsv")
         with run.open_output(tmp_path / "out.tsv") as fh:
             fh.write("x\n")
-    with runprov.Run("s2", provenance=tmp_path / "out2.prov.json") as run2:
+        run.write(tmp_path / f"out{suffix}")
+    with runprov.Run("s2", provenance=tmp_path / f"out2{suffix}") as run2:
         run2.input(tmp_path / "in.tsv")
+        run2.write(tmp_path / f"out2{suffix}")
 
     for r in (run.record, run2.record):
         assert "unregistered_reads" not in r, r.get("unregistered_reads")
