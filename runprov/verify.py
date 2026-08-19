@@ -108,6 +108,12 @@ GONE = "GONE"
 UNVERIFIABLE = "UNVERIFIABLE"
 NO_PIN = "NO PIN"
 
+#: Every state this checker can report. `show` imports the four it shares — see the note on
+#: its own vocabulary — and the two modules differ by exactly the two states only one source
+#: of evidence can support: `MODIFIED` needs the artifact's own recorded digest, which lives
+#: in the history and never in a pin; `NO PIN` needs the bytes.
+STATES = frozenset({OK, STALE, GONE, UNVERIFIABLE, NO_PIN})
+
 #: Statuses that mean the artifact cannot be trusted as current. `GONE` is included
 #: deliberately: an input that no longer exists cannot be compared, but it is not a neutral
 #: absence either -- the artifact can no longer be re-derived, which is a finding.

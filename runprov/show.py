@@ -33,6 +33,7 @@ import pathlib
 import typing
 
 from .hashing import describe, moved_since, pin_digest
+from .verify import GONE, OK, STALE, UNVERIFIABLE
 
 #: How many characters of a digest identify an artifact version to a human. The same 16 the
 #: pin uses, so a digest read here can be matched against a digest read in an artifact.
@@ -336,11 +337,26 @@ def _yaml_entry(r: dict[str, typing.Any], *, separator: bool = True) -> str:
 
 # ------------------------------------------------------------------ staleness
 #: What the artifact index can say about a file that is on disk now.
-CURRENT = "current"
-STALE = "STALE"
-GONE = "GONE"
+#:
+#: ONE VOCABULARY, IMPORTED RATHER THAN RESTATED. This module used to spell the same five
+#: ideas differently from `verify`: `current` against `OK`, `?` against `UNVERIFIABLE`, and
+#: the case split — one lowercase word among four uppercase ones — that nobody chose. A
+#: reader who learned one command's states had to learn the other's, and `runprov show` and
+#: `runprov verify` disagreed in print about the same artifact while agreeing about the
+#: facts. That was the visible half of ledger row L-23.
+#:
+#: `verify` is where the four shared states are defined, because it is the module whose
+#: docstring legislates what each one is allowed to mean, and importing them here makes the
+#: agreement structural: there is no second spelling to drift. The dependency runs one way
+#: only — `verify` imports nothing from this module.
 MODIFIED = "MODIFIED"
-UNKNOWN = "?"
+
+#: Every state the artifact index can print, and the width the column needs to hold them.
+#: DERIVED, not a literal: the column was a hand-written 9 that fitted `MODIFIED` and not
+#: `UNVERIFIABLE`, and since a `:<` field pads but never truncates, the long state ran into
+#: the digest rather than merely misaligning. A state added here widens the column with it.
+STATES = frozenset({OK, STALE, GONE, MODIFIED, UNVERIFIABLE})
+STATE_COLUMN = max(len(s) for s in STATES) + 1
 
 
 def _resolve(path: str, cwd: str | None) -> pathlib.Path:
@@ -373,11 +389,11 @@ def _sidecar(rec: dict[str, typing.Any]) -> dict[str, typing.Any] | None:
     # AGAINST THE RUN'S RECORDED CWD, exactly as `staleness` resolves every artifact path.
     # This opened the recorded string verbatim, so a run that used the natural relative
     # spelling -- `provenance="out/mid.prov.json"` -- was readable only from its own working
-    # directory. Measured: `current` from there, `?` from anywhere else, for every artifact
+    # directory. Measured: OK from there, UNVERIFIABLE from anywhere else, for every artifact
     # at once. A page whose answers depend on the reader's shell is not a page.
     try:
         doc = json.loads(_resolve(str(path), rec.get("cwd")).read_text(encoding="utf-8"))
-    except (OSError, ValueError):  # guards-ok: no sidecar is "cannot tell", not "current"
+    except (OSError, ValueError):  # guards-ok: no sidecar is "cannot tell", not OK
         return None
     if rec.get("run_uid") and doc.get("run_uid") != rec.get("run_uid"):
         return None
@@ -407,22 +423,25 @@ def staleness(
       2. DIRECTORIES CANNOT BE STAT-CHECKED AT ALL. A directory's size and mtime belong to
          its inode: they move when an entry is added or removed and stay exactly where they
          were when a file inside is edited in place. So an artifact with a directory input
-         reports `?` rather than `current` -- measured, a reference directory whose only
-         file was rewritten end to end used to report `current`, while `--rehash` on the
+         reports UNVERIFIABLE rather than OK -- measured, a reference directory whose only
+         file was rewritten end to end used to report OK, while `--rehash` on the
          same history reported STALE. A definite finding still wins: a moved FILE input is
          STALE and a rewritten artifact is MODIFIED regardless.
 
     The states answer different questions and imply different repairs:
 
-        current    the artifact is there and its inputs have not moved
-        STALE      an input moved -- rebuilding would produce something else
-        MODIFIED   the ARTIFACT is not the bytes recorded (rehash only) -- someone or
-                   something else wrote it, which is not the same as stale
-        GONE       the artifact, or an input it needs, is not there any more
-        ?          it cannot be told: the sidecar with the stat fields is missing or has
-                   been overwritten by a later run, or an input is a directory the stat
-                   check cannot speak for. Saying `current` there would be the reassuring
-                   lie this package exists to refuse -- use `--rehash` for a real answer
+        OK            the artifact is there and its inputs have not moved
+        STALE         an input moved -- rebuilding would produce something else
+        MODIFIED      the ARTIFACT is not the bytes recorded -- someone or something else
+                      wrote it, which is not the same as stale. Reachable from BOTH paths:
+                      the stat check compares the artifact's own recorded size and mtime,
+                      and this line used to say "rehash only", which was wrong about the
+                      code four screens below it
+        GONE          the artifact, or an input it needs, is not there any more
+        UNVERIFIABLE  it cannot be told: the sidecar with the stat fields is missing or has
+                      been overwritten by a later run, or an input is a directory the stat
+                      check cannot speak for. Saying OK there would be the reassuring lie
+                      this package exists to refuse -- use `--rehash` for a real answer
     """
     # FOUR FIELDS, NOT THE RECORD. This loop streams -- it reads one history line at a time
     # and never holds the file -- and then kept the WHOLE record per artifact, which put the
@@ -478,19 +497,19 @@ def staleness(
             detailed[key] = _sidecar(made)
         doc = detailed[key]
         if doc is None:
-            out[path] = UNKNOWN
+            out[path] = UNVERIFIABLE
             continue
 
-        state = CURRENT
+        state = OK
         # An input the STAT CHECK CANNOT SPEAK FOR. `moved_since` returns None for anything
         # that is not a plain file, and None means "did not move" -- so a DIRECTORY input
         # read as evidence of freshness. A directory's own size and mtime belong to its
         # inode: they move when an entry is added or removed and stay exactly where they
         # were when a file inside is edited in place. Measured: a reference directory whose
-        # only file was rewritten end to end reported `current`, while `--rehash` on the
+        # only file was rewritten end to end reported OK, while `--rehash` on the
         # same history correctly reported STALE.
         #
-        # `?`, not `current` and not STALE. We did not look, and saying so is the whole
+        # UNVERIFIABLE, not OK and not STALE. We did not look, and saying so is the whole
         # argument this package makes elsewhere -- `verify` reports UNVERIFIABLE for the
         # same reason, and `git_status_captured: false` exists for it too. `--rehash` is
         # the answer for anyone who needs a real one, and it re-derives the tree hash.
@@ -503,17 +522,17 @@ def staleness(
             if why:
                 state = GONE if why == "gone" else STALE
                 break
-        if state is CURRENT:
+        if state is OK:
             # THE ARTIFACT ITSELF, from the sidecar's own output entry. Without this, a file
-            # someone edited by hand read as `current` because its INPUTS had not moved --
+            # someone edited by hand read as OK because its INPUTS had not moved --
             # true, and not the question the reader is asking.
             mine = next((o for o in doc.get("outputs") or [] if _name(o) == _name(entry)), None)
             if mine is not None and moved_since(mine, base=base):
                 state = MODIFIED
         # AFTER the artifact check, so a definite finding still wins: MODIFIED is something
         # we established, and `?` is the absence of one.
-        if state is CURRENT and uncheckable:
-            state = UNKNOWN
+        if state is OK and uncheckable:
+            state = UNVERIFIABLE
         out[path] = state
     return out
 
@@ -554,20 +573,20 @@ def _by_digest(
             # digest with. Comparing against `_short`'s display dash made every such input
             # differ from itself and reported STALE. `?`, for the same reason `verify`
             # reports UNVERIFIABLE here.
-            return UNKNOWN
+            return UNVERIFIABLE
         fresh = now(_resolve(_name(i), str(base) if base else None))
         if fresh is None:
-            return UNKNOWN
+            return UNVERIFIABLE
         if fresh != want:
             return STALE
     want = _recorded(entry)
     if want is None:
-        return UNKNOWN  # same, for the ARTIFACT: `kind: UNHASHABLE` is not MODIFIED
+        return UNVERIFIABLE  # same, for the ARTIFACT: `kind: UNHASHABLE` is not MODIFIED
     fresh = now(target)
     if fresh is None:
-        return UNKNOWN
+        return UNVERIFIABLE
     # Not stale: the ARTIFACT is not what was recorded. A different repair entirely.
-    return CURRENT if fresh == want else MODIFIED
+    return OK if fresh == want else MODIFIED
 
 
 def _digest_now(path: pathlib.Path) -> str | None:
@@ -713,7 +732,12 @@ def render_project_lines(
             flag = "" if a["status"] == "ok" else f"  <- from a {a['status'].upper()} run"
             kind = "" if a["kind"] == "file" else f"  [{a['kind']}]"
             # The column a reader is actually scanning for: do I need to run this again.
-            mark = f"{states.get(path, '')!s:<9}" if states else ""
+            # THE LONGEST STATE PLUS ONE, so there is always a space before the digest.
+            # It was 9, which fitted `MODIFIED` and not `UNVERIFIABLE`: a `:<` field pads
+            # but never truncates, so the long state did not merely misalign the column, it
+            # ran INTO the digest -- `UNVERIFIABLEa4c3ed04a95a3da1`. Derived rather than
+            # written as a number, so the next state added cannot reintroduce it.
+            mark = f"{states.get(path, '')!s:<{STATE_COLUMN}}" if states else ""
             yield line(f"  {mark}{a['digest']}  {path}{kind}")
             yield line(f"  {' ' * (SHORT + len(mark))}  by {a['by']}  {a['when']}{flag}")
 

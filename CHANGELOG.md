@@ -268,6 +268,27 @@ Nothing has been published yet. Everything below is what a first release would c
   the run it described; a corrupt gzip escaped `content_digest`; and a `.gz` rewritten from
   identical bytes never hashed the same twice.
 
+### One vocabulary for both checkers
+
+- **`show`'s states are now `verify`'s states**, imported rather than restated: `current`
+  became `OK` and `?` became `UNVERIFIABLE`. They were the same five ideas spelled two ways
+  — plus a case split nobody chose, one lowercase word among four uppercase ones — so the
+  two commands disagreed in print about artifacts they agreed about in fact. `verify` owns
+  the four shared definitions, `show` imports them and adds `MODIFIED` (only the history
+  holds the artifact's own digest), `verify` keeps `NO PIN` (only the bytes can be missing
+  one). There is no second spelling left to drift.
+- The artifact-index column is now DERIVED from the vocabulary rather than written as a
+  number. It was a hand-written 9, which fitted `MODIFIED` and not `UNVERIFIABLE` — and
+  since a `:<` field pads but never truncates, the long state did not merely misalign the
+  column, it ran INTO the digest: `UNVERIFIABLEa4c3ed04a95a3da1`. Widening it to 12 by hand
+  would have left the same defect, one character narrower; `STATE_COLUMN` is the longest
+  state plus one, so the next state added widens the column with it.
+- **`--format yaml`'s `state:` values change with it**, which is the one thing here a
+  machine consumer would notice. Nothing has been published, so nothing is broken.
+- Two docstring errors fixed in the same pass. `staleness` described `MODIFIED` as
+  "(rehash only)" — it is reachable from the STAT path too, which the code four screens
+  below has always done and which is now measured in the test suite.
+
 ### The two staleness checkers now compose into a gate
 
 - **`show --stale --exit-code`.** The package shipped two commands that answer "is this

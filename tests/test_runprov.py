@@ -1090,8 +1090,8 @@ def test_the_sidecar_cache_survives_not_keeping_the_records(tmp_path, monkeypatc
     # The FIRST run's sidecar was overwritten, so its artifact cannot be judged and says so.
     # The second's is still its own and verifies. Sharing one cache entry would give both the
     # same answer, which is the confident nonsense `_sidecar`'s run_uid check exists to stop.
-    assert states["out_0.tsv"] == runprov.show.UNKNOWN, states
-    assert states["out_1.tsv"] == runprov.show.CURRENT, states
+    assert states["out_0.tsv"] == runprov.show.UNVERIFIABLE, states
+    assert states["out_1.tsv"] == runprov.show.OK, states
 
 
 def _shared_input_history(tmp_path, artifacts=6, inputs=3):
@@ -1132,7 +1132,7 @@ def test_rehash_reads_each_distinct_file_once_across_the_whole_page(tmp_path, mo
     )
     states = runprov.show.staleness(rows, rehash=True)
 
-    assert set(states.values()) == {runprov.show.CURRENT}, "the premise: nothing has moved"
+    assert set(states.values()) == {runprov.show.OK}, "the premise: nothing has moved"
     assert len(calls) == len(set(calls)), (
         f"{len(calls)} reads over {len(set(calls))} distinct files — one each is the point"
     )
@@ -1144,7 +1144,7 @@ def test_the_rehash_cache_does_not_change_what_is_reported(tmp_path, monkeypatch
     a moved input must still go STALE, from a single re-read of it."""
     monkeypatch.chdir(tmp_path)
     rows = _shared_input_history(tmp_path, artifacts=4, inputs=2)
-    assert set(runprov.show.staleness(rows, rehash=True).values()) == {runprov.show.CURRENT}
+    assert set(runprov.show.staleness(rows, rehash=True).values()) == {runprov.show.OK}
 
     (tmp_path / "data" / "in_0.tsv").write_text("id\n0\n1\n2\n", encoding="utf-8")
     states = runprov.show.staleness(rows, rehash=True)
@@ -1163,7 +1163,7 @@ def test_a_rewritten_directory_input_is_not_reported_as_current(tmp_path, monkey
     rows = _dir_input_history(tmp_path)
     (tmp_path / "refdir" / "a.txt").write_text("TOTALLY DIFFERENT\n", encoding="utf-8")
 
-    assert _one_state(rows) == runprov.show.UNKNOWN, "stat cannot speak for a directory"
+    assert _one_state(rows) == runprov.show.UNVERIFIABLE, "stat cannot speak for a directory"
     assert _one_state(rows, rehash=True) == runprov.show.STALE, "rehash can, and does"
 
 
@@ -10807,7 +10807,7 @@ def test_staleness_checks_the_run_that_wrote_the_artifact_last(tmp_path, monkeyp
     are not the ones it was made from. That is the reassuring lie the `?` state exists to
     avoid, arriving through the state that looks most trustworthy."""
     rows = _rebuilt_from_a_different_input(tmp_path, monkeypatch)
-    assert _state_of(runprov.show.staleness(rows), "shared.tsv") == "current", "the premise"
+    assert _state_of(runprov.show.staleness(rows), "shared.tsv") == "OK", "the premise"
 
     # The LATEST producer's input. Bigger, so the size check sees it without waiting a second.
     (tmp_path / "data" / "second.tsv").write_text("two, and then some more\n", encoding="utf-8")
@@ -10824,7 +10824,7 @@ def test_a_superseded_runs_input_does_not_make_an_artifact_stale(tmp_path, monke
     rows = _rebuilt_from_a_different_input(tmp_path, monkeypatch)
 
     (tmp_path / "data" / "first.tsv").write_text("one, edited long afterwards\n", encoding="utf-8")
-    assert _state_of(runprov.show.staleness(rows), "shared.tsv") == "current", (
+    assert _state_of(runprov.show.staleness(rows), "shared.tsv") == "OK", (
         "first.tsv is not what the artifact on disk was made from"
     )
 
@@ -10836,7 +10836,7 @@ def test_the_artifact_index_says_which_artifacts_need_rebuilding(tmp_path, monke
     for `aux.bin` — a binary that could never hold a pin at all.
     """
     rows = _staleable(tmp_path, monkeypatch)
-    assert set(runprov.show.staleness(rows).values()) == {"current"}
+    assert set(runprov.show.staleness(rows).values()) == {"OK"}
 
     time.sleep(1.1)  # mtime has one-second resolution; see `moved_since`
     (tmp_path / "data" / "in.tsv").write_text("id\tv\n1\tCHANGED\n", encoding="utf-8")
@@ -10880,7 +10880,7 @@ def test_rehash_catches_what_a_stat_cannot(tmp_path, monkeypatch):
     src.write_bytes(b"id\tv\n1\tz\n")
     os.utime(src, (stat.st_atime, stat.st_mtime))  # and put the mtime back
 
-    assert _state_of(runprov.show.staleness(rows), "mid.tsv") == "current", (
+    assert _state_of(runprov.show.staleness(rows), "mid.tsv") == "OK", (
         "the stat check cannot see this, and says so by being documented, not by guessing"
     )
     assert _state_of(runprov.show.staleness(rows, rehash=True), "mid.tsv") == "STALE"
@@ -10906,7 +10906,7 @@ def test_an_artifact_whose_INPUT_is_gone_says_GONE_not_STALE(tmp_path, monkeypat
     assert _state_of(states, "aux.bin") == "GONE", (
         "an input that is not there cannot be compared, and rebuilding will not find it"
     )
-    assert _state_of(states, "mid.tsv") == "current", "the other artifact is unaffected"
+    assert _state_of(states, "mid.tsv") == "OK", "the other artifact is unaffected"
 
 
 def test_rehash_reports_MODIFIED_for_an_artifact_someone_rewrote(tmp_path, monkeypatch):
@@ -10921,7 +10921,7 @@ def test_rehash_reports_MODIFIED_for_an_artifact_someone_rewrote(tmp_path, monke
     artifact is rebuilt from moved inputs, a modified one was overwritten by something that
     is not this pipeline and rebuilding it silently discards whatever that was."""
     rows = _staleable(tmp_path, monkeypatch)
-    assert _state_of(runprov.show.staleness(rows, rehash=True), "mid.tsv") == "current", (
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "mid.tsv") == "OK", (
         "the premise: nothing has moved yet"
     )
 
@@ -10968,14 +10968,14 @@ def test_rehash_will_not_call_an_undigested_artifact_MODIFIED(tmp_path, monkeypa
     assert recorded["kind"] == "UNHASHABLE" and not recorded["sha256"], (
         "the premise: the run recorded no digest for this output"
     )
-    assert _state_of(runprov.show.staleness(rows, rehash=True), "pipe.out") == "?", (
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "pipe.out") == "UNVERIFIABLE", (
         "while it is still a FIFO it cannot be read, so the answer is already `?`"
     )
 
     # NOW the path becomes readable, which is where the bug lived.
     fifo.unlink()
     fifo.write_text("a regular file stands here now\n", encoding="utf-8")
-    assert _state_of(runprov.show.staleness(rows, rehash=True), "pipe.out") == "?", (
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "pipe.out") == "UNVERIFIABLE", (
         "a digest that was never recorded cannot have changed — `?`, not MODIFIED"
     )
 
@@ -10997,13 +10997,67 @@ def test_rehash_will_not_call_an_undigested_input_STALE(tmp_path, monkeypatch):
             fh.write("a\n")
     rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
 
-    assert _state_of(runprov.show.staleness(rows, rehash=True), "m.tsv") == "current"
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "m.tsv") == "OK"
     # Strip the digest the run recorded for the input, leaving the entry in place.
     for key in ("content_sha256", "sha256", "sha256_tree"):
         rows[0]["inputs"][0].pop(key, None)
-    assert _state_of(runprov.show.staleness(rows, rehash=True), "m.tsv") == "?", (
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "m.tsv") == "UNVERIFIABLE", (
         "an input the run never digested makes the artifact unknowable, not stale"
     )
+
+
+def test_the_two_checkers_have_one_vocabulary_and_only_one_spelling_of_it(tmp_path, monkeypatch):
+    """L-23, the visible half. `show` said `current` where `verify` said `OK`, and `?` where
+    `verify` said `UNVERIFIABLE` — the same five ideas spelled two ways, plus a case split
+    nobody chose: one lowercase word among four uppercase ones. Two commands printed
+    different words about artifacts they agreed about in fact.
+
+    THIS ASSERTS THE PROPERTY, NOT THE VALUES. Comparing the strings would pass just as well
+    if someone re-declared `OK = "OK"` in `show` — two definitions that happen to agree
+    today, which is exactly the arrangement that drifts. So it asserts the SET RELATION: the
+    two vocabularies differ by precisely the two states only one source of evidence can
+    support. `MODIFIED` needs the artifact's own recorded digest, which lives in the history
+    and never in the pin; `NO PIN` needs the bytes, which the history cannot speak for.
+
+    The case rule is asserted too, because `current` is what got in last time and nothing
+    would have caught it."""
+    # FROM THE MODULES, not a list retyped here. A hand-written set in the test cannot see a
+    # sixth state someone adds to a module, so it would go on passing over exactly the drift
+    # it exists to catch.
+    show_states = runprov.show.STATES
+    verify_states = runprov.verify.STATES
+
+    assert show_states - verify_states == {runprov.show.MODIFIED}, (
+        "show may say exactly one thing verify cannot: MODIFIED, which needs the history"
+    )
+    assert verify_states - show_states == {runprov.verify.NO_PIN}, (
+        "verify may say exactly one thing show cannot: NO PIN, which needs the bytes"
+    )
+    for state in show_states | verify_states:
+        assert state == state.upper(), f"{state!r} is not upper case; `current` was the last one"
+
+    # AND THE COLUMN HAS TO HOLD THEM, rendered from a REAL page rather than a hand-built
+    # view, so the assertion cannot drift away from the shape `project_view` actually
+    # produces. `UNVERIFIABLE` is 12 characters against a field that was 9, and an
+    # overflowing field pushes the digest and the name out of alignment on exactly the rows
+    # a reader is scanning for.
+    rows = _staleable(tmp_path, monkeypatch)
+    view = runprov.show.project_view(rows)
+    states = dict.fromkeys(view["artifacts"], runprov.show.UNVERIFIABLE)
+    page = "".join(runprov.show.render_project_lines(view, states))
+    widest = runprov.show.STATE_COLUMN
+    for path, a in view["artifacts"].items():
+        # The ARTIFACT ROW, which carries the digest — the path alone also appears on the
+        # continuation line beneath it and in the script's `expects:` block.
+        line = next(ln for ln in page.splitlines() if path in ln and a["digest"] in ln)
+        assert line.startswith(f"  {runprov.show.UNVERIFIABLE:<{widest}}{a['digest']}"), (
+            f"the state column is narrower than {widest}: {line!r}"
+        )
+        # AND IT DOES NOT TOUCH THE DIGEST. `:<` pads and never truncates, so a field
+        # exactly as wide as the longest state renders `UNVERIFIABLEa4c3ed04a95a3da1`.
+        assert f"{runprov.show.UNVERIFIABLE} " in line, (
+            f"no separator between the state and the digest: {line!r}"
+        )
 
 
 def test_show_exit_code_gates_on_what_verify_structurally_cannot_see(tmp_path, monkeypatch, capsys):
@@ -11091,7 +11145,7 @@ def test_show_exit_code_does_not_fail_on_a_state_it_could_not_determine(tmp_path
 
     log = str(tmp_path / "runs.jsonl")
     rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
-    assert _state_of(runprov.show.staleness(rows), "d.tsv") == "?", (
+    assert _state_of(runprov.show.staleness(rows), "d.tsv") == "UNVERIFIABLE", (
         "the premise: a directory input cannot be stat-checked"
     )
     assert cli.main(["show", "--log", log, "--stale", "--exit-code"]) == 0
@@ -11114,13 +11168,13 @@ def test_a_missing_or_overwritten_sidecar_reports_unknown_not_current(tmp_path, 
     `current` would be the reassuring lie the whole package refuses."""
     rows = _staleable(tmp_path, monkeypatch)
     (tmp_path / "out" / "mid.prov.json").unlink()
-    assert _state_of(runprov.show.staleness(rows), "mid.tsv") == "?"
+    assert _state_of(runprov.show.staleness(rows), "mid.tsv") == "UNVERIFIABLE"
 
     # Overwritten by a different run: same path, different run_uid.
     doc = json.loads((tmp_path / "out" / "aux.prov.json").read_text(encoding="utf-8"))
     doc["run_uid"] = "a-completely-different-run"
     (tmp_path / "out" / "aux.prov.json").write_text(json.dumps(doc), encoding="utf-8")
-    assert _state_of(runprov.show.staleness(rows), "aux.bin") == "?", (
+    assert _state_of(runprov.show.staleness(rows), "aux.bin") == "UNVERIFIABLE", (
         "digests from one run against stats from another would be confident nonsense"
     )
 
@@ -11137,7 +11191,7 @@ def test_a_registered_output_that_was_never_written_is_gone(tmp_path, monkeypatc
 def test_rehash_reports_unknown_when_an_input_cannot_be_read(tmp_path, monkeypatch):
     rows = _staleable(tmp_path, monkeypatch)
     (tmp_path / "data" / "in.tsv").unlink()
-    assert _state_of(runprov.show.staleness(rows, rehash=True), "mid.tsv") == "?"
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "mid.tsv") == "UNVERIFIABLE"
 
 
 def test_show_cli_takes_stale_and_rehash_and_tallies_them(tmp_path, monkeypatch, capsys):
@@ -11148,7 +11202,7 @@ def test_show_cli_takes_stale_and_rehash_and_tallies_them(tmp_path, monkeypatch,
 
     assert runprov.__main__.main(["show", "--log", log, "--stale"]) == 0
     seen = capsys.readouterr()
-    assert "STALE" in seen.out and "current" in seen.out
+    assert "STALE" in seen.out and "OK" in seen.out
     assert "STALE" in seen.err, "the summary line tallies the states"
 
     assert runprov.__main__.main(["show", "--log", log, "--rehash", "--format", "yaml"]) == 0
@@ -11172,7 +11226,7 @@ def test_a_record_with_no_sidecar_path_reports_unknown(tmp_path):
         "outputs": [{"path": "out.tsv", "sha256": "b" * 64, "kind": "file"}],
     }
     (tmp_path / "out.tsv").write_text("x\n", encoding="utf-8")
-    assert runprov.show.staleness([rec]) == {"out.tsv": "?"}
+    assert runprov.show.staleness([rec]) == {"out.tsv": "UNVERIFIABLE"}
 
 
 def test_two_artifacts_from_one_run_read_that_run_s_sidecar_once(tmp_path, monkeypatch):
@@ -11198,7 +11252,7 @@ def test_two_artifacts_from_one_run_read_that_run_s_sidecar_once(tmp_path, monke
 
     monkeypatch.setattr(pathlib.Path, "read_text", watched)
     states = runprov.show.staleness(rows)
-    assert len(states) == 3 and set(states.values()) == {"current"}
+    assert len(states) == 3 and set(states.values()) == {"OK"}
     assert reads.count("p.json") == 1, f"the sidecar was read {reads.count('p.json')} times"
 
 
@@ -11211,7 +11265,7 @@ def test_rehash_reports_unknown_when_the_ARTIFACT_cannot_be_read(tmp_path, monke
     aux = tmp_path / "out" / "aux.bin"
     aux.unlink()
     os.mkfifo(aux)
-    assert _state_of(runprov.show.staleness(rows, rehash=True), "aux.bin") == "?"
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "aux.bin") == "UNVERIFIABLE"
 
 
 # ================= a sidecar per run: the record beside the artifact is not overwritten
@@ -11300,8 +11354,8 @@ def test_per_run_sidecars_make_staleness_answerable_for_older_runs(tmp_path, mon
 
     rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
     states = runprov.show.staleness(rows)
-    assert set(states.values()) == {"current"}, "both runs can still answer for themselves"
-    assert "?" not in states.values()
+    assert set(states.values()) == {"OK"}, "both runs can still answer for themselves"
+    assert "UNVERIFIABLE" not in states.values()
 
 
 # ================ the code that RAN: first-party modules the run actually imported
@@ -11850,10 +11904,10 @@ def test_a_relative_provenance_path_is_readable_from_anywhere(tmp_path, monkeypa
 
     rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
     assert rows[0]["provenance_path"] == "out/mid.prov.json", "the premise: a relative path"
-    assert _state_of(runprov.show.staleness(rows), "mid.tsv") == "current"
+    assert _state_of(runprov.show.staleness(rows), "mid.tsv") == "OK"
 
     monkeypatch.chdir(tmp_path.parent)  # any other directory
-    assert _state_of(runprov.show.staleness(rows), "mid.tsv") == "current", (
+    assert _state_of(runprov.show.staleness(rows), "mid.tsv") == "OK", (
         "the same history read from elsewhere must give the same answer"
     )
 
