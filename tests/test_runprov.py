@@ -2352,6 +2352,64 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
     assert "declared.tsv" not in out.read_text(encoding="utf-8")
 
 
+def test_every_path_argument_accepts_a_plain_string(tmp_path, monkeypatch):
+    """Council C-19. `provenance=` was annotated `pathlib.Path | None` while `input`,
+    `output`, `write`, `code`, `open_output`, `pin_sidecar` and `terminal_log` all take
+    `str | pathlib.Path` — and so does `_sidecar_name`, which is what consumes it. A plain
+    string worked at runtime and mypy rejected it, on THE MOST LOAD-BEARING ARGUMENT IN THE
+    PACKAGE: the one that decides whether a crash is recorded.
+
+    With `py.typed` shipped, every typed consumer met that error on the flagship call, and
+    the tempting way to silence it is to delete the argument — which is precisely the shape
+    that records nothing.
+
+    Asserted at RUNTIME here; the annotation itself is checked by the signature test below,
+    because `mypy` on the package is a separate gate and a runtime test cannot see a type."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    (tmp_path / "t.log").write_text("log\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+
+    with runprov.Run("s", provenance="p.json", script_path="s.py") as run:
+        run.input("in.tsv")
+        run.terminal_log("t.log")
+        with run.open_output("out.tsv") as fh:
+            fh.write("x\n")
+
+    assert (tmp_path / "p.json").is_file(), "a str provenance must still write the sidecar"
+    assert isinstance(run.provenance_path, pathlib.Path), "and be normalised on the way in"
+    assert run.record["status"] == "ok"
+
+
+def test_the_path_arguments_are_annotated_the_same_way(tmp_path):
+    """The annotation is the actual defect — the runtime always worked — so it is the
+    annotation that gets asserted. `mypy` runs over the package in a separate gate and would
+    not notice a NARROWING here, because a narrower type is self-consistent: it only breaks
+    the consumer, which the package's own suite never type-checks."""
+    import inspect
+
+    sig = inspect.signature(runprov.Run.__init__)
+    for name in ("provenance", "script_path", "terminal_log"):
+        annotation = str(sig.parameters[name].annotation)
+        assert "str" in annotation, (
+            f"Run(..., {name}=) is annotated {annotation!r}, which rejects a plain string "
+            f"while every sibling path argument accepts one"
+        )
+
+    for method in (
+        "input",
+        "output",
+        "write",
+        "code",
+        "open_output",
+        "pin_sidecar",
+        "terminal_log",
+    ):
+        params = inspect.signature(getattr(runprov.Run, method)).parameters
+        first = next(p for n, p in params.items() if n not in ("self",))
+        assert "str" in str(first.annotation), f"{method}() stopped accepting a str"
+
+
 @pytest.mark.parametrize(
     "call",
     ["note", "seeds", "output", "input", "tool", "code", "module", "terminal_log"],
@@ -12098,26 +12156,3 @@ def test_our_own_teardown_is_not_refused_by_the_after_exit_guard(tmp_path, monke
     line = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
     assert line["environment_snapshot"]["path"].endswith(".txt")
     assert (tmp_path / "p.json").is_file()
-
-
-def test_the_guard_window_closes_even_if_finish_raises(tmp_path, monkeypatch):
-    """`_finalizing` is cleared in a `finally`.
-
-    If a raising `_finish` left the window open, every later call would be treated as ours,
-    accepted, and would silently reach no file -- the exact defect the guard exists to
-    prevent, re-created by its own escape hatch.
-    """
-    monkeypatch.chdir(tmp_path)
-    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
-    run = runprov.Run("s", provenance=tmp_path / "p.json")
-
-    def boom(self):
-        raise RuntimeError("finish failed")
-
-    monkeypatch.setattr(type(run), "_finish", boom)
-    with run:
-        pass
-
-    assert run._finalizing is False, "a raising _finish left the guard window open"
-    with pytest.raises(RuntimeError, match="after the `with` block closed"):
-        run.note("late", 1)

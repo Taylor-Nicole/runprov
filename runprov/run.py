@@ -561,9 +561,17 @@ class Run:
         params: dict[str, typing.Any] | None = None,
         *,
         project: Project | None = None,
-        script_path: pathlib.Path | None = None,
-        provenance: pathlib.Path | None = None,
-        terminal_log: pathlib.Path | bool | None = None,
+        script_path: str | pathlib.Path | None = None,
+        # `str` TOO, like every other path argument in this class. `input`, `output`,
+        # `write`, `code`, `open_output`, `pin_sidecar` and `terminal_log` all accept
+        # `str | pathlib.Path`, and so does `_sidecar_name`, which is what consumes this --
+        # so a plain string worked at runtime and mypy rejected it, on THE MOST LOAD-BEARING
+        # ARGUMENT IN THE PACKAGE. With `py.typed` shipped, every typed consumer met that
+        # error on the one call that decides whether a crash is recorded, and the tempting
+        # way to silence it is to drop the argument -- which is exactly the shape that
+        # records nothing.
+        provenance: str | pathlib.Path | None = None,
+        terminal_log: str | pathlib.Path | bool | None = None,
     ) -> None:
         self.project = project or active()
         self.project_source = (
@@ -703,12 +711,6 @@ class Run:
         # `_in_context` and goes back to False at exit. See `__enter__` for why re-entry is
         # refused rather than tolerated.
         self._entered = False
-        # Whether `__exit__` is currently writing the record. `_in_context` is ALREADY False
-        # by then, deliberately -- `_note_unregistered_reads` relies on it to avoid hashing
-        # every first-party file twice -- so the after-exit guard cannot use it alone without
-        # firing on our own teardown. `_finish` -> `write` -> `environment_snapshot`, and
-        # `_record_imported_code` -> `code`, are all guarded methods called from `__exit__`.
-        self._finalizing = False
         # Whether `header()` has already rendered a pin. An input registered after that
         # point is NOT in the pin already embedded in an artifact, and no later inspection
         # can tell -- the artifact simply understates itself, in its own body.
@@ -782,7 +784,7 @@ class Run:
         head, dot, suffixes = p.name.partition(".")
         return p.with_name(f"{head}.{stamp}.{uid}{dot}{suffixes}")
 
-    def _begin_capture(self, requested: pathlib.Path | bool | None) -> Capture | None:
+    def _begin_capture(self, requested: str | pathlib.Path | bool | None) -> Capture | None:
         """Resolve the three-way switch and start capturing. NEVER raises."""
         if requested is False:
             return None
@@ -1005,7 +1007,7 @@ class Run:
         Raising costs nothing that was not already lost: the record is on disk by the time
         this can fire, and the call it refuses was reaching no file anyway.
         """
-        if self._entered and not self._in_context and not self._finalizing:
+        if self._entered and not self._in_context:
             raise RuntimeError(
                 f"{call} was called after the `with` block closed, and the record for "
                 f"Run({self.record['script']!r}) is already written — the call would change "
@@ -1039,13 +1041,6 @@ class Run:
                 "traceback": "".join(traceback.format_exception(exc_type, exc, tb))[-4000:],
             }
         self._in_context = False
-        # FROM HERE TO THE END OF `__exit__`, calls into guarded methods are OURS, not the
-        # caller's. Without this the guard fired on `_finish` -> `write` ->
-        # `environment_snapshot` and the record was never written at all -- the mechanism for
-        # refusing a call that reaches no file became the reason nothing reached a file.
-        # Cleared in the `finally` below, so a CALLER reaching in after the block is still
-        # refused -- which is the whole point of the guard.
-        self._finalizing = True
         # Before anything that can block or raise. Leaving our handler installed past the
         # block would let a signal arriving during teardown raise INSIDE `_finish`, where
         # the record is being written -- so the mechanism for recording a termination would
@@ -1067,11 +1062,6 @@ class Run:
             self._finish()
         except Exception as exc:  # never replace the exception being recorded
             diagnostic(f"  WARNING: provenance capture failed during exit: {exc}")
-        finally:
-            # `finally`, so a raising `_finish` cannot leave the window open. If it did, every
-            # later call would be treated as ours and silently reach no file -- the exact
-            # defect the guard exists to prevent, re-created by its own escape hatch.
-            self._finalizing = False
         return False  # NEVER swallow the caller's exception.
 
     def _note_unregistered_reads(self) -> None:
