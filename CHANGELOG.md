@@ -279,7 +279,7 @@ Nothing has been published yet. Everything below is what a first release would c
 
 ### Verified
 
-592 tests, 100% statement *and* branch coverage.
+596 tests, 100% statement *and* branch coverage.
 
 **Run in full on CPython 3.10.12, 3.11.1, 3.12.13 and 3.13.15**, on Linux, 2026-08-19.
 **macOS 3.12 and Windows 3.12 ran green once**, on 2026-08-12 (run `31592997325`, commit

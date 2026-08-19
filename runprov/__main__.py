@@ -37,7 +37,9 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import json
+import os
 import pathlib
 import shlex
 import signal
@@ -46,7 +48,7 @@ import sys
 import typing
 
 from .project import active
-from .run import Run
+from .run import Run, Terminated
 from .show import (
     SHORT,
     _yaml_entry,
@@ -394,6 +396,11 @@ class CommandFailedError(Exception):
 #: NTSTATUS. -256 is comfortably past every real signal and nowhere near an NTSTATUS.
 _KILLED_BY_SIGNAL_FLOOR = -256
 
+#: How long a child gets to exit after being sent SIGTERM, before SIGKILL. Short on purpose:
+#: this only runs when THIS process is already being terminated, and whatever is killing us is
+#: usually counting too -- SLURM sends SIGKILL itself shortly after SIGTERM.
+_CHILD_GRACE_SECONDS = 5.0
+
 
 def _exec(args: argparse.Namespace) -> int:
     """`runprov exec -- samtools sort in.bam -o out.bam`: a subprocess, recorded as a run.
@@ -468,7 +475,30 @@ def _exec(args: argparse.Namespace) -> int:
                 # Inheriting this process's stdout and stderr, so the command still writes
                 # to the terminal it was launched from -- and so `--capture`, which works at
                 # file-descriptor level, sees a subprocess's output too.
-                returncode = subprocess.run(argv, check=False).returncode
+                # ITS OWN PROCESS GROUP, so a signal can reach the child as a group. Without
+                # this, SIGTERM to `runprov exec` killed the wrapper and ORPHANED the child --
+                # measured: a `sleep 40` outlived the runprov that started it, which on a
+                # cluster means work still running after the job that owns it is gone.
+                proc = subprocess.Popen(argv, start_new_session=True)
+                try:
+                    returncode = proc.wait()
+                except BaseException:
+                    # BaseException, because `Terminated` is one: the whole point is to catch
+                    # the signal-turned-exception and hand the signal ON to the child before
+                    # this process unwinds. Terminate the GROUP -- the child may itself have
+                    # children, and `sh -c` usually does.
+                    with contextlib.suppress(OSError):
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        proc.wait(timeout=_CHILD_GRACE_SECONDS)
+                    if proc.poll() is None:
+                        # It ignored SIGTERM. SIGKILL cannot be ignored, and leaving it
+                        # running would be the orphan this exists to prevent.
+                        with contextlib.suppress(OSError):
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        with contextlib.suppress(subprocess.TimeoutExpired):
+                            proc.wait(timeout=_CHILD_GRACE_SECONDS)
+                    raise
             except OSError as exc:
                 run.note("exec_error", f"{type(exc).__name__}: {exc}")
                 raise CommandFailedError(str(exc)) from exc
@@ -512,6 +542,19 @@ def _exec(args: argparse.Namespace) -> int:
     except CommandFailedError as exc:
         print(f"  runprov exec: recorded a FAILED run — {exc}", file=sys.stderr)
         return returncode if returncode else 1
+    except Terminated as exc:
+        # A NUMBER, NOT A TRACEBACK, for the commonest way a cluster job actually ends.
+        # `Terminated` is a BaseException on purpose -- so an ordinary `except Exception:`
+        # cannot swallow a kill -- but nothing here caught it either, so `scancel`-shaped
+        # termination (SIGTERM to the process group) printed a raw Python traceback and
+        # exited 1. Measured. The RECORD was already correct; only the CLI's answer was not.
+        #
+        # 128+N, matching a signal-killed child and matching a shell, so a wrapper that
+        # inspects the code sees the same number whether the signal hit the child or hit
+        # runprov itself. SLURM's time limit is SIGTERM-then-SIGKILL and `scancel` is
+        # SIGTERM, which the signal-handling docstring in `run.py` already calls out.
+        print(f"  runprov exec: {exc}", file=sys.stderr)
+        return 128 + exc.signum
     return returncode
 
 

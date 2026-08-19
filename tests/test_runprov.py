@@ -2441,12 +2441,36 @@ def test_exec_does_not_read_a_windows_crash_code_as_a_signal(tmp_path, monkeypat
     monkeypatch.chdir(tmp_path)
     runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
 
-    class FakeCompleted:
-        returncode = -1073741819
-        stdout = None
-        stderr = None
+    class FakePopen:
+        """Popen-shaped, because `_exec` starts the child with Popen so it can forward a
+        signal to it (C-28). Patching `subprocess.run` stopped intercepting when that
+        changed, and the test failed loudly rather than silently — which is the good case."""
 
-    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: FakeCompleted())
+        pid = 424242
+
+        def __init__(self, *a, **k):
+            self._killed = False
+            self.args = a[0] if a else []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def communicate(self, *a, **k):
+            return (None, None)
+
+        def kill(self):
+            self._killed = True
+
+        def wait(self, timeout=None):
+            return -1073741819
+
+        def poll(self):
+            return -1073741819
+
+    monkeypatch.setattr(cli.subprocess, "Popen", FakePopen)
     code = cli.main(["exec", "--name", "w", "--", "anything"])
     rec = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
     assert "signal" not in rec["notes"], "an NTSTATUS is not a signal"
@@ -2460,15 +2484,172 @@ def test_exec_names_a_signal_the_platform_has_no_name_for(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
     runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
 
-    class FakeCompleted:
-        returncode = -35
-        stdout = None
-        stderr = None
+    class FakePopen:
+        pid = 424243
 
-    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: FakeCompleted())
+        def __init__(self, *a, **k):
+            self._killed = False
+            self.args = a[0] if a else []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def communicate(self, *a, **k):
+            return (None, None)
+
+        def kill(self):
+            self._killed = True
+
+        def wait(self, timeout=None):
+            return -35
+
+        def poll(self):
+            return -35
+
+    monkeypatch.setattr(cli.subprocess, "Popen", FakePopen)
     assert cli.main(["exec", "--name", "rt", "--", "anything"]) == 163
     rec = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
     assert rec["notes"]["signal"] == {"number": 35, "name": "signal 35"}
+
+
+def _exec_and_signal(tmp_path, *, to_group):
+    """Start `runprov exec` on a long child, signal it, and report what happened.
+
+    A real subprocess, because the whole subject is what a SIGNAL does to a process tree.
+
+    READINESS AND SURVIVAL ARE BOTH SIGNALLED BY FILES, not by matching process names. A
+    `pgrep` pattern matches any shell that happens to carry the string — including the one
+    running the test — which produced both a false orphan and a killed test runner while this
+    was being written. The child touches `started` and then, if it is still alive after the
+    parent should have gone, touches `survived`."""
+    started = tmp_path / "started"
+    survived = tmp_path / "survived"
+    script = f"touch {started}; sleep 3; touch {survived}; sleep 30"
+
+    env = {**os.environ, "PYTHONPATH": str(REPO)}
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "runprov", "exec", "--name", "t", "--", "/bin/sh", "-c", script],
+        env=env,
+        cwd=tmp_path,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 30
+    while not started.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert started.exists(), "the child never started; the test proves nothing"
+
+    if to_group:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)  # what `scancel` does
+    else:
+        proc.send_signal(signal.SIGTERM)  # SIGTERM to runprov alone
+    _, err = proc.communicate(timeout=60)
+
+    # The child would touch `survived` about 3s after starting. Wait past that: if it is
+    # gone, the file never appears.
+    time.sleep(5)
+    return proc.returncode, err, survived.exists()
+
+
+@pytest.mark.parametrize("child_ignores_sigterm", [False, True])
+def test_a_terminated_exec_forwards_the_signal_and_escalates(
+    tmp_path, monkeypatch, capsys, child_ignores_sigterm
+):
+    """Council C-27 + C-28, IN PROCESS. The two subprocess tests below prove the real
+    behaviour, but they run runprov as a CHILD, so coverage cannot see the forwarding code at
+    all — the same blind spot the audit hook had. This drives the logic directly.
+
+    Both arms matter: a child that dies on SIGTERM must not be SIGKILLed, and one that
+    ignores it must be, because leaving it running is the orphan this exists to prevent."""
+    monkeypatch.chdir(tmp_path)
+    sent: list[tuple[int, int]] = []
+
+    class FakePopen:
+        pid = 999001
+
+        def __init__(self, *a, **k):
+            self._killed = False
+            self.args = a[0] if a else []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def communicate(self, *a, **k):
+            return (None, None)
+
+        def kill(self):
+            self._killed = True
+
+        def wait(self, timeout=None):
+            if timeout is None:
+                raise runprov.run.Terminated(signal.SIGTERM)  # the signal-turned-exception
+            if child_ignores_sigterm and not self._killed:
+                raise subprocess.TimeoutExpired("cmd", timeout)
+            return -signal.SIGTERM
+
+        def poll(self):
+            return None if (child_ignores_sigterm and not self._killed) else -signal.SIGTERM
+
+    def fake_killpg(pid, sig):
+        sent.append((pid, sig))
+        if sig == signal.SIGKILL:
+            FakePopen._killed = True
+
+    monkeypatch.setattr(cli.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(cli.os, "killpg", fake_killpg)
+
+    code = cli.main(["exec", "--name", "t", "--", "/bin/sh", "-c", "sleep 40"])
+
+    assert code == 128 + signal.SIGTERM, "a number, not a traceback"
+    assert "terminated by SIGTERM" in capsys.readouterr().err
+    signals = [s for _, s in sent]
+    assert signal.SIGTERM in signals, "the child must be told first"
+    if child_ignores_sigterm:
+        assert signal.SIGKILL in signals, "and killed if it will not go"
+    else:
+        assert signal.SIGKILL not in signals, "but not killed if it already went"
+
+
+@requires_fcntl  # POSIX signals and process groups are the whole subject
+def test_a_scancel_shaped_kill_gives_a_number_not_a_traceback(tmp_path):
+    """Council C-27. `Terminated` is a `BaseException` on purpose — so an ordinary
+    `except Exception:` around a pipeline step cannot swallow a kill — but nothing in the CLI
+    caught it either, so SIGTERM to the process group printed a RAW PYTHON TRACEBACK and
+    exited 1. Measured before the fix.
+
+    This is the commonest way a cluster job actually ends: SLURM's time limit is
+    SIGTERM-then-SIGKILL and `scancel` is SIGTERM, which `run.py`'s own signal docstring
+    already calls out. The RECORD was always correct; only the CLI's answer was not.
+
+    128+N, matching a signal-killed child and matching a shell, so a wrapper inspecting the
+    code sees the same number whether the signal hit the child or hit runprov."""
+    code, err, _ = _exec_and_signal(tmp_path, to_group=True)
+
+    assert "Traceback" not in err, f"a traceback is not an answer:\n{err[-400:]}"
+    assert code == 128 + signal.SIGTERM, f"a shell would say 143, got {code}"
+
+
+@requires_fcntl
+def test_a_killed_exec_does_not_orphan_its_child(tmp_path):
+    """Council C-28. SIGTERM to `runprov exec` killed the wrapper and left the child running
+    — measured: the child outlived the runprov that started it. On a cluster that is work
+    still running after the job that owns it is gone, invisible to the scheduler that thinks
+    it reclaimed the node.
+
+    The child runs in its own session and the signal is forwarded to its GROUP, because
+    `sh -c` usually has children of its own."""
+    code, _, child_survived = _exec_and_signal(tmp_path, to_group=False)
+
+    assert not child_survived, "the child outlived runprov"
+    assert code == 128 + signal.SIGTERM
 
 
 def test_the_pin_tables_cannot_be_mutated_by_a_caller(tmp_path, monkeypatch):
