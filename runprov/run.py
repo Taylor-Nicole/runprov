@@ -64,6 +64,7 @@ from .project import (
 )
 from .show import to_yaml
 from .terminal import Capture
+from .watch import attach, detach, unregistered
 
 # The record format, named and versioned. A consumer -- a script, a dashboard, an agent
 # reading the history -- can branch on this instead of guessing from which keys happen to
@@ -662,6 +663,11 @@ class Run:
         # path `__exit__` never got to, so the file the constructor named — the one
         # documented to guarantee a record — was never created at all.
         self._written_paths: list[pathlib.Path] = []
+        # Every path this process opened while the run was active, as reported by the audit
+        # hook in `watch`. A set of raw strings: filtering is deferred to `__exit__` so the
+        # hook stays as close to free as a hook can be, and so nothing here can fail on a
+        # path during the run it is describing.
+        self._opened: set[str] = set()
         # Whether `header()` has already rendered a pin. An input registered after that
         # point is NOT in the pin already embedded in an artifact, and no later inspection
         # can tell -- the artifact simply understates itself, in its own body.
@@ -884,6 +890,11 @@ class Run:
         """
         self._in_context = True
         self._catch_signals()
+        # NOTICE UNREGISTERED READS. Attached here rather than in `__init__` for the same
+        # reason the signal handler is: it describes what happens INSIDE the block, and a
+        # `Run` built without a `with` has no exit at which to report.
+        if self.project.warn_unregistered_reads:
+            attach(self)
         return self
 
     def __exit__(
@@ -925,11 +936,74 @@ class Run:
         # fd path fds 1 and 2 are still the pipe, so every diagnostic _finish emits would go
         # into the file being described instead of to the terminal.
         self._end_capture()
+        # BEFORE `_finish`, so the finding lands IN the record rather than only on a
+        # terminal nobody re-reads. A warning is ephemeral; a field is permanent, travels
+        # with the run, and a reviewer three years later can see that a read was missed.
+        self._note_unregistered_reads()
         try:
             self._finish()
         except Exception as exc:  # never replace the exception being recorded
             diagnostic(f"  WARNING: provenance capture failed during exit: {exc}")
         return False  # NEVER swallow the caller's exception.
+
+    def _note_unregistered_reads(self) -> None:
+        """Record the data files this run opened without registering, and say so once.
+
+        NEVER RAISES. This describes a run; it must not be able to end one, which is why
+        the whole body sits under a catch-all and why `watch.unregistered` is pure.
+
+        The record gets `unregistered_reads` only when there ARE some — omitted, not
+        defaulted, the same rule the rest of the record follows, so a clean run is silent in
+        the file as well as on the terminal.
+        """
+        if not self.project.warn_unregistered_reads:
+            return
+        detach(self)
+        try:
+            registered = [i.get("path", "") for i in self.record.get("inputs") or []]
+            registered += [o.get("path", "") for o in self.record.get("outputs") or []]
+            # `_pending` AS WELL AS `record["outputs"]`, because outputs are only described
+            # in `write()`, which runs after this. Without it every registered output is
+            # reported as an unregistered read — a false positive on the happy path, which
+            # would have made the whole feature noise.
+            registered += [str(x) for x in self._pending]
+            registered += [str(p) for p in self._written_paths]
+            # The package's OWN files are not the user's data. EXCLUDED AS FILES, NEVER AS
+            # DIRECTORIES, and that distinction is the whole correctness of this filter:
+            # `run_log=` and `provenance=` both frequently point AT THE PROJECT ROOT, so
+            # excluding a parent directory silently disables the entire check. Both forms of
+            # that bug were written and caught here -- a filter too broad reports nothing and
+            # looks exactly like one that works.
+            #
+            # The two directories below ARE dedicated to this package by construction (the
+            # snapshot store and the terminal-capture store are paths the user hands us for
+            # our own output), so they are excluded wholesale.
+            mine = [d for d in (self.project.env_snapshot_dir, self.project.terminal_log_dir) if d]
+            for written in (
+                self.project.resolved_run_log(),
+                self.project.resolved_transformation_log(),
+                self.provenance_path,
+                *self._written_paths,
+            ):
+                if written is None:
+                    continue
+                w = pathlib.Path(written)
+                registered.append(str(w))
+                registered.append(str(w.with_suffix(".yml")))
+            missed = unregistered(self._opened, registered, self.project.root, exclude=mine)
+        except Exception as exc:  # pragma: no cover - defensive; see the docstring
+            diagnostic(f"  WARNING: could not check for unregistered reads: {exc}")
+            return
+        if not missed:
+            return
+        self.record["unregistered_reads"] = missed
+        shown = ", ".join(missed[:5]) + (f", and {len(missed) - 5} more" if len(missed) > 5 else "")
+        diagnostic(
+            f"  UNREGISTERED READ: this run opened {len(missed)} data file(s) it did not "
+            f"register, so they are NOT in the record and NOT in the pin: {shown}. "
+            f"Open them with `run.input(path)` to include them, or set "
+            f"`warn_unregistered_reads=False` if this is deliberate."
+        )
 
     def _record_imported_code(self) -> None:
         """Put the code section into the record, if there is anything to put there.
@@ -2133,7 +2207,7 @@ class Run:
         Where it goes is the project's business (`Project.sink`), not this method's.
         """
         r = self.record
-        summary = {
+        summary: dict[str, typing.Any] = {
             "schema": HISTORY_SCHEMA,
             "script": r["script"],
             "run_uid": r["run_uid"],
@@ -2158,6 +2232,11 @@ class Run:
             # NAME -> VERSION only. The paths and binary hashes are in the sidecar; what a
             # history is asked is "which samtools was this", and that is one short string.
             "tools": {x["name"]: x.get("version") for x in (r.get("tools") or [])},
+            # IN THE HISTORY, not only in the sidecar. The sidecar holds the latest run of a
+            # script; the history holds every run ever, and "which runs were recording
+            # incompletely" is a question about the project over time -- exactly what the
+            # history is for. Omitted when empty, like every other optional field here, so a
+            # clean project's history is unchanged by this feature existing.
             "imported_code": {
                 "count": (r["code"].get("imported") or {}).get("count"),
                 "digest": (r["code"].get("imported") or {}).get("digest"),
@@ -2242,6 +2321,8 @@ class Run:
             # one that could never have seen a subprocess. Absent when nothing was captured.
             **({"terminal_log": r["terminal_log"]} if "terminal_log" in r else {}),
         }
+        if r.get("unregistered_reads"):
+            summary["unregistered_reads"] = r["unregistered_reads"]
         self._history_appended = True
         # `_jsonable` here too: the sink dumps SEPARATELY, so sanitising only the
         # sidecar left the history line carrying bare NaN, unreadable to a strict parser.

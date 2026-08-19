@@ -292,6 +292,45 @@ with Run("explore_thresholds", {"cutoff": 5}, provenance=OUT.with_suffix(".prov.
     df = pd.read_csv(run.input(RAW))
 ```
 
+## It tells you when a read bypassed registration
+
+`run.input(p)` makes registration the ordinary way to open a file. It cannot make it the only
+way — a plain `open(p)` still works, the read is absent from the record and from the pin, and
+until 0.1.0 **nothing said so**. A record that looks complete while being incomplete is worse
+than an obviously missing one, because it invites trust it has not earned.
+
+Now it says so, once, at the end of the run:
+
+```
+  UNREGISTERED READ: this run opened 1 data file(s) it did not register, so they are
+  NOT in the record and NOT in the pin: conf/app.json. Open them with `run.input(path)`
+  to include them, or set `warn_unregistered_reads=False` if this is deliberate.
+```
+
+**And it goes in the record**, as `unregistered_reads`, in the sidecar and in the history —
+because a warning scrolls past and a field is still there in three years, when someone asks
+whether that number was ever fully accounted for.
+
+It uses `sys.addaudithook`, so it sees opens from C extensions too — `pandas`, `h5py`,
+`pyarrow` — not just `builtins.open`.
+
+**What it cannot see, said plainly.** A script that never imports `runprov` at all. Code that
+is not imported does not run, and nothing inside this package can observe a process it was
+never part of. That case needs a static check over your source, or `runprov exec` wrapping the
+command. Anything claiming otherwise would have to hook every Python process on your machine,
+which this deliberately does not do.
+
+**Measured, because a noisy check is worse than none.** On a run that imports four stdlib
+modules, sets a locale, reads a config and a registered input: **13 opens observed, 1
+reported** — the config, which was genuinely unregistered. Zero false positives. The
+interpreter's own imports, locale data, `site-packages`, `.py` files and everything this
+package writes are all filtered out. Cost is paid once at exit and is proportional to the
+number of *distinct* unregistered files: **+0.4 ms** for a realistic run, +21 ms for a
+pathological 400.
+
+Turn it off per project with `configure(warn_unregistered_reads=False)` — for a step that
+deliberately reads files it does not want recorded.
+
 ## The three properties, and the defect each one prevents
 
 | property | what its absence caused |
@@ -1598,7 +1637,7 @@ constraint for standard runners, and is the one action that closes this.
 
 ## Tests
 
-`tests/test_runprov.py`, 530 tests, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, 539 tests, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite — in
 `test_size_is_stat_ed_after_the_hash_not_before` — to
@@ -1609,7 +1648,7 @@ narrow simulation of an environment this machine is not (`sys.platform` for Wind
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
 stubs the subject to make it agree with the test.
 
-Twenty-two of the 530 need something of the filesystem itself — a FIFO, a symlink, a file
+Twenty-two of the 539 need something of the filesystem itself — a FIFO, a symlink, a file
 `chmod(0o000)` really makes unreadable — and they skip where that is unavailable. The
 condition is a PROBE, not `sys.platform`: symlinks work on a Windows machine with Developer
 Mode enabled, and `chmod(0o000)` denies nothing to root, so a platform check both skipped

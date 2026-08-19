@@ -55,6 +55,7 @@ import runprov.__main__ as cli  # noqa: E402
 import runprov._report  # noqa: E402
 import runprov.environment  # noqa: E402
 import runprov.terminal  # noqa: E402
+import runprov.watch  # noqa: E402
 
 # ------------------------------------------------- what the platform can be asked to build
 #
@@ -2349,6 +2350,212 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
 
     # And the artifact carries nothing about its own origins — claim 2, same experiment.
     assert "declared.tsv" not in out.read_text(encoding="utf-8")
+
+
+def test_an_unregistered_read_is_noticed_and_recorded(tmp_path, monkeypatch, capsys):
+    """L-107. `run.input(p)` makes registration the ordinary way to open a file; it cannot
+    make it the only way. A plain `open(p)` left the read absent from the record and from the
+    pin, and NOTHING SAID SO — a record that looks complete while being incomplete, which is
+    the shape of the defect this package replaced.
+
+    Recorded as well as warned: a warning is ephemeral and a field is checkable three years
+    later by someone who was not there."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "in.tsv").write_text("a\tb\n1\t2\n", encoding="utf-8")
+    (tmp_path / "data" / "lookup.csv").write_text("code,label\n1,X\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+
+    with runprov.Run("misses", provenance=tmp_path / "p.json") as run:
+        with open(run.input(tmp_path / "data" / "in.tsv"), encoding="utf-8") as fh:
+            fh.read()
+        with open(tmp_path / "data" / "lookup.csv", encoding="utf-8") as fh:
+            fh.read()  # UNREGISTERED — the whole point
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("x\n")
+
+    assert run.record["unregistered_reads"] == ["data/lookup.csv"], (
+        "the missed read must be named, relative to the project root"
+    )
+    err = capsys.readouterr().err
+    assert "UNREGISTERED READ" in err and "data/lookup.csv" in err
+    assert "run.input(path)" in err, "the warning must say what to do about it"
+
+    # It reaches the HISTORY, not just the live object: a field nobody can read later would
+    # be no better than the warning.
+    rec = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
+    assert rec["unregistered_reads"] == ["data/lookup.csv"]
+
+
+def test_a_run_that_registers_everything_says_nothing_at_all(tmp_path, monkeypatch, capsys):
+    """The half that decides whether the feature is usable. A check that fires on a correct
+    run is noise, and noise is the failure the deterministic-pin decision exists to prevent:
+    a permanently red check teaches its audience to ignore it.
+
+    The registered OUTPUT is the trap here — outputs are described in `write()`, which runs
+    after the check, so an early version reported every output as an unregistered read."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    (tmp_path / "cfg.json").write_text('{"k": 1}\n', encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+
+    with runprov.Run("clean", provenance=tmp_path / "p.json") as run:
+        with open(run.input(tmp_path / "in.tsv"), encoding="utf-8") as fh:
+            fh.read()
+        with open(run.input(tmp_path / "cfg.json"), encoding="utf-8") as fh:
+            fh.read()
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("x\n")
+
+    assert "unregistered_reads" not in run.record, "omitted, not defaulted, when there are none"
+    assert "UNREGISTERED READ" not in capsys.readouterr().err
+
+
+def test_the_provenance_files_are_never_reported_as_unregistered(tmp_path, monkeypatch):
+    """The package's own records are not the user's data. Reporting the history, the YAML
+    view or a sidecar would make every run noisy about files the user never opened."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path)  # default provenance/ dir, YAML view and sidecar on
+
+    with runprov.Run("s", provenance=tmp_path / "out.prov.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("x\n")
+    with runprov.Run("s2", provenance=tmp_path / "out2.prov.json") as run2:
+        run2.input(tmp_path / "in.tsv")
+
+    for r in (run.record, run2.record):
+        assert "unregistered_reads" not in r, r.get("unregistered_reads")
+
+
+def test_the_watcher_can_be_turned_off(tmp_path, monkeypatch, capsys):
+    """A step may deliberately read files it does not want recorded. Off means silent in the
+    record as well as on the terminal."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "secret.tsv").write_text("x\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", warn_unregistered_reads=False)
+
+    with runprov.Run("quiet", provenance=tmp_path / "p.json") as run:
+        with open(tmp_path / "secret.tsv", encoding="utf-8") as fh:
+            fh.read()
+
+    assert "unregistered_reads" not in run.record
+    assert "UNREGISTERED READ" not in capsys.readouterr().err
+
+
+def test_the_unregistered_filter_excludes_what_is_not_data(tmp_path):
+    """`watch.unregistered` is pure, so the filter is testable directly rather than through a
+    run. Each exclusion below cost a false positive in an earlier version or would have."""
+    root = tmp_path
+    (root / "sub").mkdir()
+    (root / "sub" / "keep.tsv").write_text("x", encoding="utf-8")
+    (root / "code.py").write_text("x", encoding="utf-8")
+    (root / "site-packages").mkdir()
+    (root / "site-packages" / "thing.tsv").write_text("x", encoding="utf-8")
+    (root / "registered.tsv").write_text("x", encoding="utf-8")
+    outside = tmp_path.parent / "outside.tsv"
+    outside.write_text("x", encoding="utf-8")
+
+    got = runprov.watch.unregistered(
+        opened=[
+            str(root / "sub" / "keep.tsv"),
+            str(root / "code.py"),  # code, not data
+            str(root / "site-packages" / "thing.tsv"),  # not the user's
+            str(root / "registered.tsv"),  # already in the record
+            str(outside),  # outside the project
+            str(root / "gone.tsv"),  # does not exist
+            str(root / "sub"),  # a directory
+        ],
+        registered=[str(root / "registered.tsv")],
+        root=root,
+    )
+    assert got == ["sub/keep.tsv"]
+
+    # The `exclude` arm: a whole directory the package owns, such as the snapshot store.
+    (root / "snapshots").mkdir()
+    (root / "snapshots" / "env.tsv").write_text("x", encoding="utf-8")
+    assert runprov.watch.unregistered(
+        opened=[str(root / "snapshots" / "env.tsv"), str(root / "sub" / "keep.tsv")],
+        registered=[],
+        root=root,
+        exclude=[root / "snapshots"],
+    ) == ["sub/keep.tsv"], "an excluded directory's contents are ours, not the user's data"
+
+
+def test_the_hook_itself_ignores_everything_it_should(monkeypatch):
+    """The hook body CALLED DIRECTLY, because coverage cannot trace it otherwise: CPython
+    runs audit-hook callbacks with tracing suppressed, so the integration tests above prove
+    it works while leaving its branches unmeasured. Calling it as a plain function measures
+    the logic; the integration tests prove the real hook is wired to real opens. Both are
+    needed — neither substitutes for the other.
+
+    Every branch here is a way to be wrong about what a file is."""
+
+    class FakeRun:
+        def __init__(self):
+            self._opened = set()
+
+    w = runprov.watch._Watcher()
+    run = FakeRun()
+
+    w._hook("open", ("/tmp/x.tsv",))  # nobody listening yet
+    assert run._opened == set()
+
+    w._active.append(run)  # attach without installing a real process-wide hook
+    w._hook("exec", ("/tmp/other.tsv",))  # not an open
+    assert run._opened == set()
+
+    w._hook("open", (3,))  # a file DESCRIPTOR, not a name
+    assert run._opened == set()
+
+    w._hook("open", ("/tmp/x.tsv",))
+    w._hook("open", (b"/tmp/y.tsv",))  # bytes are a path too
+    w._hook("open", (pathlib.Path("/tmp/z.tsv"),))  # and so is os.PathLike
+    assert run._opened == {"/tmp/x.tsv", "/tmp/y.tsv", "/tmp/z.tsv"}
+
+    monkeypatch.setattr(runprov.watch, "WATCH_MAX_PATHS", 3)
+    w._hook("open", ("/tmp/past-the-cap.tsv",))
+    assert "/tmp/past-the-cap.tsv" not in run._opened, "the cap must hold"
+
+
+def test_installing_the_hook_is_idempotent(monkeypatch):
+    """`sys.addaudithook` cannot be undone — the interpreter offers no API — so installing
+    one per run would leave a process with hundreds, each firing on every open, and nothing
+    could remove them. Exactly one, ever."""
+    calls = []
+    monkeypatch.setattr(runprov.watch.sys, "addaudithook", lambda h: calls.append(h))
+    w = runprov.watch._Watcher()
+    w.install()
+    w.install()
+    w.attach(object())
+    assert len(calls) == 1, f"installed {len(calls)} hooks; it must be exactly one"
+
+
+def test_detaching_a_run_that_was_never_attached_is_harmless():
+    """Teardown must not be able to raise: `_note_unregistered_reads` detaches, and it runs
+    on the failure path too."""
+    runprov.watch._Watcher().detach(object())  # must not raise
+
+
+def test_the_watcher_remembers_a_bounded_number_of_paths(tmp_path, monkeypatch):
+    """`WATCH_MAX_PATHS` bounds MEMORY, not usefulness: a run opening more distinct files
+    than this has a provenance problem the first names already describe. Asserted with a real
+    run rather than by poking the set, and the bound gets its own sanity range so shrinking it
+    to 1 cannot satisfy this test."""
+    assert 100 <= runprov.watch.WATCH_MAX_PATHS <= 100_000
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runprov.watch, "WATCH_MAX_PATHS", 5)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    for i in range(20):
+        (tmp_path / f"f{i}.tsv").write_text("x", encoding="utf-8")
+
+    with runprov.Run("many", provenance=tmp_path / "p.json") as run:
+        for i in range(20):
+            with open(tmp_path / f"f{i}.tsv", encoding="utf-8") as fh:
+                fh.read()
+
+    assert len(run._opened) <= 5, "the hook must stop collecting at the bound"
 
 
 def test_the_exported_name_count_in_why_md_is_the_real_one():
