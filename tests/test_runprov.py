@@ -8239,7 +8239,13 @@ def test_every_copy_of_the_version_agrees():
             r"^version: (\S+)", (root / "CITATION.cff").read_text(encoding="utf-8"), re.M
         ),
         "CHANGELOG.md": re.search(
-            r"^## \[[^\]]+\] — (\S+)", (root / "CHANGELOG.md").read_text(encoding="utf-8"), re.M
+            # The version is in the BRACKETS, the date after the dash: `## [0.2.0] - 2026-08-19`,
+            # which is the Keep a Changelog shape this file's own header says it follows. The
+            # pattern read the field AFTER the dash, because the unreleased heading was
+            # `## [Unreleased] - 0.1.0`; against a real release that captures the DATE, and the
+            # check failed claiming the version was "2026-08-19". Anchored to a leading digit so
+            # an `[Unreleased]` heading above a release is skipped rather than compared.
+            r"^## \[(\d[^\]]*)\] — ", (root / "CHANGELOG.md").read_text(encoding="utf-8"), re.M
         ),
     }
     missing = [k for k, m in found.items() if m is None]
