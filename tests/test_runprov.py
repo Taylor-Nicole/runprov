@@ -2515,6 +2515,50 @@ def test_exec_names_a_signal_the_platform_has_no_name_for(tmp_path, monkeypatch)
     assert rec["notes"]["signal"] == {"number": 35, "name": "signal 35"}
 
 
+@pytest.mark.parametrize("cmd", ["log", "show", "verify", "lineage"])
+def test_every_subcommand_accepts_format_text(tmp_path, monkeypatch, cmd):
+    """L-25. `log` called the human format `timeline` while `show`, `verify` and `lineage`
+    called it `text`, so `--format text` — learned on any one of those — was a hard ERROR on
+    `log`, and NO format name at all was accepted by all four.
+
+    Asserted through the real parser: argparse exits 2 on an unknown choice, so a rejected
+    format is indistinguishable here from any other usage error, which is exactly what the
+    user hit."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("x\n")
+
+    argv = [cmd, "--format", "text"]
+    if cmd in ("log", "lineage"):
+        argv += ["--log", str(tmp_path / "h.jsonl")]
+    code = cli.main(argv)
+    assert code != 2, f"`{cmd} --format text` was rejected by the parser"
+
+
+def test_the_old_timeline_spelling_still_works(tmp_path, monkeypatch, capsys):
+    """Removing it would break every script that already passes it, so it stays accepted and
+    is merely hidden from the help. `text` and `timeline` must render the SAME BYTES — an
+    alias that quietly produced different output would be worse than the inconsistency it
+    replaces."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.note("a", 1)
+
+    rendered = []
+    for spelling in ("text", "timeline"):
+        capsys.readouterr()
+        assert cli.main(["log", "--log", str(tmp_path / "h.jsonl"), "--format", spelling]) == 0
+        rendered.append(capsys.readouterr().out)
+
+    assert rendered[0] == rendered[1], "the alias must render exactly what the new name does"
+    assert rendered[0].strip(), "and it must render something, or this proves nothing"
+
+
 def _exec_and_signal(tmp_path, *, to_group):
     """Start `runprov exec` on a long child, signal it, and report what happened.
 
