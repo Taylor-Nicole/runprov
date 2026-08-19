@@ -10930,6 +10930,82 @@ def test_rehash_reports_MODIFIED_for_an_artifact_someone_rewrote(tmp_path, monke
     assert _state_of(runprov.show.staleness(rows, rehash=True), "mid.tsv") == "MODIFIED"
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFO needed to make one")
+def test_rehash_will_not_call_an_undigested_artifact_MODIFIED(tmp_path, monkeypatch):
+    """L-109. `_short` returns `"-"` for an entry the run never digested, which is the right
+    thing to PRINT and was being COMPARED against. So `_by_digest` measured today's digest,
+    found it was not `"-"`, and returned MODIFIED for an output the record explicitly says it
+    could not hash — a FIFO, a socket, a device, anything `kind: UNHASHABLE`.
+
+    The rendered line said it all: `MODIFIED -  pipe.out  [UNHASHABLE]`. A definite finding,
+    the absent digest, and the reason it is absent, contradicting each other on one line.
+
+    TWO STATES, and the first one already worked, which is why this was invisible. While the
+    FIFO is still a FIFO, `_digest_now` cannot read it, returns None and the function exits
+    at `?` long before the comparison. It is only once the path becomes readable — the FIFO
+    replaced by a real file, a device node swapped for a regular one, a half-written output
+    completed by a later process — that the comparison is reached, and it is confidently
+    wrong. This asserts both, because a fix that only handled the second would leave the
+    first passing for the wrong reason.
+
+    Harmless for exactly as long as `show` always exits 0. `--exit-code` (L-23) makes it a
+    red gate on a correct project, which is why it was fixed first."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "out").mkdir()
+    src = tmp_path / "data" / "in.tsv"
+    src.write_text("id\tv\n1\ta\n", encoding="utf-8")
+    fifo = tmp_path / "out" / "pipe.out"
+    os.mkfifo(fifo)
+
+    proj = _project(tmp_path)
+    with runprov.Run("f", project=proj, provenance=tmp_path / "out" / "f.prov.json") as r:
+        r.input(src)
+        r.output(fifo)  # present, unhashable — recorded with kind UNHASHABLE and no digest
+    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+
+    recorded = rows[0]["outputs"][0]
+    assert recorded["kind"] == "UNHASHABLE" and not recorded["sha256"], (
+        "the premise: the run recorded no digest for this output"
+    )
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "pipe.out") == "?", (
+        "while it is still a FIFO it cannot be read, so the answer is already `?`"
+    )
+
+    # NOW the path becomes readable, which is where the bug lived.
+    fifo.unlink()
+    fifo.write_text("a regular file stands here now\n", encoding="utf-8")
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "pipe.out") == "?", (
+        "a digest that was never recorded cannot have changed — `?`, not MODIFIED"
+    )
+
+
+def test_rehash_will_not_call_an_undigested_input_STALE(tmp_path, monkeypatch):
+    """The same defect on the other side of the comparison, and it was reachable the same
+    way. An INPUT with no recorded digest was compared against `"-"` too, so it differed
+    from itself and the artifact came back STALE — telling the reader to rebuild because of
+    a file nothing was ever known about."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "out").mkdir()
+    src = tmp_path / "data" / "in.tsv"
+    src.write_text("id\tv\n1\ta\n", encoding="utf-8")
+    proj = _project(tmp_path)
+    with runprov.Run("build", project=proj, provenance=tmp_path / "out" / "m.prov.json") as r:
+        r.input(src)
+        with r.open_output(tmp_path / "out" / "m.tsv") as fh:
+            fh.write("a\n")
+    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "m.tsv") == "current"
+    # Strip the digest the run recorded for the input, leaving the entry in place.
+    for key in ("content_sha256", "sha256", "sha256_tree"):
+        rows[0]["inputs"][0].pop(key, None)
+    assert _state_of(runprov.show.staleness(rows, rehash=True), "m.tsv") == "?", (
+        "an input the run never digested makes the artifact unknowable, not stale"
+    )
+
+
 def test_a_moved_input_outranks_a_rewritten_artifact_under_rehash(tmp_path, monkeypatch):
     """When both are true the input wins, and that ordering is the useful one: rebuilding
     fixes a moved input, and cannot fix an artifact something else is writing. Asserting it

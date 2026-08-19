@@ -268,6 +268,18 @@ Nothing has been published yet. Everything below is what a first release would c
   the run it described; a corrupt gzip escaped `content_digest`; and a `.gz` rewritten from
   identical bytes never hashed the same twice.
 
+### Fixed before it could gate
+
+- **`show --rehash` called an artifact MODIFIED that it had never digested.** `_short`
+  returns `-` for an entry with no digest — right to print, and it was being compared
+  against. Today's digest is not `-`, so anything the run recorded as `kind: UNHASHABLE`
+  (a FIFO, a socket, a device) came back MODIFIED once the path became readable. The line
+  read `MODIFIED -  pipe.out  [UNHASHABLE]`: a definite finding, the absent digest and the
+  reason it is absent, contradicting each other on one line. The same comparison ran on
+  INPUTS, where it reported STALE. Both now report `?` with the reason, which is what
+  `verify` has always said for the same condition. Harmless only for as long as `show`
+  exits 0 — which is about to change.
+
 ### Named before anyone depended on it
 
 Nothing here is a rename to a user, because there are no users yet. It is written down

@@ -43,11 +43,31 @@ SHORT = 16
 VERSIONS_SHOWN = 3
 
 
+def _recorded(entry: dict[str, typing.Any]) -> str | None:
+    """The digest the run actually derived, or None when it derived none.
+
+    SEPARATE FROM `_short` BECAUSE THE DISPLAY DASH WAS BEING COMPARED AGAINST. `_short`
+    returns `"-"` for an entry with no digest, which is the right thing to PRINT and a
+    disaster to compare: `_by_digest` measured today's digest, found it was not `"-"`, and
+    reported MODIFIED for an output the record explicitly says it never hashed — a FIFO, a
+    socket, a device, anything `kind: UNHASHABLE`. The rendered line read
+    `MODIFIED -  pipe.out  [UNHASHABLE]`: a definite finding, the absent digest, and the
+    reason it is absent, contradicting each other on one line.
+
+    "We could not look" is not a finding. `verify.check_input` reaches for UNVERIFIABLE on
+    exactly this condition ("the run recorded no digest for it") and this is the same
+    condition one module over.
+    """
+    for key in ("content_sha256", "sha256", "sha256_tree"):
+        value = entry.get(key)
+        if value:
+            return str(value)[:SHORT]
+    return None
+
+
 def _short(entry: dict[str, typing.Any]) -> str:
     """The digest a human compares. Content first, like the pin — see `hashing.pin_digest`."""
-    return str(
-        entry.get("content_sha256") or entry.get("sha256") or entry.get("sha256_tree") or "-"
-    )[:SHORT]
+    return _recorded(entry) or "-"
 
 
 def _name(entry: dict[str, typing.Any]) -> str:
@@ -528,16 +548,26 @@ def _by_digest(
         return digests[p]
 
     for i in rec.get("inputs") or []:
+        want = _recorded(i)
+        if want is None:
+            # THE RUN NEVER DIGESTED THIS INPUT, so there is nothing to compare today's
+            # digest with. Comparing against `_short`'s display dash made every such input
+            # differ from itself and reported STALE. `?`, for the same reason `verify`
+            # reports UNVERIFIABLE here.
+            return UNKNOWN
         fresh = now(_resolve(_name(i), str(base) if base else None))
         if fresh is None:
             return UNKNOWN
-        if fresh != _short(i):
+        if fresh != want:
             return STALE
+    want = _recorded(entry)
+    if want is None:
+        return UNKNOWN  # same, for the ARTIFACT: `kind: UNHASHABLE` is not MODIFIED
     fresh = now(target)
     if fresh is None:
         return UNKNOWN
     # Not stale: the ARTIFACT is not what was recorded. A different repair entirely.
-    return CURRENT if fresh == _short(entry) else MODIFIED
+    return CURRENT if fresh == want else MODIFIED
 
 
 def _digest_now(path: pathlib.Path) -> str | None:
