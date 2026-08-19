@@ -1593,7 +1593,7 @@ def test_a_distribution_with_unreadable_metadata_is_counted_not_dropped(monkeypa
     bad = []
     pkgs = runprov.installed_packages(bad)
     assert pkgs == {} and len(bad) == 2
-    assert "UNREADABLE: 2" in runprov.environment.render(pkgs, len(bad))
+    assert "UNREADABLE: 2" in runprov.environment._render_snapshot(pkgs, len(bad))
 
 
 def test_a_version_that_cannot_be_read_is_recorded_as_unknown(monkeypatch):
@@ -7122,7 +7122,7 @@ def test_a_prefix_with_no_conda_meta_is_simply_not_a_conda_prefix(tmp_path):
     """An ordinary venv must be unaffected — no section, no header line, and no field in
     the record about a manager it has never met."""
     assert runprov.environment.conda_packages(tmp_path) == {}
-    assert "conda" not in runprov.environment.render({"a": "1"}, 0, {})
+    assert "conda" not in runprov.environment._render_snapshot({"a": "1"}, 0, {})
 
 
 def test_an_unreadable_conda_record_is_recovered_from_its_filename(tmp_path):
@@ -7151,8 +7151,8 @@ def test_the_snapshot_digest_moves_when_a_conda_package_moves(tmp_path):
         _conda_prefix(tmp_path / "b", [("samtools", "1.22", "h50ea8bc_0"), PKGS[1]])
     )
     d = runprov.environment.digest
-    assert d(runprov.environment.render(pip, 0, before)) != d(
-        runprov.environment.render(pip, 0, after)
+    assert d(runprov.environment._render_snapshot(pip, 0, before)) != d(
+        runprov.environment._render_snapshot(pip, 0, after)
     )
 
 
@@ -7162,8 +7162,8 @@ def test_where_the_prefix_lives_is_not_part_of_the_environment(tmp_path):
     addressing the file is named by — the same defect as an absolute path in a fixture."""
     here = runprov.environment.conda_packages(_conda_prefix(tmp_path / "opt" / "envs" / "x", PKGS))
     there = runprov.environment.conda_packages(_conda_prefix(tmp_path / "home" / "y", PKGS))
-    body = runprov.environment.render({"pandas": "3.0.5"}, 0, here)
-    assert body == runprov.environment.render({"pandas": "3.0.5"}, 0, there)
+    body = runprov.environment._render_snapshot({"pandas": "3.0.5"}, 0, here)
+    assert body == runprov.environment._render_snapshot({"pandas": "3.0.5"}, 0, there)
     assert str(tmp_path) not in body
 
 
@@ -7195,7 +7195,7 @@ def test_conda_packages_are_ordered_by_name_not_by_filename(tmp_path):
     root = _conda_prefix(tmp_path, [("R", "4.4.2", "h1b0"), ("arrow", "1.3.0", "py312")])
     got = runprov.environment.conda_packages(root)
     assert list(got) == ["arrow", "R"], "sorted case-insensitively by NAME"
-    body = runprov.environment.render({}, 0, got).splitlines()
+    body = runprov.environment._render_snapshot({}, 0, got).splitlines()
     assert body.index("arrow=1.3.0=py312") < body.index("R=4.4.2=h1b0")
 
 
@@ -8629,7 +8629,7 @@ def test_verify_cli_defaults_to_the_active_project_root(tmp_path, monkeypatch, c
 
 
 def test_verify_renders_nothing_for_an_empty_report():
-    assert runprov.verify.render({"artifacts": []}) == ""
+    assert runprov.verify.render_report({"artifacts": []}) == ""
 
 
 def test_a_pin_entry_of_the_wrong_digest_width_is_not_an_entry(tmp_path):
@@ -8695,7 +8695,7 @@ def test_verify_walks_past_a_comment_line_that_is_not_part_of_the_pin(tmp_path):
     assert [i["name"] for i in rep["inputs"]] == ["kept.tsv"], "the entry after the comment"
     assert rep["status"] == "STALE" and rep["pin_truncated"]
 
-    rendered = runprov.verify.render({"artifacts": [rep]})
+    rendered = runprov.verify.render_report({"artifacts": [rep]})
     assert "!! pin s: declares 2 input(s), carries 1" in rendered
 
 
@@ -8792,7 +8792,7 @@ def test_the_verify_report_names_the_artifact_even_when_the_pin_is_beside_it(tmp
     names = [r["artifact"] for r in report["artifacts"]]
     assert str(art) in names
     assert not any(n.endswith(runprov.run.PIN_SIDECAR_SUFFIX) for n in names), names
-    assert runprov.verify.render(report).count("out.png.prov.txt") == 0
+    assert runprov.verify.render_report(report).count("out.png.prov.txt") == 0
 
 
 def test_the_sidecar_suffix_has_one_definition(tmp_path):
@@ -11003,6 +11003,53 @@ def test_rehash_will_not_call_an_undigested_input_STALE(tmp_path, monkeypatch):
         rows[0]["inputs"][0].pop(key, None)
     assert _state_of(runprov.show.staleness(rows, rehash=True), "m.tsv") == "UNVERIFIABLE", (
         "an input the run never digested makes the artifact unknowable, not stale"
+    )
+
+
+def test_no_two_renderers_in_this_package_share_a_bare_name():
+    """L-44. `environment.render` and `verify.render` were two different functions with one
+    word between them, and `__main__` imported one of them bare — so `render(report)` at the
+    call site said nothing about which of the package's renderers was meant, with
+    `show.render_run`, `show.render_project` and `show.render_yaml` also in scope.
+
+    NEITHER RAISES ON THE OTHER'S INPUT, which is what makes it worth a test rather than a
+    style note. Measured before the rename: handing `environment.render` a `verify` report
+    returned a plausible environment snapshot whose body WAS the report —
+    `artifacts_seen==0` sitting where a package version goes — and that text is
+    content-addressed and written to disk as though it were an environment. A collision that
+    throws is a bug report; a collision that returns something plausible is a wrong file
+    nobody looks at twice.
+
+    This asserts the general rule rather than the two names, so the next renderer added
+    cannot reintroduce it."""
+    modules = {
+        "environment": runprov.environment,
+        "hashing": runprov.hashing,
+        "project": runprov.project,
+        "run": runprov.run,
+        "show": runprov.show,
+        "sinks": runprov.sinks,
+        "terminal": runprov.terminal,
+        "verify": runprov.verify,
+        "watch": runprov.watch,
+        "__main__": cli,
+    }
+    seen: dict[str, str] = {}
+    clashes = []
+    for mod_name, mod in modules.items():
+        for name, obj in vars(mod).items():
+            if name.startswith("_") or not callable(obj):
+                continue
+            if getattr(obj, "__module__", None) != mod.__name__:
+                continue  # imported from elsewhere; it is the SAME object, not a collision
+            if name in seen:
+                clashes.append(f"{seen[name]}.{name} and {mod_name}.{name}")
+            else:
+                seen[name] = mod_name
+    assert not clashes, (
+        "two different public functions share a name across modules, and an importer writing "
+        f"`from .x import {clashes[0].split('.')[-1] if clashes else ''}` gets whichever was "
+        f"imported last: {clashes}"
     )
 
 
