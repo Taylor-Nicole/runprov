@@ -5,9 +5,10 @@ Record what a script read, wrote and ran as — in a form a checker can verify.
 A **whole script**, standard library only, that you can paste into a file and run. A test
 extracts this block from this README and runs it, so the block below cannot quietly
 stop working. A fuller variant — the same four calls with `main()`, repo-relative defaults
-and a `columns` note — is shipped as
-[`examples/summarise.py`](https://github.com/Taylor-Nicole/runprov/blob/main/examples/summarise.py),
-and a second test runs that one:
+and a `columns` note — is
+[`examples/summarise.py`](https://github.com/Taylor-Nicole/runprov/blob/main/examples/summarise.py)
+**in the repository and the sdist, but deliberately not in the wheel**: `pip install runprov`
+gives you the package, not a copy of its examples. A second test runs that one:
 
 ```python
 import argparse, csv, pathlib
@@ -1637,7 +1638,7 @@ constraint for standard runners, and is the one action that closes this.
 
 ## Tests
 
-`tests/test_runprov.py`, 539 tests, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, 543 tests, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite — in
 `test_size_is_stat_ed_after_the_hash_not_before` — to
@@ -1648,7 +1649,7 @@ narrow simulation of an environment this machine is not (`sys.platform` for Wind
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
 stubs the subject to make it agree with the test.
 
-Twenty-two of the 539 need something of the filesystem itself — a FIFO, a symlink, a file
+Twenty-two of the 543 need something of the filesystem itself — a FIFO, a symlink, a file
 `chmod(0o000)` really makes unreadable — and they skip where that is unavailable. The
 condition is a PROBE, not `sys.platform`: symlinks work on a Windows machine with Developer
 Mode enabled, and `chmod(0o000)` denies nothing to root, so a platform check both skipped

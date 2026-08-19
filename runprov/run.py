@@ -313,7 +313,11 @@ def _jsonable(
         _seen.add(id(obj))
         try:
             if isinstance(obj, dict):
-                return {k: _jsonable(v, _seen, _depth + 1) for k, v in obj.items()}
+                # KEYS TOO. `default=` does not apply to them -- `json.dumps` raises
+                # TypeError on a key that is not str/int/float/bool/None, and that escapes
+                # to `__exit__` and costs the whole record, exactly as an unstringable
+                # VALUE did. One bad key must cost that key.
+                return {_jsonable_key(k): _jsonable(v, _seen, _depth + 1) for k, v in obj.items()}
             return [_jsonable(v, _seen, _depth + 1) for v in obj]
         finally:
             # Off the path again, so a sibling that shares this value is not a cycle. The
@@ -347,7 +351,34 @@ def _jsonable(
             # -- a 3-element array raises ValueError -- must not abort the caller's run. It
             # falls through to the recorded string, which is what happened before.
             del exc
-    return obj
+    # THE LAST LINE HAS TO BE TOTAL. Returning `obj` here left it to the record's
+    # `default=str`, which calls `str()` OUTSIDE this function and outside every guard --
+    # so an object whose `__str__` or `__repr__` raises destroyed the ENTIRE record,
+    # sidecar and history line alike, and the process exited 0 with one line on stderr.
+    # Measured: `run.note("bad", x)` where `x.__repr__` raises produced no sidecar, no
+    # history, and exit 0. One unusable VALUE must cost that value, never the record --
+    # the same rule that makes the history JSONL rather than one document.
+    return _stringify(obj)
+
+
+def _stringify(obj: object) -> object:
+    """`obj` if it is already JSON, else its string form, else a marker naming the type."""
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    try:
+        return str(obj)
+    except Exception as exc:  # guards-ok: a __str__ that raises is still not a reason to
+        # lose the record. The TYPE is recorded because it is the one fact still available,
+        # and it is what a reader needs in order to find the offending value.
+        del exc
+        return f"UNSERIALISABLE <{type(obj).__name__}>"
+
+
+def _jsonable_key(key: object) -> str:
+    """A dict key `json.dumps` will accept. Always a string, because the alternative is a
+    key that silently changes type between the record and any reader of it."""
+    result = _stringify(key)
+    return result if isinstance(result, str) else str(result)
 
 
 def _release_abandoned(cap: Capture) -> None:
@@ -1785,7 +1816,14 @@ class Run:
             pinned.setdefault((pin_digest(i), self._pin_name(i.get("path", "?"))), None)
         ins = sorted(pinned)
         if ins:
-            lines.append(f"{c}  inputs ({len(ins)}), sha256:")
+            # "content digest", NOT "sha256", and the word matters more here than anywhere
+            # else in the package. The value is `pin_digest`, which prefers the CONTENT
+            # digest -- sha256 over the file with volatile build stamps stripped -- so a
+            # reader who runs `sha256sum` on the input gets a different number and concludes
+            # the pin is broken. Measured: pin `5341e1a1...`, `sha256sum` `b92df3dd...`, and
+            # both are correct. Labelling it `sha256:` was a wrong word in the one place
+            # this package asks to be checked. See `hashing.content_digest`.
+            lines.append(f"{c}  inputs ({len(ins)}), content digest:")
             for sha, name in ins:
                 lines.append(f"{c}    {sha}  {name}")
         else:
@@ -2124,30 +2162,22 @@ class Run:
         return p
 
     def _encode(self) -> str:
-        """Serialise the record, degrading a value that cannot encode rather than dying.
+        """Serialise the record. Total, because `_jsonable` is.
+
+        This used to catch `SERIALISATION_ERRORS` and repair `notes`/`parameters` in place
+        on the way past. That fallback protected the SIDECAR ONLY: the history line is
+        dumped separately by the sink, so a value that could not encode still cost the
+        history entry -- measured, and it cost the sidecar too when the failure came from a
+        `__str__` that raises, because that happens inside `json.dumps` rather than before
+        it. Degrading in `_jsonable` fixes both at once and leaves nothing for this to
+        catch, so the fallback is gone rather than kept as unreachable reassurance.
 
         `default=str` handles unencodable VALUES and not KEYS, so `note("confusion",
         {(1, "a"): 0.9})` -- what a per-class confusion matrix looks like -- raised
-        TypeError, the sidecar was never written, and the whole run vanished. A note that
-        cannot be encoded is worth less than the run it belongs to.
+        TypeError, the sidecar was never written, and the whole run vanished. `_jsonable`
+        now stringifies keys for that reason.
         """
-        try:
-            return json.dumps(_jsonable(self.record), indent=2, default=str)
-        except SERIALISATION_ERRORS as exc:
-            diagnostic(
-                f"  WARNING: could not serialise part of the record ({exc}); "
-                f"degrading the offending entries"
-            )
-            for key in ("notes", "parameters"):
-                section = self.record.get(key)
-                if not isinstance(section, dict):
-                    continue
-                for k, v in list(section.items()):
-                    try:
-                        json.dumps({k: v}, default=str)
-                    except SERIALISATION_ERRORS:
-                        section[k] = f"UNSERIALISABLE <{type(v).__name__}>"
-            return json.dumps(_jsonable(self.record), indent=2, default=str)
+        return json.dumps(_jsonable(self.record), indent=2, default=str)
 
     def _persist(self, p: pathlib.Path) -> bool:
         """Write the sidecar. NEVER raises.

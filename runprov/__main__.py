@@ -690,6 +690,18 @@ def _verify(args: argparse.Namespace) -> int:
         f"{report['unverifiable']} UNVERIFIABLE",
         file=sys.stderr,
     )
+    # WHAT `OK` MEANS, every time it is printed. The caveat was in the README and nowhere a
+    # user of this command would meet it, so `verify` printed OK and exited 0 over an
+    # artifact with a fabricated row appended -- true, since the INPUTS were untouched, and
+    # read by everyone as "this file is intact". A CI gate built on this command, which the
+    # README endorses, would not catch a hand-edited result. One line, on the output that
+    # makes the claim.
+    if report["ok"]:
+        print(
+            "# OK = the inputs each artifact pins still hash the same. It does NOT mean the "
+            "artifact itself is unedited — for that, `runprov show --stale --rehash`.",
+            file=sys.stderr,
+        )
     if report["stale"] or report["gone"]:
         return 1
     if not report["ok"]:
@@ -780,7 +792,10 @@ def main(argv: list[str] | None = None) -> int:
     ex.add_argument("--provenance", default=None, help="where the sidecar goes")
     ex.add_argument("--capture", default=None, help="tee the command's output to this file")
     ex.add_argument("command", nargs=argparse.REMAINDER, help="-- then the command to run")
-    vf = sub.add_parser("verify", help="do artifacts still match the inputs they pin?")
+    vf = sub.add_parser(
+        "verify",
+        help="do artifacts still match the INPUTS they pin? (not: is the artifact unedited)",
+    )
     vf.add_argument("paths", nargs="*", help="artifacts or directories (default: the root)")
     vf.add_argument("--root", default=None, help="what pinned names are relative to")
     # ACCEPTED SO `runprov <cmd> --log X` stays uniform across the subcommands, and

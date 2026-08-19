@@ -2352,6 +2352,119 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
     assert "declared.tsv" not in out.read_text(encoding="utf-8")
 
 
+def test_one_unusable_value_costs_that_value_and_not_the_record(tmp_path, monkeypatch):
+    """Council C-07, and the worst defect found in the whole audit. `_jsonable` returned the
+    object unchanged at its last line, leaving `str()` to the record's `default=str` — which
+    runs OUTSIDE every guard here. An object whose `__str__` raises therefore destroyed the
+    ENTIRE record: no sidecar, no history line, exit 0, one line on stderr. The user believes
+    the run was recorded.
+
+    Same rule as the history being JSONL rather than one document: damage costs the damaged
+    thing, never everything around it. A bad KEY counts too — `default=` does not apply to
+    keys, so `json.dumps` raises on them before any handler is consulted."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+
+    class Boom:
+        def __repr__(self):
+            raise RuntimeError("boom")
+
+        def __str__(self):
+            raise RuntimeError("boom")
+
+    class Unhashable:
+        def __hash__(self):
+            return 7
+
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.note("bad_value", Boom())
+        run.note("bad_key", {Unhashable(): 1})
+        run.note("fine", 42)
+
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["notes"]["fine"] == 42, "the good notes must survive the bad one"
+    assert "UNSERIALISABLE" in rec["notes"]["bad_value"], rec["notes"]["bad_value"]
+    assert "Boom" in rec["notes"]["bad_value"], "and it must name the type, to be findable"
+
+    line = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
+    assert line["notes"]["fine"] == 42, "the HISTORY line must survive too, not just the sidecar"
+    assert (tmp_path / "p.yml").is_file(), "and the YAML view, which renders the same record"
+
+
+def test_configure_refuses_a_project_and_fields_together(tmp_path):
+    """Council C-08. `configure(existing, write_yaml_sidecar=False)` returned `existing` and
+    DISCARDED every keyword without a word — a silent no-op, which is this package's
+    characteristic defect and the one shape it must not ship.
+
+    Raising rather than merging: a caller who passes both has two ideas of the project in one
+    call, and choosing one for them would be a guess."""
+    proj = runprov.Project(root=tmp_path)
+    with pytest.raises(TypeError, match="Project OR its fields"):
+        runprov.configure(proj, write_yaml_sidecar=False)
+
+    # Both single forms keep working — the fix must not cost the ordinary calls.
+    assert runprov.configure(write_yaml_sidecar=False).write_yaml_sidecar is False
+    assert runprov.configure(proj).root == tmp_path
+
+
+def test_the_pin_does_not_call_a_content_digest_a_sha256(tmp_path, monkeypatch):
+    """Council C-09. The header said `sha256:` over a value that is `pin_digest` — the
+    CONTENT digest, which strips volatile build stamps. A reader who runs `sha256sum` on the
+    input gets a different number and concludes the pin is broken. In a package whose thesis
+    is that its claims can be checked, that was the wrong word in the one place it invites
+    checking.
+
+    Both spellings must still READ, because artifacts written before this change say the old
+    word and reporting them as unpinned would be worse than the mislabelling."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\tb\n1\t2\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("x\n")
+
+    body = (tmp_path / "out.tsv").read_text(encoding="utf-8")
+    assert "content digest:" in body
+    assert "sha256:" not in body, "the word must not appear over a value that is not one"
+
+    # The premise, asserted rather than assumed: the pinned value really is NOT the sha256.
+    pinned = next(row for row in body.splitlines() if "in.tsv" in row).split()[1]
+    assert runprov.content_digest(tmp_path / "in.tsv").startswith(pinned)
+    assert not runprov.sha256(tmp_path / "in.tsv").startswith(pinned), (
+        "if these ever coincide the test proves nothing; pick an input with a volatile stamp"
+    )
+
+    # An artifact carrying the OLD word still verifies.
+    old = tmp_path / "old.tsv"
+    old.write_text(body.replace("content digest:", "sha256:"), encoding="utf-8")
+    assert runprov.verify.read_pins(old), "pre-2026-08-19 artifacts must still be readable"
+
+
+def test_verify_says_what_OK_means_every_time_it_says_OK(tmp_path, monkeypatch, capsys):
+    """Council C-10. `verify` printed `OK` and exited 0 over an artifact with a fabricated
+    row appended — true, because its INPUTS were untouched, and read by everyone as "this
+    file is intact". The caveat existed in the README and nowhere a user of the command would
+    meet it, and the README endorses building a CI gate on exactly this command."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("x\n")
+    capsys.readouterr()
+
+    with open(tmp_path / "out.tsv", "a", encoding="utf-8") as fh:
+        fh.write("FABRICATED\n")  # the artifact is tampered; the inputs are not
+
+    assert cli.main(["verify", str(tmp_path / "out.tsv"), "--root", str(tmp_path)]) == 0
+    err = capsys.readouterr().err
+    assert "OK" in err, "the premise: it still reports OK, which is what makes this a trap"
+    assert "does NOT mean the artifact itself is unedited" in err
+    assert "--rehash" in err, "and it must name the command that WOULD catch this"
+
+
 def test_an_unregistered_read_is_noticed_and_recorded(tmp_path, monkeypatch, capsys):
     """L-107. `run.input(p)` makes registration the ordinary way to open a file; it cannot
     make it the only way. A plain `open(p)` left the read absent from the record and from the
@@ -3229,19 +3342,26 @@ def test_a_failing_sidecar_write_does_not_replace_the_users_exception(tmp_path, 
     assert "could not write" in capsys.readouterr().err
 
 
-def test_an_unserialisable_note_does_not_lose_the_run(tmp_path, capsys):
+def test_an_unserialisable_note_does_not_lose_the_run(tmp_path):
     """A tuple-keyed dict is what a per-class confusion matrix looks like, and
     `default=str` does not apply to KEYS -- so json.dumps raised, the sidecar was never
-    written, and the run vanished. Serialise before touching the filesystem."""
+    written, and the run vanished. Serialise before touching the filesystem.
+
+    THE MEASUREMENT NOW SURVIVES. This used to assert that the note was replaced wholesale
+    by an `UNSERIALISABLE` marker, which recorded the run and threw the confusion matrix
+    away. `_jsonable` stringifies the KEY instead, so the numbers are still there and still
+    attributable -- degrading the part that cannot encode rather than the value containing
+    it, which is the same rule one level down."""
     sink = runprov.MemorySink()
     proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
     run = runprov.Run("g", project=proj)
     run.note("confusion", {(1, "a"): 0.9})
     run.write(tmp_path / "p.json")
     assert len(sink.records) == 1, "the run must be recorded even if a note cannot encode"
-    assert "could not serialise" in capsys.readouterr().err
     rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
-    assert rec["notes"]["confusion"].startswith("UNSERIALISABLE")
+    assert list(rec["notes"]["confusion"].values()) == [0.9], "the measurement survives"
+    assert "1" in next(iter(rec["notes"]["confusion"])), "under a stringified key"
+    assert sink.records[0]["notes"] == rec["notes"], "and the HISTORY agrees with the sidecar"
 
 
 # ================= regressions introduced by the deferred-history change, found by review
@@ -3335,7 +3455,7 @@ def test_encoding_skips_a_section_that_is_not_a_dict(tmp_path):
     run.write(tmp_path / "p.json")
     rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
     assert rec["parameters"] == ["not", "a", "dict"]
-    assert rec["notes"]["bad"].startswith("UNSERIALISABLE")
+    assert rec["notes"]["bad"] == {"(1, 2)": "tuple key"}, "the key is stringified, not dropped"
 
 
 def test_a_config_that_points_at_itself_still_produces_a_record(tmp_path):
