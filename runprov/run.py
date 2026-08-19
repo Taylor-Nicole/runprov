@@ -113,7 +113,13 @@ _NOT_PROJECT_CODE = frozenset(
 #
 # The others are loud, and they are here because a fix that only knew about Newick would
 # leave the same defect standing in every one of them.
-PIN_UNSAFE = {
+#
+# IMMUTABLE. This was a plain dict and the ONLY mutable container in the whole public API,
+# so any library sharing the interpreter could rewrite it. For THIS table that was harmless
+# -- nothing branches on it, and clearing it entirely changes no behaviour (measured), since
+# it is documentation rendered into a refusal message. `PIN_ALTERNATIVE` below is the one
+# where it bites, and it is frozen for the same reason.
+PIN_UNSAFE = types.MappingProxyType({
     ".nwk": "Newick has no comment syntax — the pin's own words parse as taxon names, "
     "SILENTLY (measured: a 3-taxon tree reads back with 6)",
     ".newick": "Newick has no comment syntax — the pin parses as taxon names, silently",
@@ -163,7 +169,7 @@ PIN_UNSAFE = {
     ".zip": "an archive; `open_output` is text mode and a pin would corrupt it",
     ".png": "binary; `open_output` is text mode and a pin would corrupt it",
     ".pdf": "binary; `open_output` is text mode and a pin would corrupt it",
-}
+})  # fmt: skip
 
 #: THE ALLOWLIST: suffixes whose format is known to treat a leading `#` line as a comment,
 #: and whose first line is not otherwise special. Anything not named here gets a SIDECAR.
@@ -219,7 +225,13 @@ PIN_BINARY = frozenset(
 #: An empty caveat means there is no trade at all -- the marker is simply that format's
 #: comment syntax, and `#` was only ever the wrong default for it. A non-empty caveat is
 #: said on stderr at the moment the trade is made.
-PIN_ALTERNATIVE = {
+# IMMUTABLE, and here it is not a formality. A caller who passes `comment="// "` gets an
+# in-band pin only if this table agrees, so a third party adding a row changes what an
+# EXISTING call does -- measured: `.zzz` with `comment="// "` writes a sidecar before the
+# mutation and an in-band pin after it. Both halves are needed (the row AND a matching
+# comment), which is narrower than it first looks, but the artifact's own bytes change and
+# nothing announces it.
+PIN_ALTERNATIVE = types.MappingProxyType({
     ".sql": ("-- ", ""),
     ".tex": ("% ", ""),
     ".fasta": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
@@ -227,7 +239,7 @@ PIN_ALTERNATIVE = {
     ".fna": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
     ".faa": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
     ".ffn": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
-}
+})  # fmt: skip
 
 
 #: Runs that were given `provenance=` and have not persisted anything yet. A WeakSet, so

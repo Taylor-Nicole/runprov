@@ -702,6 +702,19 @@ YAML_TOO_DEEP = "<nested too deep for this interpreter to render>"
 def to_yaml(obj: object, indent: int = 0) -> str:
     """A nested structure as YAML, with EVERY scalar quoted.
 
+    NOT `runprov.to_yaml`, WHICH IS A DIFFERENT FUNCTION WITH THE SAME NAME. That one takes
+    run RECORDS and renders the transformation-log shape (`- step:`, `date`, `input`, `summary`);
+    this one takes ANY nested structure and renders it as indented YAML. Both are reachable —
+    `import runprov` binds `runprov.show` — both accept a record dict, and neither raises on the
+    other's input, so a caller who reaches for the wrong one gets a plausible file of the wrong
+    shape. See L-47 in the audit ledger; which name changes is the author's call.
+
+    THIS ONE DOES NOT NORMALISE ITS INPUT. `runprov.to_yaml` runs `_jsonable` over each record
+    first; this does not, so it must be handed something already normalised. Handed a live
+    record containing a numpy-like scalar it renders `"n": "<scalar 118>"` where the package's
+    own writer renders `118` — which is precisely the divergence `runprov.to_yaml`'s comment
+    says it exists to prevent. `run.py` wraps every call in `_jsonable` for that reason.
+
     The same rule as `__main__._yaml`, and for the same measured reason: the predecessor's
     log quoted only what its author thought needed quoting, and one hand-written
     `Note:` inside a description is where `yaml.safe_load_all` dies on the real file — line

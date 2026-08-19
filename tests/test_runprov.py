@@ -2352,6 +2352,219 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
     assert "declared.tsv" not in out.read_text(encoding="utf-8")
 
 
+@requires_fcntl  # a POSIX signal number is the premise
+@pytest.mark.parametrize(("signame", "signum"), [("TERM", 15), ("KILL", 9), ("HUP", 1), ("INT", 2)])
+def test_exec_returns_what_a_shell_returns_for_a_signal_killed_child(
+    tmp_path, monkeypatch, signame, signum
+):
+    """Council C-25. `subprocess` reports a signal-killed child as `-N`, and
+    `raise SystemExit(-15)` reaches the OS as `-15 & 0xFF` = 241 — so `exec` returned 241
+    where `sh -c` returns 143, and 247 for SIGKILL where a shell says 137, which is the number
+    an OOM check looks for.
+
+    Worse than merely different: IT COLLIDED. A child killed by SIGTERM and a child that
+    exited 241 both produced 241, two states a shell keeps apart. `exec`'s whole promise is
+    "returns the command's own exit code, so it composes without changing what failure means".
+
+    Parametrised over four signals because a single one cannot show the arithmetic is 128+N
+    rather than a constant."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    code = cli.main(
+        [
+            "exec",
+            "--name",
+            "k",
+            "--",
+            "/bin/sh",
+            "-c",
+            f"kill -{signame} $$",
+        ]
+    )
+    assert code == 128 + signum, f"a shell returns {128 + signum} for SIG{signame}"
+
+    rec = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
+    assert rec["status"] == "failed"
+    assert f"SIG{signame}" in rec["failure"]["message"], (
+        "and the record must NAME the signal — 'exited -15' is unreadable and wrong: the "
+        "process did not exit -15, it was killed"
+    )
+    assert rec["notes"]["signal"] == {"number": signum, "name": f"SIG{signame}"}
+    assert rec["notes"]["exit_code"] == -signum, "the RAW wait status is still recorded"
+
+
+def test_exec_does_not_confuse_a_signal_with_an_exit_code_that_looks_like_one(
+    tmp_path, monkeypatch
+):
+    """The collision, asserted directly. Before the fix, SIGTERM and `exit 241` were both 241.
+    A shell keeps them apart and so must this."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    killed = cli.main(
+        [
+            "exec",
+            "--name",
+            "a",
+            "--",
+            "/bin/sh",
+            "-c",
+            "kill -TERM $$",
+        ]
+    )
+    exited = cli.main(
+        [
+            "exec",
+            "--name",
+            "b",
+            "--",
+            "/bin/sh",
+            "-c",
+            "exit 241",
+        ]
+    )
+    assert killed == 143 and exited == 241, f"{killed} vs {exited} — these must differ"
+
+    recs = [json.loads(x) for x in (tmp_path / "h.jsonl").read_text().splitlines() if x]
+    by = {r["script"]: r for r in recs}
+    assert "signal" in by["a"]["notes"] and "signal" not in by["b"]["notes"], (
+        "and only one of them was killed by a signal"
+    )
+
+
+def test_exec_does_not_read_a_windows_crash_code_as_a_signal(tmp_path, monkeypatch):
+    """A Windows child that crashes yields a large negative NTSTATUS (e.g. -1073741819), which
+    is not a signal number. Without a floor, `128 + 1073741819` would be invented and the
+    message would name a signal that does not exist.
+
+    Cannot be produced on this platform, so `subprocess.run` is substituted — the one place in
+    this suite where a mock is right, because the value comes from an OS this machine is not."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+
+    class FakeCompleted:
+        returncode = -1073741819
+        stdout = None
+        stderr = None
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: FakeCompleted())
+    code = cli.main(["exec", "--name", "w", "--", "anything"])
+    rec = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
+    assert "signal" not in rec["notes"], "an NTSTATUS is not a signal"
+    assert "killed by" not in rec["failure"]["message"]
+    assert code != 0
+
+
+def test_exec_names_a_signal_the_platform_has_no_name_for(tmp_path, monkeypatch):
+    """A real-time signal has a number and no `signal.Signals` member. It must still be
+    recorded as a signal rather than crashing the reporting path on `ValueError`."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+
+    class FakeCompleted:
+        returncode = -35
+        stdout = None
+        stderr = None
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: FakeCompleted())
+    assert cli.main(["exec", "--name", "rt", "--", "anything"]) == 163
+    rec = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
+    assert rec["notes"]["signal"] == {"number": 35, "name": "signal 35"}
+
+
+def test_the_pin_tables_cannot_be_mutated_by_a_caller(tmp_path, monkeypatch):
+    """Council C-26. `PIN_UNSAFE` was a plain dict and the ONLY mutable container in the whole
+    public API, so any library sharing the interpreter could rewrite it.
+
+    For THAT table it is harmless, and the test says so rather than implying otherwise:
+    nothing branches on it — clearing it entirely changes no behaviour — because it is
+    documentation rendered into a refusal message.
+
+    `PIN_ALTERNATIVE` is the one where it bites, and it is NOT exported, which is why the
+    reviewer missed it. Measured: `.zzz` opened with `comment="// "` writes a sidecar before
+    a row is added and an in-band pin after. BOTH halves are needed — the row and a matching
+    caller comment — which is narrower than it first looks, but the artifact's own bytes
+    change and nothing announces it."""
+    with pytest.raises(TypeError):
+        runprov.PIN_UNSAFE[".tsv"] = "x"
+    with pytest.raises(TypeError):
+        del runprov.PIN_UNSAFE[".nwk"]
+    with pytest.raises(TypeError):
+        runprov.run.PIN_ALTERNATIVE[".zzz"] = ("// ", "")
+
+    assert runprov.PIN_UNSAFE[".nwk"].startswith("Newick"), "still readable"
+    assert dict(runprov.PIN_UNSAFE), "and still convertible, which is what a caller needs"
+
+
+def test_the_unsafe_table_is_documentation_and_nothing_branches_on_it(tmp_path, monkeypatch):
+    """The half that stops a future reader re-discovering it. `PIN_UNSAFE` earns its place by
+    explaining a refusal, not by causing one — `PIN_BINARY` and `PIN_INLINE` decide. Asserted
+    against a COPY, since the real table is now frozen."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runprov.run, "PIN_UNSAFE", {})  # emptied entirely
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        with run.open_output(tmp_path / "t.nwk") as fh:
+            fh.write("(a,b);\n")
+
+    body = (tmp_path / "t.nwk").read_text(encoding="utf-8")
+    assert not body.startswith("#"), "still no in-band pin, with the table empty"
+    assert (tmp_path / "t.nwk.prov.txt").is_file(), "still a sidecar — the route is unchanged"
+
+
+def test_the_two_to_yamls_are_both_reachable_and_disagree(tmp_path):
+    """Council C-24 / ledger L-47. `runprov.to_yaml` and `runprov.show.to_yaml` are different
+    functions with the same name, both reachable (`import runprov` binds `runprov.show`), both
+    accepting a record dict, neither raising on the other's input — so the wrong import yields
+    a plausible file of the WRONG SHAPE rather than an error.
+
+    Which name changes is the author's decision (L-47, `needs-your-decision`), so this test
+    does not assert a rename. It pins the DIVERGENCE, so that whoever settles the name has the
+    behaviour written down, and so that the more dangerous half cannot be forgotten: only the
+    package-level one normalises with `_jsonable`.
+
+    That normalisation is not cosmetic. It is exactly the failure `runprov.to_yaml`'s own
+    comment cites: a manifest reading `n_exact_matches: "<scalar 118>"` beside a sidecar
+    reading `118`, for one run."""
+
+    class Scalarish:  # a numpy scalar's shape, without the dependency
+        def item(self):
+            return 118
+
+        def __repr__(self):
+            return "<scalar 118>"
+
+    record = {"script": "s", "notes": {"n": Scalarish()}}
+
+    packaged = runprov.to_yaml([record])
+    assert "118" in packaged and "<scalar" not in packaged, (
+        "the package-level renderer normalises first, which is why the manifest and the "
+        "sidecar agree"
+    )
+
+    low_level = runprov.show.to_yaml(record)
+    assert "<scalar" in low_level, (
+        "and the low-level one does NOT — it must be handed something already normalised. If "
+        "this ever passes, the divergence is closed and the docstrings should stop warning."
+    )
+    assert packaged != low_level, "different shapes, same name, both reachable"
+
+
+def test_the_verify_module_is_not_shadowed_by_a_function(tmp_path):
+    """Council C-24, second half. `runprov.verify` is a MODULE, and `runprov.verify.verify` is
+    the function inside it. Exporting a `verify` FUNCTION from `__init__` later would shadow
+    the module for anyone who had already imported it — `import runprov.verify` does not
+    restore the attribute once `sys.modules` holds it, so working code breaks with
+    `AttributeError: 'function' object has no attribute 'verify'`.
+
+    Reproduced on a throwaway copy during the audit. This guard costs nothing and fails the
+    moment that export is added, which is the only cheap moment to notice."""
+    import runprov.verify
+
+    assert isinstance(runprov.verify, types.ModuleType), "runprov.verify must stay a module"
+    assert callable(runprov.verify.verify), "and the function must stay reachable through it"
+
+
 @requires_symlinks
 def test_a_symlinked_subdirectory_is_counted_not_silently_dropped(tmp_path):
     """Council C-23. `os.walk` does not follow a directory symlink, which is deliberate and

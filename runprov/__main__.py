@@ -40,6 +40,7 @@ import collections
 import json
 import pathlib
 import shlex
+import signal
 import subprocess
 import sys
 import typing
@@ -388,6 +389,12 @@ class CommandFailedError(Exception):
     """
 
 
+#: Below this, a negative `returncode` is not a POSIX signal. `subprocess` reports a
+#: signal-killed child as -N with N <= 64 or so; Windows reports a crash as a large negative
+#: NTSTATUS. -256 is comfortably past every real signal and nowhere near an NTSTATUS.
+_KILLED_BY_SIGNAL_FLOOR = -256
+
+
 def _exec(args: argparse.Namespace) -> int:
     """`runprov exec -- samtools sort in.bam -o out.bam`: a subprocess, recorded as a run.
 
@@ -465,7 +472,36 @@ def _exec(args: argparse.Namespace) -> int:
             except OSError as exc:
                 run.note("exec_error", f"{type(exc).__name__}: {exc}")
                 raise CommandFailedError(str(exc)) from exc
+            # THE RAW WAIT STATUS, unchanged: `subprocess` reports a signal-killed child as
+            # -N, and that is the one value from which the signal can still be recovered.
             run.note("exit_code", returncode)
+            # 128+N FOR A SIGNAL, LIKE A SHELL. `raise SystemExit(-15)` reaches the OS as
+            # `-15 & 0xFF` = 241, so `exec` returned 241 where `sh -c` returns 143 -- and 247
+            # for SIGKILL where a shell says 137, which is the number an OOM check looks for.
+            #
+            # Worse than merely different: IT COLLIDED. A child killed by SIGTERM and a child
+            # that exited 241 both produced 241, two states a shell keeps apart. 255 (SIGHUP)
+            # is not inert either -- `xargs` aborts an entire batch on 255 and continues on
+            # 129, measured -- so the rewrite changed how a pipeline behaves, not just what a
+            # number looked like.
+            #
+            # `exec`'s whole promise is "returns the command's own exit code, so it composes
+            # without changing what failure means". This is that sentence being true.
+            if _KILLED_BY_SIGNAL_FLOOR < returncode < 0:
+                # Bounded below deliberately: on Windows a crashing child yields a large
+                # negative NTSTATUS (e.g. -1073741819), which is not a signal number and must
+                # not be read as one. Unverified on Windows -- there is no Windows here.
+                signum = -returncode
+                try:
+                    signame = signal.Signals(signum).name
+                except ValueError:  # a number this platform has no name for
+                    signame = f"signal {signum}"
+                run.note("signal", {"number": signum, "name": signame})
+                returncode = 128 + signum
+                # NAMES THE SIGNAL, because "exited -15" is both unreadable and wrong: the
+                # process did not exit -15, it was killed. The parent-side vocabulary in
+                # `run.Terminated` already gets this right; this matches it.
+                raise CommandFailedError(f"{argv[0]} was killed by {signame} ({signum})")
             if returncode != 0:
                 raise CommandFailedError(f"{argv[0]} exited {returncode}")
     except UsageError as exc:
