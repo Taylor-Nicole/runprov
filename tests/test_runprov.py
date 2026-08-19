@@ -73,6 +73,32 @@ import runprov.terminal  # noqa: E402
 # filesystem answers for the machine actually running.
 
 
+#: CPython <=3.12 raises `RuntimeError("Symlink loop from ...")` when `resolve()` walks a
+#: cyclic link; **3.13 returns the path unchanged instead**. Four tests asserted the exception
+#: as their premise and so failed on 3.13 while the package itself behaved correctly — the
+#: premise was version-specific, the OUTCOME each test exists for is not. Found by the one CI
+#: run that ever executed, and confirmed locally against 3.13.15 (L-104).
+#:
+#: The guards in `run.py` still catch `RuntimeError` and must keep doing so: this is a
+#: relaxation on the newer version, not a removal on the older ones.
+_RESOLVE_RAISES_ON_LOOP = sys.version_info < (3, 13)
+
+
+def _assert_symlink_loop(path: pathlib.Path) -> None:
+    """The premise of the loop tests, asserted in a way that is true on every version."""
+    try:
+        path.resolve()
+        raised = False
+    except RuntimeError as exc:
+        raised = "Symlink loop" in str(exc)
+    assert raised == _RESOLVE_RAISES_ON_LOOP, (
+        f"resolve()-on-a-loop behaviour changed for this interpreter "
+        f"({sys.version_info.major}.{sys.version_info.minor}); update _RESOLVE_RAISES_ON_LOOP "
+        f"and check that run.py's RuntimeError guards are still needed for the versions that "
+        f"do raise"
+    )
+
+
 def _can_symlink() -> bool:
     with tempfile.TemporaryDirectory() as d:
         try:
@@ -1363,8 +1389,7 @@ def test_a_sidecar_path_through_a_symlink_loop_does_not_end_the_run(tmp_path):
     link must still record; the sidecar is what is lost, and it says so."""
     (tmp_path / "a").symlink_to(tmp_path / "b")
     (tmp_path / "b").symlink_to(tmp_path / "a")
-    with pytest.raises(RuntimeError, match="Symlink loop"):
-        (tmp_path / "a").resolve()  # the premise, asserted rather than assumed
+    _assert_symlink_loop(tmp_path / "a")  # the premise, asserted rather than assumed
 
     log, proj = _sinked(tmp_path)
     with runprov.Run("t", project=proj, provenance=tmp_path / "a" / "p.json"):
@@ -8242,8 +8267,10 @@ def test_a_symlink_loop_pins_as_external_instead_of_killing_the_run(tmp_path):
     (outside / "a").symlink_to(outside / "b")
     (outside / "b").symlink_to(outside / "a")
 
-    with pytest.raises(RuntimeError):  # the precondition: resolve() really does raise
-        (outside / "a" / "x.tsv").resolve()
+    # The premise is VERSION-DEPENDENT — see `_assert_symlink_loop`. Asserting the
+    # exception outright was wrong: 3.13 returns the path unchanged, so this test failed
+    # there while the outcome below (the run survives, the path pins as external) held.
+    _assert_symlink_loop(outside / "a" / "x.tsv")
 
     proj = runprov.Project(root=root, run_log=root / "runs.jsonl", run_id=lambda: "r")
     run = runprov.Run("s", project=proj)
@@ -10023,8 +10050,7 @@ def test_one_unresolvable_module_does_not_erase_the_whole_code_section(tmp_path,
     (tmp_path / "fit.R").write_text('cat("hi")\n', encoding="utf-8")
     (tmp_path / "a").symlink_to(tmp_path / "b")
     (tmp_path / "b").symlink_to(tmp_path / "a")
-    with pytest.raises(RuntimeError, match="Symlink loop"):
-        (tmp_path / "a" / "mod.py").resolve()  # the premise, asserted rather than assumed
+    _assert_symlink_loop(tmp_path / "a" / "mod.py")  # the premise, asserted not assumed
 
     good = types.ModuleType("goodmod_l98")
     good.__file__ = str(tmp_path / "real.py")
@@ -10159,8 +10185,7 @@ def test_declared_code_that_becomes_unresolvable_is_skipped_not_fatal(tmp_path, 
         staged.rmdir()
         (tmp_path / "staged").symlink_to(tmp_path / "loop")
         (tmp_path / "loop").symlink_to(tmp_path / "staged")
-        with pytest.raises(RuntimeError, match="Symlink loop"):
-            doomed.resolve()  # the premise, asserted rather than assumed
+        _assert_symlink_loop(doomed)  # the premise, asserted rather than assumed
 
     imported = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["code"]["imported"]
     assert "error" not in imported, f"one bad path cost the whole section: {imported}"
