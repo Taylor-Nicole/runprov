@@ -90,7 +90,11 @@ SKIP_DIRS = frozenset(
 # Against the pin's own rendering: four spaces, the digest, TWO spaces, the name. The
 # two-space separator is what allows a name to contain single spaces.
 _ENTRY = re.compile(rf"^ {{4}}([0-9a-f]{{{PIN_DIGEST_CHARS}}}|MISSING) {{2}}(.+)$")
-_COUNT = re.compile(r"^ {2}inputs \((\d+)\), sha256:$")
+#: BOTH SPELLINGS, and the old one is not deprecated so much as wrong: artifacts written
+#: before 2026-08-19 say `sha256:` where the value is a CONTENT digest. A reader that
+#: accepted only the new word would report every one of them as unpinned, which is a worse
+#: outcome than the mislabelling it corrects.
+_COUNT = re.compile(r"^ {2}inputs \((\d+)\), (?:sha256|content digest):$")
 _FIELD = re.compile(r"^ {2}(script|generation|commit) +: (.*)$")
 # TWO LEADING SPACES, like every other body line. Without them this never matched, so a
 # pin stating NONE REGISTERED fell through to "a pin with no entries" and read as

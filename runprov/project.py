@@ -479,6 +479,17 @@ def configure(
     """Install the project every later `Run()` uses. Call once, at import of your paths
     module — not inside each script, which is how three scripts end up disagreeing."""
     global _ACTIVE, _CONFIGURED
+    # BOTH, OR NEITHER SILENTLY. `configure(existing, write_yaml_sidecar=False)` used to
+    # return `existing` unchanged and DISCARD every keyword without a word -- a silent
+    # no-op, which is this package's characteristic defect and the one shape it must not
+    # ship. Raising is right rather than merging: a caller who passes both has two different
+    # ideas of the project in one call, and picking one for them would be a guess.
+    if project is not None and kwargs:
+        raise TypeError(
+            f"configure() takes a Project OR its fields, not both; got a Project and "
+            f"{sorted(kwargs)}. Use dataclasses.replace(project, ...) to adjust one, or "
+            f"pass the fields alone."
+        )
     proj = project if project is not None else Project(**kwargs)
     if proj.sink is not None:
         # `runtime_checkable` checks attribute PRESENCE, not signature. Before this,
