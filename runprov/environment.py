@@ -117,7 +117,7 @@ def conda_packages(prefix: pathlib.Path | None = None) -> dict[str, str]:
     return {k: out[k] for k in sorted(out, key=lambda s: (s.lower(), s))}
 
 
-def render(
+def _render_snapshot(
     packages: dict[str, str],
     unreadable: int = 0,
     conda: dict[str, str] | None = None,
@@ -126,6 +126,15 @@ def render(
 
     The package list alone is not the environment: the same versions on a different Python
     are a different environment, and the old per-run files did not say which they were.
+
+    NAMED FOR WHAT IT RENDERS, and underscored, because `render` was one of FOUR unqualified
+    renderers in this package and the only one nobody imports by that name from here.
+    `verify` defined a `render` too, and `__main__` imported it bare — two different
+    functions, one word, and neither raises on the other's input. Measured: handing this
+    function a `verify` report produced a plausible environment snapshot whose body was the
+    report, `artifacts_seen==0` reading as a package version, content-addressed and written
+    as though it were an environment. That is the class of defect the `to_yaml` ->
+    `render_yaml` rename was paid for, one module over.
     """
     conda = conda or {}
     head = [
@@ -165,7 +174,7 @@ def write_snapshot(directory: pathlib.Path) -> dict[str, typing.Any]:
     bad: list[str] = []
     pkgs = installed_packages(bad)
     conda = conda_packages()
-    text = render(pkgs, len(bad), conda)
+    text = _render_snapshot(pkgs, len(bad), conda)
     d = digest(text)
     directory = pathlib.Path(directory)
     directory.mkdir(parents=True, exist_ok=True)

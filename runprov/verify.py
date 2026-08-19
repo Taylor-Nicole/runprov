@@ -440,8 +440,13 @@ def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str
     }
 
 
-def render(report: dict[str, typing.Any]) -> str:
+def render_report(report: dict[str, typing.Any]) -> str:
     """The text view: one line per artifact, then one line per input that is not OK.
+
+    NAMED FOR WHAT IT RENDERS. `render` collided with `environment.render`, and `__main__`
+    imported one of them bare — `render(report)` at the call site gave the reader no clue
+    which of the package's renderers was meant, with `show.render_run`, `show.render_project`
+    and `show.render_yaml` also in scope.
 
     An OK input is not listed. A check whose passing output is proportional to the size of
     the corpus is a check whose output nobody reads, and the count in the summary already

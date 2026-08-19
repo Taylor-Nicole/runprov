@@ -62,7 +62,7 @@ from .show import (
     staleness,
 )
 from .show import render_yaml as _yaml_doc
-from .verify import GONE, STALE, render, verify
+from .verify import GONE, STALE, render_report, verify
 
 
 def _stream(path: pathlib.Path) -> typing.Iterator[dict[str, typing.Any] | None]:
@@ -771,7 +771,7 @@ def _verify(args: argparse.Namespace) -> int:
     if args.format == "json":
         sys.stdout.write(json.dumps(report, indent=2) + "\n")
     else:
-        sys.stdout.write(render(report))
+        sys.stdout.write(render_report(report))
 
     seen, pinned = report["artifacts_seen"], report["artifacts_pinned"]
     if not pinned:
