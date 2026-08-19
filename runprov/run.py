@@ -699,6 +699,10 @@ class Run:
         # hook stays as close to free as a hook can be, and so nothing here can fail on a
         # path during the run it is describing.
         self._opened: set[str] = set()
+        # Whether `__enter__` has run, ever -- not whether it is running now, which is
+        # `_in_context` and goes back to False at exit. See `__enter__` for why re-entry is
+        # refused rather than tolerated.
+        self._entered = False
         # Whether `header()` has already rendered a pin. An input registered after that
         # point is NOT in the pin already embedded in an artifact, and no later inspection
         # can tell -- the artifact simply understates itself, in its own body.
@@ -935,6 +939,29 @@ class Run:
         ENTRY rather than in `__init__` because raising only helps if there is a block to
         unwind: outside a `with`, there is no `__exit__` to record anything.
         """
+        # ONE RUN, ONE BLOCK. Re-entering the same `Run` was allowed and recorded only the
+        # first pass -- measured: two blocks, ONE history line, the second block's output
+        # sitting on disk with nothing describing it, and no warning at all when the second
+        # block registered no input. Worse than under-recording, the SIDECAR came out
+        # internally inconsistent: it listed the second block's input and not its output, so
+        # it described a run that never happened.
+        #
+        # Raising is right here and does not breach "provenance must not kill the run": this
+        # fires at ENTRY, before the second block does any work, so there is no unrecorded
+        # work to lose -- unlike the silent under-recording it replaces. It is API misuse
+        # caught immediately, the same shape as `configure()` refusing a Project and fields
+        # together, and it is what a non-reentrant context manager conventionally does.
+        #
+        # `run_uid`, `started_utc` and `command` describe ONE pass. Recording a second pass
+        # through the same object would need all three to change, which is a different object.
+        if self._entered:
+            raise RuntimeError(
+                f"Run({self.record['script']!r}) has already been used as a context manager. "
+                f"A Run records ONE pass: `run_uid`, `started_utc` and `command` all describe "
+                f"it, and the record from the first block is already written. For a loop, "
+                f"build a Run per iteration, or put the `with` around the whole loop."
+            )
+        self._entered = True
         self._in_context = True
         self._catch_signals()
         # NOTICE UNREGISTERED READS. Attached here rather than in `__init__` for the same

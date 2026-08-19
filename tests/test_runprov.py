@@ -2352,6 +2352,66 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
     assert "declared.tsv" not in out.read_text(encoding="utf-8")
 
 
+def test_a_run_refuses_to_be_entered_twice(tmp_path, monkeypatch):
+    """Council C-17. Re-entering the same `Run` was allowed and recorded only the first pass:
+    two blocks, ONE history line, and the second block's output left on disk with nothing
+    describing it. With no input registered in the second block it was completely silent.
+
+    Worse than under-recording, the SIDECAR came out internally inconsistent — it listed the
+    second block's input and not its output, describing a run that never happened.
+
+    Raising does not breach "provenance must not kill the run": it fires at ENTRY, before the
+    second block does any work, so there is no unrecorded work to lose. That is the whole
+    difference from the silent under-recording it replaces."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    run = runprov.Run("step", provenance=tmp_path / "p.json")
+
+    with run:
+        with run.open_output(tmp_path / "out1.tsv") as fh:
+            fh.write("first\n")
+
+    with pytest.raises(RuntimeError, match="already been used as a context manager"):
+        with run:
+            with run.open_output(tmp_path / "out2.tsv") as fh:  # pragma: no cover - refused
+                fh.write("second\n")
+
+    assert not (tmp_path / "out2.tsv").exists(), (
+        "refused at entry, so the second block's work never happens — an artifact with no "
+        "record is exactly what this prevents"
+    )
+    lines = [x for x in (tmp_path / "h.jsonl").read_text(encoding="utf-8").splitlines() if x]
+    assert len(lines) == 1, "the first pass is still recorded, exactly once"
+    assert (tmp_path / "out1.tsv").is_file(), "and its work is untouched"
+
+
+def test_the_message_says_what_to_do_instead(tmp_path, monkeypatch):
+    """`for f in files: with run:` is the plausible misreading, so the error has to name both
+    correct shapes rather than only refusing."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    run = runprov.Run("step", provenance=tmp_path / "p.json")
+    with run:
+        pass
+    with pytest.raises(RuntimeError) as caught:
+        with run:
+            pass  # pragma: no cover - refused
+    message = str(caught.value)
+    assert "Run per iteration" in message and "around the whole loop" in message
+    assert "step" in message, "and it must name WHICH run, for a script with several"
+
+
+def test_a_run_used_without_a_context_manager_is_unaffected(tmp_path, monkeypatch):
+    """The manual shape stays legal. The guard is about re-ENTRY, not about entering at all,
+    and `write()` without a `with` is a documented (if weaker) way to use this."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    run = runprov.Run("step", provenance=tmp_path / "p.json")
+    run.write(tmp_path / "p.json")
+    run.write(tmp_path / "p2.json")  # twice, deliberately: only __enter__ is guarded
+    assert (tmp_path / "p.json").is_file() and (tmp_path / "p2.json").is_file()
+
+
 @requires_unreadable_files
 def test_write_does_not_confirm_a_sidecar_it_could_not_write(tmp_path, monkeypatch, capsys):
     """Council C-16. `write()` called `_persist(p)` and DISCARDED the bool that `_persist`'s
@@ -3662,13 +3722,20 @@ def test_one_run_is_one_history_line_even_across_write_then_with(tmp_path):
     assert len(sink.records) == 1
 
 
-def test_one_run_is_one_history_line_across_two_with_blocks(tmp_path):
+def test_one_run_is_one_history_line_however_often_write_is_called(tmp_path):
+    """The `_history_appended` guard, which is what this has always been about: `write()` is
+    callable as often as you like and must still append exactly one line.
+
+    It used to make that point with two `with` blocks. Re-entry now raises (see
+    `test_a_run_refuses_to_be_entered_twice`), which guarantees the same property more
+    strongly — there cannot be a second block — so the guard is exercised the way it is
+    actually reachable: repeated `write()` inside one block, and again after it."""
     sink, proj = _sinked(tmp_path)
     run = runprov.Run("z", project=proj, provenance=tmp_path / "p.json")
     with run:
         run.write(tmp_path / "p.json")
-    with run:
         run.write(tmp_path / "p.json")
+    run.write(tmp_path / "p.json")
     assert len(sink.records) == 1
 
 
@@ -7149,8 +7216,12 @@ def test_entering_one_run_twice_appends_one_history_line(tmp_path, monkeypatch):
     run = runprov.Run("twice", provenance=tmp_path / "p.json")
     with run:
         pass
-    with run:
-        pass
+    # Re-entry is refused now rather than tolerated-and-under-recorded, so the property this
+    # test was written for — one history line per Run — holds by construction. Asserting the
+    # refusal AND the count keeps both halves of the original intent.
+    with pytest.raises(RuntimeError, match="already been used"):
+        with run:
+            pass  # pragma: no cover - refused
     got = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
     assert sum(1 for r in got if r["script"] == "twice") == 1
 
