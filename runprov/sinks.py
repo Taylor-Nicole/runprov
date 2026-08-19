@@ -36,6 +36,18 @@ without running anything is the right default for published work.
 
 from __future__ import annotations
 
+# A MODULE'S `__all__` RATIFIES THE PACKAGE'S PROMISE; IT NEVER MAKES ONE.
+# A name belongs here if and only if `runprov/__init__.py` re-exports it and lists it in the
+# package `__all__` (22 names, decided 2026-08-19, ledger L-24). Nothing else qualifies:
+# cross-module use inside `runprov/` is INTERNAL and `__all__` neither describes nor protects
+# it; tests reach into internals on purpose and prove nothing; and prose that documents a
+# printed string, a CLI flag or a record key is not an instruction to call a name.
+# Adding or withdrawing a promise is a package-level decision taken in `__init__.py`.
+# `TeeSink` and `YamlLogSink` are not promised: no document tells a reader to compose
+# sinks, and `YamlLogSink` writes `transformation_log.yml` specifically — a name whose
+# docstring needs a paragraph to correct it should be renamed before it is frozen.
+__all__ = ["JsonlSink", "MemorySink", "RecordSink"]
+
 import json
 import os
 import pathlib
