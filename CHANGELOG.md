@@ -7,37 +7,9 @@ taking precedence over the Python API while this is `0.x`.
 Entries state what was **measured**, not what was improved. A fix with no number beside it
 is a fix nobody checked.
 
-## [0.2.0] — 2026-08-19
+## [Unreleased] — 0.1.0
 
-**The first tagged release.** Everything below was written under `0.1.0`, which was never
-published.
-
-### Why this is 0.2.0 and not 0.1.0
-
-`0.1.0` is already recorded in roughly a thousand provenance records, produced by many
-different commits over several weeks — it was a hand-written string in an editable path
-install, and it never changed while the code did. Tagging it now would make every one of those
-records *look* identifiable when it is not.
-
-A version number that has never been emitted cannot be confused with one that has. From here,
-`runprov: 0.2.0` in a record maps to tag `v0.2.0` and therefore to exactly one commit, which is
-the entire point of a version.
-
-### Fixed since 0.1.0 — each found by running the code, not reading it
-
-* `provenance=` was the one path argument a `str` could not be passed to, on the most
-  load-bearing argument in the package.
-* The after-exit guard fired on `__exit__`'s own calls, so `runs.jsonl` was never written at
-  all — the mechanism for refusing a call that reaches no file became the reason nothing
-  reached a file. A `_finalizing` flag added to fix it turned out to guard nothing once the
-  public/private `environment_snapshot` split landed, and was removed rather than left as
-  machinery that cannot fail.
-* Everything recorded after the block was silently lost: `note`, `seeds`, `output` and `input`
-  after `__exit__` mutated the live record, returned normally and reached no file.
-* Re-entering a `Run` recorded only the first pass and wrote a sidecar describing a run that
-  never happened.
-* `write()` confirmed a sidecar it had just failed to write.
-* `terminal_log()` recorded the digest of a file in the old directory, silently.
+Nothing has been published yet. Everything below is what a first release would contain.
 
 ### The three properties it exists for
 

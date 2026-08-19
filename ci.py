@@ -113,7 +113,18 @@ _VERSION_SOURCES = {
     "pyproject.toml": r'^version = "([^"]+)"',
     "runprov/__init__.py": r'^__version__ = "([^"]+)"',
     "CITATION.cff": r"^version: (\S+)",
-    "CHANGELOG.md": r"^## \[[^\]]+\] — (\S+)",
+    # BOTH HEADING SHAPES, because this file uses two. Keep a Changelog puts the version in
+    # the BRACKETS and the date after the dash -- `## [0.2.0] — 2026-08-19` -- while the
+    # pre-release heading here is `## [Unreleased] — 0.1.0`, with the version after the dash
+    # instead. The original pattern read the field AFTER the dash unconditionally, so against
+    # a real release it captured the DATE and reported "the version copies disagree ...
+    # 'CHANGELOG.md': '2026-08-19'". Found the first time anyone cut a version, which is the
+    # worst moment to find it and the reason it is fixed before there is a release to cut.
+    #
+    # Anchored on a LEADING DIGIT so `## [Unreleased]` with no version, or any other bracketed
+    # word, is skipped rather than mistaken for one. Indifferent to the dash character, which
+    # differs between the two shapes.
+    "CHANGELOG.md": r"^## \[(?:Unreleased\] — )?(\d[^\]\s]*)",
 }
 
 

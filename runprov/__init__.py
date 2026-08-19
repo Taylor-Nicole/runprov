@@ -95,7 +95,7 @@ __all__ = [
     "to_yaml",
     "write_snapshot",
 ]
-__version__ = "0.2.0"
+__version__ = "0.1.0"
 
 
 def to_yaml(records: typing.Any) -> str:  # noqa: ANN401 - one record or an iterable of them
