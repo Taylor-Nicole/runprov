@@ -138,15 +138,15 @@ build backend.
 It is **not** the licence metadata — a build with the pre-PEP-639 `license = {text = ...}`
 emits 2.5 just the same, which was measured before this paragraph was written.
 
-## Two shapes that record nothing, and the one that does
+## Three shapes that record nothing, and the one that does
 
-Both of these look like they are recording. Neither prints a warning. Measured, running the
-same failure through each:
+All three look like they are recording. Measured, running the same failure through each:
 
 | what the script does | crash halfway |
 |---|---|
 | `run = Run(...)` … `run.write(PROV)` at the end | **nothing.** No sidecar, no history line, no output |
 | `with Run(...) as run:` … `run.write(PROV)` at the end | **nothing.** The `with` block is not enough |
+| `run = Run(..., provenance=PROV)` — no `with`, no `write()` | **nothing, ever** — including on a clean finish |
 | `with Run(..., provenance=PROV) as run:` | `status: "failed"`, the exception type, message, traceback tail, and every registered-but-unproduced output as `MISSING` |
 
 The first shape was this README's front page for the package's whole life, and someone
@@ -154,6 +154,20 @@ integrating it copied it, their script died halfway, and the record was lost —
 defect the package exists to eliminate, taught by its own quickstart. The second is worse
 because it looks like the fix: `__exit__` only writes when `provenance=` was passed to the
 **constructor**, so adding `with` while leaving `write()` at the end buys nothing.
+
+The third loses the record even when nothing goes wrong, and it is the likelier mistake now
+rather than a rarer one — every page here presses `provenance=` on the constructor, so the
+half left to forget is the `with`. Worse, the artifact is still written and still carries a
+pin naming a record that does not exist. **This one now says so**, at interpreter exit:
+
+```
+  NOTHING WAS RECORDED for Run('summarise'): `provenance=` was given but the run was never
+  written. Use `with Run(..., provenance=P) as run:` — or call `run.write(P)`
+```
+
+It warns rather than writing the record for you: writing at interpreter shutdown would make
+`with` optional and would hash your outputs while imports are being torn down. Your work is
+already on disk; what is missing is the record, and you can still fix the script.
 
 Calling `run.write(P)` *inside* a `with Run(..., provenance=PROV)` block is fine and
 sometimes useful (a caller may want the record at a second path); the history is still
@@ -1638,7 +1652,7 @@ constraint for standard runners, and is the one action that closes this.
 
 ## Tests
 
-`tests/test_runprov.py`, 568 tests, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, 574 tests, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite — in
 `test_size_is_stat_ed_after_the_hash_not_before` — to
@@ -1649,7 +1663,7 @@ narrow simulation of an environment this machine is not (`sys.platform` for Wind
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
 stubs the subject to make it agree with the test.
 
-Twenty-two of the 568 need something of the filesystem itself — a FIFO, a symlink, a file
+Twenty-two of the 574 need something of the filesystem itself — a FIFO, a symlink, a file
 `chmod(0o000)` really makes unreadable — and they skip where that is unavailable. The
 condition is a PROBE, not `sys.platform`: symlinks work on a Windows machine with Developer
 Mode enabled, and `chmod(0o000)` denies nothing to root, so a platform check both skipped

@@ -2352,6 +2352,96 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
     assert "declared.tsv" not in out.read_text(encoding="utf-8")
 
 
+def test_a_run_armed_but_never_written_says_so_at_exit(tmp_path, monkeypatch, capsys):
+    """Council C-20. The THIRD shape that records nothing, and the only one that records
+    nothing on a CLEAN finish: `provenance=` supplied, no `with`, no `write()`. The README's
+    table covered the two that lose a crash; this one loses everything, always, silently.
+
+    It is the likelier mistake now rather than a rarer one — every page presses `provenance=`
+    on the constructor as "the switch that makes `__exit__` write", so the half left to forget
+    is the `with`. And the artifact is still written, still carrying a pin that names a record
+    which does not exist.
+
+    Driven through `_warn_unpersisted` directly rather than by ending the interpreter, because
+    a test cannot exit the process it runs in. The wiring — that `atexit` calls this — is
+    asserted separately below."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+
+    run = runprov.Run("noctx", provenance=tmp_path / "p.json")  # armed, never written
+    run.note("x", 1)
+    with run.open_output(tmp_path / "out.tsv") as fh:
+        fh.write("data\n")
+    capsys.readouterr()
+
+    runprov.run._warn_unpersisted()
+    err = capsys.readouterr().err
+    assert "NOTHING WAS RECORDED" in err and "noctx" in err
+    assert "with Run(" in err, "the warning must show the shape that works"
+
+    assert not (tmp_path / "p.json").exists(), "the premise: nothing was recorded"
+    assert (tmp_path / "out.tsv").is_file(), "while the artifact IS on disk, carrying a pin"
+
+
+@pytest.mark.parametrize(
+    "shape", ["with_block", "manual_write", "no_provenance", "crash_inside_with"]
+)
+def test_a_run_that_did_record_is_not_warned_about(tmp_path, monkeypatch, capsys, shape):
+    """The half that decides whether this is usable. A warning that fires on correct code is
+    worse than none — it is the "permanently red check" this package cites more than any other
+    failure. Every shape that reaches disk must be silent, including the crash path, which
+    records precisely because it is armed."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    prov = tmp_path / "p.json"
+
+    if shape == "with_block":
+        with runprov.Run("s", provenance=prov) as run:
+            run.note("a", 1)
+    elif shape == "manual_write":
+        run = runprov.Run("s", provenance=prov)
+        run.note("a", 1)
+        run.write(prov)
+    elif shape == "no_provenance":
+        # BOUND TO A NAME, deliberately. `_UNPERSISTED` is a WeakSet, so an unreferenced Run
+        # is collected before the warning runs and the assertion passes for the wrong reason —
+        # measured: with the `provenance is not None` condition removed, this test still
+        # passed. Holding the reference is what makes it test the condition.
+        held = runprov.Run("s")  # never promised a record, so never warned about
+        held.note("a", 1)
+    else:
+        with contextlib.suppress(ValueError), runprov.Run("s", provenance=prov) as run:
+            raise ValueError("boom")
+
+    capsys.readouterr()
+    runprov.run._warn_unpersisted()
+    assert "NOTHING WAS RECORDED" not in capsys.readouterr().err
+
+
+def test_the_exit_warning_is_actually_wired_to_atexit(tmp_path, monkeypatch):
+    """A warning nothing calls is not a warning. Asserted by watching the registration, since
+    the alternative is ending the interpreter."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runprov.run, "_ATEXIT_REGISTERED", False)
+    registered = []
+    monkeypatch.setattr(runprov.run.atexit, "register", lambda fn: registered.append(fn))
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+
+    runprov.Run("a", provenance=tmp_path / "a.json")
+    runprov.Run("b", provenance=tmp_path / "b.json")
+    assert registered == [runprov.run._warn_unpersisted], (
+        "registered once, and it is the right function"
+    )
+
+    # HELD, for the same reason: a WeakSet drops an unreferenced Run, so without this the
+    # assertion below is satisfied by garbage collection rather than by the condition.
+    unarmed = runprov.Run("c")  # no provenance: promises nothing, so it must not be tracked
+    assert unarmed not in runprov.run._UNPERSISTED
+    assert all(r.provenance_path is not None for r in runprov.run._UNPERSISTED), (
+        "only runs that were armed to record may be warned about"
+    )
+
+
 def test_every_path_argument_accepts_a_plain_string(tmp_path, monkeypatch):
     """Council C-19. `provenance=` was annotated `pathlib.Path | None` while `input`,
     `output`, `write`, `code`, `open_output`, `pin_sidecar` and `terminal_log` all take

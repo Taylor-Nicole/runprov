@@ -23,6 +23,7 @@ no run id. Both were tried; both made every pinned artifact differ on every run.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import datetime as dt
 import hashlib
@@ -227,6 +228,37 @@ PIN_ALTERNATIVE = {
     ".faa": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
     ".ffn": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
 }
+
+
+#: Runs that were given `provenance=` and have not persisted anything yet. A WeakSet, so
+#: holding a run here cannot keep it alive or leak one per step of a long pipeline.
+_UNPERSISTED: weakref.WeakSet[Run] = weakref.WeakSet()
+_ATEXIT_REGISTERED = False
+
+
+def _warn_unpersisted() -> None:
+    """At interpreter exit, name every run that was armed to record and never did.
+
+    THE THIRD SHAPE THAT RECORDS NOTHING, and the only one that records nothing even on a
+    CLEAN finish: `provenance=` supplied, no `with`, no `write()`. The README's table covered
+    the two shapes that lose a CRASH; this one loses everything, always, and said nothing.
+
+    It is the likelier mistake now, not a rarer one. Every document here presses `provenance=`
+    on the constructor as "the switch that makes `__exit__` write", so the half a reader is
+    left to forget is the `with` — and forgetting it is silent, while the artifact still gets
+    written and still carries a pin pointing at a record that does not exist.
+
+    WARN, DO NOT WRITE. Writing the record here would make `with` optional and would hash
+    outputs during interpreter shutdown, where imports are being torn down and a failure is
+    hard to report. The user's work is already on disk; what is missing is the record, and the
+    honest thing is to say so while they can still fix the script.
+    """
+    for run in list(_UNPERSISTED):
+        diagnostic(
+            f"  NOTHING WAS RECORDED for Run({run.record['script']!r}): `provenance=` was "
+            f"given but the run was never written. Use `with Run(..., provenance=P) as run:` "
+            f"— or call `run.write(P)` — or the record is lost even when the script succeeds."
+        )
 
 
 class Terminated(BaseException):
@@ -676,6 +708,19 @@ class Run:
         self._pending: list[pathlib.Path] = []
         self._extra_code: dict[str, str] = {}
         self.provenance_path = self._sidecar_name(provenance) if provenance else None
+        # ARMED TO RECORD, and not yet recording. Registered only when `provenance=` was
+        # given, because that is the argument whose whole purpose is to make a record happen;
+        # a run without it is not promising anything. Discarded the moment anything is
+        # persisted -- see `_persist` and `_append_history`. `atexit` rather than `__del__`
+        # or `weakref.finalize`: those fire on collection, whose ORDER at shutdown is not
+        # something to build a diagnostic on, and this has to be reliable precisely in the
+        # case where the script ended without doing what it said.
+        if self.provenance_path is not None:
+            global _ATEXIT_REGISTERED
+            _UNPERSISTED.add(self)
+            if not _ATEXIT_REGISTERED:
+                atexit.register(_warn_unpersisted)
+                _ATEXIT_REGISTERED = True
         self._written = False
         self._code_recorded = False
         self._warned_cwd_moved = False
@@ -2482,6 +2527,12 @@ class Run:
         if r.get("unregistered_reads"):
             summary["unregistered_reads"] = r["unregistered_reads"]
         self._history_appended = True
+        # DISARMED HERE AND NOWHERE ELSE. Every path that persists anything reaches
+        # `_append_history` -- `write()` outside a block appends immediately, and inside one
+        # `__exit__` appends the deferred entry -- so a second `discard` beside the sidecar
+        # write looked prudent and was unreachable-by-mutation: no test could tell it from its
+        # absence, which is this project's standing signal that a line is decoration.
+        _UNPERSISTED.discard(self)
         # `_jsonable` here too: the sink dumps SEPARATELY, so sanitising only the
         # sidecar left the history line carrying bare NaN, unreadable to a strict parser.
         self.project.resolved_sink().append(_jsonable(summary))
