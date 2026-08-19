@@ -281,13 +281,23 @@ Nothing has been published yet. Everything below is what a first release would c
 
 530 tests, 100% statement *and* branch coverage.
 
-**Run locally on CPython 3.10.12, 3.11.1 and 3.12.13** (Linux); the CI matrix additionally
-covers 3.13 and macOS 3.12, which are unverified from here. Running 3.10 for the first time on
-2026-08-19 found a real defect that the 3.12-only gate could not have: `show --format yaml`'s
-depth guard hands the remainder to `json.dumps`, which is itself recursive, so a 1,000-deep
-record rendered on 3.12 and raised `RecursionError` on 3.10 — a reader narrower than its
-writer, on the version `requires-python` names as the floor. Fixed, and the suite no longer
-asserts any depth that is a property of the interpreter rather than of the code.
+**Run in full on CPython 3.10.12, 3.11.1, 3.12.13 and 3.13.15**, on Linux, 2026-08-19.
+**macOS and Windows have never been run**; they are in the CI matrix, which has never
+produced a result — see README, *What has actually been run*.
+
+Widening from one interpreter to four found two defects a 3.12-only gate could not, and both
+are the same shape: a test asserting something true of the interpreter rather than of the
+code.
+
+- `show --format yaml`'s depth guard hands the remainder to `json.dumps`, which is itself
+  recursive, so a 1,000-deep record rendered on 3.12 and raised `RecursionError` on 3.10 —
+  the version `requires-python` names as the floor. A reader narrower than its writer.
+- CPython 3.13 changed `Path.resolve()`: a symlink loop **returns the path unchanged** rather
+  than raising `RuntimeError`. Four tests asserted that exception as their premise and failed
+  on 3.13 while the package behaved correctly — the run survives and the path pins as
+  external. The premise is now expressed once, in a form true on every version, and
+  `run.py`'s `RuntimeError` guards stay: a relaxation on the newer version, not a removal on
+  the older ones.
 
 Windows 3.12 runs the same suite **minus 22 tests and without the coverage floor**, and the
 distinction is the point: those 22 build a fixture Windows cannot build — a FIFO

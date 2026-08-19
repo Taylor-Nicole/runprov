@@ -1554,14 +1554,45 @@ it is better than leaving silence to be read as abandonment:
 * **Security**: see
   [SECURITY.md](https://github.com/Taylor-Nicole/runprov/blob/main/SECURITY.md) — email, do
   not open a public issue first.
-* **Python versions**: whatever CI runs, currently 3.10–3.13, and the classifiers say only
-  those. A new Python is added the October it goes green, not on release day.
+* **Python versions**: 3.10–3.13, and the classifiers say only those. A new Python is added
+  the October it goes green, not on release day. This used to read "whatever CI runs", which
+  was the wrong authority: see **What has actually been run** below — every version here has
+  now been executed locally, which is not the same as a green matrix.
 * **Dependencies**: there are none, and there will not be any. It is the property that makes
   a one-person package safe to depend on — nothing upstream can break it, and upgrading is a
   version-number change and nothing else.
 * **Changes**:
   [CHANGELOG.md](https://github.com/Taylor-Nicole/runprov/blob/main/CHANGELOG.md), which
   states what was measured rather than what was improved.
+
+## What has actually been run
+
+A test suite proves nothing about an environment it has never entered, so this states the
+environments rather than implying them.
+
+| | state |
+|---|---|
+| CPython 3.10.12, 3.11.1, 3.12.13, 3.13.15 on Linux | **run in full**, 2026-08-19 |
+| macOS | **never run.** In the CI matrix; unverified |
+| Windows | **never run.** In the CI matrix; 22 tests skip there by construction (see below), so even a green job would verify less than the others |
+| GitHub Actions workflows themselves | **never executed successfully** — see below |
+
+**The CI matrix is a definition, not a result.** Every workflow run on this repository has
+failed, and 59 of the 60 failed *before starting a job*: GitHub bills Actions minutes for
+private repositories, and the account's billing has been failing. The workflow file lists
+3.10–3.13, macOS and Windows; that list has never produced an answer. Making the repository
+public removes the billing constraint for standard runners and is the one action that turns
+this table green.
+
+**One run did execute**, on 2026-08-13, before the billing lapsed — and it was worth the
+whole exercise. It found a real failure on Python 3.13 that no local run could see: CPython
+3.13 changed `Path.resolve()` so a symlink loop **returns the path unchanged** instead of
+raising `RuntimeError`. Four tests asserted that exception as their premise. The package
+itself was correct on 3.13 — the run survives, the path pins as external — but the premise
+was version-specific, and it is now expressed as one that is true on every version.
+
+That is the honest summary of this section: the gaps above are real, and the one time a gap
+was closed, it found something.
 
 ## Tests
 
