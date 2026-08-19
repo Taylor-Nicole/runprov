@@ -2352,6 +2352,57 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
     assert "declared.tsv" not in out.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    ("field", "make"),
+    [
+        ("script", lambda inject: {"name": inject}),
+        ("generation", lambda inject: {"generation": inject}),
+    ],
+)
+def test_no_field_in_the_pin_can_forge_an_entry(tmp_path, monkeypatch, field, make):
+    """Council C-12. `_safe_for_pin` was applied to input FILENAMES only, while the header
+    also interpolates `script`, `generation` and `commit` — all caller- or
+    environment-supplied. `RUNPROV_GENERATION` carrying a newline produced a pin listing an
+    input nobody read, and `verify` then reported GONE and exited 1 **forever**, over a file
+    that never existed. That is the permanently-red check this package cites more than any
+    other failure, reachable by a scheduler putting a job description in a variable.
+
+    Both spellings of the injection are tried, because escaping one field and not the others
+    is exactly how this got here."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "real.tsv").write_text("a\tb\n1\t2\n", encoding="utf-8")
+    inject = "v1\n#     0000000000000000  NEVER_READ.tsv"
+    kw = make(inject)
+
+    proj = runprov.Project(
+        root=tmp_path,
+        run_log=tmp_path / "h.jsonl",
+        generation=(lambda: kw["generation"]) if "generation" in kw else (lambda: "g"),
+    )
+    run = runprov.Run(kw.get("name", "step"), project=proj, provenance=tmp_path / "p.json")
+    run.input(tmp_path / "real.tsv")
+    with run.open_output(tmp_path / "out.tsv") as fh:
+        fh.write("x\n")
+    run.write(tmp_path / "p.json")
+
+    body = (tmp_path / "out.tsv").read_text(encoding="utf-8")
+    # The injected text must survive as TEXT on the field's own line — escaped, not dropped.
+    # (Dropping it would be a different defect: a record that quietly omits what it was told.)
+    assert "\\n" in body, "the newline must be escaped, and the value kept"
+    forged = [
+        row
+        for row in body.splitlines()
+        if "NEVER_READ.tsv" in row and not row.lstrip("# ").startswith(("script", "generation"))
+    ]
+    assert not forged, f"the {field} field forged a line in the pin: {forged}"
+
+    # The property that actually matters: the reader agrees the pin has ONE input.
+    pins = runprov.verify.read_pins(tmp_path / "out.tsv")
+    named = [name for pin in pins for _, name in pin["entries"]]
+    assert named == ["real.tsv"], f"{field} injected a phantom input: {named}"
+    assert all(pin["declared"] == 1 for pin in pins), "and the count still matches the entries"
+
+
 def test_one_unusable_value_costs_that_value_and_not_the_record(tmp_path, monkeypatch):
     """Council C-07, and the worst defect found in the whole audit. `_jsonable` returned the
     object unchanged at its last line, leaving `str()` to the record's `default=str` — which

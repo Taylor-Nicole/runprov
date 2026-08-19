@@ -1787,11 +1787,23 @@ class Run:
         # first commit, and a pin reading "commit: None" is a value a reader has to
         # interpret. Say what it means: there is no commit to name.
         commit = code["git_commit_short"] or "NONE — no commit to name (yet)"
+        # EVERY INTERPOLATED FIELD IS ESCAPED, not only the filenames. `_safe_for_pin` was
+        # applied to input names alone, and the other three fields are caller- or
+        # environment-supplied text: `script` is the `Run(...)` name, `generation` comes from
+        # `RUNPROV_GENERATION`, and `commit` from `git`. Measured 2026-08-19:
+        #
+        #   RUNPROV_GENERATION=$'v1\n#     0000000000000000  NEVER_READ.tsv' python step.py
+        #
+        # produced a pin listing an input nobody read, and `verify` then reported GONE and
+        # exited 1 forever over a file that never existed -- a permanently red check, which
+        # is the failure this package cites more than any other. A scheduler that puts a job
+        # description into that variable is not attacking anyone; it is the ordinary way for
+        # this to happen.
         lines = [
             f"{c}provenance — this artifact and what produced it",
-            f"{c}  script     : {self.record['script']}",
-            f"{c}  generation : {self.record['generation']}",
-            f"{c}  commit     : {commit}"
+            f"{c}  script     : {self._safe_for_pin(str(self.record['script']))}",
+            f"{c}  generation : {self._safe_for_pin(str(self.record['generation']))}",
+            f"{c}  commit     : {self._safe_for_pin(str(commit))}"
             + (
                 "  (CODE DIRTY — the commit does not identify what ran)"
                 if code["git_code_dirty"]

@@ -47,8 +47,16 @@ Stated plainly, because "it is only provenance" is not an argument:
   job.
 * **The embedded pin is not a signature.** It states what a run read and wrote. It proves
   nothing about *who* ran it and is not tamper-evident against someone who can edit the
-  artifact. Filenames reaching a pin are escaped so that a crafted name cannot forge a line
-  in it, which is a correctness property, not an authentication one.
+  artifact. **Every field the pin interpolates is escaped** — the script name, the generation,
+  the commit and the input filenames — so that text carrying a newline cannot forge an entry
+  in it. That is a correctness property, not an authentication one: it stops a job description
+  in `RUNPROV_GENERATION` from producing a pin that lists an input nobody read, which is how
+  this actually happens. It does not stop anyone who can edit the artifact.
+
+  Until 2026-08-19 the escaping covered the filenames ALONE, and this sentence said so in a
+  way that read as a general claim. It was not one: `RUNPROV_GENERATION` containing a newline
+  forged a pin entry, and `runprov verify` then reported `GONE` and exited 1 forever over a
+  file that never existed.
 * **`content_digest` ignores some differences on purpose** — line endings, archive member
   timestamps, volatile build stamps. `sha256` is recorded beside it and preserves the exact
   bytes. Anything checking file integrity should use `sha256`.
