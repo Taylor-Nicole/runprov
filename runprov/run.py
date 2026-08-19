@@ -48,6 +48,7 @@ import weakref
 from ._report import diagnostic, summary
 from .environment import archive_lockfiles, lockfiles, manager, write_snapshot
 from .hashing import (
+    PIN_ANCHOR,
     PIN_SIDECAR_SUFFIX,
     describe,
     moved_since,
@@ -2009,7 +2010,7 @@ class Run:
         # description into that variable is not attacking anyone; it is the ordinary way for
         # this to happen.
         lines = [
-            f"{c}provenance — this artifact and what produced it",
+            f"{c}{PIN_ANCHOR}",
             f"{c}  script     : {self._safe_for_pin(str(self.record['script']))}",
             f"{c}  generation : {self._safe_for_pin(str(self.record['generation']))}",
             f"{c}  commit     : {self._safe_for_pin(str(commit))}"

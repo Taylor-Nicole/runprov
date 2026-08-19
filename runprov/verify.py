@@ -45,12 +45,7 @@ import pathlib
 import re
 import typing
 
-from .hashing import PIN_DIGEST_CHARS, PIN_SIDECAR_SUFFIX, describe, pin_digest
-
-# The first line of every pin, and the only thing that identifies one. Matched as a
-# SUBSTRING so the caller's comment marker -- `# `, `## `, `; `, whatever the format needs
-# -- is whatever precedes it on that line, rather than something this reader has to know.
-ANCHOR = "provenance — this artifact and what produced it"
+from .hashing import PIN_ANCHOR, PIN_DIGEST_CHARS, PIN_SIDECAR_SUFFIX, describe, pin_digest
 
 # Pins are written at the top of an artifact (`open_output` writes the header first), so
 # reading the whole file to find one would mean reading every byte of a 50 GB BAM to learn
@@ -197,7 +192,7 @@ def read_pins(path: pathlib.Path) -> list[dict[str, typing.Any]]:
     lines = head.splitlines()
     blocks: list[dict[str, typing.Any]] = []
     for start, anchored in enumerate(lines):
-        if ANCHOR not in anchored:
+        if PIN_ANCHOR not in anchored:
             continue
         # A PINNED ARTIFACT DECLARES ITSELF AT THE TOP; a file that merely MENTIONS the
         # format is not an artifact. Without this the anchor was matched anywhere in the
@@ -214,10 +209,10 @@ def read_pins(path: pathlib.Path) -> list[dict[str, typing.Any]]:
         # transitivity comes from -- it just cannot be the one that makes the file count.
         if not blocks and start >= PIN_STARTS_WITHIN:
             continue
-        marker = anchored[: anchored.index(ANCHOR)]
+        marker = anchored[: anchored.index(PIN_ANCHOR)]
         pin: dict[str, typing.Any] = {"entries": [], "declared": None, "fields": {}}
         for line in lines[start + 1 :]:
-            if not line.startswith(marker) or ANCHOR in line:
+            if not line.startswith(marker) or PIN_ANCHOR in line:
                 break
             body = line[len(marker) :]
             if (m := _ENTRY.match(body)) is not None:
