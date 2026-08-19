@@ -1572,35 +1572,39 @@ environments rather than implying them.
 
 | | state |
 |---|---|
-| CPython 3.10.12, 3.11.1, 3.12.13, 3.13.15 on Linux | **run in full**, 2026-08-19 |
-| macOS | **never run.** In the CI matrix; unverified |
-| Windows | **never run.** In the CI matrix; 22 tests skip there by construction (see below), so even a green job would verify less than the others |
-| GitHub Actions workflows themselves | **never executed successfully** — see below |
+| CPython 3.10.12, 3.11.1, 3.12.13, 3.13.15 on Linux | **run in full on today's tree**, 2026-08-19 |
+| macOS 3.12 | **run once and green** — 2026-08-12, run `31592997325`, commit `dec57fe6` |
+| Windows 3.12 | **run once and green** — same run; it skipped 9 of 288 collected there |
+| the full matrix on **today's** tree | **not run.** 93 commits have landed since `dec57fe6` |
 
-**The CI matrix is a definition, not a result.** Every workflow run on this repository has
-failed, and 59 of the 60 failed *before starting a job*: GitHub bills Actions minutes for
-private repositories, and the account's billing has been failing. The workflow file lists
-3.10–3.13, macOS and Windows; that list has never produced an answer. Making the repository
-public removes the billing constraint for standard runners and is the one action that turns
-this table green.
+**The matrix has run, and the honest gap is that it has not run recently.** Over 140 workflow
+runs to 2026-08-19: **34 successful** (2026-08-07 to 2026-08-12), 101 failed, 5 cancelled. The
+last fully green run was `31592997325` at `dec57fe6`, where every leg passed — lint, build, and
+all six test legs including macOS and Windows, the latter exercising the `msvcrt` locking
+fallback that exists for it.
 
-**One run did execute**, on 2026-08-13, before the billing lapsed — and it was worth the
-whole exercise. It found a real failure on Python 3.13 that no local run could see: CPython
-3.13 changed `Path.resolve()` so a symlink loop **returns the path unchanged** instead of
-raising `RuntimeError`. Four tests asserted that exception as their premise. The package
-itself was correct on 3.13 — the run survives, the path pins as external — but the premise
-was version-specific, and it is now expressed as one that is true on every version.
+Since **2026-08-13** every run has failed, and almost all of them died before a runner started:
+GitHub bills Actions minutes for private repositories and this account's billing is failing. So
+the matrix has not seen `show`, `exec`, `verify`, the transformation-log sink, or the CPython
+3.13 `resolve()` fix — 93 commits' worth. Making the repository public removes the billing
+constraint for standard runners, and is the one action that closes this.
 
-That is the honest summary of this section: the gaps above are real, and the one time a gap
-was closed, it found something.
+> An earlier version of this section said CI had **never** run and that all 60 runs had failed.
+> That was wrong, and how it was wrong is worth keeping: the check used `gh run list --limit 60`,
+> which returned the 60 most recent runs — all of them the billing failures from 2026-08-13
+> onward — and the window was reported as the whole history. Measuring a window and stating it as
+> the total is the exact defect this package exists to catch, committed in the file that claims
+> the package catches it. Found by a pre-release review that re-ran the query without a limit.
 
 ## Tests
 
 `tests/test_runprov.py`, 530 tests, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
-There is **one** `unittest.mock` use in the whole suite (`tests/test_runprov.py:3534`), to
+There is **one** `unittest.mock` use in the whole suite — in
+`test_size_is_stat_ed_after_the_hash_not_before` — to
 assert a call ORDER that no returned value can show. Everything else is substituted by a real
-thing — 2,003 uses of `tmp_path`, actual files, actual JSONL, actual `Run` objects — or by a
+thing — 2,024 uses of `tmp_path` (`grep -oE '\btmp_path\b' tests/test_runprov.py | wc -l`), actual
+files, actual JSONL, actual `Run` objects — or by a
 narrow simulation of an environment this machine is not (`sys.platform` for Windows,
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
 stubs the subject to make it agree with the test.
@@ -1610,10 +1614,12 @@ Twenty-two of the 530 need something of the filesystem itself — a FIFO, a syml
 condition is a PROBE, not `sys.platform`: symlinks work on a Windows machine with Developer
 Mode enabled, and `chmod(0o000)` denies nothing to root, so a platform check both skipped
 tests that would have run and ran tests that could not fail. Asking the filesystem answers
-for the machine in front of you. The Windows leg therefore skips 22 more than any other
-and does not assert the coverage floor, which no leg but that one may lower.
+for the machine in front of you. The Windows leg therefore skips more than any other and does not assert the coverage
+floor, which no leg but that one may lower. (The count of 22 is derived from this machine; the one
+real Windows run skipped 9 of 288, at a commit 93 behind. Take the number from the job log
+once the matrix is green on today's tree.)
 
-Coverage is **100%** of 2,149 statements **and 772 branches**, and the gate is set there with
+Coverage is **100%** of 2,151 statements **and 772 branches**, and the gate is set there with
 `--cov-branch`. The branch half was added 2026-08-11 and was not decoration: statement
 coverage read 100% while five conditions had never been evaluated both ways — including the
 `with` block that records nothing, which is a *known* documented gap that no test held. Each

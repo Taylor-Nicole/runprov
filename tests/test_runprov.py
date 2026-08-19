@@ -2387,6 +2387,15 @@ def test_the_internal_drafts_are_not_packaged_and_not_linked():
     Checked against the include LIST rather than a built tarball, so it costs nothing and
     fails in the same run that introduces it; `ci.py build` unpacks the real sdist and checks
     the other direction — that everything named IS present."""
+    # AN UNPACKED SDIST IS NOT THE REPOSITORY, and the guard below assumes it is. `PKG-INFO`
+    # sits at the sdist root and never in the repo, so it is the one reliable way to tell them
+    # apart. Without this the suite the TARBALL SHIPS fails on its own tests — for exactly the
+    # audience the sdist exists for, a packager who runs them — and neither `ci.py build` nor
+    # the release workflow could see it, because nothing ran the shipped suite from the
+    # tarball. Found by the pre-release council; introduced by the L-08 exclusion itself.
+    if (_repo_root() / "PKG-INFO").is_file():  # pragma: no cover - only true inside an sdist
+        pytest.skip("unpacked sdist: these files are excluded from it by design")
+
     pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
     sdist = pyproject[pyproject.index("[tool.hatch.build.targets.sdist]") :]
     include = sdist[sdist.index("include = [") : sdist.index("]", sdist.index("include = ["))]
