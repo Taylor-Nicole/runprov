@@ -350,6 +350,17 @@ class Project:
     # person opens beside an artifact. Written from the same record in the same call, so
     # they cannot drift. False writes only the JSON.
     write_yaml_sidecar: bool = True
+    # NOTICE READS THAT BYPASSED REGISTRATION, and say so at the end of the run. On by
+    # default, because a record that looks complete while being incomplete is worse than an
+    # obviously missing one, and because silence here is what let the predecessor's log be
+    # trusted for four years. See `watch.py` for what it can and cannot see -- in short, it
+    # sees a run that forgot to register a read, and it can never see a script that does not
+    # import this package at all.
+    #
+    # Set False for a step that deliberately reads files it does not want recorded. The
+    # finding lands in the record as `unregistered_reads` as well as on stderr, because a
+    # warning is ephemeral and a field is checkable three years later.
+    warn_unregistered_reads: bool = True
     # Where full environment snapshots go. None disables them; `environment.packages` in
     # each record still carries the tracked subset. Opt-in because a snapshot is only
     # worth writing where someone will look for it, and content-addressed so enabling it
