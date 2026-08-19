@@ -837,7 +837,18 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     lg = sub.add_parser("log", help="read the continuous run history")
     lg.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
-    lg.add_argument("--format", choices=("timeline", "yaml", "jsonl"), default="timeline")
+    # `text` IS THE HUMAN FORMAT ON EVERY SUBCOMMAND. It was spelled `timeline` here and
+    # `text` on `show`, `verify` and `lineage`, so `--format text` -- learned on any one of
+    # those -- was a hard ERROR here, and no format name at all was accepted by all four.
+    # `timeline` stays accepted so nothing that works today stops working, and `metavar`
+    # hides it so there is one name to learn. The renderer already treats anything that is
+    # not `yaml` or `jsonl` as the human format, which is why this is the whole change.
+    lg.add_argument(
+        "--format",
+        choices=("text", "timeline", "yaml", "jsonl"),
+        default="text",
+        metavar="{text,yaml,jsonl}",
+    )
     lg.add_argument("--limit", type=int, default=0, help="show only the last N runs")
     lg.add_argument("--script", default="", help="filter by script name")
     lg.add_argument("--run-id", default="", help="filter by run id")
