@@ -1834,9 +1834,31 @@ class Run:
     def _environment_snapshot(
         self, directory: str | pathlib.Path | None = None
     ) -> dict[str, typing.Any] | None:
-        """The work, unguarded. See `environment_snapshot` for what it does and why."""
+        """The work, unguarded. See `environment_snapshot` for what it does and why.
+
+        THE UNCONFIGURED BRANCH BELOW IS ONLY EVER REACHED BY AN EXPLICIT CALL. `write()`
+        tests `env_snapshot_dir is not None` before calling, so the automatic path cannot land
+        there. A first version of this carried an `explicit=` flag to tell the two apart;
+        mutation could not distinguish it from its absence, which is this project's standing
+        signal that a parameter is decoration.
+        """
         d = directory or self.project.env_snapshot_dir
         if d is None:
+            # "WE LOOKED AND IT WAS NOT THERE" IS A FACT ABOUT THE RUN; SILENCE IS NOT.
+            # That is `tool()`'s rule, ten methods up, and it applies here for the same
+            # reason: an explicit call is unambiguous about what the caller wanted, and
+            # returning None while recording nothing left them with a record that cannot be
+            # told apart from one where nobody asked. `dict | None` nudges a mypy user, but
+            # only one who checks the result.
+            self.record["environment"]["snapshot_requested"] = {
+                "written": False,
+                "reason": "no env_snapshot_dir is configured, and none was passed",
+            }
+            diagnostic(
+                "  NO ENVIRONMENT SNAPSHOT: environment_snapshot() was called, but no "
+                "directory is configured and none was given, so nothing was written. Set "
+                "`configure(env_snapshot_dir=...)` or pass a directory."
+            )
             return None
         try:
             rec = write_snapshot(pathlib.Path(d))

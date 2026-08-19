@@ -2352,6 +2352,62 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
     assert "declared.tsv" not in out.read_text(encoding="utf-8")
 
 
+def test_an_unhonoured_snapshot_request_is_recorded_not_swallowed(tmp_path, monkeypatch, capsys):
+    """Council C-22. `environment_snapshot()` returned None, recorded nothing and warned
+    nothing when no directory was configured — while the caller was unambiguously asking for a
+    snapshot.
+
+    `tool()`, ten methods up in the same file, states the governing principle: "A tool that is
+    NOT found is recorded with `found: false` rather than omitted. 'We looked and it was not
+    there' is a fact about the run; silence is not." The same argument applies to a request
+    that could not be honoured, and silence left a record indistinguishable from one where
+    nobody asked."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")  # no env_snapshot_dir
+
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        assert run.environment_snapshot() is None, "the return contract is unchanged"
+    err = capsys.readouterr().err
+
+    asked = run.record["environment"]["snapshot_requested"]
+    assert asked["written"] is False
+    assert "env_snapshot_dir" in asked["reason"], "and the record says WHY, not just that"
+    assert "NO ENVIRONMENT SNAPSHOT" in err
+    assert "configure(env_snapshot_dir=" in err, "the warning must name the fix"
+
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["environment"]["snapshot_requested"]["written"] is False, "and it reaches disk"
+
+
+def test_a_run_nobody_asked_records_no_snapshot_request(tmp_path, monkeypatch, capsys):
+    """The half that keeps it usable. `write()` takes the automatic path only when a directory
+    IS configured, so it can never meet the unconfigured case — and a run where nobody asked
+    for a snapshot must say nothing about snapshots at all. Omitted, not defaulted, like every
+    other optional field in the record."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.note("a", 1)
+
+    assert "snapshot_requested" not in run.record["environment"]
+    assert "NO ENVIRONMENT SNAPSHOT" not in capsys.readouterr().err
+
+
+def test_a_snapshot_that_can_be_written_is_not_reported_as_refused(tmp_path, monkeypatch, capsys):
+    """And the configured case must be untouched: the request is honoured, so there is no
+    unhonoured request to record."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(
+        root=tmp_path, run_log=tmp_path / "h.jsonl", env_snapshot_dir=tmp_path / "envs"
+    )
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        got = run.environment_snapshot()
+
+    assert got is not None and "snapshot" in run.record["environment"]
+    assert "snapshot_requested" not in run.record["environment"]
+    assert "NO ENVIRONMENT SNAPSHOT" not in capsys.readouterr().err
+
+
 def test_project_fields_are_keyword_only(tmp_path):
     """Council C-21. `Project` is a frozen dataclass with 16 fields and, without
     `kw_only=True`, it accepted POSITIONAL arguments — so field order would become API the day
