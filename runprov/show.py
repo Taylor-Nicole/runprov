@@ -693,6 +693,11 @@ def render_project_lines(
 #: with an uncaught `RecursionError` -- measured, fine at 900 and dead at 1,000.
 YAML_MAX_DEPTH = 100
 
+#: Emitted when even flow style cannot be rendered — the record is deeper than this
+#: interpreter's remaining stack, not deeper than any rule of ours. Says what is missing and
+#: why, because a reader that stops has to say so; silence is what the predecessor log did.
+YAML_TOO_DEEP = "<nested too deep for this interpreter to render>"
+
 
 def to_yaml(obj: object, indent: int = 0) -> str:
     """A nested structure as YAML, with EVERY scalar quoted.
@@ -717,7 +722,28 @@ def to_yaml(obj: object, indent: int = 0) -> str:
     is where it earns its place.
     """
     if indent > YAML_MAX_DEPTH:
-        return "  " * indent + _scalar(json.dumps(obj, default=str)) + "\n"
+        try:
+            return "  " * indent + _scalar(json.dumps(obj, default=str)) + "\n"
+        except RecursionError:  # pragma: no cover - see below; unreachable on CPython 3.12
+            # THE FALLBACK NEEDS A FALLBACK, and this is not hypothetical: `json.dumps`
+            # recurses too, on a stack already YAML_MAX_DEPTH frames deep, so how much
+            # structure it can still take is a property of the INTERPRETER rather than of
+            # the record. Measured 2026-08-18: a 1,000-deep record renders on CPython 3.12
+            # and raises on 3.10, from the same code, at the same cap. The first version of
+            # this guard therefore only moved the RecursionError from `to_yaml` into
+            # `json.dumps` -- on the versions I had not run -- which is the same defect one
+            # frame further down and the same story as the log this package replaces: a
+            # READER narrower than the writer. `_jsonable` caps the writer at 100 levels
+            # with a marker and hands nothing on, so it is total on every version; this
+            # makes the reader total too.
+            #
+            # NOT COVERED ON 3.12, and the pragma is a measurement rather than a shrug: that
+            # version's C encoder does not consume PYTHON frames, so `json.dumps` renders a
+            # 5,000-deep structure even with a 60-frame budget and this branch cannot be
+            # reached there by any means short of exhausting the C stack, which would crash
+            # rather than raise. It IS reached on 3.10 and 3.11 -- both named by
+            # `requires-python` -- and the test asserts it there and skips elsewhere.
+            return "  " * indent + _scalar(YAML_TOO_DEEP) + "\n"
     pad = "  " * indent
     if isinstance(obj, dict):
         if not obj:

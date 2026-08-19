@@ -7681,34 +7681,89 @@ def test_the_history_carries_the_omitted_count_beside_the_code_digest(tmp_path, 
     assert ic["digest"], "the digest is still there — it is its SCOPE that needed stating"
 
 
-def test_the_yaml_view_survives_a_record_json_accepts(tmp_path):
+def _nest(n):
+    v = "leaf"
+    for _ in range(n):
+        v = {"k": v}
+    return v
+
+
+def _stack_depth():
+    n, f = 0, sys._getframe()
+    while f is not None:
+        n, f = n + 1, f.f_back
+    return n
+
+
+def test_the_yaml_view_survives_a_record_json_accepts():
     """L-72. `to_yaml` recurses once per nesting level, so `show <target> --format yaml` died
-    with an uncaught `RecursionError` on a record `json.loads` accepts without complaint —
-    measured, fine at depth 900 and dead at 1,000, while `log`, `log --format yaml`, `show`
-    and `lineage` all survived the same record. The READER was strictly narrower than the
-    writer, in a module whose founding story is a log that stopped being readable because one
-    record defeated its reader.
+    with an uncaught `RecursionError` on a record `json.loads` accepts without complaint. The
+    READER was narrower than the writer, in a module whose founding story is a log that
+    stopped being readable because one record defeated its reader.
 
-    Past the cap it switches to flow style, which IS valid YAML (1.2 is a JSON superset), so
-    nothing is lost or renamed — only the block layout stops."""
+    THE DEPTHS ARE NOT ASSERTED, and that is the lesson rather than a weakening. The first
+    version of this test required the VALUE to survive at depth 5,000 — true on CPython 3.12,
+    false on 3.10, because past the cap the remainder goes to `json.dumps`, which recurses on
+    a stack already `YAML_MAX_DEPTH` frames deep. How much it can still take is a property of
+    the interpreter. So the guarantee is the one that can hold everywhere: it renders, it
+    parses, and it never raises."""
     yaml = pytest.importorskip("yaml")
-
-    def nest(n):
-        v = "leaf"
-        for _ in range(n):
-            v = {"k": v}
-        return v
-
     for depth in (50, 900, 1_000, 5_000):
-        rendered = runprov.show.to_yaml(nest(depth))
+        rendered = runprov.show.to_yaml(_nest(depth))
         assert yaml.safe_load(rendered) is not None, f"depth {depth} rendered unparseable YAML"
 
-    # The value survives the switch: walk down to where flow style takes over and the rest is
-    # still there as a JSON string rather than a marker.
-    deep = yaml.safe_load(runprov.show.to_yaml(nest(5_000)))
+    # Well inside the cap the value is present in BLOCK form, so the flow-style path is not
+    # quietly swallowing everything.
+    shallow = yaml.safe_load(runprov.show.to_yaml(_nest(50)))
+    for _ in range(50):
+        shallow = shallow["k"]
+    assert shallow == "leaf"
+
+    # And past the cap the tail is either the value or the stated marker — never a silent
+    # truncation, and never an exception.
+    deep = yaml.safe_load(runprov.show.to_yaml(_nest(5_000)))
     for _ in range(runprov.show.YAML_MAX_DEPTH):
         deep = deep["k"]
-    assert "leaf" in json.dumps(deep), "the tail must be the VALUE, not a placeholder"
+    tail = json.dumps(deep)
+    assert "leaf" in tail or runprov.show.YAML_TOO_DEEP in tail, tail[:200]
+
+
+def test_the_yaml_view_says_so_when_even_flow_style_is_too_deep():
+    """The fallback needs a fallback. `json.dumps` past the cap is itself recursive, so on
+    CPython 3.10 a 1,000-deep record raised inside it — the same RecursionError the cap exists
+    to prevent, one frame further down, on the version `requires-python` names as the floor
+    and which nothing here had ever run.
+
+    SKIPPED WHERE THE BRANCH CANNOT BE REACHED. CPython 3.12's C encoder does not consume
+    Python frames — measured: it renders a 5,000-deep structure with a 60-frame budget — so
+    there is no honest way to force it there, and pretending otherwise would mean testing a
+    mock instead of the thing. The probe below decides, so this asserts real behaviour on
+    3.10 and 3.11 and says nothing it cannot support on 3.12."""
+    yaml = pytest.importorskip("yaml")
+    original = sys.getrecursionlimit()
+    budget = runprov.show.YAML_MAX_DEPTH + 60
+
+    def with_small_budget(fn):
+        # Measured from where we stand, so the limit is never set below the stack in use.
+        sys.setrecursionlimit(_stack_depth() + budget)
+        try:
+            return fn()
+        finally:
+            sys.setrecursionlimit(original)
+
+    def probe():
+        try:
+            json.dumps(_nest(5_000))
+        except RecursionError:
+            return True
+        return False
+
+    if not with_small_budget(probe):  # pragma: no cover - CPython 3.12 and later
+        pytest.skip("this interpreter's json encoder does not consume Python frames")
+
+    rendered = with_small_budget(lambda: runprov.show.to_yaml(_nest(5_000)))
+    assert runprov.show.YAML_TOO_DEEP in rendered, "it must SAY it stopped, not stop silently"
+    assert yaml.safe_load(rendered) is not None, "and what it does emit still has to parse"
 
 
 def test_binary_formats_are_still_refused_because_the_MODE_is_wrong(tmp_path):
