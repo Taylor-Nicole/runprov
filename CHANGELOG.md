@@ -268,6 +268,24 @@ Nothing has been published yet. Everything below is what a first release would c
   the run it described; a corrupt gzip escaped `content_digest`; and a `.gz` rewritten from
   identical bytes never hashed the same twice.
 
+### Named before anyone depended on it
+
+Nothing here is a rename to a user, because there are no users yet. It is written down
+because these were the last names to settle and the reasoning belongs with the release:
+
+- `run.write_json()` is **`run.output_json()`**. It shared a verb with `write()`, which
+  writes the provenance record rather than your data; `output`, `open_output` and
+  `output_json` now all mean "your data" and `write` alone means "the record".
+- `show.to_yaml()` is **`show.render_yaml()`**, so there is one obvious name and not two
+  reachable functions with the same one.
+- `--format timeline` is **`--format text`** on every subcommand, spelled the same way
+  everywhere. `timeline` still works and renders the identical bytes; it is simply not
+  advertised.
+- `__all__` is **22 names, down from 27**. `VOLATILE`, `VOLATILE_JSON`, `PIN_UNSAFE`,
+  `default_run_id` and `default_generation` left the public surface — the first three are
+  mechanism, the last two are defaults `Project` already supplies. All five still exist on
+  their own modules (`runprov.run.PIN_UNSAFE`, and so on); they are no longer promises.
+
 ### Known and deliberate
 
 - **Line endings are not content.** `content_digest` ignores a trailing newline and CRLF vs

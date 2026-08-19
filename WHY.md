@@ -155,7 +155,7 @@ it is most of the answer to "why did this run differ".
   Most of the alternatives ask you to run a daemon, adopt a workflow engine, or restructure
   your pipeline. This one asks you to change `open(p)` to `open(run.input(p))`.
 
-  Zero runtime dependencies, and the quickstart uses two of the 27 exported names. On size,
+  Zero runtime dependencies, and the quickstart uses two of the 22 exported names. On size,
   the honest figure is where the statements sit rather than the total: **1,371 record**
   (`run`, `hashing`, `project`, `sinks`, `environment`, `terminal`) and **778 read the record
   back** (`show`, `__main__`, `verify`). Adopting it costs you the first number; the second is
