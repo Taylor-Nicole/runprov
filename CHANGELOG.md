@@ -282,8 +282,13 @@ Nothing has been published yet. Everything below is what a first release would c
 530 tests, 100% statement *and* branch coverage.
 
 **Run in full on CPython 3.10.12, 3.11.1, 3.12.13 and 3.13.15**, on Linux, 2026-08-19.
-**macOS and Windows have never been run**; they are in the CI matrix, which has never
-produced a result — see README, *What has actually been run*.
+**macOS 3.12 and Windows 3.12 ran green once**, on 2026-08-12 (run `31592997325`, commit
+`dec57fe6`) — but 93 commits have landed since, so the matrix has not seen `show`, `exec`,
+`verify`, the transformation-log sink or the 3.13 fix. Every run since 2026-08-13 has failed
+before a runner started, on Actions minutes billed for a private repository. A previous version
+of this paragraph said CI had never run at all; that was measured with `gh run list --limit 60`,
+which showed only the recent billing failures — a window reported as the whole. See README,
+*What has actually been run*.
 
 Widening from one interpreter to four found two defects a 3.12-only gate could not, and both
 are the same shape: a test asserting something true of the interpreter rather than of the

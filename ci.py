@@ -267,6 +267,15 @@ def build() -> None:
         vpy = venv / ("Scripts" if sys.platform == "win32" else "bin") / "python"
         run(str(vpy), "-m", "pip", "install", "--quiet", str(next(out.glob("*.whl"))))
         run(str(vpy), "-c", "import runprov; print('sdist ok', runprov.__version__)", cwd=Path(tmp))
+        # AND RUN THE SUITE THE TARBALL SHIPS, from the tarball. Everything above proves the
+        # sdist BUILDS and IMPORTS; nothing proved its tests pass, and the audience for an
+        # sdist is precisely the person who runs them -- a Debian, conda-forge, Nix or spack
+        # packager. That gap was not hypothetical: excluding PUBLISHING.md and LICENSING.md
+        # (correctly) left a test asserting they exist, so the shipped suite failed on its own
+        # tarball while every check here passed. Found by review, on a version that could
+        # never have been re-uploaded.
+        run(str(vpy), "-m", "pip", "install", "--quiet", "pytest", "pyyaml")
+        run(str(vpy), "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests/", cwd=unpacked)
 
 
 def setup() -> None:

@@ -6,11 +6,22 @@ requires = ["hatchling>=1.27,<2"]  # 1.26.3 SILENTLY emits Metadata-Version 2.3 
                                 #
                                 # UPPER BOUND, because this backend decides the
                                 # Metadata-Version and that is a compatibility
-                                # surface, not a detail: 1.32.0 emits 2.5, which
-                                # pkginfo below 1.11 reads as `name = None` --
-                                # measured. An unbounded requirement lets a
-                                # future major pick that for us on tag day, in a
-                                # build that cannot be re-uploaded.
+                                # surface, not a detail. An unbounded requirement
+                                # lets a future major pick one for us on tag day,
+                                # in a build that cannot be re-uploaded.
+                                #
+                                # WE BUILD WITH 1.32.0 TODAY, and it emits
+                                # Metadata-Version 2.5 -- inside this bound, and
+                                # the comment here used to read as if 2.5 were the
+                                # thing being excluded, which is the opposite of
+                                # what the tree does. 2.5 is fine and was checked
+                                # rather than assumed: PyPI serves hatchling's own
+                                # 1.32.0 wheel with Metadata-Version 2.5, and
+                                # `twine check --strict` passes both artifacts. The
+                                # hazard the bound guards is a FUTURE 2.x, not this.
+                                # (Old pkginfo <1.11 misreads 2.5 as `name = None`;
+                                # that is a consumer-side bug, not a reason to emit
+                                # older metadata.)
 build-backend = "hatchling.build"
 
 [project]
@@ -103,7 +114,7 @@ addopts = "-q"
 # for. The gate is not weakened: `ci.py test` passes the same flags, and CI calls ci.py.
 testpaths = ["tests"]
 
-# 100, and it is reachable here: the package is 2,149 statements and 772 branches with no I/O
+# 100, and it is reachable here: the package is 2,151 statements and 772 branches with no I/O
 # it cannot fake. 100 is the only threshold that does not need defending -- any other number
 # is an argument about which lines deserve a test, held once and then never revisited. The
 # earlier 80 was set because the suite achieved 85.68; that is the wrong direction of
