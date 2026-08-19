@@ -2352,6 +2352,83 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
     assert "declared.tsv" not in out.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    "call",
+    ["note", "seeds", "output", "input", "tool", "code", "module", "terminal_log"],
+)
+def test_recording_after_the_block_is_refused_not_swallowed(tmp_path, monkeypatch, call):
+    """Council C-18. Everything called after `__exit__` was accepted, mutated `run.record`,
+    returned normally and reached no file — silently. Measured: `note`, `seeds`, `output` and
+    `input` after the block left the live record holding values the sidecar and history did
+    not, with not one word said.
+
+    It matters more than "do not do that", because THIS PACKAGE'S OWN DOCS send callers out
+    here: `to_yaml`'s docstring says "AFTER the block, deliberately" and shows
+    `MANIFEST.write_text(runprov.to_yaml(run.record))`. A reader taught the object is live
+    after the block will reasonably call `run.note(...)` too.
+
+    Parametrised across every recording method, because guarding some and not others is how
+    this survives a fix."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "f.txt").write_text("x\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        pass
+
+    attempt = {
+        "note": lambda: run.note("late", 1),
+        "seeds": lambda: run.seeds([7]),
+        "output": lambda: run.output(tmp_path / "late.txt"),
+        "input": lambda: run.input(tmp_path / "f.txt"),
+        "tool": lambda: run.tool("ls"),
+        "code": lambda: run.code(tmp_path / "f.txt"),
+        "module": lambda: run.module(runprov),
+        "terminal_log": lambda: run.terminal_log(tmp_path / "f.txt"),
+    }[call]
+
+    with pytest.raises(RuntimeError, match="after the `with` block closed"):
+        attempt()
+
+
+def test_reading_the_record_after_the_block_is_still_the_documented_shape(tmp_path, monkeypatch):
+    """The other half, and the reason this refuses RECORDING rather than all access: the docs
+    hand the reader `runprov.to_yaml(run.record)` after the block on purpose. Breaking that
+    to fix the silent loss would trade one defect for another."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.note("inside", "yes")
+
+    assert run.record["notes"] == {"inside": "yes"}, "the record is readable out here"
+    rendered = runprov.to_yaml(run.record)
+    assert "inside" in rendered, "and renderable, which is what the docstring demonstrates"
+
+
+def test_a_late_write_cannot_make_the_sidecar_and_the_history_disagree(tmp_path, monkeypatch):
+    """Council C-18, second half. `write()` after the block re-persists the SIDECAR while the
+    history line, already appended, is not corrected — so one `run_uid` had two persisted
+    records disagreeing about notes, seeds and outputs. That breaks the invariant `to_yaml`'s
+    own docstring states: "Two renderings of the same record must not disagree, which is the
+    whole claim here."
+
+    Fixed at the root rather than patched: if nothing can CHANGE the record after exit, a
+    later `write()` re-persists an identical one and the two files agree by construction.
+    `write()` itself stays legal — the manual shape depends on it."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.note("inside", "yes")
+
+    run.write(tmp_path / "p.json")  # legal, and must now be a no-op in content terms
+
+    side = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    hist = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
+    assert side["run_uid"] == hist["run_uid"], "the premise: one run, two persisted records"
+    for field in ("notes", "seeds"):
+        assert side[field] == hist[field], f"{field} disagree: {side[field]} vs {hist[field]}"
+    assert len(side["outputs"]) == len(hist["outputs"])
+
+
 def test_a_run_refuses_to_be_entered_twice(tmp_path, monkeypatch):
     """Council C-17. Re-entering the same `Run` was allowed and recorded only the first pass:
     two blocks, ONE history line, and the second block's output left on disk with nothing
@@ -11996,3 +12073,51 @@ def test_log_counts_a_torn_line_it_streamed_past(tmp_path, capsys):
     assert len(seen.out.strip().splitlines()) == 2, "the two good records still render"
     assert "2 of 2 run(s)" in seen.err
     assert "1 unreadable line(s) skipped" in seen.err
+
+
+def test_our_own_teardown_is_not_refused_by_the_after_exit_guard(tmp_path, monkeypatch):
+    """The after-exit guard fired on `__exit__`'s OWN calls and the record was never written.
+
+    `_in_context` is already False by the time `_finish` runs -- deliberately, because
+    `_note_unregistered_reads` relies on it to avoid hashing every first-party file twice --
+    so a guard reading `_in_context` alone cannot tell our teardown from a caller reaching in
+    after the block. `_finish` -> `write` -> `environment_snapshot` and
+    `_record_imported_code` -> `code` are all guarded methods called from `__exit__`.
+
+    Measured: runs.jsonl did not exist at all, and the only trace was a WARNING on stderr.
+    The mechanism for refusing a call that reaches no file became the reason nothing reached
+    a file.
+    """
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=log, env_snapshot_dir=tmp_path / "envs")
+    with runprov.Run("s", provenance=tmp_path / "p.json"):
+        pass
+
+    assert log.is_file(), "the history line was never written"
+    line = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert line["environment_snapshot"]["path"].endswith(".txt")
+    assert (tmp_path / "p.json").is_file()
+
+
+def test_the_guard_window_closes_even_if_finish_raises(tmp_path, monkeypatch):
+    """`_finalizing` is cleared in a `finally`.
+
+    If a raising `_finish` left the window open, every later call would be treated as ours,
+    accepted, and would silently reach no file -- the exact defect the guard exists to
+    prevent, re-created by its own escape hatch.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    run = runprov.Run("s", provenance=tmp_path / "p.json")
+
+    def boom(self):
+        raise RuntimeError("finish failed")
+
+    monkeypatch.setattr(type(run), "_finish", boom)
+    with run:
+        pass
+
+    assert run._finalizing is False, "a raising _finish left the guard window open"
+    with pytest.raises(RuntimeError, match="after the `with` block closed"):
+        run.note("late", 1)
