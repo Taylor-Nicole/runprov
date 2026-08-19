@@ -2154,7 +2154,13 @@ class Run:
         self._written = True
         if not self._wrote(p):  # so __exit__ can correct THIS file, kwarg or not
             self._written_paths.append(p)
-        self._persist(p)  # never raises; a sidecar failure must not lose the history
+        # THE RETURN VALUE IS USED, not decorative. `_persist`'s own docstring says the bool
+        # means "the record is on disk", and discarding it made the confirmation below print
+        # `provenance -> <path>` over a file that was never written -- measured with a
+        # read-only sidecar directory: the WARNING fired, the confirmation followed it, and
+        # `write()` returned a path to a file that does not exist. A wrapper parsing that
+        # line, or a caller archiving the returned path, is handed something absent.
+        wrote = self._persist(p)  # never raises; a sidecar failure must not lose the history
         if self._in_context and not already:
             self._deferred_history = p  # see __init__; __exit__ appends it once
         elif already:
@@ -2175,7 +2181,12 @@ class Run:
         # these two lines is also in the sidecar this line names, which is why this is the
         # one message RUNPROV_QUIET may hide.
         summary(
-            f"provenance -> {p}",
+            f"provenance -> {p}"
+            if wrote
+            # NOT the confirmation, because there is nothing to confirm. The run is not lost:
+            # the history line below is written by a different path and normally survives a
+            # sidecar failure, so say which half exists rather than implying both do.
+            else f"provenance NOT WRITTEN (see the warning above) -> {p}",
             # The HISTORY path, not only the sidecar. Printing the sidecar and never this
             # is what made a split history invisible from the terminal.
             f"  history -> {self.record['history']['destination']}\n"

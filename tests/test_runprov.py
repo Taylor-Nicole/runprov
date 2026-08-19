@@ -2352,6 +2352,66 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
     assert "declared.tsv" not in out.read_text(encoding="utf-8")
 
 
+@requires_unreadable_files
+def test_write_does_not_confirm_a_sidecar_it_could_not_write(tmp_path, monkeypatch, capsys):
+    """Council C-16. `write()` called `_persist(p)` and DISCARDED the bool that `_persist`'s
+    own docstring says means "the record is on disk", then printed `provenance -> <path>`
+    unconditionally. Measured with a read-only sidecar directory: the warning fired, the
+    confirmation followed it, and `write()` returned a path to a file that does not exist.
+
+    Not fully silent — the warning does precede it — but a wrapper parsing the
+    `provenance -> ` line, or a caller archiving the returned path, is handed something
+    absent. And the run is NOT lost: the history is written by a different path, so the
+    message names which half exists instead of implying both do."""
+    monkeypatch.chdir(tmp_path)
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+
+    # LOCKED BEFORE THE RUN STARTS. Locking it afterwards leaves the sidecar `__exit__`
+    # already wrote sitting there, and the test then asserts against a file that exists for
+    # an unrelated reason — which is how a test passes while proving nothing.
+    locked.chmod(0o500)  # readable, not writable
+    try:
+        run = runprov.Run("step", provenance=locked / "o.prov.json")
+        with run:
+            with run.open_output(tmp_path / "out.tsv") as fh:
+                fh.write("x\n")
+        capsys.readouterr()
+        returned = run.write(locked / "o.prov.json")
+        err = capsys.readouterr().err
+        exists = (locked / "o.prov.json").exists()
+    finally:
+        locked.chmod(0o700)
+
+    assert not exists, "the premise: the sidecar really is absent"
+    assert "could not write the provenance sidecar" in err, "the warning still fires"
+    assert "NOT WRITTEN" in err, "and the confirmation must not claim otherwise"
+    assert f"provenance -> {locked / 'o.prov.json'}" not in err, (
+        "the success line must not appear for a file that was never written"
+    )
+    # The history survives a sidecar failure, and that is worth knowing rather than guessing.
+    assert (tmp_path / "runs.jsonl").is_file()
+    assert returned == locked / "o.prov.json", "the return is still the path it tried"
+
+
+def test_write_still_confirms_a_sidecar_it_did_write(tmp_path, monkeypatch, capsys):
+    """The other half, and the one that keeps the fix honest: the ordinary path must still
+    read as a plain confirmation. A message that hedges on every run is no better than one
+    that lies on the rare one."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    run = runprov.Run("step", provenance=tmp_path / "o.prov.json")
+    with run:
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("x\n")
+
+    err = capsys.readouterr().err
+    assert f"provenance -> {tmp_path / 'o.prov.json'}" in err
+    assert "NOT WRITTEN" not in err
+    assert (tmp_path / "o.prov.json").is_file()
+
+
 def test_terminal_log_anchors_like_its_siblings(tmp_path, monkeypatch, capsys):
     """Council C-15. `terminal_log()` skipped `_anchor()`, so a relative path was resolved at
     `write()` time against the cwd the run STARTED in. A run built in `a/` that then `chdir`s
