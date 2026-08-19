@@ -812,6 +812,24 @@ class Run:
             )
 
     # ---------------------------------------------------------------- terminal capture
+    @staticmethod
+    def _yaml_twin(p: pathlib.Path) -> pathlib.Path:
+        """The YAML view written beside a JSON sidecar: `summary.prov.json` -> `.prov.yml`.
+
+        ONE DEFINITION, because there were two and they disagreed. `_persist_yaml` computed
+        the name this way; the unregistered-read exclusion list computed it with
+        `Path.with_suffix(".yml")`, which REPLACES the final suffix instead of appending.
+        The two agree only when the path ends in `.json`, and the documented idiom does not
+        — `run.write("provenance/analyse.prov")` writes `analyse.prov.yml` and the exclusion
+        list looked for `analyse.yml`. So the package read its own file, failed to recognise
+        it, and told the user THEY had left it unregistered. First run, every project.
+
+        This is the compound-suffix bug `_sidecar_name` already had to learn, in a second
+        place: `with_suffix` on `calls.v2.json` eats the `.v2`.
+        """
+        name = p.name[: -len(".json")] + ".yml" if p.name.endswith(".json") else p.name + ".yml"
+        return p.with_name(name)
+
     def _sidecar_name(self, provenance: str | pathlib.Path) -> pathlib.Path:
         """Where the sidecar goes, and whether the next run is allowed to land on it.
 
@@ -1164,7 +1182,7 @@ class Run:
                     continue
                 w = pathlib.Path(written)
                 registered.append(str(w))
-                registered.append(str(w.with_suffix(".yml")))
+                registered.append(str(self._yaml_twin(w)))
             missed = unregistered(self._opened, registered, self.project.root, exclude=mine)
         except Exception as exc:  # pragma: no cover - defensive; see the docstring
             diagnostic(f"  WARNING: could not check for unregistered reads: {exc}")
@@ -2430,13 +2448,8 @@ class Run:
         """
         if not self.project.write_yaml_sidecar:
             return
-        # `.prov.json` -> `.prov.yml`, and `x.txt` -> `x.txt.yml`. Suffix REPLACEMENT only
-        # when the name ends in `.json`, because `Path.with_suffix` on `summary.prov.json`
-        # would give `summary.prov.yml` but on `calls.v2.json` it would eat `.v2` -- the
-        # compound-suffix bug `_sidecar_name` already had to learn.
-        name = p.name[: -len(".json")] + ".yml" if p.name.endswith(".json") else p.name + ".yml"
         try:
-            (p.parent / name).write_text(render_yaml(_jsonable(self.record)), encoding="utf-8")
+            self._yaml_twin(p).write_text(render_yaml(_jsonable(self.record)), encoding="utf-8")
         except OSError as exc:  # guards-ok: a view is never the reason a record is lost
             diagnostic(f"  WARNING: could not write the YAML sidecar beside {p}: {exc}")
 
