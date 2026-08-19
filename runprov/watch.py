@@ -34,6 +34,18 @@ already registered.
 
 from __future__ import annotations
 
+# A MODULE'S `__all__` RATIFIES THE PACKAGE'S PROMISE; IT NEVER MAKES ONE.
+# A name belongs here if and only if `runprov/__init__.py` re-exports it and lists it in the
+# package `__all__` (22 names, decided 2026-08-19, ledger L-24). Nothing else qualifies:
+# cross-module use inside `runprov/` is INTERNAL and `__all__` neither describes nor protects
+# it; tests reach into internals on purpose and prove nothing; and prose that documents a
+# printed string, a CLI flag or a record key is not an instruction to call a name.
+# Adding or withdrawing a promise is a package-level decision taken in `__init__.py`.
+# Nothing here is promised. The feature is reached through `Run` — `warn_unregistered_reads`
+# on `Project`, and the `unregistered_reads` record key — never by calling into this module.
+# It is one week old, and freezing a surface on it now would freeze a first draft.
+__all__: list[str] = []
+
 import os
 import pathlib
 import sys

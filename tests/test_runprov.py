@@ -11015,6 +11015,79 @@ def test_rehash_will_not_call_an_undigested_input_STALE(tmp_path, monkeypatch):
     )
 
 
+def test_every_module_declares_its_surface_and_none_of_them_invents_one():
+    """L-44. Eleven of twelve modules declared no `__all__`, so every top-level name in them
+    was importable but unpromised — and after PyPI they would be frozen BY USE rather than
+    by decision, which is what L-24 had just been about one level up.
+
+    THE POLICY THIS ASSERTS: a module's `__all__` RATIFIES the package's promise, it never
+    makes one. A name belongs in a module's list if and only if `runprov/__init__.py`
+    promises it — with exactly one other source of publicness, `pyproject.toml`'s
+    `[project.scripts]`, which names `runprov.__main__:main` and so binds an installed
+    artefact outside this tree to that symbol.
+
+    Both directions are checked, because each catches a different mistake. A module list
+    that MISSES a promised name means the package promises something its own module treats
+    as internal. A module list that ADDS one means a module quietly widened the public
+    surface, which is the decision `__init__.py` exists to hold.
+
+    `_report.py` declares nothing on purpose: the underscore in the MODULE name is already
+    the statement, and an `__all__` there would only govern `from runprov._report import *`
+    — itself a reach into a private module — while not governing `from ._report import
+    diagnostic`, which is how `run`, `terminal` and `sinks` actually import it."""
+    import runprov._report
+
+    modules = {
+        "environment": runprov.environment,
+        "hashing": runprov.hashing,
+        "project": runprov.project,
+        "run": runprov.run,
+        "show": runprov.show,
+        "sinks": runprov.sinks,
+        "terminal": runprov.terminal,
+        "verify": runprov.verify,
+        "watch": runprov.watch,
+        "__main__": cli,
+    }
+    for name, mod in modules.items():
+        assert hasattr(mod, "__all__"), f"runprov.{name} declares no surface"
+        missing = [n for n in mod.__all__ if not hasattr(mod, n)]
+        assert not missing, f"runprov.{name}.__all__ promises names it does not have: {missing}"
+
+    assert not hasattr(runprov._report, "__all__"), (
+        "_report is private by MODULE NAME; declaring __all__ there would imply a surface "
+        "worth declaring and would not govern the `from ._report import diagnostic` that "
+        "every caller actually uses"
+    )
+
+    # EVERY PACKAGE PROMISE IS RATIFIED where the name is DEFINED — except the ones the
+    # package defines itself. `to_yaml` lives in `__init__.py` rather than in any module, so
+    # there is no second file to ratify it and the promise is already where it is made.
+    declared = {n for mod in modules.values() for n in mod.__all__}
+    unratified = [
+        n
+        for n in runprov.__all__
+        if getattr(getattr(runprov, n), "__module__", None) != "runprov"
+        and not any(
+            n in mod.__all__
+            for mod in modules.values()
+            if getattr(mod, n, None) is getattr(runprov, n)
+        )
+    ]
+    assert not unratified, (
+        f"the package promises {unratified}, and the module that defines each treats it as "
+        f"internal — the two surfaces disagree"
+    )
+
+    # AND NO MODULE PROMISES ANYTHING THE PACKAGE DOES NOT, `main` excepted.
+    invented = sorted(declared - set(runprov.__all__) - {"main"})
+    assert not invented, (
+        f"{invented} is promised by a module but not by the package. A module ratifies a "
+        f"decision taken in __init__.py; it does not take one."
+    )
+    assert cli.__all__ == ["main"], "the console-script entry point, and nothing else"
+
+
 def test_the_pin_anchor_exists_exactly_once_in_the_source():
     """L-44. The one sentence that says "this file is an artifact" existed TWICE: `header()`
     wrote it as a literal in `run.py`, and `verify` held its own copy under the name

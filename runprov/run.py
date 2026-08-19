@@ -23,6 +23,20 @@ no run id. Both were tried; both made every pinned artifact differ on every run.
 
 from __future__ import annotations
 
+# A MODULE'S `__all__` RATIFIES THE PACKAGE'S PROMISE; IT NEVER MAKES ONE.
+# A name belongs here if and only if `runprov/__init__.py` re-exports it and lists it in the
+# package `__all__` (22 names, decided 2026-08-19, ledger L-24). Nothing else qualifies:
+# cross-module use inside `runprov/` is INTERNAL and `__all__` neither describes nor protects
+# it; tests reach into internals on purpose and prove nothing; and prose that documents a
+# printed string, a CLI flag or a record key is not an instruction to call a name.
+# Adding or withdrawing a promise is a package-level decision taken in `__init__.py`.
+# `PIN_SIDECAR_SUFFIX` is absent deliberately: it is DEFINED in `hashing` and only
+# re-exported here, and one string with two promised addresses is the drift this audit
+# keeps finding. `PIN_UNSAFE` is absent because it was WITHDRAWN on 2026-08-19 — it stays
+# reachable as `runprov.run.PIN_UNSAFE` and un-underscored, which a test pins, but it is
+# no longer promised.
+__all__ = ["HISTORY_SCHEMA", "SCHEMA", "Run", "Terminated"]
+
 import atexit
 import contextlib
 import datetime as dt

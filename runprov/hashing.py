@@ -37,6 +37,19 @@ one announced pass.
 
 from __future__ import annotations
 
+# A MODULE'S `__all__` RATIFIES THE PACKAGE'S PROMISE; IT NEVER MAKES ONE.
+# A name belongs here if and only if `runprov/__init__.py` re-exports it and lists it in the
+# package `__all__` (22 names, decided 2026-08-19, ledger L-24). Nothing else qualifies:
+# cross-module use inside `runprov/` is INTERNAL and `__all__` neither describes nor protects
+# it; tests reach into internals on purpose and prove nothing; and prose that documents a
+# printed string, a CLI flag or a record key is not an instruction to call a name.
+# Adding or withdrawing a promise is a package-level decision taken in `__init__.py`.
+# `PIN_ANCHOR`, `PIN_DIGEST_CHARS`, `PIN_SIDECAR_SUFFIX`, `moved_since` and `pin_digest`
+# are INTERNAL: `run`, `show` and `verify` all need them, and that is exactly why they
+# must not be frozen. `VOLATILE` and `VOLATILE_JSON` are WITHDRAWN, not private — they
+# keep their names because a test pins their reachability.
+__all__ = ["content_digest", "describe", "sha256"]
+
 import datetime as dt
 import gzip
 import hashlib

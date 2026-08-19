@@ -268,6 +268,27 @@ Nothing has been published yet. Everything below is what a first release would c
   the run it described; a corrupt gzip escaped `content_digest`; and a `.gz` rewritten from
   identical bytes never hashed the same twice.
 
+### Every module now declares its public surface
+
+- **Eleven of twelve modules declared no `__all__`**, so 101 top-level names were importable
+  but unpromised and would have been frozen BY USE rather than by decision at the first
+  upload — the same defect `__all__` itself had one level up. The rule adopted, recorded as
+  **ADR-0003**: a module's `__all__` **ratifies** the package's promise and never makes one.
+  A name belongs in a module list if and only if `__init__.py` promises it, with exactly one
+  other source of publicness — `[project.scripts]`, which binds `runprov.__main__:main`.
+  `_report.py` declares nothing: the underscore in the module name is already the statement.
+  A test asserts both directions, since a missing name and an invented one are different
+  mistakes.
+- **Five renames landed first**, because a name recorded in two surfaces is twice the work
+  to change: `environment.render` → `_render_snapshot` and `verify.render` →
+  `render_report` (two different functions sharing a word, and neither raised on the other's
+  input — a `verify` report rendered as a plausible environment snapshot);
+  `verify.ANCHOR` → `hashing.PIN_ANCHOR` (the one sentence identifying a pin, written as a
+  literal in the writer and held as a separate constant in the reader); and the deletion of
+  `show.SHORT` (a second spelling of `PIN_DIGEST_CHARS`, with a test that only asserted the
+  two agreed) and `run.SERIALISATION_ERRORS` (dead — a promise about an `except` clause that
+  no longer exists).
+
 ### One vocabulary for both checkers
 
 - **`show`'s states are now `verify`'s states**, imported rather than restated: `current`

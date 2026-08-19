@@ -35,6 +35,14 @@ is the whole reason the pin is written into the bytes. See `verify.py`.
 
 from __future__ import annotations
 
+# THE ONE NAME THIS MODULE PROMISES, and not because the package re-exports it — it does not.
+# `pyproject.toml`'s `[project.scripts]` names `runprov.__main__:main`, so an INSTALLED
+# artefact outside this source tree depends on that symbol. That is the only other thing
+# that can make a name public here, and it makes exactly this one. Everything else in this
+# file is CLI plumbing; `_load`, `_show`, `_verify` and the rest carry underscores and the
+# tests that reach for them are reaching into internals on purpose.
+__all__ = ["main"]
+
 import argparse
 import collections
 import contextlib
