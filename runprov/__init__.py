@@ -49,31 +49,40 @@ copies that agree until they do not.
 import typing
 
 from .environment import installed_packages, write_snapshot
-from .hashing import VOLATILE, VOLATILE_JSON, content_digest, describe, sha256
+from .hashing import content_digest, describe, sha256
 from .project import (
     DEFAULT_CODE_PATHS,
     DEFAULT_TRACKED,
     Project,
     active,
     configure,
-    default_generation,
-    default_run_id,
     detect_root,
     git,
     is_configured,
 )
-from .run import HISTORY_SCHEMA, PIN_UNSAFE, SCHEMA, Run, Terminated
+from .run import HISTORY_SCHEMA, SCHEMA, Run, Terminated
 from .sinks import JsonlSink, MemorySink, RecordSink
 from .terminal import Capture
 
+# EVERY NAME HERE IS A PROMISE. It was 27, and the quickstart uses two of them; a previous
+# review already called 24 too many to freeze. Five came out on 2026-08-19 (ledger L-24):
+#
+#   VOLATILE, VOLATILE_JSON   compiled regexes -- the MECHANISM of volatile-stamp stripping.
+#                             Exporting them means never being able to change how it works.
+#   PIN_UNSAFE                documentation rendered into a refusal message. Nothing branches
+#                             on it -- proved by emptying it, behaviour unchanged.
+#   default_run_id,           defaults `Project` already supplies; a caller passes a callable
+#   default_generation        rather than reaching for these.
+#
+# They still EXIST at `runprov.run.PIN_UNSAFE`, `runprov.hashing.VOLATILE` and
+# `runprov.project.default_run_id` -- they simply stop being promised. SCHEMA and
+# HISTORY_SCHEMA stay (a consumer parsing records needs the version) and so do the two
+# DEFAULT_* tuples (people extend them).
 __all__ = [
     "DEFAULT_CODE_PATHS",
     "DEFAULT_TRACKED",
     "HISTORY_SCHEMA",
-    "PIN_UNSAFE",
     "SCHEMA",
-    "VOLATILE",
-    "VOLATILE_JSON",
     "Capture",
     "JsonlSink",
     "MemorySink",
@@ -84,8 +93,6 @@ __all__ = [
     "active",
     "configure",
     "content_digest",
-    "default_generation",
-    "default_run_id",
     "describe",
     "detect_root",
     "git",

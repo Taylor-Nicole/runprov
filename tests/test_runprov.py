@@ -1485,7 +1485,9 @@ def test_content_digest_is_streamed_not_read_whole(tmp_path):
     import hashlib
 
     body = "\n".join(
-        ln for ln in p.read_text(encoding="utf-8").splitlines() if not runprov.VOLATILE.match(ln)
+        ln
+        for ln in p.read_text(encoding="utf-8").splitlines()
+        if not runprov.hashing.VOLATILE.match(ln)
     )
     assert runprov.content_digest(p) == hashlib.sha256(body.encode()).hexdigest()
 
@@ -1640,14 +1642,14 @@ def test_git_on_a_path_that_is_not_a_directory_returns_none(tmp_path):
 def test_default_run_id_and_generation_read_the_environment(monkeypatch):
     monkeypatch.setenv("RUNPROV_RUN_ID", "chain_123")
     monkeypatch.setenv("RUNPROV_GENERATION", "gen_x")
-    assert runprov.default_run_id() == "chain_123"
-    assert runprov.default_generation() == "gen_x"
+    assert runprov.project.default_run_id() == "chain_123"
+    assert runprov.project.default_generation() == "gen_x"
     monkeypatch.delenv("RUNPROV_RUN_ID")
     monkeypatch.delenv("RUNPROV_GENERATION")
     # unset: labelled ad-hoc on purpose, so a hand-run script and a chain stage are not
     # indistinguishable in the history
-    assert runprov.default_run_id().startswith("adhoc_")
-    assert runprov.default_generation() == "(default)"
+    assert runprov.project.default_run_id().startswith("adhoc_")
+    assert runprov.project.default_generation() == "(default)"
 
 
 def test_active_builds_a_project_when_none_was_configured(monkeypatch):
@@ -2710,14 +2712,14 @@ def test_the_pin_tables_cannot_be_mutated_by_a_caller(tmp_path, monkeypatch):
     caller comment — which is narrower than it first looks, but the artifact's own bytes
     change and nothing announces it."""
     with pytest.raises(TypeError):
-        runprov.PIN_UNSAFE[".tsv"] = "x"
+        runprov.run.PIN_UNSAFE[".tsv"] = "x"
     with pytest.raises(TypeError):
-        del runprov.PIN_UNSAFE[".nwk"]
+        del runprov.run.PIN_UNSAFE[".nwk"]
     with pytest.raises(TypeError):
         runprov.run.PIN_ALTERNATIVE[".zzz"] = ("// ", "")
 
-    assert runprov.PIN_UNSAFE[".nwk"].startswith("Newick"), "still readable"
-    assert dict(runprov.PIN_UNSAFE), "and still convertible, which is what a caller needs"
+    assert runprov.run.PIN_UNSAFE[".nwk"].startswith("Newick"), "still readable"
+    assert dict(runprov.run.PIN_UNSAFE), "and still convertible, which is what a caller needs"
 
 
 def test_the_unsafe_table_is_documentation_and_nothing_branches_on_it(tmp_path, monkeypatch):
@@ -3830,6 +3832,43 @@ def test_the_exported_name_count_in_why_md_is_the_real_one():
     block = _first_python_block(_readme())
     used = {n for n in runprov.__all__ if re.search(rf"\b{n}\b", block)}
     assert used == {"Run", "configure"}, f"the quickstart now uses {sorted(used)}"
+
+
+def test_the_public_surface_is_exactly_all_and_nothing_leaks_beside_it():
+    """L-24. `__all__` was 27 names and five of them were surface by accident, not by
+    decision: `VOLATILE` and `VOLATILE_JSON` are the compiled regexes that strip volatile
+    stamps — the mechanism, which nobody should be held to — `PIN_UNSAFE` is documentation
+    rendered into a refusal message, and `default_run_id`/`default_generation` are defaults
+    `Project` already supplies.
+
+    Trimming the list is not the fix on its own. `__all__` only governs `import *`; the names
+    stayed reachable as `runprov.PIN_UNSAFE` until the re-export lines went too, and a later
+    `from .run import PIN_UNSAFE` added for an unrelated reason would quietly restore all
+    five without touching `__all__`. So this asserts the two halves that actually hold:
+
+    * everything `__all__` promises is really there, and
+    * the withdrawn five are NOT on the top level, while still existing on their own modules
+      — withdrawn, not deleted."""
+    missing = [n for n in runprov.__all__ if not hasattr(runprov, n)]
+    assert not missing, f"__all__ promises names the package does not have: {missing}"
+
+    withdrawn = {
+        "VOLATILE": runprov.hashing,
+        "VOLATILE_JSON": runprov.hashing,
+        "PIN_UNSAFE": runprov.run,
+        "default_run_id": runprov.project,
+        "default_generation": runprov.project,
+    }
+    leaked = [n for n in withdrawn if hasattr(runprov, n)]
+    assert not leaked, (
+        f"{leaked} is reachable as runprov.<name> again — the public surface grew back. "
+        "Import it from its own module, or make exporting it a deliberate decision."
+    )
+    for name, module in withdrawn.items():
+        assert hasattr(module, name), (
+            f"{name} was withdrawn from the public surface, not removed; "
+            f"{module.__name__}.{name} should still exist"
+        )
 
 
 def test_the_internal_drafts_are_not_packaged_and_not_linked():
