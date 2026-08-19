@@ -835,9 +835,25 @@ class Run:
         at `write()` like any other artifact, and it takes no ownership of any stream — so
         it is the shape to reach for wherever taking over fds 1 and 2 would be unwelcome.
 
-        RETURNS the path, like `input()` and `output()`, so registering stays the easy way.
+        RETURNS the path, like `input()` and `output()`, so registering stays the easy way —
+        and, since 2026-08-19, returns the SAME KIND of path they do. It used to hand back
+        the caller's unresolved string while its siblings returned anchored absolutes, so
+        `open(run.terminal_log(P))` and the record could disagree about which file that was.
+
+        ANCHORED AT REGISTRATION, exactly like `output()`. This method skipped `_anchor()`,
+        so a relative path was resolved at `write()` time against the cwd the run STARTED in.
+        A run constructed in `a/` that then `chdir`s to `b/` and calls
+        `terminal_log("step.log")` recorded the name `step.log` carrying the digest of
+        `a/step.log` -- the file in the old directory, not the one the caller would open --
+        and said nothing at all: measured, the run emitted no notice and no warning, because
+        the once-per-run cwd notice is raised by `_anchor`, which this never called.
+
+        That is verbatim the defect `_anchor`'s own docstring says it exists to kill: "The
+        record named a file that did not exist and carried the hash of a different one -- no
+        error, no warning, and nothing downstream able to tell." It survived in this one
+        method because the method predates the guard.
         """
-        p = pathlib.Path(path)
+        p = self._anchor(pathlib.Path(path))
         self.record["terminal_log"] = {"path": str(p), "capture": "caller"}
         self._pending.append(p)
         return p

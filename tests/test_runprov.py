@@ -2352,6 +2352,66 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
     assert "declared.tsv" not in out.read_text(encoding="utf-8")
 
 
+def test_terminal_log_anchors_like_its_siblings(tmp_path, monkeypatch, capsys):
+    """Council C-15. `terminal_log()` skipped `_anchor()`, so a relative path was resolved at
+    `write()` time against the cwd the run STARTED in. A run built in `a/` that then `chdir`s
+    to `b/` recorded the name `step.log` carrying the digest of **a/step.log** — the file in
+    the old directory, not the one the caller would open.
+
+    Verbatim the defect `_anchor`'s own docstring says it exists to kill: "The record named a
+    file that did not exist and carried the hash of a different one — no error, no warning,
+    and nothing downstream able to tell." It survived in the one method that predates the
+    guard.
+
+    The silence is asserted too, and it is the sharp end: because the cwd-moved notice is
+    raised BY `_anchor`, a run that called only this method said nothing at all."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "step.log").write_text("LOG FROM A\n", encoding="utf-8")
+    (tmp_path / "b" / "step.log").write_text("LOG FROM B\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path / "a")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+
+    run = runprov.Run("step", provenance=tmp_path / "p.json")
+    monkeypatch.chdir(tmp_path / "b")
+    returned = run.terminal_log("step.log")
+    run.write(tmp_path / "p.json")
+
+    assert returned == pathlib.Path(str(returned)).resolve(), "anchored, not the raw string"
+    assert returned == (tmp_path / "b" / "step.log").resolve(), (
+        "it must return an anchored absolute, like input() and output(), so that "
+        "open(run.terminal_log(P)) and the record cannot disagree"
+    )
+    entry = run.record["outputs"][0]
+    assert entry["sha256"] == runprov.sha256(tmp_path / "b" / "step.log"), (
+        f"the record carries the digest of the WRONG file: {entry}"
+    )
+    assert "NOTICE" in capsys.readouterr().err, (
+        "and the cwd-moved notice must fire — it is raised by _anchor, so skipping _anchor "
+        "made this case completely silent"
+    )
+    assert run.record["terminal_log"]["path"] == str(returned), "the field agrees too"
+
+
+def test_terminal_log_left_alone_when_the_cwd_does_not_move(tmp_path, monkeypatch, capsys):
+    """The ordinary case must not have acquired a notice: anchoring is only visible when the
+    cwd actually moved, and a package that warns on every correct run trains its users to
+    ignore it."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "step.log").write_text("x\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    run = runprov.Run("step", provenance=tmp_path / "p.json")
+    capsys.readouterr()
+
+    # THE SAME ANSWER `output()` GIVES, which is the actual property — not "absolute".
+    # `_anchor` deliberately leaves a path relative while the cwd is where the run started,
+    # because a relative path is the portable one and rewriting it would make records from
+    # two machines stop comparing equal.
+    assert run.terminal_log("step.log") == run.output("step.log")
+    run.write(tmp_path / "p.json")
+    assert "NOTICE" not in capsys.readouterr().err
+
+
 def test_no_stderr_never_means_the_callers_stdout(tmp_path, monkeypatch, capsys):
     """Council C-13. `print(..., file=None)` falls back to STDOUT by CPython's own rule, and
     `sys.stderr is None` is the documented state under `pythonw.exe`, embedded interpreters
