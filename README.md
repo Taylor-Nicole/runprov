@@ -651,12 +651,19 @@ python -m runprov show --rehash    # re-derive every digest, slower, no resoluti
 ```
 
 ```
-  current  a4c3ed04a95a3da1  out/final.txt
-  STALE    ae31646fa3c0107e  out/mid.tsv       <- an input moved; rebuilding differs
-  MODIFIED b413f47d13ee2fe6  out/aux.bin       <- the ARTIFACT changed, not its inputs
-  GONE     2d711642b726b044  out/deleted.txt
-  ?        …                                   <- cannot be told, and will not guess
+  OK           a4c3ed04a95a3da1  out/final.txt
+  STALE        ae31646fa3c0107e  out/mid.tsv    <- an input moved; rebuilding differs
+  MODIFIED     b413f47d13ee2fe6  out/aux.bin    <- the ARTIFACT changed, not its inputs
+  GONE         2d711642b726b044  out/deleted.txt
+  UNVERIFIABLE …                                <- cannot be told, and will not guess
 ```
+
+**The same five words as `verify`**, because they are the same five ideas. `show` used to
+say `current` where `verify` said `OK`, and `?` where `verify` said `UNVERIFIABLE` — one
+lowercase word among four uppercase ones, and two commands disagreeing in print about an
+artifact they agreed about in fact. There is now one definition and no second spelling to
+drift. `show` adds `MODIFIED`, which only the history can support, and `verify` adds
+`NO PIN`, which only the bytes can.
 
 **Answered from the history, not from the pin** — which is why it works for `aux.bin`, a
 binary that could never hold a pin at all. `verify` reads the block inside an artifact;
@@ -668,7 +675,7 @@ sizes and mtimes from the producing run's sidecar, since the history line trims 
 fields deliberately — `symlink`, `size_bytes` and `mtime_utc` would cost **19.3%** of an
 append-forever file, measured 2026-08-18 by re-serialising a real 2,453-record history
 (17,149 input/output entries): 6.39 MB trimmed against 7.62 MB with them kept. If that sidecar is
-missing, or a later run has overwritten it, the answer is `?` rather than `current`:
+missing, or a later run has overwritten it, the answer is `UNVERIFIABLE` rather than `OK`:
 digests from one run compared against stats from another would be confident nonsense.
 
 `--stale` inherits `moved_since`'s documented limit — a rewrite inside one second that
@@ -874,8 +881,8 @@ python -m runprov verify results/ && \
   python -m runprov show --stale --rehash --exit-code
 ```
 
-`--exit-code` is 0 when every artifact on record is `current`, 1 on any `STALE`, `GONE` or
-`MODIFIED`. `?` does **not** fail it: `?` means the check could not be made — a missing
+`--exit-code` is 0 when every artifact on record is `OK`, 1 on any `STALE`, `GONE` or
+`MODIFIED`. `UNVERIFIABLE` does **not** fail it: it means the check could not be made — a missing
 sidecar, or a directory input the stat check cannot speak for — and failing on it would make
 any project with one reference directory permanently red. The count is on the summary line,
 where a reader can see it and reach for `--rehash`.

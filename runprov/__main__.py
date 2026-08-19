@@ -50,10 +50,8 @@ import typing
 from .project import active
 from .run import Run, Terminated
 from .show import (
-    GONE,
     MODIFIED,
     SHORT,
-    STALE,
     _yaml_entry,
     _yaml_header,
     project_view,
@@ -64,7 +62,7 @@ from .show import (
     staleness,
 )
 from .show import render_yaml as _yaml_doc
-from .verify import render, verify
+from .verify import GONE, STALE, render, verify
 
 
 def _stream(path: pathlib.Path) -> typing.Iterator[dict[str, typing.Any] | None]:
