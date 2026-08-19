@@ -699,10 +699,12 @@ YAML_MAX_DEPTH = 100
 YAML_TOO_DEEP = "<nested too deep for this interpreter to render>"
 
 
-def to_yaml(obj: object, indent: int = 0) -> str:
+def render_yaml(obj: object, indent: int = 0) -> str:
     """A nested structure as YAML, with EVERY scalar quoted.
 
-    NOT `runprov.to_yaml`, WHICH IS A DIFFERENT FUNCTION WITH THE SAME NAME. That one takes
+    NOT `runprov.to_yaml`. Until 2026-08-19 this was ALSO called `to_yaml`, and both
+    were importable, so the wrong import produced a plausible file of the wrong shape rather
+    than an error (ledger L-47). That one takes
     run RECORDS and renders the transformation-log shape (`- step:`, `date`, `input`, `summary`);
     this one takes ANY nested structure and renders it as indented YAML. Both are reachable —
     `import runprov` binds `runprov.show` — both accept a record dict, and neither raises on the
@@ -764,7 +766,7 @@ def to_yaml(obj: object, indent: int = 0) -> str:
         out = []
         for k, v in obj.items():
             if isinstance(v, (dict, list)) and v:
-                out.append(f"{pad}{json.dumps(str(k))}:\n{to_yaml(v, indent + 1)}")
+                out.append(f"{pad}{json.dumps(str(k))}:\n{render_yaml(v, indent + 1)}")
             else:
                 out.append(f"{pad}{json.dumps(str(k))}: {_scalar(v)}\n")
         return "".join(out)
@@ -774,7 +776,7 @@ def to_yaml(obj: object, indent: int = 0) -> str:
         out = []
         for v in obj:
             if isinstance(v, (dict, list)) and v:
-                body = to_yaml(v, indent + 1)
+                body = render_yaml(v, indent + 1)
                 out.append(f"{pad}-\n{body}")
             else:
                 out.append(f"{pad}- {_scalar(v)}\n")

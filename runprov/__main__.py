@@ -60,7 +60,7 @@ from .show import (
     select,
     staleness,
 )
-from .show import to_yaml as _yaml_doc
+from .show import render_yaml as _yaml_doc
 from .verify import render, verify
 
 

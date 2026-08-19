@@ -63,7 +63,7 @@ from .project import (
     is_configured,
     is_repository,
 )
-from .show import to_yaml
+from .show import render_yaml
 from .terminal import Capture
 from .watch import attach, detach, unregistered
 
@@ -2429,7 +2429,7 @@ class Run:
         # compound-suffix bug `_sidecar_name` already had to learn.
         name = p.name[: -len(".json")] + ".yml" if p.name.endswith(".json") else p.name + ".yml"
         try:
-            (p.parent / name).write_text(to_yaml(_jsonable(self.record)), encoding="utf-8")
+            (p.parent / name).write_text(render_yaml(_jsonable(self.record)), encoding="utf-8")
         except OSError as exc:  # guards-ok: a view is never the reason a record is lost
             diagnostic(f"  WARNING: could not write the YAML sidecar beside {p}: {exc}")
 
