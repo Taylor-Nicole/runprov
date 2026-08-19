@@ -2737,16 +2737,16 @@ def test_the_unsafe_table_is_documentation_and_nothing_branches_on_it(tmp_path, 
     assert (tmp_path / "t.nwk.prov.txt").is_file(), "still a sidecar — the route is unchanged"
 
 
-def test_the_two_to_yamls_are_both_reachable_and_disagree(tmp_path):
-    """Council C-24 / ledger L-47. `runprov.to_yaml` and `runprov.show.to_yaml` are different
+def test_only_one_to_yaml_is_reachable_from_the_package(tmp_path):
+    """Council C-24 / ledger L-47. `runprov.to_yaml` and `runprov.show.render_yaml` are different
     functions with the same name, both reachable (`import runprov` binds `runprov.show`), both
     accepting a record dict, neither raising on the other's input — so the wrong import yields
     a plausible file of the WRONG SHAPE rather than an error.
 
-    Which name changes is the author's decision (L-47, `needs-your-decision`), so this test
-    does not assert a rename. It pins the DIVERGENCE, so that whoever settles the name has the
-    behaviour written down, and so that the more dangerous half cannot be forgotten: only the
-    package-level one normalises with `_jsonable`.
+    RESOLVED: the low-level one is `render_yaml` now, so only one `to_yaml` exists. This still
+    pins the DIVERGENCE, because the rename removed the confusion and not the difference —
+    only the package-level one normalises with `_jsonable`, and a caller who reaches for the
+    other still needs to know that.
 
     That normalisation is not cosmetic. It is exactly the failure `runprov.to_yaml`'s own
     comment cites: a manifest reading `n_exact_matches: "<scalar 118>"` beside a sidecar
@@ -2767,12 +2767,14 @@ def test_the_two_to_yamls_are_both_reachable_and_disagree(tmp_path):
         "sidecar agree"
     )
 
-    low_level = runprov.show.to_yaml(record)
+    low_level = runprov.show.render_yaml(record)
     assert "<scalar" in low_level, (
         "and the low-level one does NOT — it must be handed something already normalised. If "
         "this ever passes, the divergence is closed and the docstrings should stop warning."
     )
-    assert packaged != low_level, "different shapes, same name, both reachable"
+    assert packaged != low_level, "different shapes — the rename removed the confusion only"
+    assert not hasattr(runprov.show, "to_yaml"), "exactly one `to_yaml`, and it is the public one"
+    assert runprov.to_yaml.__module__ == "runprov"
 
 
 def test_the_verify_module_is_not_shadowed_by_a_function(tmp_path):
@@ -9222,19 +9224,19 @@ def test_the_yaml_view_survives_a_record_json_accepts():
     parses, and it never raises."""
     yaml = pytest.importorskip("yaml")
     for depth in (50, 900, 1_000, 5_000):
-        rendered = runprov.show.to_yaml(_nest(depth))
+        rendered = runprov.show.render_yaml(_nest(depth))
         assert yaml.safe_load(rendered) is not None, f"depth {depth} rendered unparseable YAML"
 
     # Well inside the cap the value is present in BLOCK form, so the flow-style path is not
     # quietly swallowing everything.
-    shallow = yaml.safe_load(runprov.show.to_yaml(_nest(50)))
+    shallow = yaml.safe_load(runprov.show.render_yaml(_nest(50)))
     for _ in range(50):
         shallow = shallow["k"]
     assert shallow == "leaf"
 
     # And past the cap the tail is either the value or the stated marker — never a silent
     # truncation, and never an exception.
-    deep = yaml.safe_load(runprov.show.to_yaml(_nest(5_000)))
+    deep = yaml.safe_load(runprov.show.render_yaml(_nest(5_000)))
     for _ in range(runprov.show.YAML_MAX_DEPTH):
         deep = deep["k"]
     tail = json.dumps(deep)
@@ -9274,7 +9276,7 @@ def test_the_yaml_view_says_so_when_even_flow_style_is_too_deep():
     if not with_small_budget(probe):  # pragma: no cover - CPython 3.12 and later
         pytest.skip("this interpreter's json encoder does not consume Python frames")
 
-    rendered = with_small_budget(lambda: runprov.show.to_yaml(_nest(5_000)))
+    rendered = with_small_budget(lambda: runprov.show.render_yaml(_nest(5_000)))
     assert runprov.show.YAML_TOO_DEEP in rendered, "it must SAY it stopped, not stop silently"
     assert yaml.safe_load(rendered) is not None, "and what it does emit still has to parse"
 
@@ -10449,11 +10451,11 @@ def test_the_yaml_view_quotes_every_scalar_so_a_typed_colon_cannot_break_it(tmp_
     rows[0]["notes"]["description"] = "Recomputed p_l/p_o. Note: qval and log2_fc are NOT modified"
     rows[0]["notes"]["worse"] = "a: b\n- item\n#c\t\"q\" 's' ---"
 
-    rendered = runprov.show.to_yaml(runprov.show.project_view(rows))
+    rendered = runprov.show.render_yaml(runprov.show.project_view(rows))
     back = yaml.safe_load(rendered)
     assert back["runs"] == 4
 
-    one = runprov.show.to_yaml([runprov.show.run_view(rows[0])])
+    one = runprov.show.render_yaml([runprov.show.run_view(rows[0])])
     parsed = yaml.safe_load(one)
     assert parsed[0]["notes"]["description"].startswith("Recomputed")
     assert parsed[0]["notes"]["worse"] == rows[0]["notes"]["worse"]
@@ -10466,7 +10468,7 @@ def test_show_writes_nothing(tmp_path, monkeypatch):
     before = {p: p.read_bytes() for p in sorted(tmp_path.rglob("*")) if p.is_file()}
     runprov.show.render_project(runprov.show.project_view(rows))
     runprov.show.render_run(runprov.show.run_view(rows[0]))
-    runprov.show.to_yaml(runprov.show.project_view(rows))
+    runprov.show.render_yaml(runprov.show.project_view(rows))
     after = {p: p.read_bytes() for p in sorted(tmp_path.rglob("*")) if p.is_file()}
     assert before == after
 
@@ -10552,9 +10554,9 @@ def test_the_yaml_emitter_handles_empty_and_scalar_shapes(tmp_path):
     """Small shapes it must not choke on, since a record can legitimately hold any of them."""
     yaml = pytest.importorskip("yaml")
     for obj in ({}, [], {"a": {}}, {"a": []}, [1, 2], "bare", 3, None, True, 1.5):
-        rendered = runprov.show.to_yaml(obj)
+        rendered = runprov.show.render_yaml(obj)
         yaml.safe_load(rendered)  # must not raise
-    assert yaml.safe_load(runprov.show.to_yaml({"a": [{"b": 1}]}))["a"][0]["b"] == 1
+    assert yaml.safe_load(runprov.show.render_yaml({"a": [{"b": 1}]}))["a"][0]["b"] == 1
 
 
 def test_the_views_survive_a_record_that_is_missing_almost_everything():
