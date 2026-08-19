@@ -848,6 +848,43 @@ worse than no gate, because someone will trust it — the same rule that makes
 Exit status is 0 when every pinned artifact verifies, 1 on any `STALE`, `GONE`, or nothing
 checked — so `python -m runprov verify results/` is a CI step as it stands.
 
+### What `verify` cannot tell you, and the command that can
+
+`verify` reads the pin **inside** an artifact, and a pin lists the run's **inputs**. The
+artifact's own digest is not in it and cannot be, because the pin lives inside the file it
+would be describing. So over a result someone hand-edited — inputs untouched — `verify`
+prints `OK` and exits 0. That is not a bug in `verify`; it is the honest answer to the
+question `verify` asks, which is why the command prints the caveat every time it says `OK`.
+
+The digest of the artifact itself is in the **history**, and `show` reads the history. So
+the two commands see different things, and neither sees everything:
+
+| | `verify` | `show --stale` |
+|---|---|---|
+| reads | the pin inside the artifact | the history |
+| an artifact you were **emailed**, with no history | ✅ | ❌ |
+| a **BAM, parquet or figure** — formats that cannot hold a pin | ❌ | ✅ |
+| the **artifact itself** was edited | ❌ | ✅ (`--rehash`) |
+| **transitive** staleness through inherited pins | ✅ | one generation |
+
+**The gate is the pair, and it is one line:**
+
+```bash
+python -m runprov verify results/ && \
+  python -m runprov show --stale --rehash --exit-code
+```
+
+`--exit-code` is 0 when every artifact on record is `current`, 1 on any `STALE`, `GONE` or
+`MODIFIED`. `?` does **not** fail it: `?` means the check could not be made — a missing
+sidecar, or a directory input the stat check cannot speak for — and failing on it would make
+any project with one reference directory permanently red. The count is on the summary line,
+where a reader can see it and reach for `--rehash`.
+
+It refuses two shapes so that exit 1 keeps one meaning: without `--stale` or `--rehash`
+there is nothing to gate on, and with a `show <target>` argument, which already exits 1 for
+"nothing matched your target". Both are exit 2, a usage mistake rather than a failing
+artifact.
+
 Three stated limits. The pin is looked for in the **first 64 KiB** only, because reading
 every byte of a 50 GB BAM to learn it has no pin is the cost that gets a checker deleted;
 the comment marker is whatever precedes the anchor on its line, so a pin written with
