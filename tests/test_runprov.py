@@ -2352,6 +2352,31 @@ def test_a_workflow_engine_cannot_see_an_undeclared_read(tmp_path):
     assert "declared.tsv" not in out.read_text(encoding="utf-8")
 
 
+def test_project_fields_are_keyword_only(tmp_path):
+    """Council C-21. `Project` is a frozen dataclass with 16 fields and, without
+    `kw_only=True`, it accepted POSITIONAL arguments — so field order would become API the day
+    this is published, and inserting a field beside its logical neighbour would be a breaking
+    change rather than an addition.
+
+    This is not hypothetical. `warn_unregistered_reads` was added at index 5 on 2026-08-19,
+    shifting `env_snapshot_dir` 5→6 and `terminal_log_dir` 6→7. A caller who had written the
+    positional form would now bind a `Path` to a BOOL field and get `env_snapshot_dir = None`,
+    with NO error — indices 1/2 and 6/7 are all `Path | None`, and 3/4/5 are all `bool`. A
+    silent mis-binding in the object that decides where every record goes."""
+    with pytest.raises(TypeError, match="positional"):
+        runprov.Project(tmp_path, tmp_path / "h.jsonl")  # type: ignore[misc]
+
+    assert runprov.Project(root=tmp_path).root == tmp_path, "keywords are unaffected"
+
+    # And the property that outlives this test: order is free to change because nothing can
+    # depend on it. Asserted as the RULE rather than as a list of names, so adding a field is
+    # not a test edit.
+    import dataclasses
+
+    for field in dataclasses.fields(runprov.Project):
+        assert field.kw_only, f"{field.name} is positional; inserting a field would break callers"
+
+
 def test_a_run_armed_but_never_written_says_so_at_exit(tmp_path, monkeypatch, capsys):
     """Council C-20. The THIRD shape that records nothing, and the only one that records
     nothing on a CLEAN finish: `provenance=` supplied, no `with`, no `write()`. The README's
