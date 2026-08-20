@@ -822,6 +822,8 @@ class Run:
         # `_in_context` and goes back to False at exit. See `__enter__` for why re-entry is
         # refused rather than tolerated.
         self._entered = False
+        #: The in-flight marker for this run, while it is in flight. See `_mark_in_flight`.
+        self._in_flight: pathlib.Path | None = None
         # Whether `header()` has already rendered a pin. An input registered after that
         # point is NOT in the pin already embedded in an artifact, and no later inspection
         # can tell -- the artifact simply understates itself, in its own body.
@@ -1105,9 +1107,93 @@ class Run:
         # NOTICE UNREGISTERED READS. Attached here rather than in `__init__` for the same
         # reason the signal handler is: it describes what happens INSIDE the block, and a
         # `Run` built without a `with` has no exit at which to report.
+        # BEFORE `attach`, and that ordering is the whole of it. The watcher notices files
+        # this run opens, and the marker is a file this run opens — so with these two the
+        # other way round the package reported ITS OWN marker as a read the user forgot to
+        # register. That is L-108 exactly, three weeks later and in a new place: the first
+        # version of this change re-created it, and the L-108 test caught it.
+        #
+        # Ordering rather than another exclusion entry, because an exclusion list is a
+        # second place to keep in step and L-108 was two spellings of one name drifting.
+        # A file written before the watcher exists cannot be seen by it.
+        self._mark_in_flight()
         if self.project.warn_unregistered_reads:
             attach(self)
         return self
+
+    def _mark_in_flight(self) -> None:
+        """Leave evidence, at the START, that this run exists.
+
+        THE ONE ENDING THAT STILL RECORDED NOTHING. `SIGINT`, `SIGTERM` and `SIGHUP` all
+        reach `__exit__` and are recorded — measured, one history line each. `SIGKILL` does
+        not, and neither does a power loss, an OOM kill or a node failure: nothing runs, so
+        nothing is written, and the artifacts left on disk are byte-for-byte what a
+        successful run would have left. Measured before this existed: artifact present,
+        history lines 0, sidecar absent.
+
+        That is the property this package criticises its predecessor for, in `__enter__`'s
+        own docstring: "appended only on success, so its 300 runs was 300 COMPLETED runs
+        with an unknown denominator". An 8-hour job killed by the OOM killer at hour 7 is
+        the most likely way a long run ends, and it was invisible.
+
+        ONE FILE PER RUN, DELETED AT `__exit__`, so "what started and has not been seen to
+        end" costs one `listdir` rather than a scan of a history that only grows.
+
+        IT ANSWERS "WHAT IS UNFINISHED NOW", WHICH IS NOT THE SAME QUESTION AS "HOW MANY
+        RUNS EVER STARTED". This directory is deletable and transient by design; the
+        append-only history is what makes a count permanent. See the `started` record the
+        history carries for that half — the two are kept separate precisely because one is a
+        cheap index that may be cleaned away and the other is the record.
+
+        ITS PRESENCE IS NOT A DEATH. The marker exists for the whole of every run, including
+        the one reading the page — `show.in_flight` decides between RUNNING, INTERRUPTED and
+        "cannot tell from here", and only the middle one is a finding.
+
+        NEVER RAISES, like everything else that describes a run rather than doing the work.
+        """
+        try:
+            d = self.project.resolved_incomplete_dir()
+            d.mkdir(parents=True, exist_ok=True)
+            self._in_flight = d / f"{self.record['run_uid']}.json"
+            self._in_flight.write_text(
+                json.dumps(
+                    {
+                        "run_uid": self.record["run_uid"],
+                        "script": self.record["script"],
+                        "started_utc": self.record["started_utc"],
+                        "pid": os.getpid(),
+                        # THE HOST, because a pid means nothing without one. A marker left
+                        # by a compute node says nothing a login node can check, and
+                        # `os.kill(pid, 0)` there would answer about a DIFFERENT process
+                        # that happens to hold that number. Recorded so the reader can say
+                        # "cannot tell from here" instead of guessing — which is the same
+                        # rule as `git_status_captured: false`.
+                        "host": platform.node(),
+                        "cwd": self.record.get("cwd"),
+                        "history": str(self.project.resolved_run_log()),
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:  # guards-ok: provenance must not be what ends the run
+            self._in_flight = None
+            diagnostic(f"  WARNING: could not mark this run as in flight: {exc}")
+
+    def _clear_in_flight(self) -> None:
+        """Remove the marker. The run reached its end, so it is no longer in flight.
+
+        `missing_ok`: a user who deleted the directory mid-run has not created a defect
+        worth an exception, and the history already holds the finished record by the time
+        this runs.
+        """
+        if self._in_flight is None:
+            return
+        try:
+            self._in_flight.unlink(missing_ok=True)
+        except OSError as exc:  # guards-ok
+            diagnostic(f"  WARNING: could not clear the in-flight marker: {exc}")
+        self._in_flight = None
 
     def _refuse_after_exit(self, call: str) -> None:
         """Refuse a recording call made after the block has closed.
@@ -1191,6 +1277,12 @@ class Run:
             self._finish()
         except Exception as exc:  # never replace the exception being recorded
             diagnostic(f"  WARNING: provenance capture failed during exit: {exc}")
+        # AFTER `_finish`, unconditionally. The marker says "this run started and has not
+        # been seen to end"; the moment the ending is on disk that is no longer true, and it
+        # is true whether the run succeeded, failed or was terminated — all three reach here
+        # and all three are recorded. Clearing it before `_finish` would open a window where
+        # a kill left neither the marker nor the record.
+        self._clear_in_flight()
         return False  # NEVER swallow the caller's exception.
 
     def _note_unregistered_reads(self) -> None:

@@ -42,7 +42,9 @@ __all__: list[str] = []
 
 import collections
 import json
+import os
 import pathlib
+import platform
 import typing
 
 from .hashing import PIN_DIGEST_CHARS, describe, moved_since, pin_digest
@@ -366,6 +368,62 @@ MODIFIED = "MODIFIED"
 #: the digest rather than merely misaligning. A state added here widens the column with it.
 STATES = frozenset({OK, STALE, GONE, MODIFIED, UNVERIFIABLE})
 STATE_COLUMN = max(len(s) for s in STATES) + 1
+
+
+#: What an in-flight marker can be said to be. A marker exists for the WHOLE of a run, so
+#: its presence alone does not mean the run died — it means no ending has been recorded yet.
+RUNNING = "RUNNING"
+INTERRUPTED = "INTERRUPTED"
+UNTELLABLE = "?"
+
+
+def in_flight(directory: pathlib.Path) -> list[dict[str, typing.Any]]:
+    """Runs that started and whose ending is not on record, newest first.
+
+    A MARKER IS NOT A DEATH CERTIFICATE, and conflating the two would be the guess this
+    package refuses. The marker is written at `__enter__` and removed at `__exit__`, so it
+    is present for the whole of every run — including the one reading this page. Three
+    states, and only one of them is a finding:
+
+        RUNNING       the pid is alive on THIS host: a job in progress, nothing wrong
+        INTERRUPTED   the pid is gone on this host and no ending was ever recorded — the
+                      run was killed in a way that runs no code: SIGKILL, the OOM killer,
+                      a power loss, a node failure
+        ?             the marker is from ANOTHER HOST. A pid there says nothing here, and
+                      `os.kill(pid, 0)` would answer about whichever local process happens
+                      to hold that number. Saying so is the point
+
+    Unreadable markers are skipped rather than reported as findings: a half-written marker
+    is itself the result of an interruption, and the run it describes is already visible as
+    a missing ending in the history.
+    """
+    if not directory.is_dir():
+        return []
+    out = []
+    here = platform.node()
+    for f in sorted(directory.glob("*.json")):
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):  # guards-ok: a torn marker is not a finding
+            continue
+        rec["state"] = _liveness(rec, here)
+        out.append(rec)
+    return sorted(out, key=lambda r: str(r.get("started_utc", "")), reverse=True)
+
+
+def _liveness(rec: dict[str, typing.Any], here: str) -> str:
+    if rec.get("host") != here:
+        return UNTELLABLE
+    pid = rec.get("pid")
+    if not isinstance(pid, int):
+        return UNTELLABLE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return INTERRUPTED
+    except (PermissionError, OSError):  # guards-ok: alive, owned by somebody else
+        return RUNNING
+    return RUNNING
 
 
 def _resolve(path: str, cwd: str | None) -> pathlib.Path:

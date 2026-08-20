@@ -55,6 +55,7 @@ import subprocess
 import sys
 import typing
 
+from . import show as show_mod
 from .hashing import PIN_DIGEST_CHARS
 from .project import active
 from .run import Run, Terminated
@@ -62,6 +63,7 @@ from .show import (
     MODIFIED,
     _yaml_entry,
     _yaml_header,
+    in_flight,
     project_view,
     render_project_lines,
     render_run,
@@ -771,6 +773,40 @@ def _counted(path: pathlib.Path, bad: list[int]) -> typing.Iterator[dict[str, ty
             yield rec
 
 
+def _report_in_flight(path: pathlib.Path) -> None:
+    """Say which runs started and have no ending on record. Nothing if there are none.
+
+    DERIVED FROM THE HISTORY BEING READ, not from the configured project, so `--log
+    somewhere/else.jsonl` reports the markers belonging to THAT history rather than to
+    whichever project this shell happens to be standing in.
+
+    Called even when the history file does not exist, which is the case that matters most: a
+    project whose FIRST run was killed has no history at all, so "nothing has been recorded
+    here yet" would otherwise be the whole answer over a directory holding a half-finished
+    artifact and a marker naming the run that made it.
+    """
+    pending = in_flight(path.parent / ".incomplete")
+    if not pending:
+        return
+    out = [f"# {len(pending)} run(s) STARTED with no ending recorded:"]
+    for r in pending:
+        where = "" if r.get("state") != show_mod.UNTELLABLE else f"  on {r.get('host', '?')}"
+        out.append(
+            f"#   {r.get('state', '?'):12} {r.get('script', '?')!s:20} "
+            f"{r.get('started_utc', '?')}  pid {r.get('pid', '?')}{where}"
+        )
+    print("\n".join(out), file=sys.stderr)
+    n = sum(1 for r in pending if r.get("state") == show_mod.INTERRUPTED)
+    if n:
+        print(
+            f"#   {n} of them ran no ending code at all — a SIGKILL, the OOM killer, a "
+            f"power loss or a node failure.\n"
+            f"#   Anything they wrote is on disk and is NOT in the history: it looks "
+            f"exactly like a completed run's output.",
+            file=sys.stderr,
+        )
+
+
 def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
     """`show`, which reads the history and renders it. It writes nothing, by design.
 
@@ -853,6 +889,12 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
         # time precisely so the whole of it is never a single value. Joining here would
         # rebuild the string the generator exists to avoid.
         sys.stdout.writelines(render_project_lines(view, states))
+    # RUNS WITH NO ENDING ON RECORD, before the tally, because "this page may be describing
+    # a job that is still writing" changes how everything above it should be read. Reported
+    # on the PROJECT page only, for the same reason the staleness column is: it is a fact
+    # about the project rather than about one run.
+    _report_in_flight(path)
+
     tally = ""
     if states:
         counts = collections.Counter(states.values())
@@ -1079,6 +1121,10 @@ def main(argv: list[str] | None = None) -> int:
 
     path = pathlib.Path(args.log) if args.log else active().resolved_run_log()
     if not path.is_file():
+        # BEFORE "nothing recorded here", because a marker beside a MISSING history is not
+        # nothing recorded — it is a run that started and never got to write one, which is
+        # the opposite finding and the more alarming of the two.
+        _report_in_flight(path)
         print(
             f"no run history at {path}\n"
             f"  It is created by the first recorded run — `with Run(..., provenance=...)`.\n"
