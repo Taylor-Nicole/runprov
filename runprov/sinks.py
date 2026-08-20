@@ -157,6 +157,13 @@ class YamlLogSink:
     def append(self, record: dict[str, typing.Any]) -> None:
         from .show import _yaml_entry, _yaml_header  # local: `show` must not import sinks
 
+        # A NARRATIVE OF COMPLETED RUNS. The history carries a `runprov.start.v1` line for
+        # every run that begins, so that one which never ends is still on record; rendering
+        # those here would put TWO entries per ordinary run into the file a person reads,
+        # and the second would say nothing the first does not. The JSONL beside it keeps
+        # both, and this file states in its own banner that it is a view and can be rebuilt.
+        if record.get("schema") == "runprov.start.v1":
+            return
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.path, "ab+") as fh:

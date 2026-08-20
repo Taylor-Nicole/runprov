@@ -314,6 +314,35 @@ Nothing has been published yet. Everything below is what a first release would c
   writes THE RECORD. A test asserts every method has a line and that this boundary holds,
   since prose rots and a method added without one is a method with no stated family.
 
+### A run that is killed outright is on record
+
+Reported by the first real consumer: *anything runprov writes only at the end is lost by
+every interrupted long job, and the artifacts on disk look identical to a successful run's.*
+
+- **Measured before anything was built.** `SIGINT`, `SIGTERM` and `SIGHUP` were already
+  covered — one history line each — because the signal handler raises and `__exit__` runs.
+  `SIGKILL` was not: artifact on disk, **zero** history lines, no sidecar. So the gap was
+  SIGKILL-class only: the OOM killer, `kill -9`, a power loss, a node failure. For an
+  8-hour job the OOM killer is the likeliest ending there is.
+- **A `runprov.start.v1` line is appended when the block is entered**, so the record of a
+  run exists before the run can be killed. A start whose `run_uid` never gets a matching
+  record is the finding, and it is permanent — the history is append-only. This is the
+  "unknown denominator" the package criticises its predecessor for, closed for the one
+  ending that runs no code.
+- **`<history>/.incomplete/<run_uid>.json`** is written beside it and deleted at exit: an
+  index of what is unfinished *now*, which the history cannot answer because it does not
+  know what is alive. `show` is driven by the history and enriched by the markers, so the
+  finding survives deleting the directory.
+- **A marker is not a death certificate.** It exists for the whole of every run, so
+  `RUNNING` is the ordinary state and not a finding; `INTERRUPTED` is; and a marker from
+  another host reads `?` rather than being guessed at, since `os.kill(pid, 0)` there would
+  answer about whichever local process holds that number.
+- Every reader drops the `started` lines — `_load` and `_counted` for `show`/`lineage`, and
+  `log` separately because it streams raw — so nothing counts a completed run twice. The
+  YAML view declines them too: it is a narrative of completed runs.
+- **A run with no `provenance=` writes neither.** That shape records nothing by design, and
+  a start line there would mean constructing a `Run` created a history file.
+
 ### You can see the lines a reader skipped
 
 - **`log --unreadable`** prints the lines that will not parse, with their line numbers, and
