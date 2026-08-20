@@ -1259,6 +1259,49 @@ defect that left the predecessor's file unreadable partway through and spawned n
 `fix_transformation_log_*.py` repair scripts. The append-only history is JSONL for that
 reason, and this renders a view of it.
 
+### A run that is killed outright
+
+`SIGINT`, `SIGTERM` and `SIGHUP` all reach `__exit__`, so a `scancel`, a walltime kill, a
+`docker stop` or a dropped SSH session is recorded as a failed run with everything it had
+read and written up to that point. Measured, one history line each.
+
+`SIGKILL` runs no code at all — and neither does the OOM killer, a power loss or a node
+failure. Nothing can write a record at that moment, so the record has to exist **before**:
+
+```
+runs.jsonl:   {"schema": "runprov.start.v1", "run_uid": "…", "script": "fetch", …}
+              ← the ending never arrived
+
+.incomplete/<run_uid>.json    ← removed at __exit__; still there
+```
+
+A `started` line is appended when the block is entered, and the matching record arrives at
+the end. **A start whose `run_uid` never gets a record is the finding**, and it is permanent:
+the history is append-only, so the count survives anything short of rewriting it. Beside it,
+`<history>/.incomplete/` holds one marker per running run, deleted at exit — an index of
+what is unfinished *now*, which the history cannot answer because it does not know what is
+alive.
+
+```
+$ python -m runprov show
+# 2 run(s) STARTED with no ending recorded:
+#   RUNNING      align                2026-08-20T09:02:11Z  pid 41022
+#   INTERRUPTED  fetch                2026-08-20T07:12:44Z  pid 24118
+#   1 of them ran no ending code at all — a SIGKILL, the OOM killer, a power loss or a
+#   node failure.
+#   Anything they wrote is on disk and is NOT in the history: it looks exactly like a
+#   completed run's output.
+```
+
+**A marker is not a death certificate.** It exists for the whole of every run, so `RUNNING`
+is the ordinary state of a busy project and is not a finding. A marker from another host
+reads `?` rather than being guessed at, because `os.kill(pid, 0)` there would answer about
+whichever local process holds that number.
+
+Every reader drops the `started` lines, so `show`, `log` and `lineage` count runs and not
+line pairs. A run with no `provenance=` writes neither — that shape records nothing by
+design, and this does not change it.
+
 ### When a line will not parse
 
 Every reader here degrades and says how much it lost:

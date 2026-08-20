@@ -331,7 +331,7 @@ def test_an_output_that_cannot_be_hashed_is_recorded_and_does_not_destroy_the_ru
     assert outs["stream.out"]["kind"] == "UNHASHABLE"
     assert "sha256" not in outs["stream.out"], "no digest may be invented for it"
 
-    history = (tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    history = [json.dumps(r) for r in _lines(tmp_path / "runs.jsonl")]
     assert len(history) == 1, "the run must reach the append-only history, not vanish from it"
     assert json.loads(history[0])["notes"] == {"rows": 1}
 
@@ -355,7 +355,7 @@ def test_run_appends_one_line_per_run_to_the_history(tmp_path):
     proj = _project(tmp_path)
     for _ in range(3):
         runprov.Run("t", project=proj).write(tmp_path / "t_provenance.json")
-    lines = (tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    lines = [json.dumps(r) for r in _lines(tmp_path / "runs.jsonl")]
     assert len(lines) == 3
     first = json.loads(lines[0])
     assert first["run_id"] == "test_run" and first["generation"] == "test_gen"
@@ -414,10 +414,7 @@ def test_a_failed_run_is_greppable_in_the_history(tmp_path):
         with runprov.Run("bad", project=proj, provenance=tmp_path / "bad.json"):
             raise ValueError("nope")
     runprov.Run("good", project=proj).write(tmp_path / "good.json")
-    rows = [
-        json.loads(x)
-        for x in (tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip().splitlines()
-    ]
+    rows = [json.loads(x) for x in [json.dumps(r) for r in _lines(tmp_path / "runs.jsonl")]]
     assert [r["status"] for r in rows] == ["failed", "ok"]
     assert rows[1]["failure"] is None
 
@@ -426,7 +423,7 @@ def test_a_successful_with_block_writes_once_not_twice(tmp_path):
     proj = _project(tmp_path)
     with runprov.Run("t", project=proj, provenance=tmp_path / "t.json") as run:
         run.write(tmp_path / "t.json")  # explicit write, the historic style
-    assert len((tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip().splitlines()) == 1
+    assert len([json.dumps(r) for r in _lines(tmp_path / "runs.jsonl")]) == 1
 
 
 def test_status_defaults_to_ok_on_the_plain_write_path(tmp_path):
@@ -460,7 +457,7 @@ def test_concurrent_appends_do_not_interleave(tmp_path):
 
     with cf.ThreadPoolExecutor(max_workers=8) as ex:
         list(ex.map(one, range(24)))
-    lines = (tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    lines = [json.dumps(r) for r in _lines(tmp_path / "runs.jsonl")]
     # The count first, and with the number in the message: Windows CI failed here with
     # 23 == 24 and the interesting fact was the missing ONE, not the assertion text.
     assert len(lines) == 24, f"{24 - len(lines)} record(s) lost to interleaving"
@@ -691,7 +688,7 @@ def test_history_line_carries_the_script_file_and_the_env_snapshot(tmp_path, mon
     runprov.configure(root=tmp_path, run_log=log, env_snapshot_dir=tmp_path / "envs")
     with runprov.Run("s", provenance=tmp_path / "p.json"):
         pass
-    line = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    line = _lines(log)[-1]
     assert line["script_file"], "the path, not only its hash"
     assert line["script_file"].endswith(".py")
     assert line["environment_snapshot"]["path"].endswith(".txt")
@@ -727,7 +724,7 @@ def test_the_history_is_one_file_appended_forever(tmp_path):
     for i in range(4):
         runprov.Run(f"s{i}", project=proj).write(tmp_path / f"p{i}.json")
         assert len(log.read_text(encoding="utf-8").strip().splitlines()) == i + 1
-    first = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    first = _lines(log)[0]
     assert first["script"] == "s0", "the first record must survive every later append"
 
 
@@ -771,7 +768,7 @@ def test_the_command_survives_arguments_that_need_quoting(tmp_path, monkeypatch)
 def test_the_invocation_reaches_the_history(tmp_path):
     proj = _project(tmp_path)
     runprov.Run("t", project=proj).write(tmp_path / "p.json")
-    rec = json.loads((tmp_path / "runs.jsonl").read_text(encoding="utf-8"))
+    (rec,) = _lines(tmp_path / "runs.jsonl")
     assert sys.executable in rec["command"] and rec["cwd"]
 
 
@@ -979,7 +976,7 @@ def test_every_record_declares_its_schema(tmp_path):
     # sidecar is the full record, the history line is a flattened summary, and a consumer
     # branching on the marker -- the only reason the field exists -- would have applied the
     # wrong reader to one of them.
-    assert sink.records[0]["schema"] == runprov.HISTORY_SCHEMA == "runprov.history.v2"
+    assert _completed(sink.records)[0]["schema"] == runprov.HISTORY_SCHEMA == "runprov.history.v2"
     assert runprov.SCHEMA != runprov.HISTORY_SCHEMA
 
 
@@ -1019,7 +1016,7 @@ def _dir_input_history(tmp_path):
         run.input(tmp_path / "plain.tsv")
         (out := run.output(tmp_path / "art.tsv")).write_text("x\n", encoding="utf-8")
     assert out.is_file()
-    return [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    return _lines(tmp_path / "runs.jsonl")
 
 
 def _one_state(rows, **kw):
@@ -1087,7 +1084,7 @@ def test_the_sidecar_cache_survives_not_keeping_the_records(tmp_path, monkeypatc
             (tmp_path / f"out_{k}.tsv").write_text(f"{k}\n", encoding="utf-8")
             run.output(tmp_path / f"out_{k}.tsv")
 
-    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    rows = _lines(tmp_path / "runs.jsonl")
     states = {pathlib.Path(k).name: v for k, v in runprov.show.staleness(rows).items()}
     # The FIRST run's sidecar was overwritten, so its artifact cannot be judged and says so.
     # The second's is still its own and verifies. Sharing one cache entry would give both the
@@ -1110,7 +1107,7 @@ def _shared_input_history(tmp_path, artifacts=6, inputs=3):
                 run.input(p)
             (tmp_path / f"out_{k}.tsv").write_text("x\n", encoding="utf-8")
             run.output(tmp_path / f"out_{k}.tsv")
-    return [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    return _lines(tmp_path / "runs.jsonl")
 
 
 def test_rehash_reads_each_distinct_file_once_across_the_whole_page(tmp_path, monkeypatch):
@@ -1207,7 +1204,7 @@ def test_the_history_carries_kind_when_it_is_a_finding(tmp_path):
         run.output(tmp_path / "never.tsv")  # registered and never written
         (ok := run.output(tmp_path / "real.tsv")).write_text("x\n", encoding="utf-8")
 
-    rec = json.loads((tmp_path / "runs.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    rec = _lines(tmp_path / "runs.jsonl")[0]
     by_name = {pathlib.Path(e["path"]).name: e for e in rec["inputs"] + rec["outputs"]}
     assert by_name["never.tsv"]["kind"] == "MISSING", "a run that produced nothing must say so"
     assert by_name["dir"]["kind"] == "directory", "a directory input cannot be stat-checked"
@@ -1261,7 +1258,7 @@ def test_a_project_keeps_a_readable_transformation_log_beside_the_history(tmp_pa
     assert entries[2]["summary"] == {"rows_kept": 20}
     assert isinstance(entries[0]["date"], str)
 
-    history = (tmp_path / "provenance" / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+    history = [json.dumps(r) for r in _lines(tmp_path / "provenance" / "runs.jsonl")]
     assert len(history) == 3, "the record of truth is unchanged and still one line per run"
 
 
@@ -1310,7 +1307,7 @@ def test_both_extra_views_can_be_turned_off(tmp_path):
     assert not (tmp_path / "provenance" / "transformation_log.yml").exists()
     assert not (tmp_path / "p0.prov.yml").exists()
     assert (tmp_path / "p0.prov.json").is_file(), "the record is not a view"
-    assert len((tmp_path / "provenance" / "runs.jsonl").read_text().splitlines()) == 3
+    assert len([json.dumps(r) for r in _lines(tmp_path / "provenance" / "runs.jsonl")]) == 3
     assert proj.write_transformation_log is False
 
 
@@ -1322,7 +1319,7 @@ def test_a_supplied_sink_is_the_whole_story(tmp_path):
     proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
     with runprov.Run("s", project=proj, provenance=tmp_path / "p.prov.json"):
         pass
-    assert len(sink.records) == 1
+    assert len(_completed(sink.records)) == 1
     assert not (tmp_path / "provenance" / "transformation_log.yml").exists()
 
 
@@ -1333,7 +1330,7 @@ def test_a_second_write_does_not_double_count_the_run(tmp_path):
     run = runprov.Run("t", project=proj)
     run.write(tmp_path / "a.json")
     run.write(tmp_path / "b.json")
-    assert len(sink.records) == 1
+    assert len(_completed(sink.records)) == 1
     assert (tmp_path / "a.json").is_file() and (tmp_path / "b.json").is_file()
 
 
@@ -1349,7 +1346,7 @@ def test_writing_a_second_path_does_not_cost_the_one_the_constructor_named(tmp_p
 
     assert (tmp_path / "primary.json").is_file(), "the constructor's sidecar must exist"
     assert (tmp_path / "second.json").is_file(), "and so must the one write() named"
-    assert len(log.records) == 1, "two sidecars are still one run and one history line"
+    assert len(_completed(log.records)) == 1, "two sidecars are still one run and one history line"
 
 
 def test_every_sidecar_a_run_wrote_carries_the_final_status(tmp_path):
@@ -1367,7 +1364,7 @@ def test_every_sidecar_a_run_wrote_carries_the_final_status(tmp_path):
         rec = json.loads((tmp_path / name).read_text(encoding="utf-8"))
         assert rec["status"] == "failed", f"{name} still claims the run succeeded"
         assert rec["failure"]["type"] == "ValueError"
-    assert log.records[0]["status"] == "failed"
+    assert _completed(log.records)[0]["status"] == "failed"
 
 
 def test_one_file_named_two_ways_is_one_sidecar(tmp_path):
@@ -1381,7 +1378,7 @@ def test_one_file_named_two_ways_is_one_sidecar(tmp_path):
 
     assert (tmp_path / "out" / "p.json").is_file()
     assert len(run._written_paths) == 1, f"counted {len(run._written_paths)} paths for one file"
-    assert len(log.records) == 1
+    assert len(_completed(log.records)) == 1
 
 
 @requires_symlinks
@@ -1397,7 +1394,9 @@ def test_a_sidecar_path_through_a_symlink_loop_does_not_end_the_run(tmp_path):
     log, proj = _sinked(tmp_path)
     with runprov.Run("t", project=proj, provenance=tmp_path / "a" / "p.json"):
         pass
-    assert len(log.records) == 1, "the history line survives a sidecar path that cannot resolve"
+    assert len(_completed(log.records)) == 1, (
+        "the history line survives a sidecar path that cannot resolve"
+    )
 
 
 def test_a_second_write_does_not_double_the_outputs_inside_the_record(tmp_path):
@@ -1431,8 +1430,8 @@ def test_a_second_write_does_not_double_the_outputs_inside_the_record(tmp_path):
         (out2 := run2.output(tmp_path / "p.tsv")).write_text("id\n1\n", encoding="utf-8")
         run2.write(tmp_path / "d.json")
 
-    assert len(sink2.records) == 1, "still exactly one line for the run"
-    assert [o["path"] for o in sink2.records[0]["outputs"]] == [str(out2)], (
+    assert len(_completed(sink2.records)) == 1, "still exactly one line for the run"
+    assert [o["path"] for o in _completed(sink2.records)[0]["outputs"]] == [str(out2)], (
         "the append-only history must not carry one artifact twice"
     )
 
@@ -1444,7 +1443,7 @@ def test_a_custom_sink_receives_the_records(tmp_path):
     proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
     for i in range(3):
         runprov.Run(f"s{i}", project=proj).write(tmp_path / f"p{i}.json")
-    assert [r["script"] for r in sink.records] == ["s0", "s1", "s2"]
+    assert [r["script"] for r in _completed(sink.records)] == ["s0", "s1", "s2"]
     assert not (tmp_path / "provenance" / "runs.jsonl").exists(), (
         "a custom sink must REPLACE the default, not write to both"
     )
@@ -1983,7 +1982,7 @@ def test_a_run_whose_capture_cannot_start_or_stop_is_still_recorded(tmp_path, mo
     with runprov.Run("a", provenance=tmp_path / "a.json", terminal_log=tmp_path / "a.log"):
         pass
     assert "could not start" in capsys.readouterr().err
-    assert json.loads(log.read_text(encoding="utf-8").splitlines()[-1])["status"] == "ok"
+    assert _lines(log)[-1]["status"] == "ok"
 
     class _ExplodingStop:
         def __init__(self, path):
@@ -2000,7 +1999,7 @@ def test_a_run_whose_capture_cannot_start_or_stop_is_still_recorded(tmp_path, mo
         pass
     assert "could not stop cleanly" in capsys.readouterr().err
     assert "terminal_log" not in run.record
-    assert json.loads(log.read_text(encoding="utf-8").splitlines()[-1])["status"] == "ok"
+    assert _lines(log)[-1]["status"] == "ok"
 
 
 def test_a_capture_returning_no_description_leaves_the_record_alone(tmp_path, monkeypatch):
@@ -2392,7 +2391,7 @@ def test_exec_returns_what_a_shell_returns_for_a_signal_killed_child(
     )
     assert code == 128 + signum, f"a shell returns {128 + signum} for SIG{signame}"
 
-    rec = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
+    rec = _lines(tmp_path / "h.jsonl")[-1]
     assert rec["status"] == "failed"
     assert f"SIG{signame}" in rec["failure"]["message"], (
         "and the record must NAME the signal — 'exited -15' is unreadable and wrong: the "
@@ -2433,7 +2432,7 @@ def test_exec_does_not_confuse_a_signal_with_an_exit_code_that_looks_like_one(
     )
     assert killed == 143 and exited == 241, f"{killed} vs {exited} — these must differ"
 
-    recs = [json.loads(x) for x in (tmp_path / "h.jsonl").read_text().splitlines() if x]
+    recs = [json.loads(x) for x in [json.dumps(r) for r in _lines(tmp_path / "h.jsonl")] if x]
     by = {r["script"]: r for r in recs}
     assert "signal" in by["a"]["notes"] and "signal" not in by["b"]["notes"], (
         "and only one of them was killed by a signal"
@@ -2481,7 +2480,7 @@ def test_exec_does_not_read_a_windows_crash_code_as_a_signal(tmp_path, monkeypat
 
     monkeypatch.setattr(cli.subprocess, "Popen", FakePopen)
     code = cli.main(["exec", "--name", "w", "--", "anything"])
-    rec = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
+    rec = _lines(tmp_path / "h.jsonl")[-1]
     assert "signal" not in rec["notes"], "an NTSTATUS is not a signal"
     assert "killed by" not in rec["failure"]["message"]
     assert code != 0
@@ -2520,7 +2519,7 @@ def test_exec_names_a_signal_the_platform_has_no_name_for(tmp_path, monkeypatch)
 
     monkeypatch.setattr(cli.subprocess, "Popen", FakePopen)
     assert cli.main(["exec", "--name", "rt", "--", "anything"]) == 163
-    rec = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
+    rec = _lines(tmp_path / "h.jsonl")[-1]
     assert rec["notes"]["signal"] == {"number": 35, "name": "signal 35"}
 
 
@@ -3168,7 +3167,7 @@ def test_a_late_write_cannot_make_the_sidecar_and_the_history_disagree(tmp_path,
     run.write(tmp_path / "p.json")  # legal, and must now be a no-op in content terms
 
     side = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
-    hist = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
+    hist = _lines(tmp_path / "h.jsonl")[-1]
     assert side["run_uid"] == hist["run_uid"], "the premise: one run, two persisted records"
     for field in ("notes", "seeds"):
         assert side[field] == hist[field], f"{field} disagree: {side[field]} vs {hist[field]}"
@@ -3203,7 +3202,7 @@ def test_a_run_refuses_to_be_entered_twice(tmp_path, monkeypatch):
         "refused at entry, so the second block's work never happens — an artifact with no "
         "record is exactly what this prevents"
     )
-    lines = [x for x in (tmp_path / "h.jsonl").read_text(encoding="utf-8").splitlines() if x]
+    lines = [x for x in [json.dumps(r) for r in _lines(tmp_path / "h.jsonl")] if x]
     assert len(lines) == 1, "the first pass is still recorded, exactly once"
     assert (tmp_path / "out1.tsv").is_file(), "and its work is untouched"
 
@@ -3533,7 +3532,7 @@ def test_one_unusable_value_costs_that_value_and_not_the_record(tmp_path, monkey
     assert "UNSERIALISABLE" in rec["notes"]["bad_value"], rec["notes"]["bad_value"]
     assert "Boom" in rec["notes"]["bad_value"], "and it must name the type, to be findable"
 
-    line = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
+    line = _lines(tmp_path / "h.jsonl")[-1]
     assert line["notes"]["fine"] == 42, "the HISTORY line must survive too, not just the sidecar"
     assert (tmp_path / "p.yml").is_file(), "and the YAML view, which renders the same record"
 
@@ -3643,7 +3642,7 @@ def test_an_unregistered_read_is_noticed_and_recorded(tmp_path, monkeypatch, cap
 
     # It reaches the HISTORY, not just the live object: a field nobody can read later would
     # be no better than the warning.
-    rec = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
+    rec = _lines(tmp_path / "h.jsonl")[-1]
     assert rec["unregistered_reads"] == ["data/lookup.csv"]
 
 
@@ -4445,7 +4444,7 @@ def test_a_failure_after_write_is_not_recorded_as_ok(tmp_path):
     assert rec["failure"]["type"] == "RuntimeError"
     assert "blew up" in rec["failure"]["message"]
     # The history must not claim success either, and must not double-count the run.
-    assert [r["status"] for r in sink.records] == ["failed"], sink.records
+    assert [r["status"] for r in _completed(sink.records)] == ["failed"], _completed(sink.records)
 
 
 def test_the_pin_does_not_depend_on_registration_order(tmp_path):
@@ -4561,7 +4560,7 @@ def test_a_failing_sidecar_write_does_not_replace_the_users_exception(tmp_path, 
         with runprov.Run("f", project=proj, provenance=blocker / "sub" / "p.json"):
             raise RuntimeError("THE REAL FAILURE the user needs to see")
     # and the failure must still reach the history, which does not need the filesystem
-    assert [r["status"] for r in sink.records] == ["failed"]
+    assert [r["status"] for r in _completed(sink.records)] == ["failed"]
     assert "could not write" in capsys.readouterr().err
 
 
@@ -4580,11 +4579,15 @@ def test_an_unserialisable_note_does_not_lose_the_run(tmp_path):
     run = runprov.Run("g", project=proj)
     run.note("confusion", {(1, "a"): 0.9})
     run.write(tmp_path / "p.json")
-    assert len(sink.records) == 1, "the run must be recorded even if a note cannot encode"
+    assert len(_completed(sink.records)) == 1, (
+        "the run must be recorded even if a note cannot encode"
+    )
     rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
     assert list(rec["notes"]["confusion"].values()) == [0.9], "the measurement survives"
     assert "1" in next(iter(rec["notes"]["confusion"])), "under a stringified key"
-    assert sink.records[0]["notes"] == rec["notes"], "and the HISTORY agrees with the sidecar"
+    assert _completed(sink.records)[0]["notes"] == rec["notes"], (
+        "and the HISTORY agrees with the sidecar"
+    )
 
 
 # ================= regressions introduced by the deferred-history change, found by review
@@ -4605,7 +4608,7 @@ def test_the_sidecar_and_the_history_agree_without_a_provenance_kwarg(tmp_path):
         with runprov.Run("x", project=proj) as run:  # no provenance=
             run.write(tmp_path / "p.json")
             raise RuntimeError("boom")
-    assert [r["status"] for r in sink.records] == ["failed"]
+    assert [r["status"] for r in _completed(sink.records)] == ["failed"]
     assert json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["status"] == "failed"
 
 
@@ -4618,7 +4621,7 @@ def test_one_run_is_one_history_line_even_across_write_then_with(tmp_path):
     run.write(tmp_path / "p.json")
     with run:
         run.write(tmp_path / "p.json")
-    assert len(sink.records) == 1
+    assert len(_completed(sink.records)) == 1
 
 
 def test_one_run_is_one_history_line_however_often_write_is_called(tmp_path):
@@ -4635,7 +4638,7 @@ def test_one_run_is_one_history_line_however_often_write_is_called(tmp_path):
         run.write(tmp_path / "p.json")
         run.write(tmp_path / "p.json")
     run.write(tmp_path / "p.json")
-    assert len(sink.records) == 1
+    assert len(_completed(sink.records)) == 1
 
 
 def test_a_clean_sys_exit_is_not_a_failure(tmp_path):
@@ -4646,7 +4649,7 @@ def test_a_clean_sys_exit_is_not_a_failure(tmp_path):
         with runprov.Run("q", project=proj, provenance=tmp_path / "p.json") as run:
             run.write(tmp_path / "p.json")
             raise SystemExit(0)
-    assert [r["status"] for r in sink.records] == ["ok"]
+    assert [r["status"] for r in _completed(sink.records)] == ["ok"]
     assert json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["status"] == "ok"
 
 
@@ -4655,7 +4658,7 @@ def test_a_nonzero_sys_exit_is_still_a_failure(tmp_path):
     with pytest.raises(SystemExit):
         with runprov.Run("q", project=proj, provenance=tmp_path / "p.json"):
             raise SystemExit(2)
-    assert [r["status"] for r in sink.records] == ["failed"]
+    assert [r["status"] for r in _completed(sink.records)] == ["failed"]
 
 
 def test_a_failure_inside_the_exit_capture_is_reported_not_raised(tmp_path, capsys):
@@ -4704,7 +4707,7 @@ def test_a_config_that_points_at_itself_still_produces_a_record(tmp_path):
         run.note("ok", 1)
 
     assert (tmp_path / "p.json").exists(), "the sidecar must survive a cyclic parameter"
-    rec = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    rec = _lines(log)[0]
     assert rec["parameters"]["cfg"]["parent"] == "<circular reference>"
     assert rec["parameters"]["cfg"]["name"] == "cfg", "the rest of the node is still recorded"
     assert rec["notes"]["ok"] == 1, "an unrelated note is untouched"
@@ -4725,7 +4728,7 @@ def test_shared_structure_is_recorded_twice_and_is_not_a_cycle(tmp_path):
         provenance=tmp_path / "p.json",
     ):
         pass
-    rec = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    rec = _lines(log)[0]
     assert rec["parameters"] == {"x": {"a": 1}, "y": {"a": 1}, "z": [{"a": 1}, {"a": 1}]}
 
 
@@ -4744,7 +4747,7 @@ def test_a_parameter_nested_past_the_cap_is_named_rather_than_lost(tmp_path):
     assert (tmp_path / "p.json").exists()
     body = log.read_text(encoding="utf-8")
     assert f"<nested beyond {runprov.run.JSONABLE_MAX_DEPTH} levels>" in body
-    walk, levels = json.loads(body.splitlines()[0])["parameters"]["d"], 0
+    walk, levels = _lines(log)[-1]["parameters"]["d"], 0
     while isinstance(walk, dict):
         walk, levels = walk["k"], levels + 1
     assert walk == f"<nested beyond {runprov.run.JSONABLE_MAX_DEPTH} levels>"
@@ -4780,7 +4783,7 @@ def test_a_value_that_recurses_while_being_stringified_costs_one_entry_not_the_r
         run.note("bad", Recursive())
 
     assert (tmp_path / "p.json").exists(), "one bad note must not cost the sidecar"
-    rec = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    rec = _lines(log)[0]
     assert rec["notes"]["bad"].startswith("UNSERIALISABLE")
     assert rec["notes"]["fine"] == 1, "the entries beside it are untouched"
 
@@ -5180,7 +5183,7 @@ def test_the_history_destination_is_recorded_printed_and_carried_in_the_line(tmp
     assert run.record["history"]["destination"] == str(log)
     sidecar = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
     assert sidecar["history"]["destination"] == str(log)
-    line = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    line = _lines(log)[0]
     assert line["history_destination"] == str(log), "an archived line must name its own file"
     assert line["project_source"] == "argument"
     assert f"history -> {log}" in capsys.readouterr().err
@@ -5328,7 +5331,7 @@ def test_the_history_carries_both_identities_of_an_input(tmp_path, monkeypatch):
     src.write_text("# built_utc: 2026-01-01\nid\tv\nx\t1\n", encoding="utf-8")
     with runprov.Run("s", provenance=tmp_path / "p.json") as run:
         run.input(src)
-    entry = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])["inputs"][0]
+    entry = _lines(log)[-1]["inputs"][0]
     assert entry["sha256"] == runprov.sha256(src)
     assert entry["content_sha256"] == runprov.content_digest(src), (
         "the history must carry the identity the PIN uses, or the two cannot be joined"
@@ -5374,7 +5377,7 @@ def test_the_sidecar_and_the_history_do_not_share_one_schema_name(tmp_path, monk
     with runprov.Run("s", provenance=prov):
         pass
     side = json.loads(prov.read_text(encoding="utf-8"))
-    hist = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    hist = _lines(log)[-1]
     assert side["schema"] == runprov.SCHEMA == "runprov.run.v2"
     assert hist["schema"] == runprov.HISTORY_SCHEMA == "runprov.history.v2"
     assert side["schema"] != hist["schema"], "two shapes must not answer to one name"
@@ -5485,7 +5488,7 @@ def test_a_whole_run_end_to_end_reads_back_consistently(tmp_path, monkeypatch):
         run.seeds([42])
 
     side = json.loads(prov.read_text(encoding="utf-8"))
-    hist = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    hist = _lines(log)[-1]
 
     # the two records describe the same run, under DIFFERENT schema names (C7)
     assert side["run_id"] == hist["run_id"] and side["schema"] != hist["schema"]
@@ -5867,7 +5870,7 @@ def test_every_run_has_a_unique_address_that_the_pin_never_sees(tmp_path, monkey
         assert rec["run_id"] == "chain_shared", "the chain id is deliberately shared"
         assert rec["run_uid"] not in pin, "a uuid in the pin destabilises every artifact"
     assert len(set(uids)) == 3, "three runs of one chain must have three distinct addresses"
-    hist = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    hist = _lines(log)
     assert len({h["run_uid"] for h in hist}) == 3
 
 
@@ -6801,7 +6804,7 @@ def test_lineage_joins_across_the_v1_v2_schema_boundary(tmp_path, monkeypatch):
     with runprov.Run("v2_consumer", provenance=tmp_path / "c.json") as run:
         run.input(artifact)
 
-    rows = [json.loads(x) for x in runlog.read_text(encoding="utf-8").splitlines()]
+    rows = _lines(runlog)
     got = cli._lineage(rows)
     assert got["resolvable"] == 1, "the v1 -> v2 edge must resolve"
     assert got["ambiguous"] == 0
@@ -6824,7 +6827,7 @@ def test_lineage_joins_the_other_way_too_a_v2_producer_read_by_a_v1_consumer(tmp
     it, in that order, so the producer-finished-before-consumer-started rule holds honestly
     rather than by an edited timestamp.
     """
-    rows = [json.loads(x) for x in (FIXTURES / "history_v2_then_v1.jsonl").read_text().splitlines()]
+    rows = _lines(FIXTURES / "history_v2_then_v1.jsonl")
     assert [r["schema"] for r in rows] == ["runprov.history.v2", "runprov.run.v1"], (
         "the fixture must be a v2 producer followed by a v1 consumer, in that order"
     )
@@ -7455,7 +7458,7 @@ def test_to_yaml_finds_the_script_file_in_a_sidecar_record_too(tmp_path, monkeyp
         pass
 
     from_record = yaml.safe_load(runprov.to_yaml(run.record))[0]
-    history = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    history = _lines(tmp_path / "runs.jsonl")
     from_history = yaml.safe_load(cli._yaml(history))[0]
     assert from_record["script"] == str(script)
     assert from_record["script"] == from_history["script"], "the two views must agree"
@@ -7958,7 +7961,7 @@ def test_two_runs_writing_one_sidecar_say_so(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "already written by ANOTHER RUN" in err
     assert json.loads(shared.read_text(encoding="utf-8"))["run_uid"] == second.record["run_uid"]
-    lines = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    lines = _lines(tmp_path / "runs.jsonl")
     assert {r["script"] for r in lines} == {"first", "second"}, "the history keeps both"
 
 
@@ -8104,7 +8107,9 @@ def test_a_run_nested_inside_another_records_both(tmp_path, monkeypatch):
     with runprov.Run("outer", provenance=tmp_path / "o.json"):
         with runprov.Run("inner", provenance=tmp_path / "i.json"):
             pass
-    got = [json.loads(x)["script"] for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    got = [
+        json.loads(x)["script"] for x in [json.dumps(r) for r in _lines(tmp_path / "runs.jsonl")]
+    ]
     assert sorted(got) == ["inner", "outer"]
 
 
@@ -8122,7 +8127,7 @@ def test_entering_one_run_twice_appends_one_history_line(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="already been used"):
         with run:
             pass  # pragma: no cover - refused
-    got = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    got = _lines(tmp_path / "runs.jsonl")
     assert sum(1 for r in got if r["script"] == "twice") == 1
 
 
@@ -9284,7 +9289,7 @@ def test_the_history_carries_the_omitted_count_beside_the_code_digest(tmp_path, 
         for i in range(5):
             run.code(tmp_path / f"m{i}.R")
 
-    line = json.loads((tmp_path / "runs.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    line = _lines(tmp_path / "runs.jsonl")[0]
     ic = line["imported_code"]
     assert ic["count"] == 5 and ic["omitted"] == 3, ic
     assert ic["digest"], "the digest is still there — it is its SCOPE that needed stating"
@@ -9599,7 +9604,7 @@ def test_a_sigterm_records_the_run_instead_of_vanishing(tmp_path):
     assert rec["outputs"][0]["kind"] == "MISSING", "and the output it never got to write"
     assert rec["signals"]["SIGTERM"] == "armed"
 
-    history = (tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    history = [json.dumps(r) for r in _lines(tmp_path / "runs.jsonl")]
     assert len(history) == 1 and json.loads(history[0])["status"] == "failed"
 
 
@@ -10023,7 +10028,7 @@ def test_the_shipped_example_runs_and_produces_a_verifiable_artifact(tmp_path):
     # reason the example does not set `run_log=`.
     history = tmp_path / "provenance" / "runs.jsonl"
     assert history.is_file(), "the example must write where `runprov log` looks by default"
-    rec = json.loads(history.read_text(encoding="utf-8").strip())
+    rec = _lines(history)[-1]
     assert rec["status"] == "ok"
     assert rec["notes"] == {
         "columns": ["sample", "value"],
@@ -10078,7 +10083,7 @@ def test_the_front_page_block_runs_as_printed(tmp_path):
 
     history = tmp_path / "provenance" / "runs.jsonl"
     assert history.is_file(), "`configure(root=...)` must write where the CLI looks"
-    rec = json.loads(history.read_text(encoding="utf-8").strip())
+    rec = _lines(history)[-1]
     assert rec["status"] == "ok"
     assert rec["notes"] == {"rows_read": 4, "rows_kept": 3}
     assert (tmp_path / "results" / "summary.prov.json").is_file(), "provenance= writes a sidecar"
@@ -10318,6 +10323,26 @@ def test_pickle_and_friends_are_refused_with_the_message_a_caller_needs(tmp_path
 
 
 # =========== `show`: the notebook the history already contained, per run and per project
+def _completed(records):
+    """The records of runs that ENDED, without the `started` line each run also writes.
+
+    THE HISTORY HOLDS BOTH SINCE U-02, and that is the point of it: a run appends
+    `runprov.start.v1` at `__enter__` so that one killed by SIGKILL — which runs no ending
+    code at all — is still on record. `_load` and `_counted` filter these out for every
+    reader in the package, so a test going through the CLI never sees them; a test reading
+    `runs.jsonl` or a `MemorySink` directly does, and almost always wants what this returns.
+
+    A test that is ABOUT the start lines reads them without this, deliberately."""
+    return [r for r in records if r.get("schema") != "runprov.start.v1"]
+
+
+def _lines(path):
+    """Completed-run records parsed from a history file. See `_completed`."""
+    return _completed(
+        json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()
+    )
+
+
 def _history(tmp_path, monkeypatch):
     """Two scripts, a chain, two versions of one input, and one failure."""
     monkeypatch.chdir(tmp_path)
@@ -10346,7 +10371,7 @@ def _history(tmp_path, monkeypatch):
             r.input(tmp_path / "out" / "mid.tsv")
             raise ValueError("boom")
 
-    return [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    return _lines(tmp_path / "runs.jsonl")
 
 
 def test_the_project_page_says_which_script_expects_which_input(tmp_path, monkeypatch):
@@ -10640,7 +10665,7 @@ def test_the_same_run_renders_identically_from_the_record_and_from_the_history(t
     # AFTER the block, which is what `to_yaml`'s own docstring instructs: `__exit__` is where
     # outputs are hashed and the status becomes known.
     from_record = runprov.to_yaml(run.record)
-    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    rows = _lines(tmp_path / "runs.jsonl")
     from_history = runprov.to_yaml(rows)
 
     body = lambda s: [ln for ln in s.splitlines() if ln.startswith(("- ", "  "))]  # noqa: E731
@@ -10793,7 +10818,7 @@ def _staleable(tmp_path, monkeypatch):
         (tmp_path / "out" / "gone.txt").write_text("x\n", encoding="utf-8")
         r.output(tmp_path / "out" / "gone.txt")
 
-    return [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    return _lines(tmp_path / "runs.jsonl")
 
 
 def _state_of(states, name):
@@ -10824,7 +10849,7 @@ def _rebuilt_from_a_different_input(tmp_path, monkeypatch):
             with r.open_output(tmp_path / "out" / "shared.tsv") as fh:
                 fh.write(f"from {name}\n")
 
-    return [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    return _lines(tmp_path / "runs.jsonl")
 
 
 def test_staleness_checks_the_run_that_wrote_the_artifact_last(tmp_path, monkeypatch):
@@ -10992,7 +11017,7 @@ def test_rehash_will_not_call_an_undigested_artifact_MODIFIED(tmp_path, monkeypa
     with runprov.Run("f", project=proj, provenance=tmp_path / "out" / "f.prov.json") as r:
         r.input(src)
         r.output(fifo)  # present, unhashable — recorded with kind UNHASHABLE and no digest
-    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    rows = _lines(tmp_path / "runs.jsonl")
 
     recorded = rows[0]["outputs"][0]
     assert recorded["kind"] == "UNHASHABLE" and not recorded["sha256"], (
@@ -11025,7 +11050,7 @@ def test_rehash_will_not_call_an_undigested_input_STALE(tmp_path, monkeypatch):
         r.input(src)
         with r.open_output(tmp_path / "out" / "m.tsv") as fh:
             fh.write("a\n")
-    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    rows = _lines(tmp_path / "runs.jsonl")
 
     assert _state_of(runprov.show.staleness(rows, rehash=True), "m.tsv") == "OK"
     # Strip the digest the run recorded for the input, leaving the entry in place.
@@ -11102,26 +11127,106 @@ def test_a_killed_run_leaves_evidence_that_it_started(tmp_path, sig, recorded):
     denominator knowable: it survives precisely when nothing else did."""
     _killable(tmp_path, sig)
     history = tmp_path / "runs.jsonl"
-    lines = history.read_text(encoding="utf-8").splitlines() if history.is_file() else []
+    raw = [
+        json.loads(x)
+        for x in history.read_text(encoding="utf-8").splitlines()
+        if history.is_file() and x.strip()
+    ]
+    started = [r for r in raw if r["schema"] == runprov.run.START_SCHEMA]
+    ended = _completed(raw)
     markers = list((tmp_path / ".incomplete").glob("*.json"))
 
     assert (tmp_path / "results.tsv").is_file(), (
         "the premise, and the consumer's point: the artifact is there either way"
     )
+    assert len(started) == 1, "every run appends its start before doing anything"
+
     if recorded:
-        assert len(lines) == 1, f"{sig.name} reaches __exit__ and is recorded"
+        assert len(ended) == 1, f"{sig.name} reaches __exit__ and is recorded"
+        assert started[0]["run_uid"] == ended[0]["run_uid"], "paired, by uid"
         assert not markers, f"{sig.name} was recorded, so nothing is in flight any more"
     else:
-        assert not lines, "the premise: SIGKILL runs no code, so nothing was recorded"
-        assert len(markers) == 1, (
-            "and THAT is the gap: without a marker the run is indistinguishable from one "
-            "that never started, while its output sits on disk looking complete"
-        )
+        assert not ended, "SIGKILL runs no code, so no ENDING was ever recorded"
+        # THE PAIR IS THE FINDING, and it is permanent. Before stage 2 this assertion read
+        # `assert not lines` — the history held nothing at all for a killed run — and the
+        # only evidence was the marker, which a user is free to delete.
+        assert len(markers) == 1, "the transient index says so too"
         left = json.loads(markers[0].read_text(encoding="utf-8"))
         assert left["script"] == "fetch" and left["pid"] and left["host"]
+        assert left["run_uid"] == started[0]["run_uid"], (
+            "the marker and the history line describe the same run"
+        )
+
+    unfinished = cli._unfinished(history)
+    assert len(unfinished) == (0 if recorded else 1), (
+        "a start with no matching end is what makes the denominator knowable, and it "
+        "survives deleting the .incomplete directory"
+    )
 
 
 @pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="POSIX signals needed")
+def test_no_reader_counts_a_start_line_as_a_run(tmp_path, monkeypatch, capsys):
+    """The cost of putting the start in the append-only history: every reader would count
+    each completed run TWICE unless it filters. `_load` and `_counted` are the two places
+    records enter the package's readers, and both drop `runprov.start.v1`.
+
+    Asserted through the three commands rather than on the helpers, because the helpers are
+    only right if the commands are: `show` would double its run count, `log` would print an
+    empty entry before each real one, and `lineage` — which materialises through `_load` —
+    would walk a record with no inputs and no outputs."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    proj = _project(tmp_path)
+    for i in range(3):
+        with runprov.Run("s", project=proj, provenance=tmp_path / f"p{i}.prov.json") as run:
+            run.input(tmp_path / "in.tsv")
+            with run.open_output(tmp_path / f"out{i}.tsv") as fh:
+                fh.write("x\n")
+
+    log = str(tmp_path / "runs.jsonl")
+    raw = (tmp_path / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(raw) == 6, "the premise: three runs, six lines — a start and an end each"
+
+    assert cli.main(["show", "--log", log]) == 0
+    assert "3 run(s)" in capsys.readouterr().err, "not 6"
+
+    assert cli.main(["log", "--log", log]) == 0
+    assert "3 of 3 run(s)" in capsys.readouterr().err
+
+    assert cli.main(["lineage", "--log", log]) == 0
+    assert "3 record(s)" in capsys.readouterr().err, "lineage materialises through _load"
+
+    rows, bad = cli._load(tmp_path / "runs.jsonl")
+    assert (len(rows), bad) == (3, 0)
+
+
+def test_a_start_that_cannot_be_recorded_does_not_cost_the_run(tmp_path, monkeypatch, capsys):
+    """A run whose START could not be written is still a run, and must still be recorded at
+    the end. The guard is the same rule every describing step here follows — provenance must
+    not be what ends the work — and it is broader than `OSError` on purpose: this goes
+    through the project's `sink`, which is an extension point, so whatever a lab's database
+    raises lands here."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+
+    class Angry(runprov.sinks.MemorySink):
+        def append(self, record):
+            if record.get("schema") == runprov.run.START_SCHEMA:
+                raise RuntimeError("the lab database is down")
+            super().append(record)
+
+    sink = Angry()
+    proj = runprov.Project(root=tmp_path, run_log=tmp_path / "runs.jsonl", sink=sink)
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.prov.json") as run:
+        run.input(tmp_path / "in.tsv")
+
+    assert "could not record the start of this run" in capsys.readouterr().err
+    assert [r["schema"] for r in sink.records] == [runprov.HISTORY_SCHEMA], (
+        "the ENDING still reached the sink, which is the record that matters"
+    )
+    assert json.loads((tmp_path / "p.prov.json").read_text())["status"] == "ok"
+
+
 def test_a_marker_is_not_a_death_certificate(tmp_path):
     """A marker exists for the WHOLE of a run, including the one reading the page. Reporting
     its presence as a death would be the guess this package refuses — and it would fire on
@@ -11282,15 +11387,31 @@ def test_the_first_run_being_killed_is_reported_even_though_there_is_no_history(
     beside a MISSING history is not "nothing recorded"; it is a run that started and never
     got to write one."""
     _killable(tmp_path, signal.SIGKILL)
-    assert not (tmp_path / "runs.jsonl").exists(), "the premise: no history at all"
+    # SINCE STAGE 2 the history is not empty — it holds the `started` line and nothing else,
+    # so every ordinary reader still sees a project with no completed runs. The message
+    # below is therefore still what `show` would say on its own, and still misleading on its
+    # own; what changed is that the finding is now permanent as well as reported.
+    history = tmp_path / "runs.jsonl"
+    assert history.is_file(), "the start was recorded"
+    assert not _lines(history), "and no run ever completed"
 
-    assert cli.main(["show", "--log", str(tmp_path / "runs.jsonl")]) == 1
+    assert cli.main(["show", "--log", str(history)]) == 0
     err = capsys.readouterr().err
     assert "STARTED with no ending recorded" in err, err
-    assert "INTERRUPTED" in err
-    assert err.index("STARTED with no ending") < err.index("no run history"), (
-        "the finding must come BEFORE 'nothing has been recorded here yet', which on its "
-        "own reads as an empty project rather than a killed run"
+    assert "INTERRUPTED" in err and "fetch" in err
+    assert "no run history" not in err, (
+        "the history is no longer empty — it holds the start — so the misleading "
+        "'nothing has been recorded here yet' does not arise at all"
+    )
+
+    # AND IT SURVIVES LOSING THE INDEX, which is the whole reason stage 2 exists: the
+    # `.incomplete` directory is transient and deletable, the append-only history is not.
+    shutil.rmtree(tmp_path / ".incomplete")
+    capsys.readouterr()
+    assert cli.main(["show", "--log", str(history)]) == 0
+    err = capsys.readouterr().err
+    assert "INTERRUPTED" in err, (
+        "a start with no matching end is the finding, and it is in the record of truth"
     )
 
 
@@ -11897,7 +12018,7 @@ def test_show_exit_code_does_not_fail_on_a_state_it_could_not_determine(tmp_path
             fh.write("x\n")
 
     log = str(tmp_path / "runs.jsonl")
-    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    rows = _lines(tmp_path / "runs.jsonl")
     assert _state_of(runprov.show.staleness(rows), "d.tsv") == "UNVERIFIABLE", (
         "the premise: a directory input cannot be stat-checked"
     )
@@ -11937,7 +12058,7 @@ def test_a_registered_output_that_was_never_written_is_gone(tmp_path, monkeypatc
     proj = _project(tmp_path)
     with runprov.Run("s", project=proj, provenance=tmp_path / "p.json") as r:
         r.output(tmp_path / "never.tsv")
-    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    rows = _lines(tmp_path / "runs.jsonl")
     assert _state_of(runprov.show.staleness(rows), "never.tsv") == "GONE"
 
 
@@ -11995,7 +12116,7 @@ def test_two_artifacts_from_one_run_read_that_run_s_sidecar_once(tmp_path, monke
             with r.open_output(tmp_path / "out" / f"o{i}.tsv") as fh:
                 fh.write("y\n")
 
-    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    rows = _lines(tmp_path / "runs.jsonl")
     reads = []
     real = pathlib.Path.read_text
 
@@ -12105,7 +12226,7 @@ def test_per_run_sidecars_make_staleness_answerable_for_older_runs(tmp_path, mon
             with r.open_output(tmp_path / "out" / f"o{i}.tsv") as fh:
                 fh.write("x\n")
 
-    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    rows = _lines(tmp_path / "runs.jsonl")
     states = runprov.show.staleness(rows)
     assert set(states.values()) == {"OK"}, "both runs can still answer for themselves"
     assert "UNVERIFIABLE" not in states.values()
@@ -12296,7 +12417,7 @@ def test_the_history_line_carries_the_summary_and_not_every_file(tmp_path, monke
     finally:
         _forget_src()
 
-    line = json.loads((tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip())
+    line = _lines(tmp_path / "runs.jsonl")[-1]
     # `omitted` joined `count` and `digest` for L-51: past `imported_code_max` the digest
     # covers only the kept prefix, so its SCOPE has to travel with it. The file LIST still
     # belongs in the sidecar -- that is what this test is about.
@@ -12341,7 +12462,7 @@ def test_hashing_imported_code_can_be_turned_off(tmp_path, monkeypatch):
     # All three None, not the key absent: the history line's shape is fixed so a reader never
     # has to ask whether a missing key means "no code" or "an older record". `omitted` joined
     # the other two for L-51.
-    assert json.loads((tmp_path / "runs.jsonl").read_text().strip())["imported_code"] == {
+    assert _lines(tmp_path / "runs.jsonl")[-1]["imported_code"] == {
         "count": None,
         "digest": None,
         "omitted": None,
@@ -12448,7 +12569,7 @@ def test_tool_records_which_binary_and_what_version(tmp_path, monkeypatch):
 
     rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
     assert rec["tools"][0]["name"] == "faketool"
-    line = json.loads((tmp_path / "runs.jsonl").read_text(encoding="utf-8").strip())
+    line = _lines(tmp_path / "runs.jsonl")[-1]
     assert line["tools"] == {"faketool": "faketool 9.9.9"}, "the history carries name -> version"
 
 
@@ -12655,7 +12776,7 @@ def test_a_relative_provenance_path_is_readable_from_anywhere(tmp_path, monkeypa
         with run.open_output(tmp_path / "out" / "mid.tsv") as fh:
             fh.write("a\n")
 
-    rows = [json.loads(x) for x in (tmp_path / "runs.jsonl").read_text().splitlines()]
+    rows = _lines(tmp_path / "runs.jsonl")
     assert rows[0]["provenance_path"] == "out/mid.prov.json", "the premise: a relative path"
     assert _state_of(runprov.show.staleness(rows), "mid.tsv") == "OK"
 
@@ -13109,7 +13230,7 @@ def test_the_downgrade_to_no_locking_is_ANNOUNCED(tmp_path, monkeypatch, capsys)
     err = capsys.readouterr().err
     assert "no file locking available" in err
     assert "may interleave" in err, "the consequence, not only the fact"
-    assert json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8"))["a"] == 1
+    assert _lines(tmp_path / "h.jsonl")[-1]["a"] == 1
 
 
 def test_a_torn_line_costs_one_record_not_the_file(tmp_path):
@@ -13909,6 +14030,6 @@ def test_our_own_teardown_is_not_refused_by_the_after_exit_guard(tmp_path, monke
         pass
 
     assert log.is_file(), "the history line was never written"
-    line = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    line = _lines(log)[-1]
     assert line["environment_snapshot"]["path"].endswith(".txt")
     assert (tmp_path / "p.json").is_file()

@@ -58,7 +58,7 @@ import typing
 from . import show as show_mod
 from .hashing import PIN_DIGEST_CHARS
 from .project import active
-from .run import Run, Terminated
+from .run import START_SCHEMA, Run, Terminated
 from .show import (
     MODIFIED,
     _yaml_entry,
@@ -154,6 +154,49 @@ def _render_unreadable(number: int, raw: str) -> str:
     return f"{number}: {body}" + (f"  … {cut} more character(s)" if cut else "")
 
 
+def _is_start(rec: dict[str, typing.Any]) -> bool:
+    """Is this the line appended when a run BEGAN, rather than a record of one that ran?
+
+    FILTERED OUT OF EVERY ORDINARY READER, in `_load` and `_counted`, which is the two
+    places records enter them. A `runprov.start.v1` line is not a run that happened — it is
+    a run that began, and the record of what happened arrives later under the same
+    `run_uid`. Counting both would report every completed run twice: `show` would double its
+    run count, `log` would print an empty entry before each real one, and `lineage` would
+    walk a record with no inputs and no outputs.
+
+    The line is not noise, though, and `_unfinished` is where it is read: a start whose uid
+    never gets a record IS the finding, and it is the only permanent evidence that a
+    SIGKILLed run ever existed.
+    """
+    return bool(rec.get("schema") == START_SCHEMA)
+
+
+def _unfinished(path: pathlib.Path) -> list[dict[str, typing.Any]]:
+    """Runs whose start is on record and whose ending never arrived.
+
+    ONE STREAMING PASS, AND THE MEMORY IS THE FINDING RATHER THAN THE HISTORY. A start adds
+    its uid to the open set and the matching record removes it, so what is held is the set
+    of UNFINISHED runs — bounded by how many were interrupted, not by how many ever ran. On
+    a healthy 100,000-run history that set is empty at every point in the pass.
+
+    That property is why this is not "load the history and group by uid": `show` streams
+    deliberately (measured, 392 MB materialised against 3 MB streamed on a 91 MB history)
+    and a reader that needed every uid at once would give that back.
+    """
+    open_runs: dict[str, dict[str, typing.Any]] = {}
+    for rec in _stream(path):
+        if rec is None:
+            continue
+        uid = str(rec.get("run_uid") or "")
+        if not uid:
+            continue  # a v1 record predates run_uid and cannot be paired either way
+        if _is_start(rec):
+            open_runs[uid] = rec
+        else:
+            open_runs.pop(uid, None)
+    return list(open_runs.values())
+
+
 def _load(path: pathlib.Path) -> tuple[list[dict[str, typing.Any]], int]:
     """Returns (records, unreadable_line_count). A bad line is COUNTED, never dropped.
 
@@ -164,7 +207,7 @@ def _load(path: pathlib.Path) -> tuple[list[dict[str, typing.Any]], int]:
     for rec in _stream(path):
         if rec is None:
             bad += 1
-        else:
+        elif not _is_start(rec):
             rows.append(rec)
     return rows, bad
 
@@ -743,6 +786,13 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
         if rec is None:
             bad += 1
             continue
+        if _is_start(rec):
+            # NOT A RUN THAT HAPPENED. `log` streams raw rather than through `_load` or
+            # `_counted` — it is the one reader that must not materialise — so the filter
+            # those two apply has to be repeated here. Without it every completed run
+            # printed an empty entry before its real one and the tally said 6 of 6 for
+            # three runs.
+            continue
         total += 1
         if not matches(rec):
             continue
@@ -769,27 +819,45 @@ def _counted(path: pathlib.Path, bad: list[int]) -> typing.Iterator[dict[str, ty
     for rec in _stream(path):
         if rec is None:
             bad[0] += 1
-        else:
+        elif not _is_start(rec):
             yield rec
 
 
 def _report_in_flight(path: pathlib.Path) -> None:
     """Say which runs started and have no ending on record. Nothing if there are none.
 
-    DERIVED FROM THE HISTORY BEING READ, not from the configured project, so `--log
-    somewhere/else.jsonl` reports the markers belonging to THAT history rather than to
-    whichever project this shell happens to be standing in.
+    DRIVEN BY THE HISTORY, ENRICHED BY THE MARKERS, and that order is the whole design. The
+    append-only history is what makes the finding permanent: a `started` line whose
+    `run_uid` never gets a record is evidence that survives anything short of rewriting the
+    record, including deleting `.incomplete`. The markers add the one thing the history
+    cannot know — whether the process is still alive — so a run in progress reads as RUNNING
+    rather than as a death.
 
-    Called even when the history file does not exist, which is the case that matters most: a
-    project whose FIRST run was killed has no history at all, so "nothing has been recorded
-    here yet" would otherwise be the whole answer over a directory holding a half-finished
-    artifact and a marker naming the run that made it.
+    A start with no marker and no ending is INTERRUPTED without further enquiry: either the
+    marker was cleaned away or it was never written, and both mean the same thing here.
+
+    DERIVED FROM THE HISTORY BEING READ, so `--log somewhere/else.jsonl` reports what
+    belongs to THAT history rather than to whichever project this shell stands in. Called
+    even when the file does not exist, because a marker beside a missing history is not
+    "nothing recorded" — it is a run that never got to write one.
     """
-    pending = in_flight(path.parent / ".incomplete")
+    unfinished = _unfinished(path) if path.is_file() else []
+    markers = {str(m.get("run_uid")): m for m in in_flight(path.parent / ".incomplete")}
+
+    pending: list[dict[str, typing.Any]] = []
+    for rec in unfinished:
+        uid = str(rec.get("run_uid"))
+        marker = markers.pop(uid, None)
+        pending.append({**rec, "state": (marker or {}).get("state", show_mod.INTERRUPTED)})
+    # A MARKER THE HISTORY HAS NEVER HEARD OF is still worth printing: it is what a run
+    # killed between its marker and its start line leaves, and what a run with no
+    # `provenance=` leaves, since that shape records nothing by design.
+    pending += markers.values()
     if not pending:
         return
+
     out = [f"# {len(pending)} run(s) STARTED with no ending recorded:"]
-    for r in pending:
+    for r in sorted(pending, key=lambda x: str(x.get("started_utc", "")), reverse=True):
         where = "" if r.get("state") != show_mod.UNTELLABLE else f"  on {r.get('host', '?')}"
         out.append(
             f"#   {r.get('state', '?'):12} {r.get('script', '?')!s:20} "

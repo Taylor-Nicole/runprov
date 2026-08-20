@@ -98,6 +98,24 @@ SCHEMA = "runprov.run.v2"
 # exists, would have applied the wrong reader to one of them.
 HISTORY_SCHEMA = "runprov.history.v2"
 
+#: The line appended when a run BEGINS, so that a run which never ends is still on record.
+#:
+#: THE DENOMINATOR. `__enter__`'s docstring criticises the predecessor for appending only on
+#: success — "its 300 runs was 300 COMPLETED runs with an unknown denominator" — and until
+#: this existed the same was true here for the one ending that runs no code. SIGINT, SIGTERM
+#: and SIGHUP all reach `__exit__` and are recorded; SIGKILL, the OOM killer, a power loss
+#: and a node failure do not. Measured: artifact on disk, zero history lines, no sidecar.
+#:
+#: SEPARATE FROM THE `.incomplete` MARKER, which answers a different question. The marker is
+#: an index of what is unfinished RIGHT NOW and is deleted at `__exit__`; this is permanent,
+#: append-only, and is what makes "how many runs ever started and never finished" answerable
+#: at all. Delete the marker directory and the count survives here.
+#:
+#: PAIRED BY `run_uid`. A start with no later record of the same uid is the finding. Readers
+#: track the open uids in one streaming pass, so the memory cost is the number of UNFINISHED
+#: runs and not the number of runs — see `__main__._unfinished`.
+START_SCHEMA = "runprov.start.v1"
+
 # How many dirty files the terminal warning names before it says how many more. The record
 # keeps all of them; this is the line a human reads, and a 300-file tree used to bury the
 # sentence that matters under 300 lines of stderr.
@@ -1116,10 +1134,56 @@ class Run:
         # Ordering rather than another exclusion entry, because an exclusion list is a
         # second place to keep in step and L-108 was two spellings of one name drifting.
         # A file written before the watcher exists cannot be seen by it.
+        # THE RECORD FIRST, THE INDEX SECOND, and the order is the guarantee. A kill between
+        # the two leaves the history correct and the marker merely absent; the reverse would
+        # leave a marker pointing at a run the record has never heard of.
+        self._append_start()
         self._mark_in_flight()
         if self.project.warn_unregistered_reads:
             attach(self)
         return self
+
+    def _append_start(self) -> None:
+        """Append "this run began" to the history, before the run does anything.
+
+        WHAT IT CARRIES IS WHAT IS KNOWN AT ENTRY and nothing else. Inputs are not read yet,
+        outputs do not exist, the status is not decided — writing a hopeful shape now and
+        amending it later is impossible in an append-only file and dishonest in any other.
+
+        THROUGH THE PROJECT'S SINK, because a supplied `sink=` is the whole story: a lab
+        sending records to one shared database must receive this line too, or their record
+        of truth is the one place the denominator is unknown. The YAML view declines it —
+        see `YamlLogSink.append` — because that file is a narrative of completed runs, and a
+        second entry per run would double it.
+
+        ONLY WHEN THIS RUN WAS GOING TO BE RECORDED AT ALL. `provenance=` is the switch
+        that makes `__exit__` write, and without it a `with` block records nothing — which
+        is documented, is the trap the README opens with, and is not this method's to
+        change. A start line there would mean that merely constructing a `Run` created a
+        history file, so a REPL experiment would start writing to `provenance/runs.jsonl`.
+        This records the beginning of a record that was going to exist, not a new one.
+
+        NEVER RAISES. A run whose start could not be recorded is still a run.
+        """
+        if self.provenance_path is None:
+            return
+        try:
+            self.project.resolved_sink().append(
+                {
+                    "schema": START_SCHEMA,
+                    "run_uid": self.record["run_uid"],
+                    "run_id": self.record["run_id"],
+                    "script": self.record["script"],
+                    "generation": self.record["generation"],
+                    "started_utc": self.record["started_utc"],
+                    "command": self.record.get("command"),
+                    "cwd": self.record.get("cwd"),
+                    "pid": os.getpid(),
+                    "host": platform.node(),
+                }
+            )
+        except Exception as exc:  # guards-ok: provenance must not be what ends the run
+            diagnostic(f"  WARNING: could not record the start of this run: {exc}")
 
     def _mark_in_flight(self) -> None:
         """Leave evidence, at the START, that this run exists.
