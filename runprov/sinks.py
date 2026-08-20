@@ -46,7 +46,7 @@ from __future__ import annotations
 # `TeeSink` and `YamlLogSink` are not promised: no document tells a reader to compose
 # sinks, and `YamlLogSink` writes `transformation_log.yml` specifically — a name whose
 # docstring needs a paragraph to correct it should be renamed before it is frozen.
-__all__ = ["JsonlSink", "MemorySink", "RecordSink"]
+__all__ = ["JsonlSink", "RecordSink"]
 
 import json
 import os

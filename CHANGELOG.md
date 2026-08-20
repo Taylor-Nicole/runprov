@@ -268,6 +268,24 @@ Nothing has been published yet. Everything below is what a first release would c
   the run it described; a corrupt gzip escaped `content_digest`; and a `.gz` rewritten from
   identical bytes never hashed the same twice.
 
+### `__all__` is 17 names, down from 27
+
+- **Five more withdrawn on 2026-08-20**, for a different reason from the first five. Those
+  were mechanism, or documentation rendered into a message, or defaults `Project` already
+  supplies. These are names **nobody was ever told to call**: `installed_packages`,
+  `write_snapshot`, `Capture`, `MemorySink` and `git` each had ZERO references in README,
+  GETTING-STARTED, WHY and every ADR — checked, not assumed — while the features they belong
+  to are documented entirely as configuration and record fields (`Project(env_snapshot_dir=…)`,
+  `terminal_log`, `sink=`).
+- `git` in particular: 6 internal call sites, no documented caller, and a bare `git` in an
+  importing namespace collides with GitPython's top-level module. Its contract is *swallow
+  every exception, return None, 20s timeout* — provenance capture, not a general-purpose
+  runner. ADR-0003 left this open because a module cannot decide a package promise;
+  withdrawing it closes the question without touching a single call site.
+- All ten withdrawn names still exist on their own modules: `runprov.project.git`,
+  `runprov.terminal.Capture`, `runprov.sinks.MemorySink`, and so on. **Withdrawn, not
+  deleted**, and a test pins that.
+
 ### Every module now declares its public surface
 
 - **Eleven of twelve modules declared no `__all__`**, so 101 top-level names were importable

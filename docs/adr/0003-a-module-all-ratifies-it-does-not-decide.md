@@ -62,13 +62,31 @@ internal; a module list that **adds** one means a module quietly widened the sur
 The declarations are cheap to change while nothing is published and expensive afterwards,
 which is why they are being made now rather than discovered later.
 
-**One name is ratified with an open question against it.** `project.git` is in the package
-`__all__`, so `project.py` must list it — but a bare `git` collides with GitPython's
-top-level module in an importing namespace, and the contract is *swallow every exception,
-return None, 20-second timeout*: provenance capture, not a general-purpose runner. It has
-zero documentation references. Withdrawing or renaming it is a package-level decision and is
-still open. This ADR is the reason the module could not take it.
+### Addendum, 2026-08-20: the question this ADR could not answer got answered
 
-Five of the 22 promised names have no documented user at all — `installed_packages`,
-`write_snapshot`, `Capture`, `git` and `MemorySink`. That is a question for the ledger, not
-for the modules, and the modules ratify them meanwhile.
+When this was written, five of the 22 promised names had no documented user —
+`installed_packages`, `write_snapshot`, `Capture`, `git` and `MemorySink` — and one of them,
+`project.git`, was ratified with an open question against it: a bare `git` collides with
+GitPython's top-level module in an importing namespace, and its contract is *swallow every
+exception, return None, 20-second timeout*, which is provenance capture rather than a
+general-purpose runner.
+
+The ADR said that was a question for the ledger and not for the modules. **It was, and the
+answer was to withdraw all five.** `__all__` is 17 names.
+
+The reason is different from the one that removed the first five. Those were mechanism
+(`VOLATILE`), or documentation rendered into a message (`PIN_UNSAFE`), or defaults `Project`
+already supplies. These are names **nobody was ever told to call**: checked rather than
+assumed, every one had zero references in README, GETTING-STARTED, WHY and every ADR, while
+the features they belong to are documented entirely as configuration and record fields — the
+environment snapshot as `Project(env_snapshot_dir=...)`, terminal capture as `terminal_log`,
+sinks as `sink=`.
+
+This is the process working as intended rather than a reversal: the module declarations made
+the question askable by putting all 22 promises in one place beside their evidence, and the
+package-level decision was then taken where package-level decisions belong. `project.git`
+was withdrawn rather than renamed, which resolves the collision without touching six internal
+call sites.
+
+All ten withdrawn names still exist on their own modules — `runprov.project.git`,
+`runprov.terminal.Capture`, `runprov.sinks.MemorySink` and the rest. Withdrawn, not deleted.
