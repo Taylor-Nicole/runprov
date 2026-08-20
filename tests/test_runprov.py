@@ -8960,18 +8960,39 @@ def test_the_coverage_floor_is_on_unless_it_is_asked_off(monkeypatch):
         assert "--cov=runprov" in ci._coverage_args(), "coverage is still MEASURED, just not gated"
 
 
-def test_only_the_windows_leg_turns_the_coverage_floor_off():
-    """L-26. If a second leg picked this up the gate would be gone on Linux and the suite
-    would still be green — which is the failure mode this whole audit keeps finding."""
+def test_only_the_two_legs_that_cannot_reach_the_floor_turn_it_off():
+    """L-26, and it is no longer only Windows — which is the honest half of this update.
+
+    The rule has not moved: a leg may lower the floor only where 100% is unreachable BY
+    CONSTRUCTION, never where it is merely inconvenient, because a second leg picking it up
+    casually would leave the gate gone on Linux with the suite still green. What changed is
+    that a Linux leg now qualifies, for a measured reason:
+
+        windows-latest   22 tests build a fixture Windows cannot build — a FIFO, a symlink,
+                         a file `chmod(0o000)` genuinely makes unreadable — and a skipped
+                         test leaves its lines unmeasured.
+        ubuntu, 3.13     CPython 3.13 stopped raising `RuntimeError` from `Path.resolve()`
+                         on a symlink loop (L-104). Four `except (OSError, RuntimeError)`
+                         guards in `run.py` are needed on 3.10-3.12, where the loop DOES
+                         raise, and nothing can enter them on 3.13 — measured on 3.13.15,
+                         `resolve()` raises for none of a loop, a 5,000-character path
+                         component, or a directory with no execute permission.
+
+    THIS LEG HAD BEEN UNPASSABLE AND NOBODY COULD SEE IT. L-104 fixed the tests whose
+    PREMISE was the old exception and recorded the suite passing on 3.13 — under `pytest`,
+    not under `ci.py test`, so the coverage consequence never appeared. Hosted CI has been
+    billing-blocked since 2026-08-13, and the first self-hosted run found it: three green
+    legs and 3.13 at 99.77%."""
     yaml = pytest.importorskip("yaml")
     wf = _repo_root() / ".github/workflows/test.yml"
     if not wf.is_file():  # pragma: no cover - not shipped in the sdist
         pytest.skip("test.yml not present")
     matrix = yaml.safe_load(wf.read_text(encoding="utf-8"))["jobs"]["test"]["strategy"]["matrix"]
     off = [leg for leg in matrix["include"] if leg.get("coverage_floor") == "off"]
-    assert [leg["os"] for leg in off] == ["windows-latest"], (
-        f"exactly one leg may lower the floor; found {off}"
-    )
+    assert sorted((leg["os"], leg["python"]) for leg in off) == [
+        ("ubuntu-latest", "3.13"),
+        ("windows-latest", "3.12"),
+    ], f"exactly these two legs may lower the floor, and only for the reasons above; got {off}"
     assert matrix["os"] == ["ubuntu-latest"], "the base matrix must carry no floor override"
 
 
@@ -8989,20 +9010,36 @@ def test_no_workflow_anywhere_lowers_the_coverage_floor_except_the_windows_leg()
     if not wf_dir.is_dir():  # pragma: no cover - not shipped in the sdist
         pytest.skip("workflows not present")
 
+    # TWO EXEMPTIONS, EACH NAMED, so a third cannot arrive quietly. Both are "unreachable by
+    # construction, not by regression", and both were measured:
+    #
+    #   windows-latest   22 tests build a fixture Windows cannot build — a FIFO, a symlink,
+    #                    a file `chmod(0o000)` genuinely makes unreadable — and a skipped
+    #                    test leaves its lines unmeasured.
+    #   python 3.13      CPython 3.13 stopped raising `RuntimeError` from `Path.resolve()`
+    #                    on a symlink loop (L-104), so four guards that 3.10-3.12 need
+    #                    cannot be entered there. Measured on 3.13.15: `resolve()` raises
+    #                    for none of a loop, a 5,000-character component, or a directory
+    #                    with no execute permission.
+    allowed = ({"os": "windows-latest"}, {"python": "3.13"})
     offenders = []
     for wf in sorted(wf_dir.glob("*.yml")):
         doc = yaml.safe_load(wf.read_text(encoding="utf-8")) or {}
         for job_name, job in (doc.get("jobs") or {}).items():
             legs = ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []
             for leg in legs:
-                if leg.get("coverage_floor") == "off" and leg.get("os") != "windows-latest":
+                if leg.get("coverage_floor") != "off":
+                    continue
+                if not any(all(leg.get(k) == v for k, v in a.items()) for a in allowed):
                     offenders.append(f"{wf.name}:{job_name} {leg}")
             for step in job.get("steps") or []:
-                if (step.get("env") or {}).get("RUNPROV_COVERAGE_FLOOR") == "off":
-                    offenders.append(f"{wf.name}:{job_name} step env")
+                floor = str((step.get("env") or {}).get("RUNPROV_COVERAGE_FLOOR", ""))
+                # An expression is allowed only if it names 3.13 as the sole exemption.
+                if floor == "off" or ("off" in floor and "3.13" not in floor):
+                    offenders.append(f"{wf.name}:{job_name} step env {floor!r}")
     assert not offenders, (
-        f"only the Windows leg may lower the coverage floor, because Windows cannot build "
-        f"the fixtures 22 tests need; found {offenders}"
+        f"a leg may lower the coverage floor only where 100% is unreachable BY "
+        f"CONSTRUCTION, and only for a reason already stated here; found {offenders}"
     )
 
 
