@@ -499,10 +499,17 @@ def _exec(args: argparse.Namespace) -> int:
 
     name = args.name or pathlib.Path(argv[0]).name
     project = active()
+    # THE PROJECT DECIDES, not this file. `exec` hardcoded `{name}_{run_id}.json` — per-run
+    # naming, which is `sidecar_per_run=True` behaviour reached by a second route — while
+    # the library default is `sidecar_per_run=False` and overwrites. Two entry points, the
+    # same decision, opposite answers, and a project that had chosen one got the other from
+    # whichever door it came through. Now `exec` names the sidecar the way a `Run` in a
+    # script would and lets `_sidecar_name` apply the project's setting, so changing the
+    # setting changes both.
     provenance = (
         pathlib.Path(args.provenance)
         if args.provenance
-        else pathlib.Path(project.root) / "provenance" / f"{name}_{project.run_id()}.json"
+        else pathlib.Path(project.root) / "provenance" / f"{name}.prov.json"
     )
     provenance.parent.mkdir(parents=True, exist_ok=True)
 

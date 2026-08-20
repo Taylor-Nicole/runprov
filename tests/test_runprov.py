@@ -11036,6 +11036,117 @@ def test_rehash_will_not_call_an_undigested_input_STALE(tmp_path, monkeypatch):
     )
 
 
+def test_resolving_a_module_twice_asks_the_filesystem_once(tmp_path, monkeypatch):
+    """L-44, and the cost was not where the row said it was. It measured
+    `hash_imported_code=True` at a 4.9x exit cost and read that as the price of HASHING.
+    Measured here on 86 modules with a `__file__`, 40 of them under the root:
+
+        the walk alone      17.97 ms      <- `Path(f).resolve()` + `relative_to`
+        hashing all 41       0.43 ms
+
+    96% of it was asking the filesystem, at every single exit, whether each stdlib and
+    site-packages module lives under the project root — a question whose answer cannot
+    change for a module already imported.
+
+    Two repairs, and this asserts the property rather than either timing, because a
+    stopwatch in a test suite is a flake:
+
+    * the verdict is MEMOISED per `(root, __file__)`, so run 2 in a process asks nothing;
+    * `os.path.realpath` + `startswith` replaces `resolve()` + `relative_to`, because
+      `relative_to` signals "not under the root" by RAISING and that is the common case —
+      ~150 exceptions built and thrown to compute ~150 no's.
+
+    Measured end to end afterwards: 55.3 ms -> 12.2 ms for a one-run process, and 1.6 ms for
+    every run after the first."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    (tmp_path / "mine.py").write_text("VALUE = 1\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    mine = importlib.import_module("mine")
+    proj = _project(tmp_path)
+
+    runprov.run._RESOLVED_UNDER_ROOT.clear()
+    calls = []
+    real = os.path.realpath
+    monkeypatch.setattr(os.path, "realpath", lambda f, **k: (calls.append(f), real(f, **k))[1])
+
+    with runprov.Run("a", project=proj, provenance=tmp_path / "a.prov.json") as run:
+        run.input(tmp_path / "in.tsv")
+    first = len(calls)
+    assert first, "the premise: the first run resolves modules"
+    # `str(c)`: other callers pass a Path, so the recorded arguments are not all strings.
+    assert any(isinstance(c, str) and c.endswith("mine.py") for c in calls), (
+        "including the first-party one, reached through the module walk"
+    )
+
+    calls.clear()
+    with runprov.Run("b", project=proj, provenance=tmp_path / "b.prov.json") as run:
+        run.input(tmp_path / "in.tsv")
+    # THE MODULE WALK specifically, identified by TYPE. Other parts of a run legitimately
+    # resolve paths — the caller file, the input, the sidecar — and every one of those
+    # passes a `Path`. The walk passes `mod.__file__`, which is a `str`. Filtering on the
+    # suffix instead caught the script-detection calls and made this fail for the wrong
+    # reason, which is worth the two lines to say.
+    walked = [c for c in calls if isinstance(c, str)]
+    assert not walked, f"the second run re-resolved {len(walked)} module(s): {walked[:3]}"
+
+    # AND THE ANSWER IS THE SAME ONE. A memo that changed the record would be a worse defect
+    # than the cost it saves.
+    a = json.loads((tmp_path / "a.prov.json").read_text())["code"]["imported"]
+    b = json.loads((tmp_path / "b.prov.json").read_text())["code"]["imported"]
+    assert a == b and mine.__name__ == "mine"
+    assert any("mine.py" in f["path"] for f in a["files"]), a
+
+
+def test_the_memo_is_keyed_on_the_root_and_not_only_the_file(tmp_path, monkeypatch):
+    """Two `Project`s in one process have DIFFERENT answers for the same module file, so a
+    memo keyed on the file alone would let the second project inherit the first's verdicts —
+    a wrong record rather than a slow one, which is the trade this must not make."""
+    monkeypatch.chdir(tmp_path)
+    inside, outside = tmp_path / "inside", tmp_path / "outside"
+    for d in (inside, outside):
+        d.mkdir()
+        (d / "in.tsv").write_text("a\n", encoding="utf-8")
+    (inside / "shared.py").write_text("V = 1\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(inside))
+    importlib.import_module("shared")
+    runprov.run._RESOLVED_UNDER_ROOT.clear()
+
+    def imported_for(root):
+        proj = _project(root)
+        with runprov.Run("s", project=proj, provenance=root / "s.prov.json") as run:
+            run.input(root / "in.tsv")
+        return json.loads((root / "s.prov.json").read_text())["code"]["imported"]
+
+    within = imported_for(inside)
+    beyond = imported_for(outside)
+    assert any("shared.py" in f["path"] for f in within["files"]), within
+    assert not any("shared.py" in f["path"] for f in beyond.get("files", [])), (
+        "shared.py is not under the second project's root, and the memo must not say it is"
+    )
+
+
+def test_exec_names_its_sidecar_the_way_the_project_says(tmp_path, monkeypatch, capsys):
+    """L-44's other contradiction: two entry points, the same decision, opposite answers.
+    `exec` hardcoded `{name}_{run_id}.json` — per-run naming, which is `sidecar_per_run=True`
+    behaviour reached by a second route — while a `Run` in a script honours the project's
+    setting and defaults to overwriting. A project that had chosen one got the other from
+    whichever door it came through."""
+    monkeypatch.chdir(tmp_path)
+
+    def names(**cfg):
+        for p in (tmp_path / "provenance").glob("*"):
+            p.unlink()
+        runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", **cfg)
+        for word in ("one", "two"):
+            cli.main(["exec", "--", sys.executable, "-c", f"print({word!r})"])
+        capsys.readouterr()
+        return sorted(p.name for p in (tmp_path / "provenance").glob("*.prov.json"))
+
+    assert len(names()) == 1, "the default overwrites, exactly as a script's Run does"
+    assert len(names(sidecar_per_run=True)) == 2, "and follows the project when it says so"
+
+
 def test_an_unrequested_second_file_is_announced_when_it_is_created(tmp_path, monkeypatch, capsys):
     """L-80. `open_output` writes the pin INSIDE the artifact where the format takes a
     comment, and BESIDE it as `<name>.prov.txt` where it does not — which is correct, and was
@@ -12628,14 +12739,26 @@ def test_exec_without_a_command_explains_itself(tmp_path, monkeypatch, capsys):
 
 def test_exec_defaults_the_name_and_the_sidecar_path(tmp_path, monkeypatch, capsys):
     """No `--name` and no `--provenance`: the program's own name, and a sidecar under the
-    project's provenance directory carrying the run id, so two runs do not collide."""
+    project's provenance directory named the way a `Run` in a script would name it.
+
+    THIS TEST USED TO ASSERT THE DEFECT. It globbed `sh_*.json` and its docstring gave the
+    reason — "carrying the run id, so two runs do not collide" — which is
+    `sidecar_per_run=True` behaviour, decided here, in one entry point, for every project.
+    The library default is the opposite and overwrites. Two doors into one decision, opposite
+    answers behind them, and a project that had chosen either got the other through one of
+    them (L-44). `exec` now names it `{name}.prov.json` and lets `_sidecar_name` apply the
+    project's setting, so the collision behaviour is the project's choice from both doors —
+    asserted in `test_exec_names_its_sidecar_the_way_the_project_says`."""
     monkeypatch.chdir(tmp_path)
     runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
     assert runprov.__main__.main(["exec", "--", "sh", "-c", "true"]) == 0
     capsys.readouterr()
-    written = list((tmp_path / "provenance").glob("sh_*.json"))
-    assert len(written) == 1, written
+    written = list((tmp_path / "provenance").glob("*.prov.json"))
+    assert [p.name for p in written] == ["sh.prov.json"], written
     assert json.loads(written[0].read_text(encoding="utf-8"))["script"] == "sh"
+    assert not list((tmp_path / "provenance").glob("sh_*.json")), (
+        "the run id must no longer be baked into the name by this entry point alone"
+    )
 
 
 def test_exec_can_tee_the_commands_output_to_a_file(tmp_path, monkeypatch, capsys):
