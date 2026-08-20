@@ -585,6 +585,39 @@ class Run:
         with Run("build_labels", vars(args), provenance=PROV) as run:
             ...
 
+    FOURTEEN METHODS IN FOUR FAMILIES. They were listed alphabetically and nowhere else, so
+    the rule for choosing between four ways of registering one artifact was invisible at the
+    call site — `open_output` and `output_json` both write a JSON result correctly and
+    produce provenance of different shapes, and nothing where you type them says so.
+
+        REGISTER — you write the file; this records it
+          input(p)          the read that must be in the record. RETURNS THE PATH, so
+                            `open(run.input(p))` is the natural spelling and a skipped read
+                            is a visible omission rather than an invisible one
+          output(p)         a file you wrote yourself, hashed and recorded
+          code(p)           a script or module that shaped the result
+          module(m)         the same, for an imported module object
+          tool(name)        an external program, with its version
+          terminal_log(p)   a log you captured yourself
+
+        WRITE — this writes the file, and puts the pin somewhere
+          open_output(p)    a text handle with the pin INSIDE it, where the format takes a
+                            comment. Where it does not, the pin goes to `p.prov.txt`
+                            BESIDE it and you get a second file — announced when it happens
+          output_json(p, o) JSON with the pin as a KEY inside the object: one file, and the
+                            only one of these `verify` can check from the artifact alone
+          pin_sidecar(p)    the pin beside an existing file. The general answer for a BAM,
+                            a PNG, a parquet — anything that cannot carry a comment
+          header(comment)   the pin as a STRING, for writing yourself
+
+        ANNOTATE — facts about the run rather than files
+          note(k, v)  seeds(...)  environment_snapshot()
+
+        FINISH — the record itself
+          write(p)          writes THE PROVENANCE RECORD. Not one of the WRITE family
+                            above: those write YOUR DATA. Optional when `provenance=` is
+                            given, which is the shape to prefer
+
     Args:
         script: the name recorded, and the key a history is grouped by.
         params: the parameters that shaped the result. Recorded verbatim.
@@ -1638,7 +1671,29 @@ class Run:
             # TEXT, but with nowhere to put a comment. The artifact is written untouched
             # and the pin goes beside it, so "this artifact can say what it was made from"
             # survives for a FASTA or a JSONL exactly as it does for a TSV.
-            self.pin_sidecar(p, comment=comment)
+            #
+            # AND IT SAYS SO. This branch was silent, so a caller who wrote one `.json`
+            # found TWO files in their results directory and was told nothing -- and the
+            # second one is what `verify` then reports as the pinned artifact, so the
+            # surprise arrives twice. The trade a few lines up already announces itself;
+            # this is the larger surprise of the two and said nothing.
+            #
+            # A NOTE, NOT A WARNING. Nothing is wrong: the sidecar is the correct answer for
+            # a format that cannot hold a comment, and the run is fully recorded. It is the
+            # UNREQUESTED FILE that has to be visible, which is the same rule that makes
+            # `git_status_captured: false` say "we could not look" out loud.
+            sidecar = self.pin_sidecar(p, comment=comment)
+            diagnostic(
+                f"  PROVENANCE NOTE: {p.name} cannot hold an in-band pin, so the provenance "
+                f"was written BESIDE it as {sidecar.name} — a second file you did not ask "
+                f"for, and the one `verify` will name."
+                + (
+                    "\n    `run.output_json(path, obj)` embeds the pin as a key INSIDE the "
+                    "JSON instead, which keeps it to one file."
+                    if suffix in (".json", ".geojson")
+                    else ""
+                )
+            )
         return fh
 
     def pin_sidecar(self, path: str | pathlib.Path, comment: str = "# ") -> pathlib.Path:

@@ -1500,6 +1500,22 @@ even:**
   FASTA, FASTQ, JSON, JSONL, Newick, SAM, VCF, SVG, XML and the rest. Nothing is refused
   here; the artifact is exactly the bytes you wrote.
 
+**And it says so when it happens**, because that second file is one you did not ask for:
+
+```
+PROVENANCE NOTE: calls.json cannot hold an in-band pin, so the provenance was written
+BESIDE it as calls.json.prov.txt — a second file you did not ask for, and the one
+`verify` will name.
+  `run.output_json(path, obj)` embeds the pin as a key INSIDE the JSON instead, which
+  keeps it to one file.
+```
+
+The surprise otherwise arrives twice: the sidecar is also what `verify` reports as the
+pinned artifact, so the file you never asked for is the one the checker names back at you.
+It is a note and not a warning — nothing is wrong, the sidecar is the correct answer for a
+format that cannot hold a comment, and the run is fully recorded. What has to be visible is
+the extra FILE.
+
 `runprov.run.PIN_UNSAFE` is the table (a MODULE constant, not an attribute of a `Run`), with
 the reason each format cannot take an in-band `#`:
 

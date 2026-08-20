@@ -11036,6 +11036,81 @@ def test_rehash_will_not_call_an_undigested_input_STALE(tmp_path, monkeypatch):
     )
 
 
+def test_an_unrequested_second_file_is_announced_when_it_is_created(tmp_path, monkeypatch, capsys):
+    """L-80. `open_output` writes the pin INSIDE the artifact where the format takes a
+    comment, and BESIDE it as `<name>.prov.txt` where it does not — which is correct, and was
+    silent. A caller who wrote one `.json` found TWO files in their results directory and was
+    told nothing.
+
+    The surprise arrives twice, which is what makes it worth a line: the sidecar is also what
+    `verify` reports as the pinned artifact, so the file the user never asked for is the one
+    the checker names back at them.
+
+    A NOTE, NOT A WARNING. Nothing is wrong — the sidecar is the right answer for a format
+    that cannot hold a comment and the run is fully recorded. It is the unrequested FILE that
+    has to be visible, the same rule that makes `git_status_captured: false` say "we could
+    not look" out loud. The in-band TRADE a few lines above already announced itself; this,
+    the larger of the two surprises, did not."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    proj = _project(tmp_path)
+
+    with runprov.Run("s", project=proj, provenance=tmp_path / "s.prov.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "calls.json") as fh:
+            json.dump({"variants": [1, 2]}, fh)
+    err = capsys.readouterr().err
+
+    assert (tmp_path / "calls.json.prov.txt").is_file(), "the premise: a second file appeared"
+    assert "calls.json.prov.txt" in err, "and it must be NAMED, not merely implied"
+    assert "second file you did not ask for" in err
+    assert "verify" in err, "say which file the checker will name back at them"
+    assert "output_json" in err, "and the one-file alternative, for JSON specifically"
+
+    # A FORMAT THAT CAN HOLD THE PIN SAYS NOTHING, because nothing surprising happened.
+    with runprov.Run("s2", project=proj, provenance=tmp_path / "s2.prov.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "table.tsv") as fh:
+            fh.write("a\n")
+    quiet = capsys.readouterr().err
+    assert not (tmp_path / "table.tsv.prov.txt").exists(), "the pin went inside it"
+    assert "did not ask for" not in quiet, "no second file, so no note"
+
+
+def test_the_run_docstring_names_every_method_and_says_which_family_it_is_in():
+    """L-80's other half. Fourteen methods listed alphabetically and nowhere else: the rule
+    for choosing among four ways of registering one artifact was invisible at the call site.
+    `open_output` and `output_json` both write a JSON result correctly and produce provenance
+    of DIFFERENT SHAPES — only one of which `verify` can check from the artifact alone — and
+    nothing where you type them says so.
+
+    THE FAMILY BOUNDARY THAT MATTERS is the last one: `write()` is not a member of the WRITE
+    family. Those write YOUR DATA; `write()` writes THE RECORD. That is the same confusion
+    the `write_json` -> `output_json` rename was paid for (L-21), and a docstring that listed
+    both under one heading would have put it straight back.
+
+    ASSERTED BECAUSE PROSE ROTS. A method added without a line here is a method with no
+    stated family, which is the state this row was filed about."""
+    doc = inspect.getdoc(runprov.Run)
+    assert doc
+    methods = {
+        n for n, _ in inspect.getmembers(runprov.Run, inspect.isfunction) if not n.startswith("_")
+    }
+    unnamed = sorted(m for m in methods if not re.search(rf"\b{m}\(", doc))
+    assert not unnamed, f"{unnamed} have no line in the class docstring, so no stated family"
+
+    for family in ("REGISTER", "WRITE", "ANNOTATE", "FINISH"):
+        assert family in doc, f"the {family} heading is gone"
+
+    finish = doc[doc.index("FINISH") :]
+    assert "write(p)" in finish, "`write` belongs to FINISH"
+    write_family = doc[doc.index("WRITE —") : doc.index("ANNOTATE")]
+    assert "write(p)" not in write_family, (
+        "`write()` must not be listed with the methods that write YOUR DATA — that is the "
+        "exact confusion the output_json rename was paid for"
+    )
+
+
 def _torn(tmp_path):
     """A history with three lines that will not parse, at known line numbers 2, 5 and 7.
 
