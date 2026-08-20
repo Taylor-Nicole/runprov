@@ -8975,6 +8975,64 @@ def test_only_the_windows_leg_turns_the_coverage_floor_off():
     assert matrix["os"] == ["ubuntu-latest"], "the base matrix must carry no floor override"
 
 
+def test_no_workflow_anywhere_lowers_the_coverage_floor_except_the_windows_leg():
+    """The generalisation of the test above, and the reason it needed one: that test reads
+    `test.yml` and nothing else, so a SECOND workflow file could turn the floor off on Linux
+    and the suite would stay green — which is the exact failure its docstring warns about,
+    left reachable by the file it was scoped to.
+
+    It became reachable rather than hypothetical when `selfhosted.yml` was added to run the
+    Linux legs on a local runner while hosted billing is down. That file must inherit the
+    100% floor like every other Linux leg."""
+    yaml = pytest.importorskip("yaml")
+    wf_dir = _repo_root() / ".github/workflows"
+    if not wf_dir.is_dir():  # pragma: no cover - not shipped in the sdist
+        pytest.skip("workflows not present")
+
+    offenders = []
+    for wf in sorted(wf_dir.glob("*.yml")):
+        doc = yaml.safe_load(wf.read_text(encoding="utf-8")) or {}
+        for job_name, job in (doc.get("jobs") or {}).items():
+            legs = ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []
+            for leg in legs:
+                if leg.get("coverage_floor") == "off" and leg.get("os") != "windows-latest":
+                    offenders.append(f"{wf.name}:{job_name} {leg}")
+            for step in job.get("steps") or []:
+                if (step.get("env") or {}).get("RUNPROV_COVERAGE_FLOOR") == "off":
+                    offenders.append(f"{wf.name}:{job_name} step env")
+    assert not offenders, (
+        f"only the Windows leg may lower the coverage floor, because Windows cannot build "
+        f"the fixtures 22 tests need; found {offenders}"
+    )
+
+
+def test_the_self_hosted_workflow_says_what_it_cannot_prove():
+    """A green tick is read as "the matrix passed". This one covers Linux and nothing else —
+    no macOS, and no Windows, which is the leg that proves the `msvcrt` fallback for `flock`
+    and is the reason Windows is in the hosted matrix at all.
+
+    Asserted rather than left to a comment, because the whole point of the file is to give
+    today's tree an answer while hosted billing is down, and a run that quietly implied more
+    coverage than it had would be worse than no run. The same argument as
+    `git_status_captured: false`."""
+    yaml = pytest.importorskip("yaml")
+    wf = _repo_root() / ".github/workflows/selfhosted.yml"
+    if not wf.is_file():  # pragma: no cover - not shipped in the sdist
+        pytest.skip("selfhosted.yml not present")
+    text = wf.read_text(encoding="utf-8")
+    doc = yaml.safe_load(text)
+
+    assert doc["jobs"]["test"]["runs-on"] == ["self-hosted", "linux"]
+    assert "windows" not in str(doc["jobs"]["test"]).lower(), "it cannot run Windows"
+    assert "macos" not in str(doc["jobs"]["test"]).lower(), "nor macOS"
+    assert "Not covered" in text and "Windows" in text, (
+        "the run summary must state what it does not cover, where a reader of the run sees it"
+    )
+    # `push` would queue forever whenever the desk it runs on is off, and a permanently
+    # pending job is a worse signal than no signal.
+    assert set(doc[True] if True in doc else doc["on"]) == {"workflow_dispatch"}
+
+
 def test_the_publish_workflow_declares_least_privilege(tmp_path):
     """L-34. With no top-level `permissions`, every job inherits the repository default —
     write-all on older repositories — so `build` and `test` ran a release with push rights
