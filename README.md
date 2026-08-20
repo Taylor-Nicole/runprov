@@ -1259,6 +1259,45 @@ defect that left the predecessor's file unreadable partway through and spawned n
 `fix_transformation_log_*.py` repair scripts. The append-only history is JSONL for that
 reason, and this renders a view of it.
 
+### When a line will not parse
+
+Every reader here degrades and says how much it lost:
+
+```
+# 3 of 3 run(s) from provenance/runs.jsonl; 1 FAILED; 3 unreadable line(s) skipped
+```
+
+That tells you something is wrong and nothing about what. To see the lines themselves:
+
+```bash
+python -m runprov log --unreadable
+```
+
+```
+2: {"run_id": "b", "script": "two.py", "sta
+5: not json at all \x1b[31mand a terminal escape\x1b[0m\tand a tab
+7: {"huge": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxx…  … 211 more character(s)
+```
+
+**Line numbers from the file**, so a count that would send you into a 100,000-line history
+sends you to three lines instead. Control characters are **escaped**: the reason a line will
+not parse is often that something wrote bytes into it, and printing those raw hands your
+terminal whatever corrupted the file. A history line is uncapped caller data, so the text is
+bounded at 200 characters and says what it cut.
+
+**There is no repair command, and there will not be one.** JSONL loses the bad line and
+counts it — that is the whole reason for the format, so damage costs exactly the damaged
+lines and every other record is intact. A command that rewrote `runs.jsonl` would contradict
+the claim this package is built on, and would add a new way to lose data: a bad repair
+destroys good records, and the tool becomes the risk. The file that *can* be corrupted is
+the YAML view, and its recovery already exists — it is printed in that file's own banner:
+
+```bash
+python -m runprov log --format yaml > provenance/transformation_log.yml
+```
+
+It **exits 0 even when it finds something**: it reports, it does not gate.
+
 **`json_safe()` over pandas and numpy scalars.** Every such script carries a copy, and it is
 not optional: `numpy.float64` subclasses `float` and survives, but `numpy.int64` and
 `numpy.bool_` subclass neither `int` nor `bool`. Measured before this was fixed,
