@@ -63,7 +63,7 @@ from __future__ import annotations
 # it; tests reach into internals on purpose and prove nothing; and prose that documents a
 # printed string, a CLI flag or a record key is not an instruction to call a name.
 # Adding or withdrawing a promise is a package-level decision taken in `__init__.py`.
-__all__ = ["Capture"]
+__all__: list[str] = []
 
 import os
 import pathlib

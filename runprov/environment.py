@@ -44,7 +44,7 @@ from __future__ import annotations
 # them describes this feature as `env_snapshot_dir` configuration plus record fields.
 # They go in because the two surfaces must agree; whether the PACKAGE should still
 # promise them is a separate question for the ledger, not for this file.
-__all__ = ["installed_packages", "write_snapshot"]
+__all__: list[str] = []
 
 import hashlib
 import json

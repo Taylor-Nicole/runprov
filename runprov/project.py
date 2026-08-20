@@ -37,7 +37,6 @@ __all__ = [
     "active",
     "configure",
     "detect_root",
-    "git",
     "is_configured",
 ]
 

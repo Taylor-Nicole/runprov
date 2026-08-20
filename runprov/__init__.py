@@ -48,7 +48,6 @@ copies that agree until they do not.
 
 import typing
 
-from .environment import installed_packages, write_snapshot
 from .hashing import content_digest, describe, sha256
 from .project import (
     DEFAULT_CODE_PATHS,
@@ -57,12 +56,10 @@ from .project import (
     active,
     configure,
     detect_root,
-    git,
     is_configured,
 )
 from .run import HISTORY_SCHEMA, SCHEMA, Run, Terminated
-from .sinks import JsonlSink, MemorySink, RecordSink
-from .terminal import Capture
+from .sinks import JsonlSink, RecordSink
 
 # EVERY NAME HERE IS A PROMISE. It was 27, and the quickstart uses two of them; a previous
 # review already called 24 too many to freeze. Five came out on 2026-08-19 (ledger L-24):
@@ -78,14 +75,31 @@ from .terminal import Capture
 # `runprov.project.default_run_id` -- they simply stop being promised. SCHEMA and
 # HISTORY_SCHEMA stay (a consumer parsing records needs the version) and so do the two
 # DEFAULT_* tuples (people extend them).
+#
+# FIVE MORE ON 2026-08-20 (ledger L-84 follow-up), for a different reason: not "this is
+# mechanism" but "nobody was ever told to call this". Every one had ZERO references in
+# README, GETTING-STARTED, WHY or any ADR -- checked, not assumed -- while the features they
+# belong to are documented entirely as configuration and record fields:
+#
+#   installed_packages,       the environment snapshot is reached through
+#   write_snapshot            `Project(env_snapshot_dir=...)` and the record it writes
+#   Capture                   terminal capture is reached through `terminal_log`
+#   MemorySink                `sink=` takes one; the class is for tests and for people
+#                             writing their own, neither of which needs a promise
+#   git                       6 internal call sites and no documented caller. A bare `git`
+#                             in an importing namespace also collides with GitPython's
+#                             top-level module, and the contract -- swallow everything,
+#                             return None, 20s timeout -- is provenance capture rather than
+#                             a general-purpose runner. ADR-0003 left this open; this closes
+#                             it by withdrawal rather than by rename.
+#
+# 17 names. All ten withdrawn names still exist on their own modules.
 __all__ = [
     "DEFAULT_CODE_PATHS",
     "DEFAULT_TRACKED",
     "HISTORY_SCHEMA",
     "SCHEMA",
-    "Capture",
     "JsonlSink",
-    "MemorySink",
     "Project",
     "RecordSink",
     "Run",
@@ -95,12 +109,9 @@ __all__ = [
     "content_digest",
     "describe",
     "detect_root",
-    "git",
-    "installed_packages",
     "is_configured",
     "sha256",
     "to_yaml",
-    "write_snapshot",
 ]
 __version__ = "0.1.0"
 

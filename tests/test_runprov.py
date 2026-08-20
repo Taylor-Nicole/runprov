@@ -270,8 +270,8 @@ def test_detect_root_falls_back_to_the_directory_itself_outside_git(tmp_path):
 
 def test_git_returns_none_instead_of_raising(tmp_path):
     """Provenance capture that can abort a run gets deleted from the run."""
-    assert runprov.git(REPO, "not-a-git-subcommand") is None
-    assert runprov.git(tmp_path / "does-not-exist", "rev-parse", "HEAD") is None
+    assert runprov.project.git(REPO, "not-a-git-subcommand") is None
+    assert runprov.project.git(tmp_path / "does-not-exist", "rev-parse", "HEAD") is None
 
 
 # --------------------------------------------------------------------- Run
@@ -864,7 +864,7 @@ def test_environment_snapshot_is_content_addressed_not_per_run(tmp_path):
 
 
 def test_environment_snapshot_filename_is_the_digest_of_its_body(tmp_path):
-    rec = runprov.write_snapshot(tmp_path)
+    rec = runprov.environment.write_snapshot(tmp_path)
     body = pathlib.Path(rec["path"]).read_text(encoding="utf-8")
     assert pathlib.Path(rec["path"]).name == f"env-{runprov.environment.digest(body)[:16]}.txt"
     assert rec["sha256"] == runprov.environment.digest(body)
@@ -873,8 +873,8 @@ def test_environment_snapshot_filename_is_the_digest_of_its_body(tmp_path):
 def test_environment_snapshot_reports_reuse(tmp_path):
     """`reused: true` is the signal that the environment has not moved since an earlier
     run — the question the 87 timestamped files could not answer cheaply."""
-    first = runprov.write_snapshot(tmp_path)
-    second = runprov.write_snapshot(tmp_path)
+    first = runprov.environment.write_snapshot(tmp_path)
+    second = runprov.environment.write_snapshot(tmp_path)
     assert first["reused"] is False and second["reused"] is True
     assert first["path"] == second["path"]
 
@@ -890,7 +890,7 @@ def test_installed_packages_reads_the_running_interpreter(tmp_path):
     """`importlib.metadata`, not `subprocess(['pip','freeze'])`. The dead helper in the
     sibling froze the pip on PATH, which in a mamba-plus-uv layout need not be the
     interpreter running the script."""
-    pkgs = runprov.installed_packages()
+    pkgs = runprov.environment.installed_packages()
     assert pkgs and "pytest" in {k.lower() for k in pkgs}
     assert all(v for v in pkgs.values()), "a version-less entry must read UNKNOWN, not ''"
     assert list(pkgs) == sorted(pkgs, key=str.lower)
@@ -898,7 +898,9 @@ def test_installed_packages_reads_the_running_interpreter(tmp_path):
 
 def test_snapshot_body_records_the_interpreter_not_only_the_packages(tmp_path):
     """The same versions on a different Python are a different environment."""
-    body = pathlib.Path(runprov.write_snapshot(tmp_path)["path"]).read_text(encoding="utf-8")
+    body = pathlib.Path(runprov.environment.write_snapshot(tmp_path)["path"]).read_text(
+        encoding="utf-8"
+    )
     assert f"# python   : {sys.version.split()[0]}" in body
 
 
@@ -967,7 +969,7 @@ def test_every_record_declares_its_schema(tmp_path):
     """A provenance format with no version cannot be read defensively by anything -- a
     script, a dashboard, or an agent reading the history has to guess from which keys
     happen to be present."""
-    sink = runprov.MemorySink()
+    sink = runprov.sinks.MemorySink()
     proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
     run = runprov.Run("t", project=proj)
     assert run.record["schema"] == runprov.SCHEMA == "runprov.run.v2"
@@ -998,7 +1000,7 @@ def test_the_pin_is_identical_on_two_machines_for_an_input_outside_the_root(tmp_
 def _header_for(root: pathlib.Path, src: pathlib.Path) -> str:
     root.mkdir(parents=True, exist_ok=True)
     proj = runprov.Project(
-        root=root, sink=runprov.MemorySink(), run_id=lambda: "r", generation=lambda: "g"
+        root=root, sink=runprov.sinks.MemorySink(), run_id=lambda: "r", generation=lambda: "g"
     )
     run = runprov.Run("t", project=proj)
     run.input(src)
@@ -1316,7 +1318,7 @@ def test_a_supplied_sink_is_the_whole_story(tmp_path):
     """The extension point exists so a lab can send records to one shared database, and
     quietly writing a YAML file next to it would be this package deciding where somebody
     else's records live."""
-    sink = runprov.MemorySink()
+    sink = runprov.sinks.MemorySink()
     proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
     with runprov.Run("s", project=proj, provenance=tmp_path / "p.prov.json"):
         pass
@@ -1326,7 +1328,7 @@ def test_a_supplied_sink_is_the_whole_story(tmp_path):
 
 def test_a_second_write_does_not_double_count_the_run(tmp_path):
     """One run is one history line, or every count taken from the history is wrong."""
-    sink = runprov.MemorySink()
+    sink = runprov.sinks.MemorySink()
     proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
     run = runprov.Run("t", project=proj)
     run.write(tmp_path / "a.json")
@@ -1408,7 +1410,7 @@ def test_a_second_write_does_not_double_the_outputs_inside_the_record(tmp_path):
     already-doubled list and the doubling reaches the append-only history, where any tally
     over artifacts produced is then silently inflated for the life of the file.
     """
-    sink = runprov.MemorySink()
+    sink = runprov.sinks.MemorySink()
     proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
 
     run = runprov.Run("t", project=proj)
@@ -1423,7 +1425,7 @@ def test_a_second_write_does_not_double_the_outputs_inside_the_record(tmp_path):
 
     # The history line is the one that is permanent, and inside a `with` block it is
     # deferred to `__exit__` — so it read the list AFTER every write() had appended to it.
-    sink2 = runprov.MemorySink()
+    sink2 = runprov.sinks.MemorySink()
     proj2 = runprov.Project(root=tmp_path, sink=sink2, run_id=lambda: "r", generation=lambda: "g")
     with runprov.Run("t", project=proj2, provenance=tmp_path / "c.json") as run2:
         (out2 := run2.output(tmp_path / "p.tsv")).write_text("id\n1\n", encoding="utf-8")
@@ -1438,7 +1440,7 @@ def test_a_second_write_does_not_double_the_outputs_inside_the_record(tmp_path):
 def test_a_custom_sink_receives_the_records(tmp_path):
     """The one extension point: where records go. A lab pointing many pipelines at one
     store must not have to fork the package."""
-    sink = runprov.MemorySink()
+    sink = runprov.sinks.MemorySink()
     proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
     for i in range(3):
         runprov.Run(f"s{i}", project=proj).write(tmp_path / f"p{i}.json")
@@ -1593,7 +1595,7 @@ def test_a_distribution_with_unreadable_metadata_is_counted_not_dropped(monkeypa
 
     monkeypatch.setattr(md, "distributions", lambda: [Broken(), Nameless()])
     bad = []
-    pkgs = runprov.installed_packages(bad)
+    pkgs = runprov.environment.installed_packages(bad)
     assert pkgs == {} and len(bad) == 2
     assert "UNREADABLE: 2" in runprov.environment._render_snapshot(pkgs, len(bad))
 
@@ -1606,7 +1608,7 @@ def test_a_version_that_cannot_be_read_is_recorded_as_unknown(monkeypatch):
     import importlib.metadata as md
 
     monkeypatch.setattr(md, "distributions", lambda: [NoVersion()])
-    assert runprov.installed_packages() == {"thing": "UNKNOWN"}
+    assert runprov.environment.installed_packages() == {"thing": "UNKNOWN"}
 
 
 # ================================================================= coverage: the hashing
@@ -1638,7 +1640,7 @@ def test_binary_content_falls_back_to_the_raw_hash(tmp_path):
 def test_git_on_a_path_that_is_not_a_directory_returns_none(tmp_path):
     f = tmp_path / "afile"
     f.write_text("x", encoding="utf-8")
-    assert runprov.git(f, "rev-parse", "HEAD") is None
+    assert runprov.project.git(f, "rev-parse", "HEAD") is None
 
 
 def test_default_run_id_and_generation_read_the_environment(monkeypatch):
@@ -1698,7 +1700,7 @@ def test_an_unwritable_snapshot_directory_warns_and_does_not_break_the_run(tmp_p
     blocker.write_text("I am a file, not a directory", encoding="utf-8")
     proj = runprov.Project(
         root=tmp_path,
-        sink=runprov.MemorySink(),
+        sink=runprov.sinks.MemorySink(),
         env_snapshot_dir=blocker / "sub",
         run_id=lambda: "r",
         generation=lambda: "g",
@@ -1723,7 +1725,7 @@ def test_a_dirty_tree_is_announced(tmp_path, capsys):
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "one"], check=True)
     (repo / "src" / "a.py").write_text("x = 2\n", encoding="utf-8")
-    runprov.Run("t", project=runprov.Project(root=repo, sink=runprov.MemorySink()))
+    runprov.Run("t", project=runprov.Project(root=repo, sink=runprov.sinks.MemorySink()))
     cap = capsys.readouterr()
     assert "CODE is modified relative to git_commit" in cap.err and cap.out == ""
 
@@ -1790,7 +1792,7 @@ def test_python_level_capture_says_it_cannot_see_subprocesses(tmp_path, monkeypa
     log means two different things and only the mechanism distinguishes them."""
     monkeypatch.chdir(tmp_path)
     log = tmp_path / "t.log"
-    cap = runprov.Capture(log)
+    cap = runprov.terminal.Capture(log)
     # The module reference inside runprov.terminal, NOT `os.dup2` itself. `runprov.terminal.os`
     # IS the os module, so patching an attribute on it patches it for the whole interpreter —
     # which broke pytest's own capture teardown when this test was first written.
@@ -1810,7 +1812,7 @@ def test_a_capture_that_cannot_open_its_file_does_not_touch_the_streams(tmp_path
     blocker = tmp_path / "afile"
     blocker.write_text("not a directory", encoding="utf-8")
     before_out, before_err = sys.stdout, sys.stderr
-    cap = runprov.Capture(blocker / "sub" / "t.log")
+    cap = runprov.terminal.Capture(blocker / "sub" / "t.log")
     cap.start()
     assert cap.mode == "none"
     assert sys.stdout is before_out and sys.stderr is before_err, "streams must be untouched"
@@ -1898,7 +1900,7 @@ def test_a_log_that_cannot_be_written_still_lets_the_output_through(tmp_path, mo
     would be the `_report.py` defect with extra steps."""
     monkeypatch.chdir(tmp_path)
     sink = tmp_path / "real.txt"
-    cap = runprov.Capture(tmp_path / "t.log")
+    cap = runprov.terminal.Capture(tmp_path / "t.log")
     with open(sink, "w", encoding="utf-8") as fh:
         saved = os.dup(1)
         os.dup2(fh.fileno(), 1)
@@ -1916,7 +1918,7 @@ def test_a_log_that_cannot_be_written_still_lets_the_output_through(tmp_path, mo
 def test_when_neither_mechanism_works_capture_is_off_and_says_so(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     log = tmp_path / "t.log"
-    cap = runprov.Capture(log)
+    cap = runprov.terminal.Capture(log)
     monkeypatch.setattr(runprov.terminal, "os", _NoDup2())
     monkeypatch.setattr(runprov.terminal, "_flush_std", _raise_runtime)
     cap.start()
@@ -1927,7 +1929,7 @@ def test_when_neither_mechanism_works_capture_is_off_and_says_so(tmp_path, monke
 
 def test_a_capture_whose_log_vanished_records_it_as_MISSING(tmp_path):
     """Registered and absent is a finding, exactly as it is for any other output."""
-    cap = runprov.Capture(tmp_path / "gone.log")
+    cap = runprov.terminal.Capture(tmp_path / "gone.log")
     cap.mode = "fd"
     assert cap.describe()["kind"] == "MISSING"
 
@@ -1937,7 +1939,7 @@ def test_a_process_still_holding_the_output_open_is_reported_not_hung(tmp_path, 
     the captured fd and never exits, the join times out, the log is declared possibly
     short, and the run continues."""
     monkeypatch.chdir(tmp_path)
-    cap = runprov.Capture(tmp_path / "t.log")
+    cap = runprov.terminal.Capture(tmp_path / "t.log")
     cap.start()
 
     class _Stuck:
@@ -1956,7 +1958,7 @@ def test_stopping_a_capture_never_raises_into_the_run(tmp_path, monkeypatch, cap
     """`stop()` runs while an exception may already be in flight. It must not become the
     failure the caller sees — the same rule `_persist` follows."""
     monkeypatch.chdir(tmp_path)
-    cap = runprov.Capture(tmp_path / "t.log")
+    cap = runprov.terminal.Capture(tmp_path / "t.log")
     cap.start()
     monkeypatch.setattr(runprov.terminal, "_flush_std", _raise_runtime)
     rec = cap.stop()
@@ -2076,7 +2078,7 @@ def test_write_all_gives_up_when_the_target_refuses_everything(monkeypatch):
 def test_restoring_fds_tolerates_a_closed_descriptor(tmp_path):
     """Nothing useful remains to be done about a failed restore, and raising would replace
     the run's own outcome."""
-    cap = runprov.Capture(tmp_path / "t.log")
+    cap = runprov.terminal.Capture(tmp_path / "t.log")
     cap._saved = {1: -1, 2: -1}  # never-valid descriptors
     cap._restore_fds()
     cap._close_saved()
@@ -2086,7 +2088,7 @@ def test_restoring_fds_tolerates_a_closed_descriptor(tmp_path):
 def test_the_pump_stops_when_its_pipe_disappears(tmp_path):
     """The read end going away mid-run is process teardown, not an error to report — there
     is nothing left to mirror and nothing to report to."""
-    cap = runprov.Capture(tmp_path / "t.log")
+    cap = runprov.terminal.Capture(tmp_path / "t.log")
     rfd, wfd = os.pipe()
     os.close(rfd)
     os.close(wfd)
@@ -2100,7 +2102,7 @@ def test_every_half_of_the_capture_works_without_the_other(tmp_path):
     is exactly when the rest must keep working.
     """
     # the pump, mirroring with NO file to copy into
-    cap = runprov.Capture(tmp_path / "unused.log")
+    cap = runprov.terminal.Capture(tmp_path / "unused.log")
     rfd, wfd = os.pipe()
     sink = tmp_path / "mirror.txt"
     with open(sink, "wb") as fh:
@@ -2111,12 +2113,12 @@ def test_every_half_of_the_capture_works_without_the_other(tmp_path):
     assert sink.read_bytes() == b"MIRRORED-ANYWAY\n", "no file to copy into, mirror still runs"
 
     # stop() in fd mode with no thread ever started
-    lone = runprov.Capture(tmp_path / "none.log")
+    lone = runprov.terminal.Capture(tmp_path / "none.log")
     lone.mode = "fd"
     assert lone.stop()["kind"] == "MISSING"
 
     # closing when there is nothing open
-    runprov.Capture(tmp_path / "x.log")._close_file()
+    runprov.terminal.Capture(tmp_path / "x.log")._close_file()
 
     # the python tee with no copy target: pure passthrough
     out = io.StringIO()
@@ -3861,11 +3863,17 @@ def test_the_exported_name_count_in_why_md_is_the_real_one():
 
 
 def test_the_public_surface_is_exactly_all_and_nothing_leaks_beside_it():
-    """L-24. `__all__` was 27 names and five of them were surface by accident, not by
-    decision: `VOLATILE` and `VOLATILE_JSON` are the compiled regexes that strip volatile
-    stamps — the mechanism, which nobody should be held to — `PIN_UNSAFE` is documentation
-    rendered into a refusal message, and `default_run_id`/`default_generation` are defaults
-    `Project` already supplies.
+    """L-24, and its follow-up. `__all__` was 27 names and ten of them were surface by
+    accident, not by decision.
+
+    FIVE WENT ON 2026-08-19, as mechanism or as duplication: `VOLATILE` and `VOLATILE_JSON`
+    are the compiled regexes that strip volatile stamps — the mechanism, which nobody should
+    be held to — `PIN_UNSAFE` is documentation rendered into a refusal message, and
+    `default_run_id`/`default_generation` are defaults `Project` already supplies.
+
+    FIVE MORE ON 2026-08-20, for a different reason: nobody was ever told to call them. Zero
+    references in README, GETTING-STARTED, WHY and every ADR, while the features they belong
+    to are documented entirely as configuration and record fields.
 
     Trimming the list is not the fix on its own. `__all__` only governs `import *`; the names
     stayed reachable as `runprov.PIN_UNSAFE` until the re-export lines went too, and a later
@@ -3879,11 +3887,23 @@ def test_the_public_surface_is_exactly_all_and_nothing_leaks_beside_it():
     assert not missing, f"__all__ promises names the package does not have: {missing}"
 
     withdrawn = {
+        # 2026-08-19 — mechanism, and defaults `Project` already supplies.
         "VOLATILE": runprov.hashing,
         "VOLATILE_JSON": runprov.hashing,
         "PIN_UNSAFE": runprov.run,
         "default_run_id": runprov.project,
         "default_generation": runprov.project,
+        # 2026-08-20 — a different reason: nobody was ever told to call these. Every one had
+        # ZERO references in README, GETTING-STARTED, WHY or any ADR, while the features they
+        # belong to are documented entirely as configuration and record fields. `git` also
+        # collides with GitPython's top-level module in an importing namespace, and its
+        # contract — swallow everything, return None, 20s timeout — is provenance capture
+        # rather than a general-purpose runner.
+        "installed_packages": runprov.environment,
+        "write_snapshot": runprov.environment,
+        "Capture": runprov.terminal,
+        "MemorySink": runprov.sinks,
+        "git": runprov.project,
     }
     leaked = [n for n in withdrawn if hasattr(runprov, n)]
     assert not leaked, (
@@ -4403,7 +4423,7 @@ def test_git_returns_none_when_the_binary_is_absent(monkeypatch, tmp_path):
         raise FileNotFoundError("git: command not found")
 
     monkeypatch.setattr(runprov.project.subprocess, "run", no_git)
-    assert runprov.git(tmp_path, "rev-parse", "HEAD") is None
+    assert runprov.project.git(tmp_path, "rev-parse", "HEAD") is None
 
 
 # ============================================== C0a / C0b — the two wrong-record defects
@@ -4413,7 +4433,7 @@ def test_a_failure_after_write_is_not_recorded_as_ok(tmp_path):
     final assertion, an atexit flush or a `finally` reported SUCCESS. The suite blessed the
     exact shape: test_a_successful_with_block_writes_once_not_twice writes inside the
     block. A record that has become false must be corrected, not skipped."""
-    sink = runprov.MemorySink()
+    sink = runprov.sinks.MemorySink()
     proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
     with pytest.raises(RuntimeError):
         with runprov.Run("step", project=proj, provenance=tmp_path / "p.json") as run:
@@ -4438,7 +4458,7 @@ def test_the_pin_does_not_depend_on_registration_order(tmp_path):
         (tmp_path / name).write_text(name, encoding="utf-8")
     proj = runprov.Project(
         root=tmp_path,
-        sink=runprov.MemorySink(),
+        sink=runprov.sinks.MemorySink(),
         run_id=lambda: "r",
         generation=lambda: "g",
     )
@@ -4461,7 +4481,7 @@ def test_the_pin_deduplicates_a_repeatedly_registered_input(tmp_path):
     src.write_text("id\n1\n", encoding="utf-8")
     proj = runprov.Project(
         root=tmp_path,
-        sink=runprov.MemorySink(),
+        sink=runprov.sinks.MemorySink(),
         run_id=lambda: "r",
         generation=lambda: "g",
     )
@@ -4535,7 +4555,7 @@ def test_a_failing_sidecar_write_does_not_replace_the_users_exception(tmp_path, 
     that can abort a run gets removed from the run"); the sidecar path never honoured it."""
     blocker = tmp_path / "blocked"
     blocker.write_text("a file, not a directory", encoding="utf-8")
-    sink = runprov.MemorySink()
+    sink = runprov.sinks.MemorySink()
     proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
     with pytest.raises(RuntimeError, match="THE REAL FAILURE"):
         with runprov.Run("f", project=proj, provenance=blocker / "sub" / "p.json"):
@@ -4555,7 +4575,7 @@ def test_an_unserialisable_note_does_not_lose_the_run(tmp_path):
     away. `_jsonable` stringifies the KEY instead, so the numbers are still there and still
     attributable -- degrading the part that cannot encode rather than the value containing
     it, which is the same rule one level down."""
-    sink = runprov.MemorySink()
+    sink = runprov.sinks.MemorySink()
     proj = runprov.Project(root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g")
     run = runprov.Run("g", project=proj)
     run.note("confusion", {(1, "a"): 0.9})
@@ -4569,7 +4589,7 @@ def test_an_unserialisable_note_does_not_lose_the_run(tmp_path):
 
 # ================= regressions introduced by the deferred-history change, found by review
 def _sinked(tmp_path):
-    sink = runprov.MemorySink()
+    sink = runprov.sinks.MemorySink()
     return sink, runprov.Project(
         root=tmp_path, sink=sink, run_id=lambda: "r", generation=lambda: "g"
     )
@@ -4969,7 +4989,7 @@ def test_uncommitted_code_outside_the_default_code_paths_is_not_reported_as_clea
     The whole tree is read now and `code_paths` only WIDENS what counts."""
     repo = _repo_with(tmp_path, "pkg")
     (repo / "pkg" / "mod.py").write_text("x = 2\n", encoding="utf-8")  # uncommitted edit
-    proj = runprov.Project(root=repo, sink=runprov.MemorySink())  # the DEFAULT code_paths
+    proj = runprov.Project(root=repo, sink=runprov.sinks.MemorySink())  # the DEFAULT code_paths
     code = runprov.Run("t", project=proj).record["code"]
     assert code["git_code_dirty"] is True, "an edited module is not a clean tree"
     assert any("pkg/mod.py" in line for line in code["git_dirty_code_files"])
@@ -5003,9 +5023,9 @@ def test_the_dirty_other_files_list_is_capped_and_says_how_much_it_dropped(tmp_p
     for i in range(runprov.project.OTHER_FILES_KEPT + extra):
         (repo / f"out_{i:04d}.tsv").write_text(f"{i}\n", encoding="utf-8")
 
-    code = runprov.Run("t", project=runprov.Project(root=repo, sink=runprov.MemorySink())).record[
-        "code"
-    ]
+    code = runprov.Run(
+        "t", project=runprov.Project(root=repo, sink=runprov.sinks.MemorySink())
+    ).record["code"]
     kept = code["git_dirty_other_files"]
     assert code["git_code_dirty"] is False, "churn under `churn/` is not code"
     assert code["git_tree_dirty"] is True
@@ -5044,9 +5064,9 @@ def test_data_churn_alone_still_does_not_report_the_code_as_dirty(tmp_path):
     (repo / "data.tsv").write_text("id\n1\n2\n", encoding="utf-8")
     (repo / "reports").mkdir()
     (repo / "reports" / "out.parquet").write_bytes(b"\x00")
-    code = runprov.Run("t", project=runprov.Project(root=repo, sink=runprov.MemorySink())).record[
-        "code"
-    ]
+    code = runprov.Run(
+        "t", project=runprov.Project(root=repo, sink=runprov.sinks.MemorySink())
+    ).record["code"]
     assert code["git_code_dirty"] is False
     assert code["git_tree_dirty"] is True, "the tree IS modified and the record must say so"
     assert code["git_other_changes"] == 2, "unchanged meaning: the whole-tree change count"
@@ -5104,10 +5124,11 @@ def test_a_record_made_where_git_could_not_run_is_not_a_record_of_a_clean_tree(t
     blind_root = tmp_path / "not_a_repo"
     blind_root.mkdir()
     blind = runprov.Run(
-        "t", project=runprov.Project(root=blind_root, sink=runprov.MemorySink())
+        "t", project=runprov.Project(root=blind_root, sink=runprov.sinks.MemorySink())
     ).record["code"]
     seen = runprov.Run(
-        "t", project=runprov.Project(root=_repo_with(tmp_path, "src"), sink=runprov.MemorySink())
+        "t",
+        project=runprov.Project(root=_repo_with(tmp_path, "src"), sink=runprov.sinks.MemorySink()),
     ).record["code"]
 
     assert (seen["git_status_captured"], seen["git_code_dirty"]) == (True, False)
@@ -5137,7 +5158,7 @@ def test_a_status_that_fails_inside_a_real_repository_is_recorded_as_unknown(
         return real(cmd, **kwargs)
 
     monkeypatch.setattr(runprov.project.subprocess, "run", flaky)
-    run = runprov.Run("t", project=runprov.Project(root=repo, sink=runprov.MemorySink()))
+    run = runprov.Run("t", project=runprov.Project(root=repo, sink=runprov.sinks.MemorySink()))
     code = run.record["code"]
     assert code["git_commit"] is not None, "git works and the repository is real"
     assert code["git_status_captured"] is False
@@ -5173,9 +5194,9 @@ def test_the_history_destination_names_a_sink_that_has_no_path(tmp_path):
     assert runprov.Project(root=tmp_path, sink=jsonl).history_destination() == (
         f"JsonlSink({tmp_path / 'h.jsonl'})"
     )
-    assert runprov.Project(root=tmp_path, sink=runprov.MemorySink()).history_destination() == (
-        "MemorySink"
-    )
+    assert runprov.Project(
+        root=tmp_path, sink=runprov.sinks.MemorySink()
+    ).history_destination() == ("MemorySink")
 
 
 def test_the_implicit_project_warning_fires_for_the_forgetful_script_and_not_otherwise(
@@ -5202,9 +5223,9 @@ def test_the_implicit_project_warning_fires_for_the_forgetful_script_and_not_oth
     )
 
     monkeypatch.setattr(runprov.run, "_IMPLICIT_WARNED", False)
-    override = runprov.Project(root=tmp_path, sink=runprov.MemorySink())
+    override = runprov.Project(root=tmp_path, sink=runprov.sinks.MemorySink())
     assert runprov.Run("t", project=override).record["history"]["project_source"] == "argument"
-    runprov.configure(root=tmp_path, sink=runprov.MemorySink())
+    runprov.configure(root=tmp_path, sink=runprov.sinks.MemorySink())
     assert runprov.is_configured() is True
     assert runprov.Run("t").record["history"]["project_source"] == "configured"
     assert "no configure() has run" not in capsys.readouterr().err, (
@@ -6573,7 +6594,7 @@ def test_a_capture_whose_stop_failed_does_not_poison_the_next_one(tmp_path, monk
     monkeypatch.chdir(tmp_path)
     runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
 
-    broken = runprov.Capture(tmp_path / "broken.log")
+    broken = runprov.terminal.Capture(tmp_path / "broken.log")
     broken.start()
     monkeypatch.setattr(runprov.terminal, "_flush_std", _raise_runtime)
     assert "stopping capture failed" in broken.stop()["error"]
@@ -6633,7 +6654,7 @@ def test_the_drain_gives_up_rather_than_waiting_for_a_pump_that_never_idles(tmp_
     The count is made to keep moving, so the only way out is the deadline.
     """
     monkeypatch.chdir(tmp_path)
-    cap = runprov.Capture(tmp_path / "t.log")
+    cap = runprov.terminal.Capture(tmp_path / "t.log")
     clock = _RunawayClock()
     monkeypatch.setattr(runprov.terminal, "time", clock)
 
@@ -6652,7 +6673,7 @@ def test_tearing_down_a_capture_that_has_no_pump_thread_restores_the_descriptors
     """`_teardown_fds` guards `self._thread is not None`, and the guard has to hold: the
     descriptors are what the caller's output depends on, and skipping the restore because
     there is no thread to join would be the swallow-stdout failure with extra steps."""
-    cap = runprov.Capture(tmp_path / "t.log")
+    cap = runprov.terminal.Capture(tmp_path / "t.log")
     sink = tmp_path / "sink.txt"
     with open(sink, "w", encoding="utf-8") as fh:
         before = os.dup(1)
@@ -6677,7 +6698,7 @@ def test_the_drain_stops_as_soon_as_the_pump_is_idle(tmp_path, monkeypatch):
     no observable output, only the wait.
     """
     monkeypatch.chdir(tmp_path)
-    cap = runprov.Capture(tmp_path / "t.log")
+    cap = runprov.terminal.Capture(tmp_path / "t.log")
     clock = _RunawayClock()
     monkeypatch.setattr(runprov.terminal, "time", clock)
 
@@ -8068,7 +8089,7 @@ def test_releasing_an_abandoned_capture_twice_is_harmless(tmp_path):
     shutdown. Stopping an already-stopped capture must restore nothing and close nothing
     twice — and it must not raise, because a finalizer that raises prints an
     unhandled-exception notice from deep inside the interpreter and helps nobody."""
-    cap = runprov.Capture(tmp_path / "t.log")
+    cap = runprov.terminal.Capture(tmp_path / "t.log")
     cap.start()
     cap.stop()
     runprov.run._release_abandoned(cap)
