@@ -1302,6 +1302,48 @@ Every reader drops the `started` lines, so `show`, `log` and `lineage` count run
 line pairs. A run with no `provenance=` writes neither — that shape records nothing by
 design, and this does not change it.
 
+#### What this does and does not recover
+
+| | recorded after a `SIGKILL`? |
+|---|---|
+| that the run existed, and when it started | ✅ the `started` line, `fsync`'d on append |
+| which script, which host, which pid | ✅ |
+| that it never finished | ✅ — a start with no matching record |
+| **what it had read, written or noted by then** | ❌ **not unless you checkpoint** |
+| the artifacts it had already produced | ❌ they are on disk, linked to nothing |
+
+**Everything a run records lives in memory until `__exit__`.** Measured: a job that
+registered an input, wrote an output and noted `records_fetched: 41920`, then took a
+`SIGKILL` — the history holds the start line and nothing else. `inputs`, `outputs` and
+`notes` are all absent, and `results.tsv` sits beside them belonging to nothing.
+
+**`run.write(PROV)` inside the block is the checkpoint**, and it is the answer for a long
+job. It hashes what has been registered so far and puts it on disk, so a kill after it keeps
+everything up to that point:
+
+```python
+with Run("fetch", provenance=PROV) as run:
+    for batch in batches:
+        ...
+        run.note("records_fetched", n)
+        run.write(PROV)  # survives a kill from here on
+```
+
+A checkpointed record says **`"status": "running"`** and **`"finished_utc": null`** — never
+`ok`. The run has not succeeded, and a checkpoint that claimed it had would be the reassuring
+lie the rest of this package refuses. The ending corrects it: `ok` or `failed`, with the real
+time.
+
+Two smaller limits, stated rather than discovered:
+
+- **Liveness is same-host only.** `RUNNING` versus `INTERRUPTED` comes from `os.kill(pid, 0)`,
+  so a marker written on a compute node reads `?` from anywhere else. And a pid can be
+  **reused**: a marker whose number now belongs to an unrelated process reads `RUNNING`. The
+  history is the durable half; the marker is a hint about right now.
+- **The window before the first line.** A kill in the microseconds between entering the block
+  and the `started` line landing records nothing. It cannot be closed — something has to run
+  to write the first byte.
+
 ### When a line will not parse
 
 Every reader here degrades and says how much it lost:
