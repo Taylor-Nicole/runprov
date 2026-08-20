@@ -488,6 +488,19 @@ class Project:
             self.resolved_run_log().parent / "transformation_log.yml"
         )
 
+    def resolved_incomplete_dir(self) -> pathlib.Path:
+        """Where the in-flight markers live: one file per run that has started.
+
+        BESIDE THE HISTORY, not under the root, because it belongs to the same record. A
+        project that sends its history elsewhere sends these with it, and two projects
+        writing to one history share one answer to "what is running against it".
+
+        Hidden, because a file that exists only for the duration of a run and is deleted at
+        the end of it is not a result. What is NOT hidden is the finding: `show` reports
+        what is left behind, and that is where a reader meets it.
+        """
+        return self.resolved_run_log().parent / ".incomplete"
+
     def resolved_sink(self) -> RecordSink:
         """Where records go: the JSONL, and the YAML view beside it.
 

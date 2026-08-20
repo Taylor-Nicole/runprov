@@ -11036,6 +11036,264 @@ def test_rehash_will_not_call_an_undigested_input_STALE(tmp_path, monkeypatch):
     )
 
 
+def _killable(tmp_path, sig):
+    """Start a real run in a real subprocess, wait until it is inside the block, kill it.
+
+    A SUBPROCESS AND A REAL SIGNAL, because the thing under test is what survives when no
+    Python runs at all. `SIGKILL` cannot be simulated in-process: any fake that lets a
+    `finally` run is testing the opposite of the case."""
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    (tmp_path / "job.py").write_text(
+        "import runprov, pathlib, time\n"
+        "runprov.configure(root=pathlib.Path('.'), run_log=pathlib.Path('runs.jsonl'))\n"
+        "with runprov.Run('fetch', provenance=pathlib.Path('fetch.prov.json')) as run:\n"
+        "    run.input('in.tsv')\n"
+        "    pathlib.Path('results.tsv').write_text('id\\tvalue\\n1\\tfetched\\n')\n"
+        "    run.output('results.tsv')\n"
+        "    pathlib.Path('READY').touch()\n"
+        "    time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "RUNPROV_QUIET": "1", "PYTHONPATH": str(_repo_root())}
+    proc = subprocess.Popen(
+        [sys.executable, "job.py"],
+        cwd=tmp_path,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    ready = tmp_path / "READY"
+    for _ in range(300):
+        if ready.exists():
+            break
+        time.sleep(0.05)
+    assert ready.exists(), "the job never reached the inside of the block"
+    proc.send_signal(sig)
+    proc.wait(timeout=30)
+    return proc
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="POSIX signals needed")
+@pytest.mark.parametrize(
+    ("sig", "recorded"),
+    [(signal.SIGINT, True), (signal.SIGTERM, True), (signal.SIGHUP, True), (signal.SIGKILL, False)],
+)
+def test_a_killed_run_leaves_evidence_that_it_started(tmp_path, sig, recorded):
+    """U-02, from the first real consumer: *anything runprov writes only at the end is lost
+    by every interrupted long job, and the artifacts on disk look identical to a successful
+    run's*.
+
+    MEASURED BEFORE ANYTHING WAS BUILT, because the row asked for exactly that — "worth
+    measuring what fraction of the gap the existing handler already covers":
+
+        SIGINT   artifact yes   history 1   sidecar yes
+        SIGTERM  artifact yes   history 1   sidecar yes
+        SIGHUP   artifact yes   history 1   sidecar yes
+        SIGKILL  artifact yes   history 0   sidecar NO
+
+    Three of four were already covered by the signal handler (2026-08-12), which is AFTER
+    the pain the consumer described. So the residual gap is SIGKILL-class only — the OOM
+    killer, `kill -9`, a power loss, a node failure — and for an 8-hour job the OOM killer
+    is the single most likely way it ends.
+
+    That residual is the property this package criticises its predecessor for, in
+    `__enter__`'s own docstring: "appended only on success, so its 300 runs was 300
+    COMPLETED runs with an unknown denominator". A marker written at `__enter__` makes the
+    denominator knowable: it survives precisely when nothing else did."""
+    _killable(tmp_path, sig)
+    history = tmp_path / "runs.jsonl"
+    lines = history.read_text(encoding="utf-8").splitlines() if history.is_file() else []
+    markers = list((tmp_path / ".incomplete").glob("*.json"))
+
+    assert (tmp_path / "results.tsv").is_file(), (
+        "the premise, and the consumer's point: the artifact is there either way"
+    )
+    if recorded:
+        assert len(lines) == 1, f"{sig.name} reaches __exit__ and is recorded"
+        assert not markers, f"{sig.name} was recorded, so nothing is in flight any more"
+    else:
+        assert not lines, "the premise: SIGKILL runs no code, so nothing was recorded"
+        assert len(markers) == 1, (
+            "and THAT is the gap: without a marker the run is indistinguishable from one "
+            "that never started, while its output sits on disk looking complete"
+        )
+        left = json.loads(markers[0].read_text(encoding="utf-8"))
+        assert left["script"] == "fetch" and left["pid"] and left["host"]
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="POSIX signals needed")
+def test_a_marker_is_not_a_death_certificate(tmp_path):
+    """A marker exists for the WHOLE of a run, including the one reading the page. Reporting
+    its presence as a death would be the guess this package refuses — and it would fire on
+    every healthy long job, which is the failure mode that gets a check ignored.
+
+    Three states, and only one is a finding. The third is the honest one: a marker from
+    ANOTHER HOST cannot be judged from here, because `os.kill(pid, 0)` would answer about
+    whichever local process happens to hold that number."""
+    d = tmp_path / ".incomplete"
+    d.mkdir()
+    base = {"run_uid": "u", "script": "fetch", "started_utc": "2026-08-20T10:00:00Z"}
+    here = runprov.show.platform.node()
+    (d / "alive.json").write_text(
+        json.dumps({**base, "pid": os.getpid(), "host": here}), encoding="utf-8"
+    )
+    (d / "dead.json").write_text(
+        json.dumps({**base, "pid": _never_a_pid(), "host": here}), encoding="utf-8"
+    )
+    (d / "elsewhere.json").write_text(
+        json.dumps({**base, "pid": 999999, "host": "compute-node-17"}), encoding="utf-8"
+    )
+    (d / "torn.json").write_text('{"run_uid": "u", "scr', encoding="utf-8")
+
+    found = runprov.show.in_flight(d)
+    assert sorted(r["state"] for r in found) == ["?", "INTERRUPTED", "RUNNING"], found
+    assert len(found) == 3, (
+        "the torn marker is skipped, not reported: a half-written marker is ITSELF the "
+        "result of an interruption, and the run it describes is already visible as a "
+        "missing ending in the history"
+    )
+
+
+def test_a_marker_that_cannot_be_written_does_not_cost_the_run(tmp_path, monkeypatch, capsys):
+    """The marker DESCRIBES a run; it must never be able to end one. That is the same rule
+    every other describing step here follows, and the reason each carries a guard.
+
+    And the clear must then be a no-op rather than a second failure: with nothing written,
+    there is nothing to remove, and raising at `__exit__` over it would turn a cosmetic
+    failure into a lost record — the exact inversion this package exists to prevent."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    proj = _project(tmp_path)
+
+    real = pathlib.Path.write_text
+
+    def refuse(self, *a, **k):
+        if ".incomplete" in str(self):
+            raise OSError("read-only provenance directory")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", refuse)
+    with runprov.Run("s", project=proj, provenance=tmp_path / "s.prov.json") as run:
+        run.input(tmp_path / "in.tsv")
+        assert run._in_flight is None, "marking failed, so there is nothing to clear later"
+    assert "could not mark this run as in flight" in capsys.readouterr().err
+    assert json.loads((tmp_path / "s.prov.json").read_text())["status"] == "ok", (
+        "the RECORD is what matters, and it is intact"
+    )
+
+
+def test_a_marker_that_cannot_be_removed_does_not_cost_the_run(tmp_path, monkeypatch, capsys):
+    """The other end of the same rule. By the time the marker is cleared the finished record
+    is already on disk, so a failure to remove a hint is worth a line on stderr and nothing
+    more. The cost of not removing it is a false `INTERRUPTED` on the next page, which is a
+    visible over-report rather than a silent under-report — the right way round."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    proj = _project(tmp_path)
+    monkeypatch.setattr(
+        pathlib.Path, "unlink", lambda self, **k: (_ for _ in ()).throw(OSError("busy"))
+    )
+    with runprov.Run("s", project=proj, provenance=tmp_path / "s.prov.json") as run:
+        run.input(tmp_path / "in.tsv")
+    assert "could not clear the in-flight marker" in capsys.readouterr().err
+    assert json.loads((tmp_path / "s.prov.json").read_text())["status"] == "ok"
+
+
+def test_a_marker_with_no_usable_pid_is_not_guessed_about(tmp_path):
+    """A hand-edited or half-written marker may carry no pid, or something that is not one.
+    `os.kill(None, 0)` is not a question, so the answer is `?` — the same refusal the
+    cross-host case gets, for the same reason."""
+    d = tmp_path / ".incomplete"
+    d.mkdir()
+    base = {"run_uid": "u", "script": "s", "started_utc": "t", "host": runprov.show.platform.node()}
+    (d / "nopid.json").write_text(json.dumps(base), encoding="utf-8")
+    (d / "textpid.json").write_text(json.dumps({**base, "pid": "12345"}), encoding="utf-8")
+    assert [r["state"] for r in runprov.show.in_flight(d)] == ["?", "?"]
+
+
+def test_a_pid_owned_by_someone_else_is_running_not_gone(tmp_path, monkeypatch):
+    """`os.kill(pid, 0)` raises PermissionError when the process EXISTS and belongs to
+    another user — which is the ordinary state on a shared login node. Reading that as
+    "gone" would report every colleague's job as INTERRUPTED."""
+    d = tmp_path / ".incomplete"
+    d.mkdir()
+    (d / "theirs.json").write_text(
+        json.dumps(
+            {
+                "run_uid": "u",
+                "script": "s",
+                "started_utc": "t",
+                "host": runprov.show.platform.node(),
+                "pid": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runprov.show.os,
+        "kill",
+        lambda *a: (_ for _ in ()).throw(PermissionError("not yours")),
+    )
+    assert [r["state"] for r in runprov.show.in_flight(d)] == ["RUNNING"]
+
+
+def test_a_page_with_only_running_jobs_reports_them_without_alarm(tmp_path, capsys):
+    """A marker is present for the WHOLE of a run, so on a busy project the ordinary state
+    is several RUNNING markers and no finding. The alarming paragraph — "ran no ending code
+    at all" — must not appear then, or the check becomes noise and gets ignored."""
+    log = tmp_path / "runs.jsonl"
+    log.write_text(
+        json.dumps({"schema": "runprov.history.v2", "script": "s"}) + "\n", encoding="utf-8"
+    )
+    d = tmp_path / ".incomplete"
+    d.mkdir()
+    (d / "live.json").write_text(
+        json.dumps(
+            {
+                "run_uid": "u",
+                "script": "fetch",
+                "started_utc": "t",
+                "host": runprov.show.platform.node(),
+                "pid": os.getpid(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert cli.main(["show", "--log", str(log)]) == 0
+    err = capsys.readouterr().err
+    assert "RUNNING" in err and "STARTED with no ending recorded" in err
+    assert "ran no ending code at all" not in err, (
+        "nothing is wrong here, and saying so is how a check stops being read"
+    )
+
+
+def _never_a_pid():
+    """A pid that is certainly not running: allocate one and reap it."""
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="POSIX signals needed")
+def test_the_first_run_being_killed_is_reported_even_though_there_is_no_history(tmp_path, capsys):
+    """THE WORST CASE, and the one a naive implementation misses. A project whose first run
+    is killed has no history file at all, so `show` returns "nothing has been recorded here
+    yet" — which is true, wildly misleading, and the opposite of the finding. A marker
+    beside a MISSING history is not "nothing recorded"; it is a run that started and never
+    got to write one."""
+    _killable(tmp_path, signal.SIGKILL)
+    assert not (tmp_path / "runs.jsonl").exists(), "the premise: no history at all"
+
+    assert cli.main(["show", "--log", str(tmp_path / "runs.jsonl")]) == 1
+    err = capsys.readouterr().err
+    assert "STARTED with no ending recorded" in err, err
+    assert "INTERRUPTED" in err
+    assert err.index("STARTED with no ending") < err.index("no run history"), (
+        "the finding must come BEFORE 'nothing has been recorded here yet', which on its "
+        "own reads as an empty project rather than a killed run"
+    )
+
+
 def test_resolving_a_module_twice_asks_the_filesystem_once(tmp_path, monkeypatch):
     """L-44, and the cost was not where the row said it was. It measured
     `hash_imported_code=True` at a 4.9x exit cost and read that as the price of HASHING.
