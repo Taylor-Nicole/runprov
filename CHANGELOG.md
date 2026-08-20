@@ -268,6 +268,26 @@ Nothing has been published yet. Everything below is what a first release would c
   the run it described; a corrupt gzip escaped `content_digest`; and a `.gz` rewritten from
   identical bytes never hashed the same twice.
 
+### An unrequested file is announced, and the fourteen methods have families
+
+- **`open_output` created a second file and said nothing.** Where the format cannot hold a
+  comment — JSON, FASTA, JSONL, Newick, SVG and 18 others — the pin goes BESIDE the artifact
+  as `<name>.prov.txt`, which is correct and was silent: a caller who wrote one `.json`
+  found two files in their results directory. The surprise arrives twice, because the
+  sidecar is also what `verify` reports as the pinned artifact. It now says which file was
+  created, that `verify` will name it, and — for JSON — that `output_json()` keeps it to one
+  file. A NOTE, not a warning: nothing is wrong, and it is the extra FILE that has to be
+  visible. The in-band TRADE a few lines away already announced itself; the larger of the
+  two surprises did not.
+- **`Run`'s docstring now groups its fourteen methods into REGISTER / WRITE / ANNOTATE /
+  FINISH.** They were listed alphabetically and nowhere else, so the rule for choosing among
+  four ways of registering one artifact was invisible at the call site: `open_output` and
+  `output_json` both write a JSON result correctly, produce provenance of different shapes,
+  and only one of them can be checked from the artifact alone. The boundary that matters is
+  the last one — `write()` is NOT in the WRITE family, because those write YOUR DATA and it
+  writes THE RECORD. A test asserts every method has a line and that this boundary holds,
+  since prose rots and a method added without one is a method with no stated family.
+
 ### You can see the lines a reader skipped
 
 - **`log --unreadable`** prints the lines that will not parse, with their line numbers, and
