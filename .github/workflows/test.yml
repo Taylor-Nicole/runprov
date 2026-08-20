@@ -48,6 +48,21 @@ jobs:
         os: [ubuntu-latest]
         python: ["3.10", "3.11", "3.12", "3.13"]
         include:
+          # 3.13 CANNOT REACH 100%, and it is not a regression. CPython 3.13 changed
+          # `Path.resolve()`: a symlink loop returns the path unchanged instead of raising
+          # `RuntimeError` (ledger L-104). Four `except (OSError, RuntimeError)` guards in
+          # `run.py` exist for 3.10-3.12, where the loop DOES raise, and on 3.13 nothing can
+          # enter them — measured on 3.13.15, `resolve()` raises for none of a symlink loop,
+          # a 5,000-character component, or a directory with no execute permission. So the
+          # guards must stay for the supported range and are unreachable on the newest
+          # version, which is the Windows argument in a different disguise.
+          #
+          # FOUND BY THE SELF-HOSTED RUNNER, on the first green-except-3.13 result in over a
+          # hundred commits. This leg has been unpassable for as long as 3.13 has been in the
+          # matrix and hosted billing has been down, and nothing said so.
+          - os: ubuntu-latest
+            python: "3.13"
+            coverage_floor: "off"
           # macOS and Windows on one version each. Windows earns its place: the run-history
           # append takes an advisory flock, and fcntl does not exist there — this is the
           # job that proves the documented fallback actually works rather than merely

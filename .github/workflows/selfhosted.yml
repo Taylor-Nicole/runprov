@@ -64,7 +64,12 @@ jobs:
 
       # `ci.py test`, not a bare pytest — the 100% floor lives in that script, and running
       # anything else here would be measuring a different thing from the gate.
+      # See `test.yml` for why 3.13 alone cannot reach the floor: four `RuntimeError` guards
+      # for `Path.resolve()` on a symlink loop, which 3.13 no longer raises. Unreachable by
+      # construction, not by regression, and every other leg here still asserts 100%.
       - run: "$RUNNER_TEMP/venv/bin/python ci.py test"
+        env:
+          RUNPROV_COVERAGE_FLOOR: "${{ matrix.python == '3.13' && 'off' || '' }}"
 
   summary:
     needs: test
