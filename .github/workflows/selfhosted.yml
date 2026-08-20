@@ -1,0 +1,84 @@
+# The Linux half of the matrix, on a runner that costs nothing.
+#
+# WHY THIS FILE EXISTS. Actions minutes are billed for PRIVATE repositories, and billing on
+# this account has been failing since 2026-08-13 — so every hosted job since then has died in
+# three seconds having run zero steps, and the last green matrix is over a hundred commits
+# behind. A self-hosted runner is free for a private repo and gives today's tree an answer
+# today. `test.yml` is left exactly as it is: it describes the matrix this project intends to
+# run, and it will run it again the moment billing is fixed or the repository goes public.
+#
+# WHAT IT CANNOT SAY. Linux only. macOS and Windows are not covered and are not claimed —
+# Windows in particular is the leg that proves the `msvcrt` fallback for `flock`, which is
+# the whole reason it is in the hosted matrix. A green run here is evidence about Linux and
+# about nothing else, and the summary below says so rather than leaving a green tick to
+# imply more than it knows.
+#
+# NO `actions/setup-python`. On a hosted runner it fetches an interpreter; here it would
+# reach for a tool cache this machine does not have. The interpreters are already installed,
+# so the job uses them directly and FAILS LOUDLY if one is missing rather than silently
+# testing three versions and reporting four.
+name: self-hosted (linux)
+
+on:
+  workflow_dispatch:
+  # NOT `push`. The runner is a process on one desk, not a service: when it is down a
+  # push-triggered job queues indefinitely and shows as pending, which is a worse signal than
+  # no signal. Dispatch is deliberate, and deliberate is what this is for.
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: [self-hosted, linux]
+    strategy:
+      fail-fast: false # one version failing must not hide the others
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Find the interpreter, or fail saying which one is missing
+        id: py
+        run: |
+          set -euo pipefail
+          for d in "$HOME/.local/share/mise/installs/python/${{ matrix.python }}/bin" \
+                   /usr/local/bin /usr/bin; do
+            if [ -x "$d/python${{ matrix.python }}" ]; then
+              echo "bin=$d/python${{ matrix.python }}" >> "$GITHUB_OUTPUT"
+              "$d/python${{ matrix.python }}" -V
+              exit 0
+            fi
+          done
+          echo "python${{ matrix.python }} is not installed on this runner" >&2
+          exit 1
+
+      # A FRESH VENV PER LEG, under the runner's work directory rather than the checkout, so
+      # nothing a test does to the tree can be mistaken for the environment and vice versa.
+      - name: Install
+        run: |
+          set -euo pipefail
+          "${{ steps.py.outputs.bin }}" -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install --quiet --upgrade pip
+          "$RUNNER_TEMP/venv/bin/python" -m pip install --quiet -e ".[test]"
+
+      # `ci.py test`, not a bare pytest — the 100% floor lives in that script, and running
+      # anything else here would be measuring a different thing from the gate.
+      - run: "$RUNNER_TEMP/venv/bin/python ci.py test"
+
+  summary:
+    needs: test
+    if: always()
+    runs-on: [self-hosted, linux]
+    steps:
+      - name: Say what this run does and does not prove
+        run: |
+          {
+            echo "### Linux only"
+            echo
+            echo "Python 3.10, 3.11, 3.12 and 3.13 on one self-hosted Linux runner."
+            echo
+            echo "**Not covered:** macOS, and Windows — the leg that proves the \`msvcrt\`"
+            echo "fallback for \`flock\`. Those need the hosted matrix in \`test.yml\`,"
+            echo "which needs billing or a public repository."
+          } >> "$GITHUB_STEP_SUMMARY"
