@@ -268,6 +268,32 @@ Nothing has been published yet. Everything below is what a first release would c
   the run it described; a corrupt gzip escaped `content_digest`; and a `.gz` rewritten from
   identical bytes never hashed the same twice.
 
+### The defaults follow one rule, and it is written down
+
+- **`Project`'s docstring now states the rule the defaults follow: record everything
+  observed, guess nothing.** A review read `hash_imported_code=True` against
+  `DEFAULT_TRACKED=()` as a contradiction — one doing work nobody asked for while the other
+  argued "record nothing until asked". The axis is not more against less, it is OBSERVED
+  against GUESSED: the modules that were imported are a fact about the run, and a package
+  list is a guess about somebody's domain. The old `tracked_packages` default recorded
+  `{"numpy": null, "pandas": null, …}` on every line of every history — four truthful
+  answers to a question nobody posed.
+- **The cost the review measured was not where it said.** It reported `hash_imported_code`
+  at a 4.9x exit cost and read that as the price of hashing. Measured on 86 modules with 40
+  under the root: the walk alone **17.97 ms**, hashing all 41 files **0.43 ms**. 96% of it
+  was asking the filesystem at every exit whether each stdlib and site-packages module lives
+  under the project root — a question whose answer cannot change for a module already
+  imported.
+- Two repairs: the verdict is **memoised** per `(root, __file__)`, and `os.path.realpath` +
+  `startswith` replaces `Path.resolve()` + `relative_to`, because `relative_to` signals
+  "not under the root" by RAISING and that is the common case (~150 exceptions built and
+  thrown to compute ~150 no's). End to end: **55.3 ms → 12.2 ms** for a one-run process, and
+  **1.6 ms** for every run after the first.
+- **`runprov exec` follows `sidecar_per_run` instead of contradicting it.** It hardcoded
+  `{name}_{run_id}.json` — per-run naming reached by a second route — while the library
+  default overwrites. Two entry points, the same decision, opposite answers, and a project
+  that had chosen one got the other depending on which door it came through.
+
 ### An unrequested file is announced, and the fourteen methods have families
 
 - **`open_output` created a second file and said nothing.** Where the format cannot hold a

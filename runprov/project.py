@@ -366,6 +366,35 @@ class Project:
     `run_log` defaults under the root rather than to any path this repository uses, so a
     misconfigured install writes somewhere obvious instead of appending to a history it
     does not belong to.
+
+    THE RULE THE DEFAULTS FOLLOW: **record everything observed, guess nothing.**
+
+    It is written down because without it the defaults look contradictory, and a review read
+    them that way — `hash_imported_code=True` doing work nobody asked for while
+    `DEFAULT_TRACKED=()` argued "record nothing here until asked". The axis is not more
+    against less. It is OBSERVED against GUESSED:
+
+        hash_imported_code=True     the modules that were imported are a FACT about this
+                                    run. Recording them is recording what happened.
+        warn_unregistered_reads=True  a read that bypassed registration was observed. Saying
+                                    so is the package's whole argument.
+        DEFAULT_TRACKED=()          a package list is a GUESS about somebody's domain. The
+                                    old default recorded `{"numpy": null, "pandas": null,
+                                    ...}` on every line of every history — four truthful
+                                    answers to a question nobody posed. That is not less
+                                    recording; it is not inventing.
+
+    So `configure(tracked_packages=("numpy", "pandas"))` is one line, and it makes the list
+    a decision the project took rather than one it inherited. The facts that ARE universal —
+    the interpreter, the platform, the environment manager, the lock files — were never in
+    that list and are recorded unconditionally.
+
+    `sidecar_per_run=False` is the one default that is neither: it is about the FILENAME the
+    caller asked for, not about what gets recorded. Every run is in the history either way,
+    and `provenance=PROV` writing somewhere other than `PROV` is its own surprise — so the
+    collision is a warning rather than a silent rename, and `sidecar_per_run=True` is the
+    one-line opt-in. `runprov exec` follows this setting too; it used to hardcode per-run
+    naming and disagree with the library about the same decision.
     """
 
     root: pathlib.Path = dataclasses.field(default_factory=detect_root)
