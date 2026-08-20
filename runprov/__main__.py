@@ -107,6 +107,51 @@ def _stream(path: pathlib.Path) -> typing.Iterator[dict[str, typing.Any] | None]
                 yield None
 
 
+#: How much of an unreadable line to print. A history line is uncapped caller data — see
+#: `_stream` — so a corrupted one can be megabytes, and triage needs enough to recognise the
+#: line, never the whole of it. What was cut is stated rather than silently dropped.
+UNREADABLE_SHOWN = 200
+
+
+def _unreadable(path: pathlib.Path) -> typing.Iterator[tuple[int, str]]:
+    """`(line number, raw text)` for every line of the history that will not parse.
+
+    SEPARATE FROM `_stream` ON PURPOSE, rather than widening what it yields. `_stream` has
+    five callers and a measured memory story — 2.01x the largest record, stated in its own
+    docstring — and carrying the raw text alongside every parsed record would make every
+    reader hold both. This holds one bad line at a time and nothing else, and it is only
+    ever run by the command that asks for it.
+
+    Two passes over the file would be needed to show records AND bad lines together, which
+    is why `--unreadable` prints only the bad ones: it is a triage mode, not a view.
+    """
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for n, line in enumerate(fh, 1):
+            if not line.strip():
+                continue
+            try:
+                json.loads(line)
+            except json.JSONDecodeError:
+                yield n, line.rstrip("\n")
+
+
+def _render_unreadable(number: int, raw: str) -> str:
+    """One line of triage output: `<lineno>: <the raw text, escaped and bounded>`.
+
+    ESCAPED, because the reason a line will not parse is often that something wrote bytes
+    into it — a half-written record from an interrupted append, a stray control character, a
+    terminal escape sequence. Printing that raw hands the terminal whatever corrupted the
+    file, which is a poor way to inspect corruption. `errors="replace"` upstream has already
+    dealt with invalid UTF-8; this deals with what survives it.
+    """
+    shown = raw[:UNREADABLE_SHOWN]
+    body = "".join(
+        c if c.isprintable() or c == " " else c.encode("unicode_escape").decode() for c in shown
+    )
+    cut = len(raw) - len(shown)
+    return f"{number}: {body}" + (f"  … {cut} more character(s)" if cut else "")
+
+
 def _load(path: pathlib.Path) -> tuple[list[dict[str, typing.Any]], int]:
     """Returns (records, unreadable_line_count). A bad line is COUNTED, never dropped.
 
@@ -571,6 +616,52 @@ def _exec(args: argparse.Namespace) -> int:
     return returncode
 
 
+def _log_unreadable(args: argparse.Namespace, path: pathlib.Path) -> int:
+    """`log --unreadable`: the lines the other readers counted and could not use.
+
+    THE COUNT WAS ALREADY THERE AND WAS ONLY ACTIONABLE AS A NUMBER. Every reader in this
+    package degrades correctly and says how much it lost — `2 unreadable line(s) skipped` —
+    which tells a person that something is wrong and nothing about what. This prints the
+    lines themselves so they can decide.
+
+    IT IS NOT A REPAIR COMMAND, AND THERE WILL NOT BE ONE. The predecessor needed nine
+    `fix_transformation_log_*.py` scripts because a single YAML document loses everything
+    after the first bad block. JSONL loses the bad line and counts it, which is the whole
+    reason for the format — so the record needs no repair, damage costs exactly the damaged
+    lines, and a command that rewrote `runs.jsonl` would contradict the central claim that
+    the record is append-only and never rewritten. It would also add a new way to lose data:
+    a bad repair destroys good records, and the tool becomes the risk.
+
+    The file that CAN be corrupted is the YAML view, and its recovery already exists and is
+    printed in that file's own banner:
+
+        python -m runprov log --format yaml > provenance/transformation_log.yml
+
+    Regenerating a view from the record of truth is the whole heal story.
+
+    EXIT 0 EVEN WHEN IT FINDS SOMETHING. This reports; it does not gate. `log` already
+    returns 1 for "no history at that path", and making a second condition share that code
+    would put two meanings on it — the overload ledger row L-81 is about, which is still
+    open and still Taylor's. A caller who wants a gate has the count on stderr.
+    """
+    found = 0
+    for number, raw in _unreadable(path):
+        found += 1
+        sys.stdout.write(_render_unreadable(number, raw) + "\n")
+    if found:
+        print(
+            f"# {found} unreadable line(s) in {path}. This command reads and never writes:\n"
+            f"#   the record is append-only, and a line that will not parse costs exactly\n"
+            f"#   itself — every other record in this file is intact and still readable.\n"
+            f"#   To rebuild the YAML view from the record of truth:\n"
+            f"#     python -m runprov log --format yaml > provenance/transformation_log.yml",
+            file=sys.stderr,
+        )
+    else:
+        print(f"# every line in {path} parses.", file=sys.stderr)
+    return 0
+
+
 def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
     """`log`, streamed: one record in memory at a time, or `--limit` of them.
 
@@ -586,6 +677,29 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
     view over the history, not a trim of it -- the records it does not show are exactly
     where they were, and the next command without `--limit` shows them again.
     """
+    if args.unreadable:
+        # REFUSED, NOT IGNORED. Every other flag on `log` names RECORDS — a script, a run id,
+        # a status, the last N of them, a rendering — and an unreadable line has no record to
+        # name. There is no honest "ignored" semantics to announce, unlike `show --stale`
+        # with a target, where the flag does mean something on a page it does not apply to.
+        clashing = [
+            flag
+            for flag, on in (
+                ("--limit", args.limit),
+                ("--script", args.script),
+                ("--run-id", args.run_id),
+                ("--failed", args.failed),
+                ("--format", args.format != "text"),
+            )
+            if on
+        ]
+        if clashing:
+            raise UsageError(
+                f"--unreadable cannot be combined with {', '.join(clashing)}: those select "
+                f"and render RECORDS, and a line that will not parse has none. Run it alone."
+            )
+        return _log_unreadable(args, path)
+
     keep: collections.deque[dict[str, typing.Any]] | None = (
         collections.deque(maxlen=args.limit) if args.limit else None
     )
@@ -897,6 +1011,11 @@ def main(argv: list[str] | None = None) -> int:
     lg.add_argument("--script", default="", help="filter by script name")
     lg.add_argument("--run-id", default="", help="filter by run id")
     lg.add_argument("--failed", action="store_true", help="only runs that failed")
+    lg.add_argument(
+        "--unreadable",
+        action="store_true",
+        help="print ONLY the lines that will not parse, with their line numbers, and stop",
+    )
     ln = sub.add_parser("lineage", help="reconstruct the run DAG by joining on digests")
     ln.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     ln.add_argument("--format", choices=("text", "json"), default="text")
@@ -970,19 +1089,16 @@ def main(argv: list[str] | None = None) -> int:
     # it is the page a developer opens many times a day over a history that only grows.
     # Measured on a 100,000-run, 91 MB history: 392 MB held to build the page, against 3 MB
     # to stream it. Every other command here genuinely needs all the records at once.
-    if args.cmd == "show":
+    # A MESSAGE, NOT A TRACEBACK — the reason `UsageError` exists. It was caught inside
+    # `exec` only, so the first `show` usage error printed a stack over its own message, and
+    # a second copy of the same `except` was the wrong repair. Exit 2 matches `exec`'s usage
+    # failures and argparse's own, and is distinct from 1, which is a finding about the data.
+    if args.cmd in ("show", "log"):
         try:
-            return _show(args, path)
+            return _show(args, path) if args.cmd == "show" else _log(args, path)
         except UsageError as exc:
-            # A MESSAGE, NOT A TRACEBACK — the reason the class exists, and it was caught in
-            # `exec` only, so the first `show` usage error to be raised printed a stack over
-            # its own message. Exit 2 matches `exec`'s usage failures and argparse's own, and
-            # is distinct from 1, which here means an artifact is failing.
-            print(f"  runprov show: {exc}", file=sys.stderr)
+            print(f"  runprov {args.cmd}: {exc}", file=sys.stderr)
             return 2
-
-    if args.cmd == "log":
-        return _log(args, path)
 
     # LINEAGE, and it STREAMS like everything else here. The comment that stood in this
     # place said it "genuinely needs every record at once ... there is nothing to stream

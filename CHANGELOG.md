@@ -268,6 +268,25 @@ Nothing has been published yet. Everything below is what a first release would c
   the run it described; a corrupt gzip escaped `content_digest`; and a `.gz` rewritten from
   identical bytes never hashed the same twice.
 
+### You can see the lines a reader skipped
+
+- **`log --unreadable`** prints the lines that will not parse, with their line numbers, and
+  stops. The count was already there — `3 unreadable line(s) skipped` — and was actionable
+  only as a number: it says something is wrong in a file that may hold 100,000 lines, and
+  nothing about where. Control characters are escaped, because the reason a line will not
+  parse is often that something wrote bytes into it and printing those raw hands the
+  terminal whatever corrupted the file. Bounded at 200 characters, with what was cut stated.
+- **It reads, and there is no repair command.** JSONL loses the bad line and counts it,
+  which is the whole reason for the format, so damage costs exactly the damaged lines. A
+  command that rewrote `runs.jsonl` would contradict the claim the package is built on and
+  add a new way to lose data. The corruptible file is the YAML view, and regenerating it
+  from the record of truth is already the heal story.
+- **Exit 0 even when it finds something.** `log` already returns 1 for "no history at that
+  path", and a second meaning on that code is a decision of its own, not a side effect of
+  this one.
+- Refuses `--limit`, `--script`, `--run-id`, `--failed` and `--format yaml|jsonl` with exit
+  2: those select and render RECORDS, and a line that will not parse has none.
+
 ### `__all__` is 17 names, down from 27
 
 - **Five more withdrawn on 2026-08-20**, for a different reason from the first five. Those

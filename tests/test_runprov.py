@@ -11036,6 +11036,132 @@ def test_rehash_will_not_call_an_undigested_input_STALE(tmp_path, monkeypatch):
     )
 
 
+def _torn(tmp_path):
+    """A history with three lines that will not parse, at known line numbers 2, 5 and 7.
+
+    THE BLANK LINE AT 4 IS LOAD-BEARING. It is what a partial write can leave behind, every
+    reader here skips it silently and correctly — a blank line is not damage — and it is the
+    thing that would make line numbers counted from RECORDS diverge from line numbers counted
+    from the FILE. Without it the two agree and the test proves nothing about which is used.
+    """
+    lines = [
+        json.dumps({"run_id": "a", "script": "one.py", "status": "ok"}),
+        '{"run_id": "b", "script": "two.py", "sta',  # a half-written append
+        json.dumps({"run_id": "c", "script": "three.py", "status": "ok"}),
+        "   ",  # blank: skipped by every reader, and it must not shift what follows
+        "not json at all \x1b[31mand a terminal escape\x1b[0m\tand a tab",
+        json.dumps({"run_id": "d", "script": "four.py", "status": "failed"}),
+        '{"huge": "' + "x" * 400 + '"',  # long, and unterminated
+    ]
+    log = tmp_path / "runs.jsonl"
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return log
+
+
+def test_the_skipped_lines_can_be_seen_and_not_only_counted(tmp_path, capsys):
+    """L-100. Every reader here degrades correctly and says how much it lost — `3 unreadable
+    line(s) skipped` — which tells a person that something is wrong and nothing whatever
+    about what. The count was actionable only as a number.
+
+    THE LINE NUMBERS ARE THE POINT. A count sends someone to a 100,000-line append-only file
+    with no idea where to look; `2:`, `4:` and `6:` send them to three lines. They are
+    counted from the file, not from the records, so blank lines and unparseable ones do not
+    shift them."""
+    log = _torn(tmp_path)
+
+    assert cli.main(["log", "--log", str(log)]) == 0
+    assert "3 unreadable line(s) skipped" in capsys.readouterr().err, "the premise"
+
+    assert cli.main(["log", "--log", str(log), "--unreadable"]) == 0
+    out, err = capsys.readouterr()
+    numbers = [line.split(":", 1)[0] for line in out.splitlines()]
+    assert numbers == ["2", "5", "7"], (
+        f"real FILE line numbers, in file order — 5 and 7, not 4 and 6, because the blank "
+        f"line at 4 is skipped but still occupies a line: {out!r}"
+    )
+    assert '"sta' in out, "and enough of the line to recognise it"
+    assert "3 unreadable line(s)" in err
+
+    # THE TWO PATHS MUST AGREE. The count comes from `_stream`, the lines from `_unreadable`
+    # — two readers over one file, and a disagreement would mean one of them is wrong about
+    # what parses.
+    _, counted = cli._load(log)
+    assert counted == len(numbers) == 3
+
+
+def test_an_unreadable_line_cannot_hand_the_terminal_what_corrupted_the_file(tmp_path, capsys):
+    """The reason a line will not parse is often that something wrote bytes into it, and
+    printing those raw hands the terminal whatever corrupted the history — a poor way to
+    inspect corruption. Line 4 carries a real ANSI colour sequence and a tab.
+
+    And a history line is UNCAPPED CALLER DATA — `_stream`'s own docstring measures the cost
+    of one enormous note — so a corrupted line can be megabytes. Triage needs enough to
+    recognise the line and never the whole of it, and what was cut is stated rather than
+    silently dropped."""
+    log = _torn(tmp_path)
+    assert cli.main(["log", "--log", str(log), "--unreadable"]) == 0
+    out = capsys.readouterr().out
+
+    assert "\x1b[31m" not in out, "the ESCAPE ITSELF must not reach the terminal"
+    assert "\\x1b[31m" in out, "it is shown, escaped, so the reader can see what is there"
+    assert "\t" not in out, "nor a bare tab, which would shift the column"
+
+    long_line = next(ln for ln in out.splitlines() if ln.startswith("7:"))
+    assert len(long_line) < 300, f"bounded: {len(long_line)} characters"
+    assert "211 more character(s)" in long_line, "and it says what it cut"
+
+
+def test_seeing_the_skipped_lines_writes_nothing_and_gates_nothing(tmp_path, capsys):
+    """Two refusals in one, and both are the package's central claim rather than taste.
+
+    IT WRITES NOTHING. The predecessor needed nine `fix_transformation_log_*.py` scripts
+    because one bad block costs a YAML document everything after it. JSONL loses the bad line
+    and counts it, which is the whole reason for the format — so there is nothing to repair,
+    and a command that rewrote `runs.jsonl` would contradict the claim that the record is
+    append-only. It would also add a new way to lose data: a bad repair destroys good
+    records, and the tool becomes the risk.
+
+    IT GATES NOTHING. Exit 0 even having found three. `log` already returns 1 for "no history
+    at that path", and a second meaning on that code is the overload ledger row L-81 is
+    about — still open, and not to be done as a side effect of a different feature."""
+    log = _torn(tmp_path)
+    before = log.read_bytes()
+
+    assert cli.main(["log", "--log", str(log), "--unreadable"]) == 0, "a report, not a gate"
+    assert log.read_bytes() == before, "byte for byte, before and after"
+
+    clean = tmp_path / "clean.jsonl"
+    clean.write_text(json.dumps({"run_id": "a", "script": "s"}) + "\n", encoding="utf-8")
+    capsys.readouterr()
+    assert cli.main(["log", "--log", str(clean), "--unreadable"]) == 0
+    out, err = capsys.readouterr()
+    assert out == "", "nothing to show"
+    assert "every line" in err, "and it says so, rather than printing nothing at all"
+
+
+def test_unreadable_refuses_the_flags_that_name_records(tmp_path, capsys):
+    """Every other flag on `log` names RECORDS — a script, a run id, a status, the last N of
+    them, a rendering — and a line that will not parse has no record to name. So there is no
+    honest "ignored" semantics to announce, unlike `show --stale` with a target where the
+    flag does mean something on a page it does not apply to. Refused, exit 2.
+
+    `--format text` is NOT refused: text is the default and the raw lines are text, so
+    passing it explicitly asks for what it already does."""
+    log = _torn(tmp_path)
+    for flag in (
+        ["--failed"],
+        ["--limit", "2"],
+        ["--script", "one.py"],
+        ["--run-id", "a"],
+        ["--format", "yaml"],
+    ):
+        assert cli.main(["log", "--log", str(log), "--unreadable", *flag]) == 2, flag
+        err = capsys.readouterr().err
+        assert flag[0] in err and "Traceback" not in err, err
+
+    assert cli.main(["log", "--log", str(log), "--unreadable", "--format", "text"]) == 0
+
+
 def test_every_module_declares_its_surface_and_none_of_them_invents_one():
     """L-44. Eleven of twelve modules declared no `__all__`, so every top-level name in them
     was importable but unpromised — and after PyPI they would be frozen BY USE rather than
@@ -13165,8 +13291,17 @@ def test_log_limit_holds_only_the_limit_not_the_history(tmp_path):
                     )
                     + "\n"
                 )
+        # EVERY FLAG `_log` READS, spelled out. A hand-built Namespace is not the parser,
+        # so a flag added to the parser and not to this line is an `AttributeError` inside a
+        # memory measurement — which is how `--unreadable` announced itself here.
         args = argparse.Namespace(
-            log=str(target), format="jsonl", limit=5, script="", run_id="", failed=False
+            log=str(target),
+            format="jsonl",
+            limit=5,
+            script="",
+            run_id="",
+            failed=False,
+            unreadable=False,
         )
         tracemalloc.start()
         try:
