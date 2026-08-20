@@ -116,6 +116,15 @@ HISTORY_SCHEMA = "runprov.history.v2"
 #: runs and not the number of runs — see `__main__._unfinished`.
 START_SCHEMA = "runprov.start.v1"
 
+#: The status a record carries while the run is still inside its `with` block.
+#:
+#: NOT AN OUTCOME, which is the point of having a word for it. `run.write(P)` called mid-run
+#: is the only way to get inputs, outputs and notes onto disk before a SIGKILL — `__exit__`
+#: is where they are persisted and SIGKILL never reaches it — so the call is worth
+#: recommending, and a checkpoint that stamped `ok` and a `finished_utc` would recommend a
+#: record claiming an outcome nobody observed.
+RUNNING_STATUS = "running"
+
 # How many dirty files the terminal warning names before it says how many more. The record
 # keeps all of them; this is the line a human reads, and a 300-file tree used to bury the
 # sentence that matters under 300 lines of stderr.
@@ -1460,6 +1469,11 @@ class Run:
         # SNAPSHOT FIRST: `write()` below appends to `_written_paths`, and re-persisting the
         # file it has just persisted would be one wasted write per run.
         previously = list(self._written_paths)
+        # SEAL FIRST. Everything below writes the record, and one branch of it does not call
+        # `write()` at all — so the terminal status has to be on the record before any of
+        # them, or a run whose caller wrote the sidecar themselves keeps a checkpoint's
+        # `running`.
+        self._seal()
         # THE CONSTRUCTOR'S PATH IS WRITTEN EVEN IF THE CALLER ALSO WROTE ELSEWHERE. It is
         # the path `provenance=` names, the one every document calls the guarantee, and the
         # only one armed for a run that dies. Preferring the caller's `write()` target left
@@ -1474,6 +1488,27 @@ class Run:
         if self._deferred_history is not None and not self._history_appended:
             path, self._deferred_history = self._deferred_history, None
             self._append_history(path)
+
+    def _seal(self) -> None:
+        """Stamp the terminal status and finish time. The run is over by the time this runs.
+
+        SEPARATE FROM `write()` BECAUSE `_finish` MAY NOT CALL `write()`. When the caller
+        has already written the constructor's path themselves, `_finish` skips the write and
+        only re-persists — so stamping inside `write()` left a checkpoint's `running` in
+        place on a run that had finished perfectly well, and a `finished_utc` of `None`
+        beside it. Sealing is an act of ENDING a run, not of writing a file.
+
+        IDEMPOTENT, because `_finish` seals and then `write()` may seal again on its way
+        past: `failed` set by `__exit__` survives, `running` left by a checkpoint does not,
+        and a finish time already stamped is not moved.
+        """
+        if self.record.get("status") == RUNNING_STATUS:
+            del self.record["status"]
+        self.record.setdefault("status", "ok")
+        if not isinstance(self.record.get("finished_utc"), str):
+            self.record["finished_utc"] = dt.datetime.now(dt.timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
 
     def _imported_code(self) -> dict[str, typing.Any]:
         """The project's OWN modules this run imported, each hashed. See `hash_imported_code`.
@@ -2576,10 +2611,29 @@ class Run:
         # `run.write(p)` with no `with` recorded nothing whatever.
         if not self._in_context:
             self._record_imported_code()
-        self.record.setdefault("status", "ok")
-        self.record["finished_utc"] = dt.datetime.now(dt.timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        # A CHECKPOINT MUST NOT CLAIM AN OUTCOME. Called INSIDE the block the run has not
+        # finished, so `ok` is a guess and `finished_utc` is a time that has not happened.
+        # Measured before this: `run.write(P)` mid-run, then SIGKILL, left a sidecar reading
+        # `status: "ok"` and a finish time — for a job killed at hour 7 — while the history
+        # said it had started and never ended. The two disagreed, and the wrong one was the
+        # one a reader finds beside the artifact.
+        #
+        # This matters now because a mid-run `write()` is the ONLY way to get a run's inputs,
+        # outputs and notes onto disk before it can be killed: `__exit__` is where they are
+        # persisted, and SIGKILL never reaches it. The README recommends the call; it must
+        # not recommend a record that says the run succeeded.
+        #
+        # `_in_context` is cleared by `__exit__` before `_finish` -> `write()`, so the final
+        # write takes the other branch and stamps the real status and the real time.
+        if self._in_context:
+            # NULL, NOT ABSENT. `_append_history` reads `finished_utc` unconditionally, and
+            # removing the key made the whole exit fail with a KeyError that the guard then
+            # swallowed into "provenance capture failed during exit" — losing the record to
+            # protect it. `None` is also the honest value: the run has not finished.
+            self.record["status"] = RUNNING_STATUS
+            self.record["finished_utc"] = None
+        else:
+            self._seal()
         # `already` asks "does the history have this run?", NOT "does a sidecar exist?".
         # Conflating the two appended twice for one run, both lines carrying the same
         # run_id, so any tally over runs.jsonl was silently inflated.

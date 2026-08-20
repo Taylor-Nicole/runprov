@@ -11165,6 +11165,70 @@ def test_a_killed_run_leaves_evidence_that_it_started(tmp_path, sig, recorded):
 
 
 @pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="POSIX signals needed")
+def test_a_checkpoint_does_not_claim_the_run_succeeded(tmp_path, monkeypatch):
+    """U-02, stage 3, and it was found by writing the documentation. A mid-run `run.write(P)`
+    is the ONLY way to get inputs, outputs and notes onto disk before a SIGKILL — `__exit__`
+    is where they are persisted and SIGKILL never reaches it — so the README recommends the
+    call. It must not recommend a record that lies.
+
+    Measured before this: checkpoint at hour 7, SIGKILL, and the sidecar beside the artifact
+    read `status: "ok"` with a `finished_utc`, while the history said the run had started and
+    never ended. The two disagreed and the wrong one was the file a reader opens next to the
+    output."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    proj = _project(tmp_path)
+    prov = tmp_path / "p.prov.json"
+
+    with runprov.Run("fetch", project=proj, provenance=prov) as run:
+        run.input(tmp_path / "in.tsv")
+        run.note("records_fetched", 41_920)
+        run.write(prov)  # the checkpoint
+        mid = json.loads(prov.read_text(encoding="utf-8"))
+        assert mid["status"] == "running", "not `ok`: the run has not finished"
+        assert mid["finished_utc"] is None, "and it has no finish time, because it has not"
+        assert mid["notes"] == {"records_fetched": 41_920}, (
+            "the point of the checkpoint: the work IS on disk"
+        )
+
+    # AND THE ENDING CORRECTS IT. `running` must not outlive the block.
+    final = json.loads(prov.read_text(encoding="utf-8"))
+    assert final["status"] == "ok"
+    assert isinstance(final["finished_utc"], str)
+
+
+def test_a_checkpoint_then_a_failure_is_recorded_as_failed_not_running(tmp_path, monkeypatch):
+    """`failed` is set by `__exit__` and must survive the sealing that clears `running`. The
+    query the whole history is built for is `grep '"status": "failed"'`, and a run that
+    checkpointed on its way to failing has to appear in it."""
+    monkeypatch.chdir(tmp_path)
+    proj = _project(tmp_path)
+    prov = tmp_path / "p.prov.json"
+    with pytest.raises(ValueError):
+        with runprov.Run("fetch", project=proj, provenance=prov) as run:
+            run.write(prov)
+            raise ValueError("boom")
+    rec = json.loads(prov.read_text(encoding="utf-8"))
+    assert rec["status"] == "failed" and rec["failure"]["type"] == "ValueError"
+    assert [r["status"] for r in _lines(tmp_path / "runs.jsonl")] == ["failed"]
+
+
+def test_the_seal_happens_even_when_exit_writes_no_file(tmp_path, monkeypatch):
+    """The branch that made the first version of this wrong. When the caller has already
+    written the constructor's path themselves, `_finish` SKIPS the write and only
+    re-persists — so a status stamped inside `write()` never got stamped at all, and the run
+    kept the checkpoint's `running` after finishing perfectly well. Sealing is an act of
+    ENDING a run, not of writing a file, so it happens in `_finish` before any of them."""
+    monkeypatch.chdir(tmp_path)
+    proj = _project(tmp_path)
+    prov = tmp_path / "p.prov.json"
+    with runprov.Run("s", project=proj, provenance=prov) as run:
+        run.write(prov)  # the constructor's own path, written by the caller
+    rec = json.loads(prov.read_text(encoding="utf-8"))
+    assert rec["status"] == "ok", "the exit sealed it even though it wrote no new file"
+    assert isinstance(rec["finished_utc"], str)
+
+
 def test_no_reader_counts_a_start_line_as_a_run(tmp_path, monkeypatch, capsys):
     """The cost of putting the start in the append-only history: every reader would count
     each completed run TWICE unless it filters. `_load` and `_counted` are the two places

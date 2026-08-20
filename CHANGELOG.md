@@ -342,6 +342,20 @@ every interrupted long job, and the artifacts on disk look identical to a succes
   YAML view declines them too: it is a narrative of completed runs.
 - **A run with no `provenance=` writes neither.** That shape records nothing by design, and
   a start line there would mean constructing a `Run` created a history file.
+- **A checkpoint no longer claims the run succeeded.** `run.write(PROV)` inside the block is
+  the only way to get inputs, outputs and notes onto disk before a SIGKILL — `__exit__` is
+  where they are persisted and SIGKILL never reaches it — so the README recommends the call.
+  It used to leave `"status": "ok"` and a `finished_utc`: measured, a job checkpointed at
+  hour 7 and then killed had a sidecar claiming success sitting beside the artifact, while
+  the history said it never ended. A checkpoint now records `"status": "running"` and
+  `"finished_utc": null`, and the ending corrects it to `ok` or `failed`.
+- Sealing the record moved from `write()` to `_finish`, because one exit branch writes no
+  file at all — when the caller has already written the constructor's path themselves — and
+  a status stamped inside `write()` was never stamped there. Sealing is an act of ENDING a
+  run, not of writing a file.
+- **The README states what a SIGKILL does NOT recover**: everything registered during the
+  run, unless it was checkpointed. Plus two smaller limits — liveness is same-host only and
+  pids get reused, and a kill in the microseconds before the first line records nothing.
 
 ### You can see the lines a reader skipped
 
