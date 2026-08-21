@@ -15993,3 +15993,87 @@ def test_verify_prints_the_pin_chain_so_the_condition_is_visible(tmp_path, monke
     cli.main(["verify", "results/final.tsv", "--root", "."])
     out = capsys.readouterr().out
     assert "[step2]" in out and "step1" not in out, f"a one-generation pin must show as one: {out}"
+
+
+def test_sealing_twice_does_not_move_the_finish_time(tmp_path, monkeypatch):
+    """A-19. `_seal`'s docstring promises "a finish time already stamped is not moved", and
+    NO TEST HELD IT: replacing the guard with `if True:` left the full suite green at 100%
+    coverage. Measured on the mutant — `with Run(provenance=P): pass`, then `write(Q)` two
+    seconds later — `P 20:04:13`, `Q 20:04:15`, history `20:04:13`. Three persisted copies of
+    one run; two of them claiming a finish time that is not when it finished.
+
+    The guard is what makes C-18's invariant true: "if nothing can change the record after
+    exit, a later `write()` re-persists an identical one and the two files agree by
+    construction". And writing to a second path after the block is DOCUMENTED — `write()`'s
+    own docstring calls it "fine and sometimes useful" — so this is a supported shape, not an
+    abuse.
+
+    A TICKING CLOCK RATHER THAN A SLEEP, and the difference is not just speed: every call to
+    `now()` returns a distinct instant, so the guard working means `_seal` does not call it a
+    second time at all. A one-second sleep would prove the same thing only if the two calls
+    happened to straddle a second boundary."""
+    monkeypatch.chdir(tmp_path)
+
+    class Ticking(dt.datetime):
+        ticks = itertools.count()
+
+        @classmethod
+        def now(cls, tz=None):  # signature matches datetime.now
+            return dt.datetime(2026, 1, 1, tzinfo=tz) + dt.timedelta(seconds=next(cls.ticks))
+
+    # Only `run.py`'s reference is replaced, not the stdlib module: `hashing.describe` stamps
+    # `mtime_utc` from the real clock and has no business being frozen by this.
+    monkeypatch.setattr(
+        runprov.run, "dt", types.SimpleNamespace(datetime=Ticking, timezone=dt.timezone)
+    )
+
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=log)
+    with runprov.Run("s", provenance="P.json") as run:
+        pass
+    run.write("Q.json")
+
+    first = json.loads((tmp_path / "P.json").read_text(encoding="utf-8"))["finished_utc"]
+    second = json.loads((tmp_path / "Q.json").read_text(encoding="utf-8"))["finished_utc"]
+    history = _lines(log)[-1]["finished_utc"]
+
+    assert first == second == history, (
+        f"one run, three persisted copies, and they disagree about when it ended: "
+        f"P={first} Q={second} history={history}"
+    )
+    # NOT VACUOUS: a clock that never advanced would make the assertion above true no matter
+    # what `_seal` did. The run's own start and finish must be different instants.
+    started = json.loads((tmp_path / "P.json").read_text(encoding="utf-8"))["started_utc"]
+    assert started != first, "the fixture's clock did not tick, so it proves nothing"
+
+
+def test_seal_replaces_a_finish_time_that_is_not_a_stamp(tmp_path, monkeypatch):
+    """The other half of the same line, and it was undistinguished until this test.
+
+    A-19 asked for the idempotence test, which kills `if True:`. It does NOT kill weakening
+    `not isinstance(self.record.get("finished_utc"), str)` to `is None` — both stamp for
+    every state `_seal` itself can produce, since the only other writer sets exactly `None`
+    (`write()` mid-block). By this repository's standing rule that is either decoration or a
+    missing test, so here is the state that tells them apart.
+
+    `run.record` is a documented plain dict — the README passes it to `to_yaml` — so a caller
+    assigning the natural wrong type is reachable. Measured: with `isinstance` the record
+    gets a real stamp; with `is None` it keeps `'2020-01-01 00:00:00+00:00'`, stringified on
+    the way out by `default=str`, which the package's own format cannot parse. That value
+    then goes into an APPEND-ONLY history."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    run = runprov.Run("s", provenance="P.json")
+    run.__enter__()
+    run.record["finished_utc"] = dt.datetime(2020, 1, 1, tzinfo=dt.timezone.utc)
+    run.__exit__(None, None, None)
+
+    for where, value in (
+        ("sidecar", json.loads((tmp_path / "P.json").read_text(encoding="utf-8"))),
+        ("history", _lines(tmp_path / "runs.jsonl")[-1]),
+    ):
+        stamp = value["finished_utc"]
+        assert isinstance(stamp, str), f"{where}: {stamp!r}"
+        # PARSED, not pattern-matched: the question is whether a reader can use it.
+        dt.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
+        assert not stamp.startswith("2020"), f"{where} kept the caller's value: {stamp!r}"
