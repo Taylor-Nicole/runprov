@@ -1293,7 +1293,7 @@ def test_a_project_keeps_a_readable_transformation_log_beside_the_history(tmp_pa
     """The file this package exists because of, written the way that file should have been.
     `transformation_log.yml` is what a person opens to read the story of a project — and the
     predecessor's copy is also the file that stopped parsing at line 14,547 of 24,300 and
-    grew eight repair scripts around it.
+    grew nine repair scripts around it.
 
     So: a VIEW, appended in step with the history, never the record of truth. Every scalar
     is quoted, which is exactly the defect that killed the original — it quoted only what
@@ -9958,30 +9958,45 @@ def test_the_predecessor_log_numbers_are_reproducible_from_the_named_file():
 
 def test_every_statement_of_the_repair_script_count_agrees():
     """L-59 was fixed once and drifted twice. The predecessor's `fix_transformation_log_*.py`
-    scripts are cited in eight places across four files as the reason this package exists,
-    and the number has been written as eleven, nine and eight — three values for one fact, in
-    a package whose subject is claims that stopped being true.
+    scripts are cited across this repository as the reason this package exists, and the
+    number has been written as eleven, nine and eight — three values for one fact, in a
+    package whose subject is claims that stopped being true.
 
     The COUNT cannot be checked from here: the scripts live in the sibling project, outside
     this repository. What can be checked is that every statement of it agrees, which is the
     same treatment the four version copies get — a fact nothing verified is at least not
-    allowed to contradict itself."""
+    allowed to contradict itself.
+
+    THE SCOPE WAS THE BUG, NOT THE LOGIC (A-21). This listed the four files L-59 happened to
+    fix and the package source, and excluded the file it is written in — where a ninth
+    statement said "eight" while the other eight said "nine". A guard whose subject is
+    repository-wide agreement, passing over a repository-wide disagreement, in the file
+    containing the disagreement. `docs/` was outside it too, and only agreed by luck.
+
+    So the list is now DERIVED: every Markdown file and every Python file in the repository,
+    minus what is not ours to police. A file added tomorrow is inside the rule without
+    anybody remembering to add it."""
     pat = re.compile(r"(\w+)\s+(?:`fix_transformation_log_\*\.py`\s+)?(?:repair|heal) scripts")
     root = _repo_root()
+    skip = {".git", ".venv", "__pycache__", ".mypy_cache", ".pytest_cache", "dist", "build"}
+    files = sorted(
+        f
+        for pattern in ("*.md", "*.py")
+        for f in root.rglob(pattern)
+        if not any(part in skip or part.endswith(".egg-info") for part in f.relative_to(root).parts)
+    )
     found = {}
-    for name in [
-        "README.md",
-        "WHY.md",
-        "CHANGELOG.md",
-        *sorted(str(p.relative_to(root)) for p in (root / "runprov").glob("*.py")),
-    ]:
-        f = root / name
-        if not f.is_file():  # pragma: no cover - WHY.md is not in the sdist
-            continue
-        for m in pat.finditer(f.read_text(encoding="utf-8").replace("\n", " ")):
-            found.setdefault(m.group(1).lower(), []).append(name)
+    for f in files:
+        for m in pat.finditer(f.read_text(encoding="utf-8", errors="replace").replace("\n", " ")):
+            found.setdefault(m.group(1).lower(), []).append(str(f.relative_to(root)))
     assert found, "the citation is gone entirely; if that is deliberate, delete this test"
     assert len(found) == 1, f"one fact, {len(found)} different numbers: {found}"
+    # NOT VACUOUS, in two directions. A `rglob` that matched nothing would satisfy neither
+    # assertion above but would satisfy them for the wrong reason once the citation moved;
+    # and a scope that collapsed back to one file would look exactly like agreement.
+    cited = {name for names in found.values() for name in names}
+    assert len(files) > 20, f"the file sweep found only {len(files)} files; the scope broke"
+    assert len(cited) > 3, f"the citation is in {len(cited)} file(s), so agreement is cheap"
 
 
 def _cli_subcommands() -> list[str]:
