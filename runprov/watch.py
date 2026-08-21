@@ -150,19 +150,42 @@ def unregistered(
     Pure and total: it takes strings and returns strings, so the filter can be tested
     directly rather than through a run, and no failure here can affect a caller.
     """
+    # `RuntimeError` BESIDE `OSError`, AT EVERY `resolve()` IN THIS FUNCTION. `Path.resolve()`
+    # raises `RuntimeError("Symlink loop from ...")` on CPython 3.10-3.12, and it is NOT an
+    # OSError -- so one looping path among the hundreds a run opens escaped this function,
+    # whose own docstring promises it is "pure and total ... no failure here can affect a
+    # caller". It landed in `run.py`'s catch-all and abandoned the ENTIRE unregistered-read
+    # check for that run.
+    #
+    # Measured, with a control: same script, one genuinely unregistered `data/secret.tsv`.
+    # Without a loop -> reported, `unregistered_reads: ['data/secret.tsv']`. With one ->
+    # `WARNING: could not check for unregistered reads` and `unregistered_reads` ABSENT from
+    # the record -- which is byte-identical to what a clean run writes. A run that missed a
+    # read became indistinguishable from one that missed nothing.
+    #
+    # Fifth instance of this exception family (see L-98); this module was added after that
+    # sweep and inherited none of it.
     reg = set()
     for r in registered:
         try:
             reg.add(str(pathlib.Path(r).resolve()))
-        except OSError:  # pragma: no cover - a registered path we cannot resolve
+        except (OSError, RuntimeError):  # pragma: no cover - a path we cannot resolve
             reg.add(str(r))
-    skip = [pathlib.Path(e).resolve() for e in exclude]
+    # THE COMPREHENSION WAS THE WORST OF THE FOUR, because it was not guarded at all. An
+    # unresolvable exclusion is one we cannot match against; dropping it costs at most a
+    # false positive on the package's own file, and raising costs the whole check.
+    skip = []
+    for e in exclude:
+        try:
+            skip.append(pathlib.Path(e).resolve())
+        except (OSError, RuntimeError):
+            continue
     # RESOLVED, because every path below is resolved before comparison and `relative_to` is
     # literal: an unresolved root containing a symlink (pytest's tmp_path on some systems,
     # `/tmp` on macOS) matches nothing and silently reports no findings at all.
     try:
         root = pathlib.Path(root).resolve()
-    except OSError:  # pragma: no cover - a root we cannot resolve
+    except (OSError, RuntimeError):  # pragma: no cover - a root we cannot resolve
         root = pathlib.Path(root)
 
     out: set[str] = set()
@@ -181,7 +204,9 @@ def unregistered(
             if any(rp == s or s in rp.parents for s in skip):
                 continue
             rel = rp.relative_to(root)  # raises if outside the project
-        except (OSError, ValueError):
-            continue  # outside the root, unresolvable, or gone by now: not our business
+        except (OSError, ValueError, RuntimeError):
+            # outside the root, unresolvable, a symlink loop, or gone by now: not our
+            # business, and never a reason to abandon the other paths in this run.
+            continue
         out.add(str(rel))
     return sorted(out)
