@@ -411,6 +411,18 @@ def in_flight(directory: pathlib.Path) -> list[dict[str, typing.Any]]:
     return sorted(out, key=lambda r: str(r.get("started_utc", "")), reverse=True)
 
 
+def liveness(rec: dict[str, typing.Any]) -> str:
+    """RUNNING / INTERRUPTED / `?` for ANY record carrying `pid` and `host`.
+
+    NOT ONLY FOR MARKERS. The `runprov.start.v1` history line carries the same two fields
+    (`run.py`'s `_append_start`), and a start with no marker beside it used to be declared
+    INTERRUPTED without anyone looking at them — so a run whose marker could not be written,
+    which `_mark_in_flight` deliberately tolerates and warns about, was reported dead while
+    it was still running, with its own live pid printed on the line making the claim.
+    """
+    return _liveness(rec, platform.node())
+
+
 def _liveness(rec: dict[str, typing.Any], here: str) -> str:
     if rec.get("host") != here:
         return UNTELLABLE

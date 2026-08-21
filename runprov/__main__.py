@@ -841,14 +841,29 @@ def _report_in_flight(path: pathlib.Path) -> None:
     even when the file does not exist, because a marker beside a missing history is not
     "nothing recorded" — it is a run that never got to write one.
     """
-    unfinished = _unfinished(path) if path.is_file() else []
+    # MARKERS FIRST, HISTORY SECOND, and the order is the fix. Reading the history first left
+    # a window: a run that completed between the two reads was in `unfinished` (its record
+    # was appended after the history pass hit EOF) and had no marker (`_clear_in_flight` had
+    # already unlinked it), so it was announced as a SIGKILL death while its `status: ok`
+    # record sat in the file just read. Reversed, the same run has its marker at T1 and its
+    # ending at T2 — paired, and correctly not reported. The window now belongs to a run that
+    # STARTS between the reads, which has no marker and a live pid, and the liveness check
+    # below gets that right.
     markers = {str(m.get("run_uid")): m for m in in_flight(path.parent / ".incomplete")}
+    unfinished = _unfinished(path) if path.is_file() else []
 
     pending: list[dict[str, typing.Any]] = []
     for rec in unfinished:
         uid = str(rec.get("run_uid"))
         marker = markers.pop(uid, None)
-        pending.append({**rec, "state": (marker or {}).get("state", show_mod.INTERRUPTED)})
+        # NO MARKER IS NOT A DEATH. It used to default to INTERRUPTED, which conflated three
+        # different situations: the marker was cleaned away, it was never written, or the run
+        # is STILL GOING. `_mark_in_flight` tolerates an OSError, warns and lets the run
+        # continue, so the package itself produces "start line present, marker absent, process
+        # alive" — and `.incomplete` is documented as deletable. The start line carries `pid`
+        # and `host` precisely so this question can be answered; nobody was asking it.
+        state = marker["state"] if marker else show_mod.liveness(rec)
+        pending.append({**rec, "state": state})
     # A MARKER THE HISTORY HAS NEVER HEARD OF is still worth printing: it is what a run
     # killed between its marker and its start line leaves, and what a run with no
     # `provenance=` leaves, since that shape records nothing by design.

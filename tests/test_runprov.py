@@ -12251,6 +12251,111 @@ def test_the_two_checkers_have_one_vocabulary_and_only_one_spelling_of_it(tmp_pa
         )
 
 
+def test_a_start_with_no_marker_is_not_assumed_dead(tmp_path, monkeypatch, capsys):
+    """A-03. A start line with no marker beside it was declared INTERRUPTED without anyone
+    looking at the `pid` and `host` the line itself carries — so a LIVE run was announced as
+    "ran no ending code at all — a SIGKILL, the OOM killer, a power loss", with its own
+    running pid printed on the line making the claim.
+
+    THE PACKAGE PRODUCES THIS STATE ITSELF, which is what makes it a defect rather than an
+    edge case: `_mark_in_flight` tolerates an `OSError`, warns, and lets the run continue —
+    so a provenance directory that is read-only for one moment gives exactly "start line
+    present, marker absent, process alive". `.incomplete` is also documented as deletable.
+
+    Three situations were collapsed into one verdict: cleaned away, never written, and still
+    going. The first two are INTERRUPTED only if the process is gone; the third never is."""
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    log = tmp_path / "runs.jsonl"
+    monkeypatch.chdir(tmp_path)
+
+    # A start line for THIS process, which is unmistakably alive, and no marker at all.
+    log.write_text(
+        json.dumps(
+            {
+                "schema": runprov.run.START_SCHEMA,
+                "run_uid": "alive",
+                "run_id": "r",
+                "script": "longjob",
+                "generation": "g",
+                "started_utc": "2026-08-21T12:00:00Z",
+                "pid": os.getpid(),
+                "host": runprov.show.platform.node(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert len(cli._unfinished(log)) == 1, "the premise: one start, no ending"
+    assert not (tmp_path / ".incomplete").exists(), "and no marker to consult"
+
+    assert cli.main(["show", "--log", str(log)]) == 0
+    err = capsys.readouterr().err
+    assert "RUNNING" in err, err
+    assert "INTERRUPTED" not in err, "the pid on that very line is alive"
+    assert "ran no ending code at all" not in err, (
+        "the alarming paragraph is for runs that really did run no ending code"
+    )
+
+
+def test_a_start_from_another_host_is_not_a_death_claim(tmp_path, capsys):
+    """The other half. A marker from another host already reads `?`, because `os.kill(pid, 0)`
+    here would answer about whichever LOCAL process holds that number. A start line from
+    another host had no such protection and became INTERRUPTED — a stronger claim than the
+    marker path was ever willing to make about the same run."""
+    log = tmp_path / "runs.jsonl"
+    log.write_text(
+        json.dumps(
+            {
+                "schema": runprov.run.START_SCHEMA,
+                "run_uid": "elsewhere",
+                "run_id": "r",
+                "script": "cluster_job",
+                "generation": "g",
+                "started_utc": "2026-08-21T12:00:00Z",
+                "pid": 999999,
+                "host": "compute-node-17",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["show", "--log", str(log)]) == 0
+    err = capsys.readouterr().err
+    assert "?" in err and "compute-node-17" in err, err
+    assert "INTERRUPTED" not in err, "we cannot tell from here, and must not pretend to"
+    assert "ran no ending code at all" not in err
+
+
+def test_the_markers_are_read_before_the_history(tmp_path, monkeypatch):
+    """A-05, fixed by the same change and asserted separately because it is a different bug.
+
+    Reading the history FIRST left a window: a run completing between the two reads was in
+    `_unfinished` (its record was appended after the history pass hit EOF) and had no marker
+    (`_clear_in_flight` had already unlinked it), so it was announced as a SIGKILL death
+    while its `status: ok` record sat in the file just read. The window is the whole marker
+    scan, which widens exactly as uncleaned markers accumulate.
+
+    Reversed, the same run has its marker at T1 and its ending at T2 — paired, and correctly
+    silent. What is left in the window is a run that STARTS between the reads: no marker, and
+    a live pid, which the liveness check above reports as RUNNING.
+
+    ASSERTED ON THE ORDER rather than by racing, because a test that has to win a race to
+    fail is a test that will pass for the wrong reason on a loaded machine."""
+    log = tmp_path / "runs.jsonl"
+    log.write_text("", encoding="utf-8")
+    order = []
+    real_flight, real_unfinished = cli.in_flight, cli._unfinished
+    monkeypatch.setattr(cli, "in_flight", lambda d: (order.append("markers"), real_flight(d))[1])
+    monkeypatch.setattr(
+        cli, "_unfinished", lambda p: (order.append("history"), real_unfinished(p))[1]
+    )
+
+    cli._report_in_flight(log)
+    assert order == ["markers", "history"], (
+        f"markers must be read first, or a run finishing in between is called dead: {order}"
+    )
+
+
 def test_show_exit_code_gates_on_what_verify_structurally_cannot_see(tmp_path, monkeypatch, capsys):
     """L-23. The defect: two staleness checkers, and **the one that finds more problems is
     the one that exits 0**. `verify` reads the pin INSIDE an artifact, and a pin lists the
