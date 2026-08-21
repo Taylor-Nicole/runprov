@@ -2682,6 +2682,104 @@ def test_a_terminated_exec_forwards_the_signal_and_escalates(
 
 
 @requires_fcntl  # POSIX signals and process groups are the whole subject
+def test_stopping_the_child_never_raises_where_there_are_no_process_groups(monkeypatch):
+    """A-04. `os.killpg` does not exist on Windows, so the call raised `AttributeError` —
+    not an `OSError`, and therefore straight through `contextlib.suppress(OSError)`. It cost
+    two things at once, both reproduced under an emulated Windows:
+
+        RUN FAILED — recorded: AttributeError: module 'os' has no attribute 'killpg'
+        child 889920 STILL RUNNING after the wrapper died — reparented to init
+
+    The child was ORPHANED — the very defect `start_new_session=True` exists to prevent,
+    reappearing on the platform where that argument is silently ignored — and the record
+    blamed `AttributeError` for a run terminated by SIGTERM. A wrong cause in the record is
+    the worse half: the orphan is visible in `ps`, the wrong cause is permanent.
+
+    Sixth instance of the exception-family pattern (L-98, A-01). NOT fixed by widening the
+    `except`, which would have hidden the symptom and left the child running; the two
+    platforms need different calls.
+
+    Simulated NARROWLY — `os.killpg` deleted, nothing else — because the question is exactly
+    "what happens where that one name is absent"."""
+
+    class FakeProc:
+        def __init__(self):
+            self.calls = []
+            self._alive = True
+
+        def poll(self):
+            return None if self._alive else 0
+
+        def terminate(self):
+            self.calls.append("terminate")
+            self._alive = False
+
+        def kill(self):
+            self.calls.append("kill")
+            self._alive = False
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.delattr(cli.os, "killpg", raising=False)
+    proc = FakeProc()
+    cli._stop_child(proc)  # must not raise
+    assert proc.calls == ["terminate"], (
+        "where there are no process groups, the child itself is terminated — and once, "
+        "because it went the first time"
+    )
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "SIGKILL"), reason="the POSIX group path is the subject here"
+)
+def test_stopping_the_child_escalates_when_it_will_not_go(monkeypatch):
+    """The other half of the same helper: a child that ignores the polite signal is killed.
+    On POSIX both go to the process GROUP, because the child may have children of its own and
+    `sh -c` usually does."""
+    sent = []
+
+    class Stubborn:
+        pid = 4242  # the GROUP id on POSIX: `start_new_session=True` makes the child a leader
+
+        def poll(self):
+            return None  # never dies, so the escalation runs
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(cli.os, "killpg", lambda pid, sig: sent.append(sig), raising=False)
+    cli._stop_child(Stubborn())
+    assert sent == [signal.SIGTERM, signal.SIGKILL], (
+        "polite first, then insist — and to the group, not the process"
+    )
+
+
+def test_a_group_that_vanishes_between_the_poll_and_the_signal_is_not_an_error(monkeypatch):
+    """`os.killpg` raises `ProcessLookupError` — an `OSError` — when the group has already
+    gone, which is the ordinary race: the child exits while this is deciding to signal it.
+    Nothing is wrong, there is simply nothing left to signal, and raising here would replace
+    the exception the caller is already unwinding with a worse one."""
+    tried = []
+
+    class Gone:
+        pid = 4243
+
+        def poll(self):
+            return 0  # already exited, so no escalation
+
+        def wait(self, timeout=None):
+            return 0
+
+    def vanished(pid, sig):
+        tried.append(sig)
+        raise ProcessLookupError("No such process")
+
+    monkeypatch.setattr(cli.os, "killpg", vanished, raising=False)
+    cli._stop_child(Gone())  # must not raise
+    assert tried, "the polite signal is still attempted — the GROUP may outlive the leader"
+
+
 def test_a_scancel_shaped_kill_gives_a_number_not_a_traceback(tmp_path):
     """Council C-27. `Terminated` is a `BaseException` on purpose — so an ordinary
     `except Exception:` around a pipeline step cannot swallow a kill — but nothing in the CLI

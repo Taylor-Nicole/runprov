@@ -505,6 +505,60 @@ _KILLED_BY_SIGNAL_FLOOR = -256
 _CHILD_GRACE_SECONDS = 5.0
 
 
+def _stop_child(proc: subprocess.Popen[bytes]) -> None:
+    """Ask the child to stop, then insist. Never raises, on any platform.
+
+    IT USED TO RAISE, AND ON THE ONE PATH THAT MUST NOT. `os.killpg` does not exist on
+    Windows, so the call raised `AttributeError` — which is not an `OSError` and went
+    straight through `contextlib.suppress(OSError)`. Reproduced under an emulated Windows,
+    and it cost two things at once:
+
+        RUN FAILED — recorded: AttributeError: module 'os' has no attribute 'killpg'
+        child 889920 STILL RUNNING after the wrapper died — reparented to init
+
+    The child was ORPHANED — the exact defect `start_new_session=True` was added to prevent,
+    reappearing on the platform where that argument does nothing — and the record blamed
+    `AttributeError` for a run that had been terminated by SIGTERM. A wrong cause in the
+    record is the worse half.
+
+    NOT A WIDER `except`. Catching `AttributeError` would have silenced the symptom and left
+    the child running; the platforms simply need different calls. Where there are process
+    groups, signal the GROUP: the child may have children, and `sh -c` usually does.
+
+    THE WINDOWS PATH IS NARROWER, and saying so is the point. `start_new_session` is ignored
+    there — verified, it appears nowhere in `subprocess`'s Windows branch — so there is no
+    group to signal and `terminate()`/`kill()` reach the child alone. A grandchild spawned by
+    a `cmd /c` can still outlive it. That is a real limit of the platform, not something this
+    function can fix, and it is better stated than discovered.
+    """
+
+    def send(hard: bool) -> None:
+        try:
+            if hasattr(os, "killpg"):
+                os.killpg(proc.pid, signal.SIGKILL if hard else signal.SIGTERM)
+            elif hard:  # pragma: no cover - Windows only
+                proc.kill()
+            else:  # pragma: no cover - Windows only
+                proc.terminate()
+        except OSError:  # guards-ok: nothing left to signal
+            pass
+
+    # THE POLITE SIGNAL IS UNCONDITIONAL, and an earlier draft of this made it conditional on
+    # `proc.poll() is None` — which an existing test caught with "the child must be told
+    # first". On POSIX the target is the GROUP, and a group outlives its leader: the direct
+    # child can be gone while the grandchildren `sh -c` started are still running. Checking
+    # first would skip the signal in exactly the case where it still has work to do.
+    send(hard=False)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=_CHILD_GRACE_SECONDS)
+    if proc.poll() is None:
+        # It ignored SIGTERM. SIGKILL cannot be ignored, and leaving it running would be the
+        # orphan this whole function exists to prevent.
+        send(hard=True)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=_CHILD_GRACE_SECONDS)
+
+
 def _exec(args: argparse.Namespace) -> int:
     """`runprov exec -- samtools sort in.bam -o out.bam`: a subprocess, recorded as a run.
 
@@ -597,17 +651,7 @@ def _exec(args: argparse.Namespace) -> int:
                     # the signal-turned-exception and hand the signal ON to the child before
                     # this process unwinds. Terminate the GROUP -- the child may itself have
                     # children, and `sh -c` usually does.
-                    with contextlib.suppress(OSError):
-                        os.killpg(proc.pid, signal.SIGTERM)
-                    with contextlib.suppress(subprocess.TimeoutExpired):
-                        proc.wait(timeout=_CHILD_GRACE_SECONDS)
-                    if proc.poll() is None:
-                        # It ignored SIGTERM. SIGKILL cannot be ignored, and leaving it
-                        # running would be the orphan this exists to prevent.
-                        with contextlib.suppress(OSError):
-                            os.killpg(proc.pid, signal.SIGKILL)
-                        with contextlib.suppress(subprocess.TimeoutExpired):
-                            proc.wait(timeout=_CHILD_GRACE_SECONDS)
+                    _stop_child(proc)
                     raise
             except OSError as exc:
                 run.note("exec_error", f"{type(exc).__name__}: {exc}")
