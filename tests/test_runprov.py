@@ -3201,6 +3201,92 @@ def test_the_exit_warning_is_actually_wired_to_atexit(tmp_path, monkeypatch):
     )
 
 
+def test_every_promised_name_takes_a_path_the_same_way():
+    """A-13. C-19 widened every path argument on `Run` to `str | pathlib.Path` and left the
+    rest of the promised surface behind — and its guarding test covers only `Run`, so nothing
+    held the others to the rule.
+
+    THE DAMAGE WAS NOT "REJECTS A STRING". It was that five names annotated identically
+    behaved THREE different ways at runtime:
+
+        sha256          worked, by luck — `hashlib` never touches the argument as a Path
+        content_digest  AttributeError: 'str' object has no attribute 'is_file'
+        describe        AttributeError: 'str' object has no attribute 'stat'
+        detect_root     coerced in its body
+        JsonlSink       coerced in its body
+
+    while `mypy --strict` rejected all five and accepted `Run(provenance="p.json")`. There
+    was no rule a caller could learn, and the package ships `py.typed`, so every typed
+    consumer met the errors.
+
+    ASSERTED ON THE WHOLE PROMISED SURFACE, not on the five that happened to be wrong. The
+    rule is "a promised name that takes a path takes a `str` too", and a test naming five
+    functions would be satisfied the day a sixth is added wrongly — which is exactly how
+    these five outlived C-19."""
+    import dataclasses
+    import inspect
+    import typing
+
+    # NOT `except Exception: continue`, which is how the first version of this test checked
+    # NOTHING. `typing` was not imported in this module, so `typing.get_type_hints` raised
+    # `NameError` on the FIRST name, the catch-all swallowed it, and every name was skipped —
+    # the test passed, and three mutations that narrow annotations back survived it. A
+    # skipped name is now counted and asserted, so a silent pass is impossible.
+    inspected = 0
+    offenders = []
+    for name in sorted(runprov.__all__):
+        obj = getattr(runprov, name)
+        if not (inspect.isclass(obj) or inspect.isfunction(obj)):
+            continue  # a constant: SCHEMA, DEFAULT_TRACKED — nothing to annotate
+        if dataclasses.is_dataclass(obj):
+            # A FROZEN DATACLASS IS EXCLUDED, and the reason is not convenience. Its field
+            # annotation is the type of the ATTRIBUTE, not only of the constructor argument —
+            # `Project.root` is read as `self.root / "provenance"` all over this package, so
+            # widening it to `str | Path` would make every one of those reads a type error
+            # and buy a `cast` at each. `__post_init__` coerces (A-12), so the annotation is
+            # TRUE for every read, which is what a consumer of `project.root` needs.
+            #
+            # THE RESIDUAL IS REAL AND SMALL: `mypy` still rejects `Project(root="x")`
+            # although it works. The documented entry point is `configure(**kwargs)`, which
+            # is untyped in either case, and fixing it properly needs a hand-written
+            # `__init__` or overloads — more machinery than the gap justifies.
+            continue
+        target = obj.__init__ if inspect.isclass(obj) else obj
+        hints = typing.get_type_hints(target)
+        inspected += 1
+        for param, hint in hints.items():
+            if param == "return":
+                continue
+            text = str(hint)
+            # A parameter is "a path" if `pathlib.Path` is anywhere in its annotation.
+            if "Path" not in text:
+                continue
+            if "str" not in text:
+                offenders.append(f"{name}({param}: {text})")
+    assert inspected >= 6, (
+        f"only {inspected} promised names were actually inspected — this test has stopped "
+        "looking at the surface it claims to check"
+    )
+    assert not offenders, (
+        "a promised name that takes a path must take a `str` too, like every path argument "
+        f"on `Run`: {offenders}"
+    )
+
+
+def test_the_promised_path_names_actually_accept_a_string(tmp_path):
+    """The runtime half of A-13, because an annotation is a promise and this is the delivery.
+    `sha256` already worked while `describe` raised — identical annotations, opposite
+    behaviour — so widening the types without exercising them would have moved the
+    inconsistency rather than removed it."""
+    f = tmp_path / "x.tsv"
+    f.write_text("a\n", encoding="utf-8")
+    assert runprov.sha256(str(f)) == runprov.sha256(f)
+    assert runprov.content_digest(str(f)) == runprov.content_digest(f)
+    assert runprov.describe(str(f))["path"] == runprov.describe(f)["path"]
+    assert runprov.detect_root(str(tmp_path)) == runprov.detect_root(tmp_path)
+    assert runprov.JsonlSink(str(tmp_path / "h.jsonl")).path == tmp_path / "h.jsonl"
+
+
 def test_every_path_argument_accepts_a_plain_string(tmp_path, monkeypatch):
     """Council C-19. `provenance=` was annotated `pathlib.Path | None` while `input`,
     `output`, `write`, `code`, `open_output`, `pin_sidecar` and `terminal_log` all take
