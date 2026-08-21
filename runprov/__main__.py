@@ -900,6 +900,15 @@ def _counted(path: pathlib.Path, bad: list[int]) -> typing.Iterator[dict[str, ty
             yield rec
 
 
+#: How many in-flight markers `show` prints before summarising the rest.
+#:
+#: The banner is stderr context above the page the reader actually asked for, so it must not
+#: be able to bury it. `--exit-code`'s FAILING list caps at five for the same reason; ten here
+#: because a marker line is one run rather than one artifact, and a busy machine legitimately
+#: has several in flight at once.
+MARKERS_SHOWN = 10
+
+
 def _report_in_flight(path: pathlib.Path) -> None:
     """Say which runs started and have no ending on record. Nothing if there are none.
 
@@ -961,11 +970,31 @@ def _report_in_flight(path: pathlib.Path) -> None:
         return
 
     out = [f"# {len(pending)} run(s) STARTED with no ending recorded:"]
-    for r in sorted(pending, key=lambda x: str(x.get("started_utc", "")), reverse=True):
+    # NEWEST FIRST AND CAPPED. Nothing in this package removes a marker except the run that
+    # wrote it, and there is no TTL — so on any machine that has ever had a SIGKILL they
+    # accumulate for ever. Measured with 10,000 of them: 10,004 lines of banner above a
+    # FOUR-line page. The page is what the reader asked for and it was the part they could
+    # not see.
+    #
+    # THE COST IS THE BANNER, NOT THE SECONDS, and the row that raised this had the timing
+    # roughly 5x too high. Measured here: 0.9 s wall for the whole command at 10,000 markers,
+    # against 0.28 s empty. That is not worth stat-sorting and partial parsing to avoid, so
+    # this caps what is PRINTED and leaves the read alone — the counts below stay exact
+    # because they are computed over all of `pending`.
+    #
+    # Ten, and the same shape as `--exit-code`'s FAILING list, which caps at five: a count, a
+    # sample, and a line saying how much was not shown.
+    ordered = sorted(pending, key=lambda x: str(x.get("started_utc", "")), reverse=True)
+    for r in ordered[:MARKERS_SHOWN]:
         where = "" if r.get("state") != show_mod.UNTELLABLE else f"  on {r.get('host', '?')}"
         out.append(
             f"#   {r.get('state', '?'):12} {r.get('script', '?')!s:20} "
             f"{r.get('started_utc', '?')}  pid {r.get('pid', '?')}{where}"
+        )
+    if len(ordered) > MARKERS_SHOWN:
+        out.append(
+            f"#   … and {len(ordered) - MARKERS_SHOWN} more, oldest not shown. "
+            f"`rm -r {path.parent / '.incomplete'}` is safe — see the README."
         )
     print("\n".join(out), file=sys.stderr)
     n = sum(1 for r in pending if r.get("state") == show_mod.INTERRUPTED)

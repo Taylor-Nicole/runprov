@@ -11982,6 +11982,102 @@ def test_a_start_that_cannot_be_recorded_does_not_cost_the_run(tmp_path, monkeyp
     assert json.loads((tmp_path / "p.prov.json").read_text())["status"] == "ok"
 
 
+def test_the_in_flight_banner_cannot_bury_the_page(tmp_path, capsys):
+    """A-14. Nothing in the package removes a marker except the run that wrote it — no TTL,
+    no cap, no prune command — so on any machine that has had a few hundred SIGKILLs they
+    accumulate for ever. Measured with 10,000: **10,004 lines of banner above a four-line
+    page**. The page is what the reader asked for and it was the part they could not see.
+
+    THE COST IS THE BANNER, NOT THE SECONDS. The row that raised this put the time at 5-6 s;
+    measured here it is 0.9 s for the whole command at 10,000 markers against 0.28 s empty.
+    So this caps what is PRINTED and deliberately does not stat-sort or partially parse to
+    save a second that is not being lost.
+
+    THE COUNTS STAY EXACT, which is the part a cap could easily get wrong: the total and the
+    INTERRUPTED tally are computed over every marker, and only the listing is trimmed."""
+    log = tmp_path / "runs.jsonl"
+    log.write_text("", encoding="utf-8")
+    d = tmp_path / ".incomplete"
+    d.mkdir()
+    dead = _never_a_pid()
+    for i in range(cli.MARKERS_SHOWN * 3):
+        (d / f"u{i}.json").write_text(
+            json.dumps(
+                {
+                    "run_uid": f"u{i}",
+                    "script": "fetch",
+                    "started_utc": f"2026-08-01T00:00:{i:02d}Z",
+                    "pid": dead,
+                    "host": runprov.show.platform.node(),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    assert cli.main(["show", "--log", str(log)]) == 0
+    err = capsys.readouterr().err
+    listed = [ln for ln in err.splitlines() if "INTERRUPTED" in ln and "fetch" in ln]
+    assert len(listed) == cli.MARKERS_SHOWN, f"{len(listed)} rows printed, uncapped?"
+    assert f"and {cli.MARKERS_SHOWN * 2} more" in err, err
+    assert f"{cli.MARKERS_SHOWN * 3} run(s) STARTED" in err, "the TOTAL must stay exact"
+    assert f"{cli.MARKERS_SHOWN * 3} of them ran no ending code" in err, (
+        "and so must the finding count — a cap on the LISTING must not cap the tally"
+    )
+    # NEWEST FIRST: the ones a reader can still act on.
+    assert "2026-08-01T00:00:29Z" in err and "2026-08-01T00:00:00Z" not in err
+
+
+def test_deleting_every_marker_changes_no_finding(tmp_path, monkeypatch, capsys):
+    """The claim the README now makes, asserted rather than assumed: `rm -r .incomplete` is
+    safe. It is only true because A-03 moved the liveness question to the `started` line's own
+    `pid` and `host` — before that, deleting markers turned every unfinished run into a false
+    INTERRUPTED, and the advice would have been actively harmful."""
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    log.write_text(
+        json.dumps(
+            {
+                "schema": runprov.run.START_SCHEMA,
+                "run_uid": "killed",
+                "run_id": "r",
+                "script": "fetch",
+                "generation": "g",
+                "started_utc": "2026-08-21T12:00:00Z",
+                "pid": _never_a_pid(),
+                "host": runprov.show.platform.node(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    d = tmp_path / ".incomplete"
+    d.mkdir()
+    (d / "killed.json").write_text(
+        json.dumps(
+            {
+                "run_uid": "killed",
+                "script": "fetch",
+                "started_utc": "2026-08-21T12:00:00Z",
+                "pid": _never_a_pid(),
+                "host": runprov.show.platform.node(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    capsys.readouterr()
+    assert cli.main(["show", "--log", str(log)]) == 0
+    with_markers = [ln for ln in capsys.readouterr().err.splitlines() if "INTERRUPTED" in ln]
+
+    shutil.rmtree(d)
+    assert cli.main(["show", "--log", str(log)]) == 0
+    without = [ln for ln in capsys.readouterr().err.splitlines() if "INTERRUPTED" in ln]
+
+    assert with_markers == without and with_markers, (
+        f"removing the index must not change the finding: {with_markers} vs {without}"
+    )
+
+
 def test_a_marker_is_not_a_death_certificate(tmp_path):
     """A marker exists for the WHOLE of a run, including the one reading the page. Reporting
     its presence as a death would be the guess this package refuses — and it would fire on
