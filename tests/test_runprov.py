@@ -15815,3 +15815,110 @@ def test_show_still_catches_a_late_input_going_stale_and_verify_still_cannot(
     (tmp_path / "data" / "b.tsv").write_text("b\n", encoding="utf-8")
     capsys.readouterr()
     assert cli.main(stale) == 0, "revert control: the STALE came from the unpinned input"
+
+
+# ------------------------------------------------- conditional transitivity (A-17)
+def _three_stage(tmp_path, *, transform: bool):
+    """Two pipelines from one script, differing ONLY in whether the middle step copies its
+    input through. That is the whole variable, which is what makes the pair a control."""
+    for d in ("data", "work", "results"):
+        (tmp_path / d).mkdir(exist_ok=True)
+    (tmp_path / "data" / "in.tsv").write_text("# a comment\nvalue\t1\nvalue\t2\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+
+    def step(name, src, dst):
+        with runprov.Run(name, provenance=f"provenance/{name}.prov.json") as run:
+            run.input(src)
+            text = pathlib.Path(src).read_text(encoding="utf-8")
+            if transform:
+                # Drops the comment lines — and with them the upstream pin block, which IS
+                # the pin. Nothing exotic: every filter, reshape and plot does this.
+                text = "".join(ln for ln in text.splitlines(True) if not ln.startswith("#"))
+            with run.open_output(dst) as fh:
+                fh.write(text)
+
+    step("step1", "data/in.tsv", "work/mid.tsv")
+    step("step2", "work/mid.tsv", "results/final.tsv")
+
+
+def test_verify_is_transitive_only_when_the_step_writes_its_input_through(tmp_path, monkeypatch):
+    """A-17. `verify`'s docstring said transitivity holds "because a pin lands in the artifact
+    and a downstream step registers that artifact as an input". Registration is NOT the
+    mechanism — registering `mid.tsv` pins MID's digest, not the root's. The mechanism is that
+    the upstream pin BLOCK survives into the downstream bytes, which only happens for a step
+    whose output contains its input.
+
+    Same topology, same change to the same root, one variable."""
+    monkeypatch.chdir(tmp_path)
+    _three_stage(tmp_path, transform=False)
+    final = tmp_path / "results" / "final.tsv"
+    assert len(runprov.verify.read_pins(final)) == 2, "write-through carries the upstream pin"
+
+    (tmp_path / "data" / "in.tsv").write_text("# a comment\nvalue\t999\n", encoding="utf-8")
+    assert cli.main(["verify", "results/final.tsv", "--root", "."]) == 1, "the root changed"
+
+
+def test_verify_reports_a_transforming_step_as_OK_after_its_root_changed(tmp_path, monkeypatch):
+    """The other half of the control, and the finding. Nothing here is a bug in `verify`: it
+    checks what the artifact claims, and this artifact claims one generation because that is
+    all its bytes carry. The defect was three documents saying otherwise."""
+    monkeypatch.chdir(tmp_path)
+    _three_stage(tmp_path, transform=True)
+    final = tmp_path / "results" / "final.tsv"
+    assert len(runprov.verify.read_pins(final)) == 1, "the transform dropped the upstream pin"
+
+    (tmp_path / "data" / "in.tsv").write_text("# a comment\nvalue\t999\n", encoding="utf-8")
+    assert cli.main(["verify", "results/final.tsv", "--root", "."]) == 0, (
+        "this is the measured behaviour the docs must describe, not the one they claimed"
+    )
+    # AND THE REMEDY IS REAL, which is what makes the corrected paragraph actionable rather
+    # than merely honest: the intermediate is itself pinned and stale.
+    assert cli.main(["verify", ".", "--root", "."]) == 1, (
+        "verify . catches what verify results/ misses"
+    )
+
+
+def test_show_stale_is_one_generation_deep_in_BOTH_pipelines(tmp_path, monkeypatch, capsys):
+    """The README calls `verify` + `show --stale` a gate, so the natural reading is that the
+    second half covers what the first misses. It does not: `show` is one generation deep in
+    both pipelines, including the write-through one where `verify` correctly reports STALE.
+
+    The gate does go red — on the INTERMEDIATE. The published artifact is reported OK in
+    both, and a reader looking at that row is the one being misled."""
+    monkeypatch.chdir(tmp_path)
+    _three_stage(tmp_path, transform=False)
+    (tmp_path / "data" / "in.tsv").write_text("# a comment\nvalue\t999\n", encoding="utf-8")
+
+    capsys.readouterr()
+    assert cli.main(["show", "--log", "runs.jsonl", "--stale", "--rehash", "--exit-code"]) == 1
+    # STDOUT, which is where the artifact index goes — only the summary and the FAILING
+    # line are stderr. And keyed on the STATE WORD rather than on position, because that
+    # `# FAILING (1): work/mid.tsv` line also ends in a path.
+    rows = [ln.split() for ln in capsys.readouterr().out.splitlines()]
+    states = {r[-1]: r[0] for r in rows if len(r) >= 2 and r[0] in runprov.show.STATES}
+    assert states.get("results/final.tsv") == "OK", "show never reaches the grandparent"
+    assert states.get("work/mid.tsv") == "STALE", "it is the intermediate that fails the gate"
+
+
+def test_verify_prints_the_pin_chain_so_the_condition_is_visible(tmp_path, monkeypatch, capsys):
+    """`pins` and `scripts` were computed, carried in the report and emitted in `--format
+    json` — and the TEXT view dropped both. So the one fact that decides whether an `OK`
+    covers the whole lineage or a single generation was the one fact a person reading the
+    output could not see.
+
+    Printed for every artifact, not only chained ones: the informative case is the SHORT
+    chain, because that is where a reader expecting transitivity does not get it."""
+    monkeypatch.chdir(tmp_path)
+    _three_stage(tmp_path, transform=False)
+    capsys.readouterr()
+    cli.main(["verify", "results/final.tsv", "--root", "."])
+    assert "[step2 ← step1]" in capsys.readouterr().out, "an inherited chain must be visible"
+
+    for f in (tmp_path / "work", tmp_path / "results"):
+        shutil.rmtree(f)
+    (tmp_path / "runs.jsonl").unlink()
+    _three_stage(tmp_path, transform=True)
+    capsys.readouterr()
+    cli.main(["verify", "results/final.tsv", "--root", "."])
+    out = capsys.readouterr().out
+    assert "[step2]" in out and "step1" not in out, f"a one-generation pin must show as one: {out}"

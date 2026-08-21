@@ -17,11 +17,37 @@ anything, does not compare the artifact against itself, and cannot tell you the 
 correct — only whether the things it was made from still hash the way they did when it was
 made. That is the question staleness actually is.
 
-TRANSITIVITY COMES FREE, and it is the property worth having. Because a pin lands in the
-artifact and a downstream step registers that artifact as an input, a changed root shows up
-at every level that depends on it — and a grandchild stays stale after the root is restored,
-because the child was never rebuilt. Nothing here implements that; it falls out of the pin
-being in the bytes.
+TRANSITIVITY IS REAL AND IT IS CONDITIONAL, and the condition is not the one this paragraph
+used to state. It said transitivity holds "because a pin lands in the artifact and a
+downstream step registers that artifact as an input". REGISTRATION IS NOT THE MECHANISM:
+registering `mid.tsv` pins MID's digest, not the root's. A step that TRANSFORMS its input —
+filters rows, reshapes a table, renders a figure — writes an artifact carrying exactly one
+pin block, and that block verifies OK after the root changed.
+
+Measured on two three-stage pipelines built from one script differing only in whether the
+step copies its input through, with the same change to the same root:
+
+    write-through   0 OK, 1 STALE, exit 1   STALE data/in.tsv (pinned 59ae…, now a393…) via step1
+    filtering       1 OK, 0 STALE, exit 0   — and the root had changed
+
+THE ACTUAL MECHANISM is the one the README states and this file used to drop: the upstream
+pin BLOCK has to survive into the downstream artifact's bytes. `read_pins` reads every block
+it finds, so a step that concatenates or passes text through leaves `final.tsv` stating both
+"made from mid.tsv@6a19…" and, inherited, "…which was made from in.tsv@e854…", and a changed
+root surfaces at every level that carries the block. A grandchild also stays stale after the
+root is restored, because the child was never rebuilt. That much does fall out of the pin
+being in the bytes — but only for steps whose output contains their input.
+
+WHEN A STEP TRANSFORMS, VERIFY THE INTERMEDIATE TOO. `verify .` over the whole project exits
+1 in the filtering case above, because `work/mid.tsv` is itself pinned and stale. What goes
+green is `verify results/` alone — the shape the README's own gate line uses — over published
+artifacts whose intermediates live elsewhere or are not verified.
+
+AND `show --stale` DOES NOT RESCUE IT, which is worth stating because the README calls the
+pair a gate. It is one generation deep in BOTH pipelines: measured on the write-through one,
+where `verify` correctly reports STALE, `show --stale --rehash` prints `OK results/final.tsv`
+and `STALE work/mid.tsv`. The gate does go red — on the intermediate. The published artifact
+is reported OK in both.
 
 WHAT IT REFUSES TO GUESS. Three shapes are reported UNVERIFIABLE rather than assumed good,
 because each is a case where a comparison would be meaningless and a green result would be
@@ -540,7 +566,17 @@ def render_report(report: dict[str, typing.Any]) -> str:
     """
     out = []
     for art in report["artifacts"]:
-        out.append(f"{art['status']:12} {art['artifact']}")
+        # THE CHAIN, BECAUSE TRANSITIVITY IS CONDITIONAL AND WAS INVISIBLE. `pins` and
+        # `scripts` were computed, carried in the report and emitted in `--format json`, and
+        # the text view — the one a person reads — dropped both. So the single fact that
+        # decides whether an OK covers the whole lineage or only one generation was the one
+        # fact the reader could not see. `[step2]` is one pin block; `[step2 ← step1]` is an
+        # inherited chain. Printed for EVERY artifact, not only chained ones, because the
+        # informative case is the SHORT one: a reader who expects transitivity needs to see
+        # that this artifact has none.
+        chain = " ← ".join(art.get("scripts") or [])
+        suffix = f"  [{chain}]" if chain else ""
+        out.append(f"{art['status']:12} {art['artifact']}{suffix}")
         for note in art.get("pin_truncated", []):
             out.append(f"             !! pin {note}")
         for i in art["inputs"]:
