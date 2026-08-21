@@ -3779,6 +3779,95 @@ def test_a_run_that_registers_everything_says_nothing_at_all(tmp_path, monkeypat
     assert "UNREGISTERED READ" not in capsys.readouterr().err
 
 
+def test_two_overlapping_runs_do_not_report_each_other_s_records(tmp_path, monkeypatch, capsys):
+    """A-06. `_Watcher._hook` attributes every `open` in the process to EVERY attached `Run`,
+    while the "these files are ours" subtraction was assembled PER INSTANCE at exit from
+    `self.provenance_path` and `self._written_paths`. Process-wide observation, per-object
+    subtraction — so whenever two runs overlap, each reported the OTHER's sidecar.
+
+    Measured on the nested shape this package DOCUMENTS AND TESTS
+    (`test_a_run_nested_inside_another_records_both`): the outer run's record, and its
+    history line, carried `unregistered_reads: ['i.prov.json', 'i.prov.yml']` — the inner
+    run's own sidecar and YAML twin, files runprov itself wrote — while stderr told the
+    author to open runprov's own sidecar with `run.input()`.
+
+    THIS IS L-108 ACROSS TWO RUNS. That row was fixed by ORDERING — writing the marker before
+    the watcher attaches — which protects a run from its OWN files and nothing else. The
+    subtraction had to become process-wide too, which is why `watch.own()` exists and why the
+    paths are declared when they are KNOWN rather than listed at exit: an exit-time list only
+    ever helped the run that was exiting.
+
+    It reached the append-only history, so `grep unregistered_reads runs.jsonl` — the query
+    the field exists for — was false."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+
+    with runprov.Run("outer", provenance=tmp_path / "o.prov.json") as outer:
+        outer.input(tmp_path / "in.tsv")
+        with runprov.Run("inner", provenance=tmp_path / "i.prov.json") as inner:
+            inner.input(tmp_path / "in.tsv")
+
+    for run in (outer, inner):
+        assert "unregistered_reads" not in run.record, (
+            f"{run.record['script']} was charged with {run.record.get('unregistered_reads')}"
+        )
+    for line in _lines(tmp_path / "runs.jsonl"):
+        assert "unregistered_reads" not in line, f"and it reached the history: {line}"
+    assert "UNREGISTERED READ" not in capsys.readouterr().err
+
+
+def test_a_second_write_target_is_ours_too_while_another_run_is_open(tmp_path, monkeypatch):
+    """The path `__enter__` cannot know. It declares the project logs and the constructor's
+    `provenance=`, but `write()`'s docstring says a SECOND path is "fine and sometimes
+    useful" — and that file only exists once the call is made, so it must be declared then.
+
+    Written because removing that one `own(p)` killed no test: by this project's own rule a
+    line no experiment can distinguish is decoration, and the honest options were to delete
+    it or to find the case it serves. This is the case — a run writing a second record while
+    another run is open, which without it charges the second record to the other run."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+
+    with runprov.Run("watcher", provenance=tmp_path / "w.prov.json") as watcher:
+        watcher.input(tmp_path / "in.tsv")
+        with runprov.Run("worker", provenance=tmp_path / "p.prov.json") as worker:
+            worker.input(tmp_path / "in.tsv")
+            worker.write(tmp_path / "second.prov.json")  # a path nobody could know at entry
+
+    assert (tmp_path / "second.prov.json").is_file(), "the premise: a second record exists"
+    assert "unregistered_reads" not in watcher.record, (
+        f"the outer run was charged with {watcher.record.get('unregistered_reads')}"
+    )
+
+
+def test_a_run_still_notices_a_real_missed_read_while_another_is_open(
+    tmp_path, monkeypatch, capsys
+):
+    """The other side of A-06, and the one that matters more. Two bugs have already been
+    written in this filter by making it too BROAD — the comments in `_note_unregistered_reads`
+    record both — and a filter that reports nothing looks exactly like one that works.
+
+    So: the same overlapping shape, plus a genuine unregistered read, which must still be
+    reported against the run that actually made it and against no other."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    (tmp_path / "secret.tsv").write_text("x\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+
+    with runprov.Run("outer", provenance=tmp_path / "o.prov.json") as outer:
+        outer.input(tmp_path / "in.tsv")
+        with runprov.Run("inner", provenance=tmp_path / "i.prov.json") as inner:
+            inner.input(tmp_path / "in.tsv")
+            (tmp_path / "secret.tsv").read_text(encoding="utf-8")
+
+    assert inner.record.get("unregistered_reads") == ["secret.tsv"], (
+        "the run that opened it must still be told"
+    )
+    assert "secret.tsv" in capsys.readouterr().err
+
+
 @requires_symlinks
 @pytest.mark.parametrize("where", ["opened", "exclude", "registered"])
 def test_one_symlink_loop_does_not_erase_the_whole_unregistered_read_check(tmp_path, where):

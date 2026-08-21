@@ -139,6 +139,46 @@ def detach(run: object) -> None:
     _WATCHER.detach(run)
 
 
+#: Every path this PACKAGE has written in this process — sidecars, YAML twins, the history,
+#: the transformation log, in-flight markers.
+#:
+#: PROCESS-WIDE, BECAUSE THE OBSERVATION IS. `_Watcher._hook` attributes every `open` in the
+#: process to EVERY attached `Run`, and the "these files are ours" subtraction used to be
+#: assembled per-instance from `self.provenance_path`, `self._written_paths` and the project
+#: logs. Process-wide observation, per-object subtraction — so two overlapping runs each
+#: reported the OTHER's sidecar. Measured on the nested shape the package documents and
+#: tests: the outer run's record, and its history line, carried
+#: `unregistered_reads: ['i.prov.json', 'i.prov.yml']` — the inner run's own sidecar and
+#: twin, files runprov itself wrote — and stderr told the author to `run.input()` them.
+#:
+#: That is L-108 across two runs: the package reporting its own file as the user's oversight.
+#: L-108 was fixed by ORDERING, which protects a run only from ITSELF.
+#:
+#: A SET OF FILES, NEVER OF DIRECTORIES. `run_log=` and `provenance=` frequently point at the
+#: project root, and excluding a parent directory would silently disable the whole check —
+#: both forms of that bug have been written and caught in this file already.
+#:
+#: Unbounded, and bounded in practice by the number of records a process writes; the entries
+#: are short strings and it does not grow with the number of READS, which is the thing that
+#: grows without limit here.
+_OURS: set[str] = set()
+
+
+def own(*paths: str | pathlib.Path | None) -> None:
+    """Record that this package wrote `paths`, so no run reports them as a missed read.
+
+    Called as soon as each path is KNOWN rather than at exit, because a concurrent run needs
+    the answer while it is still open — an exit-time list only ever helped the run exiting.
+    """
+    for path in paths:
+        if path is None:
+            continue
+        try:
+            _OURS.add(str(pathlib.Path(path).resolve()))
+        except (OSError, RuntimeError):  # guards-ok: see `unregistered`
+            _OURS.add(str(path))
+
+
 def unregistered(
     opened: typing.Iterable[str],
     registered: typing.Iterable[str],
@@ -195,7 +235,7 @@ def unregistered(
             if p.suffix in _NOT_DATA:
                 continue
             rp = p.resolve()
-            if str(rp) in reg:
+            if str(rp) in reg or str(rp) in _OURS:
                 continue
             if not rp.is_file():
                 continue
