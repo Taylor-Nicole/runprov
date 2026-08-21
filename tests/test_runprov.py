@@ -15684,3 +15684,134 @@ def test_show_forget_markers_never_overwrites_the_exit_code(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "removed 1" in err, "the prune must still have happened"
     assert code == 1, f"a clean prune must not mask a staleness finding (got {code})"
+
+
+# ------------------------------------------------------- late inputs vs the pin (A-16)
+def _late_input_run(tmp_path):
+    """A run that registers one input, renders a pin, then registers a second."""
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "a.tsv").write_text("a\n", encoding="utf-8")
+    (tmp_path / "data" / "b.tsv").write_text("b\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    # RELATIVE, because that is what a script writes and what the record then carries: paths
+    # are stored as passed, not rewritten at persist time. Handing absolute ones in made the
+    # first draft of these tests assert a spelling the package never produces.
+    with runprov.Run("s.py", provenance="s.prov.json") as run:
+        run.input("data/a.tsv")
+        with run.open_output("out.tsv") as fh:  # renders the pin
+            fh.write("x\n")
+        run.input("data/b.tsv")  # AFTER it
+    return run
+
+
+def test_an_input_registered_after_the_pin_is_marked_in_the_record(tmp_path, monkeypatch):
+    """A-16. `A WARNING IS EPHEMERAL; A FIELD IS PERMANENT` is this package's own sentence,
+    written four hundred lines from this branch, about `unregistered_reads` — "a reviewer
+    three years later can see that a read was missed". The same class of problem here printed
+    to stderr and recorded NOTHING: the sidecar listed 2 inputs, the artifact's pin listed 1,
+    and not one of the record's top-level keys said they disagreed.
+
+    The divergence is permanent and unfixable after the fact — the bytes are on disk and a
+    pin cannot grow a line — so the record saying so is the whole remedy available."""
+    monkeypatch.chdir(tmp_path)
+    run = _late_input_run(tmp_path)
+
+    assert [i["path"] for i in run.record["inputs"]] == ["data/a.tsv", "data/b.tsv"]
+    pin = (tmp_path / "out.tsv").read_text(encoding="utf-8")
+    assert "inputs (1)" in pin and "data/b.tsv" not in pin, "the pin understates, as designed"
+    assert run.record["inputs_not_in_pin"] == ["data/b.tsv"], (
+        "the record must name what the pin does not list; a stderr line is not a record"
+    )
+
+    sidecar = json.loads((tmp_path / "s.prov.json").read_text(encoding="utf-8"))
+    assert sidecar["inputs_not_in_pin"] == ["data/b.tsv"]
+    # PAST THE TRIM. The history summary reduces each input to path and digests, so a
+    # per-entry flag would not reach `show` — which is the only reader that can still check
+    # the late input at all.
+    line = _lines(tmp_path / "runs.jsonl")[-1]
+    assert line["inputs_not_in_pin"] == ["data/b.tsv"], "it must survive the history trim"
+
+
+def test_a_run_whose_pin_lists_everything_carries_no_such_key(tmp_path, monkeypatch):
+    """OMITTED, NOT DEFAULTED — the rule the rest of the record follows, and the one
+    `unregistered_reads` follows for this exact reason: a clean run is silent in the file as
+    well as on the terminal, so the key's PRESENCE is the finding."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("clean.py", provenance="c.prov.json") as run:
+        run.input("a.tsv")
+        with run.open_output("out.tsv") as fh:
+            fh.write("y\n")
+
+    assert "inputs_not_in_pin" not in run.record
+    assert "inputs_not_in_pin" not in json.loads(
+        (tmp_path / "c.prov.json").read_text(encoding="utf-8")
+    )
+    assert "inputs_not_in_pin" not in _lines(tmp_path / "runs.jsonl")[-1]
+
+
+def test_the_same_late_input_twice_is_named_once(tmp_path, monkeypatch):
+    """A list that grows by one entry per CALL would report "2 inputs not in the pin" about
+    one file, which is a different and wrong finding."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.tsv").write_text("a\n", encoding="utf-8")
+    (tmp_path / "b.tsv").write_text("b\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("s.py", provenance="s.prov.json") as run:
+        run.input("a.tsv")
+        with run.open_output("out.tsv") as fh:
+            fh.write("x\n")
+        run.input("b.tsv")
+        run.input("b.tsv")
+
+    assert run.record["inputs_not_in_pin"] == ["b.tsv"]
+
+
+def test_the_late_input_warning_no_longer_claims_nothing_can_detect_it(
+    tmp_path, monkeypatch, capsys
+):
+    """The warning said "nothing downstream can detect it", and that was measurably false:
+    `show --stale` reads the record, and the record has every input. Naming the command that
+    CAN and the command that CANNOT is the actionable form — and the reason `verify` cannot
+    is the same property that makes it work on an artifact with no history beside it."""
+    monkeypatch.chdir(tmp_path)
+    capsys.readouterr()
+    _late_input_run(tmp_path)
+    err = capsys.readouterr().err
+
+    assert "input registered AFTER the pin was rendered" in err
+    assert "nothing downstream can detect it" not in err, "the false claim is the defect"
+    assert "inputs_not_in_pin" in err and "show --stale" in err, "say what still checks it"
+    assert "verify" in err and "emailed" in err, "and what does not, and why"
+
+
+def test_show_still_catches_a_late_input_going_stale_and_verify_still_cannot(
+    tmp_path, monkeypatch, capsys
+):
+    """The two commands genuinely disagree about this artifact, and the README's table now
+    has a row saying so. Asserted end to end, with a REVERT CONTROL: without it, "STALE" only
+    shows that something was stale, not that the LATE input is what made it so."""
+    monkeypatch.chdir(tmp_path)
+    _late_input_run(tmp_path)
+    log = str(tmp_path / "runs.jsonl")
+    stale = ["show", "--log", log, "--stale", "--rehash", "--exit-code"]
+
+    capsys.readouterr()
+    assert cli.main(stale) == 0, "the fixture must start clean"
+
+    (tmp_path / "data" / "b.tsv").write_text("CHANGED\n", encoding="utf-8")
+    capsys.readouterr()
+    assert cli.main(stale) == 1, "show reads the record, which has the late input"
+    assert "STALE" in capsys.readouterr().err
+
+    # AND `verify` SAYS OK, which is not a defect in `verify`: it reads the pin in the bytes
+    # and nothing else, and that pin never listed this input. The record is the only place
+    # the divergence can live.
+    capsys.readouterr()
+    assert cli.main(["verify", str(tmp_path / "out.tsv"), "--root", str(tmp_path)]) == 0
+    assert "OK" in capsys.readouterr().out
+
+    (tmp_path / "data" / "b.tsv").write_text("b\n", encoding="utf-8")
+    capsys.readouterr()
+    assert cli.main(stale) == 0, "revert control: the STALE came from the unpinned input"
