@@ -1298,19 +1298,38 @@ is the ordinary state of a busy project and is not a finding. A marker from anot
 reads `?` rather than being guessed at, because `os.kill(pid, 0)` there would answer about
 whichever local process holds that number.
 
-**Deleting `.incomplete/` is safe, and nothing in the package ever cleans it for you.** No
-TTL, no cap, no prune command — so on a machine that has had a few hundred SIGKILLs the
-markers accumulate. `show` prints the ten newest and says how many it did not show, but the
-directory itself only shrinks if you remove it:
+**Deleting `.incomplete/` is safe.** The `started` line is what makes a killed run
+permanent, and the pid and host it carries are what decide `RUNNING` from `INTERRUPTED` — so
+removing every marker changes nothing a reader sees. Verified rather than asserted: the same
+killed run reports `INTERRUPTED … pid 330615` before and after the directory is removed. What
+you lose is the fast path, not the answer.
+
+Nothing else removes a marker: `__exit__` deletes its own and there is no TTL, so on a
+machine that has had a few hundred SIGKILLs they accumulate. `show` prints the ten newest and
+says how many it did not show; `prune` is how the directory actually shrinks.
 
 ```bash
-rm -r provenance/.incomplete      # safe: the finding is in the history, not here
+$ python -m runprov prune --older-than 30d --dry-run
+# would remove 412 in-flight marker(s) from provenance/.incomplete
+#     0f3a91c2.json
+#     … and 402 more
+#   1 still RUNNING on this host — kept, the marker is the live evidence
+#   6 from another host, so liveness cannot be checked here — kept (--other-hosts removes
+#     them anyway)
 ```
 
-The `started` line is what makes a killed run permanent, and the pid and host it carries are
-what decide `RUNNING` from `INTERRUPTED` — so removing every marker changes nothing a reader
-sees. Verified rather than asserted: the same killed run reports `INTERRUPTED … pid 330615`
-before and after `rm -r`. What you lose is the fast path, not the answer.
+**`prune` deletes strictly less than `rm -r` does, which is the only reason it is worth
+having.** It removes only markers it can positively call `INTERRUPTED`; it never leaves the
+`.incomplete` directory, checked per file, so a symlink planted there cannot redirect it; and
+it only touches files that parse as runprov markers — anything else in there is counted and
+left alone. Drop `--dry-run` to do it, `--older-than` to keep the recent ones, `--other-hosts`
+to include the `?` rows, and `python -m runprov show --forget-markers` to clear them straight
+after reading the page.
+
+The one thing it will not do is guess. A marker from another host, or one whose `started_utc`
+will not parse, is kept and counted with the reason printed — "we could not look" is not a
+licence to delete. `rm -r provenance/.incomplete` remains correct and remains documented; it
+is simply the blunter of the two.
 
 If `provenance/` is tracked in git — which the README recommends — markers show up as
 untracked files carrying a host, a pid and a working directory. `.incomplete/` belongs in
