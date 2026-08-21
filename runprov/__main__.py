@@ -55,6 +55,7 @@ import subprocess
 import sys
 import typing
 
+from . import prune as prune_mod
 from . import show as show_mod
 from .hashing import PIN_DIGEST_CHARS
 from .project import active
@@ -994,7 +995,7 @@ def _report_in_flight(path: pathlib.Path) -> None:
     if len(ordered) > MARKERS_SHOWN:
         out.append(
             f"#   … and {len(ordered) - MARKERS_SHOWN} more, oldest not shown. "
-            f"`rm -r {path.parent / '.incomplete'}` is safe — see the README."
+            f"`runprov prune` clears the ones that describe nothing running."
         )
     print("\n".join(out), file=sys.stderr)
     n = sum(1 for r in pending if r.get("state") == show_mod.INTERRUPTED)
@@ -1006,6 +1007,57 @@ def _report_in_flight(path: pathlib.Path) -> None:
             f"exactly like a completed run's output.",
             file=sys.stderr,
         )
+
+
+def _forget(
+    directory: pathlib.Path,
+    older_than: float | None = None,
+    *,
+    other_hosts: bool = False,
+    dry: bool = False,
+) -> int:
+    """Do the prune and say what happened. Shared by `prune` and `show --forget-markers`.
+
+    ONE DECISION PROCEDURE, TWO DOORS. The flag on `show` is not a second implementation —
+    it is this function, so the two cannot drift into deleting different things, and there
+    is one containment check to review rather than two.
+    """
+    p = prune_mod.plan(directory, older_than=older_than, other_hosts=other_hosts)
+    gone, problems = (None, []) if dry else prune_mod.apply(p)
+    print(prune_mod.render(p, gone, directory), file=sys.stderr)
+    for msg in problems:
+        print(f"#   {msg}", file=sys.stderr)
+    return 1 if problems else 0
+
+
+def _prune(args: argparse.Namespace) -> int:
+    """`prune`, the only command in this package that removes a file it did not just write.
+
+    DERIVED FROM THE HISTORY BEING READ, like `_report_in_flight`: `--log somewhere/else`
+    prunes the markers belonging to THAT history. The directory is `.incomplete` beside it,
+    which is `Project.resolved_incomplete_dir`'s rule, spelled here from the same path the
+    banner printed rather than from the ambient project — so what the banner complained
+    about is what this clears.
+
+    NO CONFIRMATION PROMPT, deliberately. The README already documents `rm -r` on this
+    directory as safe, and this command deletes a strict subset of what that `rm` deletes;
+    adding friction to the safer of the two tools would be theatre rather than caution.
+    `--dry-run` is there for a user who wants to look first, and what makes this safe is the
+    containment check and the RUNNING skip, not a question nobody reads.
+    """
+    path = pathlib.Path(args.log) if args.log else active().resolved_run_log()
+    try:
+        older = prune_mod.parse_age(args.older_than) if args.older_than else None
+    except ValueError as exc:
+        # A MESSAGE, NOT A TRACEBACK, and exit 2 like every other usage failure here.
+        print(f"  runprov prune: {exc}", file=sys.stderr)
+        return 2
+    return _forget(
+        path.parent / ".incomplete",
+        older,
+        other_hosts=args.other_hosts,
+        dry=args.dry_run,
+    )
 
 
 def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
@@ -1293,6 +1345,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="with --stale/--rehash, exit 1 if any artifact is STALE, GONE or MODIFIED",
     )
+    # THE ONLY THING `show` DOES THAT IS NOT LOOKING, and it is applied AFTER the page has
+    # been rendered, in `main`, rather than inside `_show`. That keeps the promise in
+    # `_show`'s own docstring — "it writes nothing, by design" — true of the function as
+    # well as of the prose, and it means the reader sees the markers counted on the page
+    # before the ones that describe nothing running are cleared out from under them.
+    sh.add_argument(
+        "--forget-markers",
+        action="store_true",
+        help="after the page, remove in-flight markers that describe nothing running",
+    )
     ex = sub.add_parser("exec", help="run a non-Python command AS a recorded run")
     ex.add_argument("--name", default=None, help="the step name (default: the program's)")
     ex.add_argument("--input", action="append", default=[], help="repeatable")
@@ -1312,6 +1374,20 @@ def main(argv: list[str] | None = None) -> int:
     # with SUPPRESS and never read, it was a flag that did nothing and said nothing.
     vf.add_argument("--log", default=None, help=argparse.SUPPRESS)
     vf.add_argument("--format", choices=("text", "json"), default="text")
+    pr = sub.add_parser("prune", help="remove in-flight markers that describe nothing running")
+    pr.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
+    pr.add_argument(
+        "--older-than",
+        default=None,
+        metavar="AGE",
+        help="only markers this old or older: 30d, 12h, 90m (default: every eligible one)",
+    )
+    pr.add_argument(
+        "--other-hosts",
+        action="store_true",
+        help="also remove markers from OTHER hosts, whose liveness cannot be checked here",
+    )
+    pr.add_argument("--dry-run", action="store_true", help="say what would go; remove nothing")
     args = ap.parse_args(argv)
 
     if args.cmd == "exec":
@@ -1319,6 +1395,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "verify":
         return _verify(args)
+
+    # BEFORE THE "no run history" CHECK, because markers outlive the history they name: a
+    # deleted `runs.jsonl`, a run started with no `provenance=`, a `--log` pointed at a path
+    # that was never written. Those are precisely the markers nothing else will ever clear.
+    if args.cmd == "prune":
+        return _prune(args)
 
     path = pathlib.Path(args.log) if args.log else active().resolved_run_log()
     if not path.is_file():
@@ -1337,6 +1419,14 @@ def main(argv: list[str] | None = None) -> int:
             f"  wrong file to look in.",
             file=sys.stderr,
         )
+        # THE MARKERS ARE STILL THERE EVEN THOUGH THE HISTORY IS NOT, so the flag must work
+        # here too — and this is the path where the directory is most likely to be the only
+        # thing left. Accepting `--forget-markers` and silently doing nothing here would be
+        # the silent no-op this package refuses everywhere else. After the message, for the
+        # same reason it runs after the page: what a reader was told is what was true when
+        # they were told it.
+        if args.cmd == "show" and args.forget_markers:
+            _forget(path.parent / ".incomplete")
         return 1
 
     # `show` STREAMS rather than materialising, and it is the command that most needs to:
@@ -1349,10 +1439,17 @@ def main(argv: list[str] | None = None) -> int:
     # failures and argparse's own, and is distinct from 1, which is a finding about the data.
     if args.cmd in ("show", "log"):
         try:
-            return _show(args, path) if args.cmd == "show" else _log(args, path)
+            code = _show(args, path) if args.cmd == "show" else _log(args, path)
         except UsageError as exc:
             print(f"  runprov {args.cmd}: {exc}", file=sys.stderr)
             return 2
+        if args.cmd == "show" and args.forget_markers:
+            # `show`'s EXIT CODE IS A FINDING ABOUT THE DATA and this must not overwrite it:
+            # `--stale --exit-code` returning 1 means an artifact is stale, and a prune that
+            # went perfectly cannot turn that into a pass. A file that would not unlink is
+            # reported in prose, on the line that names it.
+            _forget(path.parent / ".incomplete")
+        return code
 
     # LINEAGE, and it STREAMS like everything else here. The comment that stood in this
     # place said it "genuinely needs every record at once ... there is nothing to stream

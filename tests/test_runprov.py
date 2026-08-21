@@ -18,6 +18,7 @@ import builtins
 import concurrent.futures
 import contextlib
 import dataclasses
+import datetime as dt
 import errno
 import gc
 import gzip
@@ -54,6 +55,7 @@ import runprov  # noqa: E402
 import runprov.__main__ as cli  # noqa: E402
 import runprov._report  # noqa: E402
 import runprov.environment  # noqa: E402
+import runprov.prune  # noqa: E402
 import runprov.terminal  # noqa: E402
 import runprov.watch  # noqa: E402
 
@@ -9857,6 +9859,31 @@ def test_every_statement_of_the_repair_script_count_agrees():
     assert len(found) == 1, f"one fact, {len(found)} different numbers: {found}"
 
 
+def _cli_subcommands() -> list[str]:
+    """Every name passed to `sub.add_parser(...)` in `__main__.py`, read from the source.
+
+    By AST rather than by importing and poking at argparse internals, because the parser is
+    built inside `main()` and there is no factory to call — and `_SubParsersAction.choices`
+    is private API that has changed shape between versions.
+    """
+    tree = ast.parse((_repo_root() / "runprov" / "__main__.py").read_text(encoding="utf-8"))
+    found = [
+        node.args[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_parser"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    ]
+    # NOT VACUOUS. An `ast` walk that quietly matches nothing turns every test built on it
+    # into a pass — A-13's defect exactly, where a `get_type_hints` call raised on its first
+    # name and a bare `except` skipped all of them, and three mutations survived.
+    assert set(found) >= {"log", "lineage", "show", "exec", "verify"}, found
+    return found
+
+
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():
     """L-70. `runprov exec` is a top-level subcommand and sat as an H3 CHILD of "The
     notebook: `show`" — a section about a read-only viewer. A reader scanning the rendered
@@ -9864,8 +9891,14 @@ def test_no_cli_subcommand_is_documented_inside_another_ones_section():
     renders that outline from the same file, permanently, at upload.
 
     Asserted structurally rather than by line number: any heading that introduces
-    `runprov <sub>` must not sit under the section of a DIFFERENT subcommand."""
-    subs = ["log", "lineage", "show", "exec", "verify"]
+    `runprov <sub>` must not sit under the section of a DIFFERENT subcommand.
+
+    THE LIST IS READ OFF THE PARSER, not typed here. It was a literal five names, so
+    `prune` — added a day after this test last passed — was outside the rule the docstring
+    claims to enforce, and the test would have gone on passing however badly the new
+    subcommand was filed. A check whose scope is a hand-maintained copy of the thing it
+    checks stops checking the moment the thing grows."""
+    subs = _cli_subcommands()
     named, current = [], None
     for level, text in _readme_headings():
         here = [s for s in subs if f"runprov {s}`" in text or f"`{s}`" in text]
@@ -15295,3 +15328,305 @@ def test_our_own_teardown_is_not_refused_by_the_after_exit_guard(tmp_path, monke
     line = _lines(log)[-1]
     assert line["environment_snapshot"]["path"].endswith(".txt")
     assert (tmp_path / "p.json").is_file()
+
+
+# --------------------------------------------------------------------------- prune (A-14b)
+def _marker(d: pathlib.Path, name: str, **kw) -> pathlib.Path:
+    """One in-flight marker, defaulting to the shape `_mark_in_flight` writes."""
+    rec = {
+        "run_uid": name,
+        "script": "fetch",
+        "started_utc": "2020-01-01T00:00:00Z",
+        "pid": _never_a_pid(),
+        "host": runprov.show.platform.node(),
+        **kw,
+    }
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{name}.json"
+    f.write_text(json.dumps(rec), encoding="utf-8")
+    return f
+
+
+def test_prune_removes_only_what_it_can_call_interrupted(tmp_path):
+    """The safety property the whole command rests on. `rm -r` removes the lot; this removes
+    only markers it can positively call INTERRUPTED, because the other two answers are `the
+    run is alive` and `I cannot tell from here` — and turning "cannot tell" into a deletion
+    is the guess this package exists to refuse.
+
+    It matters most for the shape that appends no history line: a run started without
+    `provenance=` has its marker as the ONLY evidence it ever existed."""
+    d = tmp_path / ".incomplete"
+    dead = _marker(d, "dead")
+    alive = _marker(d, "alive", pid=os.getpid())
+    far = _marker(d, "far", pid=1, host="a-compute-node")
+
+    p = runprov.prune.plan(d)
+    assert p.remove == [dead], f"{[f.name for f in p.remove]}"
+    assert (p.running, p.untellable) == (1, 1)
+
+    gone, problems = runprov.prune.apply(p)
+    assert (gone, problems) == (1, [])
+    assert not dead.exists()
+    assert alive.is_file() and far.is_file(), "a live run and another host's keep their marker"
+
+
+def test_prune_other_hosts_is_the_users_assertion_not_the_commands(tmp_path):
+    """A cluster's `.incomplete` is mostly `?`, so refusing them for ever would make the
+    command useless where it is most needed. The escape hatch exists — it is just explicit,
+    and it never covers a run that is demonstrably alive HERE."""
+    d = tmp_path / ".incomplete"
+    far = _marker(d, "far", pid=1, host="a-compute-node")
+    alive = _marker(d, "alive", pid=os.getpid())
+
+    assert runprov.prune.plan(d, other_hosts=True).remove == [far]
+    assert alive.is_file(), "--other-hosts must not reach a live local run"
+
+
+def test_prune_will_not_delete_what_it_cannot_date(tmp_path):
+    """`--older-than` selects by the marker's own `started_utc`. A marker whose stamp will
+    not parse has an unknown age, and "we could not look" is not a licence to delete — the
+    same rule the `?` state follows one branch above."""
+    d = tmp_path / ".incomplete"
+    old = _marker(d, "old")
+    young = _marker(d, "young", started_utc="2026-08-21T12:00:00Z")
+    bad = _marker(d, "bad", started_utc="not-a-stamp")
+    typed = _marker(d, "typed", started_utc=17)
+
+    now = dt.datetime(2026, 8, 21, 12, 0, 30, tzinfo=dt.timezone.utc)
+    p = runprov.prune.plan(d, older_than=runprov.prune.parse_age("30d"), now=now)
+    assert p.remove == [old]
+    assert (p.too_new, p.undateable) == (1, 2)
+    assert young.is_file() and bad.is_file() and typed.is_file()
+
+
+def test_prune_leaves_alone_everything_that_is_not_its_marker(tmp_path):
+    """A command that deletes must be NARROWER than the `rm -r` it replaces, or it is not
+    worth having. Four ways a `*.json` in that directory is not ours, and all four survive."""
+    d = tmp_path / ".incomplete"
+    ours = _marker(d, "ours")
+    (d / "torn.json").write_text("{not json", encoding="utf-8")
+    (d / "list.json").write_text("[1, 2, 3]", encoding="utf-8")
+    (d / "other.json").write_text('{"hello": 1}', encoding="utf-8")
+    (d / "adir.json").mkdir()
+    (d / "notes.txt").write_text("keep me", encoding="utf-8")
+
+    p = runprov.prune.plan(d)
+    assert p.remove == [ours] and p.foreign == 4
+    runprov.prune.apply(p)
+    for name in ("torn.json", "list.json", "other.json", "adir.json", "notes.txt"):
+        assert (d / name).exists(), f"{name} was not ours to remove"
+
+
+@requires_symlinks
+def test_prune_will_not_follow_a_symlink_out_of_the_directory(tmp_path):
+    """A NAME UNDER A DIRECTORY IS NOT A PATH INSIDE IT. The containment check is per file
+    and it is the same rule `verify` applies to a pinned name (A-08). Without it, anything
+    that can write to `.incomplete` — a shared scratch directory, a restored archive —
+    chooses what a later `runprov prune` unlinks."""
+    d = tmp_path / ".incomplete"
+    d.mkdir()
+    outside = tmp_path / "precious.json"
+    outside.write_text(json.dumps({"run_uid": "x", "pid": _never_a_pid()}), encoding="utf-8")
+    (d / "sneaky.json").symlink_to(outside)
+    ours = _marker(d, "ours")
+
+    p = runprov.prune.plan(d)
+    assert p.remove == [ours] and p.foreign == 1
+    runprov.prune.apply(p)
+    assert outside.is_file() and (d / "sneaky.json").is_symlink()
+
+
+def test_prune_survives_a_directory_it_cannot_look_at(tmp_path, monkeypatch):
+    """An unresolvable or absent directory prunes nothing and says nothing alarming. The
+    exception family is `(OSError, RuntimeError)` because a symlink loop raises the SECOND
+    one from `resolve()` — the defect class L-98 swept four times and this audit twice more."""
+    assert runprov.prune.plan(tmp_path / "never").remove == []
+    assert runprov.prune.plan(tmp_path / "never") == runprov.prune.Plan([], 0, 0, 0, 0, 0)
+
+    d = tmp_path / ".incomplete"
+    _marker(d, "dead")
+    for boom in (OSError("nope"), RuntimeError("symlink loop")):
+        monkeypatch.setattr(
+            pathlib.Path, "resolve", lambda self, *a, _e=boom, **k: (_ for _ in ()).throw(_e)
+        )
+        assert runprov.prune.plan(d) == runprov.prune.Plan([], 0, 0, 0, 0, 0)
+    monkeypatch.undo()
+    assert (d / "dead.json").is_file(), "nothing may be removed on a path that could not look"
+
+
+def test_prune_reports_the_file_it_could_not_remove_and_keeps_going(tmp_path, monkeypatch):
+    """One unremovable file must not stop the other four, and the user must be told WHICH."""
+    d = tmp_path / ".incomplete"
+    for i in range(5):
+        _marker(d, f"dead{i}")
+    real = pathlib.Path.unlink
+
+    def refuse(self, *a, **k):
+        if self.name == "dead2.json":
+            raise PermissionError(13, "Permission denied")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", refuse)
+    gone, problems = runprov.prune.apply(runprov.prune.plan(d))
+    assert gone == 4 and len(problems) == 1 and "dead2.json" in problems[0]
+
+
+def test_parse_age_refuses_a_bare_number(tmp_path):
+    """`--older-than 30` is far likelier to mean thirty days than thirty seconds, and the
+    difference between those two guesses is deleting nothing and deleting everything."""
+    assert runprov.prune.parse_age("30d") == 30 * 86400
+    assert runprov.prune.parse_age("90m") == 5400
+    assert runprov.prune.parse_age(" 12H ") == 12 * 3600
+    for bad in ("30", "d", "", "xd", "-1d"):
+        with pytest.raises(ValueError):
+            runprov.prune.parse_age(bad)
+
+
+def test_prune_dry_run_names_the_files_and_removes_none(tmp_path, capsys):
+    """A `--dry-run` that says only "would remove 412" is not a preview — nobody can check
+    it against anything — and an uncheckable preview is worse than none, because it looks
+    like diligence. The listing is capped for the reason the banner is."""
+    d = tmp_path / ".incomplete"
+    for i in range(runprov.prune.LISTED + 3):
+        _marker(d, f"dead{i:02d}")
+    log = tmp_path / "runs.jsonl"
+
+    assert cli.main(["prune", "--log", str(log), "--dry-run"]) == 0
+    err = capsys.readouterr().err
+    assert f"would remove {runprov.prune.LISTED + 3}" in err
+    assert err.count("dead") == runprov.prune.LISTED, "the listing must be capped"
+    assert "… and 3 more" in err
+    assert len(list(d.glob("*.json"))) == runprov.prune.LISTED + 3, "a dry run removed files"
+
+    assert cli.main(["prune", "--log", str(log)]) == 0
+    assert f"removed {runprov.prune.LISTED + 3}" in capsys.readouterr().err
+    assert list(d.glob("*.json")) == []
+
+
+def test_prune_says_why_each_survivor_survived(tmp_path, capsys):
+    """ "removed 0" with no explanation is the silence this package refuses everywhere else:
+    a user staring at it needs to know WHICH of the four reasons it was."""
+    d = tmp_path / ".incomplete"
+    _marker(d, "alive", pid=os.getpid())
+    _marker(d, "far", pid=1, host="a-compute-node")
+    _marker(d, "young", started_utc="2999-01-01T00:00:00Z")
+    _marker(d, "bad", started_utc="not-a-stamp")
+    (d / "other.json").write_text('{"hello": 1}', encoding="utf-8")
+
+    assert cli.main(["prune", "--log", str(tmp_path / "runs.jsonl"), "--older-than", "1d"]) == 0
+    err = capsys.readouterr().err
+    assert "removed 0" in err
+    for why in ("still RUNNING", "another host", "younger than", "started_utc", "not runprov"):
+        assert why in err, f"no reason given for {why!r}: {err}"
+    assert len(list(d.glob("*.json"))) == 5
+
+    for f in d.glob("*.json"):
+        f.unlink()
+    assert cli.main(["prune", "--log", str(tmp_path / "runs.jsonl")]) == 0
+    assert "nothing to do." in capsys.readouterr().err
+
+
+def test_prune_reports_a_bad_duration_as_a_usage_error(tmp_path, capsys):
+    """Exit 2, like every other usage failure in this CLI, and a message rather than a
+    traceback. Distinct from 1, which is a finding about the data."""
+    assert cli.main(["prune", "--log", str(tmp_path / "runs.jsonl"), "--older-than", "soon"]) == 2
+    assert "expected a number and a unit" in capsys.readouterr().err
+
+
+def test_prune_exits_1_when_a_marker_would_not_go(tmp_path, capsys, monkeypatch):
+    d = tmp_path / ".incomplete"
+    _marker(d, "dead")
+    monkeypatch.setattr(
+        pathlib.Path,
+        "unlink",
+        lambda self, *a, **k: (_ for _ in ()).throw(PermissionError(13, "denied")),
+    )
+    assert cli.main(["prune", "--log", str(tmp_path / "runs.jsonl")]) == 1
+    assert "could not remove dead.json" in capsys.readouterr().err
+
+
+def test_show_forget_markers_runs_after_the_page_and_keeps_the_finding(tmp_path, capsys):
+    """The flag's two promises. `show` still renders the page it would have rendered — the
+    marker is COUNTED on it before it is cleared out from under the reader — and the finding
+    survives, because the `started` line is what makes an interruption permanent."""
+    log = tmp_path / "runs.jsonl"
+    log.write_text(
+        json.dumps(
+            {
+                "schema": runprov.run.START_SCHEMA,
+                "run_uid": "killed",
+                "run_id": "r",
+                "script": "fetch",
+                "generation": "g",
+                "started_utc": "2020-01-01T00:00:00Z",
+                "pid": _never_a_pid(),
+                "host": runprov.show.platform.node(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    d = tmp_path / ".incomplete"
+    _marker(d, "killed")
+
+    assert cli.main(["show", "--log", str(log), "--forget-markers"]) == 0
+    err = capsys.readouterr().err
+    assert "INTERRUPTED" in err, "the page must be rendered BEFORE the markers go"
+    assert err.index("INTERRUPTED") < err.index("removed 1"), "the prune must come after"
+    assert list(d.glob("*.json")) == []
+
+    assert cli.main(["show", "--log", str(log)]) == 0
+    assert "INTERRUPTED" in capsys.readouterr().err, "the finding must outlive the index"
+
+
+def test_show_forget_markers_works_where_there_is_no_history_at_all(tmp_path, capsys):
+    """The path where the directory is most likely to be the only thing left: a deleted
+    `runs.jsonl`, a `--log` pointed somewhere never written, a run started with no
+    `provenance=`. Accepting the flag and silently doing nothing here would be the silent
+    no-op this package refuses everywhere else."""
+    d = tmp_path / ".incomplete"
+    _marker(d, "orphan")
+    log = tmp_path / "never-written.jsonl"
+
+    assert cli.main(["show", "--log", str(log), "--forget-markers"]) == 1, "still 'no history'"
+    err = capsys.readouterr().err
+    assert "no run history" in err and "removed 1" in err
+    assert list(d.glob("*.json")) == []
+
+
+def test_show_forget_markers_never_overwrites_the_exit_code(tmp_path, capsys):
+    """`show --stale --exit-code` returning 1 means an artifact is stale. A prune that went
+    perfectly cannot turn that into a pass: the exit code is a finding about the DATA, and
+    housekeeping has no vote in it."""
+    root = tmp_path
+    # GONE rather than STALE, because it is the finding this fixture can build without
+    # depending on a sidecar or on mtime resolution — A-10's rule, that a test is only as
+    # strong as the states its fixture can actually reach. `out.txt` is never written.
+    src = root / "in.txt"
+    src.write_text("a", encoding="utf-8")
+    log = root / "runs.jsonl"
+    log.write_text(
+        json.dumps(
+            {
+                "schema": runprov.HISTORY_SCHEMA,
+                "run_uid": "u",
+                "run_id": "r",
+                "script": "s.py",
+                "generation": "g",
+                "started_utc": "2020-01-01T00:00:00Z",
+                "finished_utc": "2020-01-01T00:00:01Z",
+                "status": "ok",
+                "cwd": str(root),
+                "inputs": [{"path": "in.txt", "sha256": "0" * 64}],
+                "outputs": [{"path": "out.txt", "sha256": "1" * 64}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _marker(root / ".incomplete", "dead")
+
+    code = cli.main(["show", "--log", str(log), "--stale", "--exit-code", "--forget-markers"])
+    err = capsys.readouterr().err
+    assert "removed 1" in err, "the prune must still have happened"
+    assert code == 1, f"a clean prune must not mask a staleness finding (got {code})"
