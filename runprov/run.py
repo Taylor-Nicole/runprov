@@ -80,7 +80,7 @@ from .project import (
 )
 from .show import render_yaml
 from .terminal import Capture
-from .watch import attach, detach, unregistered
+from .watch import attach, detach, own, unregistered
 
 # The record format, named and versioned. A consumer -- a script, a dashboard, an agent
 # reading the history -- can branch on this instead of guessing from which keys happen to
@@ -1146,6 +1146,15 @@ class Run:
         # THE RECORD FIRST, THE INDEX SECOND, and the order is the guarantee. A kill between
         # the two leaves the history correct and the marker merely absent; the reverse would
         # leave a marker pointing at a run the record has never heard of.
+        # OURS, DECLARED AS SOON AS THEY ARE KNOWN, not subtracted at exit. The watcher
+        # observes process-wide, so a run that learns its own paths only at `__exit__` leaves
+        # every CONCURRENT run reporting them — see `watch._OURS`.
+        own(
+            self.project.resolved_run_log(),
+            self.project.resolved_transformation_log(),
+            self.provenance_path,
+            self._yaml_twin(pathlib.Path(self.provenance_path)) if self.provenance_path else None,
+        )
         self._append_start()
         self._mark_in_flight()
         if self.project.warn_unregistered_reads:
@@ -1228,6 +1237,7 @@ class Run:
             d = self.project.resolved_incomplete_dir()
             d.mkdir(parents=True, exist_ok=True)
             self._in_flight = d / f"{self.record['run_uid']}.json"
+            own(self._in_flight)
             self._in_flight.write_text(
                 json.dumps(
                     {
@@ -2673,6 +2683,7 @@ class Run:
         self._written = True
         if not self._wrote(p):  # so __exit__ can correct THIS file, kwarg or not
             self._written_paths.append(p)
+            own(p)  # every path this run persists is ours, from the moment it is written
         # THE RETURN VALUE IS USED, not decorative. `_persist`'s own docstring says the bool
         # means "the record is on disk", and discarding it made the confirmation below print
         # `provenance -> <path>` over a file that was never written -- measured with a
@@ -2775,6 +2786,7 @@ class Run:
         if not self.project.write_yaml_sidecar:
             return
         try:
+            own(self._yaml_twin(p))
             self._yaml_twin(p).write_text(render_yaml(_jsonable(self.record)), encoding="utf-8")
         except OSError as exc:  # guards-ok: a view is never the reason a record is lost
             diagnostic(f"  WARNING: could not write the YAML sidecar beside {p}: {exc}")
