@@ -189,46 +189,11 @@ def _is_start(rec: dict[str, typing.Any]) -> bool:
     run count, `log` would print an empty entry before each real one, and `lineage` would
     walk a record with no inputs and no outputs.
 
-    The line is not noise, though, and `_unfinished` is where it is read: a start whose uid
-    never gets a record IS the finding, and it is the only permanent evidence that a
+    The line is not noise, though, and `_InFlightScan` is where it is read: a start whose
+    uid never gets a record IS the finding, and it is the only permanent evidence that a
     SIGKILLed run ever existed.
     """
     return bool(rec.get("schema") == START_SCHEMA)
-
-
-def _unfinished(
-    path: pathlib.Path, finished: set[str] | None = None
-) -> list[dict[str, typing.Any]]:
-    """Runs whose start is on record and whose ending never arrived.
-
-    ONE STREAMING PASS, AND THE MEMORY IS THE FINDING RATHER THAN THE HISTORY. A start adds
-    its uid to the open set and the matching record removes it, so what is held is the set
-    of UNFINISHED runs — bounded by how many were interrupted, not by how many ever ran. On
-    a healthy 100,000-run history that set is empty at every point in the pass.
-
-    That property is why this is not "load the history and group by uid": `show` streams
-    deliberately (measured, 392 MB materialised against 3 MB streamed on a 91 MB history)
-    and a reader that needed every uid at once would give that back.
-    """
-    open_runs: dict[str, dict[str, typing.Any]] = {}
-    for rec in _stream(path):
-        if rec is None:
-            continue
-        uid = str(rec.get("run_uid") or "")
-        if not uid:
-            continue  # a v1 record predates run_uid and cannot be paired either way
-        if _is_start(rec):
-            open_runs[uid] = rec
-        else:
-            open_runs.pop(uid, None)
-            # THE OTHER HALF OF THE SAME PASS, and it used to be thrown away. Knowing which
-            # runs ENDED is what lets a caller ignore a marker left behind by one of them —
-            # see `_report_in_flight`. An out-parameter rather than a second return value, and
-            # rather than a second read of the history: `_counted` takes its `bad` counter the
-            # same way, for the same reason.
-            if finished is not None:
-                finished.add(uid)
-    return list(open_runs.values())
 
 
 def _load(path: pathlib.Path) -> tuple[list[dict[str, typing.Any]], int]:
@@ -892,12 +857,30 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
     return 0
 
 
-def _counted(path: pathlib.Path, bad: list[int]) -> typing.Iterator[dict[str, typing.Any]]:
-    """The history, streamed, with unreadable lines counted into `bad` rather than dropped."""
+def _counted(
+    path: pathlib.Path,
+    bad: list[int],
+    scan: _InFlightScan | None = None,
+) -> typing.Iterator[dict[str, typing.Any]]:
+    """The history, streamed, with unreadable lines counted into `bad` rather than dropped.
+
+    `scan` IS FED THE START LINES THIS DROPS, which is the whole of A-20. The project page
+    streams every record here and throws the `started` lines away; `_report_in_flight` then
+    read the entire file a SECOND time to recover exactly those lines. Measured on a 56 MB,
+    60,000-run history: 2.63 s for the pass that has to happen, 1.61 s for the one that did
+    not — **+61%**, on a file that by design only grows.
+
+    ONLY PASS A SCAN TO A PASS THAT IS EXHAUSTED. `show <target>` stops early at `--limit`
+    and `--stale` makes a second pass of its own; a scan fed by either would be missing
+    records and would report runs as unfinished that ended further down the file.
+    """
     for rec in _stream(path):
         if rec is None:
             bad[0] += 1
-        elif not _is_start(rec):
+            continue
+        if scan is not None:
+            scan.saw(rec)
+        if not _is_start(rec):
             yield rec
 
 
@@ -910,108 +893,145 @@ def _counted(path: pathlib.Path, bad: list[int]) -> typing.Iterator[dict[str, ty
 MARKERS_SHOWN = 10
 
 
-def _report_in_flight(path: pathlib.Path) -> None:
-    """Say which runs started and have no ending on record. Nothing if there are none.
+class _InFlightScan:
+    """Which runs started and have no ending on record — accumulated as the page streams.
 
-    DRIVEN BY THE HISTORY, ENRICHED BY THE MARKERS, and that order is the whole design. The
-    append-only history is what makes the finding permanent: a `started` line whose
-    `run_uid` never gets a record is evidence that survives anything short of rewriting the
-    record, including deleting `.incomplete`. The markers add the one thing the history
-    cannot know — whether the process is still alive — so a run in progress reads as RUNNING
-    rather than as a death.
+    THE SECOND PASS IS THE DEFECT THIS REMOVES. `_report_in_flight` used to call
+    `_unfinished`, which streamed the whole history again to recover the `started` lines the
+    project page's own pass had just dropped. Measured on a 56 MB, 60,000-run history:
+    2.63 s for the pass that must happen against 1.61 s for the one that need not, **+61%**,
+    on a file that by design only grows. `bad[0]` was already accumulated this way and the
+    docstring for `_unfinished`'s `finished` out-parameter already gave the reason — "an
+    out-parameter rather than a second return value, and rather than a second read of the
+    history".
 
-    A start with no marker and no ending is INTERRUPTED without further enquiry: either the
-    marker was cleaned away or it was never written, and both mean the same thing here.
+    MARKERS AT CONSTRUCTION, RECORDS AS THEY STREAM, AND THAT ORDER IS LOAD-BEARING. It is
+    A-05's fix and folding the passes must not undo it. Reading the history FIRST leaves a
+    window: a run that completes between the two reads is in the open set (its record was
+    appended after the pass hit EOF) and has no marker (`_clear_in_flight` has unlinked it),
+    so it is announced as a SIGKILL death while its `status: ok` record sits in the file just
+    read. Constructing this before the page's pass begins keeps markers at T1 and records at
+    T2, exactly as before — the remaining window belongs to a run that STARTS between them,
+    which has no marker and a live pid, and the liveness check below gets that right.
 
-    DERIVED FROM THE HISTORY BEING READ, so `--log somewhere/else.jsonl` reports what
-    belongs to THAT history rather than to whichever project this shell stands in. Called
-    even when the file does not exist, because a marker beside a missing history is not
-    "nothing recorded" — it is a run that never got to write one.
+    WHAT IS HELD IS THE FINDING, NOT THE HISTORY. A start adds its uid, the matching record
+    removes it, so the open set is bounded by how many runs were interrupted rather than by
+    how many ever ran — on a healthy history it is empty at every point in the pass. That is
+    why `show` can still stream: a reader needing every uid at once would give that back.
     """
-    # MARKERS FIRST, HISTORY SECOND, and the order is the fix. Reading the history first left
-    # a window: a run that completed between the two reads was in `unfinished` (its record
-    # was appended after the history pass hit EOF) and had no marker (`_clear_in_flight` had
-    # already unlinked it), so it was announced as a SIGKILL death while its `status: ok`
-    # record sat in the file just read. Reversed, the same run has its marker at T1 and its
-    # ending at T2 — paired, and correctly not reported. The window now belongs to a run that
-    # STARTS between the reads, which has no marker and a live pid, and the liveness check
-    # below gets that right.
-    markers = {str(m.get("run_uid")): m for m in in_flight(path.parent / ".incomplete")}
-    finished: set[str] = set()
-    unfinished = _unfinished(path, finished) if path.is_file() else []
 
-    pending: list[dict[str, typing.Any]] = []
-    for rec in unfinished:
-        uid = str(rec.get("run_uid"))
-        marker = markers.pop(uid, None)
-        # NO MARKER IS NOT A DEATH. It used to default to INTERRUPTED, which conflated three
-        # different situations: the marker was cleaned away, it was never written, or the run
-        # is STILL GOING. `_mark_in_flight` tolerates an OSError, warns and lets the run
-        # continue, so the package itself produces "start line present, marker absent, process
-        # alive" — and `.incomplete` is documented as deletable. The start line carries `pid`
-        # and `host` precisely so this question can be answered; nobody was asking it.
-        state = marker["state"] if marker else show_mod.liveness(rec)
-        pending.append({**rec, "state": state})
-    # A MARKER THE HISTORY HAS NEVER HEARD OF is still worth printing: it is what a run
-    # killed between its marker and its start line leaves.
-    #
-    # IT IS NO LONGER WHAT AN UNRECORDED RUN LEAVES, and this comment used to say it was —
-    # citing the behaviour as though it were the design. Two published documents said the
-    # opposite in bold, so `_mark_in_flight` now carries `_append_start`'s guard (A-15) and
-    # a run with no `provenance=` writes neither. The remaining case is the narrow one: a
-    # marker written at `__enter__` whose start line never reached the sink.
-    #
-    # A MARKER FOR A RUN THAT FINISHED IS NOT. `_clear_in_flight` tolerates an `OSError` — a
-    # read-only or full `.incomplete`, a stale NFS handle, a restored snapshot — so a marker
-    # can outlive the run that made it. Every such marker used to be announced as
-    # "INTERRUPTED ... ran no ending code at all", about a run whose `status: ok` record was
-    # in the file this function had JUST READ, two lines above where the alarm printed.
-    #
-    # The refutation was already in hand and was being discarded: the same streaming pass
-    # that pairs starts with endings knows every uid that ended. An over-report is better
-    # than an under-report, which is why this was tolerable — but not when the answer is
-    # already on the desk.
-    pending += [m for uid, m in markers.items() if uid not in finished]
-    if not pending:
-        return
+    def __init__(self, incomplete: pathlib.Path) -> None:
+        self.markers = {str(m.get("run_uid")): m for m in in_flight(incomplete)}
+        self.open: dict[str, dict[str, typing.Any]] = {}
+        self.finished: set[str] = set()
 
-    out = [f"# {len(pending)} run(s) STARTED with no ending recorded:"]
-    # NEWEST FIRST AND CAPPED. Nothing in this package removes a marker except the run that
-    # wrote it, and there is no TTL — so on any machine that has ever had a SIGKILL they
-    # accumulate for ever. Measured with 10,000 of them: 10,004 lines of banner above a
-    # FOUR-line page. The page is what the reader asked for and it was the part they could
-    # not see.
-    #
-    # THE COST IS THE BANNER, NOT THE SECONDS, and the row that raised this had the timing
-    # roughly 5x too high. Measured here: 0.9 s wall for the whole command at 10,000 markers,
-    # against 0.28 s empty. That is not worth stat-sorting and partial parsing to avoid, so
-    # this caps what is PRINTED and leaves the read alone — the counts below stay exact
-    # because they are computed over all of `pending`.
-    #
-    # Ten, and the same shape as `--exit-code`'s FAILING list, which caps at five: a count, a
-    # sample, and a line saying how much was not shown.
-    ordered = sorted(pending, key=lambda x: str(x.get("started_utc", "")), reverse=True)
-    for r in ordered[:MARKERS_SHOWN]:
-        where = "" if r.get("state") != show_mod.UNTELLABLE else f"  on {r.get('host', '?')}"
-        out.append(
-            f"#   {r.get('state', '?'):12} {r.get('script', '?')!s:20} "
-            f"{r.get('started_utc', '?')}  pid {r.get('pid', '?')}{where}"
-        )
-    if len(ordered) > MARKERS_SHOWN:
-        out.append(
-            f"#   … and {len(ordered) - MARKERS_SHOWN} more, oldest not shown. "
-            f"`runprov prune` clears the ones that describe nothing running."
-        )
-    print("\n".join(out), file=sys.stderr)
-    n = sum(1 for r in pending if r.get("state") == show_mod.INTERRUPTED)
-    if n:
-        print(
-            f"#   {n} of them ran no ending code at all — a SIGKILL, the OOM killer, a "
-            f"power loss or a node failure.\n"
-            f"#   Anything they wrote is on disk and is NOT in the history: it looks "
-            f"exactly like a completed run's output.",
-            file=sys.stderr,
-        )
+    def saw(self, rec: dict[str, typing.Any]) -> None:
+        uid = str(rec.get("run_uid") or "")
+        if not uid:
+            return  # a v1 record predates run_uid and cannot be paired either way
+        if _is_start(rec):
+            self.open[uid] = rec
+        else:
+            self.open.pop(uid, None)
+            # KNOWING WHICH RUNS ENDED is what lets a marker left behind by one of them be
+            # ignored — `_clear_in_flight` tolerates an OSError, so a marker can outlive its
+            # run. See `pending`.
+            self.finished.add(uid)
+
+    def consume(self, path: pathlib.Path) -> None:
+        """Stream the history myself. For callers with no pass of their own to ride on."""
+        if not path.is_file():
+            return
+        for rec in _stream(path):
+            if rec is not None:
+                self.saw(rec)
+
+    def pending(self) -> list[dict[str, typing.Any]]:
+        """Every run to report, each carrying the state to print for it."""
+        markers = dict(self.markers)
+        out: list[dict[str, typing.Any]] = []
+        for rec in self.open.values():
+            uid = str(rec.get("run_uid"))
+            marker = markers.pop(uid, None)
+            # NO MARKER IS NOT A DEATH. It used to default to INTERRUPTED, which conflated
+            # three different situations: the marker was cleaned away, it was never written,
+            # or the run is STILL GOING. `_mark_in_flight` tolerates an OSError, warns and
+            # lets the run continue, so the package itself produces "start line present,
+            # marker absent, process alive" — and `.incomplete` is documented as deletable.
+            # The start line carries `pid` and `host` precisely so this question can be
+            # answered; nobody was asking it.
+            out.append({**rec, "state": marker["state"] if marker else show_mod.liveness(rec)})
+        # A MARKER THE HISTORY HAS NEVER HEARD OF is still worth printing: it is what a run
+        # killed between its marker and its start line leaves.
+        #
+        # A MARKER FOR A RUN THAT FINISHED IS NOT. Every such marker used to be announced as
+        # "INTERRUPTED ... ran no ending code at all", about a run whose `status: ok` record
+        # was in the file this function had JUST READ. The refutation was already in hand and
+        # was being discarded: the same pass that pairs starts with endings knows every uid
+        # that ended.
+        out += [m for uid, m in markers.items() if uid not in self.finished]
+        return out
+
+    def report(self) -> None:
+        """Say which runs started and have no ending on record. Nothing if there are none.
+
+        DRIVEN BY THE HISTORY, ENRICHED BY THE MARKERS, and that order is the whole design.
+        The append-only history is what makes the finding permanent: a `started` line whose
+        `run_uid` never gets a record is evidence that survives anything short of rewriting
+        the record, including deleting `.incomplete`. The markers add the one thing the
+        history cannot know — whether the process is still alive — so a run in progress reads
+        as RUNNING rather than as a death.
+
+        A start with no marker and no ending is INTERRUPTED without further enquiry: either
+        the marker was cleaned away or it was never written, and both mean the same thing.
+        """
+        pending = self.pending()
+        if not pending:
+            return
+
+        out = [f"# {len(pending)} run(s) STARTED with no ending recorded:"]
+        # NEWEST FIRST AND CAPPED. Markers accumulate on any machine that has had a SIGKILL.
+        # Measured with 10,000 of them: 10,004 lines of banner above a FOUR-line page. The
+        # page is what the reader asked for and it was the part they could not see.
+        #
+        # THE COST IS THE BANNER, NOT THE SECONDS: 0.9 s wall for the whole command at 10,000
+        # markers, against 0.28 s empty. So this caps what is PRINTED and leaves the read
+        # alone — the counts below stay exact because they are computed over all of `pending`.
+        ordered = sorted(pending, key=lambda x: str(x.get("started_utc", "")), reverse=True)
+        for r in ordered[:MARKERS_SHOWN]:
+            where = "" if r.get("state") != show_mod.UNTELLABLE else f"  on {r.get('host', '?')}"
+            out.append(
+                f"#   {r.get('state', '?'):12} {r.get('script', '?')!s:20} "
+                f"{r.get('started_utc', '?')}  pid {r.get('pid', '?')}{where}"
+            )
+        if len(ordered) > MARKERS_SHOWN:
+            out.append(
+                f"#   … and {len(ordered) - MARKERS_SHOWN} more, oldest not shown. "
+                f"`runprov prune` clears the ones that describe nothing running."
+            )
+        print("\n".join(out), file=sys.stderr)
+        n = sum(1 for r in pending if r.get("state") == show_mod.INTERRUPTED)
+        if n:
+            print(
+                f"#   {n} of them ran no ending code at all — a SIGKILL, the OOM killer, a "
+                f"power loss or a node failure.\n"
+                f"#   Anything they wrote is on disk and is NOT in the history: it looks "
+                f"exactly like a completed run's output.",
+                file=sys.stderr,
+            )
+
+
+def _report_in_flight(path: pathlib.Path) -> None:
+    """The whole thing, for a caller with no streaming pass of its own to ride on.
+
+    DERIVED FROM THE HISTORY BEING READ, so `--log somewhere/else.jsonl` reports what belongs
+    to THAT history rather than to whichever project this shell stands in. Called even when
+    the file does not exist, because a marker beside a missing history is not "nothing
+    recorded" — it is a run that never got to write one.
+    """
+    scan = _InFlightScan(path.parent / ".incomplete")
+    scan.consume(path)
+    scan.report()
 
 
 def _forget(
@@ -1130,7 +1150,12 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
         )
         return 0
 
-    view = project_view(_counted(path, bad))
+    # MARKERS BEFORE THE PASS THAT READS THE HISTORY, which is A-05's ordering and is why
+    # this is constructed here rather than beside the banner it prints. `_counted` feeds it
+    # every record as the page streams, so the `started` lines the page drops are recovered
+    # in the pass already happening instead of by reading the whole file again (A-20).
+    scan = _InFlightScan(path.parent / ".incomplete")
+    view = project_view(_counted(path, bad, scan))
     # OFF unless asked. The page is consulted many times a day and reading the filesystem
     # is the one thing here that can cost what the work costs; `--stale` is a stat per
     # input, `--rehash` reads them.
@@ -1150,8 +1175,9 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
     # RUNS WITH NO ENDING ON RECORD, before the tally, because "this page may be describing
     # a job that is still writing" changes how everything above it should be read. Reported
     # on the PROJECT page only, for the same reason the staleness column is: it is a fact
-    # about the project rather than about one run.
-    _report_in_flight(path)
+    # about the project rather than about one run. The pairing was collected above, as the
+    # page streamed; this only prints it.
+    scan.report()
 
     tally = ""
     if states:

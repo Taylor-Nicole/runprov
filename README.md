@@ -1911,7 +1911,7 @@ constraint for standard runners, and is the one action that closes this.
 
 ## Tests
 
-`tests/test_runprov.py`, **about 670 tests**, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, **about 715 tests**, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite — in
 `test_size_is_stat_ed_after_the_hash_not_before` — to
@@ -1932,8 +1932,8 @@ floor, which no leg but that one may lower. (The count of 22 is derived from thi
 real Windows run skipped 9 of 288, at a commit 93 behind. Take the number from the job log
 once the matrix is green on today's tree.)
 
-Coverage is **100%** of **about 2,560 statements and 910 branches**, and the gate is set there with
-`--cov-branch`.
+Coverage is **100%** of **about 2,730 statements and 970 branches**, and the gate is set
+there with `--cov-branch`.
 
 *Every figure in this section is approximate on purpose.* They exist to convey scale, and an
 exact count is stale the moment anything is added — this section has drifted four times, and

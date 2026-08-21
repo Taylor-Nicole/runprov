@@ -113,7 +113,7 @@ HISTORY_SCHEMA = "runprov.history.v2"
 #:
 #: PAIRED BY `run_uid`. A start with no later record of the same uid is the finding. Readers
 #: track the open uids in one streaming pass, so the memory cost is the number of UNFINISHED
-#: runs and not the number of runs — see `__main__._unfinished`.
+#: runs and not the number of runs — see `__main__._InFlightScan`.
 START_SCHEMA = "runprov.start.v1"
 
 #: The status a record carries while the run is still inside its `with` block.

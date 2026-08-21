@@ -12006,8 +12006,9 @@ def test_a_killed_run_leaves_evidence_that_it_started(tmp_path, sig, recorded):
             "the marker and the history line describe the same run"
         )
 
-    unfinished = cli._unfinished(history)
-    assert len(unfinished) == (0 if recorded else 1), (
+    scan = cli._InFlightScan(history.parent / ".incomplete")
+    scan.consume(history)
+    assert len(scan.open) == (0 if recorded else 1), (
         "a start with no matching end is what makes the denominator knowable, and it "
         "survives deleting the .incomplete directory"
     )
@@ -13278,7 +13279,9 @@ def test_a_start_with_no_marker_is_not_assumed_dead(tmp_path, monkeypatch, capsy
         + "\n",
         encoding="utf-8",
     )
-    assert len(cli._unfinished(log)) == 1, "the premise: one start, no ending"
+    premise = cli._InFlightScan(tmp_path / ".incomplete")
+    premise.consume(log)
+    assert len(premise.open) == 1, "the premise: one start, no ending"
     assert not (tmp_path / ".incomplete").exists(), "and no marker to consult"
 
     assert cli.main(["show", "--log", str(log)]) == 0
@@ -13323,7 +13326,7 @@ def test_the_markers_are_read_before_the_history(tmp_path, monkeypatch):
     """A-05, fixed by the same change and asserted separately because it is a different bug.
 
     Reading the history FIRST left a window: a run completing between the two reads was in
-    `_unfinished` (its record was appended after the history pass hit EOF) and had no marker
+    the open set (its record was appended after the history pass hit EOF) and had no marker
     (`_clear_in_flight` had already unlinked it), so it was announced as a SIGKILL death
     while its `status: ok` record sat in the file just read. The window is the whole marker
     scan, which widens exactly as uncleaned markers accumulate.
@@ -13333,25 +13336,40 @@ def test_the_markers_are_read_before_the_history(tmp_path, monkeypatch):
     a live pid, which the liveness check above reports as RUNNING.
 
     ASSERTED ON THE ORDER rather than by racing, because a test that has to win a race to
-    fail is a test that will pass for the wrong reason on a loaded machine."""
+    fail is a test that will pass for the wrong reason on a loaded machine.
+
+    AND ON BOTH ENTRY POINTS, which A-20 is the reason for. Folding the pairing into the
+    project page's own streaming pass moves the history read EARLIER — it is now the page's
+    pass — so the markers have to be read before that pass begins rather than just before
+    the banner prints. This test used to hook `_unfinished`, which the page no longer calls;
+    it would have gone quiet about the path most able to regress. Hooked on `_stream`
+    instead, which is what actually opens the file, and checked through `show` as well."""
     log = tmp_path / "runs.jsonl"
     log.write_text("", encoding="utf-8")
     order = []
-    real_flight, real_unfinished = cli.in_flight, cli._unfinished
+    real_flight, real_stream = cli.in_flight, cli._stream
     monkeypatch.setattr(cli, "in_flight", lambda d: (order.append("markers"), real_flight(d))[1])
-    monkeypatch.setattr(
-        cli,
-        "_unfinished",
-        # `*a` so this keeps working when the signature grows: it did, when A-07 added the
-        # `finished` out-parameter, and a one-argument lambda turned a passing test red for
-        # a reason that had nothing to do with what it asserts.
-        lambda p, *a: (order.append("history"), real_unfinished(p, *a))[1],
-    )
+
+    def traced(p):
+        # A GENERATOR, so "history" is recorded when reading actually STARTS rather than
+        # when the generator is constructed. `_counted` is built before it is consumed.
+        order.append("history")
+        yield from real_stream(p)
+
+    monkeypatch.setattr(cli, "_stream", traced)
 
     cli._report_in_flight(log)
     assert order == ["markers", "history"], (
         f"markers must be read first, or a run finishing in between is called dead: {order}"
     )
+
+    order.clear()
+    assert cli.main(["show", "--log", str(log)]) == 0
+    assert order and order[0] == "markers", (
+        f"the project page reads the history in its OWN pass now, so the markers have to be "
+        f"read before that pass starts: {order}"
+    )
+    assert "history" in order, "the page must still read the history at all"
 
 
 def test_show_exit_code_gates_on_what_verify_structurally_cannot_see(tmp_path, monkeypatch, capsys):
@@ -16077,3 +16095,88 @@ def test_seal_replaces_a_finish_time_that_is_not_a_stamp(tmp_path, monkeypatch):
         # PARSED, not pattern-matched: the question is whether a reader can use it.
         dt.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
         assert not stamp.startswith("2020"), f"{where} kept the caller's value: {stamp!r}"
+
+
+def test_the_project_page_reads_the_history_once(tmp_path, monkeypatch, capsys):
+    """A-20. The page streamed every record and threw the `started` lines away; then
+    `_report_in_flight` read the WHOLE FILE again to recover exactly those lines. Measured on
+    a 56 MB, 60,000-run history: 2.63 s for the pass that must happen, 1.61 s for the one
+    that need not — **+61%**, on a file that by design only grows.
+
+    COUNTED, NOT TIMED. A timing assertion on a shared machine is a flake; the number of
+    times the file is opened is the thing that was wrong and it is exact.
+
+    `--stale` is excluded from the rule ON PURPOSE and asserted separately below: that pass
+    is a deliberate trade the code documents — "re-reading 91 MB costs seconds; holding it
+    costs hundreds of megabytes, and only one of those grows without bound"."""
+    log = tmp_path / "runs.jsonl"
+    log.write_text(
+        json.dumps(
+            {
+                "schema": runprov.run.START_SCHEMA,
+                "run_uid": "open",
+                "run_id": "r",
+                "script": "fetch",
+                "generation": "g",
+                "started_utc": "2020-01-01T00:00:00Z",
+                "pid": _never_a_pid(),
+                "host": runprov.show.platform.node(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    passes = [0]
+    real = cli._stream
+
+    def counting(p):
+        passes[0] += 1
+        yield from real(p)
+
+    monkeypatch.setattr(cli, "_stream", counting)
+
+    capsys.readouterr()
+    assert cli.main(["show", "--log", str(log)]) == 0
+    err = capsys.readouterr().err
+    assert passes[0] == 1, f"the history was read {passes[0]} times to render one page"
+    # NOT VACUOUS: the one pass must still have produced the finding the second pass used to.
+    assert "INTERRUPTED" in err and "fetch" in err, err
+
+    passes[0] = 0
+    assert cli.main(["show", "--log", str(log), "--stale"]) == 0
+    assert passes[0] == 2, (
+        f"`--stale` makes one deliberate extra pass rather than holding the file in memory; "
+        f"got {passes[0]}"
+    )
+
+
+def test_an_unreadable_history_line_does_not_hide_an_interrupted_run(tmp_path, capsys):
+    """A torn line is what a history HAS after the crash that also left the run unfinished —
+    the two arrive together — so the reader that reports interruptions is the last one that
+    may fall over on one. A-10 is the same defect class one reader along.
+
+    The reason this test exists rather than the guard alone: nothing exercised the branch.
+    Every history reaching `consume` had only readable lines, so `if rec is not None` had one
+    side measured, and a `saw(None)` would raise `AttributeError` inside the banner."""
+    log = tmp_path / "runs.jsonl"
+    log.write_text(
+        "{not json at all\n"
+        + json.dumps(
+            {
+                "schema": runprov.run.START_SCHEMA,
+                "run_uid": "killed",
+                "run_id": "r",
+                "script": "fetch",
+                "generation": "g",
+                "started_utc": "2020-01-01T00:00:00Z",
+                "pid": _never_a_pid(),
+                "host": runprov.show.platform.node(),
+            }
+        )
+        + "\n[1, 2, 3]\n",
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    cli._report_in_flight(log)
+    err = capsys.readouterr().err
+    assert "INTERRUPTED" in err and "fetch" in err, f"the torn lines hid the finding: {err}"
