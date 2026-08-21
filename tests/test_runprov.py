@@ -2608,6 +2608,17 @@ def _exec_and_signal(tmp_path, *, to_group):
     return proc.returncode, err, survived.exists()
 
 
+# THE SUBJECT IS A POSIX PROCESS GROUP. `os.killpg` and `SIGKILL` exist on no Windows, and
+# `_exec`'s forwarding path is `#ifdef`-ed out there — so this asserts behaviour that does not
+# exist on that platform rather than behaviour that is broken there. Unguarded, it did not
+# skip: `monkeypatch.setattr(cli.os, "killpg", ...)` raises `AttributeError` because
+# `raising=True` is the default and the attribute is absent, and the two `signal.SIGKILL`
+# references below fail the same way. Found by A-02, and it is the SECOND half of that row —
+# the first was a collection abort, this is one red test.
+@pytest.mark.skipif(
+    not hasattr(os, "killpg") or not hasattr(signal, "SIGKILL"),
+    reason="POSIX process groups and SIGKILL; `exec` does not forward this way on Windows",
+)
 @pytest.mark.parametrize("child_ignores_sigterm", [False, True])
 def test_a_terminated_exec_forwards_the_signal_and_escalates(
     tmp_path, monkeypatch, capsys, child_ignores_sigterm
@@ -9034,6 +9045,99 @@ def test_only_the_two_legs_that_cannot_reach_the_floor_turn_it_off():
     assert matrix["os"] == ["ubuntu-latest"], "the base matrix must carry no floor override"
 
 
+def test_nothing_evaluated_at_import_needs_a_posix_only_name():
+    """A-02. A `@parametrize` list containing `signal.SIGHUP` is evaluated when the module is
+    IMPORTED, before any mark is consulted — so `@skipif(not hasattr(signal, "SIGKILL"))`
+    sitting above it cannot help. On Windows the import raised `AttributeError` and pytest
+    collected **zero** of 641 tests rather than skipping four. Measured under an emulated
+    Windows: `no tests collected, 1 error` before the fix, 642 collected after.
+
+    THAT AUDIENCE IS REAL: `tests/` ships in the sdist and `ci.py build` runs the shipped
+    suite out of the unpacked tarball, so a packager on Windows saw a suite that could not
+    start. And no CI could have caught it — the Windows leg has not run since 2026-08-12,
+    and the defect landed on 2026-08-20.
+
+    ASSERTED STATICALLY, ON THE PROPERTY. A test that merely re-imported under a stub would
+    prove one name on one day; this reads the source and rejects the whole shape, so the
+    next `signal.SIGKILL` written into a decorator fails here rather than on somebody's
+    Windows box. Names inside `hasattr(...)` are fine — that is the correct spelling — and
+    so are names inside function BODIES, which run only when the test does.
+    """
+    posix_only = {
+        "SIGHUP",
+        "SIGKILL",
+        "SIGQUIT",
+        "killpg",
+        "getpgid",
+        "setsid",
+        "mkfifo",
+        "fork",
+        "geteuid",
+    }
+    tree = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+
+    offenders = []
+
+    def scan(node, where):
+        for a in ast.walk(node):
+            if isinstance(a, ast.Attribute) and a.attr in posix_only:
+                offenders.append(f"{where}: {ast.unparse(a)}")
+
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for d in node.decorator_list:
+                # `hasattr(signal, "SIGKILL")` is the CORRECT spelling and reads the name
+                # as a string, so it never appears as an Attribute — but a decorator may
+                # legitimately mention one inside a guard expression.
+                if "hasattr" in ast.unparse(d):
+                    continue
+                scan(d, f"decorator of {node.name} (line {d.lineno})")
+        else:
+            scan(node, f"module scope (line {node.lineno})")
+
+    assert not offenders, (
+        "these are evaluated when the module is imported, so the platform that lacks the "
+        f"name collects NOTHING rather than skipping something: {offenders}"
+    )
+
+    # AND THE RUNTIME HALF. A name used inside a test BODY does not break collection, but it
+    # does turn that one test red on a platform without it — which is A-02's second half:
+    # `test_a_terminated_exec_forwards_the_signal_and_escalates` used `os.killpg` and
+    # `SIGKILL` with no guard, so instead of skipping on Windows it raised.
+    #
+    # ATTRIBUTES ONLY, deliberately. `monkeypatch.delattr(signal, "SIGHUP", raising=False)`
+    # passes the name as a STRING and is the correct way to test the absent case — counting
+    # strings flagged `test_a_signal_absent_on_the_platform_is_recorded_as_absent`, which is
+    # the test FOR this platform difference.
+    guards = (
+        "requires_fifo",
+        "requires_symlinks",
+        "requires_fcntl",
+        "requires_unreadable_files",
+        "skipif",
+    )
+    unguarded = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("test_"):
+            continue
+        used = sorted(
+            {
+                a.attr
+                for a in ast.walk(node)
+                if isinstance(a, ast.Attribute) and a.attr in posix_only
+            }
+        )
+        if not used:
+            continue
+        decorators = ast.unparse(node.decorator_list) if node.decorator_list else ""
+        if not any(g in decorators for g in guards):
+            unguarded.append(f"{node.name} uses {','.join(used)}")
+    assert not unguarded, (
+        "a test that reaches for a POSIX-only name must SKIP where the name is absent, not "
+        f"fail there: {unguarded}"
+    )
+
+
 def test_no_workflow_anywhere_lowers_the_coverage_floor_except_the_windows_leg():
     """The generalisation of the test above, and the reason it needed one: that test reads
     `test.yml` and nothing else, so a SECOND workflow file could turn the floor off on Linux
@@ -11232,9 +11336,25 @@ def _killable(tmp_path, sig):
 
 
 @pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="POSIX signals needed")
+# BUILT FROM NAMES THAT EXIST, and the `skipif` above cannot do this job. A decorator's
+# ARGUMENTS are evaluated when the module is imported, before any mark is consulted — so
+# `signal.SIGHUP` written literally here raised `AttributeError` on Windows during
+# COLLECTION, and pytest ran ZERO of 641 tests rather than skipping four. `tests/` ships in
+# the sdist and `ci.py build` runs the shipped suite, so that audience is real. Measured
+# under an emulated Windows (SIGHUP/SIGKILL and os.killpg deleted): `no tests collected,
+# 1 error` before, the whole suite after.
 @pytest.mark.parametrize(
     ("sig", "recorded"),
-    [(signal.SIGINT, True), (signal.SIGTERM, True), (signal.SIGHUP, True), (signal.SIGKILL, False)],
+    [
+        (getattr(signal, name), recorded)
+        for name, recorded in (
+            ("SIGINT", True),
+            ("SIGTERM", True),
+            ("SIGHUP", True),
+            ("SIGKILL", False),
+        )
+        if hasattr(signal, name)
+    ],
 )
 def test_a_killed_run_leaves_evidence_that_it_started(tmp_path, sig, recorded):
     """U-02, from the first real consumer: *anything runprov writes only at the end is lost
