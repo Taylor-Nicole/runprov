@@ -480,6 +480,64 @@ class Project:
     run_id: typing.Callable[[], str] = default_run_id
     generation: typing.Callable[[], str] = default_generation
 
+    def __post_init__(self) -> None:
+        """Fail HERE, naming the field, rather than deep inside a run that has done work.
+
+        `configure(**kwargs: typing.Any)` erases every type check a consumer would otherwise
+        get — measured, `mypy --strict` accepts `configure(root="/tmp/x")` without a word —
+        and nothing put it back. This class already holds the principle: `configure` validates
+        `sink` because "a misconfigured project fails at `configure()` ... rather than at the
+        end of a long run". Every other field was outside it.
+
+        THE FAILURES THIS REPLACES, all reproduced:
+
+          root="/tmp/x"          -> `TypeError: unsupported operand type(s) for /: 'str' and
+                                    'str'`, four frames deep in `resolved_run_log`. Neither
+                                    `root` nor `configure` appears in it, and the frame the
+                                    reader recognises is `Run(...)` — the constructor of the
+                                    thing being observed rather than of the mistake.
+          hash_imported_code="no" -> accepted in SILENCE, and `bool("no")` is True, so the
+                                    feature the caller asked to turn OFF stayed on. Nothing
+                                    ever says otherwise. That is the worst of the three,
+                                    because there is no failure to trace at all.
+
+        PATHS ARE COERCED, the rest is REFUSED, and the asymmetry is deliberate. A `str` path
+        is unambiguous and every sibling on `Run` already accepts one, so refusing it would be
+        pedantry. `"no"` for a boolean is not a spelling of `False` — it is a caller who
+        believes something untrue about their own configuration, and guessing which they meant
+        would be this package inventing a fact.
+        """
+        for name in (
+            "root",
+            "run_log",
+            "transformation_log",
+            "env_snapshot_dir",
+            "terminal_log_dir",
+        ):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, pathlib.Path):
+                # `object.__setattr__`: the dataclass is frozen, which is what makes a
+                # Project safe to share, and `__post_init__` is the one place it may be set.
+                object.__setattr__(self, name, pathlib.Path(value))
+
+        wrong = [
+            f"{name}={getattr(self, name)!r}"
+            for name, kind in (
+                ("write_transformation_log", bool),
+                ("write_yaml_sidecar", bool),
+                ("warn_unregistered_reads", bool),
+                ("sidecar_per_run", bool),
+                ("hash_imported_code", bool),
+                ("imported_code_max", int),
+            )
+            if not isinstance(getattr(self, name), kind)
+        ]
+        if wrong:
+            raise TypeError(
+                f"Project: {', '.join(wrong)} — expected a bool or an int. A non-empty string "
+                f"is TRUE, so `hash_imported_code='no'` would have turned the feature ON."
+            )
+
     def resolved_run_log(self) -> pathlib.Path:
         return self.run_log or (self.root / "provenance" / "runs.jsonl")
 
