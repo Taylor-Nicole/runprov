@@ -1336,8 +1336,10 @@ untracked files carrying a host, a pid and a working directory. `.incomplete/` b
 `.gitignore`; the history beside it does not.
 
 Every reader drops the `started` lines, so `show`, `log` and `lineage` count runs and not
-line pairs. A run with no `provenance=` writes neither — that shape records nothing by
-design, and this does not change it.
+line pairs. **A run with no `provenance=` writes neither — and no marker either.** That
+shape records nothing by design, and none of this changes it: the marker directory indexes
+recorded runs that have no ending yet, so a run with no record has nothing to be missing
+from. Entering a `with` block creates no files under `provenance/`.
 
 #### What this does and does not recover
 

@@ -22,11 +22,16 @@ not worth having:
 * it removes only markers it can positively call **INTERRUPTED**. `rm -r` removes the lot.
   A run that is RUNNING on this host keeps its marker, and so does one whose host is not
   this one — a pid on a compute node says nothing here, `show` prints that as `?`, and
-  turning "cannot tell" into a deletion is the guess this package exists to refuse. For a
-  run started without `provenance=` the marker is the ONLY evidence there is: that shape
-  appends no history line by design, so a wrong deletion is unrecoverable rather than
-  merely inconvenient. `--other-hosts` is how a user overrides the other-host half of
-  that, and it is an assertion THEY make, not one this command makes for them.
+  turning "cannot tell" into a deletion is the guess this package exists to refuse.
+  `--other-hosts` is how a user overrides the other-host half of that, and it is an
+  assertion THEY make, not one this command makes for them.
+
+  (An earlier draft of this paragraph justified the rule with "for a run started without
+  `provenance=` the marker is the only evidence there is". That was true of the behaviour
+  and false of the design, and A-15 has since removed the case: an unrecorded run now
+  writes no marker either. The rule stands on its own — a marker whose run may still be
+  alive is not this command's to delete — and the weaker argument is gone rather than left
+  to be quoted.)
 
 WHAT IT IS NOT ALLOWED TO TOUCH: the history. `runs.jsonl` is the append-only record and is
 what makes an interruption permanent; the markers are a cheap index over "what is unfinished

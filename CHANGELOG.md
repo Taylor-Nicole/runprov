@@ -340,8 +340,13 @@ every interrupted long job, and the artifacts on disk look identical to a succes
 - Every reader drops the `started` lines — `_load` and `_counted` for `show`/`lineage`, and
   `log` separately because it streams raw — so nothing counts a completed run twice. The
   YAML view declines them too: it is a narrative of completed runs.
-- **A run with no `provenance=` writes neither.** That shape records nothing by design, and
-  a start line there would mean constructing a `Run` created a history file.
+- **A run with no `provenance=` writes neither — and no marker either.** That shape records
+  nothing by design, and a start line there would mean constructing a `Run` created a
+  history file. The marker had no such guard: an unarmed run created `<history>/.incomplete/`
+  and wrote into it, so a REPL experiment left a directory behind and, killed, left a
+  permanent marker that made one `runprov show` print "1 run(s) STARTED with no ending
+  recorded" directly above "Nothing has been recorded here yet". The marker directory indexes
+  RECORDED runs that have no ending yet; a run with no record has no ending to be missing.
 - **A checkpoint no longer claims the run succeeded.** `run.write(PROV)` inside the block is
   the only way to get inputs, outputs and notes onto disk before a SIGKILL — `__exit__` is
   where they are persisted and SIGKILL never reaches it — so the README recommends the call.
