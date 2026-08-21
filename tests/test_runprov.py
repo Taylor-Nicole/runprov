@@ -12214,6 +12214,15 @@ def _torn(tmp_path):
         "not json at all \x1b[31mand a terminal escape\x1b[0m\tand a tab",
         json.dumps({"run_id": "d", "script": "four.py", "status": "failed"}),
         '{"huge": "' + "x" * 400 + '"',  # long, and unterminated
+        # VALID JSON THAT IS NOT A RECORD — A-10. Every line above raises `JSONDecodeError`,
+        # so the "both paths agree" assertion below was satisfied BY CONSTRUCTION and could
+        # never reach these three. `123` and `[1,2]` used to kill `log`, `show` and `lineage`
+        # with `AttributeError: 'int' object has no attribute 'get'`; `null` was worse,
+        # because it parses to this reader's own sentinel for "would not parse", so the three
+        # readers counted it while `log --unreadable` said "every line parses".
+        "123",
+        "null",
+        "[1, 2]",
     ]
     log = tmp_path / "runs.jsonl"
     log.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -12232,23 +12241,58 @@ def test_the_skipped_lines_can_be_seen_and_not_only_counted(tmp_path, capsys):
     log = _torn(tmp_path)
 
     assert cli.main(["log", "--log", str(log)]) == 0
-    assert "3 unreadable line(s) skipped" in capsys.readouterr().err, "the premise"
+    assert "6 unreadable line(s) skipped" in capsys.readouterr().err, "the premise"
 
     assert cli.main(["log", "--log", str(log), "--unreadable"]) == 0
     out, err = capsys.readouterr()
     numbers = [line.split(":", 1)[0] for line in out.splitlines()]
-    assert numbers == ["2", "5", "7"], (
+    assert numbers == ["2", "5", "7", "8", "9", "10"], (
         f"real FILE line numbers, in file order — 5 and 7, not 4 and 6, because the blank "
-        f"line at 4 is skipped but still occupies a line: {out!r}"
+        f"line at 4 is skipped but still occupies a line; 8-10 are valid JSON that is not a "
+        f"record, which counts as unreadable exactly like a torn line: {out!r}"
     )
     assert '"sta' in out, "and enough of the line to recognise it"
-    assert "3 unreadable line(s)" in err
+    assert "6 unreadable line(s)" in err
 
     # THE TWO PATHS MUST AGREE. The count comes from `_stream`, the lines from `_unreadable`
     # — two readers over one file, and a disagreement would mean one of them is wrong about
     # what parses.
     _, counted = cli._load(log)
-    assert counted == len(numbers) == 3
+    assert counted == len(numbers) == 6
+
+
+@pytest.mark.parametrize("line", ["123", "null", "[1, 2]", '"just a string"', "true"])
+def test_valid_json_that_is_not_a_record_is_counted_not_crashed_on(tmp_path, capsys, line):
+    """A-10. `json.loads` succeeding does not make a line a record. `123`, `[1,2]` and
+    `"text"` all parse, and every reader then calls `rec.get(...)` — so `log`, `show` and
+    `lineage` each died with `AttributeError: 'int' object has no attribute 'get'`, over one
+    line in an otherwise healthy history, in the reader whose entire design property is that
+    JSONL "loses the bad line and counts it".
+
+    `null` WAS WORSE THAN THE CRASH, because it was silent: it parses to `None`, which is
+    `_stream`'s own sentinel for "would not parse". So the three readers counted it as
+    unreadable while `log --unreadable` reported "every line in … parses" — two commands
+    contradicting each other about one file, which is the shape of L-99 and the exact thing
+    `test_the_skipped_lines_can_be_seen_and_not_only_counted` asserts against.
+
+    A TORN APPEND CANNOT PRODUCE ANY OF THESE — a prefix of a JSON object is not valid JSON —
+    so they come from a hand-edit, a concatenation, or a writer that is not runprov. All
+    three are things this reader is expected to survive rather than die on."""
+    good = json.dumps({"schema": "runprov.history.v2", "script": "s", "run_uid": "u"})
+    log = tmp_path / "runs.jsonl"
+    log.write_text(f"{good}\n{line}\n{good}\n", encoding="utf-8")
+
+    for command in (["log"], ["show"], ["lineage"]):
+        capsys.readouterr()
+        assert cli.main([*command, "--log", str(log)]) == 0, f"{command} died on {line!r}"
+        assert "1 unreadable line(s)" in capsys.readouterr().err, command
+
+    capsys.readouterr()
+    assert cli.main(["log", "--log", str(log), "--unreadable"]) == 0
+    out = capsys.readouterr().out
+    assert out.splitlines() == [f"2: {line}"], (
+        f"the listing must name the same line the count counted: {out!r}"
+    )
 
 
 def test_an_unreadable_line_cannot_hand_the_terminal_what_corrupted_the_file(tmp_path, capsys):

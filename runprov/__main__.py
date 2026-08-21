@@ -104,9 +104,26 @@ def _stream(path: pathlib.Path) -> typing.Iterator[dict[str, typing.Any] | None]
             if not line.strip():
                 continue
             try:
-                yield json.loads(line)
+                rec = json.loads(line)
             except json.JSONDecodeError:
                 yield None
+                continue
+            # VALID JSON IS NOT A RECORD. `123`, `[1, 2]` and `"text"` all parse, and every
+            # caller here then does `rec.get(...)` — so `log`, `show` and `lineage` died with
+            # `AttributeError: 'int' object has no attribute 'get'`, in the reader whose whole
+            # design property is that JSONL "loses the bad line and counts it". Measured:
+            # exit 1 and a traceback from all three, over one line in an otherwise healthy
+            # history.
+            #
+            # `null` was worse than a crash, because it was silent: it parses to `None`, which
+            # is this function's sentinel for "would not parse", so the three readers counted
+            # it while `log --unreadable` reported "every line parses" — two commands
+            # contradicting each other about one file, which is the shape of L-99.
+            #
+            # A torn append cannot produce any of these: a prefix of a JSON object is not
+            # valid JSON. They come from a hand-edit, a concatenation, or a writer that is not
+            # runprov — all of which this reader is expected to survive rather than die on.
+            yield rec if isinstance(rec, dict) else None
 
 
 #: How much of an unreadable line to print. A history line is uncapped caller data — see
@@ -132,8 +149,15 @@ def _unreadable(path: pathlib.Path) -> typing.Iterator[tuple[int, str]]:
             if not line.strip():
                 continue
             try:
-                json.loads(line)
+                rec = json.loads(line)
             except json.JSONDecodeError:
+                yield n, line.rstrip("\n")
+                continue
+            # THE SAME RULE AS `_stream`, so the count and the listing agree BY CONSTRUCTION
+            # rather than by coincidence. This function re-parses independently — that is what
+            # keeps it cheap — and independence is exactly how the two drifted apart: a `null`
+            # line was counted by every reader and listed by none.
+            if not isinstance(rec, dict):
                 yield n, line.rstrip("\n")
 
 
