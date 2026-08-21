@@ -1298,6 +1298,24 @@ is the ordinary state of a busy project and is not a finding. A marker from anot
 reads `?` rather than being guessed at, because `os.kill(pid, 0)` there would answer about
 whichever local process holds that number.
 
+**Deleting `.incomplete/` is safe, and nothing in the package ever cleans it for you.** No
+TTL, no cap, no prune command — so on a machine that has had a few hundred SIGKILLs the
+markers accumulate. `show` prints the ten newest and says how many it did not show, but the
+directory itself only shrinks if you remove it:
+
+```bash
+rm -r provenance/.incomplete      # safe: the finding is in the history, not here
+```
+
+The `started` line is what makes a killed run permanent, and the pid and host it carries are
+what decide `RUNNING` from `INTERRUPTED` — so removing every marker changes nothing a reader
+sees. Verified rather than asserted: the same killed run reports `INTERRUPTED … pid 330615`
+before and after `rm -r`. What you lose is the fast path, not the answer.
+
+If `provenance/` is tracked in git — which the README recommends — markers show up as
+untracked files carrying a host, a pid and a working directory. `.incomplete/` belongs in
+`.gitignore`; the history beside it does not.
+
 Every reader drops the `started` lines, so `show`, `log` and `lineage` count runs and not
 line pairs. A run with no `provenance=` writes neither — that shape records nothing by
 design, and this does not change it.
