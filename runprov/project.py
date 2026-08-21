@@ -19,17 +19,19 @@ from __future__ import annotations
 
 # A MODULE'S `__all__` RATIFIES THE PACKAGE'S PROMISE; IT NEVER MAKES ONE.
 # A name belongs here if and only if `runprov/__init__.py` re-exports it and lists it in the
-# package `__all__` (22 names, decided 2026-08-19, ledger L-24). Nothing else qualifies:
+# package `__all__` (decided 2026-08-19, ledger L-24; the list, and its count, live
+# there and nowhere else). Nothing else qualifies:
 # cross-module use inside `runprov/` is INTERNAL and `__all__` neither describes nor protects
 # it; tests reach into internals on purpose and prove nothing; and prose that documents a
 # printed string, a CLI flag or a record key is not an instruction to call a name.
 # Adding or withdrawing a promise is a package-level decision taken in `__init__.py`.
-# `git` is here BY RATIFICATION, not by evidence, and it is the one name in this list with
-# an open question against it: a bare `git` collides with GitPython's top-level module in
-# an importing namespace, and the contract is 'swallow every exception, return None, 20s
-# timeout' — provenance capture rather than a general-purpose runner. Withdrawing or
-# renaming it is a package-level decision and is still open; this file cannot take it.
-# `default_run_id` and `default_generation` are WITHDRAWN and stay reachable here.
+# `git` is absent because it was WITHDRAWN on 2026-08-20 — the collision with GitPython's
+# top-level module and the 'swallow everything, return None, 20s timeout' contract were the
+# reasons, and `__init__.py` records them. It stays reachable as `runprov.project.git`.
+# `default_run_id` and `default_generation` are WITHDRAWN and stay reachable here too.
+# (This paragraph used to argue that the question was "still open" and that "this file
+# cannot take it" — which was true when written and false five lines above an `__all__`
+# that no longer contained the name. ADR-0003's addendum records the decision as taken.)
 __all__ = [
     "DEFAULT_CODE_PATHS",
     "DEFAULT_TRACKED",
