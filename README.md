@@ -831,12 +831,24 @@ STALE        results/final.tsv
              STALE        data/in.tsv  (pinned e85456706a564976, now c694cbe65e827d62)  via step1
 ```
 
-**Transitivity is free, and it is the point.** A step that reads an upstream artifact and
-writes its lines through carries the upstream pin as well as its own, so a changed root
-surfaces at every level that depends on it — and a grandchild stays stale after the root is
-restored, because the child was never rebuilt. `via` names the step whose claim failed,
-which for an inherited pin is **not** the artifact's own step. Nothing implements this; it
-falls out of the pin being in the bytes.
+**Transitivity is free — for a step that writes its input through.** Such a step carries
+the upstream pin as well as its own, so a changed root surfaces at every level that depends
+on it, and a grandchild stays stale after the root is restored because the child was never
+rebuilt. `via` names the step whose claim failed, which for an inherited pin is **not** the
+artifact's own step. Nothing implements this; it falls out of the pin being in the bytes.
+
+**A step that TRANSFORMS its input does not carry the block, and then there is no chain to
+follow.** Filtering rows, reshaping a table, rendering a figure — the output contains none
+of the input's lines, so it holds exactly one pin, naming the intermediate. Measured on two
+three-stage pipelines differing only in that one detail, with the same change to the same
+root: write-through gives `0 OK, 1 STALE` and exit 1; filtering gives `1 OK, 0 STALE` and
+exit 0. The remedy is to verify the intermediate as well — `verify .` over the project exits
+1 in the filtering case, because `work/mid.tsv` is itself pinned and stale. It is
+`verify results/` alone, over published artifacts whose intermediates live elsewhere, that
+goes green.
+
+Count the pin blocks to see which case you are in: `verify` prints the chain after each
+artifact, `[step2]` for one pin and `[step2 ← step1]` for an inherited one.
 
 Four outcomes, and the last two are the ones that make the check worth trusting:
 
@@ -873,7 +885,8 @@ the two commands see different things, and neither sees everything:
 | a **BAM, parquet or figure** — formats that cannot hold a pin | ❌ | ✅ |
 | the **artifact itself** was edited | ❌ | ✅ (`--rehash`) |
 | an input registered **after** `header()` | ❌ | ✅ |
-| **transitive** staleness through inherited pins | ✅ | one generation |
+| **transitive** staleness, step writes its input **through** | ✅ | one generation |
+| **transitive** staleness, step **transforms** its input | ❌ | one generation |
 
 That fourth row is the one you can cause by accident, so it is worth a paragraph. A pin is
 rendered once, when `header()` is written into the artifact — after that, `run.input(p)`
