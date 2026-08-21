@@ -9632,6 +9632,26 @@ def test_nothing_evaluated_at_import_needs_a_posix_only_name():
     )
 
 
+def _yaml():
+    """PyYAML, or skip. Not a module-level import: it is a dev dependency and these tests
+    read CI configuration, which is absent from the sdist anyway."""
+    return pytest.importorskip("yaml")
+
+
+def _workflow_files() -> list[pathlib.Path]:
+    """Every workflow GitHub Actions would run, which is `*.yml` AND `*.yaml`.
+
+    This globbed `*.yml` alone, and Actions treats both suffixes identically — so a file
+    named `nightly.yaml` was outside every check written here. Reproduced: the same file
+    turning the coverage floor off passes as `.yaml` and FAILS as `.yml`, which is the
+    difference between a rule and a spelling convention.
+    """
+    wf_dir = _repo_root() / ".github/workflows"
+    if not wf_dir.is_dir():  # pragma: no cover - not shipped in the sdist
+        pytest.skip("workflows not present")
+    return sorted(wf_dir.glob("*.yml")) + sorted(wf_dir.glob("*.yaml"))
+
+
 def test_no_workflow_anywhere_lowers_the_coverage_floor_except_the_windows_leg():
     """The generalisation of the test above, and the reason it needed one: that test reads
     `test.yml` and nothing else, so a SECOND workflow file could turn the floor off on Linux
@@ -9641,10 +9661,7 @@ def test_no_workflow_anywhere_lowers_the_coverage_floor_except_the_windows_leg()
     It became reachable rather than hypothetical when `selfhosted.yml` was added to run the
     Linux legs on a local runner while hosted billing is down. That file must inherit the
     100% floor like every other Linux leg."""
-    yaml = pytest.importorskip("yaml")
-    wf_dir = _repo_root() / ".github/workflows"
-    if not wf_dir.is_dir():  # pragma: no cover - not shipped in the sdist
-        pytest.skip("workflows not present")
+    yaml = _yaml()
 
     # TWO EXEMPTIONS, EACH NAMED, so a third cannot arrive quietly. Both are "unreachable by
     # construction, not by regression", and both were measured:
@@ -9659,8 +9676,21 @@ def test_no_workflow_anywhere_lowers_the_coverage_floor_except_the_windows_leg()
     #                    with no execute permission.
     allowed = ({"os": "windows-latest"}, {"python": "3.13"})
     offenders = []
-    for wf in sorted(wf_dir.glob("*.yml")):
+
+    def bad(floor: object) -> bool:
+        """An expression is allowed only if it names 3.13 as the sole exemption."""
+        f = str(floor)
+        return f == "off" or ("off" in f and "3.13" not in f)
+
+    for wf in _workflow_files():
         doc = yaml.safe_load(wf.read_text(encoding="utf-8")) or {}
+        # WORKFLOW-LEVEL `env:` FIRST. This read step envs and nothing else, so a top-level
+        # block — which GitHub Actions applies to EVERY step of EVERY job in the file —
+        # turned the floor off invisibly. Reproduced: the whole `-k "coverage_floor or
+        # workflow"` selection stayed green with `env: {RUNPROV_COVERAGE_FLOOR: "off"}` at
+        # the top of a second workflow.
+        if bad((doc.get("env") or {}).get("RUNPROV_COVERAGE_FLOOR", "")):
+            offenders.append(f"{wf.name}: workflow env {doc['env']['RUNPROV_COVERAGE_FLOOR']!r}")
         for job_name, job in (doc.get("jobs") or {}).items():
             legs = ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []
             for leg in legs:
@@ -9668,14 +9698,55 @@ def test_no_workflow_anywhere_lowers_the_coverage_floor_except_the_windows_leg()
                     continue
                 if not any(all(leg.get(k) == v for k, v in a.items()) for a in allowed):
                     offenders.append(f"{wf.name}:{job_name} {leg}")
+            # JOB-LEVEL `env:` TOO, for the same reason one level up.
+            if bad((job.get("env") or {}).get("RUNPROV_COVERAGE_FLOOR", "")):
+                offenders.append(
+                    f"{wf.name}:{job_name} job env {job['env']['RUNPROV_COVERAGE_FLOOR']!r}"
+                )
             for step in job.get("steps") or []:
                 floor = str((step.get("env") or {}).get("RUNPROV_COVERAGE_FLOOR", ""))
-                # An expression is allowed only if it names 3.13 as the sole exemption.
-                if floor == "off" or ("off" in floor and "3.13" not in floor):
+                if bad(floor):
                     offenders.append(f"{wf.name}:{job_name} step env {floor!r}")
     assert not offenders, (
         f"a leg may lower the coverage floor only where 100% is unreachable BY "
         f"CONSTRUCTION, and only for a reason already stated here; found {offenders}"
+    )
+
+
+def test_every_workflow_step_that_runs_the_suite_goes_through_ci_py():
+    """The test L-12 never got. That row moved the coverage gate into `ci.py` and was closed
+    by editing YAML, adding no assertion — so changing `python ci.py test` to `python -m
+    pytest` removes the 100% floor, the lint step and the build step from CI in one line, and
+    every workflow-reading test stays green. Reproduced exactly that way.
+
+    `test.yml` even carries a comment saying "`ci.py test`, NOT a bare `pytest`". A comment
+    is not a check; this repository's standing rule is that a claim no mutation can
+    distinguish is decoration.
+
+    THE RULE IS ONE WAY ROUND ONLY: a step may invoke `pytest` as long as it goes through
+    `ci.py`. It does not require every job to run the suite — `dco.yml` and the build jobs
+    legitimately do not.
+
+    AND IT IS ASSERTED IN BOTH DIRECTIONS, because the negative half alone is VACUOUS: on a
+    clean tree no step contains `pytest`, so it passes without looking at anything — and
+    DELETING the `ci.py test` step removes the gate exactly as silently as replacing it with
+    a bare `pytest`. The positive half is the one L-12's fix actually needed."""
+    runs = [
+        (wf.name, str(step.get("run") or ""))
+        for wf in _workflow_files()
+        for job in (
+            (_yaml().safe_load(wf.read_text(encoding="utf-8")) or {}).get("jobs") or {}
+        ).values()
+        for step in (job.get("steps") or [])
+    ]
+    offenders = [f"{n}: {r.strip()}" for n, r in runs if "pytest" in r and "ci.py" not in r]
+    assert not offenders, (
+        f"a workflow step runs the suite directly, which skips the coverage floor, the lint "
+        f"step and the build step that `ci.py` enforces: {offenders}"
+    )
+    assert any("ci.py test" in r for _, r in runs), (
+        f"NO workflow step runs `ci.py test`, so nothing in CI enforces the 100% floor. "
+        f"Read {len(runs)} run step(s) across {len({n for n, _ in runs})} workflow file(s)."
     )
 
 
