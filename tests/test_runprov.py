@@ -16195,3 +16195,110 @@ def test_an_unreadable_history_line_does_not_hide_an_interrupted_run(tmp_path, c
     cli._report_in_flight(log)
     err = capsys.readouterr().err
     assert "INTERRUPTED" in err and "fetch" in err, f"the torn lines hid the finding: {err}"
+
+
+def test_only_init_states_how_many_names_the_package_promises():
+    """A-22. `test_every_module_declares_its_surface_and_none_of_them_invents_one` checks the
+    LISTS and the nine module headers above them are prose, so when the L-84 follow-up cut
+    the surface from 22 names to 17 the lists were corrected and every header went on saying
+    "22 names". Nine files, all wrong, in the very comment that ADR-0003 makes the ratifying
+    record of the surface.
+
+    The remedy is not to write 17 nine more times — that is the same drift rescheduled, and
+    this repository has now found four of these. ONE PLACE STATES THE COUNT, `__init__.py`,
+    where the list it counts also lives, and this asserts both halves: nobody else states it,
+    and the one that does is right."""
+    root = _repo_root() / "runprov"
+    pat = re.compile(r"(\d+)\s+names\b")
+    modules = sorted(root.glob("*.py"))
+    assert len(modules) > 5, f"the module sweep found {len(modules)} files; the scope broke"
+
+    elsewhere = {
+        f.name: pat.findall(f.read_text(encoding="utf-8"))
+        for f in modules
+        if f.name != "__init__.py" and pat.search(f.read_text(encoding="utf-8"))
+    }
+    assert not elsewhere, (
+        f"a module header states the size of the package surface, which it cannot check and "
+        f"which drifted to nine wrong copies once already: {elsewhere}"
+    )
+
+    stated = pat.findall((root / "__init__.py").read_text(encoding="utf-8"))
+    assert stated, "`__init__.py` no longer says how many names it promises"
+    assert {int(s) for s in stated} == {len(runprov.__all__)}, (
+        f"`__init__.py` says {stated} names and promises {len(runprov.__all__)}"
+    )
+
+
+def _withdrawn_names() -> list[str]:
+    """The ten names `__init__.py` records as withdrawn, read from the record itself.
+
+    From the TABLE COLUMN of the withdrawal blocks, not from loose prose: scanning the whole
+    header for tokens that happen to be public attributes also catches `json`, `time`,
+    `typing` and `own`, which are ordinary words in that text. And cross-checked both ways —
+    every name must still exist on some submodule (a typo in the table fails loudly) and none
+    may still be in the package `__all__`.
+    """
+    init = (_repo_root() / "runprov" / "__init__.py").read_text(encoding="utf-8")
+    names = []
+    for line in init.split("__all__ = [")[0].splitlines():
+        m = re.match(r"^#   ([A-Za-z_][\w, ]*?)(?:\s{2,}.*)?$", line)
+        if m:
+            names += [n for n in re.split(r",\s*", m.group(1).strip()) if n and " " not in n]
+    public = {
+        n
+        for f in sorted((_repo_root() / "runprov").glob("*.py"))
+        if f.stem != "__init__"
+        for n in dir(importlib.import_module(f"runprov.{f.stem}"))
+        if not n.startswith("_")
+    }
+    found = sorted(set(names))
+    assert found, "the withdrawal record is gone from `__init__.py`; if deliberate, delete this"
+    assert set(found) <= public, f"the table names something no module has: {set(found) - public}"
+    assert not set(found) & set(runprov.__all__), (
+        f"a name is recorded as withdrawn AND still promised: "
+        f"{sorted(set(found) & set(runprov.__all__))}"
+    )
+    return found
+
+
+def test_no_module_header_argues_for_a_name_it_no_longer_exports():
+    """The other half of A-22, and the one a count check cannot reach. `project.py` carried
+    five lines arguing that withdrawing `git` "is a package-level decision and is still open;
+    this file cannot take it" — directly above an `__all__` with no `git` in it, and after
+    ADR-0003's addendum recorded the decision as taken. `environment.py` opened with "Both
+    are in the package `__all__`" above an `__all__` that is empty: a sentence that outlived
+    its subject.
+
+    A header may NAME a withdrawn export — saying where it went is the point, and `run.py`
+    does it well for `PIN_UNSAFE`. What it may not do is discuss one without saying so. The
+    population checked is exactly the ten `__init__.py` records as withdrawn, so this cannot
+    fire on an internal helper a header legitimately explains.
+
+    BACKTICKS ONLY, AND THAT IS A REAL LIMIT RATHER THAN A DETAIL. Matching the bare word
+    catches ordinary English — "what git sees", "a file that git can diff" — so the rule is
+    the codebase's own convention that an API name is written in backticks. The consequence
+    is that this catches `project.py`'s shape, a named export argued for after withdrawal,
+    and NOT `environment.py`'s, which said "Both are in the package `__all__`" and named
+    neither name. A sentence whose subject is a pronoun is not reachable from here; that one
+    was fixed by reading, and this guard does not pretend otherwise."""
+    withdrawn = _withdrawn_names()
+    offenders = []
+    for f in sorted((_repo_root() / "runprov").glob("*.py")):
+        if f.name == "__init__.py":
+            continue
+        # SPLIT ON THE ASSIGNMENT, not on the first mention. `split("__all__", 1)` cuts at
+        # the boilerplate's own "lists it in the package `__all__`" three lines in, so the
+        # slice stopped ABOVE the paragraph this test exists to read — and the check passed
+        # on a tree where `git` was argued for again. The same scope defect the row reports,
+        # in the guard written for it.
+        header = re.split(r"^__all__", f.read_text(encoding="utf-8"), maxsplit=1, flags=re.M)[0]
+        for name in withdrawn:
+            near = [ln for ln in header.splitlines() if f"`{name}`" in ln]
+            if near and not any(("WITHDRAWN" in ln or "absent" in ln) for ln in near):
+                offenders.append(f"{f.name}: {near[0].strip()}")
+    assert not offenders, (
+        f"a module header discusses a withdrawn name without saying it was withdrawn — the "
+        f"shape that left `git` argued for five lines above an `__all__` that had dropped "
+        f"it: {offenders}"
+    )

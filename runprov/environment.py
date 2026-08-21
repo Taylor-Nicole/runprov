@@ -35,15 +35,19 @@ from __future__ import annotations
 
 # A MODULE'S `__all__` RATIFIES THE PACKAGE'S PROMISE; IT NEVER MAKES ONE.
 # A name belongs here if and only if `runprov/__init__.py` re-exports it and lists it in the
-# package `__all__` (22 names, decided 2026-08-19, ledger L-24). Nothing else qualifies:
+# package `__all__` (decided 2026-08-19, ledger L-24; the list, and its count, live
+# there and nowhere else). Nothing else qualifies:
 # cross-module use inside `runprov/` is INTERNAL and `__all__` neither describes nor protects
 # it; tests reach into internals on purpose and prove nothing; and prose that documents a
 # printed string, a CLI flag or a record key is not an instruction to call a name.
 # Adding or withdrawing a promise is a package-level decision taken in `__init__.py`.
-# Both are in the package `__all__` and neither appears in any document — every one of
-# them describes this feature as `env_snapshot_dir` configuration plus record fields.
-# They go in because the two surfaces must agree; whether the PACKAGE should still
-# promise them is a separate question for the ledger, not for this file.
+# `installed_packages` and `write_snapshot` are absent because both were WITHDRAWN on
+# 2026-08-20. They stay reachable as `runprov.environment.installed_packages` and
+# `runprov.environment.write_snapshot`. No document ever described this feature by naming
+# them — every one describes it as `env_snapshot_dir` configuration plus record fields,
+# which is what the ledger cited when withdrawing them.
+# (This paragraph used to begin "Both are in the package `__all__`", directly above an
+# `__all__` that is empty: the sentence outlived its subject.)
 __all__: list[str] = []
 
 import hashlib
