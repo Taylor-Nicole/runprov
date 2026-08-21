@@ -872,7 +872,23 @@ the two commands see different things, and neither sees everything:
 | an artifact you were **emailed**, with no history | ✅ | ❌ |
 | a **BAM, parquet or figure** — formats that cannot hold a pin | ❌ | ✅ |
 | the **artifact itself** was edited | ❌ | ✅ (`--rehash`) |
+| an input registered **after** `header()` | ❌ | ✅ |
 | **transitive** staleness through inherited pins | ✅ | one generation |
+
+That fourth row is the one you can cause by accident, so it is worth a paragraph. A pin is
+rendered once, when `header()` is written into the artifact — after that, `run.input(p)`
+still registers the input in the record, but the bytes already on disk cannot grow a line.
+The artifact then **understates what it was made from**, permanently, and its pin will read
+`OK` for ever no matter what happens to that input.
+
+The run warns at the moment it happens, and **the record marks it too, as
+`inputs_not_in_pin`** — in the sidecar and in the history, omitted when there are none, the
+same treatment `unregistered_reads` gets and for the same reason: a warning is ephemeral, a
+field travels with the run. `show --stale` works from the record, so it checks every input
+including the late one; `verify` works from the artifact's own bytes, so it cannot, and that
+is not a defect in `verify` but the price of the property that makes it useful on a copy
+someone emailed you. Register every input before the first `open_output()` or `header()` and
+the question does not arise.
 
 **The gate is the pair, and it is one line:**
 

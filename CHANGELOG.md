@@ -347,6 +347,13 @@ every interrupted long job, and the artifacts on disk look identical to a succes
   permanent marker that made one `runprov show` print "1 run(s) STARTED with no ending
   recorded" directly above "Nothing has been recorded here yet". The marker directory indexes
   RECORDED runs that have no ending yet; a run with no record has no ending to be missing.
+- **An input registered after the pin was rendered is now IN THE RECORD**, as
+  `inputs_not_in_pin`, in the sidecar and the history and omitted when empty. It used to
+  print a stderr warning and record nothing, so the sidecar listed N inputs, the artifact's
+  pin listed M < N, and no field anywhere marked the divergence — which is the opposite of
+  the rule `unregistered_reads` follows for the same class of problem. The warning also
+  claimed "nothing downstream can detect it"; `show --stale` detects it and always did, and
+  the warning now says which command can and which cannot.
 - **A checkpoint no longer claims the run succeeded.** `run.write(PROV)` inside the block is
   the only way to get inputs, outputs and notes onto disk before a SIGKILL — `__exit__` is
   where they are persisted and SIGKILL never reaches it — so the README recommends the call.

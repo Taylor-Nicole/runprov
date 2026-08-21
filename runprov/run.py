@@ -1795,16 +1795,29 @@ class Run:
                 + "A registered input is hashed and pinned, so it must be present at "
                 "registration time. Register it after producing it, or check the path."
             )
-        if self._pin_rendered:
+        # A WARNING IS EPHEMERAL; A FIELD IS PERMANENT. That sentence is this package's own,
+        # four hundred lines up in `_note_unregistered_reads`, which writes `unregistered_reads`
+        # into the record for the same class of problem — "a reviewer three years later can see
+        # that a read was missed". This branch printed to stderr and recorded nothing, so the
+        # sidecar listed N inputs, the artifact's pin listed M < N, and no field anywhere said
+        # the two disagreed. Reproduced: pin `inputs (1)`, record 2, 19 top-level keys marking
+        # none of it.
+        late = self._pin_rendered
+        if late:
             diagnostic(
                 f"  PROVENANCE WARNING: {self.record['script']}: input registered AFTER the "
                 f"pin was rendered — {p}\n"
                 f"    header() has already been written into an artifact, and that pin does "
-                f"NOT list this input. The artifact understates what it was made from, and "
-                f"nothing downstream can detect it. Register every input before header()."
+                f"NOT list this input. The record says so — `inputs_not_in_pin` — so "
+                f"`runprov show --stale` still checks it against the full input list.\n"
+                f"    `runprov verify` CANNOT: it reads the pin inside the artifact and "
+                f"nothing else, which is exactly what makes it work on a copy someone "
+                f"emailed you, and that pin will read OK for ever no matter what happens to "
+                f"this input. Register every input before header()."
             )
         try:
-            self.record["inputs"].append(describe(p))
+            entry = describe(p)
+            self.record["inputs"].append(entry)
         except OSError as exc:
             # A file that EXISTS and cannot be read. `exists()` is true -- stat works --
             # so the check above passes and the failure surfaces from inside `sha256` as a
@@ -1820,6 +1833,14 @@ class Run:
             # with the script name, because the bare hang this replaces named neither the
             # script nor the path -- there was no output at all.
             raise ValueError(f"{self.record['script']}: {exc}") from exc
+        if late:
+            # OMITTED, NOT DEFAULTED, and deduplicated: the same rule and the same shape as
+            # `unregistered_reads`, so a clean run is silent in the file as well as on the
+            # terminal. Written AFTER the append, so the name here is the one the `inputs`
+            # entry carries and a reader can cross-reference the two lists by eye.
+            names = self.record.setdefault("inputs_not_in_pin", [])
+            if entry["path"] not in names:
+                names.append(entry["path"])
         return p
 
     def output(self, path: str | pathlib.Path) -> pathlib.Path:
@@ -2937,6 +2958,13 @@ class Run:
         }
         if r.get("unregistered_reads"):
             summary["unregistered_reads"] = r["unregistered_reads"]
+        # CARRIED PAST THE TRIM DELIBERATELY. The history summary reduces each input to path
+        # and digests, so a per-entry flag would not survive to the reader who most needs it:
+        # `show` works from the HISTORY, and this is the one fact that says its OK is stronger
+        # than the artifact's own pin can be. Same treatment, and same reason, as the line
+        # above.
+        if r.get("inputs_not_in_pin"):
+            summary["inputs_not_in_pin"] = r["inputs_not_in_pin"]
         self._history_appended = True
         # DISARMED HERE AND NOWHERE ELSE. Every path that persists anything reaches
         # `_append_history` -- `write()` outside a block appends immediately, and inside one
