@@ -116,8 +116,15 @@ OOXML_STAMP = re.compile(
 _ENTRY_WHOLE_MAX = 1 << 20
 
 
-def sha256(path: pathlib.Path, chunk: int = 1 << 20) -> str:
+def sha256(path: str | pathlib.Path, chunk: int = 1 << 20) -> str:
     """Streamed, so multi-GB inputs are fine."""
+    # COERCED ONCE, AT THE TOP, exactly as `Run._sidecar_name` does. Annotated
+    # `pathlib.Path` while `Run`'s path arguments all took `str | pathlib.Path`
+    # (C-19), and the five names in that position behaved THREE different ways at
+    # runtime — this one worked by luck, `describe` and `content_digest` raised
+    # `AttributeError`, `detect_root` and `JsonlSink` coerced — while mypy rejected
+    # all five. No rule a caller could learn (A-13).
+    path = pathlib.Path(path)
     h = hashlib.sha256()
     with open(path, "rb") as fh:
         while blk := fh.read(chunk):
@@ -125,7 +132,7 @@ def sha256(path: pathlib.Path, chunk: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
-def content_digest(path: pathlib.Path, chunk_lines: int = 8192) -> str | None:
+def content_digest(path: str | pathlib.Path, chunk_lines: int = 8192) -> str | None:
     """SHA-256 with volatile stamps removed. Binary falls back to the raw hash.
 
     STREAMED, line by line. The first version did `path.read_text()` and hashed the
@@ -150,6 +157,7 @@ def content_digest(path: pathlib.Path, chunk_lines: int = 8192) -> str | None:
     longest sequence. Fixing that too means abandoning line-oriented reading, which changes
     where every match boundary falls, and this function may not move a digest.
     """
+    path = pathlib.Path(path)  # see `sha256` — A-13
     if not path.is_file():
         return None
     try:
@@ -350,7 +358,7 @@ def _tar_digest(path: pathlib.Path) -> str:
     return h.hexdigest()
 
 
-def describe(path: pathlib.Path) -> dict[str, typing.Any]:
+def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
     """Everything recorded about one input or output. Directories are hashed as a tree.
 
     Raises `ValueError` for anything that is neither a regular file nor a directory. That is
@@ -360,6 +368,7 @@ def describe(path: pathlib.Path) -> dict[str, typing.Any]:
     it, because there is then no record AND no process. Sockets and devices are refused for
     the same reason.
     """
+    path = pathlib.Path(path)  # see `sha256` — A-13
     st = path.stat()
     link_target = os.readlink(path) if path.is_symlink() else None
     if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):

@@ -83,7 +83,7 @@ class JsonlSink:
     costs one record and the reader counts what it skipped.
     """
 
-    def __init__(self, path: pathlib.Path) -> None:
+    def __init__(self, path: str | pathlib.Path) -> None:
         self.path = pathlib.Path(path)
 
     def append(self, record: dict[str, typing.Any]) -> None:
@@ -151,7 +151,7 @@ class YamlLogSink:
     YAML document costs everything after it. Both files are written; only one is trusted.
     """
 
-    def __init__(self, path: pathlib.Path) -> None:
+    def __init__(self, path: str | pathlib.Path) -> None:
         self.path = pathlib.Path(path)
 
     def append(self, record: dict[str, typing.Any]) -> None:

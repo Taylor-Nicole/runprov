@@ -294,7 +294,7 @@ def classify_status(status: str | None, code_paths: typing.Sequence[str]) -> Dir
     return DirtyState(True, tuple(code), tuple(other), tuple(outside))
 
 
-def detect_root(start: pathlib.Path | None = None) -> pathlib.Path:
+def detect_root(start: str | pathlib.Path | None = None) -> pathlib.Path:
     """The git top level containing `start`, else `start` itself.
 
     Detection is a DEFAULT, never an assertion. `Project.root` is recorded in every run
