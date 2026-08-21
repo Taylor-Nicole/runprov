@@ -3670,6 +3670,44 @@ def test_a_run_that_registers_everything_says_nothing_at_all(tmp_path, monkeypat
     assert "UNREGISTERED READ" not in capsys.readouterr().err
 
 
+@requires_symlinks
+@pytest.mark.parametrize("where", ["opened", "exclude", "registered"])
+def test_one_symlink_loop_does_not_erase_the_whole_unregistered_read_check(tmp_path, where):
+    """A-01. `watch.unregistered` promises in its own docstring to be "pure and total ... no
+    failure here can affect a caller", and it raised. `Path.resolve()` raises
+    `RuntimeError("Symlink loop from ...")` on CPython 3.10-3.12 — NOT an `OSError` — so one
+    looping path among the hundreds a run opens escaped all four `resolve()` sites, landed in
+    `run.py`'s catch-all, and abandoned the entire check for that run.
+
+    THE RECORD THEN LIED BY OMISSION, which is what makes this high rather than cosmetic.
+    Measured with a control, same script and one genuinely unregistered `data/secret.tsv`:
+    without the loop the record carried `unregistered_reads: ['data/secret.tsv']`; with it,
+    the field was ABSENT — byte-identical to what a clean run writes. A run that missed a
+    read became indistinguishable from one that missed nothing.
+
+    Parametrised over all three argument lists, because the four sites were not equally
+    guarded: `registered` and the root caught `OSError` only, the `opened` loop caught
+    `(OSError, ValueError)`, and the `exclude` comprehension was not guarded at all.
+
+    Fifth instance of the exception-family pattern of L-98. This module was added after that
+    sweep and inherited none of it, which is the argument for the test rather than the fix."""
+    loop_a, loop_b = tmp_path / "a", tmp_path / "b"
+    loop_a.symlink_to(loop_b)
+    loop_b.symlink_to(loop_a)
+    real = tmp_path / "secret.tsv"
+    real.write_text("x\n", encoding="utf-8")
+
+    args = {"opened": [str(real)], "registered": [], "exclude": []}
+    args[where] = [*args[where], str(loop_a)]
+
+    found = runprov.watch.unregistered(
+        args["opened"], args["registered"], tmp_path, exclude=args["exclude"]
+    )
+    assert found == ["secret.tsv"], (
+        f"a symlink loop in {where!r} must not cost the finding about a different file"
+    )
+
+
 @pytest.mark.parametrize("suffix", [".prov.json", ".prov", ".txt", ".v2.json"])
 def test_the_provenance_files_are_never_reported_as_unregistered(tmp_path, monkeypatch, suffix):
     """The package's own records are not the user's data. Reporting the history, the YAML
