@@ -12397,6 +12397,67 @@ def test_every_module_declares_its_surface_and_none_of_them_invents_one():
     assert cli.__all__ == ["main"], "the console-script entry point, and nothing else"
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../outside.tsv",
+        "a/../../outside.tsv",
+        "/etc/passwd",
+        "sub/../../outside.tsv",
+    ],
+)
+def test_verify_will_not_hash_a_pinned_name_that_leaves_the_project(tmp_path, name):
+    """A-08. The outside-the-root refusal recognised only the marker THIS package writes
+    (`<external>/`), so any other way of naming a path outside the tree reached
+    `target = root / name` — where `pathlib` DISCARDS the left operand if the right side is
+    absolute, and never normalises `..` away.
+
+    Measured on a real artifact with two entries added by hand: `runprov verify results`
+    printed `1 OK, 0 STALE, 0 GONE, 0 UNVERIFIABLE` and exited 0, having actually READ and
+    hashed a file outside the project through both `../secret_outside.txt` and its absolute
+    path. That contradicts this module's own docstring — "a name outside the project root
+    ... reported UNVERIFIABLE ... Green must mean checked".
+
+    NARROWED, AND STILL WORTH FIXING. `_pin_name` cannot emit either spelling — it writes
+    `<external>/<name>` — so this needs a hand-written or foreign pin rather than one runprov
+    produced. That bounds who can trigger it. It does not make a green result over a file
+    that was never in the project any less wrong, and the digest printed beside it is a
+    16-hex oracle over any path the verifying process can read.
+
+    LEXICAL, DELIBERATELY: a symlinked FILE under the root is hashed on purpose (SECURITY.md),
+    so resolving first and testing containment would refuse what the package documents as
+    supported. What is rejected is how the pin SPELLS the path, which is the part a foreign
+    pin controls."""
+    outside = tmp_path / "outside.tsv"
+    outside.write_text("secret\n", encoding="utf-8")
+    root = tmp_path / "proj"
+    root.mkdir()
+
+    digest = runprov.hashing.pin_digest(runprov.hashing.describe(outside))
+    result = runprov.verify.check_input(digest, name, root)
+
+    assert result["status"] == "UNVERIFIABLE", (
+        f"{name!r} names a path outside the root and must not be read: {result}"
+    )
+    assert "outside the project root" in result["reason"]
+    assert "found" not in result, "and nothing about its contents may be reported"
+
+
+def test_verify_still_reads_ordinary_names_under_the_root(tmp_path):
+    """The other side of A-08, because the cheap version of that fix refuses everything. A
+    filter that reports nothing looks exactly like one that works — the same argument the
+    unregistered-read filter carries, and it has been got wrong twice there."""
+    root = tmp_path / "proj"
+    (root / "sub").mkdir(parents=True)
+    for rel in ("in.tsv", "sub/deep.tsv"):
+        (root / rel).write_text("a\n", encoding="utf-8")
+        digest = runprov.hashing.pin_digest(runprov.hashing.describe(root / rel))
+        assert runprov.verify.check_input(digest, rel, root)["status"] == "OK", rel
+        assert runprov.verify.check_input(digest, f"./{rel}", root)["status"] == "OK", (
+            "a leading `./` is an ordinary spelling, not an escape"
+        )
+
+
 def test_the_pin_anchor_exists_exactly_once_in_the_source():
     """L-44. The one sentence that says "this file is an artifact" existed TWICE: `header()`
     wrote it as a literal in `run.py`, and `verify` held its own copy under the name

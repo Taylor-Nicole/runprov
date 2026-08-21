@@ -845,7 +845,7 @@ Four outcomes, and the last two are the ones that make the check worth trusting:
 | `OK` | every pinned input still hashes as pinned |
 | `STALE` | one changed — rebuild the artifact |
 | `GONE` | a pinned input is no longer there. Counted apart from `STALE` because it is a different repair: a stale artifact is rebuilt, a missing input is **found** |
-| `UNVERIFIABLE` | a comparison would be meaningless, so none is claimed: a name outside the root (`<external>/…` is deliberately not a path), a name carrying an escape (a file named `a\nb` and one named `a<LF>b` render identically), or an input the run recorded no digest for |
+| `UNVERIFIABLE` | a comparison would be meaningless, so none is claimed: a name outside the root — either `<external>/…`, which is deliberately not a path, or **any spelling that leaves the tree**, an absolute path or one containing `..`; a name carrying an escape (a file named `a\nb` and one named `a<LF>b` render identically); or an input the run recorded no digest for |
 
 **It will not pass having checked nothing.** Zero pins found is a non-zero exit saying so
 in those words. A gate that goes green over a directory whose artifacts carry no pins is

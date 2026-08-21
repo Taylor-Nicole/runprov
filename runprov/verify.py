@@ -274,6 +274,29 @@ def check_input(
     out: dict[str, typing.Any] = {"name": name, "pinned": want}
     if name.startswith("<external>/"):
         return {**out, "status": UNVERIFIABLE, "reason": "outside the project root when pinned"}
+    # OUTSIDE THE ROOT IS A PROPERTY OF THE NAME, not of one spelling of it. The check above
+    # recognised only the marker THIS package writes, so any other way of naming a path
+    # outside the tree went straight to `root / name` — where `pathlib` DISCARDS the left
+    # operand if the right side is absolute, and never normalises `..` away.
+    #
+    # Measured on a real artifact with two entries added by hand: `runprov verify results`
+    # reported `1 OK, 0 STALE, 0 GONE, 0 UNVERIFIABLE`, exit 0, having actually read and
+    # hashed a file outside the project through BOTH `../secret_outside.txt` and its absolute
+    # path. That contradicts this module's own docstring — "a name outside the project root
+    # ... reported UNVERIFIABLE ... Green must mean checked" — and README.md's exit-code table.
+    #
+    # `_pin_name` cannot emit either spelling (it writes `<external>/<name>`), so this needs a
+    # hand-written or foreign pin. That bounds who can trigger it; it does not make a green
+    # result over a file that was never in the project any less wrong, and the digest it
+    # prints is a 16-hex oracle over any path the verifying process can read.
+    #
+    # LEXICAL, DELIBERATELY. A symlinked FILE under the root is hashed on purpose — SECURITY.md
+    # says so — so resolving first and testing containment would refuse what the package
+    # documents as supported. This rejects how the pin SPELLS the path, which is the thing a
+    # foreign pin controls.
+    spelled = pathlib.PurePosixPath(name)
+    if spelled.is_absolute() or ".." in spelled.parts:
+        return {**out, "status": UNVERIFIABLE, "reason": "names a path outside the project root"}
     if "\\" in name:
         return {**out, "status": UNVERIFIABLE, "reason": "escaped name — no unambiguous path"}
     if want == "MISSING":
