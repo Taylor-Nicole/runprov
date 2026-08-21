@@ -428,9 +428,11 @@ python -m runprov log --script build_labels --limit 5
 ```
 
 **The CLI does not know what your scripts passed to `configure()`.** With no `--log` it
-reads `<detected root>/provenance/runs.jsonl`, so if you set `run_log` — as the quickstart
-above does — every one of those commands needs `--log reports/runs.jsonl` or it will
-correctly report that nothing has been recorded at the default path.
+reads `<detected root>/provenance/runs.jsonl` — which is where the quickstart above puts the
+history, so those commands work as written. **If** you set `run_log` somewhere else, every
+one of them needs `--log <that path>` or it will correctly report that nothing has been
+recorded at the default path. That is the reason for "leave `run_log` alone unless you have
+a reason", above.
 
 `--format yaml` deliberately keeps the old field names — `step`, `script`, `input`, `output`,
 `run_command`, `date`, `params`, `summary`, `requirements_file` — so anyone who could read the
@@ -464,7 +466,7 @@ and is not pretended into one. The file it replaces does not parse at all.
 ## Lineage: which run produced what this one read
 
 ```bash
-python -m runprov lineage --log reports/runs.jsonl
+python -m runprov lineage                        # the default history, as above
 python -m runprov lineage --format json          # for a consumer
 ```
 

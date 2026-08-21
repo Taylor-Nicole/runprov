@@ -11,7 +11,7 @@ here, so it has to survive being rendered.
 
     from runprov import Run, configure
 
-    configure(root=REPO, run_log=REPO / "reports" / "runs.jsonl")
+    configure(root=REPO)  # history -> REPO/provenance/runs.jsonl, where the CLI looks
 
     PROV = OUT.with_name("build_labels_provenance.json")
 

@@ -16302,3 +16302,61 @@ def test_no_module_header_argues_for_a_name_it_no_longer_exports():
         f"shape that left `git` argued for five lines above an `__all__` that had dropped "
         f"it: {offenders}"
     )
+
+
+def _configure_kwargs(source: str) -> set[str]:
+    """The keyword names passed to `configure(...)` in a block of example code."""
+    return {
+        kw.arg or "**"
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "configure"
+        for kw in node.keywords
+    }
+
+
+def test_the_cli_examples_work_against_the_quickstart_as_written(tmp_path, monkeypatch, capsys):
+    """A-23. The README said "if you set `run_log` — as the quickstart above does — every one
+    of those commands needs `--log reports/runs.jsonl`". The quickstart does not set
+    `run_log`, `reports/runs.jsonl` appeared nowhere in it, and following the instruction
+    literally exits 1 while the command it says will not work exits 0. Measured both ways.
+
+    The paragraph was left over from an older quickstart, three sections above a paragraph
+    saying "**Leave `run_log` alone unless you have a reason**".
+
+    EXECUTED, NOT READ. The quickstart is already parsed by two tests and neither runs it, so
+    a claim about what its CLI commands DO had nothing holding it. This configures a project
+    the way the quickstart does, records a run, and runs `log` with no `--log` — which is the
+    sentence, tested."""
+    assert "run_log" not in _configure_kwargs(_first_python_block(_readme())), (
+        "the quickstart now sets run_log, so the paragraph about `--log` has to change with it"
+    )
+
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path)
+    with runprov.Run("summarise", provenance="provenance/s.prov.json"):
+        pass
+
+    capsys.readouterr()
+    assert cli.main(["log"]) == 0, "the README's own commands must work with no --log"
+    assert "summarise" in capsys.readouterr().out
+
+
+def test_the_shipped_help_example_teaches_the_shape_the_readme_recommends():
+    """The other half of A-23, and most likely where the stale sentence came from.
+
+    `runprov/__init__.py`'s docstring is what `help(runprov)` and `pydoc runprov` print, and
+    it was the one shipped example setting `run_log=REPO / "reports" / "runs.jsonl"` — the
+    shape the README spends a paragraph advising against, with no `--log` caveat beside it.
+    A reader following `help()` gets a project whose CLI reports nothing recorded."""
+    assert "run_log" not in _configure_kwargs(
+        textwrap.dedent(
+            "\n".join(
+                ln[4:] if ln.startswith("    ") else ln
+                for ln in (runprov.__doc__ or "").splitlines()
+                if ln.startswith("    ") or not ln.strip()
+            )
+        )
+    ), (
+        "`help(runprov)` sets run_log, which the README advises against and which silently "
+        "sends the CLI to a path with no history in it"
+    )
