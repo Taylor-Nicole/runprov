@@ -240,6 +240,59 @@ def _project(tmp_path) -> runprov.Project:
     )
 
 
+@pytest.mark.parametrize(
+    "field", ["root", "run_log", "transformation_log", "env_snapshot_dir", "terminal_log_dir"]
+)
+def test_a_path_field_given_as_a_string_is_taken_as_a_path(tmp_path, field):
+    """A-12. `configure(**kwargs: typing.Any)` erases every type check on one of the two names
+    the quickstart uses — measured, `mypy --strict` accepts `configure(root="/tmp/x")` in
+    silence — and nothing put it back at runtime either.
+
+    What the caller got instead was `TypeError: unsupported operand type(s) for /: 'str' and
+    'str'`, four frames deep in `resolved_run_log`. Neither `root` nor `configure` appears in
+    that traceback, and the frame a reader recognises is `Run(...)` — the constructor of the
+    thing being observed rather than of the mistake.
+
+    Coerced rather than refused: a `str` path is unambiguous, and `Run`'s own `provenance=`,
+    `script_path=` and `terminal_log=` already accept one (C-19). Refusing it here while
+    accepting it there would be a difference with no reason behind it."""
+    proj = runprov.Project(**{"root": tmp_path, field: str(tmp_path / "x")})
+    assert isinstance(getattr(proj, field), pathlib.Path), (
+        f"{field} was left as {type(getattr(proj, field)).__name__}"
+    )
+    # AND IT ACTUALLY WORKS, not merely has the right type: this is the call that used to die.
+    assert isinstance(runprov.Project(root=str(tmp_path)).resolved_run_log(), pathlib.Path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("hash_imported_code", "no"),
+        ("write_yaml_sidecar", "false"),
+        ("warn_unregistered_reads", 0.5),
+        ("sidecar_per_run", "off"),
+        ("imported_code_max", "200"),
+    ],
+)
+def test_a_flag_that_is_not_a_flag_is_refused_by_name(tmp_path, field, value):
+    """The other half of A-12, and the worse one, because it fails SILENTLY today rather than
+    loudly later: `configure(hash_imported_code="no")` was accepted, and `bool("no")` is True
+    — so the feature the caller asked to turn OFF stayed on, and nothing ever said otherwise.
+    There is no traceback to follow because there is no failure.
+
+    REFUSED, NOT COERCED, unlike the path fields above. A `str` path is a spelling of a path;
+    `"no"` is not a spelling of `False`. It is a caller who believes something untrue about
+    their own configuration, and picking an interpretation would be this package inventing a
+    fact about a run — which is the one thing it exists not to do.
+
+    The message names the field and the value, because `configure` already holds the
+    principle: a misconfigured project must fail AT `configure()`, not at the end of a long
+    run."""
+    with pytest.raises(TypeError) as caught:
+        runprov.Project(root=tmp_path, **{field: value})
+    assert field in str(caught.value) and repr(value) in str(caught.value), caught.value
+
+
 def test_run_log_defaults_under_the_root_not_to_this_repository(tmp_path):
     """A misconfigured install must write somewhere obvious, never append to a history
     it does not belong to."""
