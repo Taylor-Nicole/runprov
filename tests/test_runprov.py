@@ -9836,7 +9836,10 @@ def test_the_pre_commit_ruff_matches_the_one_the_gate_enforces():
     then CI rejects it with the new one, so the tool that exists to catch a failure early
     creates one."""
     root = _repo_root()
-    if not (root / ".pre-commit-config.yaml").is_file():  # pragma: no cover - not in the sdist
+    # SHIPPED, and this comment used to say the opposite: `.pre-commit-config.yaml` is in
+    # pyproject's sdist `include` and is in the tarball. The skip is for a bare checkout, not
+    # for the sdist (A-24).
+    if not (root / ".pre-commit-config.yaml").is_file():  # pragma: no cover - a bare tree
         pytest.skip(".pre-commit-config.yaml not present")
 
     hook = re.search(
@@ -16359,4 +16362,25 @@ def test_the_shipped_help_example_teaches_the_shape_the_readme_recommends():
     ), (
         "`help(runprov)` sets run_log, which the README advises against and which silently "
         "sends the CLI to a path with no history in it"
+    )
+
+
+def test_every_sdist_include_entry_names_something_that_exists():
+    """A-24, the half that can be checked without building. `include` is an explicit
+    allowlist, so an entry that names a moved or renamed path ships nothing and says nothing
+    — which is the same silence the list exists to prevent, running the other way.
+
+    `ci.py build` checks this against the real tarball, which is the authoritative version
+    and the one that also catches a file excluded by some other rule. This runs in the fast
+    suite, so a stale entry fails in the commit that introduces it rather than at release."""
+    pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
+    block = pyproject[pyproject.index("[tool.hatch.build.targets.sdist]") :]
+    block = block[block.index("include = [") : block.index("]", block.index("include = ["))]
+    named = re.findall(r'"([^"]+)"', block)
+    assert len(named) > 5, f"the include list parsed to {named}; the reader broke"
+
+    missing = sorted(n for n in named if not (_repo_root() / n).exists())
+    assert not missing, (
+        f"pyproject's sdist `include` names {missing}, which is not in the repository — "
+        f"the entry ships nothing and nothing says so"
     )

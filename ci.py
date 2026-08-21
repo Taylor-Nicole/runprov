@@ -253,22 +253,60 @@ def build() -> None:
         # `examples/summarise.py` is here because the SUITE RUNS IT: shipping the tests
         # without the file one of them executes would make the sdist's own tests fail for
         # the packager who runs them, which is the one audience this check exists for.
+        #
+        # THE LIST BELOW WENT STALE THE FIRST TIME `include` GREW, which is the failure this
+        # whole check exists to prevent, one level up: L-106 added `GETTING-STARTED.md` and
+        # `docs` to `include` and closed with "Both now ship in the sdist", extending neither
+        # `want` nor any test. Deleting that line from `include` again left every check green
+        # with all three ADRs gone from the tarball. So the guard is now DERIVED from the list
+        # it guards -- see `named` below -- and this set keeps only what derivation cannot
+        # say: individual files inside a directory entry.
         want = {
             "CHANGELOG.md",
             "CITATION.cff",
             "CODE_OF_CONDUCT.md",
+            "CONTRIBUTING.md",
+            "GETTING-STARTED.md",
             "LICENSE",
             "README.md",
             "SECURITY.md",
+            "WHY.md",
             "ci.py",
             "examples/summarise.py",
             "examples/format_compatibility.py",
             "examples/data/measurements.tsv",
+            # THE ADRs THEMSELVES, not merely something under `docs/`. A directory entry is
+            # satisfied by any one member, and `docs/adr/README.md` is an INDEX whose three
+            # relative links go to these files -- so the shape to guard against is the one
+            # where the index ships and everything it points at does not.
+            "docs/adr/0001-provenance-layout-and-overrides.md",
+            "docs/adr/0002-detecting-unregistered-reads.md",
+            "docs/adr/0003-a-module-all-ratifies-it-does-not-decide.md",
         }
         if missing := sorted(want - members):
             raise SystemExit(
                 f"{sdist.name} is missing {missing}. Anything not named in "
                 f"[tool.hatch.build.targets.sdist] include is silently left out."
+            )
+        # EVERY ENTRY IN `include` MUST HAVE PRODUCED SOMETHING, derived from pyproject so
+        # that adding a file to the list extends this check by itself. It catches the other
+        # direction too: an entry that names a path which no longer exists ships nothing and
+        # says nothing, which is how a rename quietly empties the tarball.
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        block = pyproject[pyproject.index("[tool.hatch.build.targets.sdist]") :]
+        block = block[block.index("include = [") : block.index("]", block.index("include = ["))]
+        named = re.findall(r'"([^"]+)"', block)
+        if not named:
+            raise SystemExit("could not read [tool.hatch.build.targets.sdist] include")
+        empty = sorted(
+            entry
+            for entry in named
+            if not any(m == entry or m.startswith(entry + "/") for m in members)
+        )
+        if empty:
+            raise SystemExit(
+                f"{sdist.name} contains nothing for {empty}, which pyproject's sdist "
+                f"`include` names. Either the entry is stale or the files moved."
             )
         unpacked = next(Path(tmp).glob("runprov-*"))
         out = Path(tmp) / "wheel"
