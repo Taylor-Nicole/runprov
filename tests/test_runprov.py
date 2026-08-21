@@ -11794,8 +11794,19 @@ def test_a_marker_that_cannot_be_written_does_not_cost_the_run(tmp_path, monkeyp
 def test_a_marker_that_cannot_be_removed_does_not_cost_the_run(tmp_path, monkeypatch, capsys):
     """The other end of the same rule. By the time the marker is cleared the finished record
     is already on disk, so a failure to remove a hint is worth a line on stderr and nothing
-    more. The cost of not removing it is a false `INTERRUPTED` on the next page, which is a
-    visible over-report rather than a silent under-report — the right way round."""
+    more.
+
+    THIS DOCSTRING USED TO ACCEPT THE CONSEQUENCE, and A-07 was right that it should not
+    have: it said the cost was "a false `INTERRUPTED` on the next page, a visible over-report
+    rather than a silent under-report — the right way round". The first half is true and the
+    conclusion was still wrong. An over-report beats an under-report only when you do not
+    know better; here the refutation was already in hand. `show` printed "ran no ending code
+    at all — a SIGKILL, the OOM killer, a power loss" about a run whose `status: ok` record
+    sat in the file it had just read, and listed that same completed run two lines below.
+    Every clause of the alarm was false.
+
+    See `test_a_leftover_marker_is_not_a_death_when_the_history_says_otherwise` for the fix.
+    """
     monkeypatch.chdir(tmp_path)
     (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
     proj = _project(tmp_path)
@@ -11806,6 +11817,88 @@ def test_a_marker_that_cannot_be_removed_does_not_cost_the_run(tmp_path, monkeyp
         run.input(tmp_path / "in.tsv")
     assert "could not clear the in-flight marker" in capsys.readouterr().err
     assert json.loads((tmp_path / "s.prov.json").read_text())["status"] == "ok"
+
+
+def test_a_leftover_marker_is_not_a_death_when_the_history_says_otherwise(
+    tmp_path, monkeypatch, capsys
+):
+    """A-07. Markers whose `run_uid` was not among the unfinished starts were appended
+    wholesale, with no check that the history held an ending for them — so a marker that
+    outlives its run produced a permanent, confident, false death claim about a completed
+    run. `_clear_in_flight` tolerates an `OSError` by design (a read-only or full
+    `.incomplete`, a stale NFS handle, a restored `provenance/` snapshot), so the package
+    produces this state itself.
+
+    THE ANSWER WAS ALREADY IN HAND. The same streaming pass that pairs starts with endings
+    sees every uid that ended — it is what pops them — and threw that away before the caller
+    needed it. One `set`, no second read of the history, and the streaming guarantee intact.
+
+    The two cases that MUST still report are asserted below, because the cheap fix here is a
+    filter that silences everything."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+
+    real_unlink = pathlib.Path.unlink
+
+    def stubborn(self, **kw):
+        if ".incomplete" in str(self):
+            raise OSError("device busy")
+        return real_unlink(self, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", stubborn)
+    with runprov.Run("fetch", project=None, provenance=tmp_path / "p.prov.json") as run:
+        run.input(tmp_path / "in.tsv")
+    monkeypatch.undo()
+
+    assert run.record["status"] == "ok", "the premise: the run finished perfectly well"
+    left = list((tmp_path / ".incomplete").glob("*.json"))
+    assert len(left) == 1, "and its marker could not be removed"
+
+    # THE PROCESS IS GONE, which is the real situation and not a detail. Written this way
+    # because the first version of this test ran in-process, so the marker named THIS pytest
+    # process — alive — and rendered RUNNING rather than INTERRUPTED. The assertion below
+    # passed with the defect still present, which is precisely the failure this suite keeps
+    # finding in itself.
+    stale = json.loads(left[0].read_text(encoding="utf-8"))
+    stale["pid"] = _never_a_pid()
+    left[0].write_text(json.dumps(stale), encoding="utf-8")
+
+    capsys.readouterr()
+    assert cli.main(["show", "--log", str(tmp_path / "runs.jsonl")]) == 0
+    err = capsys.readouterr().err
+    assert "STARTED with no ending recorded" not in err, (
+        f"the history holds this run's ending, in the very pass that printed this: {err}"
+    )
+    assert "INTERRUPTED" not in err and "ran no ending code at all" not in err, err
+    assert left[0].is_file(), "and `show` still writes nothing — the marker is untouched"
+
+
+def test_a_marker_the_history_never_heard_of_is_still_reported(tmp_path, monkeypatch, capsys):
+    """The case A-07's fix must NOT silence, and the reason the filter is on `finished`
+    rather than on "has a record". A marker with no history entry at all is what a run killed
+    between its marker and its start line leaves, and what a run with no `provenance=` leaves
+    — that shape records nothing by design. Neither has an ending, so neither is refuted."""
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    log.write_text("", encoding="utf-8")
+    d = tmp_path / ".incomplete"
+    d.mkdir()
+    (d / "orphan.json").write_text(
+        json.dumps(
+            {
+                "run_uid": "never-recorded",
+                "script": "ghost",
+                "started_utc": "2026-08-21T10:00:00Z",
+                "pid": _never_a_pid(),
+                "host": runprov.show.platform.node(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert cli.main(["show", "--log", str(log)]) == 0
+    err = capsys.readouterr().err
+    assert "ghost" in err and "INTERRUPTED" in err, err
 
 
 def test_a_marker_with_no_usable_pid_is_not_guessed_about(tmp_path):
@@ -12534,7 +12627,12 @@ def test_the_markers_are_read_before_the_history(tmp_path, monkeypatch):
     real_flight, real_unfinished = cli.in_flight, cli._unfinished
     monkeypatch.setattr(cli, "in_flight", lambda d: (order.append("markers"), real_flight(d))[1])
     monkeypatch.setattr(
-        cli, "_unfinished", lambda p: (order.append("history"), real_unfinished(p))[1]
+        cli,
+        "_unfinished",
+        # `*a` so this keeps working when the signature grows: it did, when A-07 added the
+        # `finished` out-parameter, and a one-argument lambda turned a passing test red for
+        # a reason that had nothing to do with what it asserts.
+        lambda p, *a: (order.append("history"), real_unfinished(p, *a))[1],
     )
 
     cli._report_in_flight(log)

@@ -171,7 +171,9 @@ def _is_start(rec: dict[str, typing.Any]) -> bool:
     return bool(rec.get("schema") == START_SCHEMA)
 
 
-def _unfinished(path: pathlib.Path) -> list[dict[str, typing.Any]]:
+def _unfinished(
+    path: pathlib.Path, finished: set[str] | None = None
+) -> list[dict[str, typing.Any]]:
     """Runs whose start is on record and whose ending never arrived.
 
     ONE STREAMING PASS, AND THE MEMORY IS THE FINDING RATHER THAN THE HISTORY. A start adds
@@ -194,6 +196,13 @@ def _unfinished(path: pathlib.Path) -> list[dict[str, typing.Any]]:
             open_runs[uid] = rec
         else:
             open_runs.pop(uid, None)
+            # THE OTHER HALF OF THE SAME PASS, and it used to be thrown away. Knowing which
+            # runs ENDED is what lets a caller ignore a marker left behind by one of them —
+            # see `_report_in_flight`. An out-parameter rather than a second return value, and
+            # rather than a second read of the history: `_counted` takes its `bad` counter the
+            # same way, for the same reason.
+            if finished is not None:
+                finished.add(uid)
     return list(open_runs.values())
 
 
@@ -894,7 +903,8 @@ def _report_in_flight(path: pathlib.Path) -> None:
     # STARTS between the reads, which has no marker and a live pid, and the liveness check
     # below gets that right.
     markers = {str(m.get("run_uid")): m for m in in_flight(path.parent / ".incomplete")}
-    unfinished = _unfinished(path) if path.is_file() else []
+    finished: set[str] = set()
+    unfinished = _unfinished(path, finished) if path.is_file() else []
 
     pending: list[dict[str, typing.Any]] = []
     for rec in unfinished:
@@ -911,7 +921,18 @@ def _report_in_flight(path: pathlib.Path) -> None:
     # A MARKER THE HISTORY HAS NEVER HEARD OF is still worth printing: it is what a run
     # killed between its marker and its start line leaves, and what a run with no
     # `provenance=` leaves, since that shape records nothing by design.
-    pending += markers.values()
+    #
+    # A MARKER FOR A RUN THAT FINISHED IS NOT. `_clear_in_flight` tolerates an `OSError` — a
+    # read-only or full `.incomplete`, a stale NFS handle, a restored snapshot — so a marker
+    # can outlive the run that made it. Every such marker used to be announced as
+    # "INTERRUPTED ... ran no ending code at all", about a run whose `status: ok` record was
+    # in the file this function had JUST READ, two lines above where the alarm printed.
+    #
+    # The refutation was already in hand and was being discarded: the same streaming pass
+    # that pairs starts with endings knows every uid that ended. An over-report is better
+    # than an under-report, which is why this was tolerable — but not when the answer is
+    # already on the desk.
+    pending += [m for uid, m in markers.items() if uid not in finished]
     if not pending:
         return
 
