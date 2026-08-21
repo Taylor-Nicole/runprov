@@ -12458,6 +12458,109 @@ def test_verify_still_reads_ordinary_names_under_the_root(tmp_path):
         )
 
 
+@pytest.mark.parametrize("field", ["generation", "script"])
+def test_a_field_carrying_the_anchor_does_not_truncate_its_own_pin(tmp_path, monkeypatch, field):
+    """A-09. The pin's block framing is the anchor sentence, and both boundary tests were
+    SUBSTRING tests. The anchor is ordinary printable text, and `_safe_for_pin` escapes
+    control characters rather than content — so any interpolated field carrying that sentence
+    ended the block early, before `inputs (N)`.
+
+    `generation` is the sharp one because it comes from the ENVIRONMENT
+    (`RUNPROV_GENERATION`), so it is not even the caller who has to be careless.
+
+    THE CONSEQUENCE IS A GREEN GATE. Measured before the fix, one poisoned artifact beside
+    one clean one: `1 OK, 0 STALE, 0 GONE, 1 UNVERIFIABLE`, **exit 0** — UNVERIFIABLE is not
+    in `FAILING`, and the NOTHING-CHECKED guard fires only when EVERY pin was unverifiable.
+    Then the poisoned artifact's input was genuinely changed and `verify` still did not say
+    so about that artifact: nothing had been compared.
+
+    Fixed in the READER, which also repairs artifacts already on disk — escaping on the way
+    out would protect only files written from now on, and the pin's promise is about files
+    written months ago."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    poison = f"batch: {runprov.hashing.PIN_ANCHOR}"
+    proj = runprov.Project(
+        root=tmp_path,
+        run_log=tmp_path / "runs.jsonl",
+        generation=(lambda: poison) if field == "generation" else (lambda: "g"),
+    )
+    name = poison if field == "script" else "step"
+    with runprov.Run(name, project=proj, provenance=tmp_path / "p.prov.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("result\n")
+
+    (pin,) = runprov.verify.read_pins(tmp_path / "out.tsv")
+    assert pin["declared"] == 1, f"the count survives the {field} field: {pin}"
+    assert [n for _, n in pin["entries"]] == ["in.tsv"], (
+        f"and so does the entry the count promises: {pin}"
+    )
+
+    # END TO END: the input really changes, and `verify` must say so.
+    (tmp_path / "in.tsv").write_text("CHANGED\n", encoding="utf-8")
+    report = runprov.verify.verify([tmp_path / "out.tsv"], tmp_path)
+    assert report["stale"] == 1 and report["unverifiable"] == 0, report
+
+
+def test_a_second_pin_block_is_still_found_after_the_first(tmp_path, monkeypatch):
+    """The regression the A-09 fix could easily have caused, and nearly did. Skipping a
+    block's interior when scanning for starts is what stops a field line being mistaken for a
+    boundary — but the line that ENDS a block does not belong to it, and for an INHERITED pin
+    that line IS the next block's anchor. Counting the terminator as consumed would skip it,
+    and transitivity — a stale root showing up three steps downstream — comes entirely from
+    reading those later blocks."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    proj = _project(tmp_path)
+
+    with runprov.Run("first", project=proj, provenance=tmp_path / "a.prov.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "mid.tsv") as fh:
+            fh.write("x\n")
+    # THE SHAPE THAT PRODUCES TWO BLOCKS: the second step copies the pinned artifact's
+    # CONTENT through, so `mid.tsv`'s pin travels into `final.tsv` underneath the new one.
+    # That carried block is what `read_pins` calls an inherited pin.
+    carried = (tmp_path / "mid.tsv").read_text(encoding="utf-8")
+    with runprov.Run("second", project=proj, provenance=tmp_path / "b.prov.json") as run:
+        run.input(tmp_path / "mid.tsv")
+        with run.open_output(tmp_path / "final.tsv") as fh:
+            fh.write(carried)
+
+    blocks = runprov.verify.read_pins(tmp_path / "final.tsv")
+    assert len(blocks) >= 2, f"the inherited block must still be read: {blocks}"
+    scripts = [b["fields"].get("script") for b in blocks]
+    assert "second" in scripts and "first" in scripts, scripts
+
+    # AND THE CASE WHERE THE BLOCK ENDS BY *HITTING* THE NEXT ANCHOR. Above, the first block
+    # stops because its declared count is satisfied — which consumes the line it stops on. A
+    # block with no `inputs (N)` line runs on until the next anchor, and THAT line is the
+    # next block's start: counting it as consumed would swallow the second pin. `header()`
+    # always writes a count, so this shape comes from a foreign or hand-written pin — which
+    # `read_pins` is expressly built to read.
+    anchor_line = f"# {runprov.hashing.PIN_ANCHOR}"
+    handwritten = tmp_path / "foreign.tsv"
+    handwritten.write_text(
+        "\n".join(
+            [
+                anchor_line,
+                "#   script     : upstream",
+                anchor_line,
+                "#   script     : downstream",
+                "#   inputs (1), content digest:",
+                "#     ca978112ca1bbdca  in.tsv",
+                "payload",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    two = runprov.verify.read_pins(handwritten)
+    assert [b["fields"].get("script") for b in two] == ["upstream", "downstream"], (
+        f"the second block starts on the line that ended the first: {two}"
+    )
+
+
 def test_the_pin_anchor_exists_exactly_once_in_the_source():
     """L-44. The one sentence that says "this file is an artifact" existed TWICE: `header()`
     wrote it as a literal in `run.py`, and `verify` held its own copy under the name

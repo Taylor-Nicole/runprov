@@ -180,6 +180,23 @@ def _json_pin(head: str) -> dict[str, typing.Any] | None:
     return None
 
 
+def _is_boundary(line: str) -> bool:
+    """Could this line START a pin block — does it END with the anchor?
+
+    `header()` renders that first line as `<comment marker><anchor>` and nothing else, so a
+    genuine start ends with the anchor and everything before it is the marker. An empty
+    marker is legitimate: `header("")` writes the anchor with no prefix, for a format where
+    `#` is not a comment.
+
+    NECESSARY BUT NOT SUFFICIENT, and that is why the caller does more. A field whose VALUE
+    ends with the anchor — `generation : batch: <anchor>` — ends with it too, so this test
+    alone cannot tell a boundary from a field. Inside a block the caller compares against
+    `marker + PIN_ANCHOR` exactly; and it never scans a block's interior for starts, so a
+    field line is never a candidate in the first place.
+    """
+    return line.endswith(PIN_ANCHOR)
+
+
 def read_pins(path: pathlib.Path) -> list[dict[str, typing.Any]]:
     """EVERY pin block in an artifact's first `SCAN_BYTES`, in the order they appear.
 
@@ -205,8 +222,35 @@ def read_pins(path: pathlib.Path) -> list[dict[str, typing.Any]]:
 
     lines = head.splitlines()
     blocks: list[dict[str, typing.Any]] = []
+    consumed = 0  # lines already claimed by a block; see below
     for start, anchored in enumerate(lines):
-        if PIN_ANCHOR not in anchored:
+        # NEVER RE-ENTER A BLOCK ALREADY PARSED. Without this, a field line ending with the
+        # anchor is picked up as the START of a second, bogus block — with a "marker" of
+        # `#   generation : batch: ` that nothing else shares, so the block closes empty and
+        # `verify_artifact` sees an entry-less pin. Skipping what the previous block consumed
+        # removes the whole question: fields live inside a block, and a block's interior is
+        # not scanned for starts.
+        if start < consumed:
+            continue
+        # A BOUNDARY LINE IS ONE WHOSE BODY IS *EXACTLY* THE ANCHOR, not one that merely
+        # contains it. Both tests here were substring tests, and the anchor is ordinary
+        # printable text — so any interpolated field carrying that sentence ended the block.
+        # `generation` comes from the environment (`RUNPROV_GENERATION`), and `_safe_for_pin`
+        # escapes control characters, not content:
+        #
+        #     RUNPROV_GENERATION="batch: <the anchor sentence>"
+        #
+        # rendered a perfectly well-formed pin whose block stopped BEFORE `inputs (1)`, so
+        # `verify` reported UNVERIFIABLE having compared nothing — and UNVERIFIABLE is not in
+        # `FAILING`. Measured: one poisoned artifact beside one clean one gave
+        # `1 OK, 0 STALE, 0 GONE, 1 UNVERIFIABLE` and **exit 0**, and when the poisoned
+        # artifact's input really did change, that change stayed invisible.
+        #
+        # THE READER IS FIXED RATHER THAN THE WRITER, because the reader also repairs
+        # artifacts already on disk. Escaping the anchor on the way out would protect only
+        # files written from now on, and the pin's whole promise is that an artifact written
+        # months ago can still be checked.
+        if not _is_boundary(anchored):
             continue
         # A PINNED ARTIFACT DECLARES ITSELF AT THE TOP; a file that merely MENTIONS the
         # format is not an artifact. Without this the anchor was matched anywhere in the
@@ -223,11 +267,21 @@ def read_pins(path: pathlib.Path) -> list[dict[str, typing.Any]]:
         # transitivity comes from -- it just cannot be the one that makes the file count.
         if not blocks and start >= PIN_STARTS_WITHIN:
             continue
-        marker = anchored[: anchored.index(PIN_ANCHOR)]
+        marker = anchored[: -len(PIN_ANCHOR)]
         pin: dict[str, typing.Any] = {"entries": [], "declared": None, "fields": {}}
-        for line in lines[start + 1 :]:
-            if not line.startswith(marker) or PIN_ANCHOR in line:
+        for offset, line in enumerate(lines[start + 1 :], start=start + 1):
+            # EXACTLY the marker plus the anchor — the ONE test that separates a boundary
+            # from a field carrying the same sentence. `endswith` alone is not enough: a
+            # `generation` whose value ENDS with the anchor ends with it too, which is how
+            # the first attempt at this fix still let the block terminate early.
+            if not line.startswith(marker) or line == marker + PIN_ANCHOR:
+                # NOT consumed: this line ends the block without belonging to it, and it may
+                # be the next block's anchor. An INHERITED pin sits directly under the one
+                # above it, so counting the terminator as consumed would skip it — and
+                # transitivity, the property that makes a stale root visible three steps
+                # downstream, comes entirely from reading those later blocks.
                 break
+            consumed = offset + 1
             body = line[len(marker) :]
             if (m := _ENTRY.match(body)) is not None:
                 pin["entries"].append((m.group(1), m.group(2)))
