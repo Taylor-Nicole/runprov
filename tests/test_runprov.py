@@ -4074,6 +4074,118 @@ def test_the_watcher_remembers_a_bounded_number_of_paths(tmp_path, monkeypatch):
     assert len(run._opened) <= 5, "the hook must stop collecting at the bound"
 
 
+def _measured_figures():
+    """Re-derive every scale figure the documents quote. See the test below."""
+    root = _repo_root()
+    suite = (root / "tests" / "test_runprov.py").read_text(encoding="utf-8")
+    # COLLECTED, NOT `def test_`, because "601 tests" in the README means the number pytest
+    # PRINTS — that is what a reader can check. Counting definitions gives a different
+    # quantity (626 against 669 here, because of parametrisation), and measuring one while
+    # the document quotes the other let the known-stale figure sit inside the tolerance of a
+    # baseline it was never compared against.
+    collected = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(root / "tests"),
+            "--collect-only",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "-o",
+            "addopts=",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=root,
+        check=False,
+    )
+    found = re.search(r"(\d+) tests? collected", collected.stdout)
+    assert found, f"could not count the suite: {collected.stdout[-400:]}"
+    stmts = 0
+    for mod in sorted((root / "runprov").glob("*.py")):
+        tree = ast.parse(mod.read_text(encoding="utf-8"))
+        # Not coverage's own definition, and it does not need to be: this asks whether the
+        # quoted SCALE is still true, so any stable proxy that moves with the code will do.
+        stmts += sum(1 for n in ast.walk(tree) if isinstance(n, ast.stmt))
+    return {
+        "tests": int(found.group(1)),
+        "tmp_path": len(re.findall(r"\btmp_path\b", suite)),
+        "statements": stmts,
+    }
+
+
+def test_the_quoted_scale_figures_have_not_drifted_out_of_meaning():
+    """A-11, and this row has now drifted FOUR times: L-09 -> C-03 -> L-58/L-101 -> here.
+    L-09's own fix field asked for the structural remedy — "have `ci.py` regenerate these
+    numbers so they cannot drift again — they have now drifted twice" — and each repair since
+    has been another exact number, which went stale within weeks. At HEAD every one of five
+    figures was wrong, the coverage pair by 17%.
+
+    WHY NOT AN EXACT ASSERTION. `test_the_exported_name_count_in_why_md_is_the_real_one`
+    explains it: pinning statement counts "would mean editing it on every commit that adds a
+    line". That reasoning is right, and it is also why nothing was pinned and the numbers
+    drifted for months. So the documents now say **about N**, and this asserts the stated
+    figure is within 10% of measured.
+
+    TEN PER CENT IS THE ARGUMENT, not a convenient slack. These figures exist to convey
+    SCALE — "a small package, fully covered". A number 5% out still conveys it; one 17% out
+    does not, and by then nobody trusts the rest of the section either. The test fires exactly
+    when the number stops doing its job.
+
+    NOT ASSERTED HERE: the **100%**. That is not approximate, it is enforced by the gate, and
+    `test_the_coverage_floor_is_the_gate` already asserts the gate is set there."""
+    measured = _measured_figures()
+    readme = _readme()
+    why = (_repo_root() / "WHY.md").read_text(encoding="utf-8")
+
+    def quoted(text, pattern, label):
+        m = re.search(pattern, text)
+        assert m, f"the {label} figure is gone from the document: {pattern}"
+        return int(m.group(1).replace(",", ""))
+
+    checks = [
+        ("tests", quoted(readme, r"\*\*about ([\d,]+) tests\*\*", "test count"), measured["tests"]),
+        (
+            "tmp_path",
+            quoted(readme, r"\*\*about ([\d,]+)\*\* uses of `tmp_path`", "tmp_path"),
+            measured["tmp_path"],
+        ),
+        (
+            "statements",
+            quoted(readme, r"about ([\d,]+) statements and [\d,]+ branches", "statements"),
+            measured["statements"],
+        ),
+        # THE BRANCH FIGURE IS PARSED BUT NOT ASSERTED, and pretending otherwise would be
+        # worse than leaving it out. Coverage counts branch ARCS — two per `if` — while an
+        # AST walk counts branching NODES: measured here, 910 against 548. Reconciling them
+        # needs either a fudge factor, which is a number nobody can check, or running
+        # coverage inside a test, which makes the suite depend on its own instrumentation.
+        # The statement figure is the proxy: the two move together, and the drift that
+        # prompted this row had BOTH out by 17%. It is still PARSED, so rewording the
+        # sentence fails here loudly rather than silently checking nothing.
+        (
+            "branches (parsed, not asserted)",
+            quoted(readme, r"about [\d,]+ statements and ([\d,]+) branches", "branches"),
+            None,
+        ),
+    ]
+    if (m := re.search(r"\*\*about ([\d,]+) record\*\*", why)) is not None:
+        checks.append(("WHY.md record split", int(m.group(1).replace(",", "")), None))
+
+    drifted = []
+    for label, stated, actual in checks:
+        if actual is None:
+            continue
+        if abs(stated - actual) > 0.10 * actual:
+            drifted.append(f"{label}: document says {stated:,}, measured {actual:,}")
+    assert not drifted, (
+        "these figures no longer convey the scale they were written to convey — re-measure "
+        f"and update the documents: {drifted}"
+    )
+
+
 def test_the_exported_name_count_in_why_md_is_the_real_one():
     """WHY.md is the positioning document — the file you hand someone who asks how this is
     different — and its differentiator bullet cited **514 statements** and **21 exported

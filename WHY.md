@@ -156,9 +156,11 @@ it is most of the answer to "why did this run differ".
   your pipeline. This one asks you to change `open(p)` to `open(run.input(p))`.
 
   Zero runtime dependencies, and the quickstart uses two of the 17 exported names. On size,
-  the honest figure is where the statements sit rather than the total: **1,371 record**
-  (`run`, `hashing`, `project`, `sinks`, `environment`, `terminal`) and **778 read the record
-  back** (`show`, `__main__`, `verify`). Adopting it costs you the first number; the second is
+  the honest figure is where the statements sit rather than the total: **about 1,500 record**
+  (`run`, `hashing`, `project`, `sinks`, `environment`, `terminal`) and **about 945 read the
+  record back** (`show`, `__main__`, `verify`). A further ~120 are in neither group —
+  `__init__`, `_report` and `watch` — which the earlier version of this bullet quietly
+  omitted, so the two numbers did not add up to the package. Adopting it costs you the first number; the second is
   a CLI you can ignore. This bullet claimed **514 statements** until 2026-08-18 — measured
   before `show`, `verify`, `exec` and the terminal capture existed, which made a stale number
   the evidence in the sentence about smallness.

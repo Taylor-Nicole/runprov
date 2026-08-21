@@ -1843,18 +1843,18 @@ constraint for standard runners, and is the one action that closes this.
 
 ## Tests
 
-`tests/test_runprov.py`, 601 tests, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, **about 670 tests**, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite — in
 `test_size_is_stat_ed_after_the_hash_not_before` — to
 assert a call ORDER that no returned value can show. Everything else is substituted by a real
-thing — 2,024 uses of `tmp_path` (`grep -oE '\btmp_path\b' tests/test_runprov.py | wc -l`), actual
+thing — **about 2,600** uses of `tmp_path` (`grep -oE '\btmp_path\b' tests/test_runprov.py | wc -l`), actual
 files, actual JSONL, actual `Run` objects — or by a
 narrow simulation of an environment this machine is not (`sys.platform` for Windows,
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
 stubs the subject to make it agree with the test.
 
-Twenty-two of the 601 need something of the filesystem itself — a FIFO, a symlink, a file
+Twenty-two of them need something of the filesystem itself — a FIFO, a symlink, a file
 `chmod(0o000)` really makes unreadable — and they skip where that is unavailable. The
 condition is a PROBE, not `sys.platform`: symlinks work on a Windows machine with Developer
 Mode enabled, and `chmod(0o000)` denies nothing to root, so a platform check both skipped
@@ -1864,8 +1864,17 @@ floor, which no leg but that one may lower. (The count of 22 is derived from thi
 real Windows run skipped 9 of 288, at a commit 93 behind. Take the number from the job log
 once the matrix is green on today's tree.)
 
-Coverage is **100%** of 2,151 statements **and 772 branches**, and the gate is set there with
-`--cov-branch`. The branch half was added 2026-08-11 and was not decoration: statement
+Coverage is **100%** of **about 2,560 statements and 910 branches**, and the gate is set there with
+`--cov-branch`.
+
+*Every figure in this section is approximate on purpose.* They exist to convey scale, and an
+exact count is stale the moment anything is added — this section has drifted four times, and
+each repair was another exact number that went stale. A test now re-derives all of them and
+fails if any is more than 10% out, which is the point at which the number stops conveying the
+scale it was written to convey. The **100%** is not approximate: the gate enforces it, and a
+separate test asserts the gate is set there.
+
+ The branch half was added 2026-08-11 and was not decoration: statement
 coverage read 100% while five conditions had never been evaluated both ways — including the
 `with` block that records nothing, which is a *known* documented gap that no test held. Each
 of the five tests closing them was then **mutation-tested**: the guarded behaviour was broken
