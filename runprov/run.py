@@ -1231,8 +1231,27 @@ class Run:
         the one reading the page — `show.in_flight` decides between RUNNING, INTERRUPTED and
         "cannot tell from here", and only the middle one is a finding.
 
+        ONLY WHEN THIS RUN WAS GOING TO BE RECORDED AT ALL, which is `_append_start`'s first
+        line and was missing here. Without it, a shape TWO PUBLISHED DOCUMENTS describe as
+        writing nothing — README's "A run with no `provenance=` writes neither" and the same
+        sentence in CHANGELOG — created `<history>/.incomplete/` and a marker in it. A REPL
+        experiment left a directory behind; killed, it left a permanent marker, and the same
+        `runprov show` then printed "1 run(s) STARTED with no ending recorded … INTERRUPTED"
+        directly above "no run history … Nothing has been recorded here yet". Both halves of
+        that are the package's own output, in one invocation, disagreeing.
+
+        NOTHING IS LOST BY THE GUARD, which is what makes it the right side to fix. This
+        directory is an INDEX over "which recorded runs have no ending yet", and a run that
+        records nothing has no ending to be missing: there is no history line for the marker
+        to be paired against, and `_report_in_flight` had to special-case it precisely
+        because it could never be resolved. The alternative was to change both documents, and
+        `_append_start`'s stated objection applies unchanged — merely entering a `with` block
+        would start creating directories under `provenance/`.
+
         NEVER RAISES, like everything else that describes a run rather than doing the work.
         """
+        if self.provenance_path is None:
+            return
         try:
             d = self.project.resolved_incomplete_dir()
             d.mkdir(parents=True, exist_ok=True)

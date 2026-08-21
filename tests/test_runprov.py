@@ -4748,6 +4748,60 @@ def test_a_with_block_with_no_provenance_and_no_write_records_nothing(
     assert "provenance capture failed" not in err, (
         "it must record nothing BY DESIGN, not by crashing on the way to recording"
     )
+    # A-15. "NOTHING" HAS TO MEAN THE MARKER TOO, and for a year it did not: this test
+    # asserted only the history file, so `_mark_in_flight` created `.incomplete/` and wrote
+    # into it on every unarmed run, and the characterisation test that exists to make such a
+    # change "a decision rather than an accident" never looked. The directory outlives the
+    # marker — `_clear_in_flight` unlinks the file and leaves the folder — so a REPL
+    # experiment left a permanent trace under `provenance/` on a shape two published
+    # documents say writes neither.
+    assert not (tmp_path / ".incomplete").exists(), (
+        "an unrecorded run created the marker directory — README and CHANGELOG both say "
+        "this shape writes neither"
+    )
+
+
+def test_an_unrecorded_run_writes_no_marker_while_it_is_still_running(tmp_path, monkeypatch):
+    """A-15, and the assertion has to be made MID-RUN to mean anything.
+
+    Checking after the block passes for the wrong reason: `_clear_in_flight` removes the
+    marker on the way out, so a clean exit hides everything except the leftover directory.
+    The state that matters is the one a SIGKILL freezes — `__enter__` has run and `__exit__`
+    never will — and entering the block by hand reproduces it exactly, because that is the
+    only difference a SIGKILL makes.
+
+    Killed in that state, the old behaviour left a marker nothing would ever remove, and the
+    same `runprov show` then printed "1 run(s) STARTED with no ending recorded … INTERRUPTED"
+    directly above "no run history … Nothing has been recorded here yet"."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    run = runprov.Run("repl-experiment")
+    run.__enter__()
+    try:
+        assert not (tmp_path / ".incomplete").exists(), (
+            "a run that records nothing marked itself in flight; killed here, the marker "
+            "would be permanent and the history would have nothing to pair it with"
+        )
+    finally:
+        run.__exit__(None, None, None)
+
+
+def test_a_recorded_run_still_marks_itself_in_flight(tmp_path, monkeypatch):
+    """The other half of A-15's guard, and the reason it is a guard and not a deletion. The
+    marker is an INDEX over recorded runs that have no ending yet; `provenance=` is what
+    makes a run recorded, so that is exactly where the marker belongs. A fix that suppressed
+    it everywhere would take out the SIGKILL evidence this package added it for."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    run = runprov.Run("armed", provenance=tmp_path / "p.json")
+    run.__enter__()
+    try:
+        markers = list((tmp_path / ".incomplete").glob("*.json"))
+        assert len(markers) == 1, f"a recorded run must mark itself in flight: {markers}"
+        assert json.loads(markers[0].read_text(encoding="utf-8"))["script"] == "armed"
+    finally:
+        run.__exit__(None, None, None)
+    assert list((tmp_path / ".incomplete").glob("*.json")) == [], "and clear it on the way out"
 
 
 def test_a_module_whose_resolved_file_is_not_a_file_records_no_hash(tmp_path, monkeypatch):

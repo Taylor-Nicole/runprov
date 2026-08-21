@@ -953,8 +953,13 @@ def _report_in_flight(path: pathlib.Path) -> None:
         state = marker["state"] if marker else show_mod.liveness(rec)
         pending.append({**rec, "state": state})
     # A MARKER THE HISTORY HAS NEVER HEARD OF is still worth printing: it is what a run
-    # killed between its marker and its start line leaves, and what a run with no
-    # `provenance=` leaves, since that shape records nothing by design.
+    # killed between its marker and its start line leaves.
+    #
+    # IT IS NO LONGER WHAT AN UNRECORDED RUN LEAVES, and this comment used to say it was —
+    # citing the behaviour as though it were the design. Two published documents said the
+    # opposite in bold, so `_mark_in_flight` now carries `_append_start`'s guard (A-15) and
+    # a run with no `provenance=` writes neither. The remaining case is the narrow one: a
+    # marker written at `__enter__` whose start line never reached the sink.
     #
     # A MARKER FOR A RUN THAT FINISHED IS NOT. `_clear_in_flight` tolerates an `OSError` — a
     # read-only or full `.incomplete`, a stale NFS handle, a restored snapshot — so a marker
