@@ -75,10 +75,15 @@ dependencies = []
 
 [project.optional-dependencies]
 test = ["pytest>=7", "pytest-cov>=4", "pyyaml>=6"]  # pyyaml only to CHECK the rendered YAML
-# ruff and mypy are pinned EXACTLY, and deliberately: both are moving
-# specifications, and an unpinned formatter turns an unrelated push red. The CI
-# lint job installs these same versions, so "it passes locally" means something.
-dev = ["runprov[test]", "ruff==0.16.2", "mypy==2.3.0", "build", "twine", "pre-commit"]
+# PINNED EXACTLY, and deliberately. ruff and mypy are moving specifications, and an
+# unpinned formatter turns an unrelated push red. `build` and `twine` are pinned for a
+# sharper reason: they produce and check the artifact the release job uploads, `on: push:
+# tags` fires once, and PyPI never allows a version to be re-uploaded (A-27).
+# THE VERSIONS LIVE HERE so Dependabot raises them — its `pip` ecosystem reads this file
+# and does not read a workflow's `run:` line. The workflows install these same versions,
+# and a test asserts the two agree.
+dev = ["runprov[test]", "ruff==0.16.2", "mypy==2.3.0",
+       "build==1.5.0", "twine==7.0.0", "pre-commit"]
 
 [project.scripts]
 # `runprov log ...` on PATH, not only `python -m runprov`. Absent until now, and its
