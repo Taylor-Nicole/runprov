@@ -156,14 +156,28 @@ class YamlLogSink:
         self.path = pathlib.Path(path)
 
     def append(self, record: dict[str, typing.Any]) -> None:
+        from .run import START_SCHEMA  # local: `sinks` -> `run` -> `project` -> `sinks`
         from .show import _yaml_entry, _yaml_header  # local: `show` must not import sinks
 
-        # A NARRATIVE OF COMPLETED RUNS. The history carries a `runprov.start.v1` line for
-        # every run that begins, so that one which never ends is still on record; rendering
-        # those here would put TWO entries per ordinary run into the file a person reads,
-        # and the second would say nothing the first does not. The JSONL beside it keeps
-        # both, and this file states in its own banner that it is a view and can be rebuilt.
-        if record.get("schema") == "runprov.start.v1":
+        # A NARRATIVE OF COMPLETED RUNS. The history carries a start line for every run that
+        # begins, so that one which never ends is still on record; rendering those here would
+        # put TWO entries per ordinary run into the file a person reads, and the second would
+        # say nothing the first does not. The JSONL beside it keeps both, and this file states
+        # in its own banner that it is a view and can be rebuilt.
+        #
+        # THE CONSTANT, NOT THE STRING. This tested `== "runprov.start.v1"` as a literal while
+        # `__main__` used the imported `START_SCHEMA` — one sentence in two places, which is
+        # what `0eb8fe8` and ADR-0003 removed for `PIN_ANCHOR`. Measured: bumping the schema
+        # to v2 and running ONE ordinary run gives two `- step:` entries in
+        # `transformation_log.yml`, the first of them hollow — verbatim the outcome this
+        # filter exists to prevent, in the file the README positions as the successor to the
+        # predecessor's manifest, where any `yaml.safe_load` tally would double.
+        #
+        # A LOCAL IMPORT because a top-level one cycles, measured rather than assumed:
+        # `sinks` -> `run` -> `project` -> `sinks` raises `ImportError: cannot import name
+        # 'OTHER_FILES_KEPT' from partially initialized module`. Same shape, and the same
+        # reason, as the `show` import on the line above.
+        if record.get("schema") == START_SCHEMA:
             return
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -11183,8 +11183,14 @@ def _completed(records):
     reader in the package, so a test going through the CLI never sees them; a test reading
     `runs.jsonl` or a `MemorySink` directly does, and almost always wants what this returns.
 
-    A test that is ABOUT the start lines reads them without this, deliberately."""
-    return [r for r in records if r.get("schema") != "runprov.start.v1"]
+    A test that is ABOUT the start lines reads them without this, deliberately.
+
+    THE CONSTANT, NOT THE STRING (A-28). This was a third copy of the literal, after
+    `sinks.py` and the definition itself, and it is the copy that made the row's symptom
+    look like something else: a real schema bump failed 42 tests, almost all of them here
+    rather than anywhere the schema matters, so a maintainer works through a wall of
+    unrelated red without being pointed at the file that actually doubled."""
+    return [r for r in records if r.get("schema") != runprov.run.START_SCHEMA]
 
 
 def _lines(path):
@@ -16689,4 +16695,90 @@ def test_every_pinned_tool_in_a_workflow_matches_the_dev_extra():
         f"a workflow installs a tool the `dev` extra pins, without the pin — which is how "
         f"the release job built its artifact with whatever had shipped that morning: "
         f"{unpinned}"
+    )
+
+
+def test_the_yaml_view_stays_one_entry_per_run_when_the_schema_is_bumped(tmp_path, monkeypatch):
+    """A-28. `YamlLogSink.append` filtered start lines with the literal `"runprov.start.v1"`
+    while `__main__` used the imported `START_SCHEMA` — one sentence in two places, which is
+    what `0eb8fe8` and ADR-0003 removed for `PIN_ANCHOR`.
+
+    Measured before the fix: bump `START_SCHEMA` to v2, run ONE ordinary run, and
+    `transformation_log.yml` gets two `- step:` entries with the first hollow — verbatim the
+    outcome the filter exists to prevent, in the file the README positions as the successor
+    to the predecessor's manifest, where any `yaml.safe_load` tally would double.
+
+    NOT A TEST THAT THE TWO STRINGS ARE EQUAL. Ledger `301b28b` settled that: "a test holding
+    two constants equal is the defect deferred, not closed" — it passes just as well when both
+    copies are wrong together. This bumps the schema and asserts the PROPERTY, which is what
+    the literal was silently failing to deliver.
+
+    The suite does go red on a bump today, which is why this is low and not medium — but on
+    `len(entries) == 3` in an unrelated history-count test, so the maintainer is pointed at
+    the wrong file."""
+    monkeypatch.setattr(runprov.run, "START_SCHEMA", "runprov.start.v2")
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "prov" / "runs.jsonl")
+    for i in range(2):
+        with runprov.Run(f"s{i}", provenance=f"prov/p{i}.json"):
+            pass
+
+    yaml_view = (tmp_path / "prov" / "transformation_log.yml").read_text(encoding="utf-8")
+    entries = [ln for ln in yaml_view.splitlines() if ln.startswith("- step:")]
+    assert len(entries) == 2, (
+        f"two completed runs must be two entries in the narrative a person reads; the start "
+        f"lines were rendered as well: {entries}"
+    )
+    # THE PREMISE, asserted rather than assumed: the bump really did reach the records. A
+    # monkeypatch that missed would make the count right for the wrong reason.
+    starts = [
+        r
+        for r in (
+            json.loads(x) for x in (tmp_path / "prov" / "runs.jsonl").read_text().splitlines()
+        )
+        if r.get("schema") == "runprov.start.v2"
+    ]
+    assert len(starts) == 2, f"the schema bump never reached the history: {starts}"
+
+
+def test_every_document_naming_the_start_schema_names_the_current_one():
+    """A-28's other half, and the reason removing the duplicated literals needed a
+    replacement rather than just a deletion.
+
+    Before: a real bump failed 42 tests, essentially all of them because the test helper
+    `_completed` hardcoded the string — noise that told a maintainer nothing true, and buried
+    the one thing that HAD silently broken, the YAML narrative. After: the readers all follow
+    the constant, and a bump passes the whole suite. That is correct for the code and wrong
+    for the documents: README and CHANGELOG both print `runprov.start.v1` to a reader as the
+    shape of a line in their history file, and both would quietly become false.
+
+    So the loudness moves to where it belongs. DERIVED over every Markdown file, not a list of
+    two filenames — the scope defect this audit found five times.
+
+    MARKDOWN ONLY, deliberately. Source comments also name the schema, but some of them are
+    HISTORICAL — `sinks.py` records what the filter used to compare against, and that sentence
+    stays true after a bump. A document showing a reader what their file contains does not."""
+    current = runprov.run.START_SCHEMA
+    pat = re.compile(r"runprov\.start\.v\d+")
+    skip = {".git", ".venv", "__pycache__", ".mypy_cache", ".pytest_cache", "dist", "build"}
+    docs = sorted(
+        f
+        for f in _repo_root().rglob("*.md")
+        if not any(p in skip or p.endswith(".egg-info") for p in f.relative_to(_repo_root()).parts)
+    )
+    assert len(docs) > 3, f"the document sweep found {len(docs)} files; the scope broke"
+
+    stale, cited = [], []
+    for f in docs:
+        for name in pat.findall(f.read_text(encoding="utf-8")):
+            cited.append(f.name)
+            if name != current:
+                stale.append(f"{f.relative_to(_repo_root())}: {name}")
+    assert cited, (
+        "no document names the start schema any more; if that is deliberate, delete this test "
+        "— it exists because README and CHANGELOG both print it to a reader"
+    )
+    assert not stale, (
+        f"a document shows a reader a schema the package no longer writes, which is exactly "
+        f"what a bump makes false and nothing else would now catch: {stale}"
     )
