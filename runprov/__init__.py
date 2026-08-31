@@ -58,7 +58,7 @@ from .project import (
     detect_root,
     is_configured,
 )
-from .run import HISTORY_SCHEMA, SCHEMA, Run, Terminated
+from .run import HISTORY_SCHEMA, SCHEMA, START_SCHEMA, Run, Terminated
 from .sinks import JsonlSink, RecordSink
 
 # EVERY NAME HERE IS A PROMISE. It was 27, and the quickstart uses two of them; a previous
@@ -93,12 +93,35 @@ from .sinks import JsonlSink, RecordSink
 #                             a general-purpose runner. ADR-0003 left this open; this closes
 #                             it by withdrawal rather than by rename.
 #
-# 17 names. All ten withdrawn names still exist on their own modules.
+# ONE ADDED ON 2026-08-22 (ledger A-30), and it is the only name ever promoted here:
+# `START_SCHEMA`. Since the start line landed, `runs.jsonl` carries a third schema and the
+# README prints it to external readers, so the promise existed as a copy-pasted string
+# before it existed as a name. Every reader inside the package filters on it, and the
+# package's own test says an outside one that does not "would count each completed run
+# TWICE". That is verbatim the reason `HISTORY_SCHEMA` is promised.
+#
+# WHY THE QUIET ONES STAY, recorded because a promised name with no document reference has
+# to justify itself — the criterion the L-84 withdrawal used, applied to what survived it
+# (ledger A-31). A test requires a line here for every such name:
+#   `SCHEMA`, `HISTORY_SCHEMA`, `START_SCHEMA` — a consumer parsing records needs the
+#     version, and the third one decides whether a run is counted once or twice.
+#   `DEFAULT_CODE_PATHS`, `DEFAULT_TRACKED` — people extend them.
+#   `active` and `is_configured` — the pair a LIBRARY needs rather than a script:
+#     `is_configured()` to avoid re-configuring somebody else's project, `active()` to read
+#     what was resolved. There is no other documented spelling for either, which is why the
+#     L-84 criterion does not reach them: it is two-pronged, and its second prong is that the
+#     feature is documented as configuration and record fields instead. These have no such
+#     alternate route.
+#   `detect_root` — the root-detection RULE is documented behaviour, and a caller
+#     reproducing it by hand is exactly the drift this package exists to remove.
+#
+# 18 names. All ten withdrawn names still exist on their own modules.
 __all__ = [
     "DEFAULT_CODE_PATHS",
     "DEFAULT_TRACKED",
     "HISTORY_SCHEMA",
     "SCHEMA",
+    "START_SCHEMA",
     "JsonlSink",
     "Project",
     "RecordSink",
