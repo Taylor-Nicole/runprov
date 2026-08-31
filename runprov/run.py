@@ -1249,6 +1249,17 @@ class Run:
         `_append_start`'s stated objection applies unchanged — merely entering a `with` block
         would start creating directories under `provenance/`.
 
+        AND IT IS WRITTEN UNDER A CUSTOM `sink=` TOO, which A-26 left open and this settles
+        by measuring rather than by preference. The marker is the only LOCAL trace a run
+        started, and it is read: a run killed under a database sink leaves
+        `INTERRUPTED ingest … pid 199423` on `runprov show`, which is true, is the finding,
+        and is not available anywhere else on that machine. Skipping the marker for
+        non-filesystem sinks would delete the SIGKILL evidence this whole mechanism exists
+        for, to avoid creating one hidden directory. The directory is `.incomplete` beside
+        where the history WOULD be, which is a predictable place and not a claim about where
+        the records went — the `history` field above is what says that, and now says it
+        correctly.
+
         NEVER RAISES, like everything else that describes a run rather than doing the work.
         """
         if self.provenance_path is None:
@@ -1273,7 +1284,17 @@ class Run:
                         # rule as `git_status_captured: false`.
                         "host": platform.node(),
                         "cwd": self.record.get("cwd"),
-                        "history": str(self.project.resolved_run_log()),
+                        # THE SAME ANSWER THE RECORD GIVES, and `history_destination` exists
+                        # to be that one answer: "a sink with no `path` (a database, a queue)
+                        # is named by its type -- that is all there is to say, and saying it
+                        # is better than printing a run log the sink ignores". This spelled it
+                        # `resolved_run_log()`, which under a custom `sink=` is a path NOTHING
+                        # EVER WRITES. So a marker asserted a location that was never observed
+                        # -- in the module whose rule is that a record must not say more than
+                        # was observed -- while the terminal line for the same run correctly
+                        # printed `history -> DbSink`. Reproduced: `marker history exists:
+                        # False`, with both records safely in the sink.
+                        "history": self.project.history_destination(),
                     }
                 )
                 + "\n",

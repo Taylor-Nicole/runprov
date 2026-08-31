@@ -16580,3 +16580,62 @@ def test_a_marker_that_cannot_answer_does_not_outrank_a_start_line_that_can(tmp_
     capsys.readouterr()
     assert cli.main(["show", "--log", str(log)]) == 0
     assert "?" in capsys.readouterr().err, "a pid on another host still cannot be judged here"
+
+
+def test_the_marker_names_the_history_the_run_actually_joined(tmp_path):
+    """A-26. `_mark_in_flight` wrote `"history": str(resolved_run_log())`. Under a custom
+    `sink=`, `resolved_sink()` returns only that sink and the run log is a path NOTHING EVER
+    WRITES — so the marker asserted a location that was never observed, in the module whose
+    stated rule is that a record must not say more than was observed. Reproduced with a sink
+    exposing only `append`: `marker history exists: False`, while both `runprov.start.v1` and
+    `runprov.history.v2` reached the sink and the terminal correctly printed
+    `history -> DbSink`.
+
+    `history_destination()` is the package's existing single answer — "a sink with no `path`
+    (a database, a queue) is named by its type … saying it is better than printing a run log
+    the sink ignores" — and the RECORD already used it. The marker was the one place that
+    disagreed with it, so this asserts the two AGREE rather than pinning either spelling.
+
+    MEASURED ON THE MARKER WRITTEN MID-RUN, because `_clear_in_flight` removes it at
+    `__exit__`; checking afterwards would be checking nothing."""
+    sink, proj = _sinked(tmp_path)
+    run = runprov.Run("s", project=proj, provenance=tmp_path / "p.json")
+    run.__enter__()
+    try:
+        marker = json.loads(
+            next((tmp_path / "provenance" / ".incomplete").glob("*.json")).read_text(
+                encoding="utf-8"
+            )
+        )
+        assert marker["history"] == proj.history_destination(), (
+            f"the marker says {marker['history']!r}, the run joined {proj.history_destination()!r}"
+        )
+        assert marker["history"] == run.record["history"]["destination"], (
+            "the marker and the record must give one answer, not two"
+        )
+        # AND IT IS NOT A PATH THAT WILL NEVER EXIST, which is the defect stated directly.
+        assert not pathlib.Path(marker["history"]).exists(), (
+            "premise: with a sink, the run log is never written — if this fails the fixture "
+            "stopped exercising the sink path and the test above proves nothing"
+        )
+        assert marker["history"] == type(sink).__name__
+    finally:
+        run.__exit__(None, None, None)
+
+
+def test_the_marker_still_names_the_file_when_there_is_no_sink(tmp_path, monkeypatch):
+    """The other side of A-26: with no `sink=`, `history_destination()` IS the run log, so the
+    ordinary case must be unchanged. A fix that made every marker say `JsonlSink` would have
+    traded a wrong answer for a useless one."""
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=log)
+    run = runprov.Run("s", provenance="p.json")
+    run.__enter__()
+    try:
+        marker = json.loads(
+            next((tmp_path / ".incomplete").glob("*.json")).read_text(encoding="utf-8")
+        )
+        assert marker["history"] == str(log)
+    finally:
+        run.__exit__(None, None, None)
