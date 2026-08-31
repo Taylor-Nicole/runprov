@@ -948,11 +948,18 @@ class _InFlightScan:
 
     def pending(self) -> list[dict[str, typing.Any]]:
         """Every run to report, each carrying the state to print for it."""
-        markers = dict(self.markers)
+        # PAIRED BY A SET, NOT BY CONSUMING THE DICT. This popped from a defensive COPY of
+        # `self.markers`, and the copy was a line no mutation could tell from its absence —
+        # popping from `self.markers` itself produces identical output, because `report()` is
+        # the only caller and calls this once. That is the shape that traps the NEXT caller:
+        # a method that reads like a query and consumes its receiver. Computing the paired
+        # uids up front removes the mutation entirely, so `pending()` is idempotent by
+        # construction rather than by a copy somebody has to remember to keep.
+        paired = {str(rec.get("run_uid")) for rec in self.open.values()}
         out: list[dict[str, typing.Any]] = []
         for rec in self.open.values():
             uid = str(rec.get("run_uid"))
-            marker = markers.pop(uid, None)
+            marker = self.markers.get(uid)
             # NO MARKER IS NOT A DEATH. It used to default to INTERRUPTED, which conflated
             # three different situations: the marker was cleaned away, it was never written,
             # or the run is STILL GOING. `_mark_in_flight` tolerates an OSError, warns and
@@ -960,7 +967,25 @@ class _InFlightScan:
             # marker absent, process alive" — and `.incomplete` is documented as deletable.
             # The start line carries `pid` and `host` precisely so this question can be
             # answered; nobody was asking it.
-            out.append({**rec, "state": marker["state"] if marker else show_mod.liveness(rec)})
+            #
+            # WHICHEVER SOURCE CAN ANSWER, and neither one is privileged. Both records are
+            # written by the same process, so their `pid` and `host` normally agree and
+            # either gives the same state — which is why "prefer the marker" was a branch NO
+            # mutation could distinguish, in either direction: always taking the marker and
+            # never taking it both left the suite green.
+            #
+            # They diverge only when one of the two is DAMAGED — parses, but has lost its
+            # `pid`. Then that source reports `?` while the other holds the answer, and `?`
+            # was printed on a line carrying a live pid on this host: "we could not look"
+            # rendered as a verdict with the answer beside it, on the same line. Measured
+            # both ways round, because damage is not particular about which file it hits.
+            #
+            # The start line is tried first because it is the append-only record; where both
+            # can answer they agree, so the order is a tie-break and not a judgement.
+            state = show_mod.liveness(rec)
+            if state == show_mod.UNTELLABLE and marker is not None:
+                state = marker["state"]
+            out.append({**rec, "state": state})
         # A MARKER THE HISTORY HAS NEVER HEARD OF is still worth printing: it is what a run
         # killed between its marker and its start line leaves.
         #
@@ -969,7 +994,14 @@ class _InFlightScan:
         # was in the file this function had JUST READ. The refutation was already in hand and
         # was being discarded: the same pass that pairs starts with endings knows every uid
         # that ended.
-        out += [m for uid, m in markers.items() if uid not in self.finished]
+        # `paired` IS THE DEDUPLICATION, and it is what the `pop` used to do implicitly. A run
+        # with BOTH a start line and a marker appears once, from the walk above. Without it,
+        # `show` prints `# 2 run(s) STARTED` above the identical row twice — measured — and
+        # the finding tally doubles with it, which is L-99's "a count that looks like
+        # evidence" in a reader three commits old.
+        out += [
+            m for uid, m in self.markers.items() if uid not in paired and uid not in self.finished
+        ]
         return out
 
     def report(self) -> None:

@@ -12466,10 +12466,31 @@ def test_a_pid_owned_by_someone_else_is_running_not_gone(tmp_path, monkeypatch):
 def test_a_page_with_only_running_jobs_reports_them_without_alarm(tmp_path, capsys):
     """A marker is present for the WHOLE of a run, so on a busy project the ordinary state
     is several RUNNING markers and no finding. The alarming paragraph — "ran no ending code
-    at all" — must not appear then, or the check becomes noise and gets ignored."""
+    at all" — must not appear then, or the check becomes noise and gets ignored.
+
+    A-25. THE START LINE SHARES THE MARKER'S `run_uid`, which is the ordinary shape and was
+    not the shape this test built: its history line was a `history.v2` record with no uid at
+    all, so the marker arrived as an ORPHAN and the pairing was never exercised. A run that
+    is genuinely in flight has both, and the dedup that stops it being counted twice had no
+    test anywhere."""
     log = tmp_path / "runs.jsonl"
     log.write_text(
-        json.dumps({"schema": "runprov.history.v2", "script": "s"}) + "\n", encoding="utf-8"
+        json.dumps({"schema": "runprov.history.v2", "script": "s"})
+        + "\n"
+        + json.dumps(
+            {
+                "schema": runprov.run.START_SCHEMA,
+                "run_uid": "u",
+                "run_id": "r",
+                "script": "fetch",
+                "generation": "g",
+                "started_utc": "t",
+                "host": runprov.show.platform.node(),
+                "pid": os.getpid(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
     )
     d = tmp_path / ".incomplete"
     d.mkdir()
@@ -12490,6 +12511,10 @@ def test_a_page_with_only_running_jobs_reports_them_without_alarm(tmp_path, caps
     assert "RUNNING" in err and "STARTED with no ending recorded" in err
     assert "ran no ending code at all" not in err, (
         "nothing is wrong here, and saying so is how a check stops being read"
+    )
+    assert "# 1 run(s) STARTED" in err, f"one run, counted once: {err}"
+    assert len([ln for ln in err.splitlines() if "RUNNING" in ln]) == 1, (
+        f"the run has a start line AND a marker; printing it once is the whole dedup: {err}"
     )
 
 
@@ -16384,3 +16409,174 @@ def test_every_sdist_include_entry_names_something_that_exists():
         f"pyproject's sdist `include` names {missing}, which is not in the repository — "
         f"the entry ships nothing and nothing says so"
     )
+
+
+def test_the_in_flight_count_equals_the_rows_it_prints(tmp_path, capsys):
+    """A-25, and the reason it is a row rather than a nicety: L-99 closed on the argument
+    that "a reader who cannot trust the count of what was lost is worse off than one given no
+    count at all, because the number looks like evidence". The header count and the rows are
+    computed from one list, and `markers.pop` is what keeps a run that has BOTH a start line
+    and a marker out of it twice.
+
+    Changing that `.pop` to `.get` — one character, and exactly what a refactor-for-clarity
+    does — makes `show` print `# 2 run(s) STARTED` above the identical row twice. Measured.
+
+    THE ASSERTION IS THE INVARIANT, NOT A LITERAL: the count must equal the rows, whatever
+    the page holds. A page built of three different shapes at once is what makes that mean
+    something — a paired live run, a paired dead one, and a marker the history never heard
+    of, which is the one shape that SHOULD add a row."""
+    here = runprov.show.platform.node()
+    dead = _never_a_pid()
+    log = tmp_path / "runs.jsonl"
+    d = tmp_path / ".incomplete"
+    d.mkdir()
+
+    def start(uid, pid):
+        return json.dumps(
+            {
+                "schema": runprov.run.START_SCHEMA,
+                "run_uid": uid,
+                "run_id": f"r-{uid}",
+                "script": uid,
+                "generation": "g",
+                "started_utc": f"2026-08-22T09:00:0{len(uid)}Z",
+                "host": here,
+                "pid": pid,
+            }
+        )
+
+    def marker(uid, pid):
+        (d / f"{uid}.json").write_text(
+            json.dumps(
+                {
+                    "run_uid": uid,
+                    "script": uid,
+                    "started_utc": f"2026-08-22T09:00:0{len(uid)}Z",
+                    "host": here,
+                    "pid": pid,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    # paired and alive, paired and dead, and an orphan marker with no start line
+    log.write_text(start("alive", os.getpid()) + "\n" + start("killed", dead) + "\n", "utf-8")
+    marker("alive", os.getpid())
+    marker("killed", dead)
+    marker("orphan", dead)
+
+    capsys.readouterr()
+    assert cli.main(["show", "--log", str(log)]) == 0
+    err = capsys.readouterr().err
+
+    stated = int(re.search(r"# (\d+) run\(s\) STARTED", err).group(1))
+    rows = [ln for ln in err.splitlines() if re.match(r"#   (RUNNING|INTERRUPTED|\?) ", ln)]
+    assert stated == len(rows) == 3, (
+        f"the header says {stated} and {len(rows)} rows were printed; a paired run must "
+        f"appear once, and only the orphan marker adds one: {err}"
+    )
+    assert len([r for r in rows if "alive" in r]) == 1, f"the live run is doubled: {err}"
+    assert len([r for r in rows if "killed" in r]) == 1, f"the dead run is doubled: {err}"
+    # AND THE FINDING TALLY, which is computed over the same list and would double with it.
+    assert "2 of them ran no ending code at all" in err, err
+
+    # `pending()` READS LIKE A QUERY AND MUST BEHAVE LIKE ONE. It pops from a COPY of the
+    # marker dict; popping from `self.markers` is indistinguishable today, because `report()`
+    # is the only caller and calls it once — which is precisely the shape that traps the next
+    # caller, and this class is three days old. Asserted rather than left as a line no
+    # mutation can tell from its absence.
+    scan = cli._InFlightScan(d)
+    scan.consume(log)
+    assert [r["run_uid"] for r in scan.pending()] == [r["run_uid"] for r in scan.pending()], (
+        "pending() consumed its own state; the second call answers a different question"
+    )
+
+
+def test_a_marker_that_cannot_answer_does_not_outrank_a_start_line_that_can(tmp_path, capsys):
+    """Found by mutation while closing A-25: `marker["state"] if marker else liveness(rec)`
+    had a branch nothing could distinguish. Both records are written by the same process, so
+    their `pid` and `host` agree and either source gives the same state — always, for every
+    run this package can produce.
+
+    They diverge when the MARKER is damaged. One that still parses but has lost its `pid`
+    reports `?`, and `?` was then printed on a line carrying the start record's own live pid
+    and this host — "we could not look" rendered as a verdict with the answer beside it, on
+    the same line. Measured before the fix:
+
+        #   ?            align   2026-08-22T09:00:00Z  pid 172377  on PLNX-194045
+
+    The start line exists to answer exactly this (A-03), so whichever source CAN answer
+    wins."""
+    here = runprov.show.platform.node()
+    log = tmp_path / "runs.jsonl"
+    log.write_text(
+        json.dumps(
+            {
+                "schema": runprov.run.START_SCHEMA,
+                "run_uid": "damaged",
+                "run_id": "r",
+                "script": "align",
+                "generation": "g",
+                "started_utc": "2026-08-22T09:00:00Z",
+                "pid": os.getpid(),
+                "host": here,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    d = tmp_path / ".incomplete"
+    d.mkdir()
+    # PARSES, AND CANNOT ANSWER: no `pid`. `in_flight` skips a torn marker, so the shape that
+    # reaches here is one that survived being written and lost a field afterwards.
+    (d / "damaged.json").write_text(
+        json.dumps({"run_uid": "damaged", "script": "align", "host": here}), encoding="utf-8"
+    )
+
+    capsys.readouterr()
+    assert cli.main(["show", "--log", str(log)]) == 0
+    err = capsys.readouterr().err
+    assert "RUNNING" in err, f"the start line could answer and was not asked: {err}"
+    assert not re.search(r"#   \?\s", err), f"`?` printed beside a live pid on this host: {err}"
+
+    # AND THE SAME DAMAGE THE OTHER WAY ROUND. Nothing privileges either file, so a start
+    # line that lost its `pid` beside an intact marker must also report the answer rather
+    # than `?`. Both mutations — always take the marker, never take it — left the suite green
+    # before these two assertions existed.
+    log.write_text(
+        json.dumps(
+            {
+                "schema": runprov.run.START_SCHEMA,
+                "run_uid": "damaged",
+                "run_id": "r",
+                "script": "align",
+                "generation": "g",
+                "started_utc": "2026-08-22T09:00:00Z",
+                "host": here,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (d / "damaged.json").write_text(
+        json.dumps({"run_uid": "damaged", "script": "align", "pid": os.getpid(), "host": here}),
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    assert cli.main(["show", "--log", str(log)]) == 0
+    err = capsys.readouterr().err
+    assert "RUNNING" in err, f"the marker could answer and was not asked: {err}"
+
+    # AND THE OTHER HOST STILL READS `?`, because there the answer genuinely is not available
+    # — `os.kill(pid, 0)` here would report on whichever local process holds that number.
+    (d / "damaged.json").write_text(
+        json.dumps({"run_uid": "damaged", "script": "align", "pid": 1, "host": "a-compute-node"}),
+        encoding="utf-8",
+    )
+    log.write_text(
+        log.read_text(encoding="utf-8").replace(f'"host": "{here}"', '"host": "a-compute-node"'),
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    assert cli.main(["show", "--log", str(log)]) == 0
+    assert "?" in capsys.readouterr().err, "a pid on another host still cannot be judged here"
