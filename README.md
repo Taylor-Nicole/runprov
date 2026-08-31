@@ -896,8 +896,15 @@ still registers the input in the record, but the bytes already on disk cannot gr
 The artifact then **understates what it was made from**, permanently, and its pin will read
 `OK` for ever no matter what happens to that input.
 
-The run warns at the moment it happens, and **the record marks it too, as
-`inputs_not_in_pin`** — in the sidecar and in the history, omitted when there are none, the
+**So the call is refused.** `run.input()` after the pin has been written raises, naming the
+artifact and the way out — it is the fourth way that method already refuses a registration,
+after a missing file, an unreadable one and a FIFO. The refusal lands in the record as
+`refused_late_inputs`, before it is raised, so a caller who catches it cannot erase the fact.
+
+For the one shape this genuinely forbids — an input whose **path** is not knowable until
+something already-open has been read, a config that names its own data file — set
+`Project(allow_late_inputs=True)`. Then the pre-existing behaviour returns exactly: the run
+warns at the moment it happens, and **the record marks it as `inputs_not_in_pin`** — in the sidecar and in the history, omitted when there are none, the
 same treatment `unregistered_reads` gets and for the same reason: a warning is ephemeral, a
 field travels with the run. `show --stale` works from the record, so it checks every input
 including the late one; `verify` works from the artifact's own bytes, so it cannot, and that
