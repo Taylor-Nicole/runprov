@@ -36,7 +36,11 @@ from __future__ import annotations
 # keeps finding. `PIN_UNSAFE` is absent because it was WITHDRAWN on 2026-08-19 — it stays
 # reachable as `runprov.run.PIN_UNSAFE` and un-underscored, which a test pins, but it is
 # no longer promised.
-__all__ = ["HISTORY_SCHEMA", "SCHEMA", "Run", "Terminated"]
+# `START_SCHEMA` is here from 2026-08-22 (ledger A-30), on the reason already written for
+# `HISTORY_SCHEMA`: a consumer parsing `runs.jsonl` MUST filter on it or count every
+# completed run twice — the package's own test says so — and the README already prints the
+# string to external readers, so the promise existed before the name did.
+__all__ = ["HISTORY_SCHEMA", "SCHEMA", "START_SCHEMA", "Run", "Terminated"]
 
 import atexit
 import contextlib

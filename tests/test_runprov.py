@@ -16806,3 +16806,42 @@ def test_every_document_naming_the_start_schema_names_the_current_one():
         f"a document shows a reader a schema the package no longer writes, which is exactly "
         f"what a bump makes false and nothing else would now catch: {stale}"
     )
+
+
+def test_a_promised_name_no_document_mentions_carries_a_recorded_reason():
+    """A-31, mechanised. The L-84 follow-up withdrew five names on a measurement — "zero
+    references in README, GETTING-STARTED, WHY and every ADR, checked rather than assumed" —
+    and the same measurement over the SURVIVORS found `active`, `is_configured` and
+    `detect_root` at zero, with `__init__.py`'s block silent about all three while it gave a
+    reason for every other quiet name.
+
+    THE SILENCE WAS THE ANOMALY, NOT THE NAMES. Zero references does not disqualify a name
+    here: `HISTORY_SCHEMA` and both `DEFAULT_*` tuples score zero and stay, on recorded
+    reasons. So the rule is not "delete the quiet ones", it is "a promise nobody was told to
+    call has to say why it is a promise" — and that is what this asserts, for every such name
+    rather than for the three that happened to be found.
+
+    A name the documents DO use justifies itself by use and needs no line; that is why the
+    measurement is the filter and not a list of names typed here."""
+    docs = [_repo_root() / n for n in ("README.md", "GETTING-STARTED.md", "WHY.md")]
+    docs += sorted((_repo_root() / "docs" / "adr").glob("*.md"))
+    docs = [d for d in docs if d.is_file()]
+    assert len(docs) > 3, f"the document sweep found {len(docs)} files; the scope broke"
+    text = "\n".join(d.read_text(encoding="utf-8") for d in docs)
+
+    reasons = (_repo_root() / "runprov" / "__init__.py").read_text(encoding="utf-8")
+    reasons = reasons.split("__all__ = [")[0]
+    quiet, loud = [], []
+    for name in runprov.__all__:
+        (quiet if not re.search(rf"\b{re.escape(name)}\b", text) else loud).append(name)
+
+    # NOT VACUOUS in either direction: some names must be quiet (or the rule checks nothing)
+    # and some must be loud (or the reader is broken and everything looks quiet).
+    assert quiet and loud, f"quiet={quiet} loud={loud}; the reference measurement broke"
+
+    silent = [n for n in quiet if f"`{n}`" not in reasons]
+    assert not silent, (
+        f"{silent} are promised, appear in no document, and `__init__.py` does not say why "
+        f"they are promised — which is the shape the L-84 withdrawal used to remove five "
+        f"other names"
+    )
