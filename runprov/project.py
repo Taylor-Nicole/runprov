@@ -429,6 +429,18 @@ class Project:
     # finding lands in the record as `unregistered_reads` as well as on stderr, because a
     # warning is ephemeral and a field is checkable three years later.
     warn_unregistered_reads: bool = True
+    # THE ESCAPE HATCH FOR A PATH THAT CANNOT BE KNOWN IN TIME. `run.input()` after the pin
+    # has been written REFUSES by default (ledger A-16): the pin lives in the artifact's first
+    # bytes, so a later registration cannot reach it, and the artifact then understates what
+    # it was made from for ever while its own `verify` reads OK. Refusing is the only thing
+    # that prevents that; recording it is all that is possible afterwards.
+    #
+    # Set True for the one shape refusing genuinely forbids — an input whose PATH is not
+    # knowable until something already-open has been read, a config that names its own data
+    # file. Then the call warns instead, and the divergence lands in the record as
+    # `inputs_not_in_pin`. A refusal lands as `refused_late_inputs`, so either way the
+    # decision is in the record and not only on the terminal.
+    allow_late_inputs: bool = False
     # Where full environment snapshots go. None disables them; `environment.packages` in
     # each record still carries the tracked subset. Opt-in because a snapshot is only
     # worth writing where someone will look for it, and content-addressed so enabling it
@@ -522,16 +534,19 @@ class Project:
                 # Project safe to share, and `__post_init__` is the one place it may be set.
                 object.__setattr__(self, name, pathlib.Path(value))
 
+        # DERIVED FROM THE ANNOTATIONS, not listed. This was a hand-written tuple of six
+        # (name, kind) pairs, which is the shape that stops covering what it names the moment
+        # a field is added — the defect this audit found five separate times in checks
+        # elsewhere, and `allow_late_inputs` would have been the seventh. `from __future__
+        # import annotations` makes them strings, which is why this compares by name.
+        simple = {"bool": bool, "int": int}
+        checked = [(f.name, simple[f.type]) for f in dataclasses.fields(self) if f.type in simple]
+        # A sweep that matched nothing would validate nothing and look identical from here,
+        # so the count is asserted in the SUITE rather than at runtime — an `assert` in
+        # shipped code is stripped by `-O`, which is the one condition it would be needed in.
         wrong = [
             f"{name}={getattr(self, name)!r}"
-            for name, kind in (
-                ("write_transformation_log", bool),
-                ("write_yaml_sidecar", bool),
-                ("warn_unregistered_reads", bool),
-                ("sidecar_per_run", bool),
-                ("hash_imported_code", bool),
-                ("imported_code_max", int),
-            )
+            for name, kind in checked
             if not isinstance(getattr(self, name), kind)
         ]
         if wrong:

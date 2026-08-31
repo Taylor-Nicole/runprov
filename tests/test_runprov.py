@@ -5970,9 +5970,14 @@ def test_registering_an_input_after_the_pin_is_written_warns(tmp_path, monkeypat
     """R14. `header()` renders the pin from the inputs registered SO FAR. Called early, it
     embeds a pin that understates its own artifact — and the artifact then claims, in its own
     body, to be derived from less than it was. Nothing can detect that after the fact, so it
-    has to be said at the moment it happens."""
+    has to be said at the moment it happens.
+
+    THE WARNING IS NOW THE OPT-IN PATH (A-16, Taylor's decision 2026-08-22): the default is to
+    REFUSE, and `allow_late_inputs=True` is for the one shape refusing forbids. So this test
+    keeps its subject — what the warning says when a late input is permitted — and the
+    refusal has its own tests."""
     monkeypatch.chdir(tmp_path)
-    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl", allow_late_inputs=True)
     a, b = tmp_path / "a.tsv", tmp_path / "b.tsv"
     for f in (a, b):
         f.write_text("x\n", encoding="utf-8")
@@ -15854,7 +15859,10 @@ def _late_input_run(tmp_path):
     (tmp_path / "data").mkdir()
     (tmp_path / "data" / "a.tsv").write_text("a\n", encoding="utf-8")
     (tmp_path / "data" / "b.tsv").write_text("b\n", encoding="utf-8")
-    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    # `allow_late_inputs=True`, because refusing is now the DEFAULT (A-16, 2026-08-22) and
+    # these tests are about what the record says when a late input is deliberately permitted.
+    # The refusal path has its own tests below.
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl", allow_late_inputs=True)
     # RELATIVE, because that is what a script writes and what the record then carries: paths
     # are stored as passed, not rewritten at persist time. Handing absolute ones in made the
     # first draft of these tests assert a spelling the package never produces.
@@ -15919,7 +15927,7 @@ def test_the_same_late_input_twice_is_named_once(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "a.tsv").write_text("a\n", encoding="utf-8")
     (tmp_path / "b.tsv").write_text("b\n", encoding="utf-8")
-    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl", allow_late_inputs=True)
     with runprov.Run("s.py", provenance="s.prov.json") as run:
         run.input("a.tsv")
         with run.open_output("out.tsv") as fh:
@@ -16845,3 +16853,118 @@ def test_a_promised_name_no_document_mentions_carries_a_recorded_reason():
         f"they are promised — which is the shape the L-84 withdrawal used to remove five "
         f"other names"
     )
+
+
+def test_a_late_input_is_refused_by_default_and_the_refusal_is_recorded(tmp_path, monkeypatch):
+    """A-16, second half — Taylor's decision, 2026-08-22. `e366833` made the record say a late
+    input happened; this stops it happening.
+
+    WHY REFUSING IS THE ONLY REMEDY, and not merely the strictest: the pin is in the
+    artifact's first bytes and those bytes are on disk. The sidecar, the history and
+    `show --stale` can all describe the divergence afterwards, but the person holding ONLY the
+    artifact runs `verify`, gets OK, and has no way to learn otherwise — measured in the row.
+    Stopping the run before the artifact becomes wrong is the one repair that reaches them.
+
+    THE FOURTH RAISE, NOT THE FIRST. `input()` already refuses a missing file, an unreadable
+    one and a FIFO. Those three refuse a read that would fail anyway; this refuses one that
+    would SUCCEED and be recorded imperfectly, which is why it was Taylor's call and not an
+    applier's.
+
+    RECORDED BEFORE IT IS RAISED, so a caller who catches the error cannot erase the fact."""
+    monkeypatch.chdir(tmp_path)
+    for name in ("a.tsv", "b.tsv"):
+        (tmp_path / name).write_text("x\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+
+    with pytest.raises(ValueError, match="cannot grow a line"):
+        with runprov.Run("s", provenance="p.json") as run:
+            run.input("a.tsv")
+            with run.open_output("out.tsv") as fh:
+                fh.write("x\n")
+            run.input("b.tsv")
+
+    record = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert record["refused_late_inputs"] == ["b.tsv"]
+    assert [i["path"] for i in record["inputs"]] == ["a.tsv"], "the refused input is NOT in it"
+    assert "inputs_not_in_pin" not in record, "nothing diverged, because nothing was accepted"
+    assert record["status"] == "failed"
+    # PAST THE TRIM, like `inputs_not_in_pin`: a caller may catch the ValueError and finish
+    # OK, and then the terminal shows nothing at all.
+    assert _lines(tmp_path / "runs.jsonl")[-1]["refused_late_inputs"] == ["b.tsv"]
+
+    # THE MESSAGE MUST NAME THE WAY OUT, or a user who genuinely cannot register earlier is
+    # left with a refusal and no route.
+    with pytest.raises(ValueError, match="allow_late_inputs"):
+        with runprov.Run("s2", provenance="p2.json") as run:
+            with run.open_output("out2.tsv") as fh:
+                fh.write("x\n")
+            run.input("b.tsv")
+
+
+def test_a_caught_refusal_still_leaves_the_fact_in_a_successful_record(tmp_path, monkeypatch):
+    """The reason the refusal is a FIELD and not just an exception. A caller can catch the
+    ValueError and carry on; the run then ends `ok`, the terminal is silent, and without this
+    the record would say nothing at all about the input that was turned away."""
+    monkeypatch.chdir(tmp_path)
+    for name in ("a.tsv", "b.tsv"):
+        (tmp_path / name).write_text("x\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+
+    with runprov.Run("s", provenance="p.json") as run:
+        run.input("a.tsv")
+        with run.open_output("out.tsv") as fh:
+            fh.write("x\n")
+        for _ in range(3):
+            # THREE TIMES, because a caller that swallows the error usually swallows it in a
+            # LOOP. One file refused repeatedly is one fact; a list that grew per call would
+            # report "3 inputs refused" about one path — the same wrong finding the
+            # `inputs_not_in_pin` dedup exists to prevent.
+            with contextlib.suppress(ValueError):
+                run.input("b.tsv")
+
+    record = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert record["status"] == "ok", "the caller swallowed it; the run succeeded"
+    assert record["refused_late_inputs"] == ["b.tsv"], "and the record still says so, once"
+
+
+def test_allow_late_inputs_restores_the_warning_and_the_divergence_field(
+    tmp_path, monkeypatch, capsys
+):
+    """The escape hatch, for the one shape refusing genuinely forbids: an input whose PATH is
+    not knowable until something already-open has been read — a config that names its own data
+    file. With it on, the pre-A-16 behaviour returns exactly, including `inputs_not_in_pin`,
+    so the divergence is still in the record rather than only on the terminal."""
+    monkeypatch.chdir(tmp_path)
+    for name in ("a.tsv", "b.tsv"):
+        (tmp_path / name).write_text("x\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl", allow_late_inputs=True)
+    capsys.readouterr()
+    with runprov.Run("s", provenance="p.json") as run:
+        run.input("a.tsv")
+        with run.open_output("out.tsv") as fh:
+            fh.write("x\n")
+        run.input("b.tsv")
+
+    record = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert record["status"] == "ok"
+    assert record["inputs_not_in_pin"] == ["b.tsv"]
+    assert "refused_late_inputs" not in record
+    assert "PROVENANCE WARNING" in capsys.readouterr().err
+
+
+def test_the_project_type_check_covers_every_bool_and_int_field(tmp_path):
+    """A-16 brought a new `Project` field, and the check that refuses `hash_imported_code='no'`
+    was a hand-written tuple of six `(name, kind)` pairs — the shape that stops covering what
+    it names the moment a field is added, which this audit found five separate times in checks
+    elsewhere. It is derived from the annotations now.
+
+    ASSERTED HERE RATHER THAN AT RUNTIME: a sweep matching nothing would validate nothing and
+    look identical from inside, but an `assert` in shipped code is removed by `-O`, which is
+    the one condition it would be needed in."""
+    fields = {f.name: f.type for f in dataclasses.fields(runprov.Project)}
+    simple = sorted(n for n, kind in fields.items() if kind in ("bool", "int"))
+    assert len(simple) >= 7, f"only {simple} are checkable; the annotation sweep broke"
+
+    for name in simple:
+        with pytest.raises(TypeError, match=name):
+            runprov.Project(root=tmp_path, **{name: "no"})

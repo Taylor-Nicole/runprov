@@ -347,6 +347,14 @@ every interrupted long job, and the artifacts on disk look identical to a succes
   permanent marker that made one `runprov show` print "1 run(s) STARTED with no ending
   recorded" directly above "Nothing has been recorded here yet". The marker directory indexes
   RECORDED runs that have no ending yet; a run with no record has no ending to be missing.
+- **An input registered after the pin was rendered is now REFUSED.** The pin lives in the
+  artifact's first bytes and cannot grow a line, so a later registration leaves the artifact
+  understating what it was made from while its own `runprov verify` reads OK for ever — and
+  the person holding only that artifact has no way to learn otherwise. Recording it is all
+  that is possible afterwards; refusing is the only thing that prevents it. The refusal is
+  recorded as `refused_late_inputs` BEFORE it is raised, so catching the error does not erase
+  it. `Project(allow_late_inputs=True)` restores the warning for the one shape this forbids:
+  an input whose path is not knowable until something already-open has been read.
 - **An input registered after the pin was rendered is now IN THE RECORD**, as
   `inputs_not_in_pin`, in the sidecar and the history and omitted when empty. It used to
   print a stderr warning and record nothing, so the sidecar listed N inputs, the artifact's

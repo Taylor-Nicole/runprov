@@ -1829,6 +1829,36 @@ class Run:
         # the two disagreed. Reproduced: pin `inputs (1)`, record 2, 19 top-level keys marking
         # none of it.
         late = self._pin_rendered
+        if late and not self.project.allow_late_inputs:
+            # REFUSED, NOT WARNED, and this is the fourth way `input()` already raises — after
+            # a missing file, an unreadable one and a FIFO. The other three refuse a read that
+            # was going to fail anyway; this one refuses a read that will SUCCEED and be
+            # recorded imperfectly, which is a stricter policy and was Taylor's decision on
+            # 2026-08-22 (ledger A-16).
+            #
+            # WHY REFUSING IS THE ONLY REMEDY. The pin is in the artifact's first bytes and
+            # those bytes are on disk; it cannot grow a line. Every other repair is
+            # after-the-fact bookkeeping: the sidecar and the history can say what happened,
+            # and `show --stale` can act on it, but the person holding ONLY the artifact runs
+            # `verify`, gets OK for ever, and has no way to learn otherwise. Stopping the run
+            # before the artifact becomes wrong is the one thing that reaches them.
+            #
+            # RECORDED BEFORE IT IS RAISED, so the refusal survives a caller who catches it:
+            # a traceback is prose and `__exit__` may never see one, while a field is
+            # greppable three years later. Same rule as `unregistered_reads`.
+            refused = self.record.setdefault("refused_late_inputs", [])
+            if str(p) not in refused:
+                refused.append(str(p))
+            raise ValueError(
+                f"{self.record['script']}: cannot register input {p} — the pin has already "
+                f"been written into an artifact and cannot grow a line, so this input would "
+                f"be in the record and NOT in the pin. The artifact would understate what it "
+                f"was made from and its own `runprov verify` would read OK for ever.\n"
+                f"    Register every input BEFORE the first header() or open_output(). If "
+                f"this path genuinely cannot be known until then — a config that names its "
+                f"own data file — set `Project(allow_late_inputs=True)`, which warns instead "
+                f"and records the divergence as `inputs_not_in_pin`."
+            )
         if late:
             diagnostic(
                 f"  PROVENANCE WARNING: {self.record['script']}: input registered AFTER the "
@@ -2991,6 +3021,11 @@ class Run:
         # above.
         if r.get("inputs_not_in_pin"):
             summary["inputs_not_in_pin"] = r["inputs_not_in_pin"]
+        # THE REFUSALS TOO, past the trim, for the same reason: a caller may catch the
+        # `ValueError` and carry on, and then the run ENDS OK with nothing on the terminal
+        # to show for it. The field is what a reviewer greps three years later.
+        if r.get("refused_late_inputs"):
+            summary["refused_late_inputs"] = r["refused_late_inputs"]
         self._history_appended = True
         # DISARMED HERE AND NOWHERE ELSE. Every path that persists anything reaches
         # `_append_history` -- `write()` outside a block appends immediately, and inside one
