@@ -23,7 +23,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: python -m pip install --upgrade build twine
+      # PINNED, and this is THE job to pin in: it produces the exact wheel and sdist
+      # `publish` uploads, `on: push: tags` fires once, and PyPI never allows a version
+      # to be re-uploaded. Every action above is SHA-pinned and the backend is
+      # constrained (`hatchling>=1.27,<2`); the front-end tooling was the gap. Same
+      # argument as `ruff` and `mypy` in test.yml, and the versions are kept in the
+      # `dev` extra so Dependabot raises them — it does not read `run:` lines.
+      # NO `--upgrade`: it defeats a pin the moment one exists.
+      - run: python -m pip install "build==1.5.0" "twine==7.0.0"
       # `ci.py build`, NOT a bare `python -m build` plus `twine check`. The artifact this
       # job produces is the one that gets uploaded, and until this line it was the one
       # artifact nothing verified: test.yml runs the full build check but triggers on

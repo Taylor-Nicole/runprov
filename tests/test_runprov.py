@@ -16639,3 +16639,54 @@ def test_the_marker_still_names_the_file_when_there_is_no_sink(tmp_path, monkeyp
         assert marker["history"] == str(log)
     finally:
         run.__exit__(None, None, None)
+
+
+def test_every_pinned_tool_in_a_workflow_matches_the_dev_extra():
+    """A-27. `publish.yml` installed `build` and `twine` with `--upgrade` and no constraint —
+    in the one job whose output is uploaded to PyPI, where `on: push: tags` fires once and a
+    version can never be re-uploaded. Everything around it was careful: every action
+    SHA-pinned, `permissions` scoped, trusted publishing, and the backend constrained
+    (`hatchling>=1.27,<2`). The front-end tooling was the gap, and it contradicted the policy
+    stated two files over for `ruff` and `mypy`.
+
+    THE VERSIONS LIVE IN `pyproject.toml`, because that is the file Dependabot's `pip`
+    ecosystem reads — it does not read a workflow's `run:` line, so "Dependabot raises both"
+    was only ever true of the tools that were also in the `dev` extra. Which leaves two
+    copies of one fact, and this is what keeps them one: a bump in `pyproject.toml` that the
+    workflows do not follow fails here rather than silently installing something else in the
+    job that builds the artifact.
+
+    DERIVED FROM THE WORKFLOWS, not a list of tool names typed here — the scope defect this
+    audit found five times. Any `name==version` a workflow installs is checked."""
+    pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
+    # `\]\s*$`, because a non-greedy `\]` stops at the one inside `"runprov[test]"` and
+    # the extra parses to nothing. Caught by the non-vacuity assertion below.
+    dev = re.search(r"^dev = \[(.*?)\]\s*$", pyproject, re.M | re.S)
+    assert dev, "the `dev` extra is gone from pyproject.toml"
+    pinned = dict(re.findall(r'"([A-Za-z0-9_.\-]+)==([^"]+)"', dev.group(1)))
+    assert len(pinned) >= 4, f"the dev extra parsed to {pinned}; the reader broke"
+
+    disagree, unpinned = [], []
+    for wf in _workflow_files():
+        for line in wf.read_text(encoding="utf-8").splitlines():
+            if "pip install" not in line:
+                continue
+            for name, version in re.findall(r'"([A-Za-z0-9_.\-]+)==([^"]+)"', line):
+                if name in pinned and pinned[name] != version:
+                    disagree.append(f"{wf.name}: {name}=={version}, pyproject says {pinned[name]}")
+            # AND THE OTHER DIRECTION: a tool the dev extra pins, installed unpinned by a
+            # workflow, is the defect this row is about — `--upgrade build twine` beside a
+            # `dev` extra naming both.
+            bare = re.sub(r'"[^"]*"', "", line)
+            unpinned += [
+                f"{wf.name}: {tool} installed unpinned"
+                for tool in pinned
+                if re.search(rf"\b{re.escape(tool)}\b", bare)
+            ]
+
+    assert not disagree, f"a workflow installs a version pyproject does not name: {disagree}"
+    assert not unpinned, (
+        f"a workflow installs a tool the `dev` extra pins, without the pin — which is how "
+        f"the release job built its artifact with whatever had shipped that morning: "
+        f"{unpinned}"
+    )

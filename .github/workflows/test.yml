@@ -102,7 +102,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: python -m pip install --upgrade build twine
+      # Pinned for the same reason as the release job, which builds the artifact that
+      # is actually uploaded. Here the blast radius is only a red check — but two
+      # copies of one toolchain that disagree is how the red check stops meaning
+      # anything about the release.
+      - run: python -m pip install "build==1.5.0" "twine==7.0.0"
       # Same script again — build, twine check --strict, then install the wheel into a
       # clean venv and import it from elsewhere.
       - run: python ci.py build
