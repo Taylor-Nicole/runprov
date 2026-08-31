@@ -79,9 +79,20 @@ jobs:
       - name: Say what this run does and does not prove
         run: |
           {
-            echo "### Linux only"
+            echo "### Linux only, and \`ci.py test\` only"
             echo
             echo "Python 3.10, 3.11, 3.12 and 3.13 on one self-hosted Linux runner."
+            echo
+            echo "**This run covers one of the three gates:** \`ci.py test\` — the suite and"
+            echo "the 100% statement-and-branch floor."
+            echo
+            echo "**Not run here:** \`ci.py lint\` (ruff format, ruff check, mypy --strict)"
+            echo "and \`ci.py build\` (sdist and wheel, twine check --strict, install into a"
+            echo "clean venv, and the shipped suite run FROM the tarball). A file dropped from"
+            echo "pyproject's sdist \`include\` is invisible to this run: the suite passes and"
+            echo "\`ci.py build\` is the only thing that fails. Both gates live in"
+            echo "\`test.yml\`, which needs billing or a public repository — and both are the"
+            echo "mandated local gate before a commit (CONTRIBUTING.md)."
             echo
             echo "**Not covered:** macOS, and Windows — the leg that proves the \`msvcrt\`"
             echo "fallback for \`flock\`. Those need the hosted matrix in \`test.yml\`,"

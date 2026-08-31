@@ -9772,6 +9772,30 @@ def test_the_self_hosted_workflow_says_what_it_cannot_prove():
     assert "Not covered" in text and "Windows" in text, (
         "the run summary must state what it does not cover, where a reader of the run sees it"
     )
+
+    # A-29. AND WHICH OF THE THREE GATES IT RAN, which the summary did not say. This file has
+    # exactly one gate step, `ci.py test`, and it is the only CI that can start today — so a
+    # green tick here is read as "the gate passed" when two thirds of it did not run.
+    # Demonstrated: delete `"SECURITY.md"` from pyproject's sdist `include` and `ci.py test`
+    # is still `OK — every step passed`, while `ci.py build` fails with
+    # `runprov-0.1.0.tar.gz is missing ['SECURITY.md']`.
+    #
+    # BOTH SIDES DERIVED, because a substring check is what let the omission pass in the first
+    # place: the gate comes from `ci.py`'s own default, and what ran comes from the workflow's
+    # `run:` lines. A workflow running a subset has to name the subset it skipped.
+    gate = re.search(r"sys\.argv\[1:\] or \[([^\]]+)\]", (_repo_root() / "ci.py").read_text())
+    assert gate, "ci.py no longer states a default gate; this test reads it from there"
+    full = [name.strip().strip("\"'") for name in gate.group(1).split(",")]
+    assert len(full) >= 3, f"the gate parsed to {full}; the reader broke"
+
+    ran = set(re.findall(r"ci\.py (\w+)", str(doc["jobs"]["test"])))
+    assert ran, "the workflow invokes no ci.py step at all; it is not running the gate"
+    summary = str(doc["jobs"]["summary"])
+    unnamed = [step for step in full if step not in ran and f"ci.py {step}" not in summary]
+    assert not unnamed, (
+        f"this run does not execute {unnamed} and its summary does not say so — a green tick "
+        f"is read as 'the gate passed'"
+    )
     # `push` would queue forever whenever the desk it runs on is off, and a permanently
     # pending job is a worse signal than no signal.
     assert set(doc[True] if True in doc else doc["on"]) == {"workflow_dispatch"}
