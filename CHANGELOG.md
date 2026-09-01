@@ -605,16 +605,23 @@ handles, and whether `link/..` traverses the link.
 
 ### Verified
 
-601 tests, 100% statement *and* branch coverage.
+768 tests, 100% statement *and* branch coverage.
 
-**Run in full on CPython 3.10.12, 3.11.1, 3.12.13 and 3.13.15**, on Linux, 2026-08-19.
-**macOS 3.12 and Windows 3.12 ran green once**, on 2026-08-12 (run `31592997325`, commit
-`dec57fe6`) — but 93 commits have landed since, so the matrix has not seen `show`, `exec`,
-`verify`, the transformation-log sink or the 3.13 fix. Every run since 2026-08-13 has failed
-before a runner started, on Actions minutes billed for a private repository. A previous version
-of this paragraph said CI had never run at all; that was measured with `gh run list --limit 60`,
-which showed only the recent billing failures — a window reported as the whole. See README,
-*What has actually been run*.
+**THE WHOLE MATRIX IS GREEN, run `33561447357`, 2026-09-01** — the first time it has been.
+Seven jobs: `lint`, `build`, ubuntu 3.10/3.11/3.12/3.13, macOS 3.12 and Windows 3.12.
+
+| leg | passed | skipped |
+|---|---|---|
+| ubuntu 3.12 | 763 | 5 |
+| macOS 3.12 | 762 | 6 |
+| windows 3.12 | 717 | 49 |
+
+Before this, macOS and Windows had run green **once**, on 2026-08-12 (run `31592997325`,
+commit `dec57fe6`), and a hundred commits landed in between: the matrix had not seen `show`,
+`exec`, `verify`, the transformation-log sink, the 3.13 fix or anything since. When it came
+back it was red on both, and the Windows leg could not say why — it aborted at 66% with exit
+15 and no summary. See the entry above for what was behind that, and README, *What has
+actually been run*.
 
 Widening from one interpreter to four found two defects a 3.12-only gate could not, and both
 are the same shape: a test asserting something true of the interpreter rather than of the

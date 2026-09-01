@@ -1998,15 +1998,25 @@ narrow simulation of an environment this machine is not (`sys.platform` for Wind
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
 stubs the subject to make it agree with the test.
 
-Twenty-two of them need something of the filesystem itself — a FIFO, a symlink, a file
-`chmod(0o000)` really makes unreadable — and they skip where that is unavailable. The
-condition is a PROBE, not `sys.platform`: symlinks work on a Windows machine with Developer
-Mode enabled, and `chmod(0o000)` denies nothing to root, so a platform check both skipped
-tests that would have run and ran tests that could not fail. Asking the filesystem answers
-for the machine in front of you. The Windows leg therefore skips more than any other and does not assert the coverage
-floor, which no leg but that one may lower. (The count of 22 is derived from this machine; the one
-real Windows run skipped 9 of 288, at a commit 93 behind. Take the number from the job log
-once the matrix is green on today's tree.)
+Some need something of the machine itself — a FIFO, a symlink, a file `chmod(0o000)` really
+makes unreadable, an executable `#!/bin/sh` script, a directory that can be opened as a file,
+an `os.kill` that delivers a signal rather than terminating the process — and they skip where
+that is unavailable. Every condition is a PROBE, not `sys.platform`: symlinks work on a
+Windows machine with Developer Mode enabled, and `chmod(0o000)` denies nothing to root, so a
+platform check both skipped tests that would have run and ran tests that could not fail.
+Asking the machine answers for the machine in front of you.
+
+**Measured on run `33561447357`, 2026-09-01, the first green matrix on today's tree:**
+
+| leg | passed | skipped |
+|---|---|---|
+| ubuntu 3.12 | 763 | 5 |
+| macOS 3.12 | 762 | 6 |
+| **windows 3.12** | **717** | **49** |
+
+The Windows leg skips ten times what any other does, and it is the only leg that does not
+assert the coverage floor — skipped tests leave their lines unmeasured, so 100% is
+unreachable there by construction rather than by regression. No other leg may lower it.
 
 Coverage is **100%** of **about 2,810 statements and 1,000 branches**, and the gate is set
 there with `--cov-branch`.
