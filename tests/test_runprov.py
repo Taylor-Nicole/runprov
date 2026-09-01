@@ -17191,11 +17191,21 @@ def test_an_artifact_cannot_write_its_own_commentary_into_verifys_output(tmp_pat
     assert f"what {hostile} registered" not in out, "but never as the checker's own sentence"
 
     # AND IT CANNOT FILL THE SCREEN.
+    #
+    # ASSERTED ON THE FIELD, NOT ON THE LINE. This measured `max(len(line)) < 200` over the
+    # whole report, and the report lines CARRY THE ARTIFACT'S ABSOLUTE PATH -- so the number
+    # it checked was mostly a property of the runner's temporary directory. It passed on
+    # Linux under `/tmp/pytest-of-<user>/` and failed on macOS at 201 columns under
+    # `/private/var/folders/...`, having found nothing wrong with the truncation it exists to
+    # check. A bound that an unrelated environment can cross is not a bound on anything.
     art.write_text(art.read_text(encoding="utf-8").replace(hostile, "A" * 400), encoding="utf-8")
     capsys.readouterr()
     cli.main(["verify", str(art), "--root", str(tmp_path)])
-    longest = max(len(ln) for ln in capsys.readouterr().out.splitlines())
-    assert longest < 200, f"a 400-character field reached the report intact ({longest} cols)"
+    out = capsys.readouterr().out
+    assert "A" * 400 not in out, "the 400-character field reached the report intact"
+    # THE POSITIVE COMPANION: a report that dropped the field entirely also contains no run
+    # of 400 A's, and would be its own dishonesty -- the value has to be SHOWN, and shown cut.
+    assert "A" * (runprov.verify.FIELD_SHOWN - 1) + "…" in out, "the capped value is not shown"
     assert runprov.verify.FIELD_SHOWN < 400
 
 
