@@ -16,11 +16,9 @@
                             (run by `build`; set RUNPROV_RELEASE_TAG=vX.Y.Z to rehearse
                             what a tag push would check)
 
-`torture` IS NOT IN THE DEFAULT GATE and it exits 1 today, on purpose: it reports that a
-crash inside any of the six `write_text` calls in `runprov/` leaves a prefix on disk. That
-is a measurement, not a regression — see the head of `tools/torture.py`. It builds and
-tears down about ninety trees and takes roughly a minute, which is the other reason it is
-asked for rather than run on every push.
+`torture` IS NOT IN THE DEFAULT GATE, because it builds and tears down about ninety trees
+and takes roughly a minute. It exits 0 today; it exited 1 until ADR-0005 made every
+provenance write atomic, which is the finding it was written to produce.
 
 Why a script rather than a list of steps in the workflow
 --------------------------------------------------------

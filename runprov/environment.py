@@ -58,6 +58,8 @@ import platform
 import sys
 import typing
 
+from ._atomic import atomic_write_text
+
 
 def installed_packages(unreadable: list[str] | None = None) -> dict[str, str]:
     """`{name: version}` for the RUNNING interpreter. Never raises.
@@ -198,7 +200,7 @@ def write_snapshot(directory: pathlib.Path) -> dict[str, typing.Any]:
     path = directory / f"env-{d[:16]}.txt"
     existed = path.is_file()
     if not existed:
-        path.write_text(text, encoding="utf-8")
+        atomic_write_text(path, text)
     rec: dict[str, typing.Any] = {
         "path": str(path),
         "sha256": d,

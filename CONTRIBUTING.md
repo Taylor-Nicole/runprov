@@ -97,18 +97,23 @@ happened to contain it, and failed the moment the package moved.
 
 ## `python ci.py torture` — damage a record and read it back
 
-Not part of the gate, and it exits 1 today on purpose.
+Not part of the gate. It exits 0 today; it exited 1 until ADR-0005 landed.
 
 The suite builds records the way the package expects them and reads them back the way the
 package expects to. Everything it feeds a reader was written by someone who knew what the
 reader wanted. `tools/torture.py` feeds the readers what a crash or a bad sector produces:
 
-* **Torn writes.** It patches `Path.write_text`, enumerates every write site in a real run
-  rather than listing them by hand, and tears each one in turn at 0%, 50% and 90%. Six of
-  the seven sites in a two-step pipeline belong to `runprov`, and **all six leave a prefix
-  on disk** — the sidecar, its YAML twin and the in-flight marker are written with a plain
-  `write_text`, and there is no `os.replace`, `mkstemp` or `O_EXCL` anywhere in the package.
-  `sinks.py` is the exception and does it properly, under a lock and fsynced.
+* **Torn writes.** It enumerates every write site in a real run rather than listing them by
+  hand, and crashes inside each one in turn at 0%, 50% and 90%. This is what found that all
+  six of the package's writes left a prefix on disk; they go through `runprov/_atomic.py`
+  since **ADR-0005** and the destination now survives every tear. Part A checks that each
+  call site GOES THROUGH the helper — the helper's own correctness is held by the unit tests,
+  and its docstring says so, because a harness silently not covering something is the failure
+  this file exists to make loud.
+* **A census of zero VOIDS the run.** When the writes moved to `_atomic`, this harness still
+  patched `Path.write_text`: it reported no findings over a line reading *0 of them
+  runprov's*. A harness that has lost sight of its subject prints exactly what one that found
+  nothing prints.
 * **Corrupted records.** Eleven byte-level and structural mutations over the history, both
   sidecars, the YAML twin, a pinned artifact and `transformation_log.yml`, with every reader
   held to the exit-code contract (0 / 1 / 2, see `__main__.py`) and to printing no

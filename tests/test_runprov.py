@@ -8878,7 +8878,7 @@ def test_verify_collects_files_directories_and_neither(tmp_path):
     (tmp_path / "d").mkdir()
     (tmp_path / "d" / "b.tsv").write_text("b\n", encoding="utf-8")
     (tmp_path / "a.tsv").write_text("a\n", encoding="utf-8")
-    got, skipped = runprov.verify.collect(
+    got, skipped, _ = runprov.verify.collect(
         [tmp_path / "d", tmp_path / "d" / "b.tsv", tmp_path / "a.tsv", tmp_path / "nope.tsv"]
     )
     assert [p.name for p in got] == ["a.tsv", "b.tsv"]
@@ -8935,12 +8935,29 @@ def test_verify_does_not_walk_build_and_vcs_directories_but_counts_what_it_skipp
         d.mkdir()
         (d / "noise.tsv").write_text("noise\n", encoding="utf-8")
 
-    found, skipped = runprov.verify.collect([tmp_path])
+    found, skipped, _ = runprov.verify.collect([tmp_path])
     assert [p.name for p in found] == ["out.tsv"]
     assert skipped == 5, "five DIRECTORIES pruned, counted rather than dropped"
 
-    named, _ = runprov.verify.collect([tmp_path / ".venv" / "noise.tsv"])
+    named, _, _ = runprov.verify.collect([tmp_path / ".venv" / "noise.tsv"])
     assert [p.name for p in named] == ["noise.tsv"], "an explicit path is always examined"
+
+
+@requires_symlinks
+def test_a_dangling_symlink_is_listed_by_the_walk_and_examined_by_nothing(tmp_path):
+    """`os.walk` puts a broken link in `filenames`, and it is neither an artifact nor
+    debris: opening it raises, and a checker that tried would report a file that is not
+    there.
+
+    Its own test because the filter used to be a comprehension's `if`, which coverage does
+    not count as a branch -- so the case had never been executed and the module still read
+    100%. Rewriting it as a statement is what made the hole visible."""
+    (tmp_path / "out.tsv").write_text("x\n", encoding="utf-8")
+    (tmp_path / "gone.tsv").symlink_to(tmp_path / "never-existed.tsv")
+
+    found, skipped, debris = runprov.verify.collect([tmp_path])
+    assert [p.name for p in found] == ["out.tsv"], found
+    assert (skipped, debris) == (0, 0), "a broken link is neither a pruned tree nor debris"
 
 
 def test_the_skip_count_does_not_descend_into_what_it_skipped(tmp_path, monkeypatch):
@@ -8966,7 +8983,7 @@ def test_the_skip_count_does_not_descend_into_what_it_skipped(tmp_path, monkeypa
         "walk",
         lambda p, *a, **k: (walked.append(str(p)), real_walk(p, *a, **k))[1],
     )
-    found, skipped = runprov.verify.collect([tmp_path])
+    found, skipped, _ = runprov.verify.collect([tmp_path])
 
     assert [p.name for p in found] == ["out.tsv"]
     assert skipped == 1, "ONE directory pruned, not the 54 entries inside it"
@@ -12379,14 +12396,19 @@ def test_a_marker_that_cannot_be_written_does_not_cost_the_run(tmp_path, monkeyp
     (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
     proj = _project(tmp_path)
 
-    real = pathlib.Path.write_text
+    # PATCHED AT THE SEAM THE MARKER ACTUALLY GOES THROUGH. This used to replace
+    # `pathlib.Path.write_text` and match on `".incomplete" in str(self)`, and it stopped
+    # intercepting the moment the writer moved to `_atomic` (ADR-0005) -- it failed loudly,
+    # which was luck rather than design. A module-level name fails with AttributeError if it
+    # is ever renamed; a method match on a path substring just silently stops applying.
+    real = runprov.run.atomic_write_text
 
-    def refuse(self, *a, **k):
-        if ".incomplete" in str(self):
+    def refuse(path, *a, **k):
+        if ".incomplete" in str(path):
             raise OSError("read-only provenance directory")
-        return real(self, *a, **k)
+        return real(path, *a, **k)
 
-    monkeypatch.setattr(pathlib.Path, "write_text", refuse)
+    monkeypatch.setattr(runprov.run, "atomic_write_text", refuse)
     with runprov.Run("s", project=proj, provenance=tmp_path / "s.prov.json") as run:
         run.input(tmp_path / "in.tsv")
         assert run._in_flight is None, "marking failed, so there is nothing to clear later"
@@ -17594,3 +17616,227 @@ def test_a_promised_static_or_class_method_is_part_of_the_surface():
         "Promised.a_prop",
         "Promised.a_static",
     ], got
+
+
+# ------------------------------------------- a record is written whole or not at all (ADR-0005)
+
+
+def test_a_write_that_fails_leaves_the_previous_record_untouched(tmp_path, monkeypatch):
+    """THE WHOLE POINT. `write_text` truncates and then fills, so a crash in between costs
+    the record that WAS there — not only the one being written. Nothing recovers that.
+
+    Simulated at the one instant where it matters: after the temporary file exists and
+    before the rename. A test that made the OPEN fail would pass against the old
+    implementation too, and prove nothing about this one."""
+    p = tmp_path / "s.prov.json"
+    p.write_text('{"status": "the record that was already here"}\n', encoding="utf-8")
+    before = p.read_bytes()
+
+    def die(*a, **k):
+        raise OSError("the machine stopped")
+
+    monkeypatch.setattr(runprov._atomic.os, "replace", die)
+    with pytest.raises(OSError, match="the machine stopped"):
+        runprov._atomic.atomic_write_text(p, "the new one, never finished")
+    assert p.read_bytes() == before, "the crash took the new record, not the old one"
+
+
+def test_a_write_that_fails_leaves_no_debris_behind(tmp_path, monkeypatch):
+    """A temporary file that outlives its write is a file every reader then has to be
+    taught to ignore. Cleaned up on the way out, including for `KeyboardInterrupt` — which
+    is not an `OSError` and would otherwise walk straight past an `except OSError`."""
+    p = tmp_path / "s.prov.json"
+
+    def interrupt(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runprov._atomic.os, "replace", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        runprov._atomic.atomic_write_text(p, "x")
+    assert sorted(q.name for q in tmp_path.iterdir()) == [], "the temporary file was left"
+
+
+def test_a_completed_write_leaves_no_debris_either(tmp_path):
+    """The ordinary path. Named separately because "no debris after a failure" passes on an
+    implementation that leaks one on every SUCCESS, and that is the common case."""
+    p = tmp_path / "s.prov.json"
+    runprov._atomic.atomic_write_text(p, "whole\n")
+    assert p.read_text(encoding="utf-8") == "whole\n"
+    assert [q.name for q in tmp_path.iterdir()] == ["s.prov.json"]
+
+
+def test_the_replacement_keeps_the_permissions_the_record_already_had(tmp_path):
+    """A rename brings the temporary file's mode with it, so a record somebody had
+    restricted would quietly re-open on the next run. `write_text` truncated in place and
+    kept them, and that behaviour has to survive the change to how it is written."""
+    p = tmp_path / "s.prov.json"
+    p.write_text("first\n", encoding="utf-8")
+    p.chmod(0o600)
+    runprov._atomic.atomic_write_text(p, "second\n")
+    assert p.stat().st_mode & 0o777 == 0o600, oct(p.stat().st_mode)
+
+
+@requires_symlinks
+def test_a_record_is_written_THROUGH_a_symlink_and_not_over_it(tmp_path):
+    """`open(path, "w")` follows a symlink; `os.replace` would destroy it and leave a real
+    file where the user had put a deliberate pointer. The record has to land where they
+    aimed it."""
+    real = tmp_path / "elsewhere" / "s.prov.json"
+    real.parent.mkdir()
+    real.write_text("first\n", encoding="utf-8")
+    link = tmp_path / "s.prov.json"
+    link.symlink_to(real)
+    runprov._atomic.atomic_write_text(link, "second\n")
+    assert link.is_symlink(), "the link was replaced by a file"
+    assert real.read_text(encoding="utf-8") == "second\n"
+    assert [q.name for q in real.parent.iterdir()] == ["s.prov.json"], "debris beside the target"
+
+
+def test_a_directory_that_cannot_be_synced_does_not_fail_a_write_that_succeeded(
+    tmp_path, monkeypatch
+):
+    """Windows cannot open a directory as a file and some network filesystems refuse the
+    `fsync`. Neither is a reason to raise over a record that is already on disk — the
+    atomicity holds either way, and only its survival of a power cut is at stake.
+
+    BOTH REFUSALS, because they are two different lines: one where the directory cannot be
+    opened at all, one where the handle exists and the sync is rejected."""
+    p = tmp_path / "s.prov.json"
+    real_open, real_fsync = runprov._atomic.os.open, runprov._atomic.os.fsync
+
+    def no_dir_handle(path, *a, **k):
+        if pathlib.Path(path).is_dir():
+            raise OSError("cannot open a directory here")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(runprov._atomic.os, "open", no_dir_handle)
+    runprov._atomic.atomic_write_text(p, "one\n")
+    assert p.read_text(encoding="utf-8") == "one\n"
+    monkeypatch.undo()
+
+    seen = []
+
+    def refuse_dir_sync(fd):
+        if os.fstat(fd).st_mode & 0o170000 == 0o040000:
+            seen.append(fd)
+            raise OSError("fsync is not supported on this filesystem")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(runprov._atomic.os, "fsync", refuse_dir_sync)
+    runprov._atomic.atomic_write_text(p, "two\n")
+    assert p.read_text(encoding="utf-8") == "two\n"
+    assert seen, "the directory sync was never attempted, so its refusal proves nothing"
+
+
+def test_every_provenance_write_in_the_package_goes_through_the_atomic_helper():
+    """DERIVED, NOT LISTED. The six sites were found by measurement, and a hand-typed list of
+    six filenames is the defect this repository has repaired eight times: it is right on the
+    day it is written and silently stops covering the seventh site.
+
+    PARSED, NOT GREPPED. The first version of this test read lines and matched
+    `".write_text("`, and it fired on two DOCSTRINGS -- `__init__.py`'s worked example and a
+    comment in `run.py` quoting it. A guard that cannot tell code from prose about code
+    would have been switched off or narrowed by whoever met it next, which is how a check
+    stops covering what it names.
+
+    Each exemption carries its reason here, beside the name, because an exemption whose
+    reason lives somewhere else is one nobody can re-examine."""
+    exempt = {
+        "sinks.py": (
+            "appends under an exclusive lock with its own torn-line repair, and is already "
+            "fsynced; rewriting a forever-growing history to add one line is the wrong shape"
+        ),
+        "_atomic.py": "is the helper",
+    }
+    offenders = {}
+    for mod in sorted(pathlib.Path(runprov.__file__).parent.glob("*.py")):
+        if mod.name in exempt:
+            continue
+        tree = ast.parse(mod.read_text(encoding="utf-8"), filename=str(mod))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "write_text"
+            ):
+                offenders[f"{mod.name}:{node.lineno}"] = ast.unparse(node.func)
+    assert not offenders, (
+        f"these write a file the old way, which a crash tears in half: {offenders}. "
+        f"Use `atomic_write_text` (ADR-0005), or add the file to `exempt` WITH its reason."
+    )
+    # NON-VACUITY. Every module could stop containing a `write_text` call and this would
+    # still pass -- "nothing found" and "nothing looked at" are the same green, and the
+    # version of this test that read lines instead of parsing them would have gone quiet the
+    # day someone wrapped a call across two of them. So make the scan find one it must find.
+    probe = ast.parse("import pathlib\npathlib.Path('x').write_text('y')\n")
+    assert [
+        n
+        for n in ast.walk(probe)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "write_text"
+    ], "the scan does not see a write_text call at all, so it found none for the wrong reason"
+    # AND A STALE EXEMPTION IS A LIE. A file renamed out from under this dict would sit here
+    # excusing something that no longer exists, while the file under its new name went
+    # unchecked -- the exemption outliving its subject.
+    for name in exempt:
+        assert (pathlib.Path(runprov.__file__).parent / name).is_file(), name
+    helper = pathlib.Path(runprov._atomic.__file__).read_text(encoding="utf-8")
+    assert "os.replace(" in helper, "the helper the others were pointed at no longer renames"
+
+
+def test_the_debris_count_reaches_the_person_reading_the_command(tmp_path, capsys):
+    """Counting it and not saying it is the failure this package refuses everywhere else.
+    Debris is the only visible trace that a run died while writing a record, and an
+    unexplained dotfile in a results directory is exactly what someone needs told."""
+    runprov.configure(root=tmp_path, run_log=tmp_path / "provenance" / "runs.jsonl")
+    (tmp_path / "in.tsv").write_text("id\n1\n", encoding="utf-8")
+    with runprov.Run("s", {}, provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("id\n1\n")
+    capsys.readouterr()
+
+    rc = runprov.__main__.main(["verify", str(tmp_path), "--root", str(tmp_path)])
+    assert runprov._atomic.TEMP_SUFFIX not in capsys.readouterr().err, (
+        "a clean tree must not mention debris, or the message is noise the next reader "
+        "learns to skip"
+    )
+    assert rc == 0
+
+    left = tmp_path / f".out.tsv.abcdef123456{runprov._atomic.TEMP_SUFFIX}"
+    left.write_text((tmp_path / "out.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+    runprov.__main__.main(["verify", str(tmp_path), "--root", str(tmp_path)])
+    err = capsys.readouterr().err
+    assert "1 file(s) left behind by a run that died while writing a record" in err, err
+    assert runprov._atomic.TEMP_SUFFIX in err, "it does not say what to look for"
+
+
+def test_verify_counts_write_debris_and_does_not_read_it_as_an_artifact(tmp_path):
+    """Debris carries a pin — it is a half-written artifact — so a checker that walked it
+    would report an artifact under a name nobody wrote. Counted and said, not dropped: it
+    is also the only visible trace that a run died mid-write."""
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+        proj = _project(tmp_path)
+        with runprov.Run("s", project=proj, provenance=tmp_path / "s.prov.json") as run:
+            run.input(tmp_path / "in.tsv")
+            fh = run.open_output(tmp_path / "out.tsv")
+            fh.write("b\n")
+            fh.close()
+    finally:
+        monkeypatch.undo()
+    art = (tmp_path / "out.tsv").read_text(encoding="utf-8")
+    clean = runprov.verify.verify([tmp_path], tmp_path)
+
+    debris = tmp_path / f".out.tsv.deadbeef1234{runprov._atomic.TEMP_SUFFIX}"
+    debris.write_text(art, encoding="utf-8")
+    after = runprov.verify.verify([tmp_path], tmp_path)
+    assert after["write_debris"] == 1, after
+    assert after["artifacts_pinned"] == clean["artifacts_pinned"], (
+        "the half-written copy was counted as a second artifact"
+    )
+    assert after["artifacts_seen"] == clean["artifacts_seen"], after
+    assert clean["write_debris"] == 0, "a clean tree must report none, or the count is noise"

@@ -64,6 +64,7 @@ import typing
 import uuid
 import weakref
 
+from ._atomic import atomic_write_text
 from ._report import diagnostic, summary
 from .environment import archive_lockfiles, lockfiles, manager, write_snapshot
 from .hashing import (
@@ -1273,7 +1274,8 @@ class Run:
             d.mkdir(parents=True, exist_ok=True)
             self._in_flight = d / f"{self.record['run_uid']}.json"
             own(self._in_flight)
-            self._in_flight.write_text(
+            atomic_write_text(
+                self._in_flight,
                 json.dumps(
                     {
                         "run_uid": self.record["run_uid"],
@@ -2076,7 +2078,7 @@ class Run:
         # The artifact's own name is in the sidecar, because a `.prov.txt` that has been
         # separated from what it describes should still say what it described.
         body = f"{comment}provenance for: {target.name}\n{self.header(comment)}"
-        side.write_text(body, encoding="utf-8")
+        atomic_write_text(side, body)
         self.output(side)
         return side
 
@@ -2135,9 +2137,8 @@ class Run:
             ),
         }
         self._pin_rendered = True
-        p.write_text(
-            json.dumps({key: pin, **payload}, indent=2, sort_keys=False, default=str) + "\n",
-            encoding="utf-8",
+        atomic_write_text(
+            p, json.dumps({key: pin, **payload}, indent=2, sort_keys=False, default=str) + "\n"
         )
         return p
 
@@ -2875,7 +2876,7 @@ class Run:
         text = self._encode()
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(text, encoding="utf-8")
+            atomic_write_text(p, text)
         except OSError as exc:
             diagnostic(f"  WARNING: could not write the provenance sidecar to {p}: {exc}")
             return False
@@ -2900,7 +2901,7 @@ class Run:
             return
         try:
             own(self._yaml_twin(p))
-            self._yaml_twin(p).write_text(render_yaml(_jsonable(self.record)), encoding="utf-8")
+            atomic_write_text(self._yaml_twin(p), render_yaml(_jsonable(self.record)))
         except OSError as exc:  # guards-ok: a view is never the reason a record is lost
             diagnostic(f"  WARNING: could not write the YAML sidecar beside {p}: {exc}")
 

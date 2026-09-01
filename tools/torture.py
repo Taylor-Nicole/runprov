@@ -177,34 +177,89 @@ def _read(tree: pathlib.Path, case: str, expect_one: bool) -> list[Finding]:
 #: write sites are enumerated instead of hand-listed -- the standing rule in this repository
 #: after eight instances of a check whose scope, not logic, had stopped covering what it
 #: names. A site added next year is tortured without anyone remembering to add it.
+#:
+#: TWO SEAMS, and the second one exists because the first stopped seeing anything. When the
+#: writes moved to `_atomic` (ADR-0005) this preload still patched `Path.write_text`, still
+#: ran, still reported no findings -- and the census line quietly said "0 of them runprov's".
+#: A harness that has lost sight of its subject prints exactly what a harness that found
+#: nothing prints. `part_a` now VOIDS the run when the count is zero, for that reason.
+#:
+#: `atomic_write_text` is rebound in every module that imported the NAME, not only in
+#: `_atomic` where it is defined: `from ._atomic import atomic_write_text` copies the
+#: binding, so patching the definition alone would leave every real call site untouched --
+#: the same shape of miss, one level down.
 TORN = """\
-import os, pathlib, json, base64, inspect
-_real = pathlib.Path.write_text
+import os, pathlib, json, base64, inspect, sys
+import runprov, runprov._atomic as _A
+
 _seen = []
 _nth = os.environ.get("TORTURE_NTH")
-def _torn(self, data, *a, **k):
-    caller = inspect.stack()[1].filename
-    _seen.append((len(_seen) + 1, str(self), len(data), os.sep + "runprov" + os.sep in caller))
+
+
+def _census(kind, path, size, mine):
+    _seen.append((len(_seen) + 1, str(path), size, mine, kind))
     with open(os.environ["TORTURE_CENSUS"], "w", encoding="utf-8") as fh:
         json.dump(_seen, fh)
-    if _nth and len(_seen) == int(_nth):
-        prior = self.read_bytes() if self.exists() else None
-        cut = int(len(data) * float(os.environ["TORTURE_FRAC"]))
-        with open(os.environ["TORTURE_TORN"], "w", encoding="utf-8") as fh:
-            json.dump({"path": str(self), "kept": cut, "whole": len(data),
-                       "prior": None if prior is None else base64.b64encode(prior).decode(),
-                       "intended": base64.b64encode(data.encode("utf-8")).decode()}, fh)
-        _real(self, data[:cut], *a, **k)
+    return len(_seen)
+
+
+def _report(path, prior, intended, kept, debris):
+    with open(os.environ["TORTURE_TORN"], "w", encoding="utf-8") as fh:
+        json.dump({"path": str(path), "kept": kept, "whole": len(intended), "debris": debris,
+                   "prior": None if prior is None else base64.b64encode(prior).decode(),
+                   "intended": base64.b64encode(intended.encode("utf-8")).decode()}, fh)
+
+
+def _cut(text):
+    return int(len(text) * float(os.environ["TORTURE_FRAC"]))
+
+
+_real_wt = pathlib.Path.write_text
+
+
+def _wt(self, data, *a, **k):
+    mine = os.sep + "runprov" + os.sep in inspect.stack()[1].filename
+    if _nth and _census("write_text", self, len(data), mine) == int(_nth):
+        _report(self, self.read_bytes() if self.exists() else None, data, _cut(data), False)
+        _real_wt(self, data[: _cut(data)], *a, **k)
         os._exit(137)
-    return _real(self, data, *a, **k)
-pathlib.Path.write_text = _torn
+    elif not _nth:
+        _census("write_text", self, len(data), mine)
+    return _real_wt(self, data, *a, **k)
+
+
+_real_at = _A.atomic_write_text
+
+
+def _at(path, text, encoding="utf-8"):
+    # THE CRASH GOES INSIDE THE TEMPORARY FILE, which is the only window a torn write still
+    # has: the destination is not opened until the rename, and the rename is atomic. So this
+    # writes the prefix where `_atomic` would have written it and exits WITHOUT renaming --
+    # exactly the state a killed process leaves -- and the oracle then asks whether the
+    # destination is untouched, which is the whole of what ADR-0005 promises.
+    path = pathlib.Path(path)
+    if _nth and _census("atomic", path, len(text), True) == int(_nth):
+        tmp = path.with_name(f".{path.name}.torture{_A.TEMP_SUFFIX}")
+        _report(path, path.read_bytes() if path.exists() else None, text, _cut(text), True)
+        _real_wt(tmp, text[: _cut(text)], encoding=encoding)
+        os._exit(137)
+    elif not _nth:
+        _census("atomic", path, len(text), True)
+    return _real_at(path, text, encoding)
+
+
+pathlib.Path.write_text = _wt
+# EVERY MODULE THAT IMPORTED THE NAME, derived from sys.modules rather than listed.
+for _m in list(sys.modules.values()):
+    if getattr(_m, "__name__", "").startswith("runprov") and hasattr(_m, "atomic_write_text"):
+        _m.atomic_write_text = _at
 """
 
 
 def part_a(
     work: pathlib.Path, fractions: tuple[float, ...], only: str | None
 ) -> tuple[list[Finding], int]:
-    """Tear each `write_text` in turn and ask whether the file is all-or-nothing.
+    """Crash inside each write in turn, and ask what is on disk afterwards.
 
     ONE FINDING PER WRITE SITE, not one per fraction. Three lines saying the same file is
     not atomic at 0%, 50% and 90% is one fact reported three times, and a report padded with
@@ -214,23 +269,47 @@ def part_a(
     script under `runprov`, not by the package, so its atomicity is not this project's
     finding -- but a run whose INPUT was torn is a tree the readers still have to survive,
     which is the other half of part A and applies to every site whoever wrote it.
+
+    WHAT THIS DOES NOT COVER, said here so nobody reads its green as covering it. The
+    `atomic` seam wraps `atomic_write_text` and models the crash from OUTSIDE it, so it
+    checks that each CALL SITE goes through the helper -- not that the helper is correct.
+    An `_atomic` rewritten to copy onto the destination instead of renaming onto it passes
+    part A untouched. That property is held by the unit tests (`test_a_write_that_fails_
+    leaves_the_previous_record_untouched` and its two neighbours, which fail on exactly that
+    rewrite); the division is deliberate, and it is written down because a harness silently
+    not covering something is the failure this whole file exists to make loud.
     """
     findings: list[Finding] = []
     census = work / "census.json"
     os.environ["TORTURE_CENSUS"] = str(census)
+    os.environ.pop("TORTURE_NTH", None)
     _build(work / "census-tree", TORN)
     sites = json.loads(census.read_text(encoding="utf-8")) if census.is_file() else []
-    mine = sum(1 for s in sites if s[3])
-    print(f"  part A: {len(sites)} write_text site(s) in one clean run, {mine} of them runprov's")
-    if not sites:
-        return [Finding("a:census", "NO WRITE SITES FOUND", "the preload did not take")], 0
+    mine = [s for s in sites if s[3]]
+    kinds = ", ".join(sorted({s[4] for s in mine}))
+    print(
+        f"  part A: {len(sites)} write site(s) in one clean run, {len(mine)} of them "
+        f"runprov's" + (f" ({kinds})" if kinds else "")
+    )
+    # VOID, NOT GREEN. A run that finds none of the package's writes has lost sight of its
+    # subject, and prints what a run that found no problem prints. This is not hypothetical:
+    # ADR-0005 moved every site off `Path.write_text` and this harness reported "0 findings"
+    # over "0 of them runprov's" until the seam was added.
+    if not mine:
+        return [
+            Finding(
+                "a:census",
+                "VOID: NOT ONE OF THE PACKAGE'S WRITES WAS SEEN",
+                "the preload no longer patches the seam the package writes through",
+            )
+        ], 0
 
     n = 0
-    for nth, path, size, ours in sites:
+    for nth, path, size, ours, kind in sites:
         rel = pathlib.PurePath(path).name
         torn: list[str] = []
         for frac in fractions:
-            if size and int(size * frac) == size:
+            if kind == "write_text" and size and int(size * frac) == size:
                 continue  # not a tear
             case = f"a:{nth}:{rel}:{frac}"
             if only and not case.startswith(only):
@@ -249,7 +328,7 @@ def part_a(
             wrote = t / r["path"]
             on_disk = wrote.read_bytes() if wrote.is_file() else b""
             whole = base64.b64decode(r["intended"])
-            prior = None if r["prior"] is None else base64.b64decode(r["prior"])
+            prior = base64.b64decode(r["prior"]) if r["prior"] is not None else b""
             if on_disk not in (whole, prior):
                 torn.append(f"{int(frac * 100)}% -> {len(on_disk)} of {len(whole)} B")
             findings += _read(t, case, expect_one=False)
@@ -259,7 +338,7 @@ def part_a(
                 Finding(
                     f"a:{nth}",
                     f"NOT ATOMIC: a crash inside this write leaves a prefix — {rel}",
-                    f"site {nth}, written by runprov; torn at {', '.join(torn)}",
+                    f"site {nth} ({kind}), written by runprov; torn at {', '.join(torn)}",
                 )
             )
     for k in ("TORTURE_NTH", "TORTURE_FRAC", "TORTURE_TORN"):
