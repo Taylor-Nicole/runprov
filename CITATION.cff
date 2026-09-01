@@ -29,7 +29,7 @@ version: 0.1.0
 # `[Unreleased]`. Set it to the tag date, YYYY-MM-DD. Inventing a date for an unreleased
 # package would be the same class of error as the placeholder ORCID this file already
 # refuses.
-license: CECILL-B
+license: BSD-3-Clause
 repository-code: "https://github.com/Taylor-Nicole/runprov"
 keywords:
   - provenance
@@ -39,4 +39,4 @@ keywords:
 authors:
   - family-names: Thompson
     given-names: Taylor
-    affiliation: "AP-HP, Hôpital Henri-Mondor, Créteil, France"
+    affiliation: "Plateforme GenoBioMICS, Hôpital Henri-Mondor, AP-HP · INSERM U955, équipe Pawlotsky · Créteil, France"

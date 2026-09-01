@@ -1,7 +1,6 @@
 # Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris (AP-HP),
 #                    Hôpital Henri-Mondor, and Taylor Thompson
-# Licensed under the CeCILL-B Free Software License Agreement — see LICENSE.
-# https://cecill.info/
+# Licensed under the BSD 3-Clause License — see LICENSE.
 """Two hashes, because "did this change?" and "is this the file?" are different questions.
 
 `sha256` is what is on disk — what git sees and what a file-integrity check needs.

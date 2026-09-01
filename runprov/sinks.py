@@ -1,7 +1,6 @@
 # Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris (AP-HP),
 #                    Hôpital Henri-Mondor, and Taylor Thompson
-# Licensed under the CeCILL-B Free Software License Agreement — see LICENSE.
-# https://cecill.info/
+# Licensed under the BSD 3-Clause License — see LICENSE.
 """Where the run history goes — the one extension point that earns its keep.
 
 A PROTOCOL, not an abstract base class

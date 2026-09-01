@@ -30,9 +30,16 @@ version = "0.1.0"
 description = "Record what a script read, wrote and ran as — in a form a checker can verify"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "CECILL-B"          # PEP 639 SPDX expression
+license = "BSD-3-Clause"      # PEP 639 SPDX expression
 license-files = ["LICENSE"]   # redundant (the default glob finds it) but pins intent
-authors = [{ name = "Taylor Thompson", email = "taylor.nicole.thompson@gmail.com" }]
+# THE INSTITUTION IS NAMED HERE AND NOT ONLY IN THE FILE HEADERS. Every source file states
+# that AP-HP holds the copyright; this file is what PyPI reads and displays, and it named
+# Taylor alone — so one artefact gave two answers to "whose is this?", and PyPI does not
+# permit a version's metadata to be replaced after upload.
+authors = [
+    { name = "Assistance Publique – Hôpitaux de Paris (AP-HP)" },
+    { name = "Taylor Thompson", email = "taylor.nicole.thompson@gmail.com" },
+]
 keywords = ["provenance", "reproducibility", "research-software", "data-lineage",
             "checksum", "audit"]
 classifiers = [
@@ -157,7 +164,7 @@ artifacts = ["runprov/py.typed"]
 # PUBLISHING.md AND LICENSING.md ARE NOT HERE, and their absence is the deliberate half of
 # this list. Both are internal working documents addressed to one person -- "that decision,
 # and the account it happens under, are yours" -- and both carry superseded reasoning kept
-# on purpose (PUBLISHING.md recommends MIT; the licence has been CeCILL-B since 2026-08-07,
+# on purpose (PUBLISHING.md recommends MIT; the licence is BSD-3-Clause since 2026-09-01,
 # and the file says so a section later). Inside the sdist that reads as the project's
 # position rather than as somebody's notes, and it travels beside a README that PyPI freezes
 # forever. They stay in the repository, where the audience is the person they address.

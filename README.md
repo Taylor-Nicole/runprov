@@ -1920,6 +1920,24 @@ it is better than leaving silence to be read as abandonment:
   [CHANGELOG.md](https://github.com/Taylor-Nicole/runprov/blob/main/CHANGELOG.md), which
   states what was measured rather than what was improved.
 
+## Licence and copyright
+
+**BSD 3-Clause.** The full text is in
+[`LICENSE`](https://github.com/Taylor-Nicole/runprov/blob/main/LICENSE), and every source file carries the
+notice in its header — clause 1 requires it to travel with any redistribution of source.
+
+```
+Copyright (c) 2026, Assistance Publique – Hôpitaux de Paris (AP-HP),
+Hôpital Henri-Mondor, and Taylor Thompson
+```
+
+Clause 3 is why this licence rather than MIT: **the copyright holder's name may not be used
+to endorse or promote a derivative product.** For software whose rights sit with a public
+hospital, that is the protection worth having, and it costs a user nothing.
+
+`CITATION.cff` names the author and affiliation for citation — a different question from who
+holds the rights, and both are stated on purpose.
+
 ## What has actually been run
 
 A test suite proves nothing about an environment it has never entered, so this states the

@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris (AP-HP),
 #                    Hôpital Henri-Mondor, and Taylor Thompson
-# Licensed under the CeCILL-B Free Software License Agreement — see LICENSE.
+# Licensed under the BSD 3-Clause License — see LICENSE.
 """Remove in-flight markers that no longer describe anything running.
 
 WHY THIS EXISTS AT ALL, given that the README already says `rm -r provenance/.incomplete` is

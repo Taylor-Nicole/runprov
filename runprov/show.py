@@ -1,7 +1,6 @@
 # Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris (AP-HP),
 #                    Hôpital Henri-Mondor, and Taylor Thompson
-# Licensed under the CeCILL-B Free Software License Agreement — see LICENSE.
-# https://cecill.info/
+# Licensed under the BSD 3-Clause License — see LICENSE.
 """The lab notebook the history already contained: one view per run, one per project.
 
 `log` is a timeline and `lineage` is a graph, and neither answers the question a developer
