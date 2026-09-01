@@ -37,6 +37,13 @@ jobs:
         python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # FULL HISTORY. `actions/checkout` clones at depth 1 by default, and the suite
+        # verifies that every commit the README's CI section cites is an ancestor of HEAD —
+        # which a shallow clone cannot answer, so the check FAILED IN CI while passing on
+        # every developer machine. Found by dispatching the self-hosted runner rather than by
+        # reading: the repository is ~200 commits, so the cost of the full clone is noise.
+        with:
+          fetch-depth: 0
 
       - name: Find the interpreter, or fail saying which one is missing
         id: py
@@ -75,6 +82,13 @@ jobs:
     runs-on: [self-hosted, linux]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # FULL HISTORY. `actions/checkout` clones at depth 1 by default, and the suite
+        # verifies that every commit the README's CI section cites is an ancestor of HEAD —
+        # which a shallow clone cannot answer, so the check FAILED IN CI while passing on
+        # every developer machine. Found by dispatching the self-hosted runner rather than by
+        # reading: the repository is ~200 commits, so the cost of the full clone is noise.
+        with:
+          fetch-depth: 0
       - name: Find the interpreter, or fail saying which one is missing
         id: py
         uses: ./.github/actions/find-python
@@ -92,6 +106,13 @@ jobs:
     runs-on: [self-hosted, linux]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # FULL HISTORY. `actions/checkout` clones at depth 1 by default, and the suite
+        # verifies that every commit the README's CI section cites is an ancestor of HEAD —
+        # which a shallow clone cannot answer, so the check FAILED IN CI while passing on
+        # every developer machine. Found by dispatching the self-hosted runner rather than by
+        # reading: the repository is ~200 commits, so the cost of the full clone is noise.
+        with:
+          fetch-depth: 0
       - name: Find the interpreter, or fail saying which one is missing
         id: py
         uses: ./.github/actions/find-python

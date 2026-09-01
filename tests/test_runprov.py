@@ -17366,6 +17366,20 @@ def test_the_commits_the_ci_section_names_are_real_and_in_this_history():
     tally carries an explicit "as of" date for that reason."""
     if not (_repo_root() / ".git").exists():  # pragma: no cover - not shipped in the sdist
         pytest.skip("not a git checkout")
+    # A SHALLOW CLONE CANNOT ANSWER THIS, and saying so is better than failing as though the
+    # shas were wrong. `actions/checkout` clones at depth 1 by default, so this test passed on
+    # every developer machine and FAILED IN CI on all four interpreters — found by dispatching
+    # the self-hosted runner, not by reading. The workflows now set `fetch-depth: 0`, and
+    # `test_every_checkout_that_runs_the_suite_fetches_the_full_history` keeps them that way,
+    # so this skip is for a human's `--depth 1` clone rather than a hole in CI.
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=_repo_root(),
+        capture_output=True,
+        text=True,
+    )
+    if shallow.stdout.strip() == "true":  # pragma: no cover - CI fetches the full history
+        pytest.skip("shallow clone: the history needed to check these commits is not here")
     section = _readme().split("## What has actually been run", 1)[1].split("\n## ", 1)[0]
     # AT LEAST ONE HEX LETTER, because the section also cites a GitHub RUN ID — `31592997325`
     # — and a decimal run id is a valid hex string, so a naive sha pattern swallows it and
@@ -17411,3 +17425,32 @@ def test_the_ci_section_claims_no_more_than_the_self_hosted_workflow_runs():
         assert platform_ not in linux_only, (
             f"the paragraph about the Linux runner mentions {platform_}, which it cannot run"
         )
+
+
+def test_every_checkout_that_runs_the_suite_fetches_the_full_history():
+    """`actions/checkout` clones at DEPTH 1 unless told otherwise, and the suite asks git
+    questions: whether each commit the README's CI section cites is an ancestor of HEAD. A
+    shallow clone cannot answer, so that check passed on every developer machine and failed in
+    CI on all four interpreters — and it would have failed the hosted matrix too, the moment
+    billing was fixed. Found by dispatching the runner rather than by reading the YAML.
+
+    The suite is allowed to SKIP that check in a shallow clone, which is why this test has to
+    exist: without it, dropping `fetch-depth` would silently turn a green CI leg into one that
+    is no longer checking anything, and a check that goes quiet is the failure this repository
+    keeps finding.
+
+    Derived — every workflow that invokes `ci.py test` must deepen every checkout it has."""
+    for wf in _workflow_files():
+        doc = _yaml().safe_load(wf.read_text(encoding="utf-8")) or {}
+        jobs = (doc.get("jobs") or {}).values()
+        if not any("ci.py test" in str(j) for j in jobs):
+            continue
+        for job_name, job in (doc.get("jobs") or {}).items():
+            for step in job.get("steps") or []:
+                if "actions/checkout" not in str(step.get("uses", "")):
+                    continue
+                depth = (step.get("with") or {}).get("fetch-depth")
+                assert depth == 0, (
+                    f"{wf.name}:{job_name} checks out at depth {depth!r}; this workflow runs "
+                    f"the suite, which asks git for history a shallow clone does not have"
+                )
