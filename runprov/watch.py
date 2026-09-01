@@ -250,5 +250,14 @@ def unregistered(
             # outside the root, unresolvable, a symlink loop, or gone by now: not our
             # business, and never a reason to abandon the other paths in this run.
             continue
-        out.add(str(rel))
+        # `.as_posix()`, NOT `str()`. A RECORD IS READ ON A DIFFERENT MACHINE FROM THE ONE
+        # THAT WROTE IT -- that is most of the point of writing it -- and `str(WindowsPath)`
+        # spells this name `data\\lookup.csv` while the same run on Linux spells it
+        # `data/lookup.csv`. Two records of one run that cannot be compared, and any reader
+        # keying on the name finds nothing. Measured on the Windows leg, 2026-09-01.
+        #
+        # The pin already made this choice (`run.py`, `_pin_name`) and the tree hash already
+        # made it (`hashing.py`); this field was the last place the package still spelled a
+        # root-relative name the platform's way. One fact, one spelling.
+        out.add(rel.as_posix())
     return sorted(out)

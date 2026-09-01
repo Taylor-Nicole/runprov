@@ -556,6 +556,44 @@ because these were the last names to settle and the reasoning belongs with the r
   rename leaves `.<name>.<uid>.runprov-tmp`. It is not read as an artifact, and it is not
   silently skipped either: it is the only visible trace that a run died mid-write.
 
+### The Windows leg, run for the first time in three weeks
+
+The hosted matrix had not run since 2026-08-12, a hundred commits earlier. When it came back
+the Windows leg **aborted at 66% with exit 15 and no pytest summary**, and had been doing so
+unreadably for as long as it had been failing. Three findings came out of it.
+
+- **`os.kill(pid, 0)` IS NOT A LIVENESS CHECK ON WINDOWS, and `show` was using it as one.**
+  `signal.CTRL_C_EVENT` is 0 and CPython special-cases it, so that call is
+  `GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid)` — **it sends a Ctrl-C to a console process
+  group** and returns success. Two consequences, and the first is the serious one: `runprov
+  show`, reading a marker left by a job that died last week, interrupted whatever live
+  process now held that number. And since it never raised, every dead run was reported
+  RUNNING — `INTERRUPTED`, the finding the whole page exists for, was unreachable on
+  Windows. Measured on the runner: it raised for nothing, and it killed two rounds of the
+  probe sent to measure it. `show` now asks `OpenProcess` + a zero-timeout wait, and signals
+  no one. An unexpected error is reported `?` rather than guessed as RUNNING.
+- **Every recorded path was spelled the platform's way.** Seven sites — `describe()` and the
+  line that overwrote it, both terminal-log fields, the environment snapshot, the
+  provenance path, the refused-late-inputs list. A record written on Windows said
+  `data\a.tsv` where the same run on Linux said `data/a.tsv`, so `show --stale` keyed its
+  answers `{'results\final.tsv': 'OK'}` for a reader asking about `results/final.tsv` and
+  found nothing. The pin and the directory hash had each already made this choice, with
+  their own note saying why; the record — which is mostly paths — had not. One rule now,
+  `hashing._posix`, at the funnel, with an AST guard so the eighth site cannot be added
+  quietly.
+- **`run.open_output()` no longer translates line endings.** `csv` writes its own `\r\n`,
+  and without `newline=""` Windows translated the `\n` of that pair as well: the README's
+  own front-page block produced an artifact with a blank line after every row. It also means
+  one script over one input now writes the same bytes, and therefore the same `sha256`, on
+  every platform.
+
+Four test guards named the wrong predicate. `hasattr(signal, "SIGTERM")` is true on Windows,
+where `os.kill` is `TerminateProcess` — so the test that signals its own process **killed the
+runner**, which is the exit 15 and the missing summary. `_RESOLVE_RAISES_ON_LOOP =
+sys.version_info < (3, 13)` asked the version, two lines under a comment reading *"PROBED, NOT
+ASKED"*. Both are probes now, along with four more: a POSIX shell, real file modes, directory
+handles, and whether `link/..` traverses the link.
+
 ### Known and deliberate
 
 - **Line endings are not content.** `content_digest` ignores a trailing newline and CRLF vs

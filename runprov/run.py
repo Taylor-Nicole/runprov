@@ -70,6 +70,7 @@ from .environment import archive_lockfiles, lockfiles, manager, write_snapshot
 from .hashing import (
     PIN_ANCHOR,
     PIN_SIDECAR_SUFFIX,
+    _posix,
     describe,
     moved_since,
     pin_digest,
@@ -1031,7 +1032,7 @@ class Run:
         """
         self._refuse_after_exit("terminal_log()")
         p = self._anchor(pathlib.Path(path))
-        self.record["terminal_log"] = {"path": str(p), "capture": "caller"}
+        self.record["terminal_log"] = {"path": _posix(p), "capture": "caller"}
         self._pending.append(p)
         return p
 
@@ -1849,8 +1850,8 @@ class Run:
             # a traceback is prose and `__exit__` may never see one, while a field is
             # greppable three years later. Same rule as `unregistered_reads`.
             refused = self.record.setdefault("refused_late_inputs", [])
-            if str(p) not in refused:
-                refused.append(str(p))
+            if _posix(p) not in refused:  # one spelling, as everywhere else in the record
+                refused.append(_posix(p))
             raise ValueError(
                 f"{self.record['script']}: cannot register input {p} — the pin has already "
                 f"been written into an artifact and cannot grow a line, so this input would "
@@ -2010,9 +2011,25 @@ class Run:
         p = pathlib.Path(self.output(path))
         p.parent.mkdir(parents=True, exist_ok=True)
         # No **kwargs, deliberately. Every option a caller might pass here is either
-        # already decided (encoding, mode) or a reason to use `output()` and open the file
-        # themselves. A pinning helper with a dozen knobs is a second `open()`.
-        fh = open(p, "w", encoding="utf-8")
+        # already decided (encoding, mode, newline) or a reason to use `output()` and open
+        # the file themselves. A pinning helper with a dozen knobs is a second `open()`.
+        #
+        # `newline=""` IS PART OF THE CONTRACT, not a detail. Two reasons, and the second is
+        # the one that makes it non-negotiable here.
+        #
+        #   1. `csv` WRITES ITS OWN `\r\n` and the standard library says so in as many words:
+        #      "If csvfile is a file object, it should be opened with newline=''." Without
+        #      it, Windows translates the `\n` of that pair as well and every row lands as
+        #      `\r\r\n`. This is not hypothetical -- the README's FRONT-PAGE BLOCK uses
+        #      `csv.DictWriter` through this handle, and measured on the Windows runner
+        #      2026-09-01 its artifact came out with a blank line after every row.
+        #   2. AN ARTIFACT MUST BE THE SAME BYTES ON EVERY PLATFORM. This package hashes what
+        #      it writes and records the digest. With translation on, one script over one
+        #      input produced a different file on Windows than on Linux and therefore a
+        #      different `sha256` -- for a package whose subject is comparing records across
+        #      machines. `content_digest` was already immune (it ignores CRLF vs LF, and says
+        #      so); `sha256`, which is recorded beside it, was not.
+        fh = open(p, "w", encoding="utf-8", newline="")
         try:
             if inline:
                 fh.write(self.header(comment))
@@ -2703,7 +2720,7 @@ class Run:
                     # `output()` defers hashing to here, AFTER the work, where raising
                     # destroys a record that is otherwise complete and true.
                     described = {
-                        "path": str(q),
+                        "path": _posix(q),
                         "kind": "UNHASHABLE",
                         "note": f"exists but could not be hashed: {exc}",
                     }
@@ -2720,14 +2737,19 @@ class Run:
                 # Keep the spelling the caller registered: `describe` reports the path it
                 # was handed, and substituting the resolved one would rewrite every
                 # ordinary relative output into an absolute path for no reason.
-                described["path"] = str(q)
+                # `_posix`, THOUGH -- this line overwrote what `describe` had already spelled
+                # correctly, so every OUTPUT went into the record the platform's way while
+                # every input went in POSIX. Measured on the Windows leg 2026-09-01:
+                # `show --stale` keyed its answers `{'results\\final.tsv': 'OK'}` for a reader
+                # asking about `results/final.tsv`, and found nothing.
+                described["path"] = _posix(q)
                 self.record["outputs"].append(described)
             else:
                 # A registered output that was never written is a FINDING, not an
                 # omission. Dropping it here is how a stage reports success having
                 # produced nothing.
                 self.record["outputs"].append(
-                    {"path": str(q), "kind": "MISSING", "note": "registered but never written"}
+                    {"path": _posix(q), "kind": "MISSING", "note": "registered but never written"}
                 )
         # OUTSIDE A BLOCK ONLY. Inside one, `__exit__` does this after the work, so a module
         # imported halfway through is still counted -- doing it here as well would hash every
@@ -3023,7 +3045,11 @@ class Run:
             ],
             # Where the FULL record is. Without this an archiver reading the history can
             # find every artifact a run produced EXCEPT its own provenance.
-            "provenance_path": str(prov_path),
+            # `_posix`, like every other recorded path -- see `hashing._posix`. Measured
+            # on the Windows leg: `out\\mid.prov.json` where every reader wanted
+            # `out/mid.prov.json`, so the sidecar a run points at was unfindable from
+            # anywhere that had not been told the platform.
+            "provenance_path": _posix(prov_path),
             "notes": r.get("notes", {}),
             # The old log's `terminal_log_file`, and more than it: the mechanism is carried
             # alongside the path, so a reader can tell an empty log that saw everything from

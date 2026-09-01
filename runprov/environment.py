@@ -59,6 +59,7 @@ import sys
 import typing
 
 from ._atomic import atomic_write_text
+from .hashing import _posix
 
 
 def installed_packages(unreadable: list[str] | None = None) -> dict[str, str]:
@@ -202,7 +203,7 @@ def write_snapshot(directory: pathlib.Path) -> dict[str, typing.Any]:
     if not existed:
         atomic_write_text(path, text)
     rec: dict[str, typing.Any] = {
-        "path": str(path),
+        "path": _posix(path),
         "sha256": d,
         "n_packages": len(pkgs),
         "n_unreadable": len(bad),
