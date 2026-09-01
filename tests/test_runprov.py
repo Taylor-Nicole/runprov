@@ -962,6 +962,19 @@ def test_snapshot_body_records_the_interpreter_not_only_the_packages(tmp_path):
 # defect this repository is entirely about -- a check asserted in prose and absent in fact
 # -- committed by the person writing the checks. Added properly, and each one was made to
 # FAIL before being kept.
+def _declared_spdx() -> str:
+    """The SPDX expression `pyproject.toml` declares — the package's single answer.
+
+    Read rather than repeated, so the source headers and the packaging metadata cannot come
+    to disagree about the licence. They already did once about the copyright holder: every
+    file said AP-HP and the metadata said one person.
+    """
+    text = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r'^license = "([^"]+)"', text, re.M)
+    assert m, "pyproject.toml no longer declares a license expression"
+    return m.group(1)
+
+
 def test_every_module_carries_the_copyright_header():
     """The intellectual-property notice has to travel with the software, and a header on
     five files out of six is the same as no policy.
@@ -984,6 +997,11 @@ def test_every_module_carries_the_copyright_header():
         assert "Hôpital Henri-Mondor" in head, m.name
         assert "Taylor Thompson" in head, m.name
         assert "BSD 3-Clause" in head, m.name
+        # THE MACHINE-READABLE TAG, and it is checked against `pyproject.toml` rather than
+        # against a literal — one fact in two files is this repository's most-repaired defect,
+        # and a licence is the worst place to let it drift. Licence scanners, REUSE and
+        # institutional compliance tooling read this line and not the prose beside it.
+        assert f"SPDX-License-Identifier: {_declared_spdx()}" in head, m.name
 
 
 def test_the_licence_text_ships_with_the_package():
