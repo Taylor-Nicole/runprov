@@ -75,6 +75,24 @@ from .show import (
 from .show import render_yaml as _yaml_doc
 from .verify import GONE, STALE, render_report, verify
 
+#: WHAT AN EXIT CODE MEANS, in every subcommand (ledger L-81, decided 2026-09-01).
+#:
+#:   0  checked, and nothing is wrong
+#:   1  checked, and something IS wrong — a stale or gone artifact, a named target or filter
+#:      that matched nothing
+#:   2  COULD NOT CHECK, or the invocation did not describe a check — no history file, no
+#:      pins found, a usage mistake
+#:
+#: The 1/2 split is the one that had been missing, and it is the one automation needs: a CI
+#: job could not tell "your artifacts are stale" from "I could not look", and both a green
+#: gate over nothing and a red gate over nothing are worse than no gate. It is grep's and
+#: diff's convention, so it costs a reader nothing to learn.
+#:
+#: `--failed` is deliberately NOT in the 1 family when it matches nothing: it selects a CLASS
+#: rather than naming a thing, and "no failed runs" is the good answer, not an absent one.
+#: `--script X` and `--run-id X` NAME something, so matching nothing means the name was wrong.
+CANNOT_CHECK = 2
+
 
 def _stream(path: pathlib.Path) -> typing.Iterator[dict[str, typing.Any] | None]:
     """Every line of the history, parsed, one at a time. `None` marks a line that would not.
@@ -800,6 +818,17 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
     )
     bad = total = shown = n_failed = 0
 
+    # THE FLAGS THAT NAME A RECORD, as opposed to the one that selects a class. Only these
+    # make "matched nothing" a finding — see `CANNOT_CHECK` for the whole contract.
+    named = [f for f in (args.script, args.run_id) if f]
+    named_hits = 0
+
+    def named_hit(r: dict[str, typing.Any]) -> bool:
+        return not (
+            (args.script and r.get("script") != args.script)
+            or (args.run_id and r.get("run_id") != args.run_id)
+        )
+
     def matches(r: dict[str, typing.Any]) -> bool:
         return not (
             (args.script and r.get("script") != args.script)
@@ -837,6 +866,12 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
             # three runs.
             continue
         total += 1
+        # THE NAME IS TESTED ON ITS OWN, before `--failed` narrows anything. Combined,
+        # `--script build --failed` over a project whose `build` never failed reported
+        # "nothing matched 'build'" and exited 1 — which is false twice over: the name was
+        # right, and no failures is the good answer.
+        if named_hit(rec):
+            named_hits += 1
         if not matches(rec):
             continue
         if keep is not None:
@@ -854,6 +889,21 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
         + (f"; {bad} unreadable line(s) skipped" if bad else ""),
         file=sys.stderr,
     )
+    # A NAME THAT MATCHED NOTHING IS A FINDING, and this printed an empty timeline and exited
+    # 0 — so `--script buidl_labels` looked exactly like a project that had never run it.
+    # `show <target>` has always exited 1 for the same question; one CLI cannot answer it two
+    # ways (ledger L-81).
+    #
+    # `--failed` IS NOT IN THIS FAMILY, deliberately: it selects a CLASS, and "no failed runs"
+    # is the good answer rather than an absent one. Only the flags that NAME a record count.
+    if named and not named_hits:
+        print(
+            f"# nothing matched {', '.join(repr(n) for n in named)} — the name may be wrong."
+            f"\n#   `python -m runprov show` with no target lists every script this "
+            f"project has run.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -1282,7 +1332,7 @@ def _verify(args: argparse.Namespace) -> int:
             f"verified from its bytes.",
             file=sys.stderr,
         )
-        return 1
+        return CANNOT_CHECK
 
     # The skipped count is REPORTED, never merely applied. A checker that quietly narrows
     # what it looked at reads as "everything is fine" when it means "I did not look there".
@@ -1338,7 +1388,7 @@ def _verify(args: argparse.Namespace) -> int:
             f"gate.",
             file=sys.stderr,
         )
-        return 1
+        return CANNOT_CHECK
     return 0
 
 
@@ -1530,7 +1580,7 @@ def main(argv: list[str] | None = None) -> int:
         # they were told it.
         if args.cmd == "show" and args.forget_markers:
             _forget(path.parent / ".incomplete")
-        return 1
+        return CANNOT_CHECK
 
     # `show` STREAMS rather than materialising, and it is the command that most needs to:
     # it is the page a developer opens many times a day over a history that only grows.

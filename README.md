@@ -939,6 +939,25 @@ sidecar, or a directory input the stat check cannot speak for — and failing on
 any project with one reference directory permanently red. The count is on the summary line,
 where a reader can see it and reach for `--rehash`.
 
+### What an exit code means
+
+The same three codes in every subcommand:
+
+| | |
+|---|---|
+| `0` | checked, and nothing is wrong |
+| `1` | checked, and something **is** wrong — a stale or gone artifact, a named target or filter that matched nothing |
+| `2` | **could not check**, or the invocation did not describe a check — no history file, no pins found, a usage mistake |
+
+grep and diff use the same split, and the one that matters is `1` against `2`: a CI job has
+to be able to tell **"your artifacts are stale"** from **"I could not look"**. A green gate
+over nothing and a red gate over nothing are both worse than no gate.
+
+`--failed` is deliberately not in the `1` family when it matches nothing: it selects a
+**class**, and "no failed runs" is the good answer, not an absent one. `--script X` and
+`--run-id X` **name** something, so matching nothing means the name was probably wrong —
+which `show <target>` has always reported and `log` used to swallow.
+
 It refuses two shapes so that exit 1 keeps one meaning: without `--stale` or `--rehash`
 there is nothing to gate on, and with a `show <target>` argument, which already exits 1 for
 "nothing matched your target". Both are exit 2, a usage mistake rather than a failing
