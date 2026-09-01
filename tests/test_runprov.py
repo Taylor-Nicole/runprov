@@ -17153,3 +17153,69 @@ def test_every_adr_is_listed_in_the_adr_index():
     linked = set(re.findall(r"\]\((\d{4}-[\w-]+\.md)\)", index))
     assert linked, "the index has no links at all; the reader broke"
     assert not linked - {f.name for f in adrs}, f"the index links a missing file: {linked}"
+
+
+def _orphan_marker(tmp_path, **extra):
+    """A marker beside a history file that does not exist — what a killed run leaves."""
+    d = tmp_path / ".incomplete"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "killed.json").write_text(
+        json.dumps(
+            {
+                "run_uid": "killed",
+                "script": "ingest",
+                "started_utc": "2026-09-01T08:00:00Z",
+                "pid": _never_a_pid(),
+                "host": runprov.show.platform.node(),
+                **extra,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return tmp_path / "runs.jsonl"
+
+
+def test_no_run_history_says_where_the_records_went_when_a_marker_knows(tmp_path, capsys):
+    """A-26's remaining half. Beside a missing history, this branch printed two things that
+    are FALSE for a project with a custom `sink=`: "nothing has been recorded here yet", when
+    a great deal was recorded — into a database — and "pass --log that path", when a sink has
+    no path to pass. The operator was sent looking for a file that will never exist, by the
+    command holding the answer: every marker carries the `history_destination()` of the run
+    that wrote it, and beside a missing history that is the one piece of evidence in the room.
+
+    NAMED, NOT INTERPRETED. Whether the destination is a file to pass to `--log` or a sink
+    with nothing to read is a distinction the reader can make from the string and this command
+    cannot make safely — `JsonlSink(/x/y.jsonl)` and a bare `DbSink` are both possible, and
+    guessing wrong sends them looking a second time."""
+    log = _orphan_marker(tmp_path, history="DbSink")
+    capsys.readouterr()
+    assert cli.main(["show", "--log", str(log)]) == 1, "still 'no run history', which is true"
+    err = capsys.readouterr().err
+
+    assert "DbSink" in err, "the command knew where the records went and did not say"
+    assert "Nothing has been recorded here yet" not in err, "false for a sink project"
+    assert "pass --log that path" not in err, "there is no path to pass"
+
+
+def test_no_run_history_keeps_its_ordinary_advice_when_no_marker_knows_better(tmp_path, capsys):
+    """The other branch, and the reason the new one is conditional: for an ordinary project
+    the `--log` advice is right and is the likeliest cause — a `configure(run_log=...)` the
+    CLI cannot see. Replacing it unconditionally would trade one wrong message for another."""
+    capsys.readouterr()
+    assert cli.main(["show", "--log", str(tmp_path / "nowhere.jsonl")]) == 1
+    err = capsys.readouterr().err
+    assert "Nothing has been recorded here yet" in err
+    assert "pass --log that path" in err
+    assert "SAYS OTHERWISE" not in err
+
+
+def test_a_marker_naming_the_path_already_being_read_is_not_a_contradiction(tmp_path, capsys):
+    """The ordinary killed-first-run case: the marker names THIS history, which simply does
+    not exist yet. Reporting that as "a marker says otherwise" would manufacture a
+    disagreement out of two records that agree."""
+    log = _orphan_marker(tmp_path, history=str(tmp_path / "runs.jsonl"))
+    capsys.readouterr()
+    assert cli.main(["show", "--log", str(log)]) == 1
+    err = capsys.readouterr().err
+    assert "SAYS OTHERWISE" not in err, f"the marker agrees with the path being read: {err}"
+    assert "Nothing has been recorded here yet" in err
