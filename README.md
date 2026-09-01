@@ -1931,13 +1931,13 @@ once for exactly that reason.
 
 | | state |
 |---|---|
-| CPython 3.10–3.13 on Linux, self-hosted | **green at `bc6d402`** (2026-08-21). `lint` and `build` were wired onto that runner later and have not been dispatched yet |
+| CPython 3.10–3.13 on Linux, self-hosted, **all three gates** | **green at `6065524`** (2026-09-01) — `ci.py lint`, `ci.py test` on all four interpreters, `ci.py build` |
 | macOS 3.12 | **run once and green** — 2026-08-12, run `31592997325`, commit `dec57fe6` |
 | Windows 3.12 | **run once and green** — same run; it skipped 9 of 288 collected there |
 | the hosted matrix on **today's** tree | **not run.** The last fully green matrix was `dec57fe6` |
 
 **The matrix has run, and the honest gap is that it has not run recently.** As of
-**2026-09-01**: 223 workflow runs — **37 successful**, 181 failed, 5 cancelled. The last fully
+**2026-09-01**: 227 workflow runs — **38 successful**, 184 failed, 5 cancelled. The last fully
 green hosted run was `31592997325` at `dec57fe6`, where every leg passed: lint, build, and all
 six test legs including macOS and Windows, the latter exercising the `msvcrt` locking fallback
 that exists for it.
@@ -1953,6 +1953,12 @@ The self-hosted Linux runner is what answers for today's tree in the meantime, a
 `967c61b` it runs the **whole** gate — `ci.py lint`, `ci.py test` on all four interpreters,
 and `ci.py build`. It is Linux only and says so in its own run summary: a green tick there is
 evidence about Linux and about nothing else.
+
+Its first dispatch found something worth keeping: `lint` and `build` passed and all four test
+legs failed, because `actions/checkout` clones at depth 1 and the suite asks git whether the
+commits this section cites are ancestors of HEAD. A test written to keep this section honest
+could not run in the place it most needed to. Fixed with `fetch-depth: 0`, and the run above
+is the one that went green afterwards.
 
 > An earlier version of this section said CI had **never** run and that all 60 runs had failed.
 > That was wrong, and how it was wrong is worth keeping: the check used `gh run list --limit 60`,
