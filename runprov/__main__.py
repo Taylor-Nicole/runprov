@@ -57,6 +57,7 @@ import typing
 
 from . import prune as prune_mod
 from . import show as show_mod
+from ._atomic import TEMP_SUFFIX
 from .hashing import PIN_DIGEST_CHARS
 from .project import active
 from .run import START_SCHEMA, Run, Terminated
@@ -1353,6 +1354,17 @@ def _verify(args: argparse.Namespace) -> int:
         ),
         file=sys.stderr,
     )
+    # DEBRIS IS SAID, not silently skipped. `_atomic` leaves one of these only when a run
+    # died between opening the temporary file and renaming it over the destination, so it is
+    # the one visible trace of a crash mid-write -- and a reader who finds an unexplained
+    # dotfile in a results directory should be told what it is rather than left to guess.
+    if report.get("write_debris"):
+        n = report["write_debris"]
+        print(
+            f"# {n} file(s) left behind by a run that died while writing a record"
+            f" (*{TEMP_SUFFIX}). Nothing reads them; they are safe to delete.",
+            file=sys.stderr,
+        )
     # WHAT `OK` MEANS, every time it is printed. The caveat was in the README and nowhere a
     # user of this command would meet it, so `verify` printed OK and exited 0 over an
     # artifact with a fabricated row appended -- true, since the INPUTS were untouched, and

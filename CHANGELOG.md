@@ -536,6 +536,26 @@ because these were the last names to settle and the reasoning belongs with the r
   mechanism, the last two are defaults `Project` already supplies. All five still exist on
   their own modules (`runprov.run.PIN_UNSAFE`, and so on); they are no longer promises.
 
+### A record is written whole or not at all
+
+- **Every provenance write is atomic.** The sidecar, its YAML twin, the in-flight marker, the
+  pinned JSON artifact and the environment snapshot were each a plain `Path.write_text`, which
+  truncates the destination and then fills it. Measured at all six sites with
+  `tools/torture.py`, tearing each write at 0%, 50% and 90%: **six of six left a prefix on
+  disk** — 1 345 of 2 691 bytes of a sidecar, 109 of 219 of a marker. Worse than a damaged new
+  record, the crash destroyed the whole OLD one. They go through `runprov/_atomic.py` now —
+  temp beside the destination, `fsync`, `os.replace`, `fsync` the directory — so a crash at any
+  instant leaves either the previous record or the new one. **ADR-0005.** `sinks.py` was
+  already correct and is unchanged.
+- **The readers were already right about torn files**, and this is the number that says so:
+  `verify`, `show`, `log`, `lineage` and `prune` were run over ~90 torn trees and 63
+  byte-mutation cases — ~600 invocations — and every one stayed inside the exit-code contract
+  with no traceback. Nothing was broken; what was missing was that a crash could take the
+  record that was already there.
+- **`verify` counts and reports write debris.** A crash between the temporary file and the
+  rename leaves `.<name>.<uid>.runprov-tmp`. It is not read as an artifact, and it is not
+  silently skipped either: it is the only visible trace that a run died mid-write.
+
 ### Known and deliberate
 
 - **Line endings are not content.** `content_digest` ignores a trailing newline and CRLF vs

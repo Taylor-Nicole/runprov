@@ -86,6 +86,7 @@ import pathlib
 import re
 import typing
 
+from ._atomic import TEMP_SUFFIX
 from .hashing import PIN_ANCHOR, PIN_DIGEST_CHARS, PIN_SIDECAR_SUFFIX, describe, pin_digest
 
 # Pins are written at the top of an artifact (`open_output` writes the header first), so
@@ -523,8 +524,14 @@ def verify_artifact(
     return out
 
 
-def collect(paths: typing.Iterable[pathlib.Path]) -> tuple[list[pathlib.Path], int]:
-    """Files to examine, and how many DIRECTORIES were skipped. See `SKIP_DIRS` for why.
+def collect(paths: typing.Iterable[pathlib.Path]) -> tuple[list[pathlib.Path], int, int]:
+    """Files to examine, how many DIRECTORIES were skipped, and how much write debris.
+
+    DEBRIS IS A FILE `_atomic` WAS PART-WAY THROUGH WRITING when the process died — see
+    ADR-0005. It is not an artifact a run produced, and reading a pin out of one would
+    report an artifact under a name nobody wrote. It is COUNTED and reported rather than
+    dropped, for the reason the skipped directories are: it is also the only visible trace
+    that a run died mid-write, which is a thing the reader wants to be told.
 
     Sorted, so two runs of the same check report in the same order — the same reason the
     pin itself is sorted. Duplicates collapse: naming a file and its parent directory must
@@ -554,6 +561,7 @@ def collect(paths: typing.Iterable[pathlib.Path]) -> tuple[list[pathlib.Path], i
     """
     found: set[pathlib.Path] = set()
     skipped = 0
+    debris = 0
     for p in paths:
         if not p.is_dir():
             if p.exists():
@@ -566,8 +574,15 @@ def collect(paths: typing.Iterable[pathlib.Path]) -> tuple[list[pathlib.Path], i
                 # Counted as we prune, without descending. `os.walk` never enters it.
                 skipped += 1
                 dirnames.remove(d)
-            found.update(here / name for name in filenames if (here / name).is_file())
-    return sorted(found), skipped
+            for name in filenames:
+                f = here / name
+                if not f.is_file():
+                    continue
+                if name.endswith(TEMP_SUFFIX):
+                    debris += 1
+                else:
+                    found.add(f)
+    return sorted(found), skipped, debris
 
 
 def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str, typing.Any]:
@@ -578,7 +593,7 @@ def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str
     finding. The COUNT still has to be visible: it is the difference between "everything
     checks out" and "nothing was checked".
     """
-    examined, skipped = collect(paths)
+    examined, skipped, debris = collect(paths)
     # ONE CACHE FOR THE WHOLE REPORT. Shared inputs are the normal case -- a fan-out of
     # N artifacts from one reference file meant N full reads of it -- so the memo has to
     # live across artifacts, not inside one.
@@ -589,6 +604,11 @@ def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str
         "root": str(root),
         "artifacts_seen": len(results),
         "directories_skipped": skipped,
+        # NOT FOLDED INTO `directories_skipped`. One is a place this checker chose not to
+        # look; the other is a file a run left behind when it died. A reader repairs those
+        # two facts differently, so a single number for both would be the wrong number
+        # twice.
+        "write_debris": debris,
         "artifacts_pinned": len(pinned),
         # GONE is counted apart from STALE even though both fail the check. They are
         # different repairs -- a stale artifact is rebuilt, a gone input is FOUND -- and
