@@ -359,6 +359,33 @@ def _tar_digest(path: pathlib.Path) -> str:
     return h.hexdigest()
 
 
+def _posix(path: str | pathlib.Path) -> str:
+    """THE ONE SPELLING EVERY RECORDED PATH USES. Forward slashes, on every platform.
+
+    A record is read on a different machine from the one that wrote it -- that is most of the
+    point of writing it -- and `str(WindowsPath("data/a.tsv"))` is `data\\a.tsv` while the same
+    run on Linux records `data/a.tsv`. Two records of one run that no reader can compare, no
+    `show --stale` key that matches, no lineage edge that joins. Measured on the Windows leg
+    2026-09-01: `['data\\a.tsv', 'data\\b.tsv'] != ['data/a.tsv', 'data/b.tsv']`, and
+    `{'results\\final.tsv': 'OK'}` where a reader asked for `results/final.tsv`.
+
+    The pin (`run._pin_name`) and the directory hash both already made this choice, each with
+    its own note saying why; the RECORD did not, so the format was consistent everywhere
+    except the field the format is mostly made of. Applied here, at `describe`, because every
+    input and every output goes through it -- one funnel, one rule, and no list of call sites
+    to keep extending.
+
+    Absolute paths are safe: `PureWindowsPath("C:/x").as_posix()` is `C:/x`, which
+    `pathlib.Path` parses back to the same file on Windows. Reading a record is unaffected.
+    """
+    # NOT RE-WRAPPED IF IT IS ALREADY A PurePath. `PurePath(PureWindowsPath(...))` on Linux
+    # produces a PurePosixPath holding a backslash as an ordinary character, which is both
+    # wrong and untestable off Windows -- and the test for this rule has to be able to fail
+    # on the platform the suite runs on, or it guards nothing.
+    p = path if isinstance(path, pathlib.PurePath) else pathlib.PurePath(path)
+    return p.as_posix()
+
+
 def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
     """Everything recorded about one input or output. Directories are hashed as a tree.
 
@@ -379,7 +406,7 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
             f"block until a writer appears, which hangs the run inside provenance capture."
         )
     rec: dict[str, typing.Any] = {
-        "path": str(path),
+        "path": _posix(path),
         # A RECORD THAT CANNOT TELL A FILE FROM A LINK TO IT is incomplete in a way that
         # matters: the link can be repointed afterwards and every hash in the record stays
         # valid while describing different bytes. The digest below is the TARGET's, which is

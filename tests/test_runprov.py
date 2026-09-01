@@ -17,6 +17,7 @@ import ast
 import builtins
 import concurrent.futures
 import contextlib
+import csv
 import dataclasses
 import datetime as dt
 import errno
@@ -76,29 +77,38 @@ import runprov.watch  # noqa: E402
 # filesystem answers for the machine actually running.
 
 
-#: CPython <=3.12 raises `RuntimeError("Symlink loop from ...")` when `resolve()` walks a
-#: cyclic link; **3.13 returns the path unchanged instead**. Four tests asserted the exception
-#: as their premise and so failed on 3.13 while the package itself behaved correctly — the
-#: premise was version-specific, the OUTCOME each test exists for is not. Found by the one CI
-#: run that ever executed, and confirmed locally against 3.13.15 (L-104).
-#:
-#: The guards in `run.py` still catch `RuntimeError` and must keep doing so: this is a
-#: relaxation on the newer version, not a removal on the older ones.
-_RESOLVE_RAISES_ON_LOOP = sys.version_info < (3, 13)
-
-
 def _assert_symlink_loop(path: pathlib.Path) -> None:
-    """The premise of the loop tests, asserted in a way that is true on every version."""
+    """The premise of the loop tests: this path really is a cycle, on any interpreter and
+    any platform.
+
+    IT USED TO ASSERT *WHICH WAY* `resolve()` FAILS, against
+    `_RESOLVE_RAISES_ON_LOOP = sys.version_info < (3, 13)` — written two lines below a
+    comment reading "PROBED, NOT ASKED. `sys.platform == 'win32'` is the wrong condition
+    twice over". Asking the version was that same mistake in another coordinate, and it cost
+    a red test on the first Windows run in three weeks.
+
+    It is not even one behaviour to ask about. Measured on Windows 3.12, 2026-09-01:
+    resolving the loop LINK raises `RuntimeError`, and resolving a path THROUGH it does not.
+    CPython <=3.12 on Linux raises for both; 3.13 raises for neither (L-104). One constant
+    could not have been right.
+
+    What every version and platform agrees on is the only thing these tests need: the cycle
+    is there and nothing at the end of it can be opened. `run.py`'s `RuntimeError` guards
+    still matter and must stay — this is a relaxation of a test's premise, not of the code.
+    """
     try:
-        path.resolve()
-        raised = False
-    except RuntimeError as exc:
-        raised = "Symlink loop" in str(exc)
-    assert raised == _RESOLVE_RAISES_ON_LOOP, (
-        f"resolve()-on-a-loop behaviour changed for this interpreter "
-        f"({sys.version_info.major}.{sys.version_info.minor}); update _RESOLVE_RAISES_ON_LOOP "
-        f"and check that run.py's RuntimeError guards are still needed for the versions that "
-        f"do raise"
+        resolved = path.resolve()
+    except RuntimeError as exc:  # 3.10-3.12 on Linux, and the link itself on Windows
+        # NOT `pytest.raises`, which PT017 would prefer: the raise is one of three accepted
+        # outcomes, not the expected one, so there is nothing to wrap.
+        why = str(exc)
+        assert "Symlink loop" in why, f"a RuntimeError that is not the loop: {why}"
+        return
+    except OSError:  # ELOOP surfaced as an OSError
+        return
+    assert not resolved.exists(), (
+        f"{path} was supposed to be a symlink loop, and it resolved to a real file at "
+        f"{resolved} — the fixture is not building what the test is about"
     )
 
 
@@ -140,6 +150,152 @@ requires_unreadable_files = pytest.mark.skipif(
 )
 requires_fcntl = pytest.mark.skipif(
     importlib.util.find_spec("fcntl") is None, reason="fcntl is POSIX-only"
+)
+
+
+def _os_kill_delivers_a_signal() -> bool:
+    """Does `os.kill(pid, SIGTERM)` DELIVER a signal here, or terminate the process?
+
+    `hasattr(signal, "SIGTERM")` is TRUE ON WINDOWS and answers a different question. There
+    `os.kill` is `TerminateProcess`, which runs no handler and gives the process no chance
+    to record anything — and for signal 0 it is `GenerateConsoleCtrlEvent`, because
+    `CTRL_C_EVENT` is 0. The four tests guarded by this were not skipping, and one of them
+    signalled the test runner itself: the whole suite died at 66% with exit 15, no summary,
+    no traceback, for three weeks of CI nobody could read.
+
+    PROBED IN A CHILD, in its own process group, because the only honest way to ask is to
+    try it and the honest way to try it is somewhere that can afford the answer.
+    """
+    src = (
+        "import os, signal, sys\n"
+        "signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))\n"
+        "os.kill(os.getpid(), signal.SIGTERM)\n"
+        "import time; time.sleep(2); sys.exit(1)\n"
+    )
+    try:
+        return (
+            subprocess.run(
+                [sys.executable, "-c", src],
+                capture_output=True,
+                timeout=60,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                check=False,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _has_posix_process_groups() -> bool:
+    """What `_exec_and_signal` actually needs: a POSIX shell and a signallable group.
+
+    One of its two callers was guarded by `@requires_fcntl`, which is a PROXY -- true on the
+    platforms where this works, for an unrelated reason -- and the other was not guarded at
+    all. The unguarded one then failed on Windows for the least informative reason available:
+    `/bin/sh` does not exist, so "the child never started; the test proves nothing".
+    """
+    return (
+        hasattr(os, "killpg")
+        and hasattr(os, "getpgid")
+        and hasattr(signal, "SIGTERM")
+        and pathlib.Path("/bin/sh").exists()
+    )
+
+
+def _dotdot_traverses_a_symlink() -> bool:
+    """Does `link/..` mean the parent of the TARGET here, or the parent of the LINK?
+
+    POSIX resolves it through the link; Windows collapses it lexically first. A test whose
+    whole subject is that difference has nothing to assert where the difference is absent.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d)
+        (base / "a" / "b").mkdir(parents=True)
+        try:
+            (base / "link").symlink_to(base / "a" / "b", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            return False
+        try:
+            return (base / "link" / "..").resolve() == (base / "a").resolve()
+        except OSError:
+            return False
+
+
+requires_signal_delivery = pytest.mark.skipif(
+    not _os_kill_delivers_a_signal(),
+    reason="os.kill does not deliver a catchable signal here (Windows: TerminateProcess)",
+)
+requires_posix_process_groups = pytest.mark.skipif(
+    not _has_posix_process_groups(), reason="needs /bin/sh and a signallable POSIX process group"
+)
+
+
+def _chmod_sets_the_mode() -> bool:
+    """Does `chmod` set the permission bits here, or only toggle a read-only flag?
+
+    Windows does the second: `p.chmod(0o600)` leaves `st_mode` at `0o666`, so a test that
+    asserts a mode survived a rename is asserting nothing there.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        f = pathlib.Path(d) / "m"
+        f.write_text("x", encoding="utf-8")
+        try:
+            f.chmod(0o600)
+        except (OSError, NotImplementedError):
+            return False
+        return f.stat().st_mode & 0o777 == 0o600
+
+
+def _can_open_a_directory() -> bool:
+    """Can a directory be opened as a file descriptor here? Windows: no.
+
+    `_atomic._sync_dir` needs one to make the rename durable, and where there is none it
+    declines quietly -- which is the behaviour, not a failure. The test for its OTHER refusal
+    (a handle that exists and an `fsync` that is rejected) has nothing to drive on a platform
+    that never gets the handle.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            fd = os.open(d, os.O_RDONLY)
+        except OSError:
+            return False
+        os.close(fd)
+        return True
+
+
+def _can_run_a_shell_script() -> bool:
+    """Can a `#!/bin/sh` script be made executable and run here? Windows: no.
+
+    Nine tests write one and expect it back — `run.tool()` asking a binary for its version,
+    `runprov exec` running a command. On Windows they failed as `assert 1 == 0` and
+    `KeyError: 'version'`, which say nothing about the platform and everything about a
+    fixture that could not be built. They had never run there: the suite died at 66% before
+    reaching them.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        script = pathlib.Path(d) / "probe"
+        try:
+            script.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+            script.chmod(0o755)
+            out = subprocess.run([str(script)], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError, NotImplementedError):
+            return False
+        return out.returncode == 0 and out.stdout.strip() == "ok"
+
+
+requires_posix_shell = pytest.mark.skipif(
+    not _can_run_a_shell_script(), reason="needs an executable `#!/bin/sh` script (Windows)"
+)
+requires_real_file_modes = pytest.mark.skipif(
+    not _chmod_sets_the_mode(), reason="chmod only toggles read-only here (Windows)"
+)
+requires_directory_handles = pytest.mark.skipif(
+    not _can_open_a_directory(), reason="a directory cannot be opened as a file here (Windows)"
+)
+requires_dotdot_through_links = pytest.mark.skipif(
+    not _dotdot_traverses_a_symlink(),
+    reason="`link/..` is collapsed lexically here, so there is no cheap answer to decline",
 )
 
 
@@ -335,7 +491,7 @@ def test_run_input_returns_the_path_so_registering_is_the_easy_path(tmp_path):
     src.write_text("id\n1\n")
     run = runprov.Run("t", project=_project(tmp_path))
     assert run.input(src) == src  # usable as `open(run.input(p))`
-    assert run.record["inputs"][0]["path"] == str(src)
+    assert run.record["inputs"][0]["path"] == runprov.hashing._posix(src)
     assert run.record["inputs"][0]["sha256"]
 
 
@@ -1503,7 +1659,9 @@ def test_a_second_write_does_not_double_the_outputs_inside_the_record(tmp_path):
     for name in ("a.json", "b.json"):
         rec = json.loads((tmp_path / name).read_text(encoding="utf-8"))
         paths = [o["path"] for o in rec["outputs"]]
-        assert paths == [str(out)], f"{name} recorded {len(paths)} entries for one file"
+        assert paths == [runprov.hashing._posix(out)], (
+            f"{name} recorded {len(paths)} entries for one file"
+        )
 
     # The history line is the one that is permanent, and inside a `with` block it is
     # deferred to `__exit__` — so it read the list AFTER every write() had appended to it.
@@ -1514,9 +1672,9 @@ def test_a_second_write_does_not_double_the_outputs_inside_the_record(tmp_path):
         run2.write(tmp_path / "d.json")
 
     assert len(_completed(sink2.records)) == 1, "still exactly one line for the run"
-    assert [o["path"] for o in _completed(sink2.records)[0]["outputs"]] == [str(out2)], (
-        "the append-only history must not carry one artifact twice"
-    )
+    assert [o["path"] for o in _completed(sink2.records)[0]["outputs"]] == [
+        runprov.hashing._posix(out2)
+    ], "the append-only history must not carry one artifact twice"
 
 
 def test_a_custom_sink_receives_the_records(tmp_path):
@@ -1930,7 +2088,7 @@ def test_a_caller_supplied_log_is_registered_without_any_capture(tmp_path, monke
         assert run.terminal_log(log) == log
         assert sys.stdout is before, "registering a log must not touch any stream"
     assert run.record["terminal_log"]["capture"] == "caller"
-    hashed = [o for o in run.record["outputs"] if o["path"] == str(log)]
+    hashed = [o for o in run.record["outputs"] if o["path"] == runprov.hashing._posix(log)]
     assert hashed and hashed[0]["sha256"], "it is hashed like any other artifact"
 
 
@@ -2484,6 +2642,7 @@ def test_exec_returns_what_a_shell_returns_for_a_signal_killed_child(
     assert rec["notes"]["exit_code"] == -signum, "the RAW wait status is still recorded"
 
 
+@requires_posix_shell
 def test_exec_does_not_confuse_a_signal_with_an_exit_code_that_looks_like_one(
     tmp_path, monkeypatch
 ):
@@ -2863,6 +3022,7 @@ def test_a_group_that_vanishes_between_the_poll_and_the_signal_is_not_an_error(m
     assert tried, "the polite signal is still attempted — the GROUP may outlive the leader"
 
 
+@requires_posix_process_groups
 def test_a_scancel_shaped_kill_gives_a_number_not_a_traceback(tmp_path):
     """Council C-27. `Terminated` is a `BaseException` on purpose — so an ordinary
     `except Exception:` around a pipeline step cannot swallow a kill — but nothing in the CLI
@@ -2881,7 +3041,7 @@ def test_a_scancel_shaped_kill_gives_a_number_not_a_traceback(tmp_path):
     assert code == 128 + signal.SIGTERM, f"a shell would say 143, got {code}"
 
 
-@requires_fcntl
+@requires_posix_process_groups
 def test_a_killed_exec_does_not_orphan_its_child(tmp_path):
     """Council C-28. SIGTERM to `runprov exec` killed the wrapper and left the child running
     — measured: the child outlived the runprov that started it. On a cluster that is work
@@ -3610,7 +3770,9 @@ def test_terminal_log_anchors_like_its_siblings(tmp_path, monkeypatch, capsys):
         "and the cwd-moved notice must fire — it is raised by _anchor, so skipping _anchor "
         "made this case completely silent"
     )
-    assert run.record["terminal_log"]["path"] == str(returned), "the field agrees too"
+    assert run.record["terminal_log"]["path"] == runprov.hashing._posix(returned), (
+        "the field agrees too"
+    )
 
 
 def test_terminal_log_left_alone_when_the_cwd_does_not_move(tmp_path, monkeypatch, capsys):
@@ -4168,6 +4330,33 @@ def test_the_unregistered_filter_excludes_what_is_not_data(tmp_path):
     ) == ["sub/keep.tsv"], "an excluded directory's contents are ours, not the user's data"
 
 
+def test_a_recorded_relative_name_is_POSIX_on_every_platform(tmp_path, monkeypatch):
+    """A RECORD IS READ ON A DIFFERENT MACHINE FROM THE ONE THAT WROTE IT. `str(WindowsPath)`
+    spells this `data\\lookup.csv` where Linux spells it `data/lookup.csv`, so one run
+    described on two platforms produces two records that cannot be compared and a reader
+    keying on the name finds nothing. Measured red on the Windows leg, 2026-09-01.
+
+    EMULATED, because the bug cannot occur on the platform this suite usually runs on and a
+    test that cannot fail here would be no guard at all: `relative_to` is made to hand back a
+    Windows-flavoured path, which is precisely what it does there. A backslash is a legal
+    character in a Linux filename, so there is no real file that would reproduce it.
+
+    The pin and the tree hash already chose `as_posix()`; this was the one field left."""
+    (tmp_path / "data").mkdir()
+    f = tmp_path / "data" / "lookup.csv"
+    f.write_text("x\n", encoding="utf-8")
+
+    real = pathlib.Path.relative_to
+
+    def windows_flavoured(self, *a, **k):
+        return pathlib.PureWindowsPath(str(real(self, *a, **k)).replace("/", "\\"))
+
+    monkeypatch.setattr(pathlib.Path, "relative_to", windows_flavoured)
+    got = runprov.watch.unregistered(opened=[str(f)], registered=[], root=tmp_path)
+    assert got == ["data/lookup.csv"], got
+    assert "\\" not in got[0], "a recorded name must not carry a platform separator"
+
+
 def test_the_hook_itself_ignores_everything_it_should(monkeypatch):
     """The hook body CALLED DIRECTLY, because coverage cannot trace it otherwise: CPython
     runs audit-hook callbacks with tracing suppressed, so the integration tests above prove
@@ -4184,7 +4373,13 @@ def test_the_hook_itself_ignores_everything_it_should(monkeypatch):
     w = runprov.watch._Watcher()
     run = FakeRun()
 
-    w._hook("open", ("/tmp/x.tsv",))  # nobody listening yet
+    # NATIVE SPELLINGS, because `os.fsdecode(WindowsPath("/tmp/z.tsv"))` is `\\tmp\\z.tsv`
+    # and this test was asserting a POSIX rendering on a platform that does not use one. The
+    # subject is the three input SHAPES the hook must accept — str, bytes, os.PathLike — and
+    # every one of them survives being spelled the way this machine spells a path.
+    x, y, z = (str(pathlib.Path(p)) for p in ("/tmp/x.tsv", "/tmp/y.tsv", "/tmp/z.tsv"))
+
+    w._hook("open", (x,))  # nobody listening yet
     assert run._opened == set()
 
     w._active.append(run)  # attach without installing a real process-wide hook
@@ -4194,14 +4389,15 @@ def test_the_hook_itself_ignores_everything_it_should(monkeypatch):
     w._hook("open", (3,))  # a file DESCRIPTOR, not a name
     assert run._opened == set()
 
-    w._hook("open", ("/tmp/x.tsv",))
-    w._hook("open", (b"/tmp/y.tsv",))  # bytes are a path too
-    w._hook("open", (pathlib.Path("/tmp/z.tsv"),))  # and so is os.PathLike
-    assert run._opened == {"/tmp/x.tsv", "/tmp/y.tsv", "/tmp/z.tsv"}
+    w._hook("open", (x,))
+    w._hook("open", (os.fsencode(y),))  # bytes are a path too
+    w._hook("open", (pathlib.Path(z),))  # and so is os.PathLike
+    assert run._opened == {x, y, z}
 
     monkeypatch.setattr(runprov.watch, "WATCH_MAX_PATHS", 3)
-    w._hook("open", ("/tmp/past-the-cap.tsv",))
-    assert "/tmp/past-the-cap.tsv" not in run._opened, "the cap must hold"
+    past = str(pathlib.Path("/tmp/past-the-cap.tsv"))
+    w._hook("open", (past,))
+    assert past not in run._opened, "the cap must hold"
 
 
 def test_installing_the_hook_is_idempotent(monkeypatch):
@@ -6343,7 +6539,9 @@ def test_open_output_registers_pins_and_forces_utf8_in_one_call(tmp_path, monkey
     assert body.startswith("# provenance"), "the pin must be the first thing in the artifact"
     assert "in.tsv" in body, "and it must name what the artifact was made from"
     assert body.rstrip().endswith("x\t1"), "the caller's content follows it"
-    assert [o["path"] for o in run.record["outputs"]] == [str(out)], "registered exactly once"
+    assert [o["path"] for o in run.record["outputs"]] == [runprov.hashing._posix(out)], (
+        "registered exactly once"
+    )
 
 
 def test_open_output_writes_utf8_whatever_the_locale_says(tmp_path, monkeypatch):
@@ -7939,6 +8137,12 @@ def test_an_object_with_no_item_method_is_still_recorded(tmp_path, monkeypatch):
     got = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["notes"]
     # `str(Path)`, never a hardcoded literal: a POSIX spelling makes this fail on Windows
     # for the separator rather than for the behaviour, which is what it did.
+    #
+    # AND `str`, NOT `_posix`, WHICH IS THE DIFFERENCE WORTH KNOWING. A NOTE IS THE CALLER'S
+    # OWN VALUE and the package records it as it was given -- `note("path", p)` happens to
+    # be spelled `path` and is not a recorded path field. The one-spelling rule applies to
+    # `inputs`, `outputs`, `provenance_path` and `terminal_log`, which the package produces
+    # and later reads back; it does not extend to whatever a caller chose to write down.
     assert got["path"] == str(somewhere)
     assert isinstance(got["set"], str)
 
@@ -10512,7 +10716,7 @@ with runprov.Run("slow", {"n": 1}, project=proj, provenance=root / "p.json") as 
 """
 
 
-@pytest.mark.skipif(not hasattr(signal, "SIGTERM"), reason="POSIX signal needed")
+@requires_signal_delivery
 def test_a_sigterm_records_the_run_instead_of_vanishing(tmp_path):
     """SLURM's time limit, `scancel` and `docker stop` are all SIGTERM, and every one of
     them used to leave no sidecar and no history line — a run indistinguishable from one
@@ -10617,7 +10821,7 @@ def test_a_signal_absent_on_the_platform_is_recorded_as_absent(tmp_path, monkeyp
         assert run.record["signals"]["SIGHUP"] == "absent on this platform"
 
 
-@pytest.mark.skipif(not hasattr(signal, "SIGTERM"), reason="POSIX signal needed")
+@requires_signal_delivery
 def test_the_handler_raises_into_the_block_it_guards(tmp_path):
     """The subprocess test above proves the whole path end to end, but it runs in another
     interpreter. This one signals THIS process, so the raise is exercised where it can be
@@ -10772,6 +10976,7 @@ def test_a_path_that_is_genuinely_outside_still_pins_as_external(tmp_path):
 
 
 @requires_symlinks
+@requires_dotdot_through_links
 def test_a_dotdot_through_a_link_declines_the_cheap_answer(tmp_path):
     """`link/../x` normalises to the parent of the LINK, while on disk it means the parent
     of its TARGET. The cheap normalisation would name a file that is not the one hashed, so
@@ -11880,8 +12085,15 @@ def test_rehash_catches_what_a_stat_cannot(tmp_path, monkeypatch):
     rows = _staleable(tmp_path, monkeypatch)
     src = tmp_path / "data" / "in.tsv"
     stat = src.stat()
-    src.write_text("id\tv\n1\tZ\n", encoding="utf-8")  # SAME length as "1\ta\n"... no: force it
-    src.write_bytes(b"id\tv\n1\tz\n")
+    # DERIVED FROM WHAT IS ON DISK, not typed out. This wrote a literal `b"id\tv\n1\tz\n"`
+    # over a file the fixture had written with `write_text` — which on Windows is 11 bytes of
+    # CRLF against 9 of LF. So the size changed, `moved_since` saw it, and the test failed
+    # for the one reason it exists to rule out. A byte-for-byte substitution cannot.
+    before = src.read_bytes()
+    src.write_bytes(before.replace(b"a", b"z", 1))
+    assert len(src.read_bytes()) == len(before), (
+        "the premise is a change no stat can see; a different length is a change every stat can see"
+    )
     os.utime(src, (stat.st_atime, stat.st_mtime))  # and put the mtime back
 
     assert _state_of(runprov.show.staleness(rows), "mid.tsv") == "OK", (
@@ -12543,7 +12755,15 @@ def test_a_marker_with_no_usable_pid_is_not_guessed_about(tmp_path):
 def test_a_pid_owned_by_someone_else_is_running_not_gone(tmp_path, monkeypatch):
     """`os.kill(pid, 0)` raises PermissionError when the process EXISTS and belongs to
     another user — which is the ordinary state on a shared login node. Reading that as
-    "gone" would report every colleague's job as INTERRUPTED."""
+    "gone" would report every colleague's job as INTERRUPTED.
+
+    `sys.platform` IS SET, so the POSIX branch is what runs and the patched `os.kill` is what
+    answers — on every machine, this one included. Without it the test asserted the POSIX
+    mechanism on whatever platform happened to run it, and on Windows `_still_running` does
+    not consult `os.kill` at all: the patch applied to nothing and the test failed for a
+    reason that had nothing to do with its subject. The Windows spelling of the same fact —
+    `OpenProcess` refusing with ERROR_ACCESS_DENIED — has its own test."""
+    monkeypatch.setattr(sys, "platform", "linux")
     d = tmp_path / ".incomplete"
     d.mkdir()
     (d / "theirs.json").write_text(
@@ -14131,6 +14351,7 @@ def test_a_failure_while_hashing_imports_is_recorded_not_raised(tmp_path, monkey
 
 
 # ============ the work that is not Python: external tools, and scripts in other languages
+@requires_posix_shell
 def test_tool_records_which_binary_and_what_version(tmp_path, monkeypatch):
     """For a pipeline whose real work is subprocesses, the Python environment answers almost
     nothing: `packages` lists what pip installed, and the thing that made the BAM is not in
@@ -14148,7 +14369,7 @@ def test_tool_records_which_binary_and_what_version(tmp_path, monkeypatch):
 
     assert got["found"] is True
     assert got["version"] == "faketool 9.9.9"
-    assert got["path"] == str(tool)
+    assert got["path"] == runprov.hashing._posix(tool)
     assert len(got["sha256"]) == 64, "the binary itself, for two builds calling themselves 9.9.9"
 
     rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
@@ -14166,6 +14387,7 @@ def test_a_tool_that_is_absent_is_recorded_as_absent(tmp_path, monkeypatch):
     assert json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["tools"] == [got]
 
 
+@requires_posix_shell
 def test_a_tool_that_hangs_or_cannot_run_is_recorded_never_raised(tmp_path, monkeypatch):
     """Provenance must not be the reason a pipeline stops. `--version` on an unknown binary
     is not free and not always harmless, which is why this is bounded and guarded."""
@@ -14185,6 +14407,7 @@ def test_a_tool_that_hangs_or_cannot_run_is_recorded_never_raised(tmp_path, monk
     assert json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["status"] == "ok"
 
 
+@requires_posix_shell
 def test_a_version_printed_to_stderr_is_still_a_version(tmp_path, monkeypatch):
     """Plenty of tools print their version to stderr, and a non-zero exit does not mean they
     failed to tell us — `samtools --version` is the canonical example."""
@@ -14201,6 +14424,7 @@ def test_a_version_printed_to_stderr_is_still_a_version(tmp_path, monkeypatch):
     assert got["version"] == "noisytool 2.1" and got["exit_code"] == 1
 
 
+@requires_posix_shell
 def test_a_version_banner_that_is_not_utf8_does_not_kill_the_run(tmp_path, monkeypatch):
     """L-14. A version banner is not required to be UTF-8 — a latin-1 `ç` in a vendor's
     copyright line is enough. Strict decoding raised `UnicodeDecodeError`, which is a
@@ -14230,6 +14454,7 @@ def test_a_version_banner_that_is_not_utf8_does_not_kill_the_run(tmp_path, monke
     assert got["exit_code"] == 0
 
 
+@requires_posix_shell
 def test_exec_runs_a_command_whose_version_banner_is_not_utf8(tmp_path, monkeypatch, capfd):
     """The consequence that makes L-14 more than cosmetic: `_exec` probes `argv[0]` with
     `tool()` BEFORE running anything, so the decode error meant the wrapped command never
@@ -14528,6 +14753,7 @@ def test_code_is_not_confused_with_input(tmp_path, monkeypatch):
 
 
 # ========== `runprov exec`: a subprocess recorded as a run, for pipelines with no Python
+@requires_posix_shell
 def test_exec_records_a_shell_command_as_a_run(tmp_path, monkeypatch, capsys):
     """`tool()` and `code()` are calls a caller has to make, and a Makefile or a Snakefile
     has no Python to put them in. So the recording is something you put IN FRONT."""
@@ -14613,6 +14839,7 @@ def test_verify_says_when_log_is_ignored(tmp_path, monkeypatch, capsys):
     assert "--log is accepted" not in capsys.readouterr().err, "silent when not passed"
 
 
+@requires_posix_shell
 def test_exec_passes_a_separator_through_to_the_command(tmp_path, monkeypatch, capfd):
     """L-13. `nargs=REMAINDER` hands back the `--` that separates runprov's own flags from
     the command, so one has to come off — but every `--` was being dropped, which rewrites
@@ -14638,6 +14865,7 @@ def test_exec_passes_a_separator_through_to_the_command(tmp_path, monkeypatch, c
     assert rec["parameters"]["argv"] == ["/bin/echo", "a", "--", "b"]
 
 
+@requires_posix_shell
 def test_exec_accepts_a_command_with_no_leading_separator(tmp_path, monkeypatch, capfd):
     """The leading `--` is optional — argparse only inserts it when the user typed it — so
     stripping position 0 unconditionally would eat the program name instead."""
@@ -14747,7 +14975,7 @@ def test_exec_can_tee_the_commands_output_to_a_file(tmp_path, monkeypatch, capsy
     assert rc == 0
     assert "from-a-subprocess" in log.read_text(encoding="utf-8")
     rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
-    assert rec["terminal_log"]["path"] == str(log)
+    assert rec["terminal_log"]["path"] == runprov.hashing._posix(log)
 
 
 # ============================ NFS and Lustre: the filesystems the lock exists for
@@ -17675,6 +17903,7 @@ def test_a_completed_write_leaves_no_debris_either(tmp_path):
     assert [q.name for q in tmp_path.iterdir()] == ["s.prov.json"]
 
 
+@requires_real_file_modes
 def test_the_replacement_keeps_the_permissions_the_record_already_had(tmp_path):
     """A rename brings the temporary file's mode with it, so a record somebody had
     restricted would quietly re-open on the next run. `write_text` truncated in place and
@@ -17702,17 +17931,14 @@ def test_a_record_is_written_THROUGH_a_symlink_and_not_over_it(tmp_path):
     assert [q.name for q in real.parent.iterdir()] == ["s.prov.json"], "debris beside the target"
 
 
-def test_a_directory_that_cannot_be_synced_does_not_fail_a_write_that_succeeded(
+def test_a_directory_that_cannot_be_OPENED_does_not_fail_a_write_that_succeeded(
     tmp_path, monkeypatch
 ):
-    """Windows cannot open a directory as a file and some network filesystems refuse the
-    `fsync`. Neither is a reason to raise over a record that is already on disk — the
-    atomicity holds either way, and only its survival of a power cut is at stake.
-
-    BOTH REFUSALS, because they are two different lines: one where the directory cannot be
-    opened at all, one where the handle exists and the sync is rejected."""
+    """Windows cannot open a directory as a file at all — that is its ORDINARY path here, not
+    an edge case — and it is no reason to raise over a record already on disk. The atomicity
+    holds either way; only the rename's survival of a power cut is at stake."""
     p = tmp_path / "s.prov.json"
-    real_open, real_fsync = runprov._atomic.os.open, runprov._atomic.os.fsync
+    real_open = runprov._atomic.os.open
 
     def no_dir_handle(path, *a, **k):
         if pathlib.Path(path).is_dir():
@@ -17722,8 +17948,22 @@ def test_a_directory_that_cannot_be_synced_does_not_fail_a_write_that_succeeded(
     monkeypatch.setattr(runprov._atomic.os, "open", no_dir_handle)
     runprov._atomic.atomic_write_text(p, "one\n")
     assert p.read_text(encoding="utf-8") == "one\n"
-    monkeypatch.undo()
 
+
+@requires_directory_handles
+def test_a_directory_sync_that_is_REFUSED_does_not_fail_a_write_that_succeeded(
+    tmp_path, monkeypatch
+):
+    """The other refusal, and a different line: the handle exists and the filesystem rejects
+    the `fsync`, as some network filesystems do.
+
+    ITS OWN TEST, and gated, because it needs a directory handle to drive and Windows never
+    supplies one. Folded in with the case above, it asserted "the sync was attempted" on the
+    one platform where it never can be — and failed there for the opposite of the reason it
+    exists.
+    """
+    p = tmp_path / "s.prov.json"
+    real_fsync = runprov._atomic.os.fsync
     seen = []
 
     def refuse_dir_sync(fd):
@@ -17850,3 +18090,272 @@ def test_verify_counts_write_debris_and_does_not_read_it_as_an_artifact(tmp_path
     )
     assert after["artifacts_seen"] == clean["artifacts_seen"], after
     assert clean["write_debris"] == 0, "a clean tree must report none, or the count is noise"
+
+
+# ------------------------------------- is that pid alive? (T-07: os.kill is not that question)
+
+
+def _fake_ctypes(*, handle=7, last_error=0, waited=None, raises=None):
+    """A stand-in for the Windows half of `ctypes`, which does not exist on this platform.
+
+    Same device as `test_the_windows_lock_path_is_exercised` uses for `msvcrt`: it does not
+    test Windows — CI does that on a real runner — but it proves this code asks the right
+    question and reads the three answers apart. The numbers are the ones measured ON the
+    runner, 2026-09-01, not ones copied out of a header file.
+    """
+    from runprov.show import _WAIT_TIMEOUT
+
+    closed = []
+
+    class Kernel32:
+        @staticmethod
+        def OpenProcess(access, inherit, pid):
+            if raises is not None:
+                raise raises
+            return handle
+
+        @staticmethod
+        def WaitForSingleObject(h, ms):
+            return _WAIT_TIMEOUT if waited is None else waited
+
+        @staticmethod
+        def CloseHandle(h):
+            closed.append(h)
+
+    class FakeCtypes:
+        WinDLL = staticmethod(lambda name, use_last_error=False: Kernel32())
+        get_last_error = staticmethod(lambda: last_error)
+
+    return FakeCtypes, closed
+
+
+def _as_windows(monkeypatch, fake):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "ctypes", fake)
+
+
+def test_show_NEVER_signals_a_process_when_asking_whether_it_is_alive(monkeypatch):
+    """THE SAFETY HALF, and the reason this was a defect and not a wrong answer.
+
+    `signal.CTRL_C_EVENT` is 0, and CPython's `os.kill` special-cases it — so
+    `os.kill(pid, 0)` on Windows is `GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid)`, which
+    sends a Ctrl-C to a console process group. `runprov show`, reading a marker left by a
+    job that died last week, would interrupt whatever live process now holds that number.
+
+    Asserted as "os.kill is not called at all" rather than as an outcome, because an
+    outcome-only test passes on any implementation that signals the process and then
+    happens to return the right answer."""
+    fake, _ = _fake_ctypes(waited=runprov.show._WAIT_OBJECT_0)
+    _as_windows(monkeypatch, fake)
+
+    def refuse(*a, **k):
+        raise AssertionError("os.kill was called to ask whether a process is alive")
+
+    monkeypatch.setattr(runprov.show.os, "kill", refuse)
+    assert runprov.show._still_running(4321) is False
+
+
+def test_the_three_windows_answers_are_read_apart(monkeypatch):
+    """Measured on the runner: self -> WAIT_TIMEOUT (258), a reaped pid -> WAIT_OBJECT_0 (0),
+    an absurd pid -> no handle, error 87. Three questions, three different right answers —
+    and the old code gave the same one to all three."""
+    for waited, expect in (
+        (runprov.show._WAIT_TIMEOUT, True),
+        (runprov.show._WAIT_OBJECT_0, False),
+    ):
+        fake, closed = _fake_ctypes(waited=waited)
+        _as_windows(monkeypatch, fake)
+        assert runprov.show._still_running(11) is expect, waited
+        assert closed == [7], "the handle must be closed whatever the answer"
+
+    fake, _ = _fake_ctypes(handle=0, last_error=runprov.show._ERROR_INVALID_PARAMETER)
+    _as_windows(monkeypatch, fake)
+    assert runprov.show._still_running(12) is False, "error 87 IS 'there is no such process'"
+
+    fake, _ = _fake_ctypes(handle=0, last_error=runprov.show._ERROR_ACCESS_DENIED)
+    _as_windows(monkeypatch, fake)
+    assert runprov.show._still_running(13) is True, (
+        "a process we may not open is a process that EXISTS -- Windows for EPERM, and the "
+        "same answer POSIX gives for the same fact"
+    )
+
+    fake, _ = _fake_ctypes(handle=0, last_error=1450)  # ERROR_NO_SYSTEM_RESOURCES
+    _as_windows(monkeypatch, fake)
+    assert runprov.show._still_running(18) is None, "a failure to ask is not an answer"
+
+    fake, _ = _fake_ctypes(waited=0xFFFFFFFF)  # WAIT_FAILED
+    _as_windows(monkeypatch, fake)
+    assert runprov.show._still_running(14) is None, "an unrecognised wait result is not an answer"
+
+    fake, _ = _fake_ctypes(raises=OSError("the call itself failed"))
+    _as_windows(monkeypatch, fake)
+    assert runprov.show._still_running(15) is None
+
+
+def test_the_windows_helper_declines_when_it_is_not_on_windows(monkeypatch):
+    """It is normally reached through a platform test, so this can only happen by calling it
+    directly — which is exactly what a later refactor might do. `None` is the honest answer
+    from a function that cannot ask the question here.
+
+    `sys.platform` IS SET RATHER THAN ASSUMED, so the test asserts the same thing on every
+    machine. Written without it, it asserted "this is not Windows" and duly failed on
+    Windows — a test whose outcome depended on where it ran, in a change whose entire
+    subject is code whose outcome depends on where it runs."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert runprov.show._still_running_windows(os.getpid()) is None
+
+
+def test_a_process_we_may_not_signal_is_alive_and_one_we_cannot_ask_about_is_not_an_answer(
+    monkeypatch,
+):
+    """`EPERM` genuinely means the process exists — that reasoning was sound and is kept.
+    It was extended to EVERY `OSError`, which is what made a failure to ask look like an
+    answer, and is the sentence the Windows bug hid behind."""
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def perm(*a, **k):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(runprov.show.os, "kill", perm)
+    assert runprov.show._still_running(16) is True
+
+    def other(*a, **k):
+        raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr(runprov.show.os, "kill", other)
+    assert runprov.show._still_running(17) is None
+    assert runprov.show._liveness({"host": "h", "pid": 17}, "h") == runprov.show.UNTELLABLE, (
+        "'I could not look' must not be printed as 'it is running'"
+    )
+
+
+def test_open_output_writes_exactly_the_bytes_it_is_given(tmp_path, monkeypatch):
+    """`csv` writes its own `\\r\\n`, so a handle that also translates `\\n` produces `\\r\\r\\n`
+    and a blank line after every row. The README's front-page block writes through this
+    handle with `csv.DictWriter`; measured on the Windows runner 2026-09-01, its artifact
+    came out with 13 lines where the test expected 10.
+
+    THE CALL SHAPE IS ASSERTED, not only the result, and that is the point of this test.
+    On Linux `newline=None` and `newline=""` produce identical bytes — so a result-only test
+    passes here on the broken version and can never guard the platform it was written for.
+
+    The bytes are asserted too: a call-shape test alone would pass on an implementation that
+    opened the file correctly and then mangled the text itself."""
+    seen = {}
+    real = builtins.open
+
+    def watched(file, *a, **k):
+        if str(file).endswith("out.tsv"):
+            seen.update(k)
+        return real(file, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", watched)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            w = csv.writer(fh, delimiter="\t")
+            w.writerow(["sample", "value"])
+            w.writerow(["a", "9"])
+    monkeypatch.undo()
+
+    assert seen.get("newline") == "", f"open_output must not translate line endings: {seen}"
+    raw = (tmp_path / "out.tsv").read_bytes()
+    assert b"\r\r\n" not in raw, "csv's own CRLF was translated a second time"
+    assert raw.count(b"\r\n") == 2, "one per csv row, and none in the pin"
+    assert raw.split(b"\r\n")[0].endswith(b"sample\tvalue"), raw[:200]
+
+
+def test_every_recorded_path_is_spelled_one_way_on_every_platform():
+    """A RECORD IS READ ON A DIFFERENT MACHINE FROM THE ONE THAT WROTE IT, and until this
+    the format was consistent everywhere except the field it is mostly made of. Measured on
+    the Windows leg 2026-09-01: `record["inputs"][i]["path"]` came back `data\\a.tsv`,
+    `provenance_path` as `out\\mid.prov.json`, and `show --stale` keyed its answers
+    `{'results\\final.tsv': 'OK'}` for a reader asking about `results/final.tsv`.
+
+    EMULATED, because on this platform `str()` and `as_posix()` agree and a test that cannot
+    fail here would be no guard at all. `PurePath` is made Windows-flavoured, which is
+    exactly what it is there.
+
+    The pin and the directory hash had each already made this choice, with their own note
+    saying why. `describe` is the funnel every input and output passes through, so the rule
+    lives there rather than in a list of call sites somebody has to keep extending."""
+    win = pathlib.PureWindowsPath
+    assert runprov.hashing._posix(win("data\\a.tsv")) == "data/a.tsv"
+    assert runprov.hashing._posix(win("C:\\x\\y.tsv")) == "C:/x/y.tsv", (
+        "an absolute path too — pathlib parses that back to the same file on Windows"
+    )
+    assert runprov.hashing._posix("data/a.tsv") == "data/a.tsv", "already-posix stays put"
+    assert runprov.hashing._posix(tmp := pathlib.Path("a") / "b") == "a/b", (
+        f"and a native path is unchanged here: {tmp}"
+    )
+
+
+def test_no_recorded_path_is_spelled_with_a_bare_str():
+    """DERIVED, NOT LISTED — the ninth and tenth instance of the pattern this repository
+    keeps finding, and the reason this test exists rather than seven fixed lines.
+
+    `describe()` had spelled the path correctly for the whole of its life, and then
+    `described["path"] = str(q)` twelve lines later overwrote it, so every INPUT went into
+    the record POSIX and every OUTPUT went in the platform's way. Two more sites were in
+    `terminal.py`, one in `environment.py`, one more in `run.py`. Nobody would have found
+    the seventh by reading, and a list of six filenames is the same defect rescheduled.
+
+    PARSED, NOT GREPPED, for the reason the atomic-write guard is: a line-matching version
+    of this fires on docstrings that quote the code.
+    """
+    offenders = {}
+    for mod in sorted(pathlib.Path(runprov.__file__).parent.glob("*.py")):
+        tree = ast.parse(mod.read_text(encoding="utf-8"), filename=str(mod))
+        for node in ast.walk(tree):
+            bare = (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "str"
+            )
+            if isinstance(node, ast.Dict):
+                for k, v in zip(node.keys, node.values, strict=False):
+                    if (
+                        isinstance(k, ast.Constant)
+                        and k.value == "path"
+                        and isinstance(v, ast.Call)
+                        and isinstance(v.func, ast.Name)
+                        and v.func.id == "str"
+                    ):
+                        offenders[f"{mod.name}:{v.lineno}"] = ast.unparse(v)
+            if (
+                isinstance(node, ast.Assign)
+                and bare is False
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id == "str"
+            ):
+                for t in node.targets:
+                    if (
+                        isinstance(t, ast.Subscript)
+                        and isinstance(t.slice, ast.Constant)
+                        and t.slice.value == "path"
+                    ):
+                        offenders[f"{mod.name}:{node.lineno}"] = ast.unparse(node)
+    assert not offenders, (
+        f"a recorded path spelled the platform's way: {offenders}. Use `hashing._posix`, so "
+        f"a record written on Windows can be read on Linux and vice versa."
+    )
+    # NON-VACUITY: the scan must be able to see the shape it is looking for, in both of the
+    # forms it takes. "Nothing found" and "nothing looked at" are the same green.
+    probe = ast.parse('rec = {"path": str(p)}\nrec["path"] = str(p)\n')
+    seen = 0
+    for node in ast.walk(probe):
+        if isinstance(node, ast.Dict) and any(
+            isinstance(k, ast.Constant) and k.value == "path" for k in node.keys
+        ):
+            seen += 1
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Subscript)
+            and isinstance(t.slice, ast.Constant)
+            and t.slice.value == "path"
+            for t in node.targets
+        ):
+            seen += 1
+    assert seen == 2, f"the scan cannot see its own subject in both forms ({seen})"

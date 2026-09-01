@@ -74,6 +74,7 @@ import time
 import typing
 
 from ._report import diagnostic
+from .hashing import _posix
 
 #: Read size for the mirror thread. Large enough that a chatty run does not spin, small
 #: enough that output reaches the terminal promptly — a capture that batches a progress bar
@@ -224,7 +225,7 @@ class Capture:
     def stop(self) -> dict[str, typing.Any] | None:
         """End the capture and describe what was recorded. NEVER raises."""
         if self.mode == "none":
-            return {"path": str(self.path), "capture": "none", "error": self.error}
+            return {"path": _posix(self.path), "capture": "none", "error": self.error}
         try:
             _flush_std()
             if self.mode == "fd":
@@ -350,7 +351,7 @@ class Capture:
         """The record entry: where, how, how big, and whether it is trustworthy."""
         from .hashing import sha256
 
-        rec: dict[str, typing.Any] = {"path": str(self.path), "capture": self.mode}
+        rec: dict[str, typing.Any] = {"path": _posix(self.path), "capture": self.mode}
         if self.path.is_file():
             rec["sha256"] = sha256(self.path)
             rec["bytes"] = self.path.stat().st_size

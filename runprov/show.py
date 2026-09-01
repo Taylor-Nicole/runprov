@@ -46,6 +46,7 @@ import json
 import os
 import pathlib
 import platform
+import sys
 import typing
 
 from .hashing import PIN_DIGEST_CHARS, describe, moved_since, pin_digest
@@ -424,19 +425,113 @@ def liveness(rec: dict[str, typing.Any]) -> str:
     return _liveness(rec, platform.node())
 
 
+#: The three Windows constants this module needs, named rather than spelled inline. See
+#: `_still_running_windows`.
+_SYNCHRONIZE = 0x00100000
+_WAIT_OBJECT_0 = 0x00000000
+_WAIT_TIMEOUT = 0x00000102
+_ERROR_INVALID_PARAMETER = 87
+_ERROR_ACCESS_DENIED = 5
+
+
+def _still_running(pid: int) -> bool | None:
+    """Is that process still going? True, False, or None for "cannot tell from here".
+
+    `os.kill(pid, 0)` IS NOT A LIVENESS CHECK ON WINDOWS, and this module used it as one for
+    the whole of its life. `signal.CTRL_C_EVENT` **is 0**, and CPython's `os.kill` special-
+    cases it: on Windows the call becomes `GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid)`,
+    which SENDS A CTRL-C TO A CONSOLE PROCESS GROUP and then returns success.
+
+    So the reader that exists to say "this run was killed" did two wrong things at once.
+    It never raised, so every dead run on a Windows machine was reported RUNNING and
+    `INTERRUPTED` was unreachable there. And it interrupted whatever else shared that
+    console -- `runprov show`, reading a marker left by a job that died last week, sending
+    a Ctrl-C to a live process that now holds the number.
+
+    MEASURED ON THE RUNNER, 2026-09-01, because this is not the kind of claim to make from
+    documentation: `os.kill(pid, 0)` raised nothing for a live pid, a reaped pid with its
+    handle still held, a reaped pid with the handle dropped, or the caller itself -- and it
+    killed two rounds of the probe sent to measure it, which is how it was found.
+    """
+    if sys.platform == "win32":
+        return _still_running_windows(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # guards-ok: it exists; we are merely not allowed to signal it
+        return True
+    except OSError:  # guards-ok: we could not ask, which is not an answer about the process
+        return None
+    return True
+
+
+def _still_running_windows(pid: int) -> bool | None:
+    """The same question, asked the way Windows answers it.
+
+    `OpenProcess(SYNCHRONIZE)` and a zero-timeout wait. A PROCESS HANDLE IS SIGNALLED WHEN
+    THE PROCESS HAS EXITED, so `WAIT_OBJECT_0` means finished and `WAIT_TIMEOUT` means still
+    running. A handle that cannot be opened at all is `ERROR_INVALID_PARAMETER` when there is
+    no such process, and something else -- a permission problem, most often -- when there is
+    one we may not ask about; the second is not an answer and says so.
+
+    Measured on the runner: self `WAIT_TIMEOUT` (258), a reaped pid `WAIT_OBJECT_0` (0), an
+    absurd pid no handle with error 87. Three questions, three different right answers.
+
+    `ctypes` is stdlib and imported HERE rather than at module scope, exactly as `sinks.py`
+    imports `msvcrt`: the package's zero-dependency claim is about what must be installed,
+    and a Windows-only import at the top of a module is a cost every Linux reader pays.
+    """
+    # THE PLATFORM TEST IS REPEATED HERE ON PURPOSE. `mypy --strict` runs on Linux, where
+    # `ctypes.WinDLL` and `ctypes.get_last_error` are not in the stubs at all; narrowing on
+    # `sys.platform` is what lets the checker skip a body it cannot type, and it is the same
+    # shape `sinks.py` uses for `msvcrt`. Suppressions would have hidden a real mistake here.
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
+        if not handle:
+            failed = ctypes.get_last_error()
+            if failed == _ERROR_INVALID_PARAMETER:
+                return False  # there is no process with that id
+            if failed == _ERROR_ACCESS_DENIED:
+                # IT EXISTS AND WE MAY NOT ASK ABOUT IT -- Windows for `EPERM`, and it gets
+                # the same answer POSIX gives, because it is the same fact. Anything else is
+                # a failure to ask, which is not news about the process.
+                return True
+            return None
+        try:
+            waited = kernel32.WaitForSingleObject(handle, 0)
+        finally:
+            kernel32.CloseHandle(handle)
+    except (ImportError, OSError, AttributeError, ValueError):
+        # guards-ok: whatever went wrong here, it is not news about the process. Reporting
+        # `?` is the honest answer and the one every other unanswerable case gets.
+        return None
+    if waited == _WAIT_OBJECT_0:
+        return False
+    if waited == _WAIT_TIMEOUT:
+        return True
+    return None
+
+
 def _liveness(rec: dict[str, typing.Any], here: str) -> str:
     if rec.get("host") != here:
         return UNTELLABLE
     pid = rec.get("pid")
     if not isinstance(pid, int):
         return UNTELLABLE
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return INTERRUPTED
-    except (PermissionError, OSError):  # guards-ok: alive, owned by somebody else
-        return RUNNING
-    return RUNNING
+    running = _still_running(pid)
+    # `?` RATHER THAN A GUESS, and this is a change: an unexpected `OSError` used to be read
+    # as RUNNING on the reasoning that a process we cannot signal is a process that exists.
+    # That reasoning is sound for `EPERM` and for nothing else, and it is the sentence that
+    # made the Windows answer wrong -- a failure to ask was reported as an answer.
+    if running is None:
+        return UNTELLABLE
+    return RUNNING if running else INTERRUPTED
 
 
 def _resolve(path: str, cwd: str | None) -> pathlib.Path:
