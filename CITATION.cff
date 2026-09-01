@@ -5,12 +5,19 @@
 # question: "How do I cite this software, and who are the authors with their ORCIDs and
 # affiliations?" It had no answer anywhere in the project.
 #
-# NO ORCID FIELD. Taylor's is not recorded here yet, and an invented or guessed identifier
-# is worse than a missing one — it resolves to a real person who is not the author. Add it
-# under `authors:` when you have it, as `orcid: "https://orcid.org/<your-id>"`.
+# NO ORCID FIELDS YET, and that is deliberate rather than an oversight. Both authors have
+# one; neither identifier has been recorded here. An invented or guessed ORCID is worse than
+# a missing one — it resolves to a REAL PERSON who is not the author, and a citation is
+# exactly the place that error propagates. Add each as `orcid: "https://orcid.org/<id>"`
+# under the person it belongs to, once you have the strings themselves.
 #
 # The example is written that way on purpose: a literal placeholder id in this comment
 # tripped the very test that forbids shipping one, which is the test working.
+#
+# AUTHOR ORDER IS THE AUTHORS' TO SET and is recorded here as decided on 2026-09-01: Taylor
+# Thompson first as the author of the software, Christophe Rodriguez second as thesis
+# director. JOSS applies authorship criteria based on contribution to the SOFTWARE — worth
+# re-reading before submission, since the reviewers ask.
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
@@ -39,4 +46,7 @@ keywords:
 authors:
   - family-names: Thompson
     given-names: Taylor
-    affiliation: "Plateforme GenoBioMICS, Hôpital Henri-Mondor, AP-HP · INSERM U955, équipe Pawlotsky · Créteil, France"
+    affiliation: "Plateforme GenoBioMICS, Hôpital Henri-Mondor, AP-HP · INSERM Unité U955, équipe Pawlotsky · Créteil, France"
+  - family-names: Rodriguez
+    given-names: Christophe
+    affiliation: "Hôpital Henri-Mondor, AP-HP · INSERM Unité U955, équipe Pawlotsky · Créteil, France"
