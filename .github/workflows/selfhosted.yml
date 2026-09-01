@@ -40,18 +40,9 @@ jobs:
 
       - name: Find the interpreter, or fail saying which one is missing
         id: py
-        run: |
-          set -euo pipefail
-          for d in "$HOME/.local/share/mise/installs/python/${{ matrix.python }}/bin" \
-                   /usr/local/bin /usr/bin; do
-            if [ -x "$d/python${{ matrix.python }}" ]; then
-              echo "bin=$d/python${{ matrix.python }}" >> "$GITHUB_OUTPUT"
-              "$d/python${{ matrix.python }}" -V
-              exit 0
-            fi
-          done
-          echo "python${{ matrix.python }} is not installed on this runner" >&2
-          exit 1
+        uses: ./.github/actions/find-python
+        with:
+          version: ${{ matrix.python }}
 
       # A FRESH VENV PER LEG, under the runner's work directory rather than the checkout, so
       # nothing a test does to the tree can be mistaken for the environment and vice versa.
@@ -71,28 +62,68 @@ jobs:
         env:
           RUNPROV_COVERAGE_FLOOR: "${{ matrix.python == '3.13' && 'off' || '' }}"
 
+  # THE OTHER TWO THIRDS OF THE GATE. This file ran `ci.py test` and nothing else, and its
+  # summary did not say so — a green tick on the only CI that can start today read as "the
+  # gate passed" when two of its three steps had not run (ledger A-29). Demonstrated at the
+  # time: delete `"SECURITY.md"` from pyproject's sdist `include` and `ci.py test` still says
+  # `OK — every step passed`, while `ci.py build` fails naming the missing file.
+  #
+  # ONE PYTHON EACH, not the matrix, which is what `test.yml` does and for the same reason:
+  # neither step is version-dependent, and running four copies of an identical check buys
+  # nothing but four times the runner's time on one desk.
+  lint:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Find the interpreter, or fail saying which one is missing
+        id: py
+        uses: ./.github/actions/find-python
+        with:
+          version: "3.12"
+      # PINNED, and the versions live in pyproject's `dev` extra — Dependabot reads that file
+      # and does not read a `run:` line, and a test requires the two to agree (ledger A-27).
+      - run: |
+          set -euo pipefail
+          "${{ steps.py.outputs.bin }}" -m venv "$RUNNER_TEMP/lint"
+          "$RUNNER_TEMP/lint/bin/python" -m pip install --quiet "ruff==0.16.2" "mypy==2.3.0"
+      - run: "$RUNNER_TEMP/lint/bin/python ci.py lint"
+
+  build:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Find the interpreter, or fail saying which one is missing
+        id: py
+        uses: ./.github/actions/find-python
+        with:
+          version: "3.12"
+      - run: |
+          set -euo pipefail
+          "${{ steps.py.outputs.bin }}" -m venv "$RUNNER_TEMP/build"
+          "$RUNNER_TEMP/build/bin/python" -m pip install --quiet "build==1.5.0" "twine==7.0.0"
+      # `ci.py build`, which does more than build: it checks the sdist against the include
+      # list, installs the wheel into a clean venv, imports it from elsewhere, and runs the
+      # suite the TARBALL ships from the tarball.
+      - run: "$RUNNER_TEMP/build/bin/python ci.py build"
+
   summary:
-    needs: test
+    needs: [test, lint, build]
     if: always()
     runs-on: [self-hosted, linux]
     steps:
       - name: Say what this run does and does not prove
         run: |
           {
-            echo "### Linux only, and \`ci.py test\` only"
+            echo "### Linux only — but the whole gate"
             echo
             echo "Python 3.10, 3.11, 3.12 and 3.13 on one self-hosted Linux runner."
             echo
-            echo "**This run covers one of the three gates:** \`ci.py test\` — the suite and"
-            echo "the 100% statement-and-branch floor."
-            echo
-            echo "**Not run here:** \`ci.py lint\` (ruff format, ruff check, mypy --strict)"
-            echo "and \`ci.py build\` (sdist and wheel, twine check --strict, install into a"
-            echo "clean venv, and the shipped suite run FROM the tarball). A file dropped from"
-            echo "pyproject's sdist \`include\` is invisible to this run: the suite passes and"
-            echo "\`ci.py build\` is the only thing that fails. Both gates live in"
-            echo "\`test.yml\`, which needs billing or a public repository — and both are the"
-            echo "mandated local gate before a commit (CONTRIBUTING.md)."
+            echo "**All three gates run here:** \`ci.py lint\` (ruff format, ruff check,"
+            echo "mypy --strict), \`ci.py test\` (the suite and the 100% statement-and-branch"
+            echo "floor, on all four interpreters) and \`ci.py build\` (sdist and wheel,"
+            echo "twine check --strict, install into a clean venv, and the shipped suite run"
+            echo "FROM the tarball). \`lint\` and \`build\` run on 3.12 only, as in"
+            echo "\`test.yml\`: neither is version-dependent."
             echo
             echo "**Not covered:** macOS, and Windows — the leg that proves the \`msvcrt\`"
             echo "fallback for \`flock\`. Those need the hosted matrix in \`test.yml\`,"
