@@ -338,11 +338,71 @@ def setup() -> None:
     print("\nhooks installed. `python ci.py` runs everything CI runs.")
 
 
+SURFACE_FILE = ROOT / "docs" / "public-surface.txt"
+
+
+def public_surface() -> list[str]:
+    """The public surface as the package actually presents it, one line per promise.
+
+    DEFINED HERE AND NOWHERE ELSE. `ci.py surface` writes the file from this and the suite
+    checks the file against this, so the generator and the checker cannot disagree -- which is
+    the failure mode this repository has repaired more often than any other.
+
+    `__all__` IS NOT THE WHOLE SURFACE, and that is the half that made the reported breakage
+    invisible: a promised class carries its public methods, so renaming `Run.write_json` to
+    `Run.output_json` broke callers while `__all__` never moved.
+    """
+    import inspect
+
+    import runprov
+
+    out: list[str] = []
+    for name in sorted(runprov.__all__):
+        obj = getattr(runprov, name)
+        if inspect.isclass(obj):
+            # A DATACLASS FIELD WHOSE DEFAULT IS A FUNCTION IS NOT A METHOD. The first version
+            # of this listed `Project.generation` and `Project.run_id` as both: they are fields
+            # holding a callable -- `Project(run_id=lambda: "r")` -- and `Project.generation()`
+            # is not something anyone is promised.
+            fields = set(getattr(obj, "__dataclass_fields__", {}))
+            out.append(f"{name}  [class]")
+            out += [
+                f"{name}.{m}"
+                for m, v in sorted(vars(obj).items())
+                if not m.startswith("_")
+                and m not in fields
+                and (inspect.isfunction(v) or isinstance(v, property))
+            ]
+            out += [f"{name}:{f}" for f in sorted(fields) if not f.startswith("_")]
+        else:
+            out.append(f"{name}  [{'callable' if callable(obj) else 'value'}]")
+    return out
+
+
+def surface() -> None:
+    """Rewrite `docs/public-surface.txt` from what the package actually exposes.
+
+    THAT FILE SAID `python -c "import tests.surface"`, WHICH IS NOT A THING. An instruction
+    that does not run is worse than none, because the reader tries it before disbelieving it
+    -- and claims that stopped being true are this repository's entire subject. This is the
+    command; the suite is what enforces the result.
+    """
+    header = [
+        ln
+        for ln in SURFACE_FILE.read_text(encoding="utf-8").splitlines()
+        if ln.startswith("#") or not ln.strip()
+    ]
+    lines = public_surface()
+    SURFACE_FILE.write_text("\n".join(header + lines) + "\n", encoding="utf-8")
+    print(f"wrote {len(lines)} surface line(s) to {SURFACE_FILE.name}")
+
+
 STEPS = {
     "lint": lint,
     "test": test,
     "build": build,
     "setup": setup,
+    "surface": surface,
     "release-check": release_check,
 }
 
