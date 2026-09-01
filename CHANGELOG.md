@@ -340,6 +340,14 @@ every interrupted long job, and the artifacts on disk look identical to a succes
 - Every reader drops the `started` lines — `_load` and `_counted` for `show`/`lineage`, and
   `log` separately because it streams raw — so nothing counts a completed run twice. The
   YAML view declines them too: it is a narrative of completed runs.
+- **The public surface is written down**, in `docs/public-surface.txt`, and a test holds the
+  package to it. Reported from downstream: an upgrade broke a project, and a survey of this
+  history for `feat!` and `BREAKING` found nothing — the three commits responsible were typed
+  `refactor:`. Two withdrew ten names from `__all__`; the third renamed `Run.write_json` to
+  `Run.output_json`, which `__all__` cannot see at all, because a promised class carries its
+  methods. **A convention that records intent cannot see a breakage the author did not
+  intend**, so the check is on the surface rather than on the commit message: removing or
+  renaming anything forces an edit to that file, in the diff, where it can be noticed.
 - **The CLI has one exit-code contract**: `0` checked and nothing wrong, `1` checked and
   something is wrong, `2` could not check or the invocation did not describe one. `1` used to
   mean "no match", "stale artifacts", "nothing was checked" and "no history file" in

@@ -17482,3 +17482,77 @@ def test_every_checkout_that_runs_the_suite_fetches_the_full_history():
                     f"{wf.name}:{job_name} checks out at depth {depth!r}; this workflow runs "
                     f"the suite, which asks git for history a shallow clone does not have"
                 )
+
+
+def _live_surface() -> list[str]:
+    """The public surface as the package actually presents it, right now.
+
+    `__all__` IS NOT THE WHOLE SURFACE, which is the half that made the reported breakage
+    invisible: `Run` is promised, so its public methods are promised with it, and renaming
+    `Run.write_json` to `Run.output_json` broke every caller while `__all__` never moved.
+    """
+    out: list[str] = []
+    for name in sorted(runprov.__all__):
+        obj = getattr(runprov, name)
+        if inspect.isclass(obj):
+            out.append(f"{name}  [class]")
+            out += [
+                f"{name}.{m}"
+                for m, v in sorted(vars(obj).items())
+                if not m.startswith("_") and (inspect.isfunction(v) or isinstance(v, property))
+            ]
+            out += [
+                f"{name}:{f}"
+                for f in sorted(getattr(obj, "__dataclass_fields__", {}))
+                if not f.startswith("_")
+            ]
+        else:
+            out.append(f"{name}  [{'callable' if callable(obj) else 'value'}]")
+    return out
+
+
+def test_the_public_surface_matches_what_is_written_down():
+    """Reported from downstream: an upgrade broke a project, and a survey of this history for
+    `feat!` and `BREAKING` found nothing — because the three commits responsible were typed
+    `refactor:`. Verified here against the history rather than taken on trust:
+
+        7da5478  refactor  withdrew 5 names from the package __all__
+        174f862  refactor  withdrew 5 more
+        b946716  refactor  renamed `Run.write_json` to `Run.output_json`
+
+    **A CONVENTION THAT RECORDS INTENT CANNOT SEE A BREAKAGE THE AUTHOR DID NOT INTEND.** Each
+    of those was deliberate and none was thought of as breaking, because each was framed as
+    "this was never really promised" — true of the decision, and false for the person who was
+    importing the name. `__all__` discipline decides what the project *means* to promise; it
+    cannot decide what somebody already depends on.
+
+    So this test does not check intent, and it does not check the commit message. It checks
+    the SURFACE, against a file. Removing or renaming anything forces an edit to
+    `docs/public-surface.txt`, which appears in the diff — and that is the moment to type the
+    commit `feat!` and write the removal in the CHANGELOG.
+
+    IT COVERS MORE THAN `__all__`, because `__all__` is where the reported breakage was NOT:
+    a promised class carries its public methods, properties and dataclass fields, and
+    `Project` is configured entirely through fields."""
+    recorded = _repo_root() / "docs" / "public-surface.txt"
+    if not recorded.is_file():  # pragma: no cover - docs/ ships, but a bare tree may not
+        pytest.skip("docs/public-surface.txt not present")
+    want = [
+        ln
+        for ln in recorded.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.startswith("#")
+    ]
+    have = _live_surface()
+    assert len(want) > 20, f"the recorded surface parsed to {len(want)} lines; the reader broke"
+
+    gone = [ln for ln in want if ln not in have]
+    new = [ln for ln in have if ln not in want]
+    assert not gone, (
+        f"THIS IS A BREAKING CHANGE. {gone} was promised and is not there any more. If that is "
+        f"intended: remove those lines from docs/public-surface.txt, type the commit `feat!`, "
+        f"and record it in the CHANGELOG so a downstream reader can find it."
+    )
+    assert not new, (
+        f"{new} is public and not written down. Add it to docs/public-surface.txt — a promise "
+        f"nobody recorded is one nobody can be held to, and one nobody knows they may rely on."
+    )
