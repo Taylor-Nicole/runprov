@@ -1,5 +1,18 @@
 # Licence and copyright holder — the decision, and what it rests on
 
+> **SUPERSEDED IN PART, 2026-09-01.** The licence is now **BSD-3-Clause**, not CeCILL-B.
+> Three facts decided it, none of which were known when this file was written: CeCILL-B is
+> **not OSI-approved** (so it closes JOSS), **GitHub names no CeCILL of any version** — the
+> repository displayed "Other" / `NOASSERTION` — and CeCILL v2.1, the OSI-approved member, is
+> **copyleft** rather than BSD-like, so it is not a substitute. BSD-3-Clause keeps the
+> permissive character and adds the clause that stops the institution's name being used to
+> promote a derivative.
+>
+> **The reasoning below is kept deliberately**, because the DRCI letter draws on it and
+> because the rights question it raises is still open. Read it as the argument that was made,
+> not as the current state.
+
+
 Recorded rather than settled in conversation, because it is the one blocker to publication
 and because "we discussed it and I think we said MIT" is not a record.
 

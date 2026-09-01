@@ -1,5 +1,18 @@
 # Publishing `runprov`
 
+> **SUPERSEDED IN PART, 2026-09-01.** The licence is now **BSD-3-Clause**, not CeCILL-B.
+> Three facts decided it, none of which were known when this file was written: CeCILL-B is
+> **not OSI-approved** (so it closes JOSS), **GitHub names no CeCILL of any version** — the
+> repository displayed "Other" / `NOASSERTION` — and CeCILL v2.1, the OSI-approved member, is
+> **copyleft** rather than BSD-like, so it is not a substitute. BSD-3-Clause keeps the
+> permissive character and adds the clause that stops the institution's name being used to
+> promote a derivative.
+>
+> **The reasoning below is kept deliberately**, because the DRCI letter draws on it and
+> because the rights question it raises is still open. Read it as the argument that was made,
+> not as the current state.
+
+
 Status as of 2026-08-07: the name **`runprov` is free on PyPI** (checked; `/pypi/runprov/json`
 returns 404 while a control package returns 200). Everything below is prepared and nothing
 has been published — that decision, and the account it happens under, are yours.

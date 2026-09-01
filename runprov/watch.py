@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris (AP-HP),
 #                    Hôpital Henri-Mondor, and Taylor Thompson
-# Licensed under the CeCILL-B Free Software License Agreement — see LICENSE.
+# Licensed under the BSD 3-Clause License — see LICENSE.
 """Notice the reads that bypassed registration, and say so.
 
 THE GAP THIS CLOSES. `run.input(p)` makes registration the ordinary way to open a file, but

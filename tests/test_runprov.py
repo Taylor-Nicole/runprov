@@ -963,8 +963,12 @@ def test_snapshot_body_records_the_interpreter_not_only_the_packages(tmp_path):
 # -- committed by the person writing the checks. Added properly, and each one was made to
 # FAIL before being kept.
 def test_every_module_carries_the_copyright_header():
-    """CeCILL-B art. 5.3.4 CREDITS requires the intellectual-property notice to travel
-    with the software. A header on five files out of six is the same as no policy."""
+    """The intellectual-property notice has to travel with the software, and a header on
+    five files out of six is the same as no policy.
+
+    Written for CeCILL-B's art. 5.3.4 CREDITS obligation; it outlives the move to
+    BSD-3-Clause, whose clause 1 requires the same notice to be retained in every
+    redistribution of source."""
     mods = sorted(pathlib.Path(runprov.__file__).parent.glob("*.py"))
     assert len(mods) >= 6, f"expected the whole package, found {[m.name for m in mods]}"
     for m in mods:
@@ -979,7 +983,7 @@ def test_every_module_carries_the_copyright_header():
         assert "AP-HP" in head, m.name
         assert "Hôpital Henri-Mondor" in head, m.name
         assert "Taylor Thompson" in head, m.name
-        assert "CeCILL-B" in head, m.name
+        assert "BSD 3-Clause" in head, m.name
 
 
 def test_the_licence_text_ships_with_the_package():
@@ -990,8 +994,14 @@ def test_the_licence_text_ships_with_the_package():
     if lic is None:
         pytest.skip("installed wheel: LICENSE lives in dist-info, not beside the package")
     text = lic.read_text(encoding="utf-8")
-    assert "CeCILL-B FREE SOFTWARE LICENSE AGREEMENT" in text
-    assert "5.3.4 CREDITS" in text, "the attribution obligation must be present"
+    assert "BSD 3-Clause License" in text
+    # THE THREE CLAUSES, each asserted, because a truncated licence file still contains its
+    # title. Clause 3 is the reason this licence was chosen over MIT: it is what stops the
+    # institution's name being used to promote a derivative product.
+    assert "Redistributions of source code must retain" in text
+    assert "Redistributions in binary form must reproduce" in text
+    assert "may be used to endorse or promote products derived" in text, "clause 3 is the point"
+    assert "AP-HP" in text, "the copyright line must name the holder"
 
 
 def test_citation_metadata_exists_and_names_the_affiliation():
@@ -1004,7 +1014,7 @@ def test_citation_metadata_exists_and_names_the_affiliation():
     if cff is None:
         pytest.skip("installed wheel: CITATION.cff is not packaged")
     text = cff.read_text(encoding="utf-8")
-    assert "cff-version:" in text and "license: CECILL-B" in text
+    assert "cff-version:" in text and "license: BSD-3-Clause" in text
     assert "AP-HP" in text and "Hôpital Henri-Mondor" in text
     assert "0000-0000-0000-0000" not in text, "never ship a placeholder ORCID"
 

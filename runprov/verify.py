@@ -1,7 +1,6 @@
 # Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris (AP-HP),
 #                    Hôpital Henri-Mondor, and Taylor Thompson
-# Licensed under the CeCILL-B Free Software License Agreement — see LICENSE.
-# https://cecill.info/
+# Licensed under the BSD 3-Clause License — see LICENSE.
 """Does each artifact still match what it was made from? The half that was missing.
 
 The package's claim is that a result can be **invalidated** when its inputs change. Every
