@@ -279,10 +279,14 @@ def build() -> None:
             # satisfied by any one member, and `docs/adr/README.md` is an INDEX whose three
             # relative links go to these files -- so the shape to guard against is the one
             # where the index ships and everything it points at does not.
-            "docs/adr/0001-provenance-layout-and-overrides.md",
-            "docs/adr/0002-detecting-unregistered-reads.md",
-            "docs/adr/0003-a-module-all-ratifies-it-does-not-decide.md",
         }
+        # EVERY ADR, READ FROM THE DIRECTORY rather than named one by one. Three were listed
+        # here and a fourth would have been silently unguarded — the same hand-maintained
+        # list, one level down, that this whole check exists to replace. A directory entry in
+        # `include` is satisfied by ANY one member, and `docs/adr/README.md` is an index whose
+        # links go to these files, so "something under docs/ shipped" is not the property
+        # wanted: each ADR is.
+        want |= {f"docs/adr/{f.name}" for f in sorted((ROOT / "docs" / "adr").glob("*.md"))}
         if missing := sorted(want - members):
             raise SystemExit(
                 f"{sdist.name} is missing {missing}. Anything not named in "
