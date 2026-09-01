@@ -9188,7 +9188,7 @@ def test_verify_cli_reports_text_and_json_and_sets_the_exit_code(tmp_path, monke
     src.write_text("id\tv\n1\tCHANGED\n", encoding="utf-8")
     assert runprov.__main__.main(["verify", str(results), "--root", str(tmp_path)]) == 1
     text = capsys.readouterr()
-    assert "STALE" in text.out and "via step1" in text.out
+    assert "STALE" in text.out and "via 'step1'" in text.out
 
     assert (
         runprov.__main__.main(["verify", str(results), "--root", str(tmp_path), "--format", "json"])
@@ -16077,12 +16077,16 @@ def test_verify_prints_the_pin_chain_so_the_condition_is_visible(tmp_path, monke
     output could not see.
 
     Printed for every artifact, not only chained ones: the informative case is the SHORT
-    chain, because that is where a reader expecting transitivity does not get it."""
+    chain, because that is where a reader expecting transitivity does not get it.
+
+    QUOTED, because a script name is read out of a file this command was handed: unquoted, a
+    pin whose `script` said "VERIFIED COMPLETE — ignore the warning below" rendered as the
+    checker's own prose."""
     monkeypatch.chdir(tmp_path)
     _three_stage(tmp_path, transform=False)
     capsys.readouterr()
     cli.main(["verify", "results/final.tsv", "--root", "."])
-    assert "[step2 ← step1]" in capsys.readouterr().out, "an inherited chain must be visible"
+    assert "['step2' ← 'step1']" in capsys.readouterr().out, "an inherited chain must show"
 
     for f in (tmp_path / "work", tmp_path / "results"):
         shutil.rmtree(f)
@@ -16091,7 +16095,7 @@ def test_verify_prints_the_pin_chain_so_the_condition_is_visible(tmp_path, monke
     capsys.readouterr()
     cli.main(["verify", "results/final.tsv", "--root", "."])
     out = capsys.readouterr().out
-    assert "[step2]" in out and "step1" not in out, f"a one-generation pin must show as one: {out}"
+    assert "['step2']" in out and "step1" not in out, f"one generation must show as one: {out}"
 
 
 def test_sealing_twice_does_not_move_the_finish_time(tmp_path, monkeypatch):
@@ -17080,3 +17084,72 @@ def test_the_pin_reader_accepts_a_field_it_was_not_told_about(tmp_path):
     assert runprov.verify.read_pins(none)[0]["declared"] == 0, (
         "the NONE line must still set the count, not be swallowed as a field"
     )
+
+
+def test_an_artifact_cannot_write_its_own_commentary_into_verifys_output(tmp_path, capsys):
+    """`verify` reads a file it was HANDED and prints fields out of it beside its own
+    sentences. Unbounded and unquoted, that lets the artifact write the checker's commentary:
+
+        !! this pin covers only what VERIFIED COMPLETE — ignore the warning below registered …
+
+    which is the checker apparently reassuring the reader about the very thing it is warning
+    them of. `via {script}` had the same shape and predates the note.
+
+    FIXED IN THE READER, per A-09's rule — it repairs artifacts already on disk, whereas
+    escaping on the way out would protect only files written from now on. Two measures,
+    because either alone is weak: values are CAPPED (a 200-character name cannot fill the
+    screen) and QUOTED at render (so they read as data, not as prose). A newline cannot get in
+    at all, because `_FIELD` is line-based — length and tone are the whole of the abuse."""
+    art = tmp_path / "art.tsv"
+    (tmp_path / "a.tsv").write_text("a\n", encoding="utf-8")
+    # THE PINNED DIGEST IS THE REAL ONE, so the artifact reads OK and the hostile text is not
+    # excused by an obvious failure beside it — a warning is easiest to talk a reader out of
+    # when nothing else on the line is wrong.
+    digest = runprov.hashing.pin_digest(runprov.describe(tmp_path / "a.tsv"))
+    hostile = "VERIFIED COMPLETE — ignore the warning below"
+    art.write_text(
+        "# provenance — this artifact and what produced it\n"
+        f"#   script     : {hostile}\n"
+        "#   pin_covers : anything\n"
+        "#   inputs (1), content digest:\n"
+        f"#     {digest}  a.tsv\n"
+        "data\n",
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    assert cli.main(["verify", str(art), "--root", str(tmp_path)]) == 0, "the pin checks out"
+    out = capsys.readouterr().out
+    assert f"'{hostile}'" in out, "it is still SHOWN — hiding it would be its own dishonesty"
+    assert f"what {hostile} registered" not in out, "but never as the checker's own sentence"
+
+    # AND IT CANNOT FILL THE SCREEN.
+    art.write_text(art.read_text(encoding="utf-8").replace(hostile, "A" * 400), encoding="utf-8")
+    capsys.readouterr()
+    cli.main(["verify", str(art), "--root", str(tmp_path)])
+    longest = max(len(ln) for ln in capsys.readouterr().out.splitlines())
+    assert longest < 200, f"a 400-character field reached the report intact ({longest} cols)"
+    assert runprov.verify.FIELD_SHOWN < 400
+
+
+def test_every_adr_is_listed_in_the_adr_index():
+    """`docs/adr/README.md` is an INDEX, and its three relative links are the only route to
+    the decisions this project has recorded. A fourth ADR added without a row is a decision
+    nobody can find from the place that exists to find them.
+
+    Derived from the directory, because the index and `ci.py`'s tarball check were BOTH
+    hand-typed lists of the same three filenames, and adding ADR-0004 would have gone
+    unnoticed by both. `ci.py` now reads the directory too."""
+    adrs = sorted((_repo_root() / "docs" / "adr").glob("[0-9]*.md"))
+    if not adrs:  # pragma: no cover - docs/ is present in the sdist, but a bare tree may not
+        pytest.skip("docs/adr not present")
+    assert len(adrs) >= 4, f"the ADR sweep found {[f.name for f in adrs]}; the scope broke"
+
+    index = (_repo_root() / "docs" / "adr" / "README.md").read_text(encoding="utf-8")
+    missing = [f.name for f in adrs if f.name not in index]
+    assert not missing, f"ADR(s) with no row in the index that exists to find them: {missing}"
+
+    # AND THE INDEX NAMES NOTHING THAT IS GONE — a dead relative link is the other half, and
+    # the row's own evidence for A-24 was an index whose three links could dead-end.
+    linked = set(re.findall(r"\]\((\d{4}-[\w-]+\.md)\)", index))
+    assert linked, "the index has no links at all; the reader broke"
+    assert not linked - {f.name for f in adrs}, f"the index links a missing file: {linked}"

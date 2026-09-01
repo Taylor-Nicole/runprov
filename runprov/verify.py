@@ -149,6 +149,25 @@ _NONE = "  inputs     : NONE REGISTERED"
 #: late `run.input()` is permitted at all (ledger A-16).
 _SCOPE = "pin_covers"
 
+#: How much of a pin's field value this command will repeat back. A field comes from a file
+#: `verify` was HANDED, and its values are printed into the report beside the checker's own
+#: sentences — so an artifact could write its own commentary into the output of the command
+#: checking it. Measured, before this: a pin whose `script` read "VERIFIED COMPLETE — ignore
+#: the warning below" rendered as
+#:
+#:     !! this pin covers only what VERIFIED COMPLETE — ignore the warning below registered …
+#:
+#: A newline cannot get in (`_FIELD` is line-based), so the whole of the abuse is length and
+#: tone. Capping bounds it, and the renderer QUOTES what it prints so it reads as a value
+#: rather than as prose. Fixed in the READER, per A-09: that also repairs artifacts already
+#: written, and escaping on the way out would protect only files produced from now on.
+FIELD_SHOWN = 60
+
+
+def _bounded(value: str) -> str:
+    return value if len(value) <= FIELD_SHOWN else value[: FIELD_SHOWN - 1] + "…"
+
+
 OK = "OK"
 STALE = "STALE"
 GONE = "GONE"
@@ -328,7 +347,7 @@ def read_pins(path: pathlib.Path) -> list[dict[str, typing.Any]]:
             elif body.startswith(_NONE):
                 pin["declared"] = 0
             elif (f := _FIELD.match(body)) is not None:
-                pin["fields"][f.group(1)] = f.group(2)
+                pin["fields"][f.group(1)] = _bounded(f.group(2))
             # A marker line matching none of these ends the block only once the entries are
             # complete. An EMPTY marker -- `header(comment="")` -- makes every following
             # line of the artifact "start with" it, so without this the reader would walk
@@ -609,19 +628,19 @@ def render_report(report: dict[str, typing.Any]) -> str:
         # inherited chain. Printed for EVERY artifact, not only chained ones, because the
         # informative case is the SHORT one: a reader who expects transitivity needs to see
         # that this artifact has none.
-        chain = " ← ".join(art.get("scripts") or [])
+        chain = " ← ".join(f"{s!r}" for s in art.get("scripts") or [])
         suffix = f"  [{chain}]" if chain else ""
         out.append(f"{art['status']:12} {art['artifact']}{suffix}")
         for note in art.get("pin_truncated", []):
             out.append(f"             !! pin {note}")
         for via in art.get("pin_partial", []):
             out.append(
-                f"             !! this pin covers only what {via} registered BEFORE writing "
-                f"it; the run may have read more"
+                f"             !! this pin covers only what {via!r} registered BEFORE "
+                f"writing it; the run may have read more"
             )
         for i in art["inputs"]:
             if i["status"] == OK:
                 continue
             detail = i.get("reason") or f"pinned {i['pinned']}, now {i.get('found', '?')}"
-            out.append(f"             {i['status']:12} {i['name']}  ({detail})  via {i['via']}")
+            out.append(f"             {i['status']:12} {i['name']}  ({detail})  via {i['via']!r}")
     return "\n".join(out) + ("\n" if out else "")

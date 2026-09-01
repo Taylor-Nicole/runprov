@@ -30,3 +30,4 @@ A *Proposed* ADR is the right place to think out loud. It is not a promise.
 | [0001](0001-provenance-layout-and-overrides.md) | Where records are written, and how a team changes it | Accepted |
 | [0002](0002-detecting-unregistered-reads.md) | Warning when a read bypasses registration | Accepted |
 | [0003](0003-a-module-all-ratifies-it-does-not-decide.md) | A module's `__all__` ratifies the package promise, never makes one | Accepted |
+| [0004](0004-a-pin-states-what-it-covers.md) | An input cannot be registered after the pin, and a pin states what it covers | Accepted |
