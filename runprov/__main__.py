@@ -1053,7 +1053,7 @@ class _InFlightScan:
             )
 
 
-def _report_in_flight(path: pathlib.Path) -> None:
+def _report_in_flight(path: pathlib.Path) -> _InFlightScan:
     """The whole thing, for a caller with no streaming pass of its own to ride on.
 
     DERIVED FROM THE HISTORY BEING READ, so `--log somewhere/else.jsonl` reports what belongs
@@ -1064,6 +1064,12 @@ def _report_in_flight(path: pathlib.Path) -> None:
     scan = _InFlightScan(path.parent / ".incomplete")
     scan.consume(path)
     scan.report()
+    # RETURNED, so the caller can read the markers this already loaded rather than opening the
+    # directory a second time — and so this stays the one entry point. After A-20 folded the
+    # pairing into the page's own pass, the only caller left was the missing-history branch;
+    # a function alive only because tests call it is the decoration `_unfinished` was deleted
+    # for, and the fix there was deletion because nothing needed it. Here something does.
+    return scan
 
 
 def _forget(
@@ -1475,16 +1481,45 @@ def main(argv: list[str] | None = None) -> int:
         # BEFORE "nothing recorded here", because a marker beside a MISSING history is not
         # nothing recorded — it is a run that started and never got to write one, which is
         # the opposite finding and the more alarming of the two.
-        _report_in_flight(path)
+        scan = _report_in_flight(path)
+        # WHERE THE RECORDS ACTUALLY WENT, WHEN A MARKER KNOWS. Every marker carries the
+        # `history_destination()` of the run that wrote it, and beside a missing history that
+        # is the one piece of evidence in the room. Without it this branch printed two things
+        # that are FALSE for a project with a custom `sink=`: "nothing has been recorded here
+        # yet", when a great deal was recorded — into a database — and "pass --log that path",
+        # when a sink has no path to pass. The operator was sent looking for a file that will
+        # never exist, by the command holding the answer.
+        elsewhere = sorted(
+            {
+                str(m["history"])
+                for m in scan.markers.values()
+                if m.get("history") and str(m["history"]) != str(path)
+            }
+        )
+        # NAMED, NOT INTERPRETED. Whether the destination is a file to pass to `--log` or a
+        # sink with nothing to read is a distinction the reader can make from the string and
+        # this command cannot make safely — `JsonlSink(/x/y.jsonl)` and a bare `DbSink` are
+        # both possible, and guessing wrong sends them looking a second time.
+        if elsewhere:
+            found = (
+                "  A MARKER BESIDE THIS PATH SAYS OTHERWISE: the run that left it recorded to\n"
+                + "".join(f"    {d}\n" for d in elsewhere)
+                + "  If that names a file, pass it to --log. If it names a sink, the records\n"
+                "  are not on this filesystem and there is nothing here for --log to read."
+            )
+        else:
+            found = (
+                "  Nothing has been recorded here yet, which is a different thing from a run\n"
+                "  that was not recorded, and worth telling apart.\n"
+                "  This CLI cannot see what your scripts passed to configure(): with no --log\n"
+                "  it reads the DEFAULT path above. If configure(run_log=...) sent the history\n"
+                "  somewhere else, pass --log that path — the runs are not missing, this is the\n"
+                "  wrong file to look in."
+            )
         print(
             f"no run history at {path}\n"
             f"  It is created by the first recorded run — `with Run(..., provenance=...)`.\n"
-            f"  Nothing has been recorded here yet, which is a different thing from a run\n"
-            f"  that was not recorded, and worth telling apart.\n"
-            f"  This CLI cannot see what your scripts passed to configure(): with no --log\n"
-            f"  it reads the DEFAULT path above. If configure(run_log=...) sent the history\n"
-            f"  somewhere else, pass --log that path — the runs are not missing, this is the\n"
-            f"  wrong file to look in.",
+            + found,
             file=sys.stderr,
         )
         # THE MARKERS ARE STILL THERE EVEN THOUGH THE HISTORY IS NOT, so the flag must work
