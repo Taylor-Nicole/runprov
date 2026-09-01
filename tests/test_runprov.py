@@ -9793,13 +9793,31 @@ def test_the_self_hosted_workflow_says_what_it_cannot_prove():
     full = [name.strip().strip("\"'") for name in gate.group(1).split(",")]
     assert len(full) >= 3, f"the gate parsed to {full}; the reader broke"
 
-    ran = set(re.findall(r"ci\.py (\w+)", str(doc["jobs"]["test"])))
+    # THE JOBS THE SUMMARY SPEAKS FOR, read from its own `needs` — which is also what keeps
+    # the summary job itself out of the count. It ECHOES "ci.py lint" and "ci.py build" as
+    # prose, so scanning every job would read the summary's description of the gate as the
+    # gate, and the check would pass by quoting itself. That is exactly what happened when
+    # `lint` and `build` were wired in: this test scanned `jobs["test"]` alone, found neither,
+    # and passed anyway because the new summary text mentions both.
+    speaks_for = doc["jobs"]["summary"]["needs"]
+    assert isinstance(speaks_for, list) and len(speaks_for) >= 1, speaks_for
+    ran = set(re.findall(r"ci\.py (\w+)", str({j: doc["jobs"][j] for j in speaks_for})))
     assert ran, "the workflow invokes no ci.py step at all; it is not running the gate"
+
+    # IT MUST RUN THE WHOLE GATE, because it is the only CI that can start while hosted
+    # billing is blocked. A-29 asked for the weaker property — run a subset, but SAY which —
+    # and Taylor wired the other two on 2026-09-01, which makes the strong form available:
+    # assert what runs rather than what the prose claims. A green tick here is now a green
+    # tick for `lint`, `test` and `build`.
+    assert set(full) <= ran, (
+        f"the only CI that can run today executes {sorted(ran)}, not {full} — a green tick "
+        f"here is read as 'the gate passed'"
+    )
+    # AND THE SUMMARY STILL LISTS THEM, where a reader of the run meets it rather than in a
+    # workflow file they will not open.
     summary = str(doc["jobs"]["summary"])
-    unnamed = [step for step in full if step not in ran and f"ci.py {step}" not in summary]
-    assert not unnamed, (
-        f"this run does not execute {unnamed} and its summary does not say so — a green tick "
-        f"is read as 'the gate passed'"
+    assert not [s for s in full if f"ci.py {s}" not in summary], (
+        f"the run summary does not name all of {full}"
     )
     # `push` would queue forever whenever the desk it runs on is off, and a permanently
     # pending job is a worse signal than no signal.

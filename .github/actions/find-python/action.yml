@@ -1,0 +1,41 @@
+# ONE DEFINITION OF "which interpreter", used by every job in `selfhosted.yml`.
+#
+# There is no `actions/setup-python` here: on a hosted runner it fetches an interpreter, and
+# on this machine it would reach for a tool cache that does not exist. The interpreters are
+# already installed, so a job finds one directly — and FAILS LOUDLY when it is missing, rather
+# than silently testing three versions and reporting four.
+#
+# A COMPOSITE ACTION RATHER THAN THREE COPIES. GitHub Actions has no YAML anchors, so the
+# `test`, `lint` and `build` jobs would each carry the same twelve lines, and this repository
+# has spent an entire audit on the failure mode where one sentence lives in several places and
+# they stop agreeing. One file, one rule.
+name: Find an installed interpreter
+description: Locate pythonX.Y on this runner, or fail naming the version that is missing.
+
+inputs:
+  version:
+    description: The X.Y interpreter to find.
+    required: true
+
+outputs:
+  bin:
+    description: Absolute path to the interpreter.
+    value: ${{ steps.find.outputs.bin }}
+
+runs:
+  using: composite
+  steps:
+    - id: find
+      shell: bash
+      run: |
+        set -euo pipefail
+        for d in "$HOME/.local/share/mise/installs/python/${{ inputs.version }}/bin" \
+                 /usr/local/bin /usr/bin; do
+          if [ -x "$d/python${{ inputs.version }}" ]; then
+            echo "bin=$d/python${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            "$d/python${{ inputs.version }}" -V
+            exit 0
+          fi
+        done
+        echo "python${{ inputs.version }} is not installed on this runner" >&2
+        exit 1
