@@ -17485,30 +17485,14 @@ def test_every_checkout_that_runs_the_suite_fetches_the_full_history():
 
 
 def _live_surface() -> list[str]:
-    """The public surface as the package actually presents it, right now.
+    """The surface, from `ci.py` — the one definition that `ci.py surface` also writes from.
 
-    `__all__` IS NOT THE WHOLE SURFACE, which is the half that made the reported breakage
-    invisible: `Run` is promised, so its public methods are promised with it, and renaming
-    `Run.write_json` to `Run.output_json` broke every caller while `__all__` never moved.
+    Not recomputed here. A checker with its own copy of the generator agrees with itself and
+    with nothing else, which is the defect this whole file keeps finding.
     """
-    out: list[str] = []
-    for name in sorted(runprov.__all__):
-        obj = getattr(runprov, name)
-        if inspect.isclass(obj):
-            out.append(f"{name}  [class]")
-            out += [
-                f"{name}.{m}"
-                for m, v in sorted(vars(obj).items())
-                if not m.startswith("_") and (inspect.isfunction(v) or isinstance(v, property))
-            ]
-            out += [
-                f"{name}:{f}"
-                for f in sorted(getattr(obj, "__dataclass_fields__", {}))
-                if not f.startswith("_")
-            ]
-        else:
-            out.append(f"{name}  [{'callable' if callable(obj) else 'value'}]")
-    return out
+    import ci
+
+    return ci.public_surface()
 
 
 def test_the_public_surface_matches_what_is_written_down():
