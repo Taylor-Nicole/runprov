@@ -50,3 +50,12 @@ authors:
   - family-names: Rodriguez
     given-names: Christophe
     affiliation: "Hôpital Henri-Mondor, AP-HP · INSERM Unité U955, équipe Pawlotsky · Créteil, France"
+  # AN ENTITY AUTHOR, which CFF supports alongside people — a `name` instead of
+  # `family-names`/`given-names`. This is how the platform gets credited in a citation
+  # WITHOUT appearing in the copyright line, which names who holds the economic rights and is
+  # a different question. The full institutional form is in `name` because a citation
+  # renderer shows only that field: "Plateforme GenoBioMICS" alone would reach a reader with
+  # no idea whose it is.
+  - name: "Plateforme GenoBioMICS, Hôpital Henri-Mondor, AP-HP"
+    city: Créteil
+    country: FR
