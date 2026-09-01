@@ -903,7 +903,21 @@ after a missing file, an unreadable one and a FIFO. The refusal lands in the rec
 
 For the one shape this genuinely forbids — an input whose **path** is not knowable until
 something already-open has been read, a config that names its own data file — set
-`Project(allow_late_inputs=True)`. Then the pre-existing behaviour returns exactly: the run
+`Project(allow_late_inputs=True)`. **Every pin that project writes then declares its own
+scope**, in the artifact's own bytes:
+
+```
+#   pin_covers : inputs registered BEFORE this pin was written; this project permits
+#                later registration (allow_late_inputs), so the list below may understate
+#                the run
+```
+
+which is the one thing that reaches a reader holding **only the artifact** — no history, no
+sidecar. `verify` prints a note beside such an artifact and counts them on its summary line.
+It does not fail the check: every input the pin *does* list has been verified, and failing
+would make the flag unusable. It is written from the FLAG rather than from what happened,
+because whether a late input occurs is not knowable while the pin is being rendered — the
+record's `inputs_not_in_pin` is what says whether it came to pass. Then the pre-existing behaviour returns exactly: the run
 warns at the moment it happens, and **the record marks it as `inputs_not_in_pin`** — in the sidecar and in the history, omitted when there are none, the
 same treatment `unregistered_reads` gets and for the same reason: a warning is ephemeral, a
 field travels with the run. `show --stale` works from the record, so it checks every input

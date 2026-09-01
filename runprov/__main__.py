@@ -1289,7 +1289,12 @@ def _verify(args: argparse.Namespace) -> int:
             else ""
         )
         + f": {report['ok']} OK, {report['stale']} STALE, {report['gone']} GONE, "
-        f"{report['unverifiable']} UNVERIFIABLE",
+        f"{report['unverifiable']} UNVERIFIABLE"
+        + (
+            f"; {report['partial_pins']} pin(s) declare they may understate the run"
+            if report.get("partial_pins")
+            else ""
+        ),
         file=sys.stderr,
     )
     # WHAT `OK` MEANS, every time it is printed. The caveat was in the README and nowhere a

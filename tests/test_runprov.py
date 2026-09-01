@@ -16968,3 +16968,115 @@ def test_the_project_type_check_covers_every_bool_and_int_field(tmp_path):
     for name in simple:
         with pytest.raises(TypeError, match=name):
             runprov.Project(root=tmp_path, **{name: "no"})
+
+
+def _late_input_artifact(tmp_path, *, allow):
+    """One artifact, produced with or without `allow_late_inputs`."""
+    for name in ("a.tsv", "b.tsv"):
+        (tmp_path / name).write_text("x\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl", allow_late_inputs=allow)
+    with runprov.Run("s", provenance="p.json") as run:
+        run.input("a.tsv")
+        with run.open_output("out.tsv") as fh:
+            fh.write("x\n")
+        if allow:
+            run.input("b.tsv")
+    return tmp_path / "out.tsv"
+
+
+def test_a_pin_that_may_understate_the_run_says_so_in_its_own_bytes(tmp_path, monkeypatch, capsys):
+    """A-16's last limit, and it was closed by asking the question at the right MOMENT rather
+    than by finding a cleverer place to write.
+
+    I first judged this unfixable: appending a supplementary pin block at close works below
+    64 KiB and silently not above it, and a check that works by file size is the failure mode
+    this package refuses. That was the wrong end of the problem. The pin is rendered BEFORE
+    the artifact is written, and `allow_late_inputs` is known then — so the disclosure goes
+    into the first bytes, where every reader already looks, with no size cliff and nothing
+    appended to anyone's data.
+
+    THE PERSON THIS REACHES holds ONLY the artifact: no history, no sidecar, no marker. Until
+    now `verify` told them OK for ever and there was nothing else to consult."""
+    monkeypatch.chdir(tmp_path)
+    art = _late_input_artifact(tmp_path, allow=True)
+
+    assert "pin_covers" in art.read_text(encoding="utf-8"), "the disclosure is in the bytes"
+    # AND IT IS INSIDE THE PIN BLOCK, not merely somewhere in the file — a reader that cannot
+    # parse it is a comment, not a disclosure.
+    assert runprov.verify.read_pins(art)[0]["fields"]["pin_covers"]
+
+    capsys.readouterr()
+    assert cli.main(["verify", str(art), "--root", str(tmp_path)]) == 0, "nothing is stale"
+    out = capsys.readouterr()
+    assert "may have read more" in out.out, f"the recipient must see it on the artifact: {out.out}"
+    assert "declare they may understate the run" in out.err, "and on the summary line"
+
+
+def test_an_ordinary_project_writes_no_such_disclosure(tmp_path, monkeypatch, capsys):
+    """The default is unchanged BYTE FOR BYTE, which is what makes the disclosure mean
+    something: a field on every artifact would be noise nobody reads. It appears only where
+    the project has actually permitted the thing it warns about."""
+    monkeypatch.chdir(tmp_path)
+    art = _late_input_artifact(tmp_path, allow=False)
+
+    assert "pin_covers" not in art.read_text(encoding="utf-8")
+    capsys.readouterr()
+    assert cli.main(["verify", str(art), "--root", str(tmp_path)]) == 0
+    out = capsys.readouterr()
+    assert "may have read more" not in out.out
+    assert "understate" not in out.err
+
+
+def test_the_verify_note_is_the_checkers_sentence_not_the_artifacts(tmp_path, monkeypatch, capsys):
+    """Only the field's PRESENCE is read. The text beside it arrives in a file this command
+    was handed, so echoing it would let an artifact write its own verdict into a checker's
+    output — and `verify` exists to be trusted about files it did not produce."""
+    monkeypatch.chdir(tmp_path)
+    art = _late_input_artifact(tmp_path, allow=True)
+    art.write_text(
+        art.read_text(encoding="utf-8").replace(
+            "inputs registered BEFORE this pin was written",
+            "VERIFIED COMPLETE by the vendor, no further checks needed",
+        ),
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    assert cli.main(["verify", str(art), "--root", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "may have read more" in out, "the checker's own sentence must still be printed"
+    assert "VERIFIED COMPLETE" not in out, "and the artifact's must not be"
+
+
+def test_the_pin_reader_accepts_a_field_it_was_not_told_about(tmp_path):
+    """`_FIELD` named `script|generation|commit` explicitly, so a field the WRITER added was
+    invisible to the READER — a closed list inside the one component whose whole job is to
+    read what an older or newer version wrote. `pin_covers` would have been unreadable.
+
+    `NONE REGISTERED` is the reason the order matters: it matches the widened pattern, so it
+    is tested first or it is collected as a field and `declared` never becomes 0."""
+    art = tmp_path / "x.tsv"
+    art.write_text(
+        "# provenance — this artifact and what produced it\n"
+        "#   script     : s\n"
+        "#   a_field_from_the_future : 42\n"
+        "#   inputs (1), content digest:\n"
+        f"#     {'a' * 16}  in.tsv\n"
+        "data\n",
+        encoding="utf-8",
+    )
+    pin = runprov.verify.read_pins(art)[0]
+    assert pin["fields"]["a_field_from_the_future"] == "42"
+    assert pin["fields"]["script"] == "s", "and the known ones still parse"
+    assert pin["entries"] == [("a" * 16, "in.tsv")], "and the entries are unaffected"
+
+    none = tmp_path / "none.tsv"
+    none.write_text(
+        "# provenance — this artifact and what produced it\n"
+        "#   script     : s\n"
+        "#   inputs     : NONE REGISTERED. Either this artifact is derived from nothing.\n"
+        "data\n",
+        encoding="utf-8",
+    )
+    assert runprov.verify.read_pins(none)[0]["declared"] == 0, (
+        "the NONE line must still set the count, not be swallowed as a field"
+    )
