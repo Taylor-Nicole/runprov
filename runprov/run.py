@@ -1,5 +1,6 @@
 # Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris (AP-HP),
 #                    Hôpital Henri-Mondor, and Taylor Thompson
+# SPDX-License-Identifier: BSD-3-Clause
 # Licensed under the BSD 3-Clause License — see LICENSE.
 """`Run` — one pass of one script, recorded so it can be reconstructed or invalidated.
 

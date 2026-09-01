@@ -1,5 +1,6 @@
 # Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris (AP-HP),
 #                    Hôpital Henri-Mondor, and Taylor Thompson
+# SPDX-License-Identifier: BSD-3-Clause
 # Licensed under the BSD 3-Clause License — see LICENSE.
 """The lab notebook the history already contained: one view per run, one per project.
 
