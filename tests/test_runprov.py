@@ -17540,3 +17540,57 @@ def test_the_public_surface_matches_what_is_written_down():
         f"{new} is public and not written down. Add it to docs/public-surface.txt — a promise "
         f"nobody recorded is one nobody can be held to, and one nobody knows they may rely on."
     )
+
+
+def test_the_surface_file_can_be_regenerated_from_nothing(tmp_path, monkeypatch):
+    """`ci.py surface` used to read the header back out of the file it was rewriting, so
+    deleting that file made it raise `FileNotFoundError` — a regenerate command that cannot
+    regenerate, taking the explanation with it. The header lives in `ci.py` now and the whole
+    file is derived.
+
+    Asserted by actually deleting it, because "it should work" is what the previous version
+    also looked like."""
+    import ci
+
+    monkeypatch.setattr(ci, "SURFACE_FILE", tmp_path / "docs" / "public-surface.txt")
+    ci.surface()
+
+    written = (tmp_path / "docs" / "public-surface.txt").read_text(encoding="utf-8")
+    assert written.startswith("# THE PUBLIC SURFACE"), "the explanation must come back too"
+    body = [ln for ln in written.splitlines() if ln.strip() and not ln.startswith("#")]
+    assert body == ci.public_surface(), "and the body must be the surface, not a stale copy"
+
+
+def test_a_promised_static_or_class_method_is_part_of_the_surface():
+    """`vars()` hands back the DESCRIPTOR, and `inspect.isfunction` is False for both
+    `staticmethod` and `classmethod` — so a promised `@staticmethod` would have been invisible
+    to a check whose entire job is not to miss things. None exists on a promised class today,
+    which is exactly why the hole would have opened silently the first time one did."""
+    import ci
+
+    class Promised:
+        @staticmethod
+        def a_static() -> None: ...
+
+        @classmethod
+        def a_class(cls) -> None: ...
+
+        @property
+        def a_prop(self) -> None: ...
+
+        def a_method(self) -> None: ...
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(runprov, "__all__", ["Promised"], raising=False)
+        monkeypatch.setattr(runprov, "Promised", Promised, raising=False)
+        got = ci.public_surface()
+    finally:
+        monkeypatch.undo()
+    assert got == [
+        "Promised  [class]",
+        "Promised.a_class",
+        "Promised.a_method",
+        "Promised.a_prop",
+        "Promised.a_static",
+    ], got
