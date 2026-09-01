@@ -784,7 +784,7 @@ def test_the_history_is_one_file_appended_forever(tmp_path):
 
 
 def test_cli_log_reports_a_missing_history_rather_than_printing_nothing(tmp_path, capsys):
-    assert cli.main(["log", "--log", str(tmp_path / "nope.jsonl")]) == 1
+    assert cli.main(["log", "--log", str(tmp_path / "nope.jsonl")]) == cli.CANNOT_CHECK
     assert "no run history" in capsys.readouterr().err
 
 
@@ -8979,7 +8979,7 @@ def test_verify_cli_exits_non_zero_and_says_so_when_it_checked_nothing(tmp_path,
     (tmp_path / "plain.tsv").write_text("id\n1\n", encoding="utf-8")
     rc = runprov.__main__.main(["verify", str(tmp_path), "--root", str(tmp_path)])
     err = capsys.readouterr().err
-    assert rc == 1
+    assert rc == cli.CANNOT_CHECK
     assert "NOTHING CHECKED" in err and "not 'nothing is wrong'" in err
 
 
@@ -9158,7 +9158,7 @@ def test_verify_exits_non_zero_when_every_pin_was_unverifiable(tmp_path, monkeyp
     rc = runprov.__main__.main(["verify", str(proj), "--root", str(proj)])
     err = capsys.readouterr().err
     assert "0 OK" in err and "1 UNVERIFIABLE" in err, "the premise: nothing was comparable"
-    assert rc == 1, "a gate that goes green having compared nothing is worse than no gate"
+    assert rc == cli.CANNOT_CHECK, "green having compared nothing is worse than no gate"
     assert "NOTHING CHECKED" in err and "not one" in err
 
 
@@ -15827,7 +15827,7 @@ def test_show_forget_markers_works_where_there_is_no_history_at_all(tmp_path, ca
     _marker(d, "orphan")
     log = tmp_path / "never-written.jsonl"
 
-    assert cli.main(["show", "--log", str(log), "--forget-markers"]) == 1, "still 'no history'"
+    assert cli.main(["show", "--log", str(log), "--forget-markers"]) == cli.CANNOT_CHECK
     err = capsys.readouterr().err
     assert "no run history" in err and "removed 1" in err
     assert list(d.glob("*.json")) == []
@@ -17207,7 +17207,7 @@ def test_no_run_history_says_where_the_records_went_when_a_marker_knows(tmp_path
     guessing wrong sends them looking a second time."""
     log = _orphan_marker(tmp_path, history="DbSink")
     capsys.readouterr()
-    assert cli.main(["show", "--log", str(log)]) == 1, "still 'no run history', which is true"
+    assert cli.main(["show", "--log", str(log)]) == cli.CANNOT_CHECK, "could not check"
     err = capsys.readouterr().err
 
     assert "DbSink" in err, "the command knew where the records went and did not say"
@@ -17220,7 +17220,7 @@ def test_no_run_history_keeps_its_ordinary_advice_when_no_marker_knows_better(tm
     the `--log` advice is right and is the likeliest cause — a `configure(run_log=...)` the
     CLI cannot see. Replacing it unconditionally would trade one wrong message for another."""
     capsys.readouterr()
-    assert cli.main(["show", "--log", str(tmp_path / "nowhere.jsonl")]) == 1
+    assert cli.main(["show", "--log", str(tmp_path / "nowhere.jsonl")]) == cli.CANNOT_CHECK
     err = capsys.readouterr().err
     assert "Nothing has been recorded here yet" in err
     assert "pass --log that path" in err
@@ -17233,7 +17233,117 @@ def test_a_marker_naming_the_path_already_being_read_is_not_a_contradiction(tmp_
     disagreement out of two records that agree."""
     log = _orphan_marker(tmp_path, history=str(tmp_path / "runs.jsonl"))
     capsys.readouterr()
-    assert cli.main(["show", "--log", str(log)]) == 1
+    assert cli.main(["show", "--log", str(log)]) == cli.CANNOT_CHECK
     err = capsys.readouterr().err
     assert "SAYS OTHERWISE" not in err, f"the marker agrees with the path being read: {err}"
     assert "Nothing has been recorded here yet" in err
+
+
+def test_the_three_exit_codes_mean_one_thing_each(tmp_path, monkeypatch, capsys):
+    """at_log-81, decided by Taylor 2026-09-01. Exit `1` meant four different things across the
+    subcommands — "no match", "stale artifacts", "nothing was checked" and "no history file" —
+    so a CI job could not tell **your artifacts are stale** from **I could not look**. Both a
+    green gate over nothing and a red one are worse than no gate, and exit codes are the CLI's
+    real API for automation: they cannot be changed in 1.x without breaking pipelines.
+
+        0  checked, nothing wrong
+        1  checked, something IS wrong
+        2  could not check, or the invocation did not describe one
+
+    grep's and diff's convention, so it costs a reader nothing to learn.
+
+    ONE TEST FOR THE WHOLE CONTRACT, not a line in each command's own test, because the defect
+    was never in one command — it was that the commands disagreed. A table is the only shape
+    that can fail for that."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "in.tsv").write_text("a\n", encoding="utf-8")
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=log)
+    with runprov.Run("build", provenance="b.prov.json") as run:
+        run.input("data/in.tsv")
+        with run.open_output("out.tsv") as fh:
+            fh.write("x\n")
+
+    at_log = ["--log", str(log)]
+    checked_clean = [
+        ["log", *at_log],
+        ["log", *at_log, "--script", "build"],
+        [
+            "log",
+            *at_log,
+            "--script",
+            "build",
+            "--failed",
+        ],  # a CLASS filter: empty is the good answer
+        ["show", *at_log],
+        ["show", *at_log, "--stale", "--exit-code"],
+        ["verify", str(tmp_path / "out.tsv"), "--root", str(tmp_path)],
+    ]
+    could_not_check = [
+        ["log", "--log", str(tmp_path / "gone.jsonl")],
+        ["show", "--log", str(tmp_path / "gone.jsonl")],
+        ["verify", str(tmp_path / "data"), "--root", str(tmp_path)],  # nothing carries a pin
+        ["show", *at_log, "--exit-code"],  # nothing to gate on
+        ["prune", *at_log, "--older-than", "soon"],
+    ]
+    for argv in checked_clean:
+        capsys.readouterr()
+        assert cli.main(argv) == 0, f"{argv} is a clean check and must exit 0"
+    for argv in could_not_check:
+        capsys.readouterr()
+        assert cli.main(argv) == cli.CANNOT_CHECK, f"{argv} could not check and must exit 2"
+
+    # AND NOW SOMETHING IS ACTUALLY WRONG.
+    (tmp_path / "data" / "in.tsv").write_text("CHANGED\n", encoding="utf-8")
+    wrong = [
+        ["verify", str(tmp_path / "out.tsv"), "--root", str(tmp_path)],
+        ["show", *at_log, "--stale", "--exit-code"],
+        ["show", *at_log, "nosuchtarget"],
+        ["log", *at_log, "--script", "buidl"],  # a NAME that matched nothing: probably a typo
+        ["log", *at_log, "--run-id", "nosuchid"],
+    ]
+    for argv in wrong:
+        capsys.readouterr()
+        assert cli.main(argv) == 1, f"{argv} found something wrong and must exit 1"
+
+    # THE THREE CODES ARE DISTINCT, asserted so a future "simplification" that collapses two
+    # of them fails here rather than in somebody's pipeline.
+    assert len({0, 1, cli.CANNOT_CHECK}) == 3
+
+
+def test_a_class_filter_matching_nothing_is_not_a_missing_name(tmp_path, monkeypatch, capsys):
+    """The distinction the contract rests on, and the one that is easy to get wrong: `--script`
+    and `--run-id` NAME a record, so matching nothing means the name was wrong; `--failed`
+    selects a CLASS, and "no failed runs" is the good answer rather than an absent one.
+
+    The first version of this fix tested them together, so `--script build --failed` over a
+    project whose `build` never failed reported "nothing matched 'build'" and exited 1 — false
+    twice over: the name was right, and no failures is success."""
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=log)
+    with runprov.Run("build", provenance="b.prov.json"):
+        pass
+
+    at_log = ["--log", str(log)]
+    capsys.readouterr()
+    assert cli.main(["log", *at_log, "--failed"]) == 0, "no failures is the good answer"
+    assert cli.main(["log", *at_log, "--script", "build", "--failed"]) == 0, (
+        "the name matched; the class filter then found nothing, which is success"
+    )
+    assert cli.main(["log", *at_log, "--script", "buidl", "--failed"]) == 1, (
+        "but a wrong NAME is still a wrong name, whatever else was asked for"
+    )
+    assert "nothing matched" in capsys.readouterr().err
+
+    # AN EMPTY HISTORY IS THE CASE THAT SEPARATES THEM. A project whose `runs.jsonl` exists
+    # but holds no completed run — only start lines, or nothing yet — must still answer 0 to
+    # `--failed`: there are no failures, which is the good answer. Treating `--failed` as a
+    # NAME is indistinguishable everywhere else, and this is where it shows.
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    capsys.readouterr()
+    assert cli.main(["log", "--log", str(empty), "--failed"]) == 0, (
+        "no runs at all still means no FAILED runs, which is not a missing name"
+    )

@@ -340,6 +340,12 @@ every interrupted long job, and the artifacts on disk look identical to a succes
 - Every reader drops the `started` lines — `_load` and `_counted` for `show`/`lineage`, and
   `log` separately because it streams raw — so nothing counts a completed run twice. The
   YAML view declines them too: it is a narrative of completed runs.
+- **The CLI has one exit-code contract**: `0` checked and nothing wrong, `1` checked and
+  something is wrong, `2` could not check or the invocation did not describe one. `1` used to
+  mean "no match", "stale artifacts", "nothing was checked" and "no history file" in
+  different commands, so a CI job could not tell a failing gate from a gate that never ran.
+  `verify`'s no-pins case and every missing-history case move from `1` to `2`, and
+  `log --script X` with no match moves from `0` to `1`, matching `show <target>`.
 - **A run with no `provenance=` writes neither — and no marker either.** That shape records
   nothing by design, and a start line there would mean constructing a `Run` created a
   history file. The marker had no such guard: an unarmed run created `<history>/.incomplete/`
