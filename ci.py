@@ -10,9 +10,17 @@
     python ci.py test       pytest with the coverage gate
     python ci.py build      release-check, build, twine check --strict, install the wheel
     python ci.py setup      install the dev extras and the pre-commit hooks
+    python ci.py surface    rewrite docs/public-surface.txt from what the package exposes
+    python ci.py torture    damage a real record and read it back (tools/torture.py)
     python ci.py release-check   the version copies, the tag and the citation's year
                             (run by `build`; set RUNPROV_RELEASE_TAG=vX.Y.Z to rehearse
                             what a tag push would check)
+
+`torture` IS NOT IN THE DEFAULT GATE and it exits 1 today, on purpose: it reports that a
+crash inside any of the six `write_text` calls in `runprov/` leaves a prefix on disk. That
+is a measurement, not a regression — see the head of `tools/torture.py`. It builds and
+tears down about ninety trees and takes roughly a minute, which is the other reason it is
+asked for rather than run on every push.
 
 Why a script rather than a list of steps in the workflow
 --------------------------------------------------------
@@ -432,12 +440,24 @@ def surface() -> None:
     print(f"wrote {len(lines)} surface line(s) to {SURFACE_FILE.name}")
 
 
+def torture() -> None:
+    """Damage a real record and read it back. NOT a gate — see the head of that file.
+
+    Shelled out rather than imported so it runs under the same interpreter as every other
+    step and cannot import anything of this file's by accident: it is an instrument pointed
+    AT the package, and one that shared a process with its subject would be measuring a
+    tree that this file had already touched.
+    """
+    run(PY, str(ROOT / "tools" / "torture.py"))
+
+
 STEPS = {
     "lint": lint,
     "test": test,
     "build": build,
     "setup": setup,
     "surface": surface,
+    "torture": torture,
     "release-check": release_check,
 }
 

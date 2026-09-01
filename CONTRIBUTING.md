@@ -95,6 +95,33 @@ temporary directories. If a test needs the ambient environment, it is testing th
 thing — `test_detect_root_finds_the_git_toplevel` used to assert against whatever repository
 happened to contain it, and failed the moment the package moved.
 
+## `python ci.py torture` — damage a record and read it back
+
+Not part of the gate, and it exits 1 today on purpose.
+
+The suite builds records the way the package expects them and reads them back the way the
+package expects to. Everything it feeds a reader was written by someone who knew what the
+reader wanted. `tools/torture.py` feeds the readers what a crash or a bad sector produces:
+
+* **Torn writes.** It patches `Path.write_text`, enumerates every write site in a real run
+  rather than listing them by hand, and tears each one in turn at 0%, 50% and 90%. Six of
+  the seven sites in a two-step pipeline belong to `runprov`, and **all six leave a prefix
+  on disk** — the sidecar, its YAML twin and the in-flight marker are written with a plain
+  `write_text`, and there is no `os.replace`, `mkstemp` or `O_EXCL` anywhere in the package.
+  `sinks.py` is the exception and does it properly, under a lock and fsynced.
+* **Corrupted records.** Eleven byte-level and structural mutations over the history, both
+  sidecars, the YAML twin, a pinned artifact and `transformation_log.yml`, with every reader
+  held to the exit-code contract (0 / 1 / 2, see `__main__.py`) and to printing no
+  traceback. Roughly six hundred reader invocations per run; **no findings** as of
+  2026-09-01, which is the sentence the tool exists to be able to say.
+
+Two controls run before any case, because *no findings* and *nothing was damaged* are the
+same green: a clean tree must verify 0, and a byte appended to a pinned input must verify 1.
+If either fails the run exits **2** and reports nothing, having measured nothing. Every
+mutation also asserts its own bytes changed.
+
+A finding prints the flags that reproduce it: `--case a:3 --seed 0 --keep`.
+
 ## What the suite skips, and how to un-skip it
 
 **A green run is not a complete run**, and the count is printed so you can tell the

@@ -168,10 +168,15 @@ artifacts = ["runprov/py.typed"]
 # and the file says so a section later). Inside the sdist that reads as the project's
 # position rather than as somebody's notes, and it travels beside a README that PyPI freezes
 # forever. They stay in the repository, where the audience is the person they address.
-include = ["runprov", "tests", "examples", "ci.py", "README.md", "WHY.md",
+include = ["runprov", "tests", "examples", "ci.py", "tools", "README.md", "WHY.md",
            "GETTING-STARTED.md", "docs",
            "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "DCO.txt", "LICENSE",
            "CITATION.cff", "CHANGELOG.md", "SECURITY.md", ".ruff.toml",
            ".pre-commit-config.yaml"]
 # `examples` is here because a test runs it: shipping the suite without the file it
 # executes would make the sdist's own tests fail for the packager who runs them.
+# `tools` is here for the same reason one step further out: `ci.py` ships, `ci.py torture`
+# is one of its steps, and a step that raises FileNotFoundError from the tarball is worse
+# than a step that does not exist. The audience is the same packager, and what that file
+# does -- damage a record and check the readers survive it -- is exactly what someone
+# rebuilding from source has reason to run.
