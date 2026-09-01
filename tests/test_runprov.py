@@ -17347,3 +17347,67 @@ def test_a_class_filter_matching_nothing_is_not_a_missing_name(tmp_path, monkeyp
     assert cli.main(["log", "--log", str(empty), "--failed"]) == 0, (
         "no runs at all still means no FAILED runs, which is not a missing name"
     )
+
+
+def test_the_commits_the_ci_section_names_are_real_and_in_this_history():
+    """L-105. "What has actually been run" exists because every platform claim in this README
+    once rested on "CI covers it", and CI had not run — and the FIRST version of that section
+    was itself wrong, because `gh run list --limit 60` returned a window and it was reported
+    as the whole history.
+
+    So the section now names COMMITS rather than dates or counts-since. A count is stale the
+    next time anyone pushes; a commit is a fact that can be checked, and this checks it: every
+    sha the section cites must exist in this repository and be an ancestor of HEAD. A typo, a
+    rebase, or a sha copied from another project fails here.
+
+    WHAT THIS CANNOT CHECK, stated rather than implied: whether those runs were green, and how
+    many runs there have been. Both live on GitHub, and a test that needed the network would
+    be skipped in exactly the environments this section exists to be honest about. The run
+    tally carries an explicit "as of" date for that reason."""
+    if not (_repo_root() / ".git").exists():  # pragma: no cover - not shipped in the sdist
+        pytest.skip("not a git checkout")
+    section = _readme().split("## What has actually been run", 1)[1].split("\n## ", 1)[0]
+    # AT LEAST ONE HEX LETTER, because the section also cites a GitHub RUN ID — `31592997325`
+    # — and a decimal run id is a valid hex string, so a naive sha pattern swallows it and
+    # then reports that this repository has no such commit. A real all-digit sha is possible
+    # and astronomically unlikely; a run id is neither.
+    shas = sorted(set(re.findall(r"`([0-9a-f]{7,40})`", section)))
+    shas = [s for s in shas if re.search(r"[a-f]", s)]
+    assert len(shas) >= 2, f"the CI section names {shas}; it is supposed to cite commits"
+
+    for sha in shas:
+        found = subprocess.run(
+            ["git", "cat-file", "-t", sha], cwd=_repo_root(), capture_output=True, text=True
+        )
+        assert found.stdout.strip() == "commit", f"{sha} is not a commit in this repository"
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", sha, "HEAD"], cwd=_repo_root()
+        )
+        assert ancestor.returncode == 0, f"{sha} is not an ancestor of HEAD"
+
+
+def test_the_ci_section_claims_no_more_than_the_self_hosted_workflow_runs():
+    """The other half of L-105, and the reason this section keeps going stale: it describes a
+    thing that changes underneath it. `967c61b` wired `lint` and `build` onto the self-hosted
+    runner, which makes "the whole gate" true — and would have made it a lie if the wiring were
+    ever undone.
+
+    Derived from the workflow rather than trusted: whatever `ci.py` steps that file actually
+    runs are what the README may claim for it."""
+    wf = _repo_root() / ".github/workflows/selfhosted.yml"
+    if not wf.is_file():  # pragma: no cover - workflows are not in the sdist
+        pytest.skip("selfhosted.yml not present")
+    section = _readme().split("## What has actually been run", 1)[1].split("\n## ", 1)[0]
+    assert "self-hosted" in section, "the runner that answers for today's tree is unmentioned"
+
+    runs = set(re.findall(r"ci\.py (\w+)", wf.read_text(encoding="utf-8")))
+    claimed = set(re.findall(r"`ci\.py (\w+)`", section))
+    assert claimed, "the section names no gate step for the self-hosted runner"
+    assert claimed <= runs, f"the README claims {sorted(claimed - runs)}, which it does not run"
+
+    # AND IT MUST NOT CLAIM THE TWO PLATFORMS THAT RUNNER CANNOT REACH.
+    linux_only = section.split("self-hosted Linux runner", 1)[-1]
+    for platform_ in ("macOS", "Windows"):
+        assert platform_ not in linux_only, (
+            f"the paragraph about the Linux runner mentions {platform_}, which it cannot run"
+        )
