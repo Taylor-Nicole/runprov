@@ -131,12 +131,23 @@ _ENTRY = re.compile(rf"^ {{4}}([0-9a-f]{{{PIN_DIGEST_CHARS}}}|MISSING) {{2}}(.+)
 #: accepted only the new word would report every one of them as unpinned, which is a worse
 #: outcome than the mislabelling it corrects.
 _COUNT = re.compile(r"^ {2}inputs \((\d+)\), (?:sha256|content digest):$")
-_FIELD = re.compile(r"^ {2}(script|generation|commit) +: (.*)$")
+#: Any `name : value` line in a pin block. This named `script|generation|commit`
+#: explicitly, so a field the writer added was invisible to the reader — a closed list
+#: inside a reader whose whole job is to read what an older version wrote, which is the
+#: scope defect this audit found repeatedly. `_NONE` is now tested BEFORE this, because
+#: `  inputs     : NONE REGISTERED` matches the widened pattern and would otherwise be
+#: collected as a field instead of setting `declared = 0`.
+_FIELD = re.compile(r"^ {2}(\w+) +: (.*)$")
 # TWO LEADING SPACES, like every other body line. Without them this never matched, so a
 # pin stating NONE REGISTERED fell through to "a pin with no entries" and read as
 # UNVERIFIABLE -- turning the one case where a run explicitly says it read nothing into
 # the case where we do not know what it read. Found by the test, not by review.
 _NONE = "  inputs     : NONE REGISTERED"
+
+#: The field a pin uses to say its input list may understate the run. Written only when
+#: `Project(allow_late_inputs=True)` is set, which is the only configuration under which a
+#: late `run.input()` is permitted at all (ledger A-16).
+_SCOPE = "pin_covers"
 
 OK = "OK"
 STALE = "STALE"
@@ -314,10 +325,10 @@ def read_pins(path: pathlib.Path) -> list[dict[str, typing.Any]]:
                 pin["entries"].append((m.group(1), m.group(2)))
             elif (c := _COUNT.match(body)) is not None:
                 pin["declared"] = int(c.group(1))
-            elif (f := _FIELD.match(body)) is not None:
-                pin["fields"][f.group(1)] = f.group(2)
             elif body.startswith(_NONE):
                 pin["declared"] = 0
+            elif (f := _FIELD.match(body)) is not None:
+                pin["fields"][f.group(1)] = f.group(2)
             # A marker line matching none of these ends the block only once the entries are
             # complete. An EMPTY marker -- `header(comment="")` -- makes every following
             # line of the artifact "start with" it, so without this the reader would walk
@@ -472,6 +483,24 @@ def verify_artifact(
     }
     if truncated:
         out["pin_truncated"] = truncated
+    # A PIN THAT SAYS IT MAY NOT BE THE WHOLE STORY. Under `Project(allow_late_inputs=True)`
+    # a run may register an input AFTER the pin is written, and the pin — being in the
+    # artifact's first bytes — cannot grow a line. That used to be undetectable by anyone
+    # holding only the artifact: `verify` read OK for ever and there was nothing else to
+    # consult. It is detectable now because the pin DECLARES ITS OWN SCOPE at render time,
+    # which is the only moment anything can be written into those bytes.
+    #
+    # IT DOES NOT CHANGE THE STATUS. Every input the pin DOES list has been checked and the
+    # answer for those is true; what is unknown is whether the list is complete. Failing on
+    # that would make every project using the flag permanently red — the same argument the
+    # README makes for UNVERIFIABLE not failing the gate — and calling it UNVERIFIABLE would
+    # throw away the true half. So: the real status, plus a note, plus a count on the summary.
+    # THE NOTE IS OURS, NOT THE ARTIFACT'S. Only the FIELD'S PRESENCE is read; the text
+    # beside it is producer-controlled and arrives from a file this command was handed, so
+    # echoing it would let an artifact write its own verdict into a checker's output.
+    partial = [b["fields"].get("script", "?") for b in blocks if _SCOPE in b["fields"]]
+    if partial:
+        out["pin_partial"] = partial
     return out
 
 
@@ -549,6 +578,11 @@ def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str
         "stale": sum(1 for r in pinned if r["status"] == STALE),
         "gone": sum(1 for r in pinned if r["status"] == GONE),
         "unverifiable": sum(1 for r in pinned if r["status"] == UNVERIFIABLE),
+        # COUNTED ALONGSIDE THE STATES, not folded into one, because it is not a state: an
+        # artifact can be OK and still declare that its pin may understate the run. It is on
+        # the summary for the same reason UNVERIFIABLE is — a per-artifact note is easy to
+        # scroll past, and the summary line is the one thing every reader reads.
+        "partial_pins": sum(1 for r in pinned if r.get("pin_partial")),
         "artifacts": pinned,
     }
 
@@ -580,6 +614,11 @@ def render_report(report: dict[str, typing.Any]) -> str:
         out.append(f"{art['status']:12} {art['artifact']}{suffix}")
         for note in art.get("pin_truncated", []):
             out.append(f"             !! pin {note}")
+        for via in art.get("pin_partial", []):
+            out.append(
+                f"             !! this pin covers only what {via} registered BEFORE writing "
+                f"it; the run may have read more"
+            )
         for i in art["inputs"]:
             if i["status"] == OK:
                 continue

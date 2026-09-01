@@ -2432,6 +2432,23 @@ class Run:
                 else ""
             ),
         ]
+        # THE PIN DECLARES ITS OWN SCOPE when the project permits a late `run.input()`.
+        # Registration after this point cannot reach these bytes — they are the artifact's
+        # first bytes and are about to be written — so the ONE moment anything can be said to
+        # a reader holding only the artifact is now. Without it, `verify` on an emailed copy
+        # read OK for ever and nothing else was available to consult (ledger A-16).
+        #
+        # WRITTEN FROM THE FLAG, not from what actually happened, and that is deliberate
+        # rather than a shortcut: whether a late input occurs is not knowable while the pin is
+        # being rendered. So it discloses the POSSIBILITY, which is a durable fact about the
+        # project, and `inputs_not_in_pin` in the record says whether it came to pass. Absent
+        # entirely by default, so no artifact from an ordinary project changes by one byte.
+        if self.project.allow_late_inputs:
+            lines.append(
+                f"{c}  pin_covers : inputs registered BEFORE this pin was written; this "
+                f"project permits later registration (allow_late_inputs), so the list below "
+                f"may understate the run"
+            )
         # SORTED AND DEDUPED, and that is the determinism guarantee rather than a tidy-up.
         # This rendered inputs in REGISTRATION order, and `Path.glob()` returns filesystem
         # order -- so the ordinary `for p in DIR.glob("*.tsv"): run.input(p)` produced a

@@ -355,6 +355,15 @@ every interrupted long job, and the artifacts on disk look identical to a succes
   recorded as `refused_late_inputs` BEFORE it is raised, so catching the error does not erase
   it. `Project(allow_late_inputs=True)` restores the warning for the one shape this forbids:
   an input whose path is not knowable until something already-open has been read.
+- **A pin written under `allow_late_inputs` declares its own scope**, as a `pin_covers` field
+  in the artifact's own bytes. That is the only thing that reaches someone holding just the
+  artifact — no history, no sidecar — and it works at any file size because it is written
+  when the pin is rendered rather than appended afterwards. `verify` notes it per artifact and
+  counts it on the summary line, without failing: the inputs the pin does list are verified.
+  Default projects are unchanged byte for byte.
+- **`verify` reads any `name : value` field in a pin**, not the three it was told about. The
+  reader's whole job is to read what another version wrote, and a closed list made a field the
+  writer added invisible.
 - **An input registered after the pin was rendered is now IN THE RECORD**, as
   `inputs_not_in_pin`, in the sidecar and the history and omitted when empty. It used to
   print a stderr warning and record nothing, so the sidecar listed N inputs, the artifact's
