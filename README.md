@@ -1925,24 +1925,34 @@ it is better than leaving silence to be read as abandonment:
 A test suite proves nothing about an environment it has never entered, so this states the
 environments rather than implying them.
 
+Every claim below names the **commit** it was true at, not a date or a count of commits
+since — a count is stale the next time anyone pushes, and this section has already been wrong
+once for exactly that reason.
+
 | | state |
 |---|---|
-| CPython 3.10.12, 3.11.1, 3.12.13, 3.13.15 on Linux | **run in full on today's tree**, 2026-08-19 |
+| CPython 3.10–3.13 on Linux, self-hosted | **green at `bc6d402`** (2026-08-21). `lint` and `build` were wired onto that runner later and have not been dispatched yet |
 | macOS 3.12 | **run once and green** — 2026-08-12, run `31592997325`, commit `dec57fe6` |
 | Windows 3.12 | **run once and green** — same run; it skipped 9 of 288 collected there |
-| the full matrix on **today's** tree | **not run.** 93 commits have landed since `dec57fe6` |
+| the hosted matrix on **today's** tree | **not run.** The last fully green matrix was `dec57fe6` |
 
-**The matrix has run, and the honest gap is that it has not run recently.** Over 140 workflow
-runs to 2026-08-19: **34 successful** (2026-08-07 to 2026-08-12), 101 failed, 5 cancelled. The
-last fully green run was `31592997325` at `dec57fe6`, where every leg passed — lint, build, and
-all six test legs including macOS and Windows, the latter exercising the `msvcrt` locking
-fallback that exists for it.
+**The matrix has run, and the honest gap is that it has not run recently.** As of
+**2026-09-01**: 223 workflow runs — **37 successful**, 181 failed, 5 cancelled. The last fully
+green hosted run was `31592997325` at `dec57fe6`, where every leg passed: lint, build, and all
+six test legs including macOS and Windows, the latter exercising the `msvcrt` locking fallback
+that exists for it.
 
-Since **2026-08-13** every run has failed, and almost all of them died before a runner started:
-GitHub bills Actions minutes for private repositories and this account's billing is failing. So
-the matrix has not seen `show`, `exec`, `verify`, the transformation-log sink, or the CPython
-3.13 `resolve()` fix — 93 commits' worth. Making the repository public removes the billing
-constraint for standard runners, and is the one action that closes this.
+Since **2026-08-13** every hosted run has failed, and almost all died before a runner started:
+GitHub bills Actions minutes for private repositories and this account's billing is failing.
+So the hosted matrix has not seen `show`, `exec`, `verify`, `prune`, the transformation-log
+sink, the exit-code contract, or the CPython 3.13 `resolve()` fix. **Making the repository
+public removes the billing constraint for standard runners, and is the one action that closes
+this.**
+
+The self-hosted Linux runner is what answers for today's tree in the meantime, and since
+`967c61b` it runs the **whole** gate — `ci.py lint`, `ci.py test` on all four interpreters,
+and `ci.py build`. It is Linux only and says so in its own run summary: a green tick there is
+evidence about Linux and about nothing else.
 
 > An earlier version of this section said CI had **never** run and that all 60 runs had failed.
 > That was wrong, and how it was wrong is worth keeping: the check used `gh run list --limit 60`,
