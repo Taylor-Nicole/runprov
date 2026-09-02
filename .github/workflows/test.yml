@@ -82,8 +82,8 @@ jobs:
             # `chmod(0o000)` genuinely makes unreadable, an executable `#!/bin/sh` script, a
             # directory opened as a file, an `os.kill` that delivers a signal instead of
             # terminating the process — and they skip there (see the probes at the top of
-            # the suite). MEASURED on run 33561447357, 2026-09-01: 717 passed, 49 skipped,
-            # against 763 and 5 on ubuntu. Skipped tests leave their lines unmeasured, so the
+            # the suite). MEASURED on run 33575026376, 2026-09-02: 722 passed, 50 skipped,
+            # against 769 and 5 on ubuntu. Skipped tests leave their lines unmeasured, so the
             # 100% floor is unreachable HERE by construction, not by regression. Every other
             # leg still asserts it; this is the only place the word `off` appears, on purpose.
             coverage_floor: "off"

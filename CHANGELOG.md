@@ -609,16 +609,17 @@ handles, and whether `link/..` traverses the link.
 
 ### Verified
 
-768 tests, 100% statement *and* branch coverage.
+774 tests, 100% statement *and* branch coverage.
 
-**THE WHOLE MATRIX IS GREEN, run `33561447357`, 2026-09-01** — the first time it has been.
-Seven jobs: `lint`, `build`, ubuntu 3.10/3.11/3.12/3.13, macOS 3.12 and Windows 3.12.
+**THE WHOLE MATRIX IS GREEN, run `33575026376`, 2026-09-02.** Seven jobs: `lint`, `build`,
+ubuntu 3.10/3.11/3.12/3.13, macOS 3.12 and Windows 3.12. (The first ever green matrix was
+`33561447357` the day before; these are the figures after the split-role review.)
 
 | leg | passed | skipped |
 |---|---|---|
-| ubuntu 3.12 | 763 | 5 |
-| macOS 3.12 | 762 | 6 |
-| windows 3.12 | 717 | 49 |
+| ubuntu 3.12 | 769 | 5 |
+| macOS 3.12 | 768 | 6 |
+| windows 3.12 | 722 | 50 |
 
 Before this, macOS and Windows had run green **once**, on 2026-08-12 (run `31592997325`,
 commit `dec57fe6`), and a hundred commits landed in between: the matrix had not seen `show`,

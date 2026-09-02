@@ -2006,13 +2006,13 @@ Windows machine with Developer Mode enabled, and `chmod(0o000)` denies nothing t
 platform check both skipped tests that would have run and ran tests that could not fail.
 Asking the machine answers for the machine in front of you.
 
-**Measured on run `33561447357`, 2026-09-01, the first green matrix on today's tree:**
+**Measured on run `33575026376`, 2026-09-02:**
 
 | leg | passed | skipped |
 |---|---|---|
-| ubuntu 3.12 | 763 | 5 |
-| macOS 3.12 | 762 | 6 |
-| **windows 3.12** | **717** | **49** |
+| ubuntu 3.12 | 769 | 5 |
+| macOS 3.12 | 768 | 6 |
+| **windows 3.12** | **722** | **50** |
 
 The Windows leg skips ten times what any other does, and it is the only leg that does not
 assert the coverage floor — skipped tests leave their lines unmeasured, so 100% is
