@@ -24,6 +24,28 @@ covering what it names — and tears each in turn. Measured over a two-step pipe
 Six of the six sites the package owns. The seventh site in that run is the pipeline's own
 `in.tsv` and is not this project's to fix.
 
+> **CORRECTED 2026-09-02, by a review of this decision.** That sentence was never true. It was
+> a census of what ONE two-step pipeline happened to reach, reported as a census of the
+> package. `archive_lockfiles` (`environment.py`) copies a lock file with `Path.write_bytes`,
+> which the harness's seam did not patch and which that pipeline never executed, because it
+> sets no `env_snapshot_dir`. `write_snapshot`, a site that WAS converted, is missing from the
+> table above for the same reason. The eighth site is now atomic too, and the number the
+> harness reports is **eight of ten**, of which two are the pipeline's own.
+>
+> The seventh site was the worst of them, which is what makes the miss worth recording rather
+> than quietly fixing. Its target is content-addressed and `reused = target.is_file()`, so a
+> crash that leaves a truncated copy is PERMANENT: every later run sees the name present,
+> records `archived: true, reused: true`, and never rewrites it, while the record goes on
+> asserting the whole source file's digest. Measured with a real SIGKILL — 85 MB of a 300 MB
+> lock on disk, and two subsequent runs reporting `bytes: 314572800` over it. A sidecar torn
+> by the old code was repaired by the next run; this one never is.
+>
+> Both instruments built to make this impossible were blind to it: the AST guard matched only
+> `write_text`, and the harness patched only `write_text` and `atomic_write_text`. Both now
+> cover `write_bytes`, and the pipeline sets `env_snapshot_dir` so the site is reachable by
+> the census at all. **A census is only a census of what it can reach**, which is the same
+> lesson as the harness that lost sight of its subject, one level further out.
+
 **Nothing was broken.** Every reader survived every torn tree: `verify`, `show`, `log`,
 `lineage` and `prune` stayed inside the exit-code contract over ninety of them and not one
 printed a traceback. `sinks.py` — the history and the transformation log — was already correct,

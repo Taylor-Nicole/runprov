@@ -540,9 +540,13 @@ because these were the last names to settle and the reasoning belongs with the r
 
 - **Every provenance write is atomic.** The sidecar, its YAML twin, the in-flight marker, the
   pinned JSON artifact and the environment snapshot were each a plain `Path.write_text`, which
-  truncates the destination and then fills it. Measured at all six sites with
-  `tools/torture.py`, tearing each write at 0%, 50% and 90%: **six of six left a prefix on
-  disk** — 1 345 of 2 691 bytes of a sidecar, 109 of 219 of a marker. Worse than a damaged new
+  truncates the destination and then fills it. Measured with `tools/torture.py`, tearing each
+  write at 0%, 50% and 90%: **every site left a prefix on
+  disk** — 1 345 of 2 691 bytes of a sidecar, 109 of 219 of a marker. (A later review found
+  the census had reported "six of six" while enumerating only what one two-step pipeline
+  reached: an eighth site, `archive_lockfiles`, spells its write `Path.write_bytes` and was
+  invisible to both the guard and the harness. It is atomic now, and both instruments cover
+  `write_bytes`. See ADR-0005's correction note.) Worse than a damaged new
   record, the crash destroyed the whole OLD one. They go through `runprov/_atomic.py` now —
   temp beside the destination, `fsync`, `os.replace`, `fsync` the directory — so a crash at any
   instant leaves either the previous record or the new one. **ADR-0005.** `sinks.py` was

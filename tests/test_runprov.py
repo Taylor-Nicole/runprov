@@ -8380,7 +8380,10 @@ def test_a_lock_that_cannot_be_archived_is_recorded_not_fatal(tmp_path, monkeypa
     def _boom(*a, **k):
         raise OSError("read-only file system")
 
-    monkeypatch.setattr(pathlib.Path, "write_bytes", _boom)
+    # THE SEAM FOLLOWS THE CALL. This patched `pathlib.Path.write_bytes` while the copy was
+    # `target.write_bytes(...)`; the copy now goes through `atomic_write_bytes`, so patching
+    # the old name would leave this test green over a copy that never failed at all.
+    monkeypatch.setattr(runprov.environment, "atomic_write_bytes", _boom)
     got = runprov.environment.archive_lockfiles(tmp_path, tmp_path / "envs")
     assert "read-only file system" in got[0]["error"]
     assert got[0]["sha256"], "the digest is still recorded — only the copy failed"
@@ -11653,6 +11656,66 @@ def test_show_finds_a_run_by_script_uid_run_id_or_artifact(tmp_path, monkeypatch
     assert len(runprov.show.select(iter(rows), rows[0]["run_id"])) == 4, "run_id is a CHAIN id"
     assert len(runprov.show.select(iter(rows), "mid.tsv")) == 4, "written twice, read twice"
     assert runprov.show.select(iter(rows), "no_such_thing") == []
+
+
+def test_show_finds_an_artifact_by_the_NATIVE_spelling_a_shell_completed(monkeypatch):
+    """`show results\\final.tsv` on Windows found nothing, and had no way to say so usefully.
+
+    Records have been POSIX everywhere since T-08 -- that is the whole point of `_posix` --
+    but `select` compared the CLI target against them by raw equality, so the one spelling a
+    Windows user can produce by tab-completing is the one spelling that cannot match. The
+    basename fallback beside it does not rescue it either: `final.tsv` is not what they
+    typed. So the command answered "nothing matches" about a record it was holding.
+
+    TWO WAYS IN, and the first needs no emulation at all: `./results/final.tsv` is what a
+    shell completes on EVERY platform, and it did not match either, for the same reason.
+    That half of this test fails on the unrepaired `select` right here on Linux.
+
+    The Windows half is EMULATED as the sibling T-08 tests are, by giving `_posix` the
+    flavour it has there -- `pathlib.PurePath` IS `PureWindowsPath` on Windows, so this is
+    the function itself, not a stand-in for it. A backslash is a legal character in a Linux
+    filename, so no real file here reproduces the spelling.
+
+    THE POSIX SPELLING IS ASSERTED FIRST AND UNPATCHED. Normalising the target is only safe
+    if it changes nothing for the readers who were already matching, and "the new spelling
+    works" passes just as well on a `select` that has started matching everything."""
+    rows = [
+        {"script": "s", "run_uid": "aaaa1111", "outputs": [{"path": "results/final.tsv"}]},
+        {"script": "t", "run_uid": "bbbb2222", "outputs": [{"path": "results/other.tsv"}]},
+    ]
+    assert runprov.show.select(iter(rows), "results/final.tsv") == [rows[0]]
+    assert runprov.show.select(iter(rows), "./results/final.tsv") == [rows[0]], (
+        "the spelling every shell hands the user for a file in a subdirectory"
+    )
+    assert runprov.show.select(iter(rows), "results\\final.tsv") == [], (
+        "the premise: on this platform a backslash is just a character in a name"
+    )
+
+    monkeypatch.setattr(runprov.show, "_posix", lambda p: pathlib.PureWindowsPath(p).as_posix())
+    assert runprov.show.select(iter(rows), "results\\final.tsv") == [rows[0]], (
+        "the native spelling still finds nothing where the record is POSIX"
+    )
+    assert runprov.show.select(iter(rows), "results/final.tsv") == [rows[0]], "and so does it"
+    assert runprov.show.select(iter(rows), "results\\missing.tsv") == [], (
+        "normalising the target must not make it match a record it does not name"
+    )
+
+
+def test_selecting_by_an_EMPTY_target_still_means_every_record():
+    """`_posix("")` is `"."`. The target is deliberately NOT normalised at the top of
+    `select`, and this is one of the reasons: an empty target matches every record through
+    the `run_uid` prefix bucket (`"".startswith` is true of everything), and a normalisation
+    applied to `target` itself would have turned that into a `run_uid` beginning with a full
+    stop, which is none of them. The other reasons are the three buckets above it -- a script
+    name, a `run_uid` prefix and a `RUN_ID` are not paths, and every one of them may legally
+    carry a backslash. Its own test because it is the case a reviewer has to reason about
+    rather than see."""
+    rows = [{"script": "s", "run_uid": "aaaa1111", "outputs": [{"path": "results/final.tsv"}]}]
+    assert runprov.hashing._posix("") == ".", "the premise this test exists to guard against"
+    assert runprov.show.select(iter(rows), "") == rows
+    assert runprov.show.select(iter(rows), ".") == [], (
+        "and a target of `.` is a name nothing here has, not a wildcard"
+    )
 
 
 def test_select_takes_the_LAST_n_when_it_is_given_a_limit(tmp_path, monkeypatch):
@@ -15899,6 +15962,43 @@ def test_prune_other_hosts_is_the_users_assertion_not_the_commands(tmp_path):
     assert alive.is_file(), "--other-hosts must not reach a live local run"
 
 
+def test_prune_other_hosts_does_not_reach_a_LOCAL_marker_whose_probe_could_not_answer(
+    tmp_path, monkeypatch
+):
+    """`?` means two things now, and only one of them is the user's assertion to make.
+
+    `_liveness` used to return `?` for exactly one reason — the marker names another host —
+    so `plan` could read the STATE and know what `--other-hosts` licensed. T-07 gave it a
+    second reason: a probe that could not answer returns `?` rather than guessing RUNNING,
+    and that `?` is about a pid on THIS machine. Measured before the repair: a same-host
+    marker whose `os.kill` raises `OSError(EINVAL)` came back `?`, and
+    `plan(d, other_hosts=True).remove` contained it — `--other-hosts` deleting the marker of
+    a run that may be alive right here, on the strength of a flag about somewhere else.
+
+    THE POSITIVE COMPANION IS IN THE SAME TEST: the other-host marker beside it must still
+    go, or this passes on a `plan` that has simply stopped removing anything."""
+    d = tmp_path / ".incomplete"
+    mute = _marker(d, "mute", pid=os.getpid())
+    far = _marker(d, "far", pid=1, host="a-compute-node")
+
+    def cannot_ask(pid, sig):
+        raise OSError(errno.EINVAL, "Invalid argument")
+
+    monkeypatch.setattr(runprov.show.os, "kill", cannot_ask)
+    assert runprov.show.liveness(json.loads(mute.read_text(encoding="utf-8"))) == "?", (
+        "the premise: an unanswerable probe on this host is `?`, the same string the "
+        "other-host case gets"
+    )
+
+    p = runprov.prune.plan(d, other_hosts=True)
+    assert p.remove == [far], f"{[f.name for f in p.remove]}"
+    assert (p.untellable, p.unanswerable) == (0, 1)
+    assert "--other-hosts does not cover them" in runprov.prune.render(p, None, d)
+
+    runprov.prune.apply(p)
+    assert mute.is_file(), "--other-hosts deleted a marker for a run on THIS host"
+
+
 def test_prune_will_not_delete_what_it_cannot_date(tmp_path):
     """`--older-than` selects by the marker's own `started_utc`. A marker whose stamp will
     not parse has an unknown age, and "we could not look" is not a licence to delete — the
@@ -15958,7 +16058,7 @@ def test_prune_survives_a_directory_it_cannot_look_at(tmp_path, monkeypatch):
     exception family is `(OSError, RuntimeError)` because a symlink loop raises the SECOND
     one from `resolve()` — the defect class L-98 swept four times and this audit twice more."""
     assert runprov.prune.plan(tmp_path / "never").remove == []
-    assert runprov.prune.plan(tmp_path / "never") == runprov.prune.Plan([], 0, 0, 0, 0, 0)
+    assert runprov.prune.plan(tmp_path / "never") == runprov.prune.Plan([], 0, 0, 0, 0, 0, 0)
 
     d = tmp_path / ".incomplete"
     _marker(d, "dead")
@@ -15966,7 +16066,7 @@ def test_prune_survives_a_directory_it_cannot_look_at(tmp_path, monkeypatch):
         monkeypatch.setattr(
             pathlib.Path, "resolve", lambda self, *a, _e=boom, **k: (_ for _ in ()).throw(_e)
         )
-        assert runprov.prune.plan(d) == runprov.prune.Plan([], 0, 0, 0, 0, 0)
+        assert runprov.prune.plan(d) == runprov.prune.Plan([], 0, 0, 0, 0, 0, 0)
     monkeypatch.undo()
     assert (d / "dead.json").is_file(), "nothing may be removed on a path that could not look"
 
@@ -17915,6 +18015,97 @@ def test_the_replacement_keeps_the_permissions_the_record_already_had(tmp_path):
     assert p.stat().st_mode & 0o777 == 0o600, oct(p.stat().st_mode)
 
 
+@requires_real_file_modes
+def test_the_temporary_file_IS_NARROW_WHILE_IT_HOLDS_THE_RECORD(tmp_path, monkeypatch):
+    """The mode after the call is not the question. The question is the mode DURING it.
+
+    The test above checks `p.stat()` once the write has returned, and it passed on an
+    implementation that created the temporary file at `0o666 & ~umask` — world- or
+    group-readable — filled it with the complete record, `fsync`ed it, and only THEN
+    narrowed it. Measured under umask 0002 against a `0o600` destination: at fsync time the
+    temporary file was 0o664 and already held every byte. `fsync` is not a fast call, and
+    the file it is syncing sits in the results directory under a predictable name.
+
+    `write_text` truncated the destination in place and never widened the mode for any
+    instant, so this was a REGRESSION introduced by ADR-0005 against the guarantee stated in
+    the comment three lines above the chmod that was meant to provide it.
+
+    THE SPY IS ON `fsync` BECAUSE THAT IS THE MOMENT: the content is complete (it was just
+    flushed) and the rename has not happened, so the file is at its most exposed and its
+    most interesting. Anything sampled after the call cannot see the window at all."""
+    p = tmp_path / "s.prov.json"
+    p.write_text("first\n", encoding="utf-8")
+    p.chmod(0o600)
+    record = "SECRET RECORD v2\n"
+    real_fsync = runprov._atomic.os.fsync
+    seen: list[tuple[int, int]] = []
+
+    def spy(fd):
+        for q in tmp_path.iterdir():
+            if q.name != p.name:
+                seen.append((q.stat().st_mode & 0o777, q.stat().st_size))
+        return real_fsync(fd)
+
+    was = os.umask(0o002)
+    try:
+        monkeypatch.setattr(runprov._atomic.os, "fsync", spy)
+        runprov._atomic.atomic_write_text(p, record)
+    finally:
+        os.umask(was)
+
+    assert seen, "no temporary file existed at any fsync, so this observed nothing"
+    mode, size = seen[0]
+    assert size == len(record), (
+        f"the sample was taken before the record was complete ({size} B), so a wide mode "
+        f"here would not yet have exposed anything"
+    )
+    assert mode == 0o600, (
+        f"the temporary file held the whole record at {oct(mode)} under a 0o600 destination"
+    )
+    assert p.stat().st_mode & 0o777 == 0o600, oct(p.stat().st_mode)
+
+
+def test_a_destination_REMOVED_while_its_mode_is_read_does_not_lose_the_write(
+    tmp_path, monkeypatch
+):
+    """A permission-preserving nicety must not be able to destroy the record.
+
+    The narrowing used to be `if dest.is_file(): os.chmod(tmp, dest.stat().st_mode & 0o7777)`
+    — two questions to the filesystem about one file. A concurrent `unlink` landing between
+    them raised `FileNotFoundError` from inside the helper, the `except BaseException`
+    cleanup removed the temporary file, and NEITHER the old record nor the new one was left
+    on disk. The identical removal one syscall later, between the `stat` and the
+    `os.replace`, is harmless — `os.replace` does not care whether the destination is there.
+    A window that loses a write depending on which of two adjacent syscalls it falls between
+    is not a policy, so the mode lookup now answers "I do not know" and the write goes on.
+
+    The spy asserts it FIRED: a race nobody ran looks exactly like a race that was survived."""
+    p = tmp_path / "s.prov.json"
+    p.write_text("first\n", encoding="utf-8")
+    real_stat = runprov._atomic.os.stat
+    raced: list[object] = []
+
+    def vanishing(target, *a, **k):
+        # `follow_symlinks` TELLS THE TWO CALLERS APART. `runprov._atomic.os` is the `os`
+        # module itself, so this patch is global, and `path.is_symlink()` at the top of the
+        # helper reaches `os.stat(..., follow_symlinks=False)` on Python 3.12. Racing THAT
+        # call proves nothing: `is_symlink` swallows the error, the real mode lookup then
+        # succeeds, and the test passes on the unrepaired helper -- measured, which is how
+        # this line came to be here.
+        if pathlib.Path(target) == p and k.get("follow_symlinks", True) and not raced:
+            raced.append(target)
+            raise FileNotFoundError(errno.ENOENT, "No such file or directory")
+        return real_stat(target, *a, **k)
+
+    monkeypatch.setattr(runprov._atomic.os, "stat", vanishing)
+    runprov._atomic.atomic_write_text(p, "second\n")
+    monkeypatch.undo()
+
+    assert raced, "the destination's mode was never read, so nothing was raced"
+    assert p.read_text(encoding="utf-8") == "second\n", "the write was lost to the race"
+    assert [q.name for q in tmp_path.iterdir()] == ["s.prov.json"], "debris beside the target"
+
+
 @requires_symlinks
 def test_a_record_is_written_THROUGH_a_symlink_and_not_over_it(tmp_path):
     """`open(path, "w")` follows a symlink; `os.replace` would destroy it and leave a real
@@ -17989,6 +18180,12 @@ def test_every_provenance_write_in_the_package_goes_through_the_atomic_helper():
     would have been switched off or narrowed by whoever met it next, which is how a check
     stops covering what it names.
 
+    BOTH SPELLINGS, and the second one is a repair. This matched `write_text` alone, and
+    `environment.archive_lockfiles` copied a lock file with `target.write_bytes(...)` — a
+    seventh non-atomic site, sitting in front of a guard written precisely so there could
+    not be a seventh. "Derived, not listed" was true of the FILES and false of the METHOD
+    NAME: one hand-typed string inside the check was the whole of its scope.
+
     Each exemption carries its reason here, beside the name, because an exemption whose
     reason lives somewhere else is one nobody can re-examine."""
     exempt = {
@@ -17998,34 +18195,48 @@ def test_every_provenance_write_in_the_package_goes_through_the_atomic_helper():
         ),
         "_atomic.py": "is the helper",
     }
+    torn = ("write_text", "write_bytes")
+
+    # ONE MATCHER, CALLED TWICE — on the package and on the probe below. Two copies of it
+    # is how the sibling `_posix` guard came to have a non-vacuity probe that agreed with a
+    # matcher the real scan did not use, and passed while the real scan matched nothing.
+    def offenders_in(source: str, name: str) -> dict[str, str]:
+        found = {}
+        for node in ast.walk(ast.parse(source, filename=name)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in torn
+            ):
+                found[f"{name}:{node.lineno}"] = ast.unparse(node.func)
+        return found
+
     offenders = {}
     for mod in sorted(pathlib.Path(runprov.__file__).parent.glob("*.py")):
         if mod.name in exempt:
             continue
-        tree = ast.parse(mod.read_text(encoding="utf-8"), filename=str(mod))
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "write_text"
-            ):
-                offenders[f"{mod.name}:{node.lineno}"] = ast.unparse(node.func)
+        offenders |= offenders_in(mod.read_text(encoding="utf-8"), mod.name)
     assert not offenders, (
         f"these write a file the old way, which a crash tears in half: {offenders}. "
-        f"Use `atomic_write_text` (ADR-0005), or add the file to `exempt` WITH its reason."
+        f"Use `atomic_write_text` / `atomic_write_bytes` (ADR-0005), or add the file to "
+        f"`exempt` WITH its reason."
     )
     # NON-VACUITY. Every module could stop containing a `write_text` call and this would
     # still pass -- "nothing found" and "nothing looked at" are the same green, and the
     # version of this test that read lines instead of parsing them would have gone quiet the
     # day someone wrapped a call across two of them. So make the scan find one it must find.
-    probe = ast.parse("import pathlib\npathlib.Path('x').write_text('y')\n")
-    assert [
-        n
-        for n in ast.walk(probe)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "write_text"
-    ], "the scan does not see a write_text call at all, so it found none for the wrong reason"
+    #
+    # ONE PER ARM, and the count is asserted rather than "is not empty": with `write_bytes`
+    # dropped from `torn` a probe that only had to be non-empty would go on passing on the
+    # strength of the `write_text` line, which is exactly how the seventh site got in.
+    hits = offenders_in(
+        "import pathlib\npathlib.Path('x').write_text('y')\npathlib.Path('x').write_bytes(b'y')\n",
+        "<probe>",
+    )
+    assert hits == {
+        "<probe>:2": "pathlib.Path('x').write_text",
+        "<probe>:3": "pathlib.Path('x').write_bytes",
+    }, f"the scan cannot see its own subject in both spellings: {hits}"
     # AND A STALE EXEMPTION IS A LIE. A file renamed out from under this dict would sit here
     # excusing something that no longer exists, while the file under its new name went
     # unchecked -- the exemption outliving its subject.
@@ -18304,58 +18515,169 @@ def test_no_recorded_path_is_spelled_with_a_bare_str():
 
     PARSED, NOT GREPPED, for the reason the atomic-write guard is: a line-matching version
     of this fires on docstrings that quote the code.
-    """
-    offenders = {}
-    for mod in sorted(pathlib.Path(runprov.__file__).parent.glob("*.py")):
-        tree = ast.parse(mod.read_text(encoding="utf-8"), filename=str(mod))
-        for node in ast.walk(tree):
-            bare = (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "str"
+
+    THREE SHAPES, AND THE KEY IS A SUFFIX — both of those are repairs to this test, and both
+    were found by mutating the package rather than by reading the check:
+
+    * the key was matched as the literal `"path"`, so `run.py`'s
+      `"provenance_path": _posix(prov_path)` was outside the scan entirely. Reverting that
+      one line to `str(...)` left the whole file green — and `provenance_path` is a field
+      the sibling test's own docstring names as one of the breakages this rule exists for.
+      It is `.endswith("path")` now, which was measured to be false-positive-free here.
+    * a keyword ARGUMENT was not a shape at all, and `path=str(target)` inside a
+      `dict(rec, ...)` call is how the lock-file record spelled its path — one line below
+      the snapshot path that had been converted, in the same commit, by somebody reading.
+
+    ONE MATCHER, CALLED TWICE. The non-vacuity probe below used to walk a hand-copied,
+    LOOSER version of this scan: it keyed on `"path"` and omitted the two `func.id == "str"`
+    conditions the real one turns on. Measured: changing `== "str"` to `== "srt"` in the
+    test body left it at `1 passed`, so the real matcher could have matched nothing at all
+    and the probe would still have said the scan could see its subject. A probe that does
+    not run the code under test is a second implementation agreeing with itself."""
+
+    def offenders_in(source: str, name: str) -> dict[str, str]:
+        def is_str_call(v: ast.expr | None) -> bool:
+            return isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and v.func.id == "str"
+
+        def names_a_path(x: ast.expr | None) -> bool:
+            return (
+                isinstance(x, ast.Constant)
+                and isinstance(x.value, str)
+                and x.value.endswith("path")
             )
+
+        found: dict[str, str] = {}
+        for node in ast.walk(ast.parse(source, filename=name)):
             if isinstance(node, ast.Dict):
                 for k, v in zip(node.keys, node.values, strict=False):
-                    if (
-                        isinstance(k, ast.Constant)
-                        and k.value == "path"
-                        and isinstance(v, ast.Call)
-                        and isinstance(v.func, ast.Name)
-                        and v.func.id == "str"
-                    ):
-                        offenders[f"{mod.name}:{v.lineno}"] = ast.unparse(v)
-            if (
-                isinstance(node, ast.Assign)
-                and bare is False
-                and isinstance(node.value, ast.Call)
-                and isinstance(node.value.func, ast.Name)
-                and node.value.func.id == "str"
-            ):
+                    if names_a_path(k) and is_str_call(v):
+                        found[f"{name}:{v.lineno}"] = ast.unparse(v)
+            elif isinstance(node, ast.Assign) and is_str_call(node.value):
                 for t in node.targets:
-                    if (
-                        isinstance(t, ast.Subscript)
-                        and isinstance(t.slice, ast.Constant)
-                        and t.slice.value == "path"
-                    ):
-                        offenders[f"{mod.name}:{node.lineno}"] = ast.unparse(node)
+                    if isinstance(t, ast.Subscript) and names_a_path(t.slice):
+                        found[f"{name}:{node.lineno}"] = ast.unparse(node)
+            elif isinstance(node, ast.keyword) and node.arg and node.arg.endswith("path"):
+                if is_str_call(node.value):
+                    found[f"{name}:{node.value.lineno}"] = ast.unparse(node)
+        return found
+
+    offenders = {}
+    for mod in sorted(pathlib.Path(runprov.__file__).parent.glob("*.py")):
+        offenders |= offenders_in(mod.read_text(encoding="utf-8"), mod.name)
     assert not offenders, (
         f"a recorded path spelled the platform's way: {offenders}. Use `hashing._posix`, so "
         f"a record written on Windows can be read on Linux and vice versa."
     )
-    # NON-VACUITY: the scan must be able to see the shape it is looking for, in both of the
-    # forms it takes. "Nothing found" and "nothing looked at" are the same green.
-    probe = ast.parse('rec = {"path": str(p)}\nrec["path"] = str(p)\n')
-    seen = 0
-    for node in ast.walk(probe):
-        if isinstance(node, ast.Dict) and any(
-            isinstance(k, ast.Constant) and k.value == "path" for k in node.keys
-        ):
-            seen += 1
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Subscript)
-            and isinstance(t.slice, ast.Constant)
-            and t.slice.value == "path"
-            for t in node.targets
-        ):
-            seen += 1
-    assert seen == 2, f"the scan cannot see its own subject in both forms ({seen})"
+    # NON-VACUITY, THROUGH THE SAME FUNCTION. "Nothing found" and "nothing looked at" are
+    # the same green. One line per arm, and each arm twice -- once with the bare key and
+    # once with a suffixed one -- so narrowing the key back to `== "path"` fails here rather
+    # than quietly halving the scan's reach, and so does losing either `str` condition.
+    hits = offenders_in(
+        'rec = {"path": str(p)}\n'
+        'rec = {"provenance_path": str(p)}\n'
+        'rec["path"] = str(p)\n'
+        'rec["provenance_path"] = str(p)\n'
+        "f(path=str(p))\n"
+        "f(script_path=str(p))\n",
+        "<probe>",
+    )
+    assert hits == {
+        "<probe>:1": "str(p)",
+        "<probe>:2": "str(p)",
+        "<probe>:3": "rec['path'] = str(p)",
+        "<probe>:4": "rec['provenance_path'] = str(p)",
+        "<probe>:5": "path=str(p)",
+        "<probe>:6": "script_path=str(p)",
+    }, f"the scan cannot see its own subject in all three shapes: {hits}"
+
+
+def test_inside_describe_every_str_is_wrapped_in_posix():
+    """THE FUNNEL'S OWN RULE, MADE CHECKABLE. `describe`'s docstring calls `_posix` "THE ONE
+    SPELLING EVERY RECORDED PATH USES ... one funnel, one rule, and no list of call sites to
+    keep extending" — and then three lists inside that same function were built with `str()`:
+    `unreadable_dirs`, `symlinked_dirs_not_followed` and `skipped_nonregular`, which are
+    precisely the fields a reader on the other platform consults when a tree hash does not
+    match and they want to know what was left out of it.
+
+    SCOPED TO THE INVARIANT, NOT TO A SYNTAX SHAPE, which is why this is a second guard and
+    not a fourth arm on the one above. That one enumerates the shapes a path can be recorded
+    in — a dict value, a subscript assignment, a keyword argument — and a shape list is the
+    thing this repository has had to widen nine times. This one asks a question with no
+    shapes in it: inside this one function, is there any `str(...)` that is not handed
+    straight to `_posix`? It catches `list.append(str(p))`, a comprehension element, an
+    f-string's operand, a return value — anything, because it does not look at where the
+    call sits.
+
+    IT NEEDS NO EXEMPTIONS, and that is what makes it worth having rather than a rule with a
+    list of excuses beside it. Measured on this tree: `describe` contains exactly ONE `str(`
+    call, `_posix(str(getattr(e, "filename", e)))`, and the `str` there is not redundant —
+    `onerror` is handed an exception whose `filename` can be `None` and whose fallback is
+    the exception itself, and `_posix` of either raises `TypeError` out of the guard that
+    exists so an unreadable directory does not stop the walk.
+
+    IT IS ALSO THE ONLY WAY THIS FIX CAN FAIL HERE. On Linux `str(PosixPath(p))` and
+    `_posix(PosixPath(p))` are byte-identical, so no assertion about a record's CONTENT can
+    tell the repaired function from the unrepaired one on the platform this suite runs on.
+    A line no mutation can distinguish is decoration; this is the mutation."""
+
+    def scan(source: str, name: str) -> tuple[dict[str, str], dict[str, str]]:
+        """Every `str(...)` inside `describe`, split into wrapped and bare."""
+        tree = ast.parse(source, filename=name)
+        fn = next(
+            (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "describe"),
+            None,
+        )
+        # NOT `assert fn`: a scan that located no function must be a LOUD failure, not a
+        # quiet empty result that reads exactly like a clean tree.
+        assert fn is not None, f"{name}: there is no `describe` here, so this looked at nothing"
+
+        def is_str_call(n: ast.AST) -> bool:
+            return isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "str"
+
+        wrapped_ids = {
+            id(a)
+            for c in ast.walk(fn)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == "_posix"
+            for a in c.args
+            if is_str_call(a)
+        }
+        bare, wrapped = {}, {}
+        for n in ast.walk(fn):
+            if is_str_call(n):
+                (wrapped if id(n) in wrapped_ids else bare)[f"{name}:{n.lineno}"] = ast.unparse(n)
+        return bare, wrapped
+
+    source = pathlib.Path(runprov.hashing.__file__).read_text(encoding="utf-8")
+    bare, wrapped = scan(source, "hashing.py")
+    assert not bare, (
+        f"a path inside `describe` is spelled the platform's way: {bare}. Every `str(...)` in "
+        f"the funnel must be the argument of `_posix(...)`, or a record written on Windows "
+        f"cannot be read on Linux — and this is the function whose docstring promises it."
+    )
+    # NON-VACUITY, ON THE REAL FILE: `describe` could lose its last `str` call and this would
+    # go on passing for ever while the rule it enforces stopped having a subject. Keyed on
+    # what was matched rather than on a line number, so moving the function does not lie.
+    assert sorted(wrapped.values()) == ["str(getattr(e, 'filename', e))"], (
+        f"the one legitimate wrapped `str` in `describe` is not where this thinks: {wrapped}"
+    )
+    # AND THE SCAN MUST BE ABLE TO REPORT ONE. The assertion above is a negative; a matcher
+    # that had stopped recognising `str` at all would satisfy it and the one above equally.
+    probe = scan(
+        "def describe(path):\n"
+        "    out = []\n"
+        "    out.append(_posix(str(path)))\n"
+        "    out.append(str(path))\n"
+        "    return out\n",
+        "<probe>",
+    )
+    assert probe == (
+        {"<probe>:4": "str(path)"},
+        {"<probe>:3": "str(path)"},
+    ), f"the scan cannot tell a wrapped `str` from a bare one: {probe}"
+    # AND LOSING THE FUNCTION MUST BE LOUD. This arm cannot be reached by mutating the
+    # package -- `runprov/__init__.py` imports `describe` by name, so a rename fails at
+    # import long before it reaches here -- so it is driven directly. Without it, a scan
+    # renamed out from under this guard would report zero offenders for ever, which is the
+    # "nothing found and nothing looked at are the same green" failure in its purest form.
+    with pytest.raises(AssertionError, match="looked at nothing"):
+        scan("def something_else(path):\n    return str(path)\n", "<no-describe>")

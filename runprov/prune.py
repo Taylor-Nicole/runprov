@@ -54,6 +54,7 @@ __all__: list[str] = []
 import datetime as dt
 import json
 import pathlib
+import platform
 import typing
 
 from .show import INTERRUPTED, liveness
@@ -76,15 +77,22 @@ class Plan(typing.NamedTuple):
     procedure. A dry run that walked a different code path would be a preview of something
     other than what happens, which is the failure mode a preview exists to prevent.
 
-    The four counts are not decoration: each names a distinct reason a file in that directory
+    The six counts are not decoration: each names a distinct reason a file in that directory
     survived, and a user staring at "removed 0" needs to know which of them it was.
     """
 
     remove: list[pathlib.Path]
     #: Alive on this host. Never removed — see the module docstring.
     running: int
-    #: From another host, so liveness cannot be checked here. Kept unless `other_hosts`.
+    #: From another host, so a pid here means nothing. Kept unless `other_hosts`.
     untellable: int
+    #: ON THIS HOST, and the question could not be answered — a `pid` that is not an int,
+    #: an `OSError` other than `EPERM` from `os.kill`, or a Windows `OpenProcess` that
+    #: failed for a reason that is not "no such process". `show` prints this as `?` too, and
+    #: it is NOT what `--other-hosts` covers: the user's assertion there is about a pid on
+    #: another machine, and they have made no assertion about a local process nobody
+    #: managed to look at.
+    unanswerable: int
     #: Younger than `--older-than`.
     too_new: int
     #: A marker whose `started_utc` will not parse, under `--older-than`. We cannot say how
@@ -152,13 +160,13 @@ def plan(
     """
     now = now or dt.datetime.now(dt.timezone.utc)
     remove: list[pathlib.Path] = []
-    running = untellable = too_new = undateable = foreign = 0
+    running = untellable = unanswerable = too_new = undateable = foreign = 0
     try:
         here = directory.resolve()
     except (OSError, RuntimeError):  # guards-ok: an unresolvable directory prunes nothing
-        return Plan([], 0, 0, 0, 0, 0)
+        return Plan([], 0, 0, 0, 0, 0, 0)
     if not directory.is_dir():
-        return Plan([], 0, 0, 0, 0, 0)
+        return Plan([], 0, 0, 0, 0, 0, 0)
     for f in sorted(directory.glob("*.json")):
         try:
             if f.resolve().parent != here or not f.is_file():
@@ -175,15 +183,26 @@ def plan(
             foreign += 1
             continue
         # POSITIVELY INTERRUPTED, OR IT STAYS. Three answers come back and only one of them
-        # is "this run is definitely over": RUNNING is a live pid here, and `?` is a marker
-        # from another host, where a pid means nothing and `os.kill(pid, 0)` would answer
-        # about whichever local process happens to hold that number. An earlier draft of
-        # this loop removed `?` — deleting evidence about a job that may well still be
-        # running on a compute node, on the strength of not having looked.
+        # is "this run is definitely over". An earlier draft of this loop removed `?` —
+        # deleting evidence about a job that may well still be running on a compute node,
+        # on the strength of not having looked.
+        #
+        # THE OVERRIDE IS GATED ON THE RECORD, NOT ON THE STATE, and that is a repair.
+        # `?` used to mean one thing, "this marker is from another host", so reading it as
+        # the thing `--other-hosts` licenses was sound. It means two things now: `_liveness`
+        # was changed so a probe that could not answer returns `?` rather than guessing
+        # RUNNING (the Windows fix, T-07), and that second `?` is about a pid on THIS
+        # machine. Measured: a same-host marker whose probe raises `OSError(EINVAL)` came
+        # back `?` and `--other-hosts` deleted it — a run that may be alive here, removed
+        # by a flag whose whole content is a user's assertion about somewhere else. So ask
+        # the record where it came from; the state is no longer able to say.
         state = liveness(rec)
         if state != INTERRUPTED:
             if state == RUNNING_STATE:
                 running += 1
+                continue
+            if rec.get("host") == platform.node():
+                unanswerable += 1
                 continue
             if not other_hosts:
                 untellable += 1
@@ -197,7 +216,7 @@ def plan(
                 too_new += 1
                 continue
         remove.append(f)
-    return Plan(remove, running, untellable, too_new, undateable, foreign)
+    return Plan(remove, running, untellable, unanswerable, too_new, undateable, foreign)
 
 
 def apply(p: Plan) -> tuple[int, list[str]]:
@@ -242,6 +261,11 @@ def render(p: Plan, gone: int | None, directory: pathlib.Path) -> str:
             p.untellable,
             "from another host, so liveness cannot be checked here — kept "
             "(--other-hosts removes them anyway)",
+        ),
+        (
+            p.unanswerable,
+            "on this host, but the liveness probe could not answer — kept, and "
+            "--other-hosts does not cover them",
         ),
         (p.too_new, "younger than --older-than"),
         (p.undateable, "no readable started_utc, so their age is unknown — kept"),

@@ -9,7 +9,10 @@ which truncates the destination and then fills it. A process that dies between t
 things leaves a PREFIX: a sidecar that is half a JSON document, a marker that names a run
 and stops before saying which host it is on. `tools/torture.py` measured it at six of the
 six write sites the package owns, at 0%, 50% and 90% of each — the finding is not that one
-site was careless, it is that none of them had been thought about.
+site was careless, it is that none of them had been thought about. There were SEVEN: the
+census enumerated `Path.write_text` and the seventh site spells it `Path.write_bytes`, so
+the harness that was built to stop this being a hand-typed list had a hand-typed list of
+one method name inside it. See `atomic_write_bytes` below.
 
 WHY IT MATTERS HERE MORE THAN ELSEWHERE. A truncated cache entry is a slow program. A
 truncated provenance record is a run whose account of itself is gone, produced by exactly
@@ -60,21 +63,93 @@ def atomic_write_text(path: pathlib.Path, text: str, encoding: str = "utf-8") ->
     Does not create the parent directory — the callers that need one already make it, and
     a helper that quietly created directories would hide a mistyped path.
     """
+    _write_atomically(path, text, encoding)
+
+
+def atomic_write_bytes(path: pathlib.Path, data: bytes) -> None:
+    """The same guarantee for bytes. `Path.write_bytes` truncates and fills exactly as
+    `Path.write_text` does, and this package had a seventh site doing it.
+
+    THE SEVENTH SITE, MISSED BY ADR-0005 because the census that found the other six was
+    looking for one spelling. `environment.archive_lockfiles` copies a lock file into the
+    snapshot directory with `target.write_bytes(source.read_bytes())`, and it is WORSE than
+    the six that were converted: the target is CONTENT-ADDRESSED (`lock-<sha256[:16]>-uv.lock`)
+    and the next run's `rec["reused"] = target.is_file()` asks only whether that name exists.
+    So a crash part-way through the copy leaves a prefix under a name that claims a digest,
+    every later run sees the name, sets `reused: true`, and never writes it again — while
+    the record beside it goes on asserting the sha256 of the WHOLE source file. A truncated
+    sidecar is a record that is visibly broken; this is a record that is quietly wrong, for
+    ever, and the only thing that would notice is somebody re-hashing the archive by hand.
+    """
+    _write_atomically(path, data, None)
+
+
+def _destination_mode(dest: pathlib.Path) -> int | None:
+    """The mode the destination already has, or None if it has none we can read.
+
+    THE DESTINATION'S OWN MODE, if it has one. `write_text` truncates in place and so keeps
+    whatever permissions the file already had; a rename brings the temporary file's instead,
+    which would silently re-open a record somebody had restricted.
+
+    ONE `stat`, AND ITS FAILURE IS NOT FATAL — both halves of that are a repair. This was
+    `if dest.is_file(): os.chmod(tmp, dest.stat().st_mode & 0o7777)`, which asks the
+    filesystem the same question twice: a concurrent `unlink` landing between the two raised
+    `FileNotFoundError` out of a helper whose caller had already been given the bytes, the
+    `except BaseException` below removed the temporary file, and NEITHER the old record nor
+    the new one was left on disk. The same removal one syscall later — between the `stat` and
+    `os.replace` — is harmless, because `os.replace` does not care whether the destination is
+    there. A window that destroys a write depending on which of two adjacent syscalls it
+    falls between is not a policy; losing the record was never the intent, so the lookup
+    answers "I do not know" instead of raising, and the write proceeds at the umask default,
+    which is what a destination that does not exist gets anyway.
+    """
+    try:
+        # `os.stat` RATHER THAN `dest.stat()` so this module's own `os` is the seam a test
+        # can drive: `pathlib.Path.stat` is global, and patching it also catches the
+        # `is_symlink` above, which would make a race test pass without racing anything.
+        return os.stat(dest).st_mode & 0o7777
+    except OSError:  # guards-ok: no readable destination, no mode to preserve
+        return None
+
+
+def _write_atomically(path: pathlib.Path, payload: str | bytes, encoding: str | None) -> None:
+    """Temp beside the destination, fsync, rename. `encoding=None` writes bytes.
+
+    THE TEMPORARY FILE IS NARROWED BEFORE IT HOLDS ANYTHING, and that ordering is the whole
+    of the second repair here. It used to be `open(tmp, "w")` — which creates at
+    `0o666 & ~umask` — with the narrowing `os.chmod` running only after the text had been
+    written AND fsynced. Measured under umask 0002 against a `0o600` destination: at fsync
+    time the temporary file was mode 0o664 and already held the complete record. Anyone in
+    the group could read it, and `fsync` is not a fast call. `write_text` truncated the
+    destination in place and never widened the mode for any instant, so the file this module
+    replaced did not have this window — it is a regression against the guarantee stated
+    three lines above the chmod, not an inherited one.
+
+    Creating with `os.open(..., mode)` alone is not enough: that mode is masked by the umask
+    too, so a `0o666` destination under umask 0022 would come back 0o644. The `chmod` still
+    happens — it just happens on an EMPTY file, before the first byte goes in.
+    """
     # THROUGH A SYMLINK, as `open(path, "w")` does. Replacing the link itself would silently
     # relocate a record the user had deliberately pointed somewhere else — and `realpath` of
     # a dangling link is the file `open` would have created, so this matches on that too.
     dest = pathlib.Path(os.path.realpath(path)) if path.is_symlink() else path
     tmp = dest.with_name(f".{dest.name}.{uuid.uuid4().hex[:12]}{TEMP_SUFFIX}")
+    mode = _destination_mode(dest)
     try:
-        with open(tmp, "w", encoding=encoding) as fh:
-            fh.write(text)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666 if mode is None else mode)
+        # `os.fdopen` RATHER THAN A SECOND `open`, so the descriptor that was created with
+        # `O_EXCL` is the one that gets written: re-opening by name would hand the mode back
+        # to the umask and reintroduce the window this ordering exists to close. TEXT MODE
+        # WHERE THERE IS AN ENCODING, because `open(tmp, "w")` defaulted to `newline=None`
+        # and this must keep doing whatever that did: on Windows that translates every "\n"
+        # to "\r\n", so writing these records in binary would silently change the bytes of
+        # every sidecar on one platform, which is not a change this repair is making.
+        with os.fdopen(fd, "wb" if encoding is None else "w", encoding=encoding) as fh:
+            if mode is not None:
+                os.chmod(tmp, mode)
+            fh.write(payload)
             fh.flush()
             os.fsync(fh.fileno())
-        # THE DESTINATION'S OWN MODE, if it has one. `write_text` truncates in place and so
-        # keeps whatever permissions the file already had; a rename brings the temporary
-        # file's instead, which would silently re-open a record somebody had restricted.
-        if dest.is_file():
-            os.chmod(tmp, dest.stat().st_mode & 0o7777)
         os.replace(tmp, dest)
     except BaseException:
         # INCLUDING KeyboardInterrupt. The debris is this module's to clean up whatever

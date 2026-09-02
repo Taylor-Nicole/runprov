@@ -58,7 +58,7 @@ import platform
 import sys
 import typing
 
-from ._atomic import atomic_write_text
+from ._atomic import atomic_write_bytes, atomic_write_text
 from .hashing import _posix
 
 
@@ -396,11 +396,11 @@ def archive_lockfiles(root: pathlib.Path, directory: pathlib.Path) -> list[dict[
             out.append(dict(rec, archived=False, git_blob=blob, note="git already stores it"))
             continue
         target = directory / f"lock-{rec['sha256'][:16]}-{rec['name']}"
-        rec = dict(rec, archived=True, path=str(target), reused=target.is_file())
+        rec = dict(rec, archived=True, path=_posix(target), reused=target.is_file())
         if not rec["reused"]:
             try:
                 directory.mkdir(parents=True, exist_ok=True)
-                target.write_bytes((root / rec["name"]).read_bytes())
+                atomic_write_bytes(target, (root / rec["name"]).read_bytes())
             except OSError as exc:  # guards-ok: a snapshot that could not be archived is
                 # recorded as such. Failing the caller's run because a copy failed would
                 # make provenance the reason the work did not happen.

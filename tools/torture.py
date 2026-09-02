@@ -65,10 +65,21 @@ PY = sys.executable
 #: something for each reader to be right or wrong about. `open_output` rather than
 #: `open(run.output(...))` deliberately: only the former writes the pin into the bytes, and
 #: without a pin `verify` correctly says it could not look, which measures nothing.
+#:
+#: `env_snapshot_dir` AND A LOCK FILE, because without them two of the package's write sites
+#: are not merely un-tortured, they are UNREACHABLE: `environment._write_snapshot` and the
+#: lock-file copy in `archive_lockfiles` both run only when a snapshot directory is
+#: configured, and this pipeline never configured one. The census is the thing that makes
+#: this harness "derived, not listed", and it was enumerating a pipeline that did not
+#: exercise the package's own configuration -- so the site whose non-atomic write was found
+#: by reading could never have been found here. A census over a subset is a list with extra
+#: steps.
 PIPELINE = """\
 import pathlib, runprov
-runprov.configure(root=pathlib.Path("."), run_log=pathlib.Path("history.jsonl"))
+runprov.configure(root=pathlib.Path("."), run_log=pathlib.Path("history.jsonl"),
+                  env_snapshot_dir=pathlib.Path("envs"))
 pathlib.Path("in.tsv").write_text("a\\n", encoding="utf-8")
+pathlib.Path("uv.lock").write_text("version = 1\\n", encoding="utf-8")
 with runprov.Run("step1", provenance=pathlib.Path("out/step1.prov.json")) as r:
     r.input("in.tsv")
     fh = r.open_output("out/mid.tsv"); fh.write("b\\n"); fh.close()
@@ -188,6 +199,13 @@ def _read(tree: pathlib.Path, case: str, expect_one: bool) -> list[Finding]:
 #: `_atomic` where it is defined: `from ._atomic import atomic_write_text` copies the
 #: binding, so patching the definition alone would leave every real call site untouched --
 #: the same shape of miss, one level down.
+#:
+#: FOUR SEAMS NOW, and the third and fourth are the same lesson a third time. `write_bytes`
+#: was never patched, so `archive_lockfiles`'s `target.write_bytes(source.read_bytes())` --
+#: the seventh non-atomic write in the package, and the worst of them, because the target is
+#: content-addressed and a truncated copy is reused for ever under a name asserting a digest
+#: it no longer has -- was invisible to a census whose whole purpose is not needing anyone to
+#: remember it. `write_text` is not "how this package writes files"; it is one of the ways.
 TORN = """\
 import os, pathlib, json, base64, inspect, sys
 import runprov, runprov._atomic as _A
@@ -204,10 +222,13 @@ def _census(kind, path, size, mine):
 
 
 def _report(path, prior, intended, kept, debris):
+    # `intended` IS str OR bytes -- the same report shape covers both seams, and the oracle
+    # in part_a compares raw bytes either way.
+    raw = intended.encode("utf-8") if isinstance(intended, str) else intended
     with open(os.environ["TORTURE_TORN"], "w", encoding="utf-8") as fh:
-        json.dump({"path": str(path), "kept": kept, "whole": len(intended), "debris": debris,
+        json.dump({"path": str(path), "kept": kept, "whole": len(raw), "debris": debris,
                    "prior": None if prior is None else base64.b64encode(prior).decode(),
-                   "intended": base64.b64encode(intended.encode("utf-8")).decode()}, fh)
+                   "intended": base64.b64encode(raw).decode()}, fh)
 
 
 def _cut(text):
@@ -226,6 +247,20 @@ def _wt(self, data, *a, **k):
     elif not _nth:
         _census("write_text", self, len(data), mine)
     return _real_wt(self, data, *a, **k)
+
+
+_real_wb = pathlib.Path.write_bytes
+
+
+def _wb(self, data, *a, **k):
+    mine = os.sep + "runprov" + os.sep in inspect.stack()[1].filename
+    if _nth and _census("write_bytes", self, len(data), mine) == int(_nth):
+        _report(self, self.read_bytes() if self.exists() else None, data, _cut(data), False)
+        _real_wb(self, data[: _cut(data)], *a, **k)
+        os._exit(137)
+    elif not _nth:
+        _census("write_bytes", self, len(data), mine)
+    return _real_wb(self, data, *a, **k)
 
 
 _real_at = _A.atomic_write_text
@@ -248,11 +283,32 @@ def _at(path, text, encoding="utf-8"):
     return _real_at(path, text, encoding)
 
 
+_real_ab = _A.atomic_write_bytes
+
+
+def _ab(path, data):
+    # The bytes twin of `_at`, and the same crash-inside-the-temporary-file model.
+    path = pathlib.Path(path)
+    if _nth and _census("atomic_bytes", path, len(data), True) == int(_nth):
+        tmp = path.with_name(f".{path.name}.torture{_A.TEMP_SUFFIX}")
+        _report(path, path.read_bytes() if path.exists() else None, data, _cut(data), True)
+        _real_wb(tmp, data[: _cut(data)])
+        os._exit(137)
+    elif not _nth:
+        _census("atomic_bytes", path, len(data), True)
+    return _real_ab(path, data)
+
+
 pathlib.Path.write_text = _wt
+pathlib.Path.write_bytes = _wb
 # EVERY MODULE THAT IMPORTED THE NAME, derived from sys.modules rather than listed.
 for _m in list(sys.modules.values()):
-    if getattr(_m, "__name__", "").startswith("runprov") and hasattr(_m, "atomic_write_text"):
+    if not getattr(_m, "__name__", "").startswith("runprov"):
+        continue
+    if hasattr(_m, "atomic_write_text"):
         _m.atomic_write_text = _at
+    if hasattr(_m, "atomic_write_bytes"):
+        _m.atomic_write_bytes = _ab
 """
 
 
@@ -309,7 +365,7 @@ def part_a(
         rel = pathlib.PurePath(path).name
         torn: list[str] = []
         for frac in fractions:
-            if kind == "write_text" and size and int(size * frac) == size:
+            if kind in ("write_text", "write_bytes") and size and int(size * frac) == size:
                 continue  # not a tear
             case = f"a:{nth}:{rel}:{frac}"
             if only and not case.startswith(only):

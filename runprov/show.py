@@ -49,7 +49,7 @@ import platform
 import sys
 import typing
 
-from .hashing import PIN_DIGEST_CHARS, describe, moved_since, pin_digest
+from .hashing import PIN_DIGEST_CHARS, _posix, describe, moved_since, pin_digest
 from .verify import GONE, OK, STALE, UNVERIFIABLE
 
 #: How many distinct input versions to name before summarising. A script that has read forty
@@ -391,9 +391,15 @@ def in_flight(directory: pathlib.Path) -> list[dict[str, typing.Any]]:
         INTERRUPTED   the pid is gone on this host and no ending was ever recorded — the
                       run was killed in a way that runs no code: SIGKILL, the OOM killer,
                       a power loss, a node failure
-        ?             the marker is from ANOTHER HOST. A pid there says nothing here, and
-                      `os.kill(pid, 0)` would answer about whichever local process happens
-                      to hold that number. Saying so is the point
+        ?             nobody could answer the question. TWO WAYS THAT HAPPENS, and the
+                      state deliberately does not distinguish them because neither is news
+                      about the run: the marker is from ANOTHER HOST, where a pid says
+                      nothing here and a local probe would answer about whichever process
+                      happens to hold that number; or the marker is from this host and the
+                      probe itself failed -- an `OSError` that is not `EPERM`, a Windows
+                      `OpenProcess` that failed for a reason other than "no such process".
+                      Saying so is the point. A reader that needs to tell the two apart
+                      has to look at `host` itself, and `prune` does
 
     Unreadable markers are skipped rather than reported as findings: a half-written marker
     is itself the result of an interruption, and the run it describes is already visible as
@@ -425,7 +431,7 @@ def liveness(rec: dict[str, typing.Any]) -> str:
     return _liveness(rec, platform.node())
 
 
-#: The three Windows constants this module needs, named rather than spelled inline. See
+#: The five Windows constants this module needs, named rather than spelled inline. See
 #: `_still_running_windows`.
 _SYNCHRONIZE = 0x00100000
 _WAIT_OBJECT_0 = 0x00000000
@@ -471,9 +477,16 @@ def _still_running_windows(pid: int) -> bool | None:
 
     `OpenProcess(SYNCHRONIZE)` and a zero-timeout wait. A PROCESS HANDLE IS SIGNALLED WHEN
     THE PROCESS HAS EXITED, so `WAIT_OBJECT_0` means finished and `WAIT_TIMEOUT` means still
-    running. A handle that cannot be opened at all is `ERROR_INVALID_PARAMETER` when there is
-    no such process, and something else -- a permission problem, most often -- when there is
-    one we may not ask about; the second is not an answer and says so.
+    running.
+
+    A HANDLE THAT CANNOT BE OPENED AT ALL HAS THREE OUTCOMES, not two, and this paragraph
+    used to describe two of them wrongly. `ERROR_INVALID_PARAMETER` (87) is Windows for "no
+    such process": False. `ERROR_ACCESS_DENIED` (5) is Windows for `EPERM` -- the process
+    EXISTS and we may not ask about it -- so it is True, the same answer POSIX gives for the
+    same fact, and the code below has always returned that. Anything else is a failure to
+    ask, which is not news about the process, and it is the only one of the three that is
+    `?`. The sentence that stood here called the permission case "not an answer", which the
+    code beneath it contradicted and `tests/test_runprov.py` pins against.
 
     Measured on the runner: self `WAIT_TIMEOUT` (258), a reaped pid `WAIT_OBJECT_0` (0), an
     absurd pid no handle with error 87. Three questions, three different right answers.
@@ -1049,6 +1062,15 @@ def select(
         collections.deque(maxlen=limit) for _ in range(4)
     )
     by_script, by_uid, by_run_id, by_path = kinds
+    # THE PATH BUCKET'S TARGET ONLY, and the narrowness is the whole design of this line.
+    # Records have been POSIX since T-08, so on Windows the user who types the spelling
+    # their own shell completed for them -- `results\final.tsv` -- is compared against
+    # `results/final.tsv` and matches nothing, and the basename fallback beside it does not
+    # rescue it either, because `final.tsv` is not what they typed. `target` ITSELF IS NOT
+    # REWRITTEN: it is also a script name, a `run_uid` prefix and a `RUN_ID`, none of which
+    # is a path, all of which may legally contain a backslash -- and `_posix("")` is `"."`,
+    # which would turn `select(recs, "")` from "every record" into "none of them".
+    wanted = _posix(target)
     for r in records:
         if r.get("script") == target:
             by_script.append(r)
@@ -1057,7 +1079,7 @@ def select(
         elif r.get("run_id") == target:
             by_run_id.append(r)
         elif any(
-            _name(e) == target or pathlib.Path(_name(e)).name == target
+            _name(e) == wanted or pathlib.Path(_name(e)).name == target
             for e in (r.get("outputs") or []) + (r.get("inputs") or [])
         ):
             by_path.append(r)
