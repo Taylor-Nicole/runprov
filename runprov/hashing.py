@@ -423,12 +423,25 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
         # says nothing, so the tree hash changed while the tree did not -- the silent-skip
         # class, inside the function whose job is saying what a run read. The count is
         # always present so "0" and "this record predates the check" stay distinguishable.
+        #
+        # ALL THREE OF THESE ARE RECORDED PATHS, and all three were built with `str()` --
+        # inside the function whose `_posix` helper twenty lines up calls itself THE ONE
+        # SPELLING EVERY RECORDED PATH USES. `describe` was made the funnel precisely so the
+        # rule would not be a list of call sites; these three were the call sites it had
+        # missed, and they are exactly the fields a reader on the other platform consults
+        # when the tree hash does not match and they want to know what was left out of it.
         unreadable: list[str] = []
         skipped: list[str] = []
         files: list[pathlib.Path] = []
         linked_dirs: list[str] = []
         for root, dirs, names in os.walk(
-            path, onerror=lambda e: unreadable.append(str(getattr(e, "filename", e)))
+            path,
+            # `str()` INSIDE `_posix`, not instead of it. `onerror` is handed an exception
+            # whose `filename` can be `None`, and whose fallback here is the exception
+            # itself; `_posix` of either is a `TypeError` raised out of the guard that
+            # exists so an unreadable directory does not stop the walk. Spelling it first
+            # keeps both cases printable and still records the path the one way.
+            onerror=lambda e: unreadable.append(_posix(str(getattr(e, "filename", e)))),
         ):
             # NOT FOLLOWED, AND NO LONGER SILENT. `os.walk` does not follow a directory
             # symlink by default, and not following is deliberate -- SECURITY.md says so, and
@@ -448,7 +461,9 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
             # named. Only a directory link found DURING the walk is left out. Following the
             # first is bounded by one file; following the last would be unbounded.
             linked_dirs += [
-                str(pathlib.Path(root) / d) for d in dirs if (pathlib.Path(root) / d).is_symlink()
+                _posix(pathlib.Path(root) / d)
+                for d in dirs
+                if (pathlib.Path(root) / d).is_symlink()
             ]
             for n in names:
                 fp = pathlib.Path(root) / n
@@ -460,7 +475,7 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
                     # but dropping it without a word is the same silent skip as the
                     # unreadable directory above. Counted, so the tree hash's population is
                     # stated rather than assumed.
-                    skipped.append(str(fp))
+                    skipped.append(_posix(fp))
         files.sort()
         rec["kind"] = "directory"
         rec["n_files"] = len(files)
