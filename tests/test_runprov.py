@@ -11667,14 +11667,25 @@ def test_show_finds_an_artifact_by_the_NATIVE_spelling_a_shell_completed(monkeyp
     basename fallback beside it does not rescue it either: `final.tsv` is not what they
     typed. So the command answered "nothing matches" about a record it was holding.
 
-    TWO WAYS IN, and the first needs no emulation at all: `./results/final.tsv` is what a
-    shell completes on EVERY platform, and it did not match either, for the same reason.
-    That half of this test fails on the unrepaired `select` right here on Linux.
+    THREE WAYS IN, AND EVERY ONE OF THEM ASSERTS THE SAME PROPERTY ON EVERY PLATFORM: a
+    target typed the way this machine spells a path finds the record. `./results/final.tsv`
+    is what a shell completes anywhere; `str(PurePath(...))` is whatever the native spelling
+    IS here, derived rather than typed; and the third is the Windows spelling emulated.
 
-    The Windows half is EMULATED as the sibling T-08 tests are, by giving `_posix` the
-    flavour it has there -- `pathlib.PurePath` IS `PureWindowsPath` on Windows, so this is
-    the function itself, not a stand-in for it. A backslash is a legal character in a Linux
-    filename, so no real file here reproduces the spelling.
+    IT USED TO OPEN WITH A PREMISE THAT WAS ONLY TRUE ON LINUX -- "a backslash is just a
+    character in a name", asserted by requiring `results\final.tsv` to match NOTHING before
+    the emulation was installed. On Windows a backslash is a separator, so the repair made
+    that target match, and the test failed on its own scaffolding while the behaviour it
+    guards was working perfectly. Measured on the Windows leg of run 33573724906. That is
+    the same defect as T-09, one layer up: a test asserting something true of the platform
+    it was written on. The property is what belongs in an assertion; the platform's opinion
+    about backslashes does not.
+
+    The Windows spelling is still EXERCISED everywhere, by giving `_posix` the flavour it has
+    there -- `pathlib.PurePath` IS `PureWindowsPath` on Windows, so this is the function
+    itself and not a stand-in, and on Windows the emulation is simply what already happens.
+    That arm fails on the unrepaired `select` on both platforms, and the `./` arm does too,
+    so neither of them got its ability to fail from the machine it ran on.
 
     THE POSIX SPELLING IS ASSERTED FIRST AND UNPATCHED. Normalising the target is only safe
     if it changes nothing for the readers who were already matching, and "the new spelling
@@ -11687,8 +11698,12 @@ def test_show_finds_an_artifact_by_the_NATIVE_spelling_a_shell_completed(monkeyp
     assert runprov.show.select(iter(rows), "./results/final.tsv") == [rows[0]], (
         "the spelling every shell hands the user for a file in a subdirectory"
     )
-    assert runprov.show.select(iter(rows), "results\\final.tsv") == [], (
-        "the premise: on this platform a backslash is just a character in a name"
+    # DERIVED, NOT TYPED: `results\final.tsv` where a backslash separates, `results/final.tsv`
+    # where it does not. On the platform whose separator differs from the record's this is
+    # the whole finding; on the other it is the posix arm again, which costs nothing.
+    native = str(pathlib.PurePath("results/final.tsv"))
+    assert runprov.show.select(iter(rows), native) == [rows[0]], (
+        f"the spelling this machine completes ({native!r}) found nothing"
     )
 
     monkeypatch.setattr(runprov.show, "_posix", lambda p: pathlib.PureWindowsPath(p).as_posix())
@@ -15976,7 +15991,24 @@ def test_prune_other_hosts_does_not_reach_a_LOCAL_marker_whose_probe_could_not_a
     a run that may be alive right here, on the strength of a flag about somewhere else.
 
     THE POSITIVE COMPANION IS IN THE SAME TEST: the other-host marker beside it must still
-    go, or this passes on a `plan` that has simply stopped removing anything."""
+    go, or this passes on a `plan` that has simply stopped removing anything.
+
+    `sys.platform` IS SET, for the reason `test_a_pid_owned_by_someone_else_is_running_not_
+    gone` sets it: `_still_running` branches to `_still_running_windows` on Windows and never
+    consults `os.kill` at all, so the patch below applied to nothing there, the live pid
+    answered for real, and this test failed on its own PREMISE — an unanswerable probe came
+    back RUNNING — for a reason with nothing to do with its subject. Measured on the Windows
+    leg of run 33573724906: `assert 'RUNNING' == '?'`. Setting the platform makes the POSIX
+    branch run and the patched `os.kill` answer on every machine, which is the emulation
+    `sinks.py`'s lock tests use in the other direction. The subject is `prune`'s reading of
+    `?`, not which system call produced it: the Windows spelling of an unanswerable probe
+    (`OpenProcess` failing for a reason that is not "no such process") reaches `_liveness`
+    through the same `None` and has its own test.
+
+    THE OTHER-HOST HALF DOES NOT DEPEND ON EITHER PATCH. `far` names a host that is not this
+    one, so `_liveness` returns `?` without probing anything at all — which is the point:
+    two markers, one state, and only one of them is the user's to assert about."""
+    monkeypatch.setattr(sys, "platform", "linux")
     d = tmp_path / ".incomplete"
     mute = _marker(d, "mute", pid=os.getpid())
     far = _marker(d, "far", pid=1, host="a-compute-node")
