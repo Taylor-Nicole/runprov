@@ -80,6 +80,7 @@ from __future__ import annotations
 # name, and an `__all__` cannot hold it.
 __all__: list[str] = []
 
+import hashlib
 import json
 import os
 import pathlib
@@ -87,7 +88,15 @@ import re
 import typing
 
 from ._atomic import TEMP_SUFFIX
-from .hashing import PIN_ANCHOR, PIN_DIGEST_CHARS, PIN_SIDECAR_SUFFIX, describe, pin_digest
+from .hashing import (
+    PIN_ANCHOR,
+    PIN_BODY_FIELD,
+    PIN_BODY_PENDING,
+    PIN_DIGEST_CHARS,
+    PIN_SIDECAR_SUFFIX,
+    describe,
+    pin_digest,
+)
 
 # Pins are written at the top of an artifact (`open_output` writes the header first), so
 # reading the whole file to find one would mean reading every byte of a 50 GB BAM to learn
@@ -173,6 +182,12 @@ OK = "OK"
 STALE = "STALE"
 GONE = "GONE"
 UNVERIFIABLE = "UNVERIFIABLE"
+#: THE ARTIFACT ITSELF HAS CHANGED since it was written — not its inputs. Its own state
+#: because it is its own repair: a STALE artifact is REBUILT from inputs that moved, and an
+#: ALTERED one was edited, which is a question about who edited it and why. Reporting the
+#: second as the first would send somebody to re-run a pipeline over an artifact that
+#: somebody had hand-corrected, and destroy the correction.
+ALTERED = "ALTERED"
 NO_PIN = "NO PIN"
 
 #: Every state this checker can report. `show` imports the four it shares — see the note on
@@ -355,6 +370,17 @@ def read_pins(path: pathlib.Path) -> list[dict[str, typing.Any]]:
             # the whole data section looking for entries it has already found.
             if pin["declared"] is not None and len(pin["entries"]) >= pin["declared"]:
                 break
+        # WHERE THE BODY BEGINS, IN BYTES. `consumed` is a LINE index and the body digest
+        # is over bytes, so the two are not interchangeable: one multi-byte character in a
+        # script name would shift every offset derived by counting lines. Summing the
+        # encoded lengths of the lines the block claimed is the only conversion that holds,
+        # and `splitlines()` has dropped the terminators, so each one is added back.
+        #
+        # `\n` RATHER THAN THE ORIGINAL TERMINATOR: `open_output` writes with `newline=""`,
+        # so nothing was translated and every line it wrote ends in exactly one `\n`. A file
+        # with CRLF endings was not written by this package and carries no `body` field for
+        # this offset to be used with.
+        pin["body_at"] = sum(len(ln.encode("utf-8")) + 1 for ln in lines[:consumed])
         blocks.append(pin)
     return blocks
 
@@ -431,6 +457,38 @@ def check_input(
     return {**out, "status": OK if got_or_exc == want else STALE, "found": got_or_exc}
 
 
+def _body_verdict(path: pathlib.Path, first: dict[str, typing.Any]) -> bool | None:
+    """Does the artifact's body still hash to what its own pin says? `None` if it cannot say.
+
+    THREE ANSWERS, NOT TWO, and the third is the honest one for most files on disk: a pin
+    written before this field existed carries no `body`, and an artifact somebody produced
+    another way never did. Those are not findings — reporting them as altered would condemn
+    every artifact this package wrote before 2026-09-04.
+
+    STREAMED FROM THE OFFSET the pin block ended at, so a 40 GB artifact costs a read and not
+    a copy. `sha256` of the raw bytes, matching what `_PinnedWriter` hashed as it wrote them.
+    """
+    want = first.get("fields", {}).get(PIN_BODY_FIELD)
+    if not want or want == PIN_BODY_PENDING:
+        # A PENDING PLACEHOLDER IS NOT A FINDING EITHER. It means the run that opened this
+        # artifact never published it -- the temporary file was renamed by something other
+        # than `close()`, or an older version wrote it -- and "I cannot tell" is the true
+        # answer, not "somebody edited this".
+        return None
+    at = first.get("body_at")
+    if not isinstance(at, int):
+        return None  # pragma: no cover - `read_pins` always sets it
+    h = hashlib.sha256()
+    try:
+        with path.open("rb") as fh:
+            fh.seek(at)
+            while chunk := fh.read(1 << 20):
+                h.update(chunk)
+    except OSError:  # guards-ok: unreadable is "cannot tell", never "altered"
+        return None
+    return bool(h.hexdigest()[:PIN_DIGEST_CHARS] == want)
+
+
 def verify_artifact(
     path: pathlib.Path,
     root: pathlib.Path,
@@ -482,7 +540,16 @@ def verify_artifact(
 
     statuses = {c["status"] for c in checked}
     declared_none = all(p["declared"] == 0 for p in blocks)
-    if statuses & set(FAILING) or truncated:
+    # THE ARTIFACT ITSELF, BEFORE ITS INPUTS, because it is the stronger finding and the two
+    # need different repairs. `verify` has always answered "do the inputs this file names
+    # still hash the same" and said, in its own output, that OK "does NOT mean the artifact
+    # itself is unedited". This is that gap: a file whose body no longer matches the digest
+    # its own pin carries was edited after it was written, and rebuilding it from unchanged
+    # inputs would silently destroy whatever the edit was.
+    body = _body_verdict(path, blocks[0])
+    if body is False:
+        status = ALTERED
+    elif statuses & set(FAILING) or truncated:
         status = STALE if (statuses & {STALE} or truncated) else GONE
     elif statuses == {OK} or (not checked and declared_none):
         # `declared == 0` is the NONE REGISTERED pin: the run stated it read nothing, which
@@ -501,6 +568,8 @@ def verify_artifact(
         "pins": len(blocks),
         "scripts": scripts,
     }
+    if body is not None:
+        out["body_checked"] = True
     if truncated:
         out["pin_truncated"] = truncated
     # A PIN THAT SAYS IT MAY NOT BE THE WHOLE STORY. Under `Project(allow_late_inputs=True)`
@@ -615,6 +684,13 @@ def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str
         # collapsing them printed "1 STALE" over an artifact whose line said GONE.
         "ok": sum(1 for r in pinned if r["status"] == OK),
         "stale": sum(1 for r in pinned if r["status"] == STALE),
+        # ITS OWN COUNT, not folded into `stale`. A stale artifact is rebuilt; an altered
+        # one was edited by somebody, and rebuilding it would destroy the edit.
+        "altered": sum(1 for r in pinned if r["status"] == ALTERED),
+        # HOW MANY COULD BE ASKED AT ALL, because "0 altered" over artifacts that carry
+        # no body digest says nothing, and looks exactly like "nothing was tampered
+        # with". Every artifact written before this field existed counts here.
+        "body_checked": sum(1 for r in pinned if r.get("body_checked")),
         "gone": sum(1 for r in pinned if r["status"] == GONE),
         "unverifiable": sum(1 for r in pinned if r["status"] == UNVERIFIABLE),
         # COUNTED ALONGSIDE THE STATES, not folded into one, because it is not a state: an

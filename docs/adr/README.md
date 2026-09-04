@@ -32,3 +32,4 @@ A *Proposed* ADR is the right place to think out loud. It is not a promise.
 | [0003](0003-a-module-all-ratifies-it-does-not-decide.md) | A module's `__all__` ratifies the package promise, never makes one | Accepted |
 | [0004](0004-a-pin-states-what-it-covers.md) | An input cannot be registered after the pin, and a pin states what it covers | Accepted |
 | [0005](0005-a-record-is-written-whole-or-not-at-all.md) | A record is written whole or not at all | Accepted |
+| [0006](0006-an-artifact-answers-for-itself.md) | An artifact answers for itself | Accepted |

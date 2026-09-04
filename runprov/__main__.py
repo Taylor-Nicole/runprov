@@ -1347,6 +1347,7 @@ def _verify(args: argparse.Namespace) -> int:
         )
         + f": {report['ok']} OK, {report['stale']} STALE, {report['gone']} GONE, "
         f"{report['unverifiable']} UNVERIFIABLE"
+        + (f", {report['altered']} ALTERED" if report.get("altered") else "")
         + (
             f"; {report['partial_pins']} pin(s) declare they may understate the run"
             if report.get("partial_pins")
@@ -1373,11 +1374,23 @@ def _verify(args: argparse.Namespace) -> int:
     # makes the claim.
     if report["ok"]:
         print(
-            "# OK = the inputs each artifact pins still hash the same. It does NOT mean the "
-            "artifact itself is unedited — for that, `runprov show --stale --rehash`.",
+            "# OK = the inputs each artifact pins still hash the same, AND — for artifacts "
+            "carrying a `body` digest — that the artifact itself has not been edited since "
+            f"it was written ({report.get('body_checked', 0)} of {pinned} could be asked; "
+            "one written before that field existed carries no digest to check).",
             file=sys.stderr,
         )
-    if report["stale"] or report["gone"]:
+    # ALTERED IS SAID SEPARATELY AND LOUDLY. It is not a result that went out of date; it
+    # is a file somebody changed after it was written, and the person reading this needs to
+    # know which of the two they are looking at before they rebuild anything.
+    if report.get("altered"):
+        print(
+            f"# {report['altered']} artifact(s) ALTERED: the body no longer hashes to what "
+            f"the artifact's own pin says it was written as. That is an edit after the fact, "
+            f"not a stale input — rebuilding would destroy whatever was changed.",
+            file=sys.stderr,
+        )
+    if report["stale"] or report["gone"] or report.get("altered"):
         return 1
     if not report["ok"]:
         # THE OTHER WAY TO CHECK NOTHING. The guard above catches "no artifact carries a

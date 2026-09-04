@@ -536,6 +536,39 @@ because these were the last names to settle and the reasoning belongs with the r
   mechanism, the last two are defaults `Project` already supplies. All five still exist on
   their own modules (`runprov.run.PIN_UNSAFE`, and so on); they are no longer promises.
 
+### An artifact answers for itself
+
+- **`verify` can now say "this file has not been edited since it was written."** It could
+  only ever say the artifact's INPUTS were unchanged, and it printed that caveat every time
+  it passed. A test existed whose premise was the gap — it appended a fabricated row, asserted
+  a passing exit code, and called that *the trap*. **That test now asserts the opposite:
+  same fixture, same tampering, `ALTERED` and exit 1.**
+- **`ALTERED` is its own state, not a flavour of `STALE`,** because they are opposite
+  repairs: a stale artifact is rebuilt, an altered one was edited by somebody and rebuilding
+  it destroys the edit.
+- **The artifact is published once, complete.** The body streams into a temporary file and is
+  hashed as it goes; the pin's `body` field is patched there and one rename publishes it, so
+  the file never exists carrying a digest that is wrong. ADR-0005's rule applied to the
+  artifact. Measured against the obvious alternative — writing the body then copying it under
+  a finished header — that would have cost **1.7×** on a 210 MB artifact (0.76 s against
+  0.45 s) and bought nothing.
+- **An artifact with no `body` digest is not a finding.** Everything written before this, and
+  everything produced any other way, reports "cannot tell" — and the summary says **how many
+  could be asked at all**, because `0 ALTERED` over files carrying no digest says nothing and
+  reads exactly like `nothing was tampered with`.
+- **Cost, stated:** an artifact does not exist at its final path until its handle is closed.
+  A script that writes and re-reads an artifact *inside* the same `with` block will not find
+  it; after the block, nothing changes. `_seal` publishes anything a caller left open, so
+  forgetting `close()` costs the pin's accuracy at worst, never the file. **ADR-0006.**
+
+### A gate other projects can adopt
+
+- **`.pre-commit-hooks.yaml` and `action.yml`.** The exit-code contract has been right since
+  the CLI gained it and unreachable without somebody remembering to type the command. Two
+  pre-commit hooks and a one-line GitHub Action make a stale or altered result fail a build.
+  Both pass the exit code through rather than collapsing it: 1 is a finding about the data,
+  2 is "could not check", and they need different repairs.
+
 ### A record is written whole or not at all
 
 - **Every provenance write is atomic.** The sidecar, its YAML twin, the in-flight marker, the
