@@ -150,10 +150,14 @@ it is most of the answer to "why did this run differ".
 ## What it is *not*, and say this before someone else does
 
 * **It is not novel, and the pitch should not claim it is.** `sumatra`, `recipy`,
-  `provenance` and `dvc` all address versions of this. The honest positioning: *the smallest
+  `noWorkflow` and `dvc` all address versions of this. The honest positioning: *the smallest
   possible one, with each design choice traceable to a specific failure in a real project.*
   Most of the alternatives ask you to run a daemon, adopt a workflow engine, or restructure
   your pipeline. This one asks you to change `open(p)` to `open(run.input(p))`.
+
+  **And "the provenance travels inside the artifact" is not novel either.** That was the
+  claim this file was building toward, and a literature check on 2026-09-04 narrowed it — see
+  *Related work, checked* below. Say the narrowed version or a reviewer will say it for you.
 
   Zero runtime dependencies, and the quickstart uses two of the 18 exported names. On size,
   the honest figure is where the statements sit rather than the total: **about 1,500 record**
@@ -169,6 +173,79 @@ it is most of the answer to "why did this run differ".
   *mattered*, and it cannot see a rule reimplemented as control flow. The half that makes the
   record trustworthy is a separate checker that fails the build on an unregistered read.
 * **It does not version your data.** That is DVC's job, and they compose fine.
+
+## Related work, checked
+
+**Checked on 2026-09-04 against current sources, not from memory.** Every row is dated
+because a maintenance status goes stale and an unverified comparison is worse than none — a
+reviewer who finds one wrong stops trusting the rest.
+
+### The tools that do what this does
+
+| | latest release | where the record lives |
+|---|---|---|
+| **Sumatra** | **0.8.1, 2025-07-14**, Python 3.9–3.13 | a project database (`.smt/`) |
+| **noWorkflow** | **2.1.3, 2024-12-11**, Python ≥3.8 | a SQLite database, from AST instrumentation + tracing |
+| **recipy** | 0.3.0, **2016-09-13** | MongoDB, by monkeypatching library readers |
+| **DVC** | actively developed | git-backed; versions DATA, does not record what a script read |
+
+**Two corrections this check produced, and both were mine to make.**
+
+**Sumatra is maintained.** I had assumed it was abandoned — the documentation a search
+surfaces first is from 2015 — and it released 0.8.1 in July 2025 supporting Python 3.13. So
+*"why not just use Sumatra?"* is a live question and cannot be answered on maintenance
+grounds. The answer is where the record lives, and that it wants to launch your runs.
+
+**noWorkflow is maintained too** (2.1.3, December 2024) and it captures far more than this
+does: definition, deployment and execution provenance, by instrumenting the AST. That is the
+real trade — it can tell you which value came from which, and it **changes the program it
+observes**. This package has a test section headed *"provenance must not change the program
+it observes"*, and for a record that may end up in a clinical result that is the side to be
+on. Say the trade; do not claim the coverage.
+
+**recipy has not been released in ten years.** It captures observed reads, like `capture`
+does, and only through the libraries somebody remembered to patch — an unpatched reader is
+invisible, silently. The audit hook sees every `open` because the interpreter emits it.
+
+### The claim that had to be narrowed
+
+**In-band provenance in a scientific artifact is standard, and predates this by about
+fifteen years.** Verified in the specifications:
+
+* **SAM/BAM `@PG`** records the program name (`PN`), version (`VN`) and **exact command line
+  (`CL`)**, chained through `PP` so the header carries the whole sequence of programs that
+  touched the file.
+* **SAM/BAM `@SQ M5`** carries the **MD5 digest of the reference sequence**, in the header.
+  So a content digest of an input, written into the artifact, is not new.
+* **VCF `##source` and `##reference`** name the producing program and the reference used.
+
+So *"the provenance travels with the file"* is a claim a bioinformatician will meet with
+*"yes, `@PG` does that"* — and they will be right.
+
+**What those do not do, and this is the defensible form:**
+
+1. They record **what ran**, not **what it read**. `@PG` has no digest of the inputs; `@SQ M5`
+   digests the reference and nothing else. So a `@PG` chain cannot answer *"is this result
+   still valid?"* — it cannot be re-derived and compared.
+2. They are **per format**. There is no `@PG` for a TSV, a CSV, a parquet, a figure or a
+   JSON. The pin here is format-agnostic, and where a format cannot hold a comment the
+   package says so and writes a sidecar rather than pretending.
+3. They have **no checker**. `runprov verify` re-derives every pinned digest and reports
+   `STALE`, `GONE` or `ALTERED` from the artifact's own bytes, with no history, no database
+   and no network.
+
+**The sentence that survives all of it:** *a format-agnostic pin that carries the content
+digest of every input, plus a checker that re-derives them from the artifact alone.* That is
+narrower than "provenance in the file" and it is true.
+
+### What was NOT checked
+
+RO-Crate and W3C PROV are emitted (ADR-0009) and were **not** compared as alternatives —
+they are formats, not tools, and this package produces them rather than competing with them.
+ReproZip, Sacred, MLflow and datalad were named in review and not investigated; they address
+adjacent problems (environment packing, experiment tracking, dataset versioning) and if one
+is going into a paper it needs its own check. **Do not cite a tool this section does not
+list.**
 
 ## Where it sits relative to Snakemake, Nextflow, Prefect and Dagster
 
