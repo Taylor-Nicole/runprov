@@ -56,11 +56,24 @@ authors:
   - family-names: Thompson
     given-names: Taylor
     orcid: "https://orcid.org/0009-0004-0091-0319"
-    affiliation: "Plateforme GenoBioMICS, Hôpital Henri-Mondor, AP-HP · INSERM Unité U955, équipe Pawlotsky · Créteil, France"
+    affiliation: "Plateforme GenoBioMICS — DMU Biologie-Pathologie · Hôpital Henri-Mondor, AP-HP — Créteil · INSERM Unité U955, équipe Pawlotsky · Créteil, France"
   - family-names: Rodriguez
     given-names: Christophe
     orcid: "https://orcid.org/0000-0002-9817-5006"
-    affiliation: "Plateforme GenoBioMICS, Hôpital Henri-Mondor, AP-HP · INSERM Unité U955, équipe Pawlotsky · Créteil, France"
+    affiliation: "Plateforme GenoBioMICS — DMU Biologie-Pathologie · Hôpital Henri-Mondor, AP-HP — Créteil · INSERM Unité U955, équipe Pawlotsky · Créteil, France"
+  # THE AFFILIATION IS ONE STRING HERE AND THREE LINES IN THE DRCI LETTER, and that is the
+  # format's doing, not a disagreement: CFF's `affiliation` is a single scalar and a citation
+  # renderer shows it on one line, while a signature block has room to break it. Same three
+  # parts, same order, joined by the separator this file already uses. If one is edited, edit
+  # the other — `runprov_paper/COURRIER-DRCI-droits.md`, the signature.
+  #
+  # AND IT IS NOT THE COPYRIGHT LINE. The source headers name AP-HP, Hôpital Henri-Mondor and
+  # the author, because that line says who holds the ECONOMIC RIGHTS. Neither the DMU nor
+  # INSERM belongs there on this evidence: the DMU is an internal component of the AP-HP, and
+  # whether INSERM is a co-holder is the open question the letter exists to ask. Affiliation
+  # says where the authors work; copyright says who owns the result. They are allowed to
+  # differ, and here they must.
+  #
   # AN ENTITY AUTHOR, which CFF supports alongside people — a `name` instead of
   # `family-names`/`given-names`. This is how the platform gets credited in a citation
   # WITHOUT appearing in the copyright line, which names who holds the economic rights and is
