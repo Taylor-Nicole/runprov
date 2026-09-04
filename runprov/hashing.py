@@ -552,6 +552,25 @@ PIN_SIDECAR_SUFFIX = ".prov.txt"
 #: whatever the format needs — is whatever precedes it on that line.
 PIN_ANCHOR = "provenance — this artifact and what produced it"
 
+#: The pin field that answers "has this artifact itself been altered since it was written?",
+#: and the placeholder it carries while the artifact is still being written.
+#:
+#: A DIGEST OF THE BODY CANNOT BE KNOWN WHEN THE PIN IS WRITTEN, because the pin goes into
+#: the artifact's first bytes and the body comes after it. `open_output` therefore writes
+#: this placeholder, streams the body into a TEMPORARY file, hashes it as it goes, patches
+#: these sixteen characters in the temporary file, and only then renames it into place. The
+#: artifact never exists in a state where the field is wrong: it appears once, complete —
+#: which is ADR-0005's rule applied to the artifact rather than to the record.
+#:
+#: RAW SHA-256 OF THE BODY'S BYTES, deliberately NOT `content_digest`. The two answer
+#: different questions and the difference is the point: `content_digest` asks "is this the
+#: same DATA?" and ignores a line-ending change, which is right for deciding whether an
+#: input moved. This asks "has anyone touched this FILE?", where a line-ending change is a
+#: touch. A tool that reported an edited results file as unaltered because only its newlines
+#: moved would be answering the wrong question confidently.
+PIN_BODY_FIELD = "body"
+PIN_BODY_PENDING = "0" * PIN_DIGEST_CHARS
+
 
 def pin_digest(entry: dict[str, typing.Any]) -> str:
     """The digest a PIN carries for one described file — exactly as `header()` renders it.

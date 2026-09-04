@@ -64,11 +64,14 @@ import typing
 import uuid
 import weakref
 
-from ._atomic import atomic_write_text
+from ._atomic import TEMP_SUFFIX, _sync_dir, atomic_write_text
 from ._report import diagnostic, summary
 from .environment import archive_lockfiles, lockfiles, manager, write_snapshot
 from .hashing import (
     PIN_ANCHOR,
+    PIN_BODY_FIELD,
+    PIN_BODY_PENDING,
+    PIN_DIGEST_CHARS,
     PIN_SIDECAR_SUFFIX,
     _posix,
     describe,
@@ -625,6 +628,103 @@ def _warn_implicit_project(project: Project) -> None:
 _RESOLVED_UNDER_ROOT: dict[tuple[str, str], tuple[pathlib.Path, str] | None] = {}
 
 
+class _PinnedWriter:
+    """The handle `open_output` hands back: it writes the body, then publishes the artifact.
+
+    WHY THIS EXISTS. The pin goes into the artifact's FIRST bytes, so at the moment it is
+    written the body does not exist and its digest cannot be known. Without this, `verify`
+    could say "the inputs this artifact names still hash the same" and never "this artifact
+    has not itself been touched" — and it said so, in its own output, every time it printed
+    OK. An edited results file passed.
+
+    HOW. The body streams into a temporary file beside the destination, hashed as it goes,
+    with the pin's `body` field standing at its placeholder. On close the sixteen characters
+    are patched IN THE TEMPORARY FILE and `os.replace` publishes it. So the artifact is
+    created once, already correct, and never exists in a state where its own pin is wrong:
+    ADR-0005's rule, applied to the artifact instead of to the record.
+
+    Measured, because the obvious implementation is worse: writing the body to a temporary
+    file and then COPYING it under a finished header costs 0.76 s against 0.45 s for a 210 MB
+    artifact — 1.7x — and buys nothing, since the patch is sixteen bytes either way.
+
+    NOT A SUBCLASS OF THE FILE OBJECT. It delegates by `__getattr__`, so a caller who reaches
+    for something this class does not implement gets the real handle's answer rather than an
+    AttributeError — but `write` and `writelines` are defined here, because those are the two
+    that must also feed the hash.
+    """
+
+    def __init__(self, run: Run, dest: pathlib.Path, comment: str) -> None:
+        head = run.header(comment, body_digest=PIN_BODY_PENDING)
+        marker = f"{comment}  {PIN_BODY_FIELD}       : "
+        # EXACTLY ONE, asserted rather than assumed: the offset below is where sixteen bytes
+        # get overwritten, and finding the wrong occurrence would corrupt the artifact at a
+        # place no test would look.
+        if head.count(marker + PIN_BODY_PENDING) != 1:
+            raise RuntimeError(  # pragma: no cover - unreachable while `header` builds it
+                f"the pin's {PIN_BODY_FIELD} field is not unique in the header; refusing to "
+                f"patch a byte offset that may not be the right one"
+            )
+        cut = head.index(marker + PIN_BODY_PENDING) + len(marker)
+        self._at = len(head[:cut].encode("utf-8"))
+        self._dest = dest
+        self._tmp = dest.with_name(f".{dest.name}.{uuid.uuid4().hex[:12]}{TEMP_SUFFIX}")
+        self._hash = hashlib.sha256()
+        self._closed = False
+        self._run = run
+        self._fh = open(self._tmp, "w", encoding="utf-8", newline="")
+        try:
+            self._fh.write(head)
+        except BaseException:
+            self._fh.close()
+            self._tmp.unlink(missing_ok=True)
+            raise
+
+    def write(self, text: str) -> int:
+        # `newline=""` ON BOTH SIDES is what makes this hash reproducible: nothing is
+        # translated on the way out, so the bytes hashed here are the bytes on disk, and a
+        # reader can recompute them without knowing which platform wrote the file.
+        self._hash.update(text.encode("utf-8"))
+        return self._fh.write(text)
+
+    def writelines(self, lines: typing.Iterable[str]) -> None:
+        for line in lines:
+            self.write(line)
+
+    def __getattr__(self, name: str) -> typing.Any:  # noqa: ANN401 - it is a file's API
+        return getattr(self._fh, name)
+
+    def __enter__(self) -> _PinnedWriter:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Patch the digest into the temporary file, then publish it. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        with contextlib.suppress(ValueError):
+            self._run._open_writers.remove(self)
+        try:
+            self._fh.seek(self._at)
+            self._fh.write(self._hash.hexdigest()[:PIN_DIGEST_CHARS])
+            self._fh.flush()
+            os.fsync(self._fh.fileno())
+            self._fh.close()
+            os.replace(self._tmp, self._dest)
+        except BaseException:
+            # THE ARTIFACT IS NEVER LEFT HALF-PUBLISHED. Whatever went wrong, the temporary
+            # file goes and the destination is untouched — which for a first write means no
+            # file at all, and that is the honest outcome: a run that could not finish
+            # writing its result did not produce one.
+            with contextlib.suppress(Exception):
+                self._fh.close()
+            self._tmp.unlink(missing_ok=True)
+            raise
+        _sync_dir(self._dest.parent)
+
+
 class Run:
     """Collects provenance for a single run.
 
@@ -806,6 +906,10 @@ class Run:
             "outputs": [],
         }
         self._pending: list[pathlib.Path] = []
+        # OPEN PINNED WRITERS. A caller who forgets to close one would otherwise lose the
+        # artifact entirely, because it lives in a temporary file until close publishes
+        # it. `_seal` closes what is still open, so forgetting costs nothing.
+        self._open_writers: list[_PinnedWriter] = []
         self._extra_code: dict[str, str] = {}
         self.provenance_path = self._sidecar_name(provenance) if provenance else None
         # ARMED TO RECORD, and not yet recording. Registered only when `provenance=` was
@@ -1559,7 +1663,22 @@ class Run:
         IDEMPOTENT, because `_finish` seals and then `write()` may seal again on its way
         past: `failed` set by `__exit__` survives, `running` left by a checkpoint does not,
         and a finish time already stamped is not moved.
+
+        IT ALSO PUBLISHES ANY PINNED ARTIFACT STILL OPEN, and that has to happen HERE rather
+        than be left to the caller: a `_PinnedWriter` holds its body in a temporary file
+        until `close()` renames it, so a caller who forgot to close one would find no
+        artifact at all rather than a partial one. Forgetting must cost the pin's accuracy
+        at worst, never the file. A failure to publish is reported and swallowed, for the
+        rule this module follows everywhere: describing a run may not be what ends it.
         """
+        for writer in list(self._open_writers):
+            try:
+                writer.close()
+            except OSError as exc:  # guards-ok: provenance must not be what loses the work
+                diagnostic(
+                    f"  WARNING: {self.record['script']}: could not publish "
+                    f"{writer._dest.name} — {exc}"
+                )
         if self.record.get("status") == RUNNING_STATUS:
             del self.record["status"]
         self.record.setdefault("status", "ok")
@@ -2029,14 +2148,12 @@ class Run:
         #      different `sha256` -- for a package whose subject is comparing records across
         #      machines. `content_digest` was already immune (it ignores CRLF vs LF, and says
         #      so); `sha256`, which is recorded beside it, was not.
-        fh = open(p, "w", encoding="utf-8", newline="")
-        try:
-            if inline:
-                fh.write(self.header(comment))
-        except Exception:  # guards-ok: an artifact half-written by this method would be
-            # worse than one this method refused to open -- close before re-raising
-            fh.close()
-            raise
+        if inline:
+            # THE ARTIFACT APPEARS ONCE, COMPLETE — see `_PinnedWriter`, and ADR-0006.
+            fh: typing.Any = _PinnedWriter(self, p, comment)
+            self._open_writers.append(fh)
+        else:
+            fh = open(p, "w", encoding="utf-8", newline="")
         if not inline:
             # TEXT, but with nowhere to put a comment. The artifact is written untouched
             # and the pin goes beside it, so "this artifact can say what it was made from"
@@ -2064,7 +2181,11 @@ class Run:
                     else ""
                 )
             )
-        return fh
+        # `typing.IO[str]` IS THE PROMISE AND IT STILL HOLDS. `_PinnedWriter` is a file-like
+        # that delegates everything it does not define, so a caller cannot tell the
+        # difference through the documented API — which is the whole reason it delegates
+        # rather than subclasses. The cast says that in the one place a checker asks.
+        return typing.cast("typing.IO[str]", fh)
 
     def pin_sidecar(self, path: str | pathlib.Path, comment: str = "# ") -> pathlib.Path:
         """Write the pin BESIDE an artifact instead of inside it, and register it.
@@ -2397,7 +2518,7 @@ class Run:
         self.record.setdefault("modules", []).append(rec)
 
     # ---------------------------------------------------------------- the pin
-    def header(self, comment: str = "# ") -> str:
+    def header(self, comment: str = "# ", *, body_digest: str | None = None) -> str:
         """The PIN, as a comment block to embed in the artifact ITSELF.
 
         A sidecar provenance file is overwritten by the next run, so a committed artifact
@@ -2461,6 +2582,11 @@ class Run:
         # being rendered. So it discloses the POSSIBILITY, which is a durable fact about the
         # project, and `inputs_not_in_pin` in the record says whether it came to pass. Absent
         # entirely by default, so no artifact from an ordinary project changes by one byte.
+        if body_digest is not None:
+            # BEFORE THE INPUTS BLOCK, and that is not cosmetic: `read_pins` stops reading
+            # fields as soon as it has the declared number of entries, so a field written
+            # after them is a field no reader ever sees.
+            lines.append(f"{c}  {PIN_BODY_FIELD}       : {body_digest}")
         if self.project.allow_late_inputs:
             lines.append(
                 f"{c}  pin_covers : inputs registered BEFORE this pin was written; this "

@@ -4090,11 +4090,22 @@ def test_verify_says_what_OK_means_every_time_it_says_OK(tmp_path, monkeypatch, 
     with open(tmp_path / "out.tsv", "a", encoding="utf-8") as fh:
         fh.write("FABRICATED\n")  # the artifact is tampered; the inputs are not
 
-    assert cli.main(["verify", str(tmp_path / "out.tsv"), "--root", str(tmp_path)]) == 0
+    # THE TRAP IS CLOSED, AND THIS TEST IS WHERE THAT IS RECORDED. It used to assert the
+    # defect — "the premise: it still reports OK, which is what makes this a trap" — because
+    # `verify` read only the inputs, and the caveat it printed was an apology for a gap.
+    # Since ADR-0006 the pin carries a digest of the artifact's own body, so a fabricated row
+    # is exactly what `verify` now catches, from the bytes alone, with no history and no
+    # sidecar. The fixture is unchanged on purpose: same artifact, same tampering, opposite
+    # verdict.
+    assert cli.main(["verify", str(tmp_path / "out.tsv"), "--root", str(tmp_path)]) == 1
     err = capsys.readouterr().err
-    assert "OK" in err, "the premise: it still reports OK, which is what makes this a trap"
-    assert "does NOT mean the artifact itself is unedited" in err
-    assert "--rehash" in err, "and it must name the command that WOULD catch this"
+    assert "ALTERED" in err, "an appended row is an edit after the fact, and it is named"
+    assert "rebuilding would destroy" in err, (
+        "and it must say why ALTERED is not STALE: the repairs are opposite"
+    )
+    assert "does NOT mean the artifact itself is unedited" not in err, (
+        "the apology for the gap must go when the gap does"
+    )
 
 
 def test_an_unregistered_read_is_noticed_and_recorded(tmp_path, monkeypatch, capsys):
@@ -6657,11 +6668,18 @@ def test_open_output_closes_the_handle_if_the_pin_cannot_be_written(tmp_path, mo
         with pytest.raises(RuntimeError, match="no pin"):
             run.open_output(out)
 
-    assert out.read_text(encoding="utf-8") == "", "nothing may reach a half-pinned artifact"
-    # THE ASSERTION THAT MAKES IT FALSIFIABLE. "the file is empty" is also true when the
-    # handle leaked -- the write simply never happened. Mutation-tested: dropping the
-    # `fh.close()` leaves the emptiness check green and this one red.
-    assert opened and all(fh.closed for fh in opened), "the handle must not leak"
+    # STRONGER SINCE ADR-0006: the pin is rendered BEFORE anything is opened, so a pin that
+    # cannot be rendered opens no file at all. The artifact does not exist, rather than
+    # existing empty — and the destination is not even touched.
+    assert not out.exists(), "a pin that cannot be rendered must not create the artifact"
+    assert all(fh.closed for fh in opened), "the handle must not leak"
+    # AND NO DEBRIS. `_PinnedWriter` writes the body to a temporary file beside the
+    # destination; a failure that left one behind would put a file `verify` has to be taught
+    # to ignore into a results directory. "the file is empty" was falsifiable before because
+    # a leaked handle made it green; this is the same assertion for the new mechanism.
+    assert [
+        q.name for q in tmp_path.iterdir() if q.name.endswith(runprov._atomic.TEMP_SUFFIX)
+    ] == []
 
 
 # ================================================= C8 + L1: a unique address, and lineage
@@ -18534,7 +18552,10 @@ def test_open_output_writes_exactly_the_bytes_it_is_given(tmp_path, monkeypatch)
     real = builtins.open
 
     def watched(file, *a, **k):
-        if str(file).endswith("out.tsv"):
+        # THE TEMPORARY FILE, not the destination. Since ADR-0006 the body is written into
+        # `.out.tsv.<hex>.runprov-tmp` and renamed, so matching on the final name would
+        # watch a file this call never opens — a spy that sees nothing and asserts nothing.
+        if "out.tsv" in str(file):
             seen.update(k)
         return real(file, *a, **k)
 
@@ -18853,3 +18874,251 @@ def test_the_action_only_names_subcommands_that_exist_and_options_it_handles():
         f"{sorted(branched)} — a value in one and not the other is a build that fails for a "
         f"reason nobody wrote down"
     )
+
+
+# ------------------------------------- the artifact answers for itself (ADR-0006)
+
+
+def _pinned(tmp_path, body="sample\tvalue\na\t9\n"):
+    """A real pinned artifact, written the documented way."""
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write(body)
+    return tmp_path / "out.tsv"
+
+
+def test_an_edited_artifact_is_ALTERED_and_a_stale_one_is_not(tmp_path, monkeypatch):
+    """The two findings are different repairs and must not collapse into one another.
+
+    A STALE artifact is REBUILT — its inputs moved. An ALTERED one was edited by somebody
+    after it was written, and rebuilding it is exactly the wrong move: it destroys whatever
+    the edit was. Reporting either as the other sends a person to do the opposite of what
+    the situation needs, which is why they are separate states and not one."""
+    monkeypatch.chdir(tmp_path)
+    art = _pinned(tmp_path)
+    assert runprov.verify.verify_artifact(art, tmp_path)["status"] == "OK"
+
+    art.write_text(art.read_text(encoding="utf-8").replace("a\t9", "a\t999"), encoding="utf-8")
+    assert runprov.verify.verify_artifact(art, tmp_path)["status"] == runprov.verify.ALTERED
+
+    # THE OTHER DIRECTION, so the test cannot pass by calling everything ALTERED: restore the
+    # artifact byte for byte and move the INPUT instead. Same file, opposite verdict.
+    art.write_text(art.read_text(encoding="utf-8").replace("a\t999", "a\t9"), encoding="utf-8")
+    (tmp_path / "in.tsv").write_text("MOVED\n", encoding="utf-8")
+    assert runprov.verify.verify_artifact(art, tmp_path)["status"] == "STALE"
+
+
+def test_the_body_digest_covers_the_body_and_not_the_pin(tmp_path, monkeypatch):
+    """The digest is of everything AFTER the pin block, and it has to be: a digest that
+    covered the pin could never be written into it.
+
+    So an artifact whose pin block is edited is not reported ALTERED by this check — that is
+    a real limit and it is asserted rather than left to be discovered. What catches THAT is
+    the pin no longer parsing, or its digests no longer matching the inputs."""
+    monkeypatch.chdir(tmp_path)
+    art = _pinned(tmp_path)
+    raw = art.read_bytes()
+    pin = runprov.verify.read_pins(art)[0]
+    assert raw[pin["body_at"] :] == b"sample\tvalue\na\t9\n", "the offset is the body's start"
+    assert hashlib.sha256(raw[pin["body_at"] :]).hexdigest()[:16] == pin["fields"]["body"]
+
+
+def test_an_artifact_with_no_body_digest_is_not_reported_as_altered(tmp_path, monkeypatch):
+    """Every artifact this package wrote before ADR-0006 carries no `body` field, and so does
+    every artifact anybody produced another way. "I cannot tell" is the honest answer for
+    them — reporting them ALTERED would condemn the entire existing corpus on the day this
+    shipped, which is the loudest possible false positive."""
+    monkeypatch.chdir(tmp_path)
+    art = _pinned(tmp_path)
+    stripped = "\n".join(
+        ln for ln in art.read_text(encoding="utf-8").splitlines() if "  body " not in ln
+    )
+    art.write_text(stripped + "\n", encoding="utf-8")
+    result = runprov.verify.verify_artifact(art, tmp_path)
+    assert result["status"] == "OK", result
+    assert not result.get("body_checked"), "and it must not claim to have checked"
+
+
+def test_the_report_says_how_many_artifacts_could_be_asked_at_all(tmp_path, monkeypatch, capsys):
+    """ "0 ALTERED" over artifacts that carry no digest says nothing, and looks exactly like
+    "nothing was tampered with" — the negative assertion this repository keeps having to give
+    a positive companion. The count of how many COULD be asked is that companion."""
+    monkeypatch.chdir(tmp_path)
+    _pinned(tmp_path)
+    capsys.readouterr()
+    assert cli.main(["verify", str(tmp_path), "--root", str(tmp_path)]) == 0
+    err = capsys.readouterr().err
+    assert "1 of 1 could be asked" in err, err
+
+
+def test_a_pinned_artifact_appears_once_and_complete_never_half_written(tmp_path, monkeypatch):
+    """ADR-0006. The body streams into a temporary file and one rename publishes it, so the
+    destination never exists holding a pin whose own digest is still the placeholder.
+
+    Asserted DURING the write, which is the only moment it could be false."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    out = tmp_path / "out.tsv"
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(out) as fh:
+            fh.write("sample\tvalue\n")
+            assert not out.exists(), (
+                "the artifact must not exist while it is still being written — a reader "
+                "would find a pin whose body digest is a placeholder"
+            )
+            temps = [q for q in tmp_path.iterdir() if q.name.endswith(runprov._atomic.TEMP_SUFFIX)]
+            assert len(temps) == 1, f"the body should be in exactly one temporary file: {temps}"
+        assert out.exists(), "and it must exist as soon as the handle closes"
+    assert runprov.hashing.PIN_BODY_PENDING not in out.read_text(encoding="utf-8")
+    assert [q for q in tmp_path.iterdir() if q.name.endswith(runprov._atomic.TEMP_SUFFIX)] == []
+
+
+def test_a_writer_the_caller_forgot_to_close_is_published_by_the_seal(tmp_path, monkeypatch):
+    """Forgetting `close()` must cost the pin's accuracy at worst, never the file. Because
+    the body lives in a temporary file until close renames it, a caller who forgets would
+    otherwise find NO artifact — which is a far worse failure than the partial one the old
+    implementation left."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    out = tmp_path / "out.tsv"
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        fh = run.open_output(out)
+        fh.write("sample\tvalue\na\t9\n")  # and never closed
+    assert out.is_file(), "the seal must publish what the caller left open"
+    assert runprov.verify.verify_artifact(out, tmp_path)["status"] == "OK", (
+        "and the digest must be right, not merely present"
+    )
+
+
+def test_a_pin_that_cannot_be_written_leaves_no_temporary_file(tmp_path, monkeypatch):
+    """The header is the first thing written into the temporary file. If that write fails —
+    a full disk, a directory that vanished — the handle closes and the temporary file goes,
+    so a failure to start an artifact does not leave debris beside the one it never made."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        real = builtins.open
+
+        def refuse_the_header(*a, **k):
+            fh = real(*a, **k)
+            fh.write = lambda *_a, **_k: (_ for _ in ()).throw(OSError("no space left"))
+            return fh
+
+        monkeypatch.setattr(runprov.run, "open", refuse_the_header, raising=False)
+        with pytest.raises(OSError, match="no space left"):
+            run.open_output(tmp_path / "out.tsv")
+        monkeypatch.undo()
+    assert not (tmp_path / "out.tsv").exists()
+    assert [
+        q.name for q in tmp_path.iterdir() if q.name.endswith(runprov._atomic.TEMP_SUFFIX)
+    ] == []
+
+
+def test_a_publish_that_fails_leaves_no_artifact_and_no_debris(tmp_path, monkeypatch):
+    """The rename is the moment the artifact becomes real. If it cannot happen, the honest
+    outcome is NO file — a run that could not finish writing its result did not produce one —
+    and the temporary file must not be left where `verify` would meet it."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        fh = run.open_output(tmp_path / "out.tsv")
+        fh.write("x\n")
+        # ONLY THE ARTIFACT'S RENAME. `os` is one module object, so a blanket patch also
+        # breaks the sidecar's own atomic write and the test then fails for the wrong reason
+        # — measured: `p.json` was never published.
+        real_replace = os.replace
+        monkeypatch.setattr(
+            runprov.run.os,
+            "replace",
+            lambda src, dst: (
+                (_ for _ in ()).throw(OSError("cannot rename"))
+                if str(dst).endswith("out.tsv")
+                else real_replace(src, dst)
+            ),
+        )
+        with pytest.raises(OSError, match="cannot rename"):
+            fh.close()
+        monkeypatch.undo()
+    assert not (tmp_path / "out.tsv").exists()
+    assert [
+        q.name for q in tmp_path.iterdir() if q.name.endswith(runprov._atomic.TEMP_SUFFIX)
+    ] == []
+
+
+def test_the_seal_reports_a_publish_it_could_not_do_and_does_not_end_the_run(
+    tmp_path, monkeypatch, capsys
+):
+    """The rule this module follows everywhere: describing a run may not be what ends one.
+    A writer the caller left open that cannot be published is a warning and a lost artifact,
+    never an exception out of `__exit__` over work that already succeeded."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        fh = run.open_output(tmp_path / "out.tsv")
+        fh.write("x\n")
+        real_replace = os.replace  # only the artifact's rename — see the test above
+        monkeypatch.setattr(
+            runprov.run.os,
+            "replace",
+            lambda src, dst: (
+                (_ for _ in ()).throw(OSError("read-only"))
+                if str(dst).endswith("out.tsv")
+                else real_replace(src, dst)
+            ),
+        )
+    monkeypatch.undo()
+    assert "could not publish out.tsv" in capsys.readouterr().err
+    assert json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["status"] == "ok", (
+        "the run finished; only an artifact was lost, and the record says so"
+    )
+
+
+def test_writelines_and_a_second_close_and_a_delegated_attribute_all_behave(tmp_path, monkeypatch):
+    """The three parts of the handle's surface that are not `write`.
+
+    `writelines` must feed the hash exactly as `write` does — a body written that way and one
+    written line by line are the same bytes and must get the same digest. `close` is
+    idempotent, because `with` closes and a caller may close again. And anything the wrapper
+    does not define delegates, which is why it wraps rather than subclasses."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("s", provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        fh = run.open_output(tmp_path / "out.tsv")
+        assert fh.encoding == "utf-8", "an attribute this class does not define must delegate"
+        fh.writelines(["sample\tvalue\n", "a\t9\n"])
+        fh.close()
+        fh.close()  # idempotent: `with` would have done this too
+    art = tmp_path / "out.tsv"
+    assert art.read_text(encoding="utf-8").endswith("sample\tvalue\na\t9\n")
+    assert runprov.verify.verify_artifact(art, tmp_path)["status"] == "OK", (
+        "writelines must feed the hash exactly as write does, or the digest is wrong"
+    )
+
+
+def test_an_artifact_that_cannot_be_READ_is_not_reported_as_altered(tmp_path, monkeypatch):
+    """ "I could not open it" is not "somebody edited it". The same rule as everywhere else in
+    this checker: a failure to ask is never reported as an answer."""
+    monkeypatch.chdir(tmp_path)
+    art = _pinned(tmp_path)
+    # THE PIN IS READ FIRST. Patching `Path.open` before this would break `read_pins` too,
+    # and the test would pass on an IndexError rather than on the branch it names.
+    pin = runprov.verify.read_pins(art)[0]
+    monkeypatch.setattr(
+        pathlib.Path, "open", lambda *a, **k: (_ for _ in ()).throw(OSError("unreadable"))
+    )
+    assert runprov.verify._body_verdict(art, pin) is None

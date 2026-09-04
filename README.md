@@ -939,6 +939,30 @@ sidecar, or a directory input the stat check cannot speak for — and failing on
 any project with one reference directory permanently red. The count is on the summary line,
 where a reader can see it and reach for `--rehash`.
 
+### What `OK` means, and what `ALTERED` means
+
+`verify` answers two questions about a pinned artifact, from its bytes alone — no history, no
+sidecar, no network:
+
+| state | what it means | what to do |
+|---|---|---|
+| `OK` | the inputs it names still hash the same, **and** the artifact itself is byte-for-byte what it was written as | nothing |
+| `STALE` | an input moved | rebuild it |
+| `ALTERED` | **the artifact was edited after it was written** | find out by whom, and why — **do not rebuild**, that destroys the edit |
+| `GONE` | an input it names no longer exists | find the input |
+| `UNVERIFIABLE` | the pin could not be read | look at the file |
+
+The second half of `OK` is new and it is the one a reader of a results file actually asks.
+An artifact written before this existed carries no `body` digest and reports neither — so the
+summary also says **how many could be asked at all**, because "0 ALTERED" over files that
+carry no digest says nothing.
+
+The cost, stated plainly: **a pinned artifact does not exist at its final path until its
+handle is closed.** It is written to a temporary file and published by a single rename, so it
+never exists carrying a digest that is wrong. A script that writes an artifact and reads it
+back *inside* the same `with` block will not find it; after the block, nothing changes. See
+**ADR-0006**.
+
 ### Making it a gate somebody else's project can adopt
 
 A record nobody reads is a file that grows. Two ways to make the question part of the work
