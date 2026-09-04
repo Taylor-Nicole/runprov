@@ -175,6 +175,12 @@ include = ["runprov", "tests", "examples", "ci.py", "tools", "README.md", "WHY.m
            ".pre-commit-config.yaml"]
 # `examples` is here because a test runs it: shipping the suite without the file it
 # executes would make the sdist's own tests fail for the packager who runs them.
+# `.pre-commit-hooks.yaml` and `action.yml` are NOT here, and that is the `.github/`
+# judgement rather than the CHANGELOG oversight: both are consumed by CLONING this
+# repository — `pre-commit` clones it, and `uses:` reads it from the git ref — so neither is
+# reachable from a tarball and shipping them would put two files in the sdist that nothing
+# there can execute. They are documented in the README, which does ship.
+#
 # `tools` is here for the same reason one step further out: `ci.py` ships, `ci.py torture`
 # is one of its steps, and a step that raises FileNotFoundError from the tarball is worse
 # than a step that does not exist. The audience is the same packager, and what that file

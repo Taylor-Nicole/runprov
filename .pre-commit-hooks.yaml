@@ -1,0 +1,33 @@
+# HOOKS THIS REPOSITORY OFFERS TO OTHERS. Not to be confused with `.pre-commit-config.yaml`
+# beside it, which is the hooks this repository runs on ITSELF.
+#
+# WHY THESE EXIST. A provenance record that nobody reads is a file that grows. `runprov`
+# could tell you an artifact went stale six months ago and never be asked. These make the
+# question part of committing and part of CI, which is the difference between a tool that
+# records and a tool that is load-bearing.
+#
+# `always_run: true` and `pass_filenames: false` on both: the question is about the PROJECT
+# — "is anything on record stale?" — not about the files in this commit. A staged file is
+# rarely the artifact that went stale; the input it was made from usually is.
+
+- id: runprov-stale
+  name: runprov — is anything on record stale?
+  description: >
+    Fails when an artifact's recorded inputs no longer hash the way they did when it was
+    made. Reads the run history, re-hashes each input, and reports which results no longer
+    follow from what is on disk. Exit 1 means a finding, 2 means it could not look.
+  entry: python -m runprov show --stale --rehash --exit-code
+  language: python
+  always_run: true
+  pass_filenames: false
+
+- id: runprov-verify
+  name: runprov — do the pins in the artifacts still check out?
+  description: >
+    The same question asked of the ARTIFACTS THEMSELVES rather than of the history, so it
+    works on a file a collaborator sent you: every pinned artifact under the root is read,
+    and each input it names is re-hashed. Needs no history file and no database.
+  entry: python -m runprov verify
+  language: python
+  always_run: true
+  pass_filenames: false
