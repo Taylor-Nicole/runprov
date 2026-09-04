@@ -33,3 +33,5 @@ A *Proposed* ADR is the right place to think out loud. It is not a promise.
 | [0004](0004-a-pin-states-what-it-covers.md) | An input cannot be registered after the pin, and a pin states what it covers | Accepted |
 | [0005](0005-a-record-is-written-whole-or-not-at-all.md) | A record is written whole or not at all | Accepted |
 | [0006](0006-an-artifact-answers-for-itself.md) | An artifact answers for itself | Accepted |
+| [0007](0007-the-gate-passes-the-exit-code-through.md) | The gate ships with the tool, and passes the exit code through | Accepted |
+| [0008](0008-capture-observes-what-declaration-cannot-reach.md) | `capture` observes what declaration cannot reach | Accepted |

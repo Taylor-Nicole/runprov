@@ -121,9 +121,23 @@ class _Watcher:
             path = args[0]
             if not isinstance(path, (str, bytes, os.PathLike)):
                 return  # a file DESCRIPTOR, not a name; nothing to attribute
+            # THE MODE, WHICH THE EVENT HAS BEEN CARRYING ALL ALONG. PEP 578 hands `open` the
+            # tuple `(path, mode, flags)`, and this hook read only the first of the three for
+            # the whole of its life — enough to WARN that a read went unregistered, not enough
+            # to say whether it was a read. `capture` needs the difference: a file this run
+            # wrote is its output and a file it read is its input, and calling one the other
+            # inverts the lineage.
+            #
+            # `None` FOR A MODE IS TREATED AS A READ. `os.open` and some C-level callers emit
+            # the event with no mode; a read is the conservative reading, because misfiling a
+            # read as an output would claim this run PRODUCED a file it only looked at.
+            mode = args[1] if len(args) > 1 and isinstance(args[1], str) else "r"
+            name = os.fsdecode(path)
             for run in self._active:
                 if len(run._opened) < WATCH_MAX_PATHS:
-                    run._opened.add(os.fsdecode(path))
+                    run._opened.add(name)
+                    if any(ch in mode for ch in "wax+"):
+                        run._opened_write.add(name)
         except Exception:  # pragma: no cover - defensive; see install()
             return  # never let bookkeeping break the caller
 

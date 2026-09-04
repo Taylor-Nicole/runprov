@@ -956,6 +956,9 @@ class Run:
         # hook stays as close to free as a hook can be, and so nothing here can fail on a
         # path during the run it is describing.
         self._opened: set[str] = set()
+        # THOSE OPENED FOR WRITING, a subset of the above. `capture` classifies by it:
+        # a file this run wrote is an output, a file it only read is an input.
+        self._opened_write: set[str] = set()
         # Whether `__enter__` has run, ever -- not whether it is running now, which is
         # `_in_context` and goes back to False at exit. See `__enter__` for why re-entry is
         # refused rather than tolerated.

@@ -49,6 +49,7 @@ import contextlib
 import json
 import os
 import pathlib
+import runpy
 import shlex
 import signal
 import subprocess
@@ -59,7 +60,7 @@ from . import prune as prune_mod
 from . import show as show_mod
 from ._atomic import TEMP_SUFFIX
 from .hashing import PIN_DIGEST_CHARS
-from .project import active
+from .project import Project, active
 from .run import START_SCHEMA, Run, Terminated
 from .show import (
     MODIFIED,
@@ -75,6 +76,7 @@ from .show import (
 )
 from .show import render_yaml as _yaml_doc
 from .verify import GONE, STALE, render_report, verify
+from .watch import unregistered
 
 #: WHAT AN EXIT CODE MEANS, in every subcommand (ledger L-81, decided 2026-09-01).
 #:
@@ -575,6 +577,76 @@ def _stop_child(proc: subprocess.Popen[bytes]) -> None:
         send(hard=True)
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=_CHILD_GRACE_SECONDS)
+
+
+def _capture(args: argparse.Namespace) -> int:
+    """Run a Python script inside a `Run` and record what it ACTUALLY opened.
+
+    THE ADOPTION COST, REMOVED. `run.input(p)` is one call and it is one call in every script,
+    paid by every colleague, for ever — and the scripts that most need a record are the
+    exploratory ones nobody is going to refactor. This runs an UNMODIFIED script and records
+    what the interpreter saw it do.
+
+    IN-PROCESS, and that is the whole mechanism. The audit hook this package already installs
+    fires for every `open` in the process; a subprocess has its own interpreter and its own
+    hooks, so `runprov exec` — which spawns one — can record the command and its exit code but
+    never the files inside it. `runpy` runs the script here, under this hook, so every read
+    and every write is seen.
+
+    WHAT IT DOES NOT GIVE YOU, said before somebody discovers it. An observed record is
+    WIDER and WEAKER than a declared one: it lists what was opened, not what mattered, and
+    nothing in it is pinned into an artifact — `open_output` is still the only way an artifact
+    carries its own provenance. This is the rung below `run.input()`, not a replacement for
+    it: adopt it in an afternoon, and register properly where it matters.
+    """
+    script = pathlib.Path(args.script)
+    if not script.is_file():
+        print(f"  runprov capture: no such script: {script}", file=sys.stderr)
+        return CANNOT_CHECK
+    proj = active()
+    name = args.name or script.stem
+    prov = pathlib.Path(args.provenance) if args.provenance else None
+    if prov is None:
+        prov = proj.resolved_run_log().parent / f"{name}.prov.json"
+
+    code = 0
+    argv_before = list(sys.argv)
+    sys.argv = [str(script), *(args.rest or [])]
+    try:
+        with Run(name, provenance=prov, script_path=script) as run:
+            try:
+                runpy.run_path(str(script), run_name="__main__")
+            except SystemExit as exc:
+                # THE SCRIPT'S OWN EXIT CODE, so `capture` composes in a Makefile exactly as
+                # `exec` does. `SystemExit(None)` and `SystemExit(0)` are both success.
+                code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+            _register_observed(run, proj)
+    finally:
+        sys.argv = argv_before
+    return code
+
+
+def _register_observed(run: Run, proj: Project) -> None:
+    """Turn what the hook saw into inputs and outputs. Never raises.
+
+    A FILE THIS RUN WROTE IS AN OUTPUT, EVEN IF IT ALSO READ IT — a script that appends to a
+    table has not taken it as an input, and recording it as one would draw a lineage edge from
+    the file to itself.
+
+    `unregistered` DOES THE FILTERING, and reusing it is the point rather than a shortcut: it
+    already drops code, caches, site-packages, anything outside the root and this package's
+    own files, and every one of those exclusions was put there by a false positive somebody
+    met. A second filter here would be a second set of rules to keep in step.
+    """
+    mine = [pathlib.Path(str(p)) for p in (run.record.get("provenance_path"),) if p]
+    written = set(unregistered(run._opened_write, [], proj.root, exclude=mine))
+    read = [n for n in unregistered(run._opened, [], proj.root, exclude=mine) if n not in written]
+    for name in read:
+        with contextlib.suppress(OSError, ValueError):
+            run.input(proj.root / name)
+    for name in sorted(written):
+        with contextlib.suppress(OSError, ValueError):
+            run.output(proj.root / name)
 
 
 def _exec(args: argparse.Namespace) -> int:
@@ -1523,6 +1595,17 @@ def main(argv: list[str] | None = None) -> int:
     # with SUPPRESS and never read, it was a flag that did nothing and said nothing.
     vf.add_argument("--log", default=None, help=argparse.SUPPRESS)
     vf.add_argument("--format", choices=("text", "json"), default="text")
+    cp = sub.add_parser(
+        "capture",
+        help="run a Python script AS a recorded run, with no changes to the script",
+    )
+    cp.add_argument("script", help="the .py file to run")
+    cp.add_argument("rest", nargs=argparse.REMAINDER, help="arguments passed to the script")
+    cp.add_argument(
+        "--name", default=None, help="the script name in the record (default: its stem)"
+    )
+    cp.add_argument("--provenance", default=None, help="where to write the sidecar")
+    cp.add_argument("--log", default=None, help=argparse.SUPPRESS)
     pr = sub.add_parser("prune", help="remove in-flight markers that describe nothing running")
     pr.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     pr.add_argument(
@@ -1548,6 +1631,9 @@ def main(argv: list[str] | None = None) -> int:
     # BEFORE THE "no run history" CHECK, because markers outlive the history they name: a
     # deleted `runs.jsonl`, a run started with no `provenance=`, a `--log` pointed at a path
     # that was never written. Those are precisely the markers nothing else will ever clear.
+    if args.cmd == "capture":
+        return _capture(args)
+
     if args.cmd == "prune":
         return _prune(args)
 
