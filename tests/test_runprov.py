@@ -19253,3 +19253,192 @@ def test_capture_says_so_when_there_is_no_such_script(tmp_path, monkeypatch, cap
     runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
     assert cli.main(["capture", "nope.py"]) == 2
     assert "no such script" in capsys.readouterr().err
+
+
+# ------------------------------------- the record in other people's vocabularies (ADR-0009)
+
+
+def _two_stage(tmp_path):
+    """Two runs joined by a real file, so there is a lineage edge to look for."""
+    (tmp_path / "data").mkdir(exist_ok=True)
+    (tmp_path / "out").mkdir(exist_ok=True)
+    (tmp_path / "data" / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("step1", provenance=tmp_path / "out/step1.prov.json") as run:
+        run.input("data/in.tsv")
+        with run.open_output("out/mid.tsv") as fh:
+            fh.write("b\n")
+    with runprov.Run("step2", provenance=tmp_path / "out/step2.prov.json") as run:
+        run.input("out/mid.tsv")
+        with run.open_output("out/final.tsv") as fh:
+            fh.write("c\n")
+
+
+def test_export_writes_nothing_the_package_owns(tmp_path, monkeypatch, capsys):
+    """THE REQUIREMENT, ASSERTED. Export is a derived view; `runs.jsonl`, the sidecars, the
+    YAML twins and `transformation_log.yml` remain the record of truth. A derived view that
+    could rewrite its source would be a strange thing for a provenance tool to ship."""
+    monkeypatch.chdir(tmp_path)
+    _two_stage(tmp_path)
+    before = {p: p.read_bytes() for p in sorted(tmp_path.rglob("*")) if p.is_file()}
+    assert any(p.name == "transformation_log.yml" for p in before), "the premise: it exists"
+    capsys.readouterr()
+    assert cli.main(["export", "--format", "ro-crate"]) == 0
+    after = {p: p.read_bytes() for p in sorted(tmp_path.rglob("*")) if p.is_file()}
+    assert after == before, "export must not touch, add or rewrite a single file"
+    assert capsys.readouterr().out.startswith("{"), "and it goes to stdout by default"
+
+
+@pytest.mark.parametrize("fmt", ["ro-crate", "prov"])
+def test_export_joins_the_lineage_across_runs(tmp_path, monkeypatch, capsys, fmt):
+    """`out/mid.tsv` is step1's output and step2's input. It must be ONE node in the export,
+    or the graph says two files with the same name and the lineage does not join.
+
+    This is where T-08 pays: the key is the recorded path, and every recorded path is spelled
+    one way on every platform."""
+    monkeypatch.chdir(tmp_path)
+    _two_stage(tmp_path)
+    capsys.readouterr()
+    assert cli.main(["export", "--format", fmt]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    text = json.dumps(doc)
+    assert text.count('"out/mid.tsv"') >= 1, "the joined file must be named"
+    if fmt == "ro-crate":
+        ids = [n["@id"] for n in doc["@graph"]]
+        assert len(ids) == len(set(ids)), f"a repeated @id makes the crate invalid: {ids}"
+        assert ids.count("out/mid.tsv") == 1, "one file, one node"
+        assert {"ro-crate-metadata.json", "./"} <= set(ids), "both required descriptors"
+        actions = [n for n in doc["@graph"] if n.get("@type") == "CreateAction"]
+        assert len(actions) == 2, actions
+        assert {"@id": "out/mid.tsv"} in actions[0]["result"]
+        assert {"@id": "out/mid.tsv"} in actions[1]["object"]
+    else:
+        assert set(doc["prefix"]) == {"prov", "runprov"}
+        assert len(doc["activity"]) == 2 and len(doc["entity"]) == 3, doc
+        assert len(doc["wasDerivedFrom"]) == 2, "one derivation per (output, input) per run"
+        assert doc["used"] and doc["wasGeneratedBy"] and doc["wasAssociatedWith"]
+
+
+@pytest.mark.parametrize("fmt", ["ro-crate", "prov"])
+def test_export_of_one_run_needs_only_its_sidecar(tmp_path, monkeypatch, capsys, fmt):
+    """The scope that matters for a file somebody sent you: no history, no database, one
+    sidecar. It is also the scope you attach to a submitted artifact."""
+    monkeypatch.chdir(tmp_path)
+    _two_stage(tmp_path)
+    (tmp_path / "runs.jsonl").unlink()  # the history is GONE; the sidecar is not
+    capsys.readouterr()
+    assert cli.main(["export", "out/step2.prov.json", "--format", fmt]) == 0
+    text = capsys.readouterr().out
+    assert "out/final.tsv" in text and "out/mid.tsv" in text
+    assert "data/in.tsv" not in text, "one run means one run — step1's input is not in it"
+
+
+def test_export_says_what_to_do_when_there_is_no_history(tmp_path, monkeypatch, capsys):
+    """Exit 2 — could not check — and it must name the scope that WOULD work, because the
+    person meeting this most often is holding a sidecar and no history."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    assert cli.main(["export"]) == 2
+    err = capsys.readouterr().err
+    assert "no run history" in err and "runprov export out/step.prov.json" in err
+
+
+def test_export_to_a_directory_uses_the_formats_own_filename(tmp_path, monkeypatch, capsys):
+    """`ro-crate-metadata.json` is not a preference: a crate is RECOGNISED by that filename
+    sitting beside the data, so writing it as anything else produces a file no tool looks
+    for."""
+    monkeypatch.chdir(tmp_path)
+    _two_stage(tmp_path)
+    (tmp_path / "crate").mkdir()
+    assert cli.main(["export", "-o", str(tmp_path / "crate")]) == 0
+    assert (tmp_path / "crate" / "ro-crate-metadata.json").is_file()
+    assert cli.main(["export", "--format", "prov", "-o", str(tmp_path / "crate")]) == 0
+    assert (tmp_path / "crate" / "prov.json").is_file()
+
+
+def test_export_leaves_out_a_run_that_only_started(tmp_path, monkeypatch, capsys):
+    """A `runprov.start.v1` line is a run that has begun and says nothing yet about inputs or
+    outputs. In a crate it would assert an activity that produced nothing, which is not what
+    a reader would understand by it."""
+    monkeypatch.chdir(tmp_path)
+    _two_stage(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    log.write_text(
+        log.read_text(encoding="utf-8")
+        + json.dumps({"schema": runprov.run.START_SCHEMA, "run_uid": "begun", "script": "step3"})
+        + "\n",
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    assert cli.main(["export"]) == 0
+    assert "step3" not in capsys.readouterr().out
+
+
+def test_an_unknown_export_format_is_refused_by_name(tmp_path):
+    """The CLI's `choices` catches it first; the function must too, because it is importable
+    and a caller who reaches it directly deserves the same answer."""
+    with pytest.raises(ValueError, match="unknown export format"):
+        runprov.export.render([], "turtle")
+
+
+def test_export_reports_a_sidecar_it_cannot_read(tmp_path, monkeypatch, capsys):
+    """Two ways it is not a sidecar — unreadable, and readable but not an object — and both
+    are `could not check` rather than an empty export that looks like a run with nothing in
+    it."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    assert cli.main(["export", "nope.prov.json"]) == 2
+    assert "cannot read" in capsys.readouterr().err
+    (tmp_path / "list.json").write_text("[1, 2]", encoding="utf-8")
+    assert cli.main(["export", "list.json"]) == 2
+    assert "is not a runprov sidecar" in capsys.readouterr().err
+
+
+def test_export_reports_a_destination_it_cannot_write(tmp_path, monkeypatch, capsys):
+    """Writing the export is the one thing this command does that can fail, and it must fail
+    as `could not check` rather than by traceback."""
+    monkeypatch.chdir(tmp_path)
+    _two_stage(tmp_path)
+    monkeypatch.setattr(
+        runprov.__main__,
+        "atomic_write_text",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("read-only")),
+    )
+    assert cli.main(["export", "-o", str(tmp_path / "c.json")]) == 2
+    assert "cannot write" in capsys.readouterr().err
+
+
+def test_export_describes_a_thin_record_without_inventing_anything():
+    """Records are not uniform and the export must not pretend they are.
+
+    A history line trims an input to path and digests; a MISSING output has no digest at all
+    and no size; an entry with no `path` cannot be a node in either graph. Each of those is a
+    real shape on disk, and the honest response to a missing field is to OMIT it rather than
+    emit a null that a validator reads as "known to be nothing"."""
+    thin = [
+        {
+            "run_uid": "u1",
+            "script": "s",
+            "status": "failed",
+            "inputs": [{"path": "a.tsv"}, {"note": "no path at all"}],
+            "outputs": [{"path": "b.tsv", "kind": "MISSING"}],
+        }
+    ]
+    crate = runprov.export.to_ro_crate(thin)
+    files = {n["@id"]: n for n in crate["@graph"] if n.get("@type") == "File"}
+    assert set(files) == {"a.tsv", "b.tsv"}, "the entry with no path is not a node"
+    assert "sha256" not in files["a.tsv"] and "contentSize" not in files["a.tsv"]
+    assert files["b.tsv"]["description"] == "runprov: MISSING", (
+        "a finding must survive into the crate; a tidier description would be of a worse situation"
+    )
+    action = next(n for n in crate["@graph"] if n.get("@type") == "CreateAction")
+    assert action["actionStatus"].endswith("FailedActionStatus")
+
+    doc = runprov.export.to_prov_json(thin)
+    assert set(doc["entity"]) == {"runprov:file/a.tsv", "runprov:file/b.tsv"}
+    assert "runprov:sha256" not in doc["entity"]["runprov:file/a.tsv"]
+
+    # AN EMPTY DOCUMENT DECLARES NOTHING. A PROV document that says it has entities and lists
+    # none means something different from one that does not mention them.
+    empty = runprov.export.to_prov_json([])
+    assert set(empty) == {"prefix"}, empty
