@@ -939,6 +939,36 @@ sidecar, or a directory input the stat check cannot speak for — and failing on
 any project with one reference directory permanently red. The count is on the summary line,
 where a reader can see it and reach for `--rehash`.
 
+### Making it a gate somebody else's project can adopt
+
+A record nobody reads is a file that grows. Two ways to make the question part of the work
+rather than something you remember to ask:
+
+**pre-commit** — the hooks are defined in `.pre-commit-hooks.yaml` at the root of this
+repository, so a project adds them by pointing at it:
+
+```yaml
+repos:
+  - repo: https://github.com/Taylor-Nicole/runprov
+    rev: v0.1.0                 # pin it; a gate that changes under you is a build that
+    hooks:                      # goes red on a push that touched nothing
+      - id: runprov-stale       # walks the run history and re-hashes each input
+      - id: runprov-verify      # reads the pins inside the artifacts; needs no history
+```
+
+**GitHub Actions** — `action.yml` is a composite action, so it is one step:
+
+```yaml
+- uses: Taylor-Nicole/runprov@v0.1.0
+  with:
+    check: both                 # `stale`, `verify`, or `both`
+```
+
+Both pass the exit code through rather than collapsing it, because **1 and 2 need different
+repairs**: 1 means a result no longer follows from its inputs, 2 means the check could not
+look — no history, no pins. A gate that reported those as the same failure would send you to
+rebuild an artifact when the real answer is that nothing was recorded.
+
 ### What an exit code means
 
 The same three codes in every subcommand:

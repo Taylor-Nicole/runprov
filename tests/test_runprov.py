@@ -18759,3 +18759,97 @@ def test_inside_describe_every_str_is_wrapped_in_posix():
     # "nothing found and nothing looked at are the same green" failure in its purest form.
     with pytest.raises(AssertionError, match="looked at nothing"):
         scan("def something_else(path):\n    return str(path)\n", "<no-describe>")
+
+
+# ------------------------------------- the gate others can adopt: pre-commit and an Action
+
+
+def _repo_file(name):
+    """The file at the repository root, or a skip when running from an installed wheel."""
+    p = _repo_root() / name
+    if not p.is_file():
+        pytest.skip(f"{name} is not packaged in the installed distribution")
+    return p
+
+
+def test_every_pre_commit_hook_runs_a_command_this_package_actually_accepts():
+    """A hook whose flags do not exist is worse than no hook: `pre-commit` reports it as a
+    failure, and the first thing anybody does with a gate that cries wolf is remove it.
+
+    RUN, NOT PARSED. The commands are executed in an empty directory, which is the state a
+    fresh clone is in — so this also pins that the gate SAYS SOMETHING USEFUL rather than
+    crashing when there is no history yet. Exit 2 is the right answer there ("could not
+    check"), and it is in the contract; a traceback or an argparse complaint is not."""
+    import yaml
+
+    hooks = yaml.safe_load(_repo_file(".pre-commit-hooks.yaml").read_text(encoding="utf-8"))
+    assert len(hooks) >= 2, f"expected the hooks this repository offers, found {hooks}"
+    with tempfile.TemporaryDirectory() as empty:
+        for hook in hooks:
+            entry = hook["entry"].split()
+            assert entry[:3] == ["python", "-m", "runprov"], (
+                f"{hook['id']}: a hook must invoke this package, not {entry[:3]}"
+            )
+            out = subprocess.run(
+                [sys.executable, "-m", "runprov", *entry[3:]],
+                capture_output=True,
+                text=True,
+                cwd=empty,
+                env={**os.environ, "PYTHONPATH": str(REPO)},
+                check=False,
+            )
+            said = out.stdout + out.stderr
+            assert "unrecognized arguments" not in said, f"{hook['id']}: {said.strip()[:200]}"
+            assert "invalid choice" not in said, f"{hook['id']}: {said.strip()[:200]}"
+            assert "Traceback" not in said, f"{hook['id']}: {said.strip()[:300]}"
+            assert out.returncode in {0, 1, 2}, (
+                f"{hook['id']}: exit {out.returncode} is outside the contract — see "
+                f"CANNOT_CHECK in __main__.py"
+            )
+
+
+def test_the_action_only_names_subcommands_that_exist_and_options_it_handles():
+    """The Action's script is shell inside YAML, which no type checker reads. Two ways it can
+    lie and both are silent until somebody's build breaks: naming a subcommand this package
+    does not have, and documenting a `check:` value its own `case` statement does not branch
+    on."""
+    import yaml
+
+    text = _repo_file("action.yml").read_text(encoding="utf-8")
+    action = yaml.safe_load(text)
+
+    # DERIVED FROM THE PARSER, not from a list typed here — the point of the whole exercise.
+    out = subprocess.run(
+        [sys.executable, "-m", "runprov", "--help"],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(REPO)},
+        check=False,
+    )
+    real = {w.strip(" ,") for w in re.findall(r"\{([a-z,]+)\}", out.stdout)[0].split(",")}
+    assert {"show", "verify"} <= real, f"the parser no longer offers these: {real}"
+
+    named = set(re.findall(r"python -m runprov ([a-z]+)", text))
+    assert named, "the Action runs no runprov command at all"
+    assert named <= real, f"the Action names subcommands that do not exist: {named - real}"
+
+    # THE DOCUMENTED VALUES AND THE BRANCHED VALUES MUST BE THE SAME SET, and BOTH SIDES ARE
+    # DERIVED. The first version of this matched ``(stale|verify|both)`` — a hand-typed
+    # alternation, so the "documented" set could only ever contain the three words already in
+    # it. Adding a fourth documented value went undetected: mutation-checked, it survived.
+    # That is the scope pattern this repository keeps finding, in the test written to prevent
+    # a documentation drift.
+    documented = set(re.findall(r"`([a-z]+)`", action["inputs"]["check"]["description"]))
+    branched = {
+        w
+        for line in re.findall(r"^\s*([a-z|]+)\)$", text, re.M)
+        for w in line.split("|")
+        if w != "esac"
+    }
+    assert documented, "the `check:` input documents no values at all"
+    assert branched, "the Action's script branches on nothing — the case statement is gone"
+    assert documented == branched, (
+        f"`check:` documents {sorted(documented)} and the script branches on "
+        f"{sorted(branched)} — a value in one and not the other is a build that fails for a "
+        f"reason nobody wrote down"
+    )

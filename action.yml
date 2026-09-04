@@ -1,0 +1,67 @@
+# A GITHUB ACTION, so the provenance check is one line in somebody else's workflow.
+#
+# The reason this file exists rather than three lines of `run:` in a README: a check that
+# has to be assembled by hand is a check most projects do not add. `uses:` is the shape
+# people already know.
+name: runprov provenance check
+description: >
+  Fail the build when a recorded result no longer follows from the inputs it was made from.
+author: Plateforme GenoBioMICS, Hôpital Henri-Mondor, AP-HP
+
+branding:
+  icon: git-commit
+  color: blue
+
+inputs:
+  log:
+    description: "Path to the run history (runs.jsonl). Defaults to the project's."
+    required: false
+    default: ""
+  root:
+    description: "Directory to search for pinned artifacts. Defaults to the project root."
+    required: false
+    default: ""
+  check:
+    description: >
+      Which question to ask. `stale` walks the run history; `verify` reads the pins inside
+      the artifacts and needs no history; `both` runs each and fails if either does.
+    required: false
+    default: "both"
+  version:
+    description: "Version specifier to install, e.g. `runprov==0.1.0`. Defaults to the latest."
+    required: false
+    default: "runprov"
+
+runs:
+  using: composite
+  steps:
+    # PINNABLE, and the input exists for that reason. A provenance gate that silently
+    # changes what it checks when a new version ships is the same class of problem as an
+    # unpinned formatter: the build goes red on a push that touched nothing.
+    - shell: bash
+      run: python -m pip install --disable-pip-version-check "${{ inputs.version }}"
+    - shell: bash
+      run: |
+        set -euo pipefail
+        log=""; [ -n "${{ inputs.log }}" ] && log="--log ${{ inputs.log }}"
+        root=""; [ -n "${{ inputs.root }}" ] && root="${{ inputs.root }}"
+        rc=0
+        case "${{ inputs.check }}" in
+          stale|both)
+            echo "::group::runprov show --stale --rehash --exit-code"
+            python -m runprov show --stale --rehash --exit-code $log || rc=$?
+            echo "::endgroup::"
+            ;;
+        esac
+        case "${{ inputs.check }}" in
+          verify|both)
+            echo "::group::runprov verify"
+            python -m runprov verify $root || rc=$?
+            echo "::endgroup::"
+            ;;
+        esac
+        # THE EXIT CODE IS THE CONTRACT, and it is passed through rather than collapsed:
+        # 1 is a finding about the data, 2 is "could not check". A gate that reported both
+        # as failure would make "there is no history here" indistinguishable from "your
+        # results are stale", and the two need different repairs.
+        exit $rc
