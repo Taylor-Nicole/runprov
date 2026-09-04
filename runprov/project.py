@@ -601,6 +601,30 @@ class Project:
 
         A sink with no `path` (a database, a queue) is named by its type — that is all
         there is to say, and saying it is better than printing a run log the sink ignores.
+
+        NOT A RECORDED PATH, AND DELIBERATELY NOT `_posix`-SPELLED. A 2026-09-02 review asked
+        whether this should follow T-08's one-spelling rule like every other path the record
+        carries. It should not, and the three shapes it returns are the whole reason:
+
+            no sink            '/proj/provenance/runs.jsonl'      a path
+            JsonlSink          'JsonlSink(/proj/other.jsonl)'     a path inside prose
+            a sink with none   'DbSink'                           not a path at all
+
+        A field that is sometimes a type name cannot be a path. Normalising it would convert
+        the first shape and leave the second's path platform-spelled INSIDE ITS OWN
+        PARENTHESES — unless this method parsed the label it had just written, which is not a
+        thing to do. The record would then be POSIX in one shape and native in another, which
+        is worse than consistently native, and worse for the reason the rule exists: a reader
+        could no longer tell which it was holding.
+
+        It is a LABEL, and the only consumer treats it as one. `__main__` prints it beside a
+        missing history and says, in as many words, "If that names a file, pass it to --log. If
+        it names a sink, the records are not on this filesystem" — the code already knows it
+        may not be a path. Nothing resolves it, opens it, or joins on it.
+
+        IF A READER EVER NEEDS TO JOIN ON WHERE THE HISTORY WENT, the repair is a second,
+        machine-readable field beside this one — a `_posix` path present only when there IS a
+        path — not a spelling change to this one. Nothing needs that today.
         """
         if self.sink is None:
             return str(self.resolved_run_log())
