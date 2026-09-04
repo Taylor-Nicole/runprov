@@ -536,6 +536,23 @@ because these were the last names to settle and the reasoning belongs with the r
   mechanism, the last two are defaults `Project` already supplies. All five still exist on
   their own modules (`runprov.run.PIN_UNSAFE`, and so on); they are no longer promises.
 
+### The record in somebody else's vocabulary
+
+- **`runprov export`** emits **RO-Crate 1.1** (JSON-LD over schema.org — what Zenodo and
+  WorkflowHub ingest) and **W3C PROV-JSON** (entities, activities, agents), over the **whole
+  history** or over **one run from its sidecar alone**. The second scope is the case the
+  in-band pin exists for: somebody holding a file and its sidecar, with no history to read.
+- **It writes nothing this package owns.** `runs.jsonl`, the sidecars, the YAML twins and
+  `transformation_log.yml` are untouched and remain the record of truth; a test asserts every
+  byte in the project is identical before and after an export.
+- **PROV-JSON rather than PROV-O in Turtle**, because those want an RDF library and this
+  package has no dependencies. Both formats are plain JSON.
+- **One limit, stated rather than glossed:** PROV's `wasDerivedFrom` here means "this output
+  was produced by a run that read this input", not "this value came from that value". PROV
+  allows the finer claim and this package cannot make it. Over-claiming in a standard
+  vocabulary would be harder to catch than over-claiming in our own, because it would be
+  well-formed. **ADR-0009.**
+
 ### Recording a script nobody changed
 
 - **`runprov capture script.py`** runs an unmodified script — no `import runprov`, no

@@ -58,7 +58,9 @@ import typing
 
 from . import prune as prune_mod
 from . import show as show_mod
-from ._atomic import TEMP_SUFFIX
+from ._atomic import TEMP_SUFFIX, atomic_write_text
+from .export import FORMATS as EXPORT_FORMATS
+from .export import default_filename, render
 from .hashing import PIN_DIGEST_CHARS
 from .project import Project, active
 from .run import START_SCHEMA, Run, Terminated
@@ -577,6 +579,62 @@ def _stop_child(proc: subprocess.Popen[bytes]) -> None:
         send(hard=True)
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=_CHILD_GRACE_SECONDS)
+
+
+def _export(args: argparse.Namespace) -> int:
+    """The record in somebody else's vocabulary. Reads; writes nothing this package owns.
+
+    TWO SCOPES BECAUSE THEY ANSWER DIFFERENT QUESTIONS. The whole history is what you DEPOSIT
+    — every run, every artifact, the lineage between them. One sidecar is what you ATTACH to a
+    submitted artifact, and it is the only scope available to somebody holding a file and its
+    sidecar with no history to read, which is the case the in-band pin exists for.
+    """
+    if args.sidecar:
+        path = pathlib.Path(args.sidecar)
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"  runprov export: cannot read {path}: {exc}", file=sys.stderr)
+            return CANNOT_CHECK
+        if not isinstance(rec, dict):
+            print(f"  runprov export: {path} is not a runprov sidecar", file=sys.stderr)
+            return CANNOT_CHECK
+        records, name = [rec], f"{rec.get('script', 'run')} — one run"
+    else:
+        log = pathlib.Path(args.log) if args.log else active().resolved_run_log()
+        if not log.is_file():
+            print(
+                f"  runprov export: no run history at {log}\n"
+                f"    Export one run instead by naming its sidecar: "
+                f"`runprov export out/step.prov.json`.",
+                file=sys.stderr,
+            )
+            return CANNOT_CHECK
+        # COMPLETED RUNS ONLY. A `runprov.start.v1` line is a run that has begun and says
+        # nothing yet about inputs or outputs; putting it in a crate would assert an activity
+        # that produced nothing, which is not what a reader of that crate would understand.
+        records = [r for r in (_parsed(log)) if r.get("schema") != START_SCHEMA]
+        name = f"{log.parent.name} — {len(records)} run(s)"
+    text = render(records, args.format, name)
+    if not args.out:
+        sys.stdout.write(text)
+        return 0
+    out = pathlib.Path(args.out)
+    if out.is_dir():
+        out = out / default_filename(args.format)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(out, text)
+    except OSError as exc:
+        print(f"  runprov export: cannot write {out}: {exc}", file=sys.stderr)
+        return CANNOT_CHECK
+    print(f"# {len(records)} run(s) -> {out} ({args.format})", file=sys.stderr)
+    return 0
+
+
+def _parsed(log: pathlib.Path) -> list[dict[str, typing.Any]]:
+    """Every readable record in the history. Unreadable lines are skipped, as everywhere."""
+    return [rec for rec in _stream(log) if rec is not None]
 
 
 def _capture(args: argparse.Namespace) -> int:
@@ -1606,6 +1664,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     cp.add_argument("--provenance", default=None, help="where to write the sidecar")
     cp.add_argument("--log", default=None, help=argparse.SUPPRESS)
+    ex2 = sub.add_parser("export", help="the record in RO-Crate or W3C PROV, for other tools")
+    ex2.add_argument(
+        "sidecar",
+        nargs="?",
+        default=None,
+        help="one run's sidecar (.prov.json). Omit to export the whole history.",
+    )
+    ex2.add_argument("--format", choices=EXPORT_FORMATS, default="ro-crate")
+    ex2.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
+    ex2.add_argument(
+        "-o",
+        "--out",
+        default=None,
+        help="write here instead of stdout; a directory gets the format's own filename",
+    )
     pr = sub.add_parser("prune", help="remove in-flight markers that describe nothing running")
     pr.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     pr.add_argument(
@@ -1633,6 +1706,9 @@ def main(argv: list[str] | None = None) -> int:
     # that was never written. Those are precisely the markers nothing else will ever clear.
     if args.cmd == "capture":
         return _capture(args)
+
+    if args.cmd == "export":
+        return _export(args)
 
     if args.cmd == "prune":
         return _prune(args)

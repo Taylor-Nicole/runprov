@@ -35,3 +35,4 @@ A *Proposed* ADR is the right place to think out loud. It is not a promise.
 | [0006](0006-an-artifact-answers-for-itself.md) | An artifact answers for itself | Accepted |
 | [0007](0007-the-gate-passes-the-exit-code-through.md) | The gate ships with the tool, and passes the exit code through | Accepted |
 | [0008](0008-capture-observes-what-declaration-cannot-reach.md) | `capture` observes what declaration cannot reach | Accepted |
+| [0009](0009-export-is-a-derived-view-in-two-vocabularies.md) | Export is a derived view, in two vocabularies and two scopes | Accepted |

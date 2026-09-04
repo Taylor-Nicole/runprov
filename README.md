@@ -939,6 +939,40 @@ sidecar, or a directory input the stat check cannot speak for — and failing on
 any project with one reference directory permanently red. The count is on the summary line,
 where a reader can see it and reach for `--rehash`.
 
+### The record in somebody else's vocabulary
+
+Everything this package writes is its own — `runs.jsonl`, the sidecar, the pin,
+`transformation_log.yml` — which is right for a format meant to be read by a person and
+grepped in three years, and means a repository or a reviewer has to be taught to read it.
+Two formats they already read:
+
+```bash
+runprov export                                  # RO-Crate, whole history, to stdout
+runprov export --format prov -o .               # W3C PROV-JSON, whole history
+runprov export out/step2.prov.json              # ONE run, from its sidecar alone
+runprov export out/step2.prov.json --format prov
+```
+
+| | what it is | why |
+|---|---|---|
+| **RO-Crate 1.1** | JSON-LD on schema.org | Zenodo and WorkflowHub ingest it — the format that matters at **deposit** |
+| **PROV-JSON** | the W3C provenance model | entities, activities, agents — the vocabulary a **reviewer** recognises |
+
+Both scopes exist because they answer different questions. The **whole history** is what you
+deposit: every run, every artifact, the lineage joining them. **One run**, from its sidecar,
+is what you attach to a submitted artifact — and it is the only scope available to somebody
+holding a file and its sidecar with no history to read, which is the case the in-band pin
+exists for.
+
+**Export writes nothing this package owns.** It is read-only and additive: `runs.jsonl`, the
+sidecars, the YAML twins and `transformation_log.yml` are untouched and remain the record of
+truth. There is a test that asserts every byte in the project is identical before and after.
+
+One limit, stated because a standard vocabulary makes it easy to over-claim: PROV's
+`wasDerivedFrom` here means *"this output was produced by a run that read this input"*, not
+*"this value came from that value"*. PROV allows the finer claim and this package cannot make
+it — it records what was opened, not what mattered. See **ADR-0009**.
+
 ### Recording a script you do not want to change
 
 `run.input(p)` is one call, and it is one call in every script — paid by every colleague, for
@@ -2071,12 +2105,12 @@ is the one that went green afterwards.
 
 ## Tests
 
-`tests/test_runprov.py`, **about 715 tests**, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, **about 805 tests**, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite — in
 `test_size_is_stat_ed_after_the_hash_not_before` — to
 assert a call ORDER that no returned value can show. Everything else is substituted by a real
-thing — **about 3,000** uses of `tmp_path` (`grep -oE '\btmp_path\b' tests/test_runprov.py | wc -l`), actual
+thing — **about 3,100** uses of `tmp_path` (`grep -oE '\btmp_path\b' tests/test_runprov.py | wc -l`), actual
 files, actual JSONL, actual `Run` objects — or by a
 narrow simulation of an environment this machine is not (`sys.platform` for Windows,
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
@@ -2102,7 +2136,7 @@ The Windows leg skips ten times what any other does, and it is the only leg that
 assert the coverage floor — skipped tests leave their lines unmeasured, so 100% is
 unreachable there by construction rather than by regression. No other leg may lower it.
 
-Coverage is **100%** of **about 3,000 statements and 1,050 branches**, and the gate is set
+Coverage is **100%** of **about 3,140 statements and 1,110 branches**, and the gate is set
 there with `--cov-branch`.
 
 *Every figure in this section is approximate on purpose.* They exist to convey scale, and an
