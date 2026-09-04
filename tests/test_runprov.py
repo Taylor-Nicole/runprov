@@ -4426,6 +4426,7 @@ def test_the_hook_itself_ignores_everything_it_should(monkeypatch):
     class FakeRun:
         def __init__(self):
             self._opened = set()
+            self._opened_write = set()
 
     w = runprov.watch._Watcher()
     run = FakeRun()
@@ -4455,6 +4456,18 @@ def test_the_hook_itself_ignores_everything_it_should(monkeypatch):
     past = str(pathlib.Path("/tmp/past-the-cap.tsv"))
     w._hook("open", (past,))
     assert past not in run._opened, "the cap must hold"
+
+    # THE MODE, which decides input from output in `capture`. PEP 578 hands `open` the tuple
+    # `(path, mode, flags)`; a missing or non-string mode is read as a READ, because filing a
+    # read as an output would claim this run PRODUCED a file it only looked at.
+    monkeypatch.setattr(runprov.watch, "WATCH_MAX_PATHS", 99)
+    run2 = FakeRun()
+    w._active[:] = [run2]
+    for spelling in ("r", "w", "a", "r+", None):
+        w._hook("open", (f"/tmp/m-{spelling}.tsv", spelling))
+    written = {p.rsplit("m-", 1)[-1] for p in run2._opened_write}
+    assert written == {"w.tsv", "a.tsv", "r+.tsv"}, written
+    assert len(run2._opened) == 5, "every mode is still observed; only the classing differs"
 
 
 def test_installing_the_hook_is_idempotent(monkeypatch):
@@ -19138,3 +19151,105 @@ def test_an_artifact_that_cannot_be_READ_is_not_reported_as_altered(tmp_path, mo
         pathlib.Path, "open", lambda *a, **k: (_ for _ in ()).throw(OSError("unreadable"))
     )
     assert runprov.verify._body_verdict(art, pin) is None
+
+
+# ------------------------------------- recording a script nobody changed (ADR-0008)
+
+
+def _capture_project(tmp_path, body, name="summarise.py"):
+    """A project with one unmodified script in it, ready for `runprov capture`."""
+    (tmp_path / "data").mkdir(exist_ok=True)
+    (tmp_path / "results").mkdir(exist_ok=True)
+    (tmp_path / "data" / "in.tsv").write_text("sample\tvalue\na\t9\nb\t2\n", encoding="utf-8")
+    (tmp_path / name).write_text(body, encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    return tmp_path / name
+
+
+def test_capture_records_an_unmodified_script(tmp_path, monkeypatch):
+    """THE ADOPTION COST, REMOVED. The script contains no `import runprov`, no `run.input`,
+    nothing — and the record still names what it read and what it wrote, because the audit
+    hook saw the interpreter do it."""
+    monkeypatch.chdir(tmp_path)
+    _capture_project(
+        tmp_path,
+        "rows = open('data/in.tsv').read().splitlines()\n"
+        "open('results/out.tsv', 'w').write(rows[0] + '\\n')\n",
+    )
+    assert cli.main(["capture", "summarise.py"]) == 0
+    rec = json.loads((tmp_path / "summarise.prov.json").read_text(encoding="utf-8"))
+    assert [pathlib.Path(i["path"]).name for i in rec["inputs"]] == ["in.tsv"]
+    assert [pathlib.Path(o["path"]).name for o in rec["outputs"]] == ["out.tsv"]
+    assert rec["inputs"][0]["sha256"], "an observed input is hashed like any other"
+    # NON-VACUITY IN THE OTHER DIRECTION: the script itself is a `.py` and must NOT be
+    # recorded as data. A capture that swept up every file the interpreter touched would
+    # list the script, the stdlib and site-packages, and be useless rather than wrong.
+    names = [pathlib.Path(i["path"]).name for i in rec["inputs"]]
+    assert "summarise.py" not in names, names
+
+
+def test_capture_calls_a_file_it_wrote_an_output_even_if_it_also_read_it(tmp_path, monkeypatch):
+    """A script that appends to a table has not taken that table as an INPUT. Recording it as
+    both would draw a lineage edge from the file to itself — a cycle in the one graph this
+    package exists to keep straight."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "results").mkdir(exist_ok=True)
+    (tmp_path / "results" / "log.tsv").write_text("a\n", encoding="utf-8")
+    _capture_project(
+        tmp_path,
+        "prev = open('results/log.tsv').read()\nopen('results/log.tsv', 'a').write('b\\n')\n",
+    )
+    assert cli.main(["capture", "summarise.py"]) == 0
+    rec = json.loads((tmp_path / "summarise.prov.json").read_text(encoding="utf-8"))
+    assert [pathlib.Path(o["path"]).name for o in rec["outputs"]] == ["log.tsv"]
+    assert [pathlib.Path(i["path"]).name for i in rec["inputs"]] == [], rec["inputs"]
+
+
+def test_capture_returns_the_scripts_own_exit_code_and_argv(tmp_path, monkeypatch, capsys):
+    """It has to compose in a Makefile exactly as `exec` does, so the wrapped script's exit
+    code is the command's exit code — and the script must see the arguments it was given, not
+    runprov's."""
+    monkeypatch.chdir(tmp_path)
+    _capture_project(
+        tmp_path, "import sys\nprint('argv', sys.argv[1:])\nsys.exit(int(sys.argv[1]))\n"
+    )
+    assert cli.main(["capture", "summarise.py", "7"]) == 7
+    assert "argv ['7']" in capsys.readouterr().out
+    assert sys.argv[0] != "summarise.py", "argv must be restored afterwards"
+
+
+def test_capture_records_a_script_that_raises_as_a_failed_run(tmp_path, monkeypatch):
+    """The failure mode this package exists for: a run that died still has to be on record,
+    with what it had read before it died."""
+    monkeypatch.chdir(tmp_path)
+    _capture_project(
+        tmp_path, "open('data/in.tsv').read()\nraise ValueError('the analysis broke')\n"
+    )
+    with pytest.raises(ValueError, match="the analysis broke"):
+        cli.main(["capture", "summarise.py"])
+    rec = json.loads((tmp_path / "summarise.prov.json").read_text(encoding="utf-8"))
+    assert rec["status"] == "failed" and rec["failure"]["type"] == "ValueError"
+
+
+def test_capture_writes_the_sidecar_where_it_is_told_to(tmp_path, monkeypatch):
+    """`--provenance` names the sidecar; without it the record goes beside the history, named
+    for the script. Both are asserted because the default is the one nobody types and so the
+    one that goes wrong unnoticed."""
+    monkeypatch.chdir(tmp_path)
+    _capture_project(tmp_path, "open('data/in.tsv').read()\n")
+    # BEFORE THE SCRIPT, and that is the contract rather than an accident: `rest` is
+    # `argparse.REMAINDER`, so everything after the script name belongs to the SCRIPT. A flag
+    # written afterwards is passed through to it — which is what you want, and worth pinning,
+    # because the alternative would have runprov quietly eat a script's own `--provenance`.
+    assert cli.main(["capture", "--provenance", str(tmp_path / "sc.json"), "summarise.py"]) == 0
+    assert (tmp_path / "sc.json").is_file()
+    assert not (tmp_path / "summarise.prov.json").exists(), "the default must not also fire"
+
+
+def test_capture_says_so_when_there_is_no_such_script(tmp_path, monkeypatch, capsys):
+    """Exit 2, `CANNOT_CHECK`: the invocation did not describe a run. Not 1, which would say
+    a run happened and something was wrong with it."""
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    assert cli.main(["capture", "nope.py"]) == 2
+    assert "no such script" in capsys.readouterr().err

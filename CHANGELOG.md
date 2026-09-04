@@ -536,6 +536,21 @@ because these were the last names to settle and the reasoning belongs with the r
   mechanism, the last two are defaults `Project` already supplies. All five still exist on
   their own modules (`runprov.run.PIN_UNSAFE`, and so on); they are no longer promises.
 
+### Recording a script nobody changed
+
+- **`runprov capture script.py`** runs an unmodified script — no `import runprov`, no
+  `run.input`, nothing — and records every data file the interpreter saw it read or write.
+  In-process via `runpy`, under the audit hook this package already installed and had been
+  using only to print a warning. A file the run wrote is an **output** even if it also read
+  it; the audit event has carried the mode all along (PEP 578 passes `(path, mode, flags)`)
+  and this hook read only the first of the three.
+- **It is a rung below `run.input()`, not a replacement,** and the README says so: an observed
+  record lists what was opened, not what mattered, and nothing in it is pinned into an
+  artifact. The records are the same format, so nothing is wasted at the migration.
+- `runprov exec` remains the sibling for non-Python steps: a subprocess has its own
+  interpreter and its own hooks, so it can record a command and never see inside it.
+  **ADR-0008.**
+
 ### An artifact answers for itself
 
 - **`verify` can now say "this file has not been edited since it was written."** It could

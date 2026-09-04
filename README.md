@@ -939,6 +939,36 @@ sidecar, or a directory input the stat check cannot speak for — and failing on
 any project with one reference directory permanently red. The count is on the summary line,
 where a reader can see it and reach for `--rehash`.
 
+### Recording a script you do not want to change
+
+`run.input(p)` is one call, and it is one call in every script — paid by every colleague, for
+ever. The scripts that most need a record are the exploratory ones nobody is going to
+refactor. So there is a rung below it:
+
+```bash
+runprov capture summarise.py            # the script is not modified. At all.
+```
+
+It runs the script **in this interpreter**, under the audit hook this package already
+installs, and records every data file the interpreter saw it read or write. A file the script
+wrote is an output; a file it only read is an input. Code, caches, site-packages and anything
+outside the project root are filtered out by the same rules that decide what counts as an
+unregistered read.
+
+It returns the script's own exit code, so it composes in a Makefile. Arguments after the
+script name go to the script.
+
+**What it does not give you, and this is the trade.** An observed record is *wider and
+weaker* than a declared one: it lists what was opened, not what mattered, and **nothing in it
+is pinned into an artifact** — `run.open_output()` is still the only way an artifact carries
+its own provenance and can be checked from its own bytes. Adopt `capture` in an afternoon;
+register properly where it matters. The records are the same format, so nothing is wasted at
+the migration.
+
+`runprov exec -- <command>` is the sibling for non-Python steps. It records the command, its
+tool versions and its exit code — but a subprocess has its own interpreter and its own hooks,
+so it cannot see inside. That is the difference between the two, and the reason both exist.
+
 ### What `OK` means, and what `ALTERED` means
 
 `verify` answers two questions about a pinned artifact, from its bytes alone — no history, no
@@ -2046,7 +2076,7 @@ objects — a test that reimplements its subject proves only that the test is se
 There is **one** `unittest.mock` use in the whole suite — in
 `test_size_is_stat_ed_after_the_hash_not_before` — to
 assert a call ORDER that no returned value can show. Everything else is substituted by a real
-thing — **about 2,900** uses of `tmp_path` (`grep -oE '\btmp_path\b' tests/test_runprov.py | wc -l`), actual
+thing — **about 3,000** uses of `tmp_path` (`grep -oE '\btmp_path\b' tests/test_runprov.py | wc -l`), actual
 files, actual JSONL, actual `Run` objects — or by a
 narrow simulation of an environment this machine is not (`sys.platform` for Windows,
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
@@ -2072,7 +2102,7 @@ The Windows leg skips ten times what any other does, and it is the only leg that
 assert the coverage floor — skipped tests leave their lines unmeasured, so 100% is
 unreachable there by construction rather than by regression. No other leg may lower it.
 
-Coverage is **100%** of **about 2,810 statements and 1,000 branches**, and the gate is set
+Coverage is **100%** of **about 3,000 statements and 1,050 branches**, and the gate is set
 there with `--cov-branch`.
 
 *Every figure in this section is approximate on purpose.* They exist to convey scale, and an
