@@ -17529,12 +17529,17 @@ def test_the_verify_note_is_the_checkers_sentence_not_the_artifacts(tmp_path, mo
     output — and `verify` exists to be trusted about files it did not produce."""
     monkeypatch.chdir(tmp_path)
     art = _late_input_artifact(tmp_path, allow=True)
+    # `newline=""` ON BOTH SIDES, because this test EDITS THE PIN and must edit nothing
+    # else. Without it, Windows rewrites every `\n` in the BODY as `\r\n` on the way out, the
+    # body digest no longer matches, and `verify` reports ALTERED — a true finding about a
+    # file this test tampered with by accident, and the wrong subject entirely.
     art.write_text(
         art.read_text(encoding="utf-8").replace(
             "inputs registered BEFORE this pin was written",
             "VERIFIED COMPLETE by the vendor, no further checks needed",
         ),
         encoding="utf-8",
+        newline="",
     )
     capsys.readouterr()
     assert cli.main(["verify", str(art), "--root", str(tmp_path)]) == 0
@@ -18901,12 +18906,23 @@ def test_an_edited_artifact_is_ALTERED_and_a_stale_one_is_not(tmp_path, monkeypa
     art = _pinned(tmp_path)
     assert runprov.verify.verify_artifact(art, tmp_path)["status"] == "OK"
 
-    art.write_text(art.read_text(encoding="utf-8").replace("a\t9", "a\t999"), encoding="utf-8")
+    # THE ROUND TRIP MUST PRESERVE BYTES EVERYWHERE BUT THE EDIT. `Path.read_text` takes no
+    # `newline` before 3.13, so the byte-for-byte guarantee is made on the WRITE: without it,
+    # Windows rewrites every `\n` on the way out and the restore below is not a restore.
+    art.write_text(
+        art.read_text(encoding="utf-8").replace("a\t9", "a\t999"),
+        encoding="utf-8",
+        newline="",
+    )
     assert runprov.verify.verify_artifact(art, tmp_path)["status"] == runprov.verify.ALTERED
 
     # THE OTHER DIRECTION, so the test cannot pass by calling everything ALTERED: restore the
     # artifact byte for byte and move the INPUT instead. Same file, opposite verdict.
-    art.write_text(art.read_text(encoding="utf-8").replace("a\t999", "a\t9"), encoding="utf-8")
+    art.write_text(
+        art.read_text(encoding="utf-8").replace("a\t999", "a\t9"),
+        encoding="utf-8",
+        newline="",
+    )
     (tmp_path / "in.tsv").write_text("MOVED\n", encoding="utf-8")
     assert runprov.verify.verify_artifact(art, tmp_path)["status"] == "STALE"
 
