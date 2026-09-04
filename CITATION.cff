@@ -5,15 +5,22 @@
 # question: "How do I cite this software, and who are the authors with their ORCIDs and
 # affiliations?" It had no answer anywhere in the project.
 #
-# NO ORCID FIELDS YET, and that is deliberate rather than an oversight. Both PEOPLE have
-# one; neither identifier has been recorded here. (The third author is an entity, and an
-# ORCID identifies a person — it has none to record.) An invented or guessed ORCID is worse than
-# a missing one — it resolves to a REAL PERSON who is not the author, and a citation is
-# exactly the place that error propagates. Add each as `orcid: "https://orcid.org/<id>"`
-# under the person it belongs to, once you have the strings themselves.
+# BOTH ORCIDs ARE RECORDED, supplied by the authors on 2026-09-04. The entity author has
+# none and never will: an ORCID identifies a PERSON.
 #
-# The example is written that way on purpose: a literal placeholder id in this comment
-# tripped the very test that forbids shipping one, which is the test working.
+# They were held empty until the strings themselves were in hand, on the reasoning that an
+# invented or guessed ORCID is worse than a missing one — it resolves to a REAL PERSON who is
+# not the author, and a citation is exactly the place that error propagates. A test still
+# forbids shipping the all-zeros placeholder, and it is NOT SPELLED OUT ANYWHERE IN THIS FILE
+# on purpose: the guard matches the literal string, so writing it here — even inside a comment
+# explaining the guard — trips it. That has now happened twice, to two different people
+# describing the same rule, which is the guard working and the reason this paragraph is
+# phrased the long way round.
+#
+# EACH CHECK DIGIT WAS VERIFIED before it was written here, not merely pasted. An ORCID
+# carries an ISO 7064 MOD 11-2 checksum over its first fifteen digits, so a transposed pair
+# is detectable rather than silent — and a silently wrong ORCID is precisely the failure the
+# paragraph above refuses. Both computed to the digit they carry.
 #
 # AUTHOR ORDER IS THE AUTHORS' TO SET and is recorded here as decided on 2026-09-01: Taylor
 # Thompson first as the author of the software, Christophe Rodriguez second as thesis
@@ -48,9 +55,11 @@ keywords:
 authors:
   - family-names: Thompson
     given-names: Taylor
+    orcid: "https://orcid.org/0009-0004-0091-0319"
     affiliation: "Plateforme GenoBioMICS, Hôpital Henri-Mondor, AP-HP · INSERM Unité U955, équipe Pawlotsky · Créteil, France"
   - family-names: Rodriguez
     given-names: Christophe
+    orcid: "https://orcid.org/0000-0002-9817-5006"
     affiliation: "Plateforme GenoBioMICS, Hôpital Henri-Mondor, AP-HP · INSERM Unité U955, équipe Pawlotsky · Créteil, France"
   # AN ENTITY AUTHOR, which CFF supports alongside people — a `name` instead of
   # `family-names`/`given-names`. This is how the platform gets credited in a citation

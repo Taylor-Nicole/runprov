@@ -1193,6 +1193,52 @@ def test_citation_metadata_exists_and_names_the_affiliation():
     assert "0000-0000-0000-0000" not in text, "never ship a placeholder ORCID"
 
 
+def test_every_person_in_the_citation_has_an_ORCID_that_checksums():
+    """An ORCID carries an ISO 7064 MOD 11-2 check digit over its first fifteen digits, so a
+    transposed pair is DETECTABLE rather than silent.
+
+    That matters more here than the shape does. A malformed ORCID fails loudly the first time
+    anybody resolves it; a well-formed WRONG one resolves to a real researcher who is not the
+    author, and a citation file is exactly where that error propagates — into every downstream
+    bibliography, silently, for ever. The neighbouring test forbids the all-zeros placeholder;
+    this one is the reason that test was never sufficient.
+
+    ENTITY AUTHORS ARE EXEMPT BY DERIVATION, not by name: an author with no `family-names` is
+    an organisation, and an ORCID identifies a person. So adding a fourth author cannot
+    quietly widen the exemption — only being an entity does."""
+    pkg = pathlib.Path(runprov.__file__).parent
+    cff = next(
+        (p for p in (pkg.parent / "CITATION.cff", pkg / "CITATION.cff") if p.is_file()), None
+    )
+    if cff is None:
+        pytest.skip("installed wheel: CITATION.cff is not packaged")
+    import yaml
+
+    def check_digit(base15):
+        total = 0
+        for ch in base15:
+            total = (total + int(ch)) * 2
+        result = (12 - total % 11) % 11
+        return "X" if result == 10 else str(result)
+
+    people = [
+        a for a in yaml.safe_load(cff.read_text(encoding="utf-8"))["authors"] if "family-names" in a
+    ]
+    # NON-VACUITY: an `authors` list that stopped parsing, or a filter that stopped matching,
+    # would check nobody and pass. "Nothing found" and "nothing looked at" are the same green.
+    assert len(people) >= 2, f"expected the person authors, found {people}"
+    for person in people:
+        who = f"{person.get('given-names')} {person.get('family-names')}"
+        orcid = person.get("orcid", "")
+        assert orcid.startswith("https://orcid.org/"), f"{who}: ORCID must be the full URL form"
+        digits = orcid.rsplit("/", 1)[-1].replace("-", "")
+        assert len(digits) == 16 and digits[:15].isdigit(), f"{who}: {orcid} is not 16 digits"
+        assert digits[15] == check_digit(digits[:15]), (
+            f"{who}: {orcid} FAILS ITS OWN CHECK DIGIT — it is a typo, and it resolves to "
+            f"somebody else or to nobody"
+        )
+
+
 # --------------------------------------------------------------------- robustness review
 def test_the_package_ships_pep561_type_information():
     """Without `py.typed` every annotation in this package is INVISIBLE to a downstream
