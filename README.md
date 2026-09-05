@@ -257,6 +257,22 @@ needed and least available. A header naming the script, the commit and the SHA-2
 input travels with the file, and `runprov verify` reports `STALE` from the artifact alone,
 without the pipeline, the engine or a re-run.
 
+> **Say the narrowed version of this, because the broad one is not true.** Provenance written
+> into a scientific artifact is standard and about fifteen years old: SAM/BAM `@PG` carries
+> the program, its version and the exact command line, chained through `PP`; **`@SQ M5`
+> carries the MD5 digest of the reference sequence in the header**; VCF has `##source` and
+> `##reference`. A content digest of an input, written into the file, is not new — and the
+> first bioinformatician who reads "the provenance travels with the artifact" will say so.
+>
+> What those do not do: they record **what ran**, not **what it read**. `@PG` carries no
+> digest of the inputs and `@SQ M5` digests the reference and nothing else, so a `@PG` chain
+> cannot be re-derived to answer *"is this result still valid?"*. They exist per format —
+> there is no `@PG` for a TSV, a parquet or a figure. And they come with no checker.
+>
+> So the claim is: **a format-agnostic pin carrying the content digest of every input, and a
+> checker that re-derives them from the artifact alone.** Checked 2026-09-04 against the
+> specifications; see `WHY.md`, *Related work, checked*.
+
 **3. An engine needs the DAG to exist.** Exploratory work is where the shape of the analysis
 is the unknown — and it is also where nothing gets recorded and where a wrong number enters a
 manuscript. By the time a Snakefile exists, the decisions that need explaining have already
