@@ -335,11 +335,35 @@ So *"the provenance travels with the file"* is a claim a bioinformatician will m
 digest of every input, plus a checker that re-derives them from the artifact alone.* That is
 narrower than "provenance in the file" and it is true.
 
+### MLflow — a different category, checked 2026-09-07
+
+Named in review and worth its own entry, because it is the tool most people reach for and it
+is **not** an alternative to this one.
+
+* **It has moved.** Its own PyPI summary now calls it *"the largest open source AI engineering
+  platform for agents, LLMs, and ML models"*. Tracking is one part of a platform that is
+  mostly about serving, evaluation and prompt management.
+* **It records what you DECLARE.** `log_param`, `log_metric`, `log_artifact` are explicit
+  calls. `mlflow.autolog()` is real but **framework-specific** — it hooks sklearn, Keras,
+  PyTorch and friends to capture hyperparameters, metrics and the model. It does not observe
+  arbitrary file reads, so a `pd.read_csv` of the wrong reference table is invisible to it in
+  the way it is invisible to a workflow engine's declared inputs.
+* **`log_artifact` copies the file INTO the store.** The provenance is not in the file; the
+  file is in the provenance. That is the exact inverse of the design here, and it is the right
+  design for comparing two hundred training runs.
+* **20 base runtime dependencies** — Flask, gunicorn, docker, SQLAlchemy, numpy, pandas,
+  scikit-learn, scipy, pyarrow, matplotlib among them — against 0.
+
+**The honest comparison is that they answer different questions.** MLflow answers *"which run
+gave the best AUC, and with what hyperparameters?"*. This answers *"what made this file, and
+does it still hold?"*. A platform that trains models should use MLflow for the training and
+would gain nothing by replacing it with this.
+
 ### What was NOT checked
 
 RO-Crate and W3C PROV are emitted (ADR-0009) and were **not** compared as alternatives —
 they are formats, not tools, and this package produces them rather than competing with them.
-ReproZip, Sacred, MLflow and datalad were named in review and not investigated; they address
+ReproZip, Sacred and datalad were named in review and not investigated; they address
 adjacent problems (environment packing, experiment tracking, dataset versioning) and if one
 is going into a paper it needs its own check. **Do not cite a tool this section does not
 list.**
