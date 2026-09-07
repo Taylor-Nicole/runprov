@@ -213,6 +213,79 @@ axis it is equivalent, not better. The difference that survives is that `run.inp
 launcher at all, the record goes INTO the artifact rather than into a store beside the
 project, and nothing is installed alongside it.
 
+**And the launcher difference is really about a FAILURE MODE.** `smt run` and `now run` fail
+*silently*: run the script the ordinary way — from a Makefile, an `sbatch`, an IDE, or a
+colleague's habit — and there is no record and nothing says so. `run.input()` is in the code,
+so it cannot be bypassed by launching differently. For a package whose subject is checks that
+only look green because they never ran, that asymmetry is the argument, not convenience.
+
+### The deployment this was actually written for
+
+Checked 2026-09-04. These are specific to a hospital platform — an air-gapped or
+intranet-only server, where installing anything is a procurement question and a listening
+port needs an address from the DSI — and they are the points that hold there.
+
+**What must NOT be claimed:** that the alternatives need a daemon, a server or an IP. They do
+not. Sumatra's `smtweb` is an `extra == "web"`, and with no Django installed it falls back to
+a **shelve** store and works; noWorkflow's `now vis -b` is a separate Flask command nobody has
+to run. **Both work air-gapped out of the box.** Anyone who has used either will say so.
+
+What holds instead:
+
+**1. Nothing to install alongside it.** Zero runtime dependencies against Sumatra's four and
+noWorkflow's ~7 (including SQLAlchemy and ipykernel). On an air-gapped machine every
+dependency is a separate artifact to obtain, transfer and have approved. This is a boring
+advantage and it is the one that decides whether a tool gets deployed at all.
+
+**2. THE RECORD IS READABLE WITH `cat`, AND VERIFIABLE WITH `sha256sum`.** This is the strong
+one, and it is why `transformation_log.yml` exists rather than being a nicety:
+
+| | what the record is | to read it you need |
+|---|---|---|
+| `transformation_log.yml` | UTF-8 YAML, one entry per run | `cat`, `grep`, `less` |
+| the run history | JSONL, one object per line | the same, or any language |
+| the pin | a comment block inside the artifact | the artifact |
+| Sumatra, no Django | **Berkeley DB** (`shelve` — pickled Python objects) | Python, and the same class definitions |
+| Sumatra, with Django | **SQLite** | the `sqlite3` binary, or Django |
+| noWorkflow | **SQLite via SQLAlchemy** | the same |
+
+Measured: `grep 'measurements.tsv'` finds two hits in `transformation_log.yml` and refuses
+both binary stores. `file` calls them *"Berkeley DB (Hash, version 9)"* and *"SQLite 3.x
+database"*.
+
+And the digests are written in `sha256sum`'s own format, which means **the record can be
+verified with coreutils and no Python at all** — measured on 2026-09-07:
+
+```
+$ grep -A2 '_sha256' provenance/transformation_log.yml | grep -oE '"[0-9a-f]{64}  [^"]+"' \
+    | tr -d '"' > SUMS
+$ sha256sum -c SUMS
+data/measurements.tsv: OK
+out/summary.tsv: OK
+
+# after appending one line to the input:
+data/measurements.tsv: FAILED
+sha256sum: WARNING: 1 computed checksum did NOT match
+```
+
+That is the whole argument for a machine where you cannot install a viewer, and it is the
+argument the "daemon" claim was a bad proxy for.
+
+**3. `transformation_log.yml` uses the field names of the log it replaced**, so anything that
+could read the hand-maintained transformation log reads this one. Two deliberate differences,
+both in its own header: every scalar is quoted, so `date` loads as an ISO-8601 string rather
+than a bare YAML timestamp; and a key is omitted when a run did not use the feature rather
+than filled with a default.
+
+**4. Concurrency is measured for this package and UNKNOWN for the others.** The history is
+JSONL appended under an exclusive `flock` with torn-line repair, verified at **16 × 20
+concurrent processes against one history: every start/record line present, 0 unpaired uids, 0
+unreadable lines** (2026-08-21; `sinks.py` has not been touched on that path since). **How
+Sumatra or noWorkflow behave under concurrent writers has not been checked here** — do not
+assume SQLite locking bites them. If several researchers sharing one store is going into an
+argument, measure it on your own hardware first; it is an afternoon's work and worth more
+than anything in their documentation.
+
 **Two corrections this check produced, and both were mine to make.**
 
 **Sumatra is maintained.** I had assumed it was abandoned — the documentation a search
