@@ -392,6 +392,84 @@ generation but not the run id:
 #     c1263ad3556572f4  data/labels.tsv
 ```
 
+## The record needs nothing installed to read, and nothing installed to check
+
+This is the property the rest of the design is in service of, and the one worth reading first
+if you deploy on a locked-down or air-gapped machine.
+
+Every run appends an entry to `provenance/transformation_log.yml`. It is UTF-8 YAML, one
+entry per run, and it looks like this:
+
+```yaml
+- step: "summarise"
+  date: "2026-09-07T16:37:21Z"
+  input: "data/measurements.tsv"
+  output: "out/summary.tsv"
+  run_command: "/…/python summarise.py"
+  cwd: "/…/project"
+  run_id: "adhoc_20260907T163721Z"
+  git_commit: "?"
+  status: "ok"
+  params: {"threshold": 5}
+  summary: {"rows_kept": 1}
+  input_sha256:
+    - "68ee2625f6f02498876b5180a5d151992bd8db27672f80cd84219e07f8265a44  data/measurements.tsv"
+  output_sha256:
+    - "6febaad77c74fae75d0c94d2a34d60d1e00ba2300ee194adec71aa20b3dd4903  out/summary.tsv"
+```
+
+**The digests are written in `sha256sum`'s own format.** So the record can be verified with
+coreutils, on a machine with no Python and no `runprov` installed at all:
+
+```console
+$ grep -A2 '_sha256' provenance/transformation_log.yml \
+    | grep -oE '"[0-9a-f]{64}  [^"]+"' | tr -d '"' > SUMS
+
+$ sha256sum -c SUMS
+data/measurements.tsv: OK
+out/summary.tsv: OK
+```
+
+and after one line is appended to the input:
+
+```console
+$ sha256sum -c SUMS
+data/measurements.tsv: FAILED
+out/summary.tsv: OK
+sha256sum: WARNING: 1 computed checksum did NOT match
+```
+
+That is the whole check, done by a binary that has been on every Unix since 2002.
+
+**Why this is not a nicety.** The comparable tools keep the record in a store you have to
+query rather than a file you can read — measured 2026-09-04: Sumatra keeps a **Berkeley DB**
+(`shelve`, i.e. pickled Python objects) when Django is not installed, or **SQLite** when it
+is; noWorkflow keeps **SQLite via SQLAlchemy**. `grep` refuses all three. Reading a shelve
+store back needs Python *and the same class definitions*, so a record written today may not
+load in five years.
+
+Nothing here is a criticism of those designs — a queryable store buys things a flat file
+cannot. It is a statement about where this one is meant to run: a hospital analysis machine,
+five years later, with nothing installed on it.
+
+| what you want | what you need |
+|---|---|
+| read the whole history | `cat provenance/transformation_log.yml` |
+| find every run that touched a file | `grep measurements.tsv provenance/*.yml` |
+| check the inputs still hash the same | `sha256sum -c` |
+| ask what produced *this* file, holding only the file | read its first lines — the pin is a comment block |
+| all of the above with `runprov` uninstalled | yes |
+
+The field names are those of the hand-maintained transformation log this replaced, so
+anything that could read that file reads this one. Two deliberate differences, stated in the
+file's own header: every scalar is quoted, so `date` loads as an ISO-8601 string rather than
+a bare YAML timestamp, and a key is **omitted** when a run did not use the feature rather
+than filled with a default.
+
+`runs.jsonl` beside it is the record of truth — append-only, one JSON object per line, also
+`grep`-able — and the YAML view can be rebuilt from it at any time with
+`python -m runprov log --format yaml`.
+
 ## One continuous history, and reading it back
 
 `runs.jsonl` is created by the first recorded run and **appended to forever** — every run
