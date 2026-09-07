@@ -152,8 +152,18 @@ it is most of the answer to "why did this run differ".
 * **It is not novel, and the pitch should not claim it is.** `sumatra`, `recipy`,
   `noWorkflow` and `dvc` all address versions of this. The honest positioning: *the smallest
   possible one, with each design choice traceable to a specific failure in a real project.*
-  Most of the alternatives ask you to run a daemon, adopt a workflow engine, or restructure
-  your pipeline. This one asks you to change `open(p)` to `open(run.input(p))`.
+  Most of the alternatives ask you to **launch your runs through their command** — `smt run`,
+  `now run` — or to adopt a workflow engine, or to restructure your pipeline. This one asks
+  you to change `open(p)` to `open(run.input(p))`, under whatever launcher you already use.
+
+  **This bullet used to say "run a daemon" and that was wrong.** Checked 2026-09-04:
+  neither Sumatra nor noWorkflow needs one. Both keep a local file-backed database — Sumatra
+  a Django store under `.smt/`, noWorkflow SQLAlchemy — and both ship an OPTIONAL viewer
+  (`smtweb`, `now vis -b`) that nobody has to run. Saying "daemon" was a caricature of the
+  nearest neighbours, and a reviewer who has used either would spot it in one line. The
+  checkable differences are the launcher, where the record lives, and the dependency count:
+  Sumatra installs four packages, noWorkflow around seven including SQLAlchemy, this one
+  installs none.
 
   **And "the provenance travels inside the artifact" is not novel either.** That was the
   claim this file was building toward, and a literature check on 2026-09-04 narrowed it — see
@@ -184,10 +194,24 @@ reviewer who finds one wrong stops trusting the rest.
 
 | | latest release | where the record lives |
 |---|---|---|
-| **Sumatra** | **0.8.1, 2025-07-14**, Python 3.9–3.13 | a project database (`.smt/`) |
-| **noWorkflow** | **2.1.3, 2024-12-11**, Python ≥3.8 | a SQLite database, from AST instrumentation + tracing |
+| **Sumatra** | **0.8.1, 2025-07-14**, Python 3.9–3.13 | Django store under `.smt/records` |
+| **noWorkflow** | **2.1.3, 2024-12-11**, Python ≥3.8 | SQLAlchemy database, from AST instrumentation + tracing |
 | **recipy** | 0.3.0, **2016-09-13** | MongoDB, by monkeypatching library readers |
 | **DVC** | actively developed | git-backed; versions DATA, does not record what a script read |
+
+**All three are Python, and NONE of them needs a daemon.** That matters because this file
+used to imply otherwise. What they do require, and this package does not:
+
+| | how a run is recorded | runtime dependencies |
+|---|---|---|
+| **Sumatra** | **`smt run --executable=python --main=main.py …`** — a plain `python script.py` is not recorded | 4 (`setuptools`, `packaging`, `parameters`, `pyyaml`); Django only under the `[web]` extra, Postgres/MySQL only under theirs |
+| **noWorkflow** | **`now run script.py`** | ~7, including SQLAlchemy |
+| **runprov** | `run.input(p)` inside the script, under any launcher — or `runprov capture script.py`, which IS the same shape as the two above | **0** |
+
+Be fair about the last row: **`capture` is `smt run` in a different hat.** On the launcher
+axis it is equivalent, not better. The difference that survives is that `run.input()` needs no
+launcher at all, the record goes INTO the artifact rather than into a store beside the
+project, and nothing is installed alongside it.
 
 **Two corrections this check produced, and both were mine to make.**
 
