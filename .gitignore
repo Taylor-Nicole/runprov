@@ -17,3 +17,19 @@ build/
 # and not something to commit.
 /provenance/
 examples/results/
+
+# THE TWO INTERNAL DRAFTS, untracked 2026-09-08 when the repository went public.
+#
+# L-08 had already kept `PUBLISHING.md` and `LICENSING.md` out of the sdist and off the
+# README, on the grounds that they address one person and keep superseded reasoning on
+# purpose. A private repository made that enough. A public one does not: below their
+# "SUPERSEDED IN PART" banners they still recommend MIT with the CHU as holder, which is
+# neither the licence nor the rights holder the source headers assert — and the DRCI has
+# not yet answered which is correct. A reader following the repository link from the letter
+# that asks that question would find the project appearing to answer it two ways.
+#
+# They stay on disk because the reasoning in them is worth having; they are simply not the
+# project's public position. Untracking is not deleting, and it does not remove them from
+# history — that would need a rewrite.
+/LICENSING.md
+/PUBLISHING.md
