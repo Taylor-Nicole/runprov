@@ -4700,8 +4700,10 @@ def test_the_public_surface_is_exactly_all_and_nothing_leaks_beside_it():
 
 
 def test_the_internal_drafts_are_not_packaged_and_not_linked():
-    """L-08. Both shipped inside the 0.1.0 sdist AND were linked from the README, which is
-    the `Description` PyPI freezes at upload.
+    """L-08, widened 2026-09-08. Both shipped inside the 0.1.0 sdist AND were linked from the
+    README, which is the `Description` PyPI freezes at upload. They are now untracked as
+    well, so this guards the three ways they could come back — the include list, a README
+    link, and a citation from a file that does ship — without requiring them to be present.
 
     They are addressed to one person — "that decision, and the account it happens under, are
     yours" — and both keep superseded reasoning on purpose: PUBLISHING.md recommends MIT, and
@@ -4726,7 +4728,10 @@ def test_the_internal_drafts_are_not_packaged_and_not_linked():
     include = sdist[sdist.index("include = [") : sdist.index("]", sdist.index("include = ["))]
     readme = _readme()
     for name in _NOT_FOR_DISTRIBUTION:
-        assert (_repo_root() / name).is_file(), f"{name} is gone; excluding it was not deleting it"
+        # NOT `is_file()` any more. Until 2026-09-08 this asserted the file was still THERE,
+        # because excluding it from the sdist was not the same as deleting it. Going public
+        # untracked both, so on a fresh clone they do not exist and that assertion failed for
+        # the one audience — someone who cloned the public repository — the guard is for.
         assert f'"{name}"' not in include, f"{name} is in the sdist include list"
         assert f"]({name})" not in readme and f"/blob/main/{name})" not in readme, (
             f"the README links {name}, and the README is the description PyPI freezes"
