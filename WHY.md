@@ -181,7 +181,10 @@ it is most of the answer to "why did this run differ".
 
 * **It records; it does not audit.** It cannot tell you a registered read was the read that
   *mattered*, and it cannot see a rule reimplemented as control flow. The half that makes the
-  record trustworthy is a separate checker that fails the build on an unregistered read.
+  record trustworthy is a separate checker that fails the build on an unregistered read —
+  **which now exists** and did not when this bullet was first written: `.pre-commit-hooks.yaml`
+  and `action.yml`, ADR-0007. Adopting the library is not the same as adopting the check, and
+  a project that skips the second has a record nobody is obliged to keep honest.
 * **It does not version your data.** That is DVC's job, and they compose fine.
 
 ## Related work, checked
@@ -304,6 +307,40 @@ on. Say the trade; do not claim the coverage.
 does, and only through the libraries somebody remembered to patch — an unpatched reader is
 invisible, silently. The audit hook sees every `open` because the interpreter emits it.
 
+### The AST and bytecode tools — a family it is easy to confuse this with
+
+Raised in review: how does this differ from Python's `ast`, LibCST, Pyccolo, `torch.fx` or
+TorchDynamo? The short answer is that **all of those change or re-emit the program, and this
+one does not** — but the interesting part is why that trade goes the way it does here.
+
+| | what it does | does the observed program change? |
+|---|---|---|
+| `ast`, LibCST | parse to a tree (LibCST losslessly, so it round-trips comments and formatting) — the substrate for linters and codemods | only if you rewrite and re-emit |
+| **Pyccolo** | instrumentation as a library: AST rewriting with hooks at chosen syntactic events | **yes, by design** |
+| **`torch.fx`** | symbolic tracing of an `nn.Module` into a graph you can transform | yes — it produces a new module |
+| **TorchDynamo** | bytecode-level graph capture for compilation | yes — it rewrites bytecode |
+| **noWorkflow** | provenance via AST instrumentation plus tracing | **yes** |
+| **this** | PEP 578 audit hook + an explicit `run.input()` call | **no** |
+
+Only two of those are provenance tools; the rest are transformation frameworks that a
+provenance tool could be *built on*, and noWorkflow is roughly what that looks like when
+someone does.
+
+**The trade is granularity against fidelity, and it is a real trade.** AST instrumentation can
+say *which value came from which* — dataflow inside the function — and this cannot; it records
+that a file was read, not what happened to the bytes afterwards. What it buys is that the code
+that runs is the code you wrote. The suite has a section headed *"provenance must not change
+the program it observes"* for that reason, and for a record that may end up attached to a
+clinical result, that is the side to be on. **Say the trade; do not claim the coverage.**
+
+One practical consequence worth naming, since it is the same failure mode as `smt run`: a
+rewriting observer only sees what it was wired into. `sys.addaudithook` gets an `open` event
+because the interpreter emits it, from any library, including one nobody thought about.
+
+*Definitional claims above, from each project's own documentation of what it is; no release
+or maintenance status is asserted for any of them, deliberately, because that goes stale and
+this file has been wrong that way once already.*
+
 ### The claim that had to be narrowed
 
 **In-band provenance in a scientific artifact is standard, and predates this by about
@@ -324,9 +361,28 @@ So *"the provenance travels with the file"* is a claim a bioinformatician will m
 1. They record **what ran**, not **what it read**. `@PG` has no digest of the inputs; `@SQ M5`
    digests the reference and nothing else. So a `@PG` chain cannot answer *"is this result
    still valid?"* — it cannot be re-derived and compared.
-2. They are **per format**. There is no `@PG` for a TSV, a CSV, a parquet, a figure or a
-   JSON. The pin here is format-agnostic, and where a format cannot hold a comment the
-   package says so and writes a sidecar rather than pretending.
+2. They are **per format**, and that is the binding limit in practice rather than a
+   quibble. There is no `@PG` for a TSV, a CSV, a parquet, a figure or a JSON. The pin here
+   is format-agnostic, and where a format cannot hold a comment the package says so and
+   writes a sidecar rather than pretending.
+
+   **Measured, because "in practice" needs a number** (2026-09-07, the six analysis
+   repositories of the platform this was written for, virtualenvs excluded, `.gz` unwrapped
+   before the extension is taken so `x.csv.gz` counts as CSV):
+
+   ```
+   GenBank 692,435 · CSV 201,183 · PNG 4,212 · JSON 1,951 · HTML 1,448
+   FASTA 839 · TSV 709 · parquet 686        total 903,463
+   SAM 0 · BAM 0 · CRAM 0 · VCF 0 · BCF 0
+   ```
+
+   So of 903,463 data artifacts, **none** is in a format that has an in-band provenance
+   convention at all. Two caveats to state before someone else does: two directories hold
+   96% of that corpus, and **a group whose pipelines end in BAM would count differently**.
+   The point is not that `@PG` is inadequate — it is that its coverage is a property of the
+   formats a group happens to use, and here that coverage is exactly zero. Re-run it with
+   `find | sed 's|.*\.||' | sort | uniq -c` before quoting it anywhere; a number nobody can
+   reproduce is the thing this package exists to complain about.
 3. They have **no checker**. `runprov verify` re-derives every pinned digest and reports
    `STALE`, `GONE` or `ALTERED` from the artifact's own bytes, with no history, no database
    and no network.
