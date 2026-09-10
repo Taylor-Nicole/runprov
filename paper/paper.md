@@ -19,19 +19,17 @@ date: 10 September 2026
 bibliography: paper.bib
 ---
 
-<!-- DRAFT. NOT SUBMITTED.
-     Prose, reviewer preparation and the trimming history live in
-     `runprov_paper/PAPER-DRAFT-joss.md`; this file is the extract JOSS builds from.
+<!-- DRAFT. NOT SUBMITTED. GENERATED — edit `runprov_paper/PAPER-DRAFT-joss.md` and re-run
+     `runprov_paper/extract_paper.py`; hand edits here are lost on the next extraction.
 
-     THE AUTHOR LIST IS NOT SETTLED. It carries one name because JOSS asks for contribution
-     to the SOFTWARE, and because question 2 of the letter to the DRCI asks who should figure
-     where — that answer decides this block. If Christophe Rodriguez becomes an author here,
-     the sentence thanking him in the Acknowledgements must come out: one does not thank a
-     co-author.
+     THE AUTHOR LIST CARRIES ONE NAME. JOSS asks for contribution to the SOFTWARE. Christophe
+     Rodriguez is acknowledged as thesis director rather than listed here — settled 2026-09-10
+     — and those two choices move together: if he ever becomes an author, the sentence
+     thanking him must come out, because one does not thank a co-author.
 
-     Affiliations are word-for-word `CITATION.cff`'s. If one is edited, edit the other.
-     The National Reference Center is named in the Acknowledgements as the funder of the
-     post, not as an affiliation; see `runprov_paper/REFERENCES.md`.
+     Affiliations are word-for-word `CITATION.cff`'s. If one is edited, edit the other. The
+     National Reference Center is named in the Acknowledgements as the funder of the post, not
+     as an affiliation; see `runprov_paper/REFERENCES.md`.
 -->
 
 > *"Let the seal … be set upon these lines, and they shall never be filched from him, nor
@@ -129,7 +127,6 @@ durability, deliberately.
 This work was carried out within the National Reference Center for Viral Hepatitis B, C and D
 (Hôpital Henri-Mondor, AP-HP, Créteil), designated by Santé publique France; the first
 author's post is funded by that centre's budget. We thank Professor Christophe Rodriguez,
-thesis director, and the whole Plateforme GenoBioMICS team (DMU Biologie-Pathologie) for the
-infrastructure and working context in which this tool was written, and Professor Jean-Michel
-Pawlotsky's team at INSERM U955 for the setting its requirements came from — the failure that
-produced it was met in that group's own pipeline.
+thesis director, and the whole Plateforme GenoBioMICS team (DMU Biologie-Pathologie) — for the
+infrastructure and working context in which this tool was written, and for the setting its
+requirements came from — together with Professor Jean-Michel Pawlotsky's team at INSERM U955.
