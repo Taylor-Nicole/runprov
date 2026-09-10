@@ -36,6 +36,18 @@ license-files = ["LICENSE"]   # redundant (the default glob finds it) but pins i
 # that AP-HP holds the copyright; this file is what PyPI reads and displays, and it named
 # Taylor alone — so one artefact gave two answers to "whose is this?", and PyPI does not
 # permit a version's metadata to be replaced after upload.
+#
+# AND THIS LIST IS DELIBERATELY NOT `CITATION.cff`'s. That file credits CONTRIBUTORS — Taylor,
+# Christophe Rodriguez as thesis director, and the Plateforme GenoBioMICS as an entity author,
+# each with an ORCID and a full affiliation. This field is package metadata: PyPI renders it
+# as `Author`, and core Python metadata has NO copyright-holder field, which is the only
+# reason a legal entity appears in something called `authors`. The two lists answer different
+# questions and are expected to differ; neither is a copy of the other.
+#
+# Whether anyone else belongs in EITHER list is question 2 of `runprov_paper/EMAIL-directeur.md`
+# and is not settled. Do not add a name here to make the two match — JOSS reviewers check
+# authorship against contribution to the SOFTWARE, so a name added for symmetry is a claim
+# somebody then has to defend.
 authors = [
     { name = "Assistance Publique – Hôpitaux de Paris (AP-HP)" },
     { name = "Taylor Thompson", email = "taylor.nicole.thompson@gmail.com" },
