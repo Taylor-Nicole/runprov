@@ -48,8 +48,20 @@ license-files = ["LICENSE"]   # redundant (the default glob finds it) but pins i
 # and is not settled. Do not add a name here to make the two match — JOSS reviewers check
 # authorship against contribution to the SOFTWARE, so a name added for symmetry is a claim
 # somebody then has to defend.
+#
+# ORDER AND ROLE, settled 2026-09-10 alongside the JOSS paper. The person who wrote the
+# software comes first — the paper names her as its sole author, and `CITATION.cff` lists her
+# first — because AP-HP standing at the head of a field called `authors` read as though the
+# institution had written the code. It is named here for one reason only: it holds the
+# copyright and core metadata has nowhere else to say so.
+#
+# `maintainers` exists so "who wrote it" and "who to write to" are not the same field. It also
+# keeps a personal address off the line that names the institution.
 authors = [
+    { name = "Taylor Thompson" },
     { name = "Assistance Publique – Hôpitaux de Paris (AP-HP)" },
+]
+maintainers = [
     { name = "Taylor Thompson", email = "taylor.nicole.thompson@gmail.com" },
 ]
 keywords = ["provenance", "reproducibility", "research-software", "data-lineage",
