@@ -196,6 +196,32 @@ def build() -> None:
     if (ROOT / "dist").is_dir():
         shutil.rmtree(ROOT / "dist")  # never check a stale artifact
     run(PY, "-m", "build")
+
+    # `twine check --strict` PASSES WITHOUT CHECKING THE DESCRIPTION when readme_renderer has
+    # no markdown backend installed: it validates the metadata, finds it cannot render
+    # `text/markdown`, and reports PASSED anyway. That is the check most worth having, because
+    # PyPI freezes the rendered description at upload and the only fix afterwards is another
+    # release. Measured 2026-09-10 on this very venv: `readme_renderer.markdown.render()`
+    # returned None while `twine check --strict` printed PASSED for both artifacts.
+    #
+    # So the renderer is proved to work FIRST, on a fragment whose output is known. A positive
+    # control, because "nothing failed" and "nothing was examined" print the same word.
+    # chr(10) rather than an escaped newline: this string is SOURCE passed to `-c`, and a
+    # literal newline inside its single-quoted argument is a SyntaxError. The first
+    # version of this probe had exactly that, so it exited non-zero and reported a
+    # missing renderer — a guard failing for a reason other than the one it names,
+    # which is worse than no guard at all.
+    probe = (
+        "import readme_renderer.markdown as m, sys;"
+        "h = m.render('# t' + chr(10) + chr(10) + '`c`' + chr(10));"
+        "sys.exit(0 if h and '<h1' in h and '<code>' in h else 1)"
+    )
+    if subprocess.run([PY, "-c", probe], capture_output=True).returncode != 0:
+        raise SystemExit(
+            "readme_renderer cannot render markdown, so `twine check --strict` would pass "
+            "without looking at the description — which is the part PyPI freezes.\n"
+            f"Install the backend into this environment:  {PY} -m pip install comrak"
+        )
     run(
         PY, "-m", "twine", "check", "--strict", *[str(p) for p in sorted((ROOT / "dist").iterdir())]
     )
