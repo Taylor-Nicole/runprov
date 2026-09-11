@@ -4755,24 +4755,75 @@ def test_the_internal_drafts_are_not_packaged_and_not_linked():
     assert not dangling, f"shipped file(s) cite a file that is not in the sdist: {dangling}"
 
 
-def test_the_readme_has_no_relative_links_because_it_is_the_pypi_page():
-    """The README becomes `Description` in METADATA, and PyPI does not rewrite relative
-    links: they resolve against `https://pypi.org/project/runprov/` and dead-end.
+def _pypi_description() -> tuple[str, str]:
+    """(filename, text) of the file PyPI freezes — DERIVED from `readme =`, never named here.
+
+    It was `README.md` until 2026-09-11 and is now a shorter `README-pypi.md`. A test that
+    hard-codes the name keeps passing while checking a file PyPI no longer shows: the scope
+    pattern this project keeps re-finding, in the one check whose subject cannot be edited
+    after upload.
+    """
+    pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r"^readme\s*=\s*[\"']([^\"']+)[\"']", pyproject, re.M)
+    assert m, "pyproject names no `readme`; nothing knows what PyPI would display"
+    name = m.group(1)
+    path = _repo_root() / name
+    assert path.is_file(), f"pyproject points `readme` at {name}, which does not exist"
+    return name, path.read_text(encoding="utf-8")
+
+
+def test_the_pypi_description_has_no_relative_links():
+    """Whatever `readme =` names becomes `Description` in METADATA, and PyPI does not rewrite
+    relative links: they resolve against `https://pypi.org/project/runprov/` and dead-end.
 
     This is a test rather than a review note because the description **cannot be edited
-    after upload** — the same immutability PUBLISHING.md argues for versions applies to the
-    prose inside them, so the only remedy for a dead link is a new release. A pure `#anchor`
-    is fine: PyPI renders the headings it points at.
+    after upload**, so the only remedy for a dead link is a new release. A pure `#anchor` is
+    fine: PyPI renders the headings it points at.
     """
+    name, text = _pypi_description()
     bad = [
         m.group(0)
-        for m in re.finditer(r"\[[^\]]+\]\(([^)]+)\)", _readme())
+        for m in re.finditer(r"\[[^\]]+\]\(([^)]+)\)", text)
         if not m.group(1).startswith(("http://", "https://", "#"))
     ]
     assert not bad, (
-        f"{len(bad)} link(s) that 404 on the PyPI page: {bad}. Use the absolute "
+        f"{len(bad)} link(s) in {name} that 404 on the PyPI page: {bad}. Use the absolute "
         f"https://github.com/…/blob/main/ form; a relative path only works on GitHub."
     )
+
+    # POSITIVE CONTROL. An empty `bad` also means "found no links at all", which is what a
+    # broken regex or an empty file looks like.
+    assert re.search(r"\[[^\]]+\]\(https://", text), f"{name} has no absolute links to check"
+
+
+def test_the_pypi_description_ships_and_its_example_is_real_api():
+    """Two ways the short page could rot silently.
+
+    It must be IN the sdist: `readme =` puts it in the wheel metadata either way, but a
+    packager rebuilding from the tarball gets a source tree whose pyproject points at a file
+    that is not there, and the build fails for them and not for us.
+
+    And its example is the first thing a reader copies. It is parsed, and every `run.*` call
+    in it must exist on `Run` — a name that drifts here is a broken quickstart frozen on a
+    page that cannot be edited.
+    """
+    name, text = _pypi_description()
+    pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
+    sdist = pyproject[pyproject.index("[tool.hatch.build.targets.sdist]") :]
+    include = sdist[sdist.index("include = [") : sdist.index("]", sdist.index("include = ["))]
+    assert f'"{name}"' in include, f"{name} is the PyPI description and is not in the sdist"
+
+    tree = ast.parse(_first_python_block(text))
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and getattr(node.func.value, "id", None) == "run"
+    }
+    assert called, f"the example in {name} calls nothing on `run`"
+    missing = sorted(a for a in called if not hasattr(runprov.Run, a))
+    assert not missing, f"{name} teaches Run method(s) that do not exist: {missing}"
 
 
 def test_the_readme_quickstart_teaches_the_shape_that_actually_records():

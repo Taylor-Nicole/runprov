@@ -27,8 +27,13 @@ build-backend = "hatchling.build"
 [project]
 name = "runprov"
 version = "0.1.0"
-description = "Record what a script read, wrote and ran as — in a form a checker can verify"
-readme = "README.md"
+description = "Records what a script really read and wrote — inside the result file, checkable with sha256sum"
+# THE PYPI PAGE IS A DIFFERENT, SHORTER DOCUMENT than the repository README, which is 125 kB
+# and 26 tables. PyPI freezes this description at upload and the only fix afterwards is another
+# release, so what it freezes is a page someone can read in two minutes, and the long one stays
+# where it can keep changing. Anything that asserts something about "the page PyPI freezes"
+# must DERIVE the filename from this line rather than naming README.md.
+readme = "README-pypi.md"
 requires-python = ">=3.10"
 license = "BSD-3-Clause"      # PEP 639 SPDX expression
 license-files = ["LICENSE"]   # redundant (the default glob finds it) but pins intent
@@ -61,8 +66,13 @@ authors = [
     { name = "Taylor Thompson" },
     { name = "Assistance Publique – Hôpitaux de Paris (AP-HP)" },
 ]
+# NO EMAIL, deliberately. `Maintainer-email` is rendered on the project page and scraped from
+# it; the issue tracker under [project.urls] is the contact route. This does NOT make the
+# address private — it is the author of all 258 commits in a public repository — but a PyPI
+# page is harvested far harder than a git log, and it is the line that would sit directly
+# under the institution's name.
 maintainers = [
-    { name = "Taylor Thompson", email = "taylor.nicole.thompson@gmail.com" },
+    { name = "Taylor Thompson" },
 ]
 keywords = ["provenance", "reproducibility", "research-software", "data-lineage",
             "checksum", "audit"]
@@ -195,7 +205,8 @@ artifacts = ["runprov/py.typed"]
 # and the file says so a section later). Inside the sdist that reads as the project's
 # position rather than as somebody's notes, and it travels beside a README that PyPI freezes
 # forever. They stay in the repository, where the audience is the person they address.
-include = ["runprov", "tests", "examples", "ci.py", "tools", "README.md", "WHY.md",
+include = ["runprov", "tests", "examples", "ci.py", "tools", "README.md", "README-pypi.md",
+           "WHY.md",
            "GETTING-STARTED.md", "docs",
            "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "DCO.txt", "LICENSE",
            "CITATION.cff", "CHANGELOG.md", "SECURITY.md", ".ruff.toml",
