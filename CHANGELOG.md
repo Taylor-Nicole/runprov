@@ -9,7 +9,16 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
-Nothing yet. `release_check` refuses a `v*` tag while this heading says `[Unreleased]`, so
+### Tooling
+
+* **`ruff` 0.16.2 → 0.16.6, `mypy` 2.3.0 → 2.3.1, `build` 1.5.0 → 1.6.0.** Applied by hand
+  across all seven pin sites rather than by merging Dependabot's pull requests, which edit
+  `pyproject.toml` alone: Dependabot does not read workflow `run:` lines, and the
+  `.pre-commit-config.yaml` pin is a `rev:` it cannot match either. Nothing new was reported
+  by either tool — `ruff check`, `ruff format --check` and `mypy --strict` all clean at the
+  new versions.
+
+Nothing else yet. `release_check` refuses a `v*` tag while this heading says `[Unreleased]`, so
 dating it is part of cutting a release rather than something to remember separately.
 
 ## [0.1.0] — 2026-09-11

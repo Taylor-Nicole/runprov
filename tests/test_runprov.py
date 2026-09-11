@@ -4924,6 +4924,12 @@ def test_every_pinned_tool_version_agrees_across_pyproject_and_the_workflows():
 
     Both sides are DERIVED — every `name==version` in the dev extra, every `name==version` in
     any workflow — so a tool pinned tomorrow is covered without editing this test.
+
+    IT DOES NOT COVER `.pre-commit-config.yaml`, which pins ruff as `rev: v0.16.6` and is
+    therefore invisible to a `name==version` search. That link has its own test,
+    `test_the_pre_commit_ruff_matches_the_one_the_gate_enforces`, and it is the one that
+    caught the seventh pin site while these three bumps were being applied. Two tests, two
+    spellings, and neither pretends to cover the other's.
     """
     pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
     # NOT `index("]")`: the list contains `"runprov[test]"`, whose bracket ends the slice two
