@@ -31,8 +31,14 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
 title: runprov
+# THE FIRST SENTENCE IS `pyproject.toml`'s `description`, WORD FOR WORD, and a test asserts
+# it. They are two descriptions of one package shown to two audiences — this one on Zenodo and
+# under GitHub's "Cite this repository", that one on PyPI and in `pip show` — and they had
+# already drifted: this file kept "in a form a checker can verify" for a day after the PyPI
+# summary was sharpened. The rest of the paragraph is free to say more; the opening claim is
+# not free to differ.
 abstract: >-
-  Records what a script read, wrote and ran as, in a form a checker can verify. Inputs are
+  Records what a script really read and wrote — inside the result file, checkable with sha256sum. Inputs are
   hashed at the moment they are opened, the resulting pin is written into the artifact
   itself rather than only into a sidecar, and the pin is deterministic so that a changed
   header means changed inputs. Zero runtime dependencies.
