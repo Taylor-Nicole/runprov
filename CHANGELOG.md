@@ -7,6 +7,11 @@ taking precedence over the Python API while this is `0.x`.
 Entries state what was **measured**, not what was improved. A fix with no number beside it
 is a fix nobody checked.
 
+## [Unreleased]
+
+Nothing yet. `release_check` refuses a `v*` tag while this heading says `[Unreleased]`, so
+dating it is part of cutting a release rather than something to remember separately.
+
 ## [0.1.0] — 2026-09-11
 
 The first published release. Everything below is what it contains.
