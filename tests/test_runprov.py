@@ -4903,6 +4903,57 @@ def test_record_header_refuses_a_suffix_it_would_have_to_guess_at(tmp_path):
     assert _header_of(tmp_path, "g.csv", "a,b\n", record_header=True) == ["a", "b"]
 
 
+#: Standard-library modules younger than some supported Pythons, with the version that got
+#: them. A WIDENING LIST and not a guarantee — nothing here can enumerate the whole standard
+#: library per version, and CI on the minimum interpreter remains the real check. It exists
+#: because the same mistake is cheap to make and expensive to find: `tomllib` is 3.11+, it
+#: passed on every developer machine and three of four CI legs, and it failed the `v0.1.0`
+#: tag itself. Add a row the next time one gets through.
+_TOO_YOUNG = {"tomllib": (3, 11), "graphlib": (3, 9)}
+
+
+def test_nothing_imports_a_stdlib_module_younger_than_requires_python():
+    """`requires-python` is a promise, and a test may not need more than the package does.
+
+    Checked against the floor DECLARED in pyproject rather than a number written here, so
+    raising the floor relaxes this automatically and lowering it tightens it.
+    """
+    pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r'^requires-python = ">=(\d+)\.(\d+)"', pyproject, re.M)
+    assert m, "pyproject declares no requires-python floor"
+    floor = (int(m.group(1)), int(m.group(2)))
+
+    offenders = []
+    for path in [
+        _repo_root() / "ci.py",
+        pathlib.Path(__file__),
+        *sorted((_repo_root() / "runprov").glob("*.py")),
+    ]:
+        text = path.read_text(encoding="utf-8")
+        for module, added in _TOO_YOUNG.items():
+            if added <= floor:
+                continue
+            for node in ast.walk(ast.parse(text)):
+                names = (
+                    [a.name for a in node.names]
+                    if isinstance(node, ast.Import)
+                    else [node.module or ""]
+                    if isinstance(node, ast.ImportFrom)
+                    else []
+                )
+                if any(n.split(".")[0] == module for n in names):
+                    offenders.append(f"{path.name} imports {module} (stdlib in {added})")
+
+    assert not offenders, f"supported Python is >={floor[0]}.{floor[1]}: " + "; ".join(
+        sorted(set(offenders))
+    )
+
+    # NON-VACUITY: a table whose every entry is older than the floor checks nothing.
+    assert any(added > floor for added in _TOO_YOUNG.values()), (
+        "every module in _TOO_YOUNG predates the supported floor; this test checks nothing"
+    )
+
+
 def test_the_citation_abstract_opens_with_the_package_description():
     """One package, two descriptions, two audiences — and they had already drifted.
 
@@ -4925,10 +4976,15 @@ def test_the_citation_abstract_opens_with_the_package_description():
     if not cff.is_file():  # pragma: no cover - absent in an unpacked sdist
         pytest.skip("CITATION.cff not present")
 
-    import tomllib
-
-    pyproject = tomllib.loads((_repo_root() / "pyproject.toml").read_text(encoding="utf-8"))
-    description = pyproject["project"]["description"]
+    # A REGEX, NOT `tomllib`. `tomllib` entered the standard library in 3.11 and this package
+    # supports 3.10, so importing it here passed on every developer machine and on three of
+    # the four CI legs, and failed the 3.10 leg — which is how a red `main` went unnoticed for
+    # three commits and then failed the v0.1.0 tag itself. `requires-python` is the contract;
+    # a test may not need more than it.
+    pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r'^description = "([^"]+)"', pyproject, re.M)
+    assert m, "pyproject declares no description"
+    description = m.group(1)
     abstract = yaml.safe_load(cff.read_text(encoding="utf-8"))["abstract"]
 
     # NON-VACUITY: an empty description would make `startswith` true against anything.
