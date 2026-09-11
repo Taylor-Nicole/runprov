@@ -7,7 +7,7 @@ repos:
   # with the new one, so the tool that exists to catch a failure early creates one. There is
   # a test asserting these two agree.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.2
+    rev: v0.16.6
     hooks:
       - id: ruff
         args: [--fix]
