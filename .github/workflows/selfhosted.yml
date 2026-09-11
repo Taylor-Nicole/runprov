@@ -121,7 +121,7 @@ jobs:
       - run: |
           set -euo pipefail
           "${{ steps.py.outputs.bin }}" -m venv "$RUNNER_TEMP/build"
-          "$RUNNER_TEMP/build/bin/python" -m pip install --quiet "build==1.5.0" "twine==7.0.0"
+          "$RUNNER_TEMP/build/bin/python" -m pip install --quiet "build==1.5.0" "twine==7.0.0" comrak
       # `ci.py build`, which does more than build: it checks the sdist against the include
       # list, installs the wheel into a clean venv, imports it from elsewhere, and runs the
       # suite the TARBALL ships from the tarball.
