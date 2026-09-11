@@ -43,6 +43,10 @@ abstract: >-
   itself rather than only into a sidecar, and the pin is deterministic so that a changed
   header means changed inputs. Zero runtime dependencies.
 version: 0.1.0
+# REQUIRED BY `ci.py release_check` ONCE THE CHANGELOG STOPS SAYING [Unreleased]: a citation
+# for a released version with no date has no year in it, which is the one field every
+# citation style needs. The check refuses the tag rather than shipping a dateless citation.
+date-released: "2026-09-11"
 # NO `date-released` YET, and that is a statement rather than an omission: this version has
 # not been released. Zenodo and GitHub render a citation without a year until it is set, and
 # a citation without a year is a poor one -- so `python ci.py release-check` (which `build`
