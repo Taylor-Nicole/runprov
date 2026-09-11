@@ -4865,7 +4865,8 @@ def test_record_header_survives_the_crlf_that_csv_writes(tmp_path):
     assert b"\r\n" in raw, "csv did not write CRLF, so this test is no longer testing anything"
 
     line = (tmp_path / "provenance" / "runs.jsonl").read_text(encoding="utf-8").splitlines()[-1]
-    header = [o for o in json.loads(line)["outputs"] if o["path"].endswith("w.tsv")][0]["header"]
+    out = next(o for o in json.loads(line)["outputs"] if o["path"].endswith("w.tsv"))
+    header = out["header"]
     assert header == ["sample", "value"], f"the CR survived into the record: {header!r}"
 
 
