@@ -4843,6 +4843,32 @@ def test_record_header_without_a_trailing_newline_and_with_nothing_written(tmp_p
     assert _header_of(tmp_path, "e.csv", "", record_header=True) is None
 
 
+def test_record_header_survives_the_crlf_that_csv_writes(tmp_path):
+    """`csv.DictWriter` emits `\r\n` on EVERY platform — that is why `newline=""` is
+    mandatory on this handle — so the first line arrives as `sample\tvalue\r` after the
+    split. Parsed with `csv.reader` the `\r` is gone; split on the delimiter it is not, and
+    the last column would be recorded as `value\r` for every artifact written the way the
+    README's own front page writes one.
+
+    This is the Windows CRLF family that has bitten this package twice (`\r\r\n` rows, and
+    a different sha256 per platform), reaching a new field. Pinned so that simplifying
+    `csv.reader` into `line.split(delimiter)` fails here instead of in somebody's record.
+    """
+    runprov.configure(root=tmp_path)
+    with runprov.Run("crlf", {}, provenance=tmp_path / "p.prov.json") as run:
+        with run.open_output(tmp_path / "w.tsv", record_header=True) as fh:
+            writer = csv.DictWriter(fh, fieldnames=["sample", "value"], delimiter="\t")
+            writer.writeheader()
+            writer.writerow({"sample": "A", "value": 1})
+
+    raw = (tmp_path / "w.tsv").read_bytes()
+    assert b"\r\n" in raw, "csv did not write CRLF, so this test is no longer testing anything"
+
+    line = (tmp_path / "provenance" / "runs.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    header = [o for o in json.loads(line)["outputs"] if o["path"].endswith("w.tsv")][0]["header"]
+    assert header == ["sample", "value"], f"the CR survived into the record: {header!r}"
+
+
 def test_record_header_does_not_detect_whether_a_header_exists(tmp_path):
     """THE DOCUMENTED FAILURE, pinned so it stays documented rather than becoming a surprise.
 
