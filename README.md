@@ -1,6 +1,31 @@
 # runprov
 
-Record what a script read, wrote and ran as — in a form a checker can verify.
+**Records what a Python script actually read, wrote and ran — and writes that record into the
+result file itself.**
+
+A hand-maintained log describes what an author believed they did. It cannot describe what the
+program did. `runprov` records the reads and writes as they happen, and writes the record in
+two forms that need no software to read: a YAML log whose digests are in `sha256sum`'s own
+format, and a comment header inside the artifact.
+
+One command, `runprov verify`, re-derives every recorded digest and reports whether a result
+still follows from the inputs it was made from — or has itself been edited — **reading only
+the file**. No database, no history, no network.
+
+- **Zero runtime dependencies.** Python 3.10+.
+- **Observed, not declared.** A CPython audit hook sees every `open`, including those made by
+  a library nobody thought to instrument; unregistered reads are recorded rather than ignored.
+- **The record does not depend on the tool that wrote it.** With the package uninstalled,
+  `cat` reads the history, `grep` finds every run that touched a file, and `sha256sum -c`
+  verifies the digests.
+
+*Everything below is the long form: the complete API, every supported format, the failure each
+design decision came from, and what has actually been run. It is long on purpose. The same
+opening, and nothing else, is what PyPI shows — see `README-pypi.md`.*
+
+---
+
+## The whole thing, in one script
 
 A **whole script**, standard library only, that you can paste into a file and run. A test
 extracts this block from this README and runs it, so the block below cannot quietly
