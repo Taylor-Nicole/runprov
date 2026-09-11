@@ -19,7 +19,7 @@ The answer worth being able to give is not an argument. It is **we emit them**.
 | format | what it is | why this one |
 |---|---|---|
 | **RO-Crate 1.1** | JSON-LD over schema.org | Zenodo and WorkflowHub ingest it. This is the format that matters at **deposit**: the record arrives with the data rather than being described in a README nobody parses. |
-| **PROV-JSON** | the W3C provenance model, in the JSON serialisation its own note defines | Entities, activities, agents and the relations between them — the vocabulary the field agreed on, and the one a **reviewer** recognises. |
+| **PROV-JSON** | the W3C provenance model, in the JSON serialisation defined by *The PROV-JSON Serialization*, a **W3C Member Submission of 24 April 2013** | Entities, activities, agents and the relations between them — the vocabulary the field agreed on, and the one a **reviewer** recognises. **Not a Note and not a Recommendation:** `/TR/prov-json/` is a 404, and saying otherwise to a reader who knows the W3C process costs more than the sentence is worth. Verified 2026-09-11. |
 
 | scope | what it answers |
 |---|---|

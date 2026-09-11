@@ -12,8 +12,12 @@ to be taught to read it, which most of them will not be. Two formats they alread
   RO-CRATE 1.1  a JSON-LD packaging convention built on schema.org. Zenodo and WorkflowHub
                 ingest it, which makes this the format that matters at DEPOSIT: the record
                 arrives with the data instead of being described in a README nobody parses.
-  PROV-JSON     the W3C provenance data model, as the JSON serialisation its own note
-                defines. Entities, activities, agents, and the four relations between them.
+  PROV-JSON     the W3C provenance data model, in the JSON serialisation defined by `The
+                PROV-JSON Serialization` -- a W3C MEMBER SUBMISSION of 24 April 2013, which
+                is neither a Note nor a Recommendation. This said "its own note" until
+                2026-09-11; `/TR/prov-json/` is a 404, and the distinction is one a reviewer
+                in this field makes without effort.
+                Entities, activities, agents, and the four relations between them.
                 Fewer tools consume it and it is the one a reviewer recognises, because it is
                 the vocabulary the field agreed on.
 
