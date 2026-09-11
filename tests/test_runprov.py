@@ -4903,6 +4903,75 @@ def test_record_header_refuses_a_suffix_it_would_have_to_guess_at(tmp_path):
     assert _header_of(tmp_path, "g.csv", "a,b\n", record_header=True) == ["a", "b"]
 
 
+def test_every_leg_that_cannot_reach_the_floor_says_so():
+    """Two workflows run `ci.py test`, and both must know which legs cannot reach 100%.
+
+    They did not. `test.yml` exempted ubuntu/3.13 — on 3.13 `Path.resolve()` raises for none
+    of a symlink loop, an over-long component or an unreadable directory, so four
+    `except (OSError, RuntimeError)` guards cannot be entered and the floor is unreachable BY
+    CONSTRUCTION (L-104) — and `publish.yml` did not. Found on 2026-09-11 by the first
+    rehearsal of the release path: a real tag would have built everything, failed at 99.72%,
+    and never published.
+
+    The floor is declared per leg and never sniffed at runtime; `ci.py` refuses to lower
+    itself by inspecting the platform, because a floor that moves on its own is a floor
+    nobody can rely on. The cost of that decision is the same knowledge written in two files,
+    and this is what stops them drifting.
+
+    Derived from the workflows, never a hand-typed list of jobs: a check whose scope is typed
+    out stops covering what it names the day a third workflow appears.
+    """
+    yaml = pytest.importorskip("yaml")
+    root = _repo_root() / ".github" / "workflows"
+    if not root.is_dir():  # pragma: no cover - absent in an unpacked sdist
+        pytest.skip("no .github/workflows here")
+
+    exempt_needed = {"3.13", "windows-latest"}
+    checked = 0
+    for wf in sorted(root.glob("*.yml")):
+        spec = yaml.safe_load(wf.read_text(encoding="utf-8"))
+        for name, job in (spec.get("jobs") or {}).items():
+            steps = job.get("steps") or []
+            runs_suite = any("ci.py test" in str(s.get("run", "")) for s in steps)
+            if not runs_suite:
+                continue
+            matrix = ((job.get("strategy") or {}).get("matrix")) or {}
+            legs = {str(v) for key in ("python", "os") for v in (matrix.get(key) or [])}
+            legs |= {str(v) for inc in (matrix.get("include") or []) for v in inc.values()}
+            if not legs & exempt_needed:
+                continue
+            checked += 1
+            # EVERY value of an exempt include, not one key of it. The Windows exemption is
+            # keyed on `os` AND `python` together, so reading a single key found "3.12" and
+            # reported windows-latest as unexempted — the guard's own first false alarm.
+            off = {
+                str(v)
+                for inc in (matrix.get("include") or [])
+                if inc.get("coverage_floor") == "off"
+                for k, v in inc.items()
+                if k != "coverage_floor"
+            }
+            missing = sorted((legs & exempt_needed) - off)
+            assert not missing, (
+                f"{wf.name}:{name} runs the suite on {missing} without "
+                f"coverage_floor: off — that leg cannot reach 100% by construction (L-104), "
+                f"so it will fail there and nowhere else"
+            )
+            wired = any(
+                "RUNPROV_COVERAGE_FLOOR" in str(s.get("env") or {})
+                for s in steps
+                if "ci.py test" in str(s.get("run", ""))
+            )
+            assert wired, (
+                f"{wf.name}:{name} declares coverage_floor in its matrix and never passes it "
+                f"to the step — the exemption is written down and does not reach `ci.py`"
+            )
+
+    # NON-VACUITY: a parser that stopped finding jobs, or a glob that matched nothing, would
+    # pass this test in silence. Two workflows run the suite today.
+    assert checked >= 2, f"expected at least two workflows running the suite, examined {checked}"
+
+
 def test_the_two_readmes_open_with_the_same_words():
     """The same opening now lives in two files, which is this repository's oldest bite.
 

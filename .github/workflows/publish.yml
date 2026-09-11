@@ -90,6 +90,22 @@ jobs:
     strategy:
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          # THE SAME EXEMPTION test.yml CARRIES, and its absence here is what this file's
+          # first rehearsal found. On 3.13 `Path.resolve()` no longer raises for a symlink
+          # loop, an over-long component or an unreadable directory, so four
+          # `except (OSError, RuntimeError)` guards in `run.py` cannot be entered and the
+          # 100% floor is unreachable BY CONSTRUCTION (ledger L-104). test.yml turns the
+          # floor off for this leg; this file did not, so a real tag would have built
+          # everything, failed at 99.72%, and never published.
+          #
+          # The floor is declared per leg and never sniffed at runtime — see `ci.py`, which
+          # refuses to lower itself by inspecting the platform, because a floor that moves
+          # on its own is a floor nobody can rely on. Declaring it twice is the cost, and
+          # `test_every_leg_that_cannot_reach_the_floor_says_so` is what keeps the two
+          # declarations from drifting again.
+          - python: "3.13"
+            coverage_floor: "off"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # FULL HISTORY. `actions/checkout` clones at depth 1 by default, and the suite
@@ -109,6 +125,8 @@ jobs:
       # caught by reading it; a tag would have built and stopped. `-q` is already
       # in pyproject's addopts.
       - run: python ci.py test
+        env:
+          RUNPROV_COVERAGE_FLOOR: "${{ matrix.coverage_floor }}"
 
   publish:
     needs: [build, test]
