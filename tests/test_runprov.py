@@ -4796,6 +4796,86 @@ def test_the_pypi_description_has_no_relative_links():
     assert re.search(r"\[[^\]]+\]\(https://", text), f"{name} has no absolute links to check"
 
 
+def _header_of(tmp_path, name, text, **kw):
+    """Write `text` through `open_output(name, **kw)` and return the recorded header, if any."""
+    runprov.configure(root=tmp_path)
+    with runprov.Run("hdr", {}, provenance=tmp_path / "p.prov.json") as run:
+        with run.open_output(tmp_path / name, **kw) as fh:
+            fh.write(text)
+    line = (tmp_path / "provenance" / "runs.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    out = [o for o in json.loads(line)["outputs"] if o["path"].endswith(name)]
+    assert len(out) == 1, f"expected one record for {name}, got {out}"
+    return out[0].get("header")
+
+
+def test_record_header_captures_the_columns_it_wrote(tmp_path):
+    """T-24. The digest says the file changed; it cannot say a column appeared.
+
+    Read from the HISTORY, not from the in-memory record, because that projection
+    whitelists its keys — the first working version of this captured the header perfectly
+    and wrote records with no header in them, which is the `kind` lesson the projection's
+    own comment already carried.
+
+    The comma inside `value, raw` is the point of parsing with `csv` rather than splitting:
+    a field containing the delimiter survives as one column.
+    """
+    assert _header_of(tmp_path, "a.tsv", 'sample\t"value, raw"\n1\t2\n', record_header=True) == [
+        "sample",
+        "value, raw",
+    ]
+    assert _header_of(tmp_path, "b.csv", '"a,b",c\n1,2\n', record_header=True) == ["a,b", "c"]
+
+    # NOT ASKED FOR IS ABSENT, not empty: a reader can tell "no header recorded" from "a
+    # header of no columns", which a default of [] would have destroyed.
+    assert _header_of(tmp_path, "c.tsv", "x\ty\n") is None
+
+
+def test_record_header_without_a_trailing_newline_and_with_nothing_written(tmp_path):
+    """Two edges that would otherwise make identical data produce different records.
+
+    A body written as one `write("a\tb")` has a first line just as much as one ending in a
+    newline, and recording one and not the other would be a difference with no cause.
+
+    An artifact where nothing was written has no first line, and gets no header — not an
+    empty one.
+    """
+    assert _header_of(tmp_path, "d.tsv", "a\tb", record_header=True) == ["a", "b"]
+    assert _header_of(tmp_path, "e.csv", "", record_header=True) is None
+
+
+def test_record_header_does_not_detect_whether_a_header_exists(tmp_path):
+    """THE DOCUMENTED FAILURE, pinned so it stays documented rather than becoming a surprise.
+
+    Pointed at a headerless file the flag records the first row of DATA. That is the design:
+    detection would mean guessing, a wrong guess is silent, and the flag means the caller
+    asserting that line one names the columns. If this test ever changes, the docstring on
+    `open_output` changes with it.
+    """
+    assert _header_of(tmp_path, "f.tsv", "1\t2\n3\t4\n", record_header=True) == ["1", "2"]
+
+
+def test_record_header_refuses_a_suffix_it_would_have_to_guess_at(tmp_path):
+    """No sniffing. `csv.Sniffer` does not fail on an unknown format — it returns one column
+    named `"sample\tvalue"`, which looks exactly like a real answer and would be recorded as
+    one. The refusal names the suffixes that work and the escape hatch that always works.
+
+    Refused BEFORE registering, so the rejected path leaves no pending output behind to be
+    recorded as MISSING by a run that never meant to write it.
+    """
+    runprov.configure(root=tmp_path)
+    with runprov.Run("hdr", {}, provenance=tmp_path / "p.prov.json") as run:
+        with pytest.raises(ValueError, match=r"\.svg.*not one this package will guess at"):
+            run.open_output(tmp_path / "fig.svg", record_header=True)
+        assert not run.record["outputs"], "the refused path was registered anyway"
+
+    line = (tmp_path / "provenance" / "runs.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    assert not json.loads(line)["outputs"], "a refused output reached the history"
+
+    # POSITIVE CONTROL: the same call succeeds for a suffix the table names, so the test
+    # above is about the suffix and not about some unrelated refusal upstream of it.
+    assert _header_of(tmp_path, "g.csv", "a,b\n", record_header=True) == ["a", "b"]
+
+
 def test_the_two_readmes_open_with_the_same_words():
     """The same opening now lives in two files, which is this repository's oldest bite.
 

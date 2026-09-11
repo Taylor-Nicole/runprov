@@ -44,6 +44,7 @@ __all__ = ["HISTORY_SCHEMA", "SCHEMA", "START_SCHEMA", "Run", "Terminated"]
 
 import atexit
 import contextlib
+import csv
 import datetime as dt
 import hashlib
 import importlib.metadata
@@ -171,6 +172,13 @@ _NOT_PROJECT_CODE = frozenset(
 # -- nothing branches on it, and clearing it entirely changes no behaviour (measured), since
 # it is documentation rendered into a refusal message. `PIN_ALTERNATIVE` below is the one
 # where it bites, and it is frozen for the same reason.
+# T-24. THE DELIMITER IS TAKEN FROM THE SUFFIX AND NEVER SNIFFED. `csv.Sniffer` guesses, and
+# a wrong guess does not fail — it returns ONE column named "sample\tvalue", which looks
+# exactly like a real answer and would be recorded as one. A suffix this table does not name
+# is refused, so the set of files this can be asked about is visible here rather than
+# discovered when a header comes out wrong.
+HEADER_DELIMITERS = types.MappingProxyType({".tsv": "\t", ".csv": ","})
+
 PIN_UNSAFE = types.MappingProxyType({
     ".nwk": "Newick has no comment syntax — the pin's own words parse as taxon names, "
     "SILENTLY (measured: a 3-taxon tree reads back with 6)",
@@ -653,7 +661,14 @@ class _PinnedWriter:
     that must also feed the hash.
     """
 
-    def __init__(self, run: Run, dest: pathlib.Path, comment: str) -> None:
+    def __init__(
+        self,
+        run: Run,
+        dest: pathlib.Path,
+        comment: str,
+        delimiter: str | None = None,
+        record_key: str | None = None,
+    ) -> None:
         head = run.header(comment, body_digest=PIN_BODY_PENDING)
         marker = f"{comment}  {PIN_BODY_FIELD}       : "
         # EXACTLY ONE, asserted rather than assumed: the offset below is where sixteen bytes
@@ -671,6 +686,17 @@ class _PinnedWriter:
         self._hash = hashlib.sha256()
         self._closed = False
         self._run = run
+        # T-24. The first BODY line, when the caller asked for it. It is in hand here for
+        # free: the body already streams through `write` on its way to the hash, so nothing
+        # is re-read and nothing beyond the first line is ever parsed.
+        self._delimiter = delimiter
+        self._head_buf: str | None = "" if delimiter is not None else None
+        self._header: list[str] | None = None
+        # THE KEY IS THE CALLER'S SPELLING, not `dest`. `describe` records the path it was
+        # handed and `_seal` keys on that; `dest` here is the anchored one. Keying on the
+        # wrong spelling loses the header silently — it did, on the first run of this code,
+        # and the record simply came back without the field.
+        self._record_key = record_key
         self._fh = open(self._tmp, "w", encoding="utf-8", newline="")
         try:
             self._fh.write(head)
@@ -684,7 +710,17 @@ class _PinnedWriter:
         # translated on the way out, so the bytes hashed here are the bytes on disk, and a
         # reader can recompute them without knowing which platform wrote the file.
         self._hash.update(text.encode("utf-8"))
+        if self._head_buf is not None:
+            self._head_buf += text
+            if "\n" in self._head_buf:
+                self._take_header(self._head_buf.split("\n", 1)[0])
         return self._fh.write(text)
+
+    def _take_header(self, line: str) -> None:
+        """Parse one line with `csv`, so a quoted field containing the delimiter survives."""
+        assert self._delimiter is not None  # noqa: S101 - set together with `_head_buf`
+        self._header = next(csv.reader([line], delimiter=self._delimiter), [])
+        self._head_buf = None  # stop accumulating; nothing past line one is ever looked at
 
     def writelines(self, lines: typing.Iterable[str]) -> None:
         for line in lines:
@@ -706,6 +742,11 @@ class _PinnedWriter:
         self._closed = True
         with contextlib.suppress(ValueError):
             self._run._open_writers.remove(self)
+        # A body with no trailing newline still has a first line. Without this, a file
+        # written as one `write("a\tb")` records no header while an identical file with a
+        # newline records one — the same data, two different records.
+        if self._head_buf:
+            self._take_header(self._head_buf)
         try:
             self._fh.seek(self._at)
             self._fh.write(self._hash.hexdigest()[:PIN_DIGEST_CHARS])
@@ -713,6 +754,10 @@ class _PinnedWriter:
             os.fsync(self._fh.fileno())
             self._fh.close()
             os.replace(self._tmp, self._dest)
+            # AFTER the publish, never before: a header recorded for an artifact that failed
+            # to be written would describe a file that does not exist.
+            if self._header is not None and self._record_key is not None:
+                self._run._headers[self._record_key] = self._header
         except BaseException:
             # THE ARTIFACT IS NEVER LEFT HALF-PUBLISHED. Whatever went wrong, the temporary
             # file goes and the destination is untouched — which for a first write means no
@@ -910,6 +955,9 @@ class Run:
         # artifact entirely, because it lives in a temporary file until close publishes
         # it. `_seal` closes what is still open, so forgetting costs nothing.
         self._open_writers: list[_PinnedWriter] = []
+        # T-24. Headers captured by `open_output(..., record_header=True)`, keyed by the
+        # POSIX path the record will use, merged into the output description at seal time.
+        self._headers: dict[str, list[str]] = {}
         self._extra_code: dict[str, str] = {}
         self.provenance_path = self._sidecar_name(provenance) if provenance else None
         # ARMED TO RECORD, and not yet recording. Registered only when `provenance=` was
@@ -2038,7 +2086,12 @@ class Run:
         self._pending.append(p)
         return p
 
-    def open_output(self, path: str | pathlib.Path, comment: str = "# ") -> typing.IO[str]:
+    def open_output(
+        self,
+        path: str | pathlib.Path,
+        comment: str = "# ",
+        record_header: bool = False,
+    ) -> typing.IO[str]:
         """Open a text artifact for writing, REGISTERED and PINNED, in UTF-8.
 
         The pin as the default of the write path. Doing it by hand takes three things a
@@ -2080,6 +2133,26 @@ class Run:
         wants a pin in a format with its own comment syntax can still write
         `run.header(";")` by hand.
 
+        `record_header=True` RECORDS THE FIRST LINE of what you write, as `header` on this
+        output in the record AND in the run history — the column names and their order,
+        which a digest cannot give you. A digest says the file changed; it cannot say that a
+        column appeared, and comparing two dated records answers "when did that column
+        arrive".
+
+        Three deliberate refusals, because this is the package's only path that looks at the
+        CONTENT of an artifact rather than its bytes, and each of them is a way it could be
+        confidently wrong instead:
+
+        * **Only a file this method itself writes.** It never opens an artifact it did not
+          produce. Guessing at somebody else's schema is how a tool ends up wrong about it.
+        * **It does not detect whether a header exists.** The flag is the CALLER asserting
+          that line one names the columns. Pointed at a headerless file it records the first
+          row of data, and that is the documented behaviour rather than a defect — detection
+          would mean guessing, and a wrong guess here is silent.
+        * **It does not sniff the delimiter**, which comes from the suffix via
+          `HEADER_DELIMITERS`. A suffix that table does not name is refused with the list, so
+          the answer is "not for this format" instead of a plausible wrong one.
+
         Refused BEFORE registering, so a rejected path leaves no pending output behind to
         be recorded as `MISSING` by a run that never intended to write it.
 
@@ -2087,6 +2160,17 @@ class Run:
         artifact as `MISSING` rather than losing it.
         """
         suffix = pathlib.Path(path).suffix.lower()
+        delimiter: str | None = None
+        if record_header:
+            # BEFORE anything is registered or opened, so a refused request leaves no trace.
+            delimiter = HEADER_DELIMITERS.get(suffix)
+            if delimiter is None:
+                raise ValueError(
+                    f"record_header=True needs a delimiter, and {suffix or 'no suffix'!r} is "
+                    f"not one this package will guess at. Supported: "
+                    f"{', '.join(sorted(HEADER_DELIMITERS))}. Write the columns yourself "
+                    f"with run.note('columns', [...]) for anything else."
+                )
         # `PIN_UNSAFE`'s reason strings are DOCUMENTATION, not a message source: the binary
         # branch below states the mode (which is the actual cause), and the 23 text suffixes
         # get a sidecar without comment because that is the ordinary outcome rather than a
@@ -2153,7 +2237,7 @@ class Run:
         #      so); `sha256`, which is recorded beside it, was not.
         if inline:
             # THE ARTIFACT APPEARS ONCE, COMPLETE — see `_PinnedWriter`, and ADR-0006.
-            fh: typing.Any = _PinnedWriter(self, p, comment)
+            fh: typing.Any = _PinnedWriter(self, p, comment, delimiter, _posix(path))
             self._open_writers.append(fh)
         else:
             fh = open(p, "w", encoding="utf-8", newline="")
@@ -2872,6 +2956,12 @@ class Run:
                 # `show --stale` keyed its answers `{'results\\final.tsv': 'OK'}` for a reader
                 # asking about `results/final.tsv`, and found nothing.
                 described["path"] = _posix(q)
+                # T-24. Only ever present for an artifact this run wrote through
+                # `open_output(record_header=True)`; absent everywhere else, so a reader can
+                # tell "no header recorded" from "a header of no columns".
+                header = self._headers.get(described["path"])
+                if header is not None:
+                    described["header"] = header
                 self.record["outputs"].append(described)
             else:
                 # A registered output that was never written is a FINDING, not an
@@ -3169,6 +3259,14 @@ class Run:
                     # absent kind as a file (`kind not in ("file", None)`), so omitting it
                     # and writing it are the same statement -- one of them is just smaller.
                     **({"kind": o["kind"]} if o.get("kind", "file") != "file" else {}),
+                    # T-24, AND THE SAME LESSON AS `kind` DIRECTLY ABOVE. This projection
+                    # whitelists, so a field that is not named here does not reach the
+                    # history — and the history is what `show` and `log` read. The first
+                    # version of the header capture worked perfectly and produced records
+                    # with no header in them, for exactly this reason. Omitted when absent,
+                    # so "no header recorded" stays distinguishable from "a header of no
+                    # columns".
+                    **({"header": o["header"]} if o.get("header") is not None else {}),
                 }
                 for o in r["outputs"]
             ],
