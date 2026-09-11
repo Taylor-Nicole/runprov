@@ -4912,6 +4912,57 @@ def test_record_header_refuses_a_suffix_it_would_have_to_guess_at(tmp_path):
 _TOO_YOUNG = {"tomllib": (3, 11), "graphlib": (3, 9)}
 
 
+def test_every_pinned_tool_version_agrees_across_pyproject_and_the_workflows():
+    """The pin exists so the gate you run is the gate CI runs. It is written in six places.
+
+    DEPENDABOT EDITS EXACTLY ONE OF THEM. It raises versions in `pyproject.toml`'s `dev`
+    extra and does not read `run:` lines — pyproject says so itself — so merging one of its
+    pull requests leaves the extra on the new version and every workflow on the old one.
+    Three such pull requests were open on 2026-09-11, and merging any of them as offered
+    would have linted with one ruff locally and a different one in CI, silently, which is
+    the whole failure the pin exists to prevent.
+
+    Both sides are DERIVED — every `name==version` in the dev extra, every `name==version` in
+    any workflow — so a tool pinned tomorrow is covered without editing this test.
+    """
+    pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
+    # NOT `index("]")`: the list contains `"runprov[test]"`, whose bracket ends the slice two
+    # entries in and leaves nothing to compare. The closing bracket is the one at end of line.
+    block = re.search(r"^dev = \[(.*?)\]\s*$", pyproject, re.M | re.S)
+    assert block, "pyproject declares no `dev` extra"
+    declared = dict(re.findall(r'"([A-Za-z0-9_.-]+)==([^"]+)"', block.group(1)))
+    assert declared, "no pinned tools found in the dev extra"
+
+    workflows = _repo_root() / ".github" / "workflows"
+    if not workflows.is_dir():  # pragma: no cover - absent in an unpacked sdist
+        pytest.skip("no .github/workflows here")
+
+    disagree, seen = [], 0
+    for wf in sorted(workflows.glob("*.yml")):
+        for name, version in re.findall(
+            r'"([A-Za-z0-9_.-]+)==([^"]+)"', wf.read_text(encoding="utf-8")
+        ):
+            if name not in declared:
+                continue
+            seen += 1
+            if version != declared[name]:
+                disagree.append(
+                    f"{wf.name} pins {name}=={version}, dev extra says {declared[name]}"
+                )
+
+    assert not disagree, (
+        "a pinned tool differs between the dev extra and a workflow, so the gate CI runs is "
+        "not the gate you run:\n  " + "\n  ".join(sorted(disagree))
+    )
+
+    # NON-VACUITY: a regex that stopped matching, or a glob that found nothing, would make the
+    # loop above pass without comparing anything.
+    assert seen >= len(declared), (
+        f"expected every pinned tool to appear in at least one workflow; "
+        f"declared {sorted(declared)}, matched {seen} workflow pin(s)"
+    )
+
+
 def test_nothing_imports_a_stdlib_module_younger_than_requires_python():
     """`requires-python` is a promise, and a test may not need more than the package does.
 
