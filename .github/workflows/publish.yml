@@ -1,12 +1,27 @@
-# Publish to PyPI on a version tag, via Trusted Publishing (OIDC) — no API token is
-# stored anywhere. Configure the publisher once at
-# https://pypi.org/manage/account/publishing/ : owner, repo, workflow filename
-# `publish.yml`, environment `pypi`.
+# Publish via Trusted Publishing (OIDC) — no API token is stored anywhere. Configure the
+# publisher once per index, at .../manage/account/publishing/ : owner, repo, workflow
+# filename `publish.yml`, and the environment named below.
+#
+#   a tag `v*`          -> PyPI,     environment `pypi`
+#   workflow_dispatch   -> TestPyPI, environment `testpypi`
+#
+# ONE FILE, TWO DESTINATIONS, AND NO INPUT TO CHOOSE BETWEEN THEM. The dispatch path can only
+# ever reach TestPyPI and the tag path can only ever reach PyPI, because the destination is
+# derived from the EVENT rather than from something a human types at dispatch time. A
+# `target:` input would make publishing to the real index one wrong dropdown away, on a path
+# whose entire purpose is to be run casually.
+#
+# AND IT IS WHY THIS PATH IS DISPATCHABLE AT ALL. Until 2026-09-11 this workflow ran only on a
+# tag, which means it had NEVER RUN: its own comments record two defects found by reading it
+# rather than by running it — a `-q` that would have exited 1, and a release path that skipped
+# the build check entirely. A release path that cannot be rehearsed gets rehearsed on the
+# release. TestPyPI is the rehearsal.
 name: publish
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 # LEAST PRIVILEGE, DECLARED AT THE TOP. Without this block every job inherits the
 # repository default, which for older repositories is write-all -- so a compromised
@@ -98,7 +113,8 @@ jobs:
   publish:
     needs: [build, test]
     runs-on: ubuntu-latest
-    environment: pypi
+    # Derived from the event, not chosen. See the header.
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'testpypi' || 'pypi' }}
     # A job-level block REPLACES the top-level one rather than adding to it, so
     # `contents: read` is repeated here on purpose -- omit it and this job runs with
     # id-token and nothing else.
@@ -110,4 +126,12 @@ jobs:
         with:
           name: dist
           path: dist/
+      # BOTH URLs ARE SPELLED OUT, including the default one. Leaving the tag path to the
+      # action's default would mean the two destinations are expressed in different ways, and
+      # the one that matters would be the one not written down.
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: >-
+            ${{ github.event_name == 'workflow_dispatch'
+                && 'https://test.pypi.org/legacy/'
+                || 'https://upload.pypi.org/legacy/' }}
