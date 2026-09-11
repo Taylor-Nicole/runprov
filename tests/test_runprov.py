@@ -4796,6 +4796,31 @@ def test_the_pypi_description_has_no_relative_links():
     assert re.search(r"\[[^\]]+\]\(https://", text), f"{name} has no absolute links to check"
 
 
+def test_the_two_readmes_open_with_the_same_words():
+    """The same opening now lives in two files, which is this repository's oldest bite.
+
+    `transformation_log.yml` existed in five places with different contents, and measuring
+    the wrong one produced confident corrections that were wrong. The PyPI page and the long
+    README now share an opening, so one of them can be improved and the other left behind —
+    and the stale one would be the immutable one.
+
+    Compared verbatim rather than approximately: a summary that has drifted in wording has
+    drifted, and "close enough" is how two files start disagreeing.
+    """
+    name, short = _pypi_description()
+    long_readme = (_repo_root() / "README.md").read_text(encoding="utf-8")
+
+    start = short.index("**Records what a Python script")
+    opening = short[start : short.index("```\npip install runprov")].rstrip()
+
+    # NON-VACUITY: a slice that silently came back empty would pass `in` against anything.
+    assert len(opening.split()) > 80, f"the extracted opening is {len(opening.split())} words"
+    assert opening in long_readme, (
+        f"README.md no longer opens with the same words as {name}. Both are read by people "
+        f"deciding whether to care; edit one and copy it to the other."
+    )
+
+
 def test_the_pypi_description_ships_and_its_example_is_real_api():
     """Two ways the short page could rot silently.
 
