@@ -33,3 +33,14 @@ examples/results/
 # history — that would need a rewrite.
 /LICENSING.md
 /PUBLISHING.md
+
+# AGENT WORKING STATE. `.claude/` is a tool's scratch directory, and it was NOT ignored — it
+# happens to be empty, so nothing has leaked, but a `git add -A` would have committed whatever
+# it contained into a public repository. That is the shape of the incident this file's first
+# rule records: a swap file committed by the initial `git add -A`, holding text that had been
+# written and deliberately cut.
+#
+# Worse here than a swap file, because the repository is public and the directory can hold
+# session transcripts, worktrees and prompts. Nothing belongs in the project's history that
+# nobody chose to put there.
+/.claude/
