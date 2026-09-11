@@ -4903,6 +4903,43 @@ def test_record_header_refuses_a_suffix_it_would_have_to_guess_at(tmp_path):
     assert _header_of(tmp_path, "g.csv", "a,b\n", record_header=True) == ["a", "b"]
 
 
+def test_the_citation_abstract_opens_with_the_package_description():
+    """One package, two descriptions, two audiences — and they had already drifted.
+
+    `pyproject.toml`'s `description` is what PyPI shows under the title and what `pip show`
+    prints. `CITATION.cff`'s `abstract` is what Zenodo stores and what GitHub's "Cite this
+    repository" renders. When the PyPI summary was sharpened on 2026-09-11 this file kept the
+    earlier wording for a day, so the project described itself two ways depending on where you
+    asked.
+
+    A PREFIX, not equality: the abstract goes on to say more, which is right for a citation
+    record. What it may not do is open with a different claim. Trailing punctuation is
+    therefore outside the comparison — the description carries none and the sentence needs
+    one.
+
+    Unlike the PyPI description this file is editable forever, so this guards drift rather
+    than anything irreversible.
+    """
+    yaml = pytest.importorskip("yaml")
+    cff = _repo_root() / "CITATION.cff"
+    if not cff.is_file():  # pragma: no cover - absent in an unpacked sdist
+        pytest.skip("CITATION.cff not present")
+
+    import tomllib
+
+    pyproject = tomllib.loads((_repo_root() / "pyproject.toml").read_text(encoding="utf-8"))
+    description = pyproject["project"]["description"]
+    abstract = yaml.safe_load(cff.read_text(encoding="utf-8"))["abstract"]
+
+    # NON-VACUITY: an empty description would make `startswith` true against anything.
+    assert len(description.split()) > 5, f"the description is {description!r}"
+    assert abstract.startswith(description), (
+        f"CITATION.cff's abstract no longer opens with pyproject's description.\n"
+        f"  description: {description}\n"
+        f"  abstract   : {abstract[: len(description) + 20]}…"
+    )
+
+
 def test_every_leg_that_cannot_reach_the_floor_says_so():
     """Two workflows run `ci.py test`, and both must know which legs cannot reach 100%.
 
