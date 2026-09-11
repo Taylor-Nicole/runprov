@@ -10029,8 +10029,27 @@ def _release_tree(
     return tmp_path
 
 
+#: The two variables `release_check` reads a tag from. Both are STRIPPED for every call
+#: below, and set back only when a test asks for a tag.
+_TAG_VARS = ("RUNPROV_RELEASE_TAG", "GITHUB_REF_NAME")
+
+
 def _release_check(tree, tag=None):
-    env = {**os.environ, "RUNPROV_RELEASE_TAG": tag} if tag else os.environ
+    """THE ENVIRONMENT IS BUILT, NOT INHERITED, and that is the whole point of this helper.
+
+    It used to pass `os.environ` through untouched when no tag was asked for, so the
+    "untagged tree" baseline said whatever the ambient environment said. Two places set one
+    of these for real: a developer simulating a tag, and GitHub Actions, which sets
+    `GITHUB_REF_NAME` in EVERY step — to the tag on a tag push.
+
+    `ci.py build` runs this suite from the built wheel with the environment inherited, so on
+    the real `v0.1.0` push the baseline test would have seen a tag, expected "untagged", and
+    failed the build job — on the one path where the version cannot be published twice.
+    Caught locally on 2026-09-11 by exporting `RUNPROV_RELEASE_TAG` to rehearse the tag.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _TAG_VARS}
+    if tag:
+        env["RUNPROV_RELEASE_TAG"] = tag
     return subprocess.run(
         [sys.executable, str(tree / "ci.py"), "release-check"],
         capture_output=True,
