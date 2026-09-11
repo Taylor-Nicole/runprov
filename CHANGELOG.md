@@ -7,9 +7,15 @@ taking precedence over the Python API while this is `0.x`.
 Entries state what was **measured**, not what was improved. A fix with no number beside it
 is a fix nobody checked.
 
-## [Unreleased] — 0.1.0
+## [0.1.0] — 2026-09-11
 
-Nothing has been published yet. Everything below is what a first release would contain.
+The first published release. Everything below is what it contains.
+
+The release path was rehearsed end to end against TestPyPI before this tag existed
+(run `34598547070`): built, tested on Python 3.10–3.13, published by Trusted Publishing,
+then installed into a clean environment from the index and exercised — `verify` returning
+`OK`, then `STALE` naming the input that changed. That rehearsal found and fixed a missing
+coverage exemption that would have failed this very tag at 99.72% and published nothing.
 
 ### The three properties it exists for
 
