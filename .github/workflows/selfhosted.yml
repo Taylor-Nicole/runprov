@@ -35,6 +35,14 @@ jobs:
       fail-fast: false # one version failing must not hide the others
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          # ONE SPELLING ACROSS ALL THREE WORKFLOWS. This said the same thing inline —
+          # `matrix.python == '3.13' && 'off'` — which is correct and was invisible to the
+          # guard written for the drift that publish.yml had. Two ways of expressing one
+          # exemption means a check must either know both or produce false alarms, and a
+          # check that fires on a correct configuration is a check people learn to ignore.
+          - python: "3.13"
+            coverage_floor: "off"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # FULL HISTORY. `actions/checkout` clones at depth 1 by default, and the suite
@@ -67,7 +75,7 @@ jobs:
       # construction, not by regression, and every other leg here still asserts 100%.
       - run: "$RUNNER_TEMP/venv/bin/python ci.py test"
         env:
-          RUNPROV_COVERAGE_FLOOR: "${{ matrix.python == '3.13' && 'off' || '' }}"
+          RUNPROV_COVERAGE_FLOOR: "${{ matrix.coverage_floor }}"
 
   # THE OTHER TWO THIRDS OF THE GATE. This file ran `ci.py test` and nothing else, and its
   # summary did not say so — a green tick on the only CI that can start today read as "the
