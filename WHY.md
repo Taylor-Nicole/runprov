@@ -185,7 +185,13 @@ it is most of the answer to "why did this run differ".
   **which now exists** and did not when this bullet was first written: `.pre-commit-hooks.yaml`
   and `action.yml`, ADR-0007. Adopting the library is not the same as adopting the check, and
   a project that skips the second has a record nobody is obliged to keep honest.
-* **It does not version your data.** That is DVC's job, and they compose fine.
+* **It identifies versions of your data; it does not store them.** The distinction is worth
+  stating precisely, because "you record checksums, so you version data" is a fair thing for a
+  reviewer to say. A digest gives **detection** — this input is not what it was — and
+  **identification** — the result was built from the version hashing to `17ffe705…`. It does
+  not give **retrieval**: once those bytes are overwritten they are gone, and the record can
+  only tell you that they were. DVC stores content and can hand it back; this records which
+  content a run actually read. They compose, and neither does the other's half.
 
 ## Related work, checked
 

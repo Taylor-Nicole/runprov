@@ -74,8 +74,11 @@ STALE   results/summary.tsv
 
 It records; it does not audit — it cannot tell you that a registered read was the read that
 *mattered*. It captures no intra-function dataflow, which noWorkflow does by instrumenting the
-AST, at the cost of changing the program it observes. It does not version data; that is DVC's
-job, and they compose.
+AST, at the cost of changing the program it observes.
+
+**It identifies versions; it does not store them.** A digest says an input changed, and says
+which version a result was built from — it cannot give those bytes back. That is DVC's job,
+and the two compose: DVC stores content, `runprov` records which content a run actually read.
 
 Provenance written into a scientific artifact is not new either: SAM/BAM `@PG` has carried
 program, version and command line for over a decade. What is narrower and true here is *a
