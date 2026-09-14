@@ -11,6 +11,24 @@ is a fix nobody checked.
 
 ### Added
 
+* **`progress` — the run narrates itself, configured once instead of in every script.** Each
+  registered read and each artifact written, with elapsed time, a path relative to the project
+  root, and the same short digest the pin carries:
+
+  ```
+  [00:00] read  data/m1.tsv  1541e29a8301ba21
+  [00:01] wrote out.tsv      c533232884b32c60
+  ```
+
+  It answers both questions a long run is asked — *what has it done* and *is it still going* —
+  from events runprov already observes, so no script configures anything.
+
+  **On when stderr is a terminal, off otherwise**, because a pipe, a file or a job runner's
+  log has nobody watching and the lines are somebody else's noise. `configure(progress="on")`
+  and `"off"` force it, `RUNPROV_QUIET` silences it like every other routine message, and it
+  never touches stdout — that channel belongs to the caller's data. Capped at 200 lines per
+  run, and it says once when the cap bites.
+
 * **`@run.step` — function-level provenance (T-25, ADR-0010).** A digest says a *file*
   changed; this says an *argument* changed, which is the difference inside a script that
   `verify` cannot see because `verify`'s subject is the artifact. Records the digests of what
