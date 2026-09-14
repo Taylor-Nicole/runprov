@@ -103,8 +103,9 @@ STALE   results/summary.tsv
 ## What it is not
 
 It records; it does not audit — it cannot tell you that a registered read was the read that
-*mattered*. It captures no intra-function dataflow, which noWorkflow does by instrumenting the
-AST, at the cost of changing the program it observes.
+*mattered*. `@run.step` digests what crossed a function's boundary — arguments in, result out
+— and **not the dataflow between statements**, which is what noWorkflow reports and what
+requires rewriting the AST, at the cost of changing the program it observes.
 
 **It identifies versions; it does not store them.** A digest says an input changed, and says
 which version a result was built from — it cannot give those bytes back. That is DVC's job,

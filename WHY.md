@@ -180,7 +180,9 @@ it is most of the answer to "why did this run differ".
   the evidence in the sentence about smallness.
 
 * **It records; it does not audit.** It cannot tell you a registered read was the read that
-  *mattered*, and it cannot see a rule reimplemented as control flow. The half that makes the
+  *mattered*, and it cannot see a rule reimplemented as control flow. **Nor does `@run.step`
+  change that** — it digests what crossed a function's boundary, not what the function decided
+  to do with it. The half that makes the
   record trustworthy is a separate checker that fails the build on an unregistered read —
   **which now exists** and did not when this bullet was first written: `.pre-commit-hooks.yaml`
   and `action.yml`, ADR-0007. Adopting the library is not the same as adopting the check, and
@@ -308,6 +310,21 @@ real trade — it can tell you which value came from which, and it **changes the
 observes**. This package has a test section headed *"provenance must not change the program
 it observes"*, and for a record that may end up in a clinical result that is the side to be
 on. Say the trade; do not claim the coverage.
+
+**The gap narrowed in 0.2.0, and the sentence above is still the right one.** This package now
+records function-level provenance too — `@run.step` digests what a function received and
+returned, and on Python 3.12+ `sys.monitoring` counts which of your own functions ran without
+any decorator at all (ADR-0010). So *"it records nothing inside a script"* has stopped being
+true, and anyone who installs it and finds `@run.step` will notice.
+
+**What has NOT changed is the thing the comparison turns on.** noWorkflow reports *which value
+came from which* — dataflow **between** statements, which requires rewriting the AST. This
+records values **at a function's boundary**: arguments in, result out, nothing about the path
+between them. And it is still declared, or observed from outside, never rewritten.
+
+So the honest form is narrower than before and narrower than noWorkflow's: *arguments and
+returns, digested, without modifying the code that is running.* A reviewer who knows
+noWorkflow will ask exactly where the line falls, and that is where.
 
 **recipy has not been released in ten years.** It captures observed reads, like `capture`
 does, and only through the libraries somebody remembered to patch — an unpatched reader is
