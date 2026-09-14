@@ -2175,6 +2175,12 @@ hospital, that is the protection worth having, and it costs a user nothing.
 `CITATION.cff` names the author and affiliation for citation — a different question from who
 holds the rights, and both are stated on purpose.
 
+**The DOI is [`10.5281/zenodo.22745568`](https://doi.org/10.5281/zenodo.22745568)** — the
+*concept* DOI, which always resolves to the most recent release. Zenodo mints a second one
+frozen to each version (`10.5281/zenodo.22745569` for 0.1.0); cite the concept DOI unless you
+mean that version specifically. Both are in `CITATION.cff`, and GitHub's **Cite this
+repository** button reads them from there.
+
 ## What has actually been run
 
 A test suite proves nothing about an environment it has never entered, so this states the

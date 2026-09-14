@@ -57,6 +57,18 @@ date-released: "2026-09-11"
 # refuses.
 license: BSD-3-Clause
 repository-code: "https://github.com/Taylor-Nicole/runprov"
+# THE CONCEPT DOI, not the version one. Zenodo mints two on every release: a version DOI
+# frozen to v0.1.0, and a concept DOI that always resolves to the newest version. A citation
+# in a thesis or a paper should survive the next release, so `doi` is the concept one and both
+# are listed below with which is which. Minted 2026-09-14 from the GitHub release.
+doi: 10.5281/zenodo.22745568
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.22745568
+    description: "Concept DOI — always resolves to the most recent version."
+  - type: doi
+    value: 10.5281/zenodo.22745569
+    description: "Version DOI — version 0.1.0, permanently."
 keywords:
   - provenance
   - reproducibility
