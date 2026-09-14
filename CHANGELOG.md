@@ -29,6 +29,32 @@ is a fix nobody checked.
   never touches stdout — that channel belongs to the caller's data. Capped at 200 lines per
   run, and it says once when the cap bites.
 
+* **A heartbeat, for the silence between events.** After `configure(heartbeat=…)` seconds
+  with nothing happening, a narrated run says it is still there and names what it last did:
+
+  ```
+  [00:02] still running — last: read data/m1.tsv
+  ```
+
+  **Silence, not a metronome:** every registered read, write or step resets it, so a run
+  producing events steadily never beats at all. `heartbeat=0` disables it and builds no
+  thread; the count reaches the record as `observation.heartbeats`.
+
+  The thread is a daemon *and* stopped explicitly — a non-daemon thread keeps a finished
+  process alive, a daemon one killed at shutdown can raise from inside a module being torn
+  down. It is stopped at the top of `__exit__`, **before** the record is assembled: signals
+  reach the main thread only, so on a `SIGTERM` it would otherwise go on printing "still
+  running" while the run unwound. stderr is now serialised by a lock, re-created after
+  `os.fork()` — a child inheriting a lock held by a thread that no longer exists deadlocks on
+  its first message.
+
+* **Automatic observation is bounded, which is what makes it safe as a default.** Measured on
+  call-bound code against `auto_steps="off"`: `census` **6.4×**, `arguments` **21×**, and
+  unbounded, because every call in the process pays for the callback whether or not it is in
+  scope. The observer now turns itself off after **50 000 calls** and records
+  `observation.auto_stopped_after_calls`. A run of 1 040 000 calls pays 268 ms once and then
+  runs at full speed, where the uncapped cost extrapolates to about six seconds.
+
 * **`@run.step` — function-level provenance (T-25, ADR-0010).** A digest says a *file*
   changed; this says an *argument* changed, which is the difference inside a script that
   `verify` cannot see because `verify`'s subject is the artifact. Records the digests of what

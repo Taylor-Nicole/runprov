@@ -83,6 +83,7 @@ from .hashing import (
     pin_digest,
     sha256,
 )
+from .heartbeat import DEFAULT_INTERVAL, Heartbeat
 from .observe import Observer, default_mode
 from .project import (
     OTHER_FILES_KEPT,
@@ -989,6 +990,7 @@ class Run:
         # something later rebinds stderr.
         self._narrate = progress_enabled(self.project.progress)
         self._started_monotonic = time.monotonic()
+        self._heart: Heartbeat | None = None
         self._progress_state: dict[str, int] = {}
         # T-24. Headers captured by `open_output(..., record_header=True)`, keyed by the
         # POSIX path the record will use, merged into the output description at seal time.
@@ -1312,6 +1314,18 @@ class Run:
             self.project.auto_steps or default_mode(getattr(sys, "monitoring", None)),
             getattr(sys, "monitoring", None),
         )
+        interval = DEFAULT_INTERVAL if self.project.heartbeat is None else self.project.heartbeat
+        # NO OBJECT FOR A DISABLED FEATURE. `heartbeat=0` used to build a Heartbeat and never
+        # start it, which left `_say` unable to reach its own "no heart" branch — a shape
+        # that is never exercised is a shape nobody has tested.
+        if self._narrate and interval > 0:
+            self._heart = Heartbeat(
+                interval, lambda line: progress(line, state=self._progress_state)
+            )
+            self._heart.start()
+            # THE BACKSTOP, not the mechanism. `__exit__` stops it before the record is
+            # assembled; this catches the run that never reaches an exit at all.
+            atexit.register(self._heart.stop)
         active = self._observer.start()
         obs = self.record["observation"]
         obs["auto_mode"] = active
@@ -2712,6 +2726,8 @@ class Run:
             f"  [{int(elapsed) // 60:02d}:{int(elapsed) % 60:02d}] {verb} {shown}{short}",
             state=self._progress_state,
         )
+        if self._heart is not None:
+            self._heart.saw(f"{verb.strip()} {shown}")
 
     def _observed_packages(self) -> str:
         """Which of the three answers the environment block actually gives. ADR-0010.
@@ -3150,6 +3166,14 @@ class Run:
         # and the tracked-package read both happen during the run: asked earlier the answer
         # would be "none" for every run that later recorded either.
         self.record["observation"]["packages_recorded"] = self._observed_packages()
+        # STOPPED BEFORE THE RECORD IS ASSEMBLED. Signals reach the main thread only, so on a
+        # SIGTERM this thread would go on printing "still running" while `__exit__` unwinds —
+        # a line that arrives after "record written" is the package lying about itself.
+        if self._heart is not None:
+            self._heart.stop()
+            if self._heart.beats:
+                self.record["observation"]["heartbeats"] = self._heart.beats
+            self._heart = None
         # ADR-0010. Folded in HERE, where the record is finalised, and stopped first: a
         # callback still firing while the record is serialised would append to a dict being
         # read. `observed` is absent rather than empty when nothing was seen, so "no calls in
@@ -3158,6 +3182,12 @@ class Run:
             self._observer.stop()
             if self._observer.records:
                 self.record["observed"] = self._observer.records
+            if self._observer.stopped_after is not None:
+                # IT SAYS WHEN IT STOPPED. A census that quietly ended halfway is a census
+                # reported as covering the whole run — the shape this package exists to catch.
+                self.record["observation"]["auto_stopped_after_calls"] = (
+                    self._observer.stopped_after
+                )
             if self._observer.truncated_functions:
                 self.record["observation"]["observed_truncated"] = (
                     self._observer.truncated_functions

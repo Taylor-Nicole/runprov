@@ -50,6 +50,18 @@ VENDORED = ("site-packages", "dist-packages", ".venv", "node_modules")
 MAX_FUNCTIONS = 200
 MAX_SIGNATURES = 32
 
+#: THE COST BUDGET, and the reason this can be on by default. Every Python call in the process
+#: pays for the callback whether or not it is in scope, so the overhead grows with the run and
+#: not with what is recorded. Measured 2026-09-14 on call-bound code — 20 400 calls — against
+#: `off`: `census` 6.4x, `arguments` 21x. Unbounded, that is not a default anybody should be
+#: given without asking.
+#:
+#: After this many calls the observer TURNS ITSELF OFF and the record says when. The cost is
+#: then paid once and bounded: at roughly 7 microseconds a call, this budget is about a third
+#: of a second, after which the run is at full speed again. A census is a sample of what a run
+#: calls, and a sample large enough to name every function it uses is large enough.
+MAX_CALLS = 50_000
+
 #: `sys.monitoring` has six tool slots. 0, 1 and 2 are reserved by convention for a debugger,
 #: `coverage` and a profiler; this project runs `coverage` at 100 %, so taking a low id would
 #: collide with its own gate. 3 is the first free one.
@@ -76,6 +88,7 @@ class Observer:
         tool_id: int = TOOL_ID,
         max_functions: int = MAX_FUNCTIONS,
         max_signatures: int = MAX_SIGNATURES,
+        max_calls: int = MAX_CALLS,
         frames: typing.Callable[[int], typing.Any] | None = None,
     ) -> None:
         if mode not in MODES:
@@ -90,6 +103,9 @@ class Observer:
         self._tool = tool_id
         self._max_functions = max_functions
         self._max_signatures = max_signatures
+        self._max_calls = max_calls
+        self.seen_calls = 0
+        self.stopped_after: int | None = None
         self._frames = frames if frames is not None else sys._getframe
         # DECIDED ONCE PER FILE, not once per call. The scope test resolves a path and asks
         # whether it is under the root; doing that on every call in a hot loop would make the
@@ -154,6 +170,14 @@ class Observer:
         return ok
 
     def _on_call(self, code: typing.Any, offset: int) -> None:  # noqa: ANN401 - a code object
+        # COUNTED BEFORE THE SCOPE TEST, because the cost is paid for every call in the
+        # process and not only for the ones recorded. Budgeting what is kept would leave the
+        # overhead unbounded while looking careful.
+        self.seen_calls += 1
+        if self.seen_calls > self._max_calls:
+            self.stopped_after = self._max_calls
+            self.stop()
+            return
         if ANONYMOUS_MARK in code.co_qualname or not self._scope(code.co_filename):
             return
         key = f"{pathlib.Path(code.co_filename).name}:{code.co_qualname}"

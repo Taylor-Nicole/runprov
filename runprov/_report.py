@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 
 #: Set to any value other than these to silence the per-run confirmation. An env var and
 #: not a `Project` field: the noise belongs to the INVOCATION (a chain, a cron job, a CI
@@ -65,6 +66,22 @@ def quiet() -> bool:
     """Whether routine confirmation is suppressed. Read per call — never cached, so a
     test (or a caller) can change the variable and have it take effect."""
     return os.environ.get(QUIET_ENV, "").strip().lower() not in _FALSEY
+
+
+#: ONE LOCK FOR STDERR, because the heartbeat thread and the main thread both write here and
+#: two interleaved lines are one garbled line — in the module whose job is to degrade well.
+#: Re-created after a fork: threads do not survive `os.fork()`, so a child inheriting a lock
+#: held by a thread that no longer exists would deadlock on its first message.
+_WRITE_LOCK = threading.Lock()
+
+
+def _reset_lock_after_fork() -> None:  # pragma: no cover - only runs in a forked child
+    global _WRITE_LOCK
+    _WRITE_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):  # pragma: no branch - present on every POSIX build
+    os.register_at_fork(after_in_child=_reset_lock_after_fork)
 
 
 def _write(line: str) -> None:
@@ -92,7 +109,8 @@ def _write(line: str) -> None:
     if stream is None or not hasattr(stream, "write"):
         return
     try:
-        print(line, file=stream, flush=True)
+        with _WRITE_LOCK:
+            print(line, file=stream, flush=True)
     except UnicodeEncodeError:
         try:
             enc = getattr(stream, "encoding", None) or "ascii"

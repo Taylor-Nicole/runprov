@@ -482,6 +482,13 @@ class Project:
     #: anything. `RUNPROV_QUIET` silences it like every other routine message, and it never
     #: touches stdout — that channel belongs to the caller's data.
     progress: str | None = None
+    #: Seconds of SILENCE before the run says it is still there, when narrating. `None` uses
+    #: the default; `0` disables the heartbeat while leaving event lines on.
+    #:
+    #: Silence and not a metronome: every registered read, write or step resets it, so a run
+    #: producing events steadily never beats at all and a twenty-minute computation says so
+    #: once a period, naming what it last did.
+    heartbeat: float | None = None
     #: Write a sidecar per RUN instead of one that the next run overwrites.
     #:
     #: `provenance=OUT.with_name("summary.prov.json")` names ONE path, so the tenth run of

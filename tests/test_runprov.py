@@ -5055,6 +5055,92 @@ def _code(filename, qualname="f", varnames=(), argcount=0):
     )
 
 
+def test_heartbeat_beats_only_after_silence_and_names_what_it_last_did():
+    """Silence, not a metronome. A run producing events steadily never beats at all.
+
+    Driven by a fake clock rather than by sleeping: a heartbeat whose logic can only be
+    exercised by waiting is a heartbeat nobody tests, and the thread would make the suite
+    slower and flakier for no extra coverage. `tick()` IS the decision; the thread only calls
+    it.
+    """
+    now = [0.0]
+    said = []
+    hb = runprov.heartbeat.Heartbeat(10.0, said.append, clock=lambda: now[0])
+
+    now[0] = 9.9
+    assert hb.tick() is False, "beat before the interval elapsed"
+    now[0] = 10.0
+    assert hb.tick() is True
+    assert "still running" in said[0] and "starting" in said[0]
+
+    # An event resets the silence, which is the whole difference from a metronome.
+    now[0] = 15.0
+    hb.saw("read data/big.tsv")
+    now[0] = 24.0
+    assert hb.tick() is False, "an event did not reset the silence"
+    now[0] = 25.0
+    assert hb.tick() is True
+    assert "read data/big.tsv" in said[1]
+    assert said[1].startswith("  [00:25]"), (
+        f"elapsed is from the start, not the last event: {said[1]!r}"
+    )
+    assert hb.beats == 2
+
+
+def test_heartbeat_never_kills_the_run_it_is_describing():
+    """The same rule `_report._write` follows: a message is worth less than the run it is
+    about. A beat that raised from a daemon thread would surface as an unrelated crash."""
+
+    def explode(line):
+        raise OSError("stderr is gone")
+
+    now = [0.0]
+    hb = runprov.heartbeat.Heartbeat(1.0, explode, clock=lambda: now[0])
+    now[0] = 5.0
+    assert hb.tick() is False, "a failing beat must report that it did not beat"
+
+
+def test_heartbeat_start_and_stop_are_idempotent_and_zero_disables():
+    """A non-daemon thread would keep a finished process alive; a daemon one killed at
+    shutdown can raise from inside a module being torn down. So: daemon, and stopped."""
+    hb = runprov.heartbeat.Heartbeat(0.05, lambda line: None)
+    hb.start()
+    hb.start()  # idempotent
+    assert hb._thread is not None and hb._thread.daemon, "the thread must be a daemon"
+    hb.stop()
+    hb.stop()  # idempotent, and safe twice
+    assert hb._thread is None
+
+    off = runprov.heartbeat.Heartbeat(0, lambda line: None)
+    off.start()
+    assert off._thread is None, "a zero interval must not start a thread"
+    off.stop()
+
+
+def test_a_narrated_run_records_how_many_times_it_said_it_was_alive(tmp_path, capsys):
+    """`heartbeats` is absent when the run never fell silent — the same rule as `observed`:
+    absent and zero are different statements, and only one of them is a measurement."""
+    runprov.configure(root=tmp_path, progress="on", heartbeat=0)
+    with runprov.Run("brisk", {}, provenance=tmp_path / "b.prov.json") as run:
+        assert run._heart is None, "a disabled heartbeat must build no object"
+        run.input(tmp_path)  # narrated, with no heart to inform
+    rec = json.loads((tmp_path / "b.prov.json").read_text(encoding="utf-8"))
+    assert "heartbeats" not in rec["observation"]
+
+    # AND A RUN THAT DID FALL SILENT RECORDS HOW OFTEN IT SAID SO. Driven by a fake clock
+    # rather than by sleeping: the count reaching the record is what this asserts, and
+    # waiting thirty seconds to assert it would make the suite slower for nothing.
+    runprov.configure(root=tmp_path, progress="on")
+    with runprov.Run("slow", {}, provenance=tmp_path / "s.prov.json") as run:
+        now = [0.0]
+        run._heart = runprov.heartbeat.Heartbeat(1.0, lambda line: None, clock=lambda: now[0])
+        now[0] = 5.0
+        assert run._heart.tick() is True
+    rec = json.loads((tmp_path / "s.prov.json").read_text(encoding="utf-8"))
+    assert rec["observation"]["heartbeats"] == 1
+    capsys.readouterr()
+
+
 def test_progress_narrates_reads_and_writes_relative_to_the_project(tmp_path, capsys):
     """Both questions a long run is asked — *what has it done* and *is it still going* —
     answered from events runprov already observes, so no script configures anything.
@@ -5237,6 +5323,36 @@ def test_observer_refuses_a_frame_that_is_not_the_one_that_started(tmp_path):
     obs.stop()
 
     assert obs.records["w.py:f"] == {"calls": 1}, "values from the wrong frame were recorded"
+
+
+def test_observer_turns_itself_off_after_its_call_budget_and_says_when(tmp_path):
+    """The budget is what makes observation safe to have on by default.
+
+    Every Python call in the process pays for the callback whether or not it is in scope, so
+    the cost grows with the RUN and not with what is recorded. Measured 2026-09-14 on
+    call-bound code: `census` 6.4x and `arguments` 21x against `off`, unbounded. With the
+    budget, a run of 1 040 000 calls pays 268 ms once and then runs at full speed — where the
+    uncapped cost extrapolates to about six seconds.
+
+    Counted BEFORE the scope test on purpose: budgeting only what is kept would leave the
+    overhead unbounded while looking careful.
+    """
+    outside = tmp_path.parent / "not-mine.py"
+    outside.write_text("x = 1\n", encoding="utf-8")
+    mine = tmp_path / "mine.py"
+    mine.write_text("x = 1\n", encoding="utf-8")
+
+    stub = _StubMonitoring()
+    obs = runprov.observe.Observer(tmp_path, "census", stub, max_calls=3)
+    obs.start()
+    for _ in range(3):
+        stub.callback(_code(outside), 0)  # out of scope, and still spending the budget
+    assert obs.stopped_after is None, "the budget bit before it was spent"
+    stub.callback(_code(mine), 0)
+
+    assert obs.stopped_after == 3
+    assert obs.records == {}, "a call past the budget was still recorded"
+    assert stub.freed, "the observer did not release the tool id when it stopped itself"
 
 
 def test_observer_caps_how_many_functions_it_tracks(tmp_path):
@@ -5504,7 +5620,12 @@ def test_every_record_says_what_it_was_able_to_observe(tmp_path):
     assert obs["steps"] == "none", "a run with no steps must say so rather than omit the field"
     assert obs["auto_available"] is hasattr(sys, "monitoring")
     assert obs["packages_recorded"] in {"none", "tracked", "snapshot"}
-    assert obs["auto_backend"] is None, "nothing automatic is implemented yet; ADR-0010 is proposed"
+    # THE CAPABILITY DECIDES, and the record states it. Written as a derivation rather than
+    # as a constant so this test says the same thing on 3.10 and on 3.13 — a hard-coded
+    # expectation here would pass on one leg of the matrix and fail on another.
+    expected = "sys.monitoring" if hasattr(sys, "monitoring") else None
+    assert obs["auto_backend"] == expected
+    assert obs["auto_mode"] == ("census" if expected else "off")
 
     # AND IT REACHES THE HISTORY, which whitelists its keys — the `kind` lesson that
     # projection already carries, and the one that swallowed T-24's header on its first run.
