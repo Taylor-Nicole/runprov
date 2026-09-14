@@ -42,23 +42,21 @@ abstract: >-
   hashed at the moment they are opened, the resulting pin is written into the artifact
   itself rather than only into a sidecar, and the pin is deterministic so that a changed
   header means changed inputs. Zero runtime dependencies.
-version: 0.1.0
+version: 0.2.0
 # REQUIRED BY `ci.py release_check` ONCE THE CHANGELOG STOPS SAYING [Unreleased]: a citation
 # for a released version with no date has no year in it, which is the one field every
 # citation style needs. The check refuses the tag rather than shipping a dateless citation.
-date-released: "2026-09-11"
-# NO `date-released` YET, and that is a statement rather than an omission: this version has
-# not been released. Zenodo and GitHub render a citation without a year until it is set, and
-# a citation without a year is a poor one -- so `python ci.py release-check` (which `build`
-# runs, and which ships beside this file) refuses a release whose CHANGELOG says released
-# while this field is missing, and refuses a version TAG whose CHANGELOG section still reads
-# `[Unreleased]`. Set it to the tag date, YYYY-MM-DD. Inventing a date for an unreleased
-# package would be the same class of error as the placeholder ORCID this file already
-# refuses.
+date-released: "2026-09-14"
+# SET TO THE TAG DATE, YYYY-MM-DD, and set in the SAME commit that dates the CHANGELOG
+# section -- `python ci.py release-check` (which `build` runs, and which ships beside this
+# file) refuses a release whose CHANGELOG says released while this field is missing, and
+# refuses a version TAG whose CHANGELOG section still reads `[Unreleased]`. Inventing a date
+# ahead of the tag would be the same class of error as the placeholder ORCID this file
+# already refuses.
 license: BSD-3-Clause
 repository-code: "https://github.com/Taylor-Nicole/runprov"
 # THE CONCEPT DOI, not the version one. Zenodo mints two on every release: a version DOI
-# frozen to v0.1.0, and a concept DOI that always resolves to the newest version. A citation
+# frozen to that one release, and a concept DOI that always resolves to the newest version. A citation
 # in a thesis or a paper should survive the next release, so `doi` is the concept one and both
 # are listed below with which is which. Minted 2026-09-14 from the GitHub release.
 doi: 10.5281/zenodo.22745568
