@@ -1,6 +1,6 @@
 # 10. A record states what it was able to observe
 
-Date: 2026-09-11 · Status: **proposed** · Ledger: T-25 · Raised by the author
+Date: 2026-09-11, amended 2026-09-14 · Status: **accepted** (stage one shipped `f21ddfc`; stage two specified below) · Ledger: T-25
 
 ## Context
 
@@ -116,6 +116,90 @@ installed"* from *"nobody asked"*.
    `GONE` / `ALTERED` answer *"does this artifact still follow from its inputs?"*. A step
    digest answers *"did this function see what it saw last time?"* — a different question
    about a different subject, and a fifth value would blur both.
+
+## Amendment, 2026-09-14 — the automatic backend has two levels, and they are different features
+
+Stage one (`@run.step`) shipped in `f21ddfc`. Building stage two forced two questions the
+original decision did not answer. Both are settled here rather than in the code.
+
+### Measured first, because "it records everything" was an assertion
+
+Reading **500 lines of TSV** with the standard library, under `sys.monitoring`:
+
+```
+1 505 Python calls observed
+1 504 of them inside csv.py
+    1 in the caller's own code
+```
+
+**The cap does not save this.** At 1 000 entries it would fill on `csv.py` internals and stop
+before recording a single one of the author's functions — a record that honestly announces
+its truncation and contains the wrong thing. **Scope is the fix, not the cap.** Filtering to
+code under `project.root`, the same run yields **4 calls**, all the caller's.
+
+The scope is therefore DERIVED from the project root, never a list of modules to maintain.
+
+### Anonymous frames are not steps
+
+`sum(int(r["value"]) for r in rows)` compiles the generator expression into its own code
+object, so the interpreter reports two calls for that one line: `summarise`, and
+`summarise.<locals>.<genexpr>`. It is genuinely a call and it is not a step: it has no name
+the author wrote, and it describes Python's compilation of a line rather than the line.
+
+**Filtered, and derived rather than listed:** a code object whose `co_qualname` contains `<`
+is anonymous by construction — `<genexpr>`, `<lambda>`, `<listcomp>`. No set of names to fall
+out of date.
+
+### Two levels, because they answer two questions at two prices
+
+| mode | what an observed entry says | cost |
+|---|---|---|
+| **`census`** — default on 3.12+ | *this function of mine ran, N times* | one counter per call |
+| **`arguments`** — opt-in | *and these are the distinct argument sets it saw* | a frame materialised and values digested, per call |
+
+`sys.monitoring`'s `PY_START` callback receives `(code, instruction_offset)` — **it reports
+that a call began, not what was passed.** Arguments require reaching into the running frame
+with `sys._getframe()` and reading `f_locals` on every call. That is buildable and it is a
+different feature at a different price, which is why it is a MODE and not a default.
+
+**`census` is the default for a reason beyond cost.** A declared step says *the author said
+this matters*; an observed step says only *the interpreter noticed this*. Those are different
+claims, and if both carried argument digests they would look identical in the record while
+meaning different things — the distinction surviving only in a metadata field. Keeping
+observed entries structurally different — a count, not a digest — puts it in the data. Same
+reasoning as `unregistered_reads` being its own key rather than quietly mixed into `inputs`.
+
+It also gives the feature an honest shape: a census tells you **which functions to decorate**.
+It complements `@run.step` instead of competing with it.
+
+### In `arguments` mode, distinct signatures rather than calls
+
+Recording one entry per call reintroduces the volume problem inside the scope. So a function
+records its call count and the **set of distinct argument-set digests**, with a count each:
+
+```json
+"work.py:summarise": {"calls": 400, "signatures": {"a1b2c3d4e5f60718": 399, "…": 1}}
+```
+
+Four hundred calls, two distinct input sets. *"Did this function see the same inputs as last
+time?"* is then a comparison of two small sets, and the record's size is bounded by variety
+rather than by volume.
+
+### What the record says about which backend ran
+
+`observation.auto_backend` is `"sys.monitoring"` or `null`; `observation.auto_mode` is
+`"off"`, `"census"` or `"arguments"`. **A refusal is recorded, not silent:** `sys.monitoring`
+has six tool slots and `coverage` uses one, so `use_tool_id` can fail — in which case the
+mode is recorded as `off` with the reason, rather than a record that looks like a run where
+nothing happened to be called.
+
+### The implementation constraint this creates
+
+Version-conditional code cannot reach 100 % coverage on any single interpreter, which is the
+L-104 problem in a new place. The backend therefore takes its monitoring interface **as an
+argument** rather than reaching for `sys.monitoring` directly, so both paths are exercised on
+every leg with a stub. A capability read at module scope would have forced a coverage
+exemption on three legs instead of a test.
 
 ## Consequences
 

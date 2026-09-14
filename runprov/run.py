@@ -82,6 +82,7 @@ from .hashing import (
     pin_digest,
     sha256,
 )
+from .observe import Observer, default_mode
 from .project import (
     OTHER_FILES_KEPT,
     Project,
@@ -975,6 +976,9 @@ class Run:
         # artifact entirely, because it lives in a temporary file until close publishes
         # it. `_seal` closes what is still open, so forgetting costs nothing.
         self._open_writers: list[_PinnedWriter] = []
+        # ADR-0010. `None` until `__enter__` starts one; a run used outside a block never
+        # observes, because nothing would stop it.
+        self._observer: Observer | None = None
         # T-24. Headers captured by `open_output(..., record_header=True)`, keyed by the
         # POSIX path the record will use, merged into the output description at seal time.
         self._headers: dict[str, list[str]] = {}
@@ -1287,7 +1291,25 @@ class Run:
         A termination signal is caught here too — see `_catch_signals`. It is armed on
         ENTRY rather than in `__init__` because raising only helps if there is a block to
         unwind: outside a `with`, there is no `__exit__` to record anything.
+
+        ADR-0010. Automatic observation starts HERE and not in `__init__` for the same
+        reason: it must stop at `__exit__`, and a run constructed outside a block has no
+        exit to stop it at. An observer left running would outlive its record.
         """
+        self._observer = Observer(
+            pathlib.Path(self.project.root),
+            self.project.auto_steps or default_mode(getattr(sys, "monitoring", None)),
+            getattr(sys, "monitoring", None),
+        )
+        active = self._observer.start()
+        obs = self.record["observation"]
+        obs["auto_mode"] = active
+        obs["auto_backend"] = "sys.monitoring" if active != "off" else None
+        if self._observer.refusal is not None:
+            # A REFUSAL IS RECORDED. `sys.monitoring` has six tool slots and `coverage` holds
+            # one; a taken slot that produced a silent empty record would be indistinguishable
+            # from a run in which nothing happened to be called.
+            obs["auto_refused"] = self._observer.refusal
         # ONE RUN, ONE BLOCK. Re-entering the same `Run` was allowed and recorded only the
         # first pass -- measured: two blocks, ONE history line, the second block's output
         # sitting on disk with nothing describing it, and no warning at all when the second
@@ -3088,6 +3110,18 @@ class Run:
         # and the tracked-package read both happen during the run: asked earlier the answer
         # would be "none" for every run that later recorded either.
         self.record["observation"]["packages_recorded"] = self._observed_packages()
+        # ADR-0010. Folded in HERE, where the record is finalised, and stopped first: a
+        # callback still firing while the record is serialised would append to a dict being
+        # read. `observed` is absent rather than empty when nothing was seen, so "no calls in
+        # scope" stays distinguishable from "not observing".
+        if self._observer is not None:
+            self._observer.stop()
+            if self._observer.records:
+                self.record["observed"] = self._observer.records
+            if self._observer.truncated_functions:
+                self.record["observation"]["observed_truncated"] = (
+                    self._observer.truncated_functions
+                )
         # A CHECKPOINT MUST NOT CLAIM AN OUTCOME. Called INSIDE the block the run has not
         # finished, so `ok` is a guess and `finished_utc` is a time that has not happened.
         # Measured before this: `run.write(P)` mid-run, then SIGKILL, left a sidecar reading

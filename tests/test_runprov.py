@@ -5014,6 +5014,266 @@ def test_nothing_imports_a_stdlib_module_younger_than_requires_python():
 # --------------------------------------------------------------------------- T-25, ADR-0010
 
 
+class _StubMonitoring:
+    """A stand-in for `sys.monitoring`, so every branch below runs on 3.10 as well as 3.13.
+
+    The real interface exists only from 3.12. Reading it directly would make this module's
+    code unreachable on two of the four supported versions — the L-104 problem again, and it
+    would have cost three coverage exemptions where a stub costs none. `Observer` takes the
+    interface as an argument for exactly this reason.
+    """
+
+    class events:  # noqa: N801 - mirrors sys.monitoring.events
+        PY_START = 1
+
+    def __init__(self, *, busy=False):
+        self.busy = busy
+        self.callback = None
+        self.events_set = None
+        self.freed = False
+
+    def use_tool_id(self, tool, name):
+        if self.busy:
+            raise ValueError(f"tool {tool} is in use")
+
+    def register_callback(self, tool, event, fn):
+        self.callback = fn
+
+    def set_events(self, tool, mask):
+        self.events_set = mask
+
+    def free_tool_id(self, tool):
+        self.freed = True
+
+
+def _code(filename, qualname="f", varnames=(), argcount=0):
+    return types.SimpleNamespace(
+        co_filename=str(filename),
+        co_qualname=qualname,
+        co_varnames=tuple(varnames),
+        co_argcount=argcount,
+    )
+
+
+def test_observer_counts_only_the_projects_own_functions(tmp_path):
+    """The scope IS the design. Measured 2026-09-14: reading 500 lines of TSV produces 1 505
+    Python calls, 1 504 of them inside `csv.py`. A cap would fill on those and stop before
+    recording one function the author wrote."""
+    mine = tmp_path / "work.py"
+    mine.write_text("x = 1\n", encoding="utf-8")
+    vendored = tmp_path / ".venv" / "lib" / "dep.py"
+    vendored.parent.mkdir(parents=True)
+    vendored.write_text("y = 2\n", encoding="utf-8")
+    outside = tmp_path.parent / "elsewhere.py"
+    outside.write_text("z = 3\n", encoding="utf-8")
+
+    stub = _StubMonitoring()
+    obs = runprov.observe.Observer(tmp_path, "census", stub)
+    assert obs.start() == "census"
+
+    stub.callback(_code(mine), 0)
+    stub.callback(_code(mine), 0)
+    stub.callback(_code(vendored), 0)  # a dependency under the root
+    stub.callback(_code(outside), 0)  # outside the root
+    stub.callback(_code(mine, "f.<locals>.<genexpr>"), 0)  # compiler-generated
+    stub.callback(_code("<frozen posixpath>", "join"), 0)  # not a path at all
+    stub.callback(_code(tmp_path / "never-written.py"), 0)  # a name no file backs
+    obs.stop()
+
+    assert obs.records == {"work.py:f": {"calls": 2}}
+    assert stub.freed and stub.events_set == 0
+
+
+def test_observer_records_a_refusal_rather_than_an_empty_record():
+    """`sys.monitoring` has six tool slots and `coverage` holds one. A taken slot that
+    produced a silent empty record would be indistinguishable from a run in which nothing
+    happened to be called — the distinction this whole ADR exists to keep."""
+    busy = runprov.observe.Observer(pathlib.Path("."), "census", _StubMonitoring(busy=True))
+    assert busy.start() == "off"
+    assert "in use" in busy.refusal
+    busy.stop()  # safe after a failed start, and must not touch the interface
+
+    absent = runprov.observe.Observer(pathlib.Path("."), "census", None)
+    assert absent.start() == "off"
+    assert "unavailable" in absent.refusal
+
+    off = runprov.observe.Observer(pathlib.Path("."), "off", _StubMonitoring())
+    assert off.start() == "off" and off.refusal is None
+
+    with pytest.raises(ValueError, match="mode must be one of"):
+        runprov.observe.Observer(pathlib.Path("."), "nonsense", None)
+
+
+def test_observer_arguments_mode_records_distinct_signatures(tmp_path):
+    """Four hundred calls with two distinct argument sets record two entries: bounded by
+    VARIETY, not by volume. That is what makes "did this function see the same inputs as last
+    time" a comparison of two small sets."""
+    mine = tmp_path / "w.py"
+    mine.write_text("x = 1\n", encoding="utf-8")
+    code = _code(mine, "scale", varnames=("rows", "factor"), argcount=2)
+
+    frames = {}
+
+    def fake_getframe(depth):
+        return frames["current"]
+
+    stub = _StubMonitoring()
+    obs = runprov.observe.Observer(
+        tmp_path, "arguments", stub, max_signatures=2, frames=fake_getframe
+    )
+    obs.start()
+
+    def call(rows, factor):
+        frames["current"] = types.SimpleNamespace(
+            f_code=code, f_locals={"rows": rows, "factor": factor}
+        )
+        stub.callback(code, 0)
+
+    call([1, 2], 1.0)
+    call([1, 2], 1.0)  # identical -> the same signature
+    call([1, 3], 1.0)  # different -> a second
+    call([1, 4], 1.0)  # a third, past max_signatures=2
+    obs.stop()
+
+    entry = obs.records["w.py:scale"]
+    assert entry["calls"] == 4
+    assert len(entry["signatures"]) == 2, "the signature cap did not hold"
+    assert sum(entry["signatures"].values()) == 3
+    assert entry["signatures_truncated"] == 1, "a dropped signature must be counted"
+
+
+def test_observer_refuses_a_frame_that_is_not_the_one_that_started(tmp_path):
+    """A confident digest of the wrong values is worse than no digest.
+
+    The first version asked for the frame inside the helper rather than in the callback,
+    which reads one level too shallow: three different inputs recorded as one signature.
+    Measured, which is how it was found.
+    """
+    mine = tmp_path / "w.py"
+    mine.write_text("x = 1\n", encoding="utf-8")
+    code = _code(mine, "f", varnames=("a",), argcount=1)
+    other = _code(mine, "other")
+
+    stub = _StubMonitoring()
+    obs = runprov.observe.Observer(
+        tmp_path,
+        "arguments",
+        stub,
+        frames=lambda d: types.SimpleNamespace(f_code=other, f_locals={"a": 1}),
+    )
+    obs.start()
+    stub.callback(code, 0)
+    obs.stop()
+
+    assert obs.records["w.py:f"] == {"calls": 1}, "values from the wrong frame were recorded"
+
+
+def test_observer_caps_how_many_functions_it_tracks(tmp_path):
+    """Bounded by variety, and it says when the bound bites."""
+    stub = _StubMonitoring()
+    obs = runprov.observe.Observer(tmp_path, "census", stub, max_functions=2)
+    obs.start()
+    for i in range(5):
+        f = tmp_path / f"m{i}.py"
+        f.write_text("x = 1\n", encoding="utf-8")
+        stub.callback(_code(f), 0)
+    obs.stop()
+
+    assert len(obs.records) == 2
+    assert obs.truncated_functions == 3
+
+
+def test_observer_scope_is_decided_once_per_file_and_survives_a_bad_path(tmp_path):
+    """Two branches that only a hot loop and a hostile filename reach.
+
+    The scope answer is cached: resolving a path on every call would make the observer the
+    slowest thing in the run. And a filename the filesystem refuses to answer about — a NUL
+    byte is the portable way to provoke that — must be out of scope rather than an exception
+    raised from inside an interpreter callback, where it would surface as an unrelated crash
+    in the user's own code.
+    """
+    mine = tmp_path / "w.py"
+    mine.write_text("x = 1\n", encoding="utf-8")
+    stub = _StubMonitoring()
+    obs = runprov.observe.Observer(tmp_path, "census", stub)
+    obs.start()
+
+    stub.callback(_code(mine), 0)
+    stub.callback(_code(mine), 0)  # second time: the cached answer, not a re-resolve
+    stub.callback(_code("bad\x00name.py"), 0)
+    obs.stop()
+
+    assert obs.records == {"w.py:f": {"calls": 2}}
+
+
+def test_observer_arguments_mode_tolerates_locals_it_cannot_read(tmp_path):
+    """`f_locals` is not readable on every implementation, and a provenance tool that raises
+    from inside an interpreter callback has changed the program it observes."""
+    mine = tmp_path / "w.py"
+    mine.write_text("x = 1\n", encoding="utf-8")
+    code = _code(mine, "f", varnames=("a",), argcount=1)
+
+    class NoLocals:
+        f_code = code
+
+        @property
+        def f_locals(self):
+            raise ValueError("no locals here")
+
+    stub = _StubMonitoring()
+    obs = runprov.observe.Observer(tmp_path, "arguments", stub, frames=lambda d: NoLocals())
+    obs.start()
+    stub.callback(code, 0)
+    obs.stop()
+
+    assert obs.records["w.py:f"] == {"calls": 1}, "the call is still counted"
+
+
+def test_what_the_observer_saw_is_folded_into_the_record_at_seal(tmp_path):
+    """The observer is stopped BEFORE the record is serialised and its counts folded in.
+
+    Driven through a stub rather than through `sys.monitoring`, so this runs on 3.10 as well
+    as 3.13: the feature is 3.12+ but the fold-in is version-independent, and testing it only
+    where the interpreter supports it would leave the branch uncovered on half the matrix.
+    """
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    for f in (a, b):
+        f.write_text("x = 1\n", encoding="utf-8")
+
+    runprov.configure(root=tmp_path, auto_steps="off")
+    with runprov.Run("folded", {}, provenance=tmp_path / "f.prov.json") as run:
+        stub = _StubMonitoring()
+        # Only one function may be tracked, so the second file is dropped and counted.
+        run._observer = runprov.observe.Observer(tmp_path, "census", stub, max_functions=1)
+        run._observer.start()
+        stub.callback(_code(a), 0)
+        stub.callback(_code(a), 0)
+        stub.callback(_code(b), 0)
+
+    rec = json.loads((tmp_path / "f.prov.json").read_text(encoding="utf-8"))
+    assert rec["observed"] == {"a.py:f": {"calls": 2}}
+    assert rec["observation"]["observed_truncated"] == 1, "a dropped function must be counted"
+
+
+def test_a_run_that_observed_nothing_says_so_by_omission(tmp_path):
+    """`observed` is ABSENT rather than empty when nothing in scope was called, so "no calls"
+    stays distinguishable from "not observing" — which `observation.auto_mode` answers."""
+    runprov.configure(root=tmp_path, auto_steps="off")
+    with runprov.Run("quiet", {}, provenance=tmp_path / "q.prov.json"):
+        pass
+    rec = json.loads((tmp_path / "q.prov.json").read_text(encoding="utf-8"))
+    assert "observed" not in rec
+    assert rec["observation"]["auto_mode"] == "off"
+    assert rec["observation"]["auto_backend"] is None
+
+
+def test_default_mode_follows_the_capability_and_not_a_preference():
+    """The capability decides; the record says which it was."""
+    assert runprov.observe.default_mode(_StubMonitoring()) == "census"
+    assert runprov.observe.default_mode(None) == "off"
+
+
 def test_value_digest_separates_values_that_json_would_confuse():
     """The rule's whole job is that unequal values digest unequally.
 

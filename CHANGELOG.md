@@ -42,8 +42,26 @@ is a fix nobody checked.
   counts what was dropped. A truncated record that does not announce the truncation is the
   same defect one level down.
 
-`sys.monitoring` automatic capture (3.12+) is **not** implemented: ADR-0010 specifies it as an
-optional amplifier and it is deliberately a second stage.
+* **Automatic call observation on Python 3.12+ (ADR-0010 stage two).** `sys.monitoring`
+  counts calls into the project's own code, with no decorator and no opt-in: on an
+  interpreter that can do it the default is `census`, below it the default is `off`, and
+  `observation.auto_mode` says which — the capability decides and the record states it.
+
+  **Scope, not a cap, is what makes it usable.** Measured: reading 500 lines of TSV with the
+  standard library produces **1 505 Python calls, 1 504 of them inside `csv.py`**. A cap of a
+  thousand fills on those and stops before recording one function the author wrote. Filtering
+  to code under the project root gives **4**, all theirs. Compiler-generated frames —
+  `<genexpr>`, `<lambda>` — are excluded by a property rather than a list of names.
+
+  **`configure(auto_steps="arguments")`** additionally digests the distinct argument sets each
+  function saw: four hundred calls with two distinct inputs record two signatures, so *"did
+  this function see the same inputs as last time?"* is a comparison of two small sets. It
+  costs a frame read per call, which is why it is asked for rather than assumed.
+
+  An observed entry is a **count**, a declared one a **digest** — structurally different,
+  because "the interpreter noticed this" and "the author said this matters" are different
+  claims and the difference belongs in the data. A refused tool slot (`coverage` holds one) is
+  recorded as `auto_refused`, never as an empty record.
 
 ### Tooling
 

@@ -462,6 +462,16 @@ class Project:
     sink: RecordSink | None = None
     code_paths: tuple[str, ...] = DEFAULT_CODE_PATHS
     tracked_packages: tuple[str, ...] = DEFAULT_TRACKED
+    #: Automatic call observation. ADR-0010 stage two.
+    #:
+    #: `None` means "whatever this interpreter can do" — `census` on 3.12+ where
+    #: `sys.monitoring` exists, `off` below it. THE CAPABILITY DECIDES, and the record says
+    #: which it was; that is the difference between *not observed* and *could not observe*.
+    #:
+    #: `"census"` counts calls into the project's own code. `"arguments"` also digests the
+    #: distinct argument sets each function saw, which costs a frame read per call and is
+    #: therefore asked for rather than assumed. `"off"` disables it.
+    auto_steps: str | None = None
     #: Write a sidecar per RUN instead of one that the next run overwrites.
     #:
     #: `provenance=OUT.with_name("summary.prov.json")` names ONE path, so the tenth run of
