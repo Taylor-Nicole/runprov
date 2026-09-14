@@ -5443,6 +5443,73 @@ def test_what_the_observer_saw_is_folded_into_the_record_at_seal(tmp_path):
     assert rec["observation"]["observed_truncated"] == 1, "a dropped function must be counted"
 
 
+def test_a_refused_tool_slot_reaches_the_record_rather_than_looking_like_silence(
+    tmp_path, monkeypatch
+):
+    """run.py's half of the refusal, which the Observer's own test does not reach.
+
+    `sys.monitoring` has six tool slots and `coverage` holds one, so `use_tool_id` really can
+    fail on a user's machine. The Observer records the refusal; this is the line that folds it
+    into the record, and without it a refused slot would produce `auto_mode: "off"` — exactly
+    the record a run where nothing happened to be called produces. The two must not look alike.
+
+    Driven by monkeypatching `sys.monitoring` with a BUSY stub, so it runs on 3.10 as well as
+    3.13: `__enter__` reads the interface with `getattr(sys, "monitoring", None)`, which is the
+    same seam `Observer` takes it as an argument for.
+
+    IT HAD NO TEST AND STILL READ AS COVERED, which is why it is worth a docstring. Measured
+    with per-test coverage contexts: sixteen tests reached this line, and the subject of every
+    one of them was something else — nested runs, overlapping runs, out-of-order captures. A
+    second `Run` inside a first finds slot 3 held by the first and is refused, so the line ran
+    as a SIDE EFFECT of tests about nesting. On 3.10 and 3.11 there is no `sys.monitoring` at
+    all, `default_mode` returns `off`, and `start` never reaches `use_tool_id` — so the side
+    effect vanished and those two legs failed while this machine stayed green.
+    """
+    monkeypatch.setattr(sys, "monitoring", _StubMonitoring(busy=True), raising=False)
+    runprov.configure(root=tmp_path, auto_steps="census")
+    with runprov.Run("refused", {}, provenance=tmp_path / "r.prov.json"):
+        pass
+
+    rec = json.loads((tmp_path / "r.prov.json").read_text(encoding="utf-8"))
+    obs = rec["observation"]
+    assert obs["auto_mode"] == "off"
+    assert obs["auto_backend"] is None
+    assert "in use" in obs["auto_refused"], "a taken slot must say so, not just record nothing"
+
+
+def test_an_observer_that_spent_its_budget_says_so_in_the_record(tmp_path):
+    """The other half of ADR-0010's bound: the record must say the census STOPPED.
+
+    A census that quietly ended a third of the way through a run is a census reported as
+    covering the whole run — a partial answer presented as a complete one, which is the shape
+    this package exists to catch. `Observer.stopped_after` has its own test; this is the line
+    that carries it into the record, and it had none.
+
+    The budget is spent through a stub with `max_calls=2` rather than by making fifty thousand
+    real calls: the decision is the same one either way, and a test that has to spend the real
+    budget is a test nobody runs. Which is exactly how it read as covered without one — six
+    tests about environment snapshots and end-to-end runs each made more than fifty thousand
+    Python calls inside their `with` block, so the real observer really did stop and really did
+    record it, incidentally. The count is a property of the machine, so ubuntu 3.12 lost it and
+    macOS 3.12 kept it; 3.10 and 3.11 never had an observer to spend a budget at all.
+    """
+    mine = tmp_path / "work.py"
+    mine.write_text("x = 1\n", encoding="utf-8")
+
+    runprov.configure(root=tmp_path, auto_steps="off")
+    with runprov.Run("spent", {}, provenance=tmp_path / "s.prov.json") as run:
+        stub = _StubMonitoring()
+        run._observer = runprov.observe.Observer(tmp_path, "census", stub, max_calls=2)
+        run._observer.start()
+        stub.callback(_code(mine), 0)
+        stub.callback(_code(mine), 0)
+        stub.callback(_code(mine), 0)  # the third call is the one over the budget
+
+    rec = json.loads((tmp_path / "s.prov.json").read_text(encoding="utf-8"))
+    assert rec["observation"]["auto_stopped_after_calls"] == 2
+    assert rec["observed"] == {"work.py:f": {"calls": 2}}, "what it saw before stopping stands"
+
+
 def test_a_run_that_observed_nothing_says_so_by_omission(tmp_path):
     """`observed` is ABSENT rather than empty when nothing in scope was called, so "no calls"
     stays distinguishable from "not observing" — which `observation.auto_mode` answers."""
