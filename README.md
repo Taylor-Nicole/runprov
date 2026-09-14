@@ -353,6 +353,139 @@ with Run("explore_thresholds", {"cutoff": 5}, provenance=OUT.with_suffix(".prov.
     df = pd.read_csv(run.input(RAW))
 ```
 
+## Inside the script: `@run.step`
+
+A digest says a **file** changed. It cannot say that an **argument** changed — and the
+difference inside a script is the one `verify` cannot see, because `verify`'s subject is the
+artifact.
+
+```python
+with Run("analysis", vars(args), provenance=PROV) as run:
+
+    @run.step
+    def normalise(rows, factor=1.0):
+        return [r * factor for r in rows]
+```
+
+```json
+{"step": "normalise",
+ "args": ["5cc14cc5ae7995c9"],
+ "kwargs": {"factor": "8de9af64de408706"},
+ "returned": "40b05e015f82d48e"}
+```
+
+Identical calls digest identically; a changed argument moves both its own digest and the
+result's. A call that raises is recorded with the exception type instead of a result — a step
+that failed is a thing that happened, and it is usually the interesting one.
+
+**Declared, not observed, and that is the design.** noWorkflow captures more by instrumenting
+the abstract syntax tree, at the cost of changing the program it observes; this package has a
+test section headed *provenance must not change the program it observes*. The decorator is the
+same argument as `run.input()` — it is in the code, so a reviewer sees it in the diff and it
+cannot be bypassed by launching differently.
+
+### What a value digests to, and when it refuses
+
+| value | recorded as |
+|---|---|
+| `bytes`, `str`, `int`, `float`, `bool`, `None` | a type-tagged canonical form, hashed |
+| `list` / `tuple` / `dict` of those | the same, keys sorted |
+| anything with `__runprov_digest__` | its answer |
+| **everything else** | **`UNDIGESTIBLE:<type>`** |
+
+Type-tagged because `json.dumps` renders `True`, `1` and `1.0` identically and would call a
+changed argument unchanged. `isinstance(True, int)` is true in Python, so `bool` is tested
+before `int`: the obvious ordering digests `True` as the integer 1.
+
+**Never a `repr`**, which is unstable across runs and would be recorded as though it were not.
+**Never a pickle**, which is irreproducible and would put executable bytes inside a provenance
+record. The last row is what keeps this honest, and it is the same posture as the fifteen
+formats `open_output` refuses rather than pretending to pin.
+
+Steps are capped at 1 000 per run; `observation.steps_truncated` counts what was dropped.
+
+## Automatic observation, on Python 3.12+
+
+On an interpreter with `sys.monitoring` (PEP 669), runs also record **which of your own
+functions ran, and how often** — no decorator, no opt-in:
+
+```json
+"observed": {"work.py:parse": {"calls": 3}, "work.py:summarise": {"calls": 3}}
+```
+
+**Scope is what makes this usable, not a cap.** Measured: reading 500 lines of TSV with the
+standard library produces **1 505 Python calls, 1 504 of them inside `csv.py`** and one in
+your code. A cap of a thousand fills on `csv.py` internals and stops before recording a single
+function you wrote. Filtering to code under the project root gives **4**, all yours.
+Compiler-generated frames — `<genexpr>`, `<lambda>` — are excluded by a property rather than a
+list of names.
+
+`configure(auto_steps="arguments")` additionally digests the **distinct argument sets** each
+function saw:
+
+```json
+"work.py:parse": {"calls": 400, "signatures": {"92f439f7405ef322": 399, "32db84826714626b": 1}}
+```
+
+Four hundred calls, two distinct inputs — so *"did this function see the same inputs as last
+time?"* is a comparison of two small sets, and the record is bounded by variety rather than by
+volume.
+
+**An observed entry is a count; a declared one is a digest.** They are structurally different
+because *the interpreter noticed this* and *the author said this matters* are different
+claims, and the difference belongs in the data rather than in a metadata field.
+
+### It is bounded, which is why it can be on by default
+
+Every Python call in the process pays for the callback whether or not it is in scope, so the
+cost grows with the run rather than with what is recorded. Measured against `auto_steps="off"`
+on call-bound code: **`census` 6.4×, `arguments` 21×**.
+
+So the observer **turns itself off after 50 000 calls** and records
+`observation.auto_stopped_after_calls`. A run of 1 040 000 calls pays 268 ms once and then
+runs at full speed, where the uncapped cost extrapolates to about six seconds. A census is a
+sample of what a run calls, and a sample that large names every function it uses.
+
+### Every record says what it was able to observe
+
+```json
+"observation": {"steps": "declared", "auto_backend": "sys.monitoring",
+                "auto_available": true, "auto_mode": "census",
+                "packages_recorded": "none"}
+```
+
+Present whether or not any of this is used, because a record with no steps must be
+distinguishable from a record made where steps **could not** be observed. Otherwise a reader
+comparing two runs on two interpreters concludes *"nothing changed inside the script"* when
+the truth is *"nothing was looked at"* — the defect this package exists to catch, arriving
+through the feature meant to detect it. `auto_available` carries that distinction;
+`packages_recorded` does the same for an empty `packages` map, which otherwise cannot be told
+from nobody having asked. A refused tool slot (`coverage` holds one) is recorded as
+`auto_refused`, never as an empty record. See ADR-0010.
+
+## Watching a long run: `progress` and `heartbeat`
+
+```
+[00:00] read  data/m1.tsv  1541e29a8301ba21
+[00:02] still running — last: read data/m1.tsv
+[00:03] wrote out.tsv      c533232884b32c60
+```
+
+Configured once in `configure()`, never per script — every line comes from events the package
+already observes. Elapsed time answers *is it still going*; the path and the digest answer
+*what has it done*, and that digest is the same short form the artifact's own header carries.
+
+**On when stderr is a terminal, off otherwise.** A pipe, a file or a job runner's log has
+nobody watching, and lines there are noise in somebody else's output. `configure(progress="on")`
+and `"off"` force it; `RUNPROV_QUIET` silences it like every other routine message; it never
+touches stdout, because that channel belongs to your data. Capped at 200 lines a run, and it
+says once when the cap bites.
+
+**The heartbeat fires on silence, not on a timer.** Every registered event resets it, so a run
+producing events steadily never beats at all and a twenty-minute computation says so once a
+period, naming what it last did. `configure(heartbeat=0)` disables it and builds no thread;
+the count reaches the record as `observation.heartbeats`.
+
 ## It tells you when a read bypassed registration
 
 `run.input(p)` makes registration the ordinary way to open a file. It cannot make it the only
@@ -1903,6 +2036,37 @@ on every platform**. The notice sits outside the platform branches, so an NFS or
 whose `flock` raises `ENOLCK`, or a container without the syscall, says so on stderr rather
 than degrading quietly. Those filesystems are the lock's entire justification, which makes
 that the one case that most deserved announcing.
+
+## Recording the columns you wrote: `record_header=True`
+
+A digest says the file changed. It cannot say that a **column appeared**, and comparing two
+dated records is how *"when did that column arrive?"* gets answered.
+
+```python
+with run.open_output(OUT, record_header=True) as fh:
+    ...
+# record:  {"path": "out.tsv", "sha256": …, "header": ["sample", "value"]}
+```
+
+Nearly free: the body already streams through the writer on its way to the hash, so the first
+line is in hand at the moment the pin is patched. Nothing is re-read and nothing past line one
+is ever parsed. Parsed with `csv`, so a field containing the delimiter survives as one column.
+
+**Three refusals, in the design rather than in a later bug report:**
+
+* **Only a file this method itself writes.** It never opens an artifact it did not produce —
+  guessing at somebody else's schema is how a tool ends up wrong about it.
+* **It does not detect whether a header exists.** The flag is *you* asserting that line one
+  names the columns. Pointed at a headerless file it records the first row of data, and that
+  is documented behaviour rather than a defect: detection would mean guessing, and a wrong
+  guess here is silent.
+* **It does not sniff the delimiter**, which comes from the suffix — `.tsv` and `.csv`.
+  `csv.Sniffer` does not fail on an unknown format; it returns one column named
+  `"sample\tvalue"`, which looks exactly like a real answer. An unnamed suffix is refused with
+  the list, and `run.note("columns", [...])` remains the answer for anything else.
+
+The field is **absent** rather than empty when you did not ask, so *no header recorded* stays
+distinguishable from *a header of no columns*.
 
 ## The pin is not a comment everywhere, so `open_output` refuses 15 formats and gives 23 a sidecar
 

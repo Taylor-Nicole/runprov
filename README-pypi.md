@@ -52,6 +52,36 @@ The artifact then carries its own provenance, as a comment block above its first
 #     17ffe7054ecf0cc8  data/measurements.tsv
 ```
 
+## Inside the script, and watching it run
+
+```python
+@run.step  # digests what a function received and returned
+def normalise(rows, factor=1.0):
+    return [r * factor for r in rows]
+```
+
+A digest says a *file* changed; this says an *argument* changed. Values that cannot be
+canonically serialised are recorded as `UNDIGESTIBLE:<type>` — never a `repr`, never a
+pickle.
+
+**On Python 3.12+ it also records which of your own functions ran, and how often**, with no
+decorator: `sys.monitoring`, scoped to code under the project root, and bounded — the
+observer stops itself after 50 000 calls and the record says when. `configure(
+auto_steps="arguments")` additionally digests the distinct argument sets each function saw.
+
+Every record carries an `observation` block naming what the run was *able* to observe, so a
+record with no steps is distinguishable from one made where steps could not be observed.
+
+```
+[00:00] read  data/m1.tsv  1541e29a8301ba21
+[00:02] still running — last: read data/m1.tsv
+[00:03] wrote out.tsv      c533232884b32c60
+```
+
+Progress is on when stderr is a terminal and off otherwise; the heartbeat fires only after
+silence, so a run producing events steadily never beats. Both are configured once, never per
+script. `run.open_output(p, record_header=True)` records the column names it just wrote.
+
 ## Checking it later
 
 ```
