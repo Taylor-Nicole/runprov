@@ -637,3 +637,93 @@ def moved_since(rec: dict[str, typing.Any], base: pathlib.Path | None = None) ->
     if _mtime_utc(st) != rec.get("mtime_utc"):
         return "mtime"
     return None
+
+
+# ---------------------------------------------------------------------------- T-25, ADR-0010
+#: How deep a container may nest before it is refused. A cycle would otherwise recurse until
+#: the interpreter stops it, and a list nested two hundred deep is not a value anybody meant
+#: to record.
+_VALUE_MAX_DEPTH = 12
+
+#: What `_value_digest` returns when it will not pretend. The type name follows the colon, so
+#: a reader sees WHAT could not be digested rather than only that something could not.
+# THE NAME IS PRIVATE; THE VALUE IS NOT. A blanket rename to `_value_digest` also rewrote
+# this string, which would have put `_UNDIGESTIBLE:` into every record — a Python naming
+# convention leaking into a data format that readers and `grep` depend on.
+_UNDIGESTIBLE = "UNDIGESTIBLE"
+
+
+def _canonical(value: typing.Any, depth: int = 0) -> str:  # noqa: ANN401 - any value
+    """A string that is the same for equal values and different for unequal ones.
+
+    TYPE-TAGGED, because JSON is not enough. `json.dumps` renders `True` and `1` identically
+    and `1` and `1.0` identically, so three different values would digest the same and a
+    changed argument would read as unchanged — the exact failure this exists to catch.
+
+    Raises `TypeError` for anything it will not canonicalise. The caller turns that into
+    `_UNDIGESTIBLE`; it is never guessed at here.
+    """
+    if depth > _VALUE_MAX_DEPTH:
+        raise TypeError(f"nested deeper than {_VALUE_MAX_DEPTH}")
+    # BOOL BEFORE INT, and not by accident: `isinstance(True, int)` is true in Python, so the
+    # obvious ordering digests `True` as the integer 1.
+    if value is None:
+        return "n:"
+    if isinstance(value, bool):
+        return f"b:{'1' if value else '0'}"
+    if isinstance(value, int):
+        return f"i:{value}"
+    if isinstance(value, float):
+        # `repr` round-trips a float exactly and renders nan/inf deterministically.
+        return f"f:{value!r}"
+    if isinstance(value, str):
+        return f"s:{len(value)}:{value}"
+    if isinstance(value, (bytes, bytearray)):
+        return f"y:{bytes(value).hex()}"
+    if isinstance(value, (list, tuple)):
+        tag = "l" if isinstance(value, list) else "t"
+        inner = ",".join(_canonical(v, depth + 1) for v in value)
+        return f"{tag}:{len(value)}:[{inner}]"
+    if isinstance(value, dict):
+        # STRING KEYS ONLY. Ordering `{1: ..., "1": ...}` requires deciding how an int sorts
+        # against a str, and any answer to that is invented rather than derived.
+        if not all(isinstance(k, str) for k in value):
+            raise TypeError("dict with non-string keys")
+        items = ",".join(
+            f"{_canonical(k, depth + 1)}={_canonical(value[k], depth + 1)}" for k in sorted(value)
+        )
+        return f"d:{len(value)}:{{{items}}}"
+    raise TypeError(type(value).__name__)
+
+
+def _value_digest(value: typing.Any) -> str:  # noqa: ANN401 - any value
+    """Digest a Python VALUE, or say plainly that it cannot be done. ADR-0010.
+
+    Files have bytes; function arguments are arbitrary objects, which is where a provenance
+    tool reaches for a database and the record starts depending on the tool again. The rule
+    here is fixed in advance so that it cannot quietly become "whatever worked":
+
+      * scalars and containers of them -> a type-tagged canonical form, hashed
+      * anything exposing `__runprov_digest__` -> its answer, which must be a string
+      * EVERYTHING ELSE -> `_UNDIGESTIBLE:<type>`
+
+    Never a `repr`: it is unstable across runs and across versions, and recording it would
+    present an unstable value as a stable one. Never a pickle: it is not reproducible across
+    versions, and it would put executable bytes inside a provenance record.
+
+    The last rule is what keeps this honest, and it is the same behaviour as the fifteen
+    formats `open_output` refuses rather than pretending to pin.
+    """
+    own = getattr(value, "__runprov_digest__", None)
+    if callable(own):
+        try:
+            answer = own()
+        except Exception:  # a broken hook must not break the run it is describing
+            return f"{_UNDIGESTIBLE}:{type(value).__name__}"
+        # A hook that returns a non-string is a hook that did not answer the question.
+        return answer if isinstance(answer, str) else f"{_UNDIGESTIBLE}:{type(value).__name__}"
+    try:
+        canonical = _canonical(value)
+    except (TypeError, RecursionError):
+        return f"{_UNDIGESTIBLE}:{type(value).__name__}"
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:PIN_DIGEST_CHARS]

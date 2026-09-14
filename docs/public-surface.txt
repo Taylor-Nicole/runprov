@@ -66,6 +66,7 @@ Run.output
 Run.output_json
 Run.pin_sidecar
 Run.seeds
+Run.step
 Run.terminal_log
 Run.tool
 Run.write

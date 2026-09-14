@@ -9,6 +9,42 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Added
+
+* **`@run.step` — function-level provenance (T-25, ADR-0010).** A digest says a *file*
+  changed; this says an *argument* changed, which is the difference inside a script that
+  `verify` cannot see because `verify`'s subject is the artifact. Records the digests of what
+  a decorated function received and returned, including calls that raised.
+
+  **Declared, not observed, and that is the design.** noWorkflow captures more by
+  instrumenting the abstract syntax tree, at the cost of changing the program it observes;
+  this package has a test section headed *provenance must not change the program it observes*
+  and states that trade in `WHY.md`. The decorator is the same argument as `run.input()`: it
+  is in the code, so a reviewer sees it in the diff and it cannot be bypassed by launching
+  differently.
+
+* **A digest rule for Python values that refuses rather than guesses.** Type-tagged canonical
+  forms for scalars and containers of them — `json.dumps` renders `True`, `1` and `1.0`
+  identically and would call a changed argument unchanged — `__runprov_digest__` for anything
+  that offers it, and `UNDIGESTIBLE:<type>` for everything else. **Never a `repr`**, which is
+  unstable across runs and would be recorded as though it were not; **never a pickle**, which
+  is irreproducible and would put executable bytes inside a provenance record.
+
+* **An `observation` block in every record.** Names what the run was ABLE to observe, present
+  whether or not the feature is used. Without it a record with no steps cannot be told apart
+  from a record made where steps could not be observed, and a reader comparing two runs on two
+  interpreters concludes "nothing changed inside the script" when the truth is "nothing was
+  looked at" — this package's own defect class, arriving through the feature meant to catch
+  it. `auto_available` is the field that carries that distinction; `packages_recorded` does
+  the same for `"packages": {}`, which until now could not be told from nobody asking.
+
+* **Steps are capped at 1000 per run, and the cap says so.** `observation.steps_truncated`
+  counts what was dropped. A truncated record that does not announce the truncation is the
+  same defect one level down.
+
+`sys.monitoring` automatic capture (3.12+) is **not** implemented: ADR-0010 specifies it as an
+optional amplifier and it is deliberately a second stage.
+
 ### Tooling
 
 * **`ruff` 0.16.2 → 0.16.6, `mypy` 2.3.0 → 2.3.1, `build` 1.5.0 → 1.6.0.** Applied by hand

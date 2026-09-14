@@ -46,6 +46,7 @@ import atexit
 import contextlib
 import csv
 import datetime as dt
+import functools
 import hashlib
 import importlib.metadata
 import inspect
@@ -75,6 +76,7 @@ from .hashing import (
     PIN_DIGEST_CHARS,
     PIN_SIDECAR_SUFFIX,
     _posix,
+    _value_digest,
     describe,
     moved_since,
     pin_digest,
@@ -778,7 +780,7 @@ class Run:
         with Run("build_labels", vars(args), provenance=PROV) as run:
             ...
 
-    FOURTEEN METHODS IN FOUR FAMILIES. They were listed alphabetically and nowhere else, so
+    FIFTEEN METHODS IN FOUR FAMILIES. They were listed alphabetically and nowhere else, so
     the rule for choosing between four ways of registering one artifact was invisible at the
     call site — `open_output` and `output_json` both write a JSON result correctly and
     produce provenance of different shapes, and nothing where you type them says so.
@@ -805,6 +807,9 @@ class Run:
 
         ANNOTATE — facts about the run rather than files
           note(k, v)  seeds(...)  environment_snapshot()
+          step(f)           a DECORATOR: records the digests of what a function received
+                            and returned, so a difference inside the script is visible the
+                            way a difference between files already is (ADR-0010)
 
         FINISH — the record itself
           write(p)          writes THE PROVENANCE RECORD. Not one of the WRITE family
@@ -946,9 +951,24 @@ class Run:
                 "sink": type(self.project.resolved_sink()).__name__,
                 "project_source": self.project_source,
             },
+            # ADR-0010. WHAT THIS RUN WAS ABLE TO OBSERVE, present whether or not the
+            # feature is used. Without it, a record with no steps cannot be told apart from a
+            # record made where steps could not be observed — and a reader comparing two runs
+            # on two interpreters concludes "nothing changed inside the script" when the truth
+            # is "nothing was looked at". That is this package's own defect class, and it
+            # would arrive through the feature meant to detect it.
+            "observation": {
+                "steps": "none",
+                "auto_backend": None,
+                # CAPABILITY, NOT CHOICE. `sys.monitoring` is PEP 669 and 3.12+; recording it
+                # separately is what lets a reader tell "not observed" from "could not be".
+                "auto_available": hasattr(sys, "monitoring"),
+                "packages_recorded": "none",
+            },
             "seeds": [],
             "inputs": [],
             "outputs": [],
+            "steps": [],
         }
         self._pending: list[pathlib.Path] = []
         # OPEN PINNED WRITERS. A caller who forgets to close one would otherwise lose the
@@ -2569,6 +2589,94 @@ class Run:
         self._refuse_after_exit("seeds()")
         self.record["seeds"] = [int(s) for s in seeds]
 
+    #: How many step calls one run records before it stops. A loop calling a decorated
+    #: function ten thousand times would otherwise flood a history designed to be read with
+    #: `cat`. When the cap bites it is RECORDED — a truncated record that does not say it was
+    #: truncated is the same defect the `observation` block exists to prevent.
+    MAX_STEPS = 1000
+
+    def step(
+        self, func: typing.Callable[..., typing.Any] | None = None, *, name: str | None = None
+    ) -> typing.Any:  # noqa: ANN401 - a decorator, used bare or called
+        """Record what a function received and returned. ADR-0010, T-25.
+
+            @run.step
+            def normalise(table, factor=1.0):
+                ...
+
+        A digest says a FILE changed. This says an argument changed — the difference inside a
+        script that `verify` cannot see, because `verify`'s subject is the artifact.
+
+        DECLARED, NOT OBSERVED, and that is the design rather than a limitation. noWorkflow
+        captures more by instrumenting the abstract syntax tree, at the cost of changing the
+        program it observes; this package has a test section headed *provenance must not
+        change the program it observes* and states that trade in `WHY.md`. The decorator is
+        the same argument as `run.input()`: it is IN the code, so a reviewer sees it in the
+        diff and it cannot be bypassed by launching differently.
+
+        **Values are digested by the rule in `hashing._value_digest`, which refuses rather
+        than guesses.** Anything it cannot canonicalise is recorded as `_UNDIGESTIBLE:<type>`
+        — never a `repr`, which is unstable and would be recorded as though it were not, and
+        never a pickle, which is irreproducible and would put executable bytes in a record.
+
+        A raising call is still recorded, with the exception type in place of a result: a
+        step that failed is a thing that happened, and dropping it is how a record shows a
+        run doing less than it did.
+
+        Works bare or called: `@run.step` and `@run.step(name="...")`.
+        """
+
+        def decorate(f: typing.Callable[..., typing.Any]) -> typing.Callable[..., typing.Any]:
+            label = name or getattr(f, "__qualname__", repr(f))
+
+            @functools.wraps(f)
+            def wrapper(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:  # noqa: ANN401
+                entry: dict[str, typing.Any] = {
+                    "step": label,
+                    "args": [_value_digest(a) for a in args],
+                    "kwargs": {k: _value_digest(v) for k, v in sorted(kwargs.items())},
+                }
+                try:
+                    result = f(*args, **kwargs)
+                except BaseException as exc:
+                    entry["raised"] = type(exc).__name__
+                    self._add_step(entry)
+                    raise
+                entry["returned"] = _value_digest(result)
+                self._add_step(entry)
+                return result
+
+            return wrapper
+
+        # Bare `@run.step` hands the function straight in; `@run.step(name=...)` does not.
+        return decorate if func is None else decorate(func)
+
+    def _observed_packages(self) -> str:
+        """Which of the three answers the environment block actually gives. ADR-0010.
+
+        `"packages": {}` alone cannot be told apart from "nobody asked": `DEFAULT_TRACKED` is
+        empty on the stated grounds that a package list is a guess about somebody's domain, so
+        an empty map is the ORDINARY case and says nothing. This names which it is.
+        """
+        env = self.record["environment"]
+        if "snapshot" in env:
+            return "snapshot"
+        return "tracked" if env.get("packages") else "none"
+
+    def _add_step(self, entry: dict[str, typing.Any]) -> None:
+        """Append one step, or count it as dropped once the cap is reached."""
+        self._refuse_after_exit("step()")
+        steps = self.record["steps"]
+        if len(steps) >= self.MAX_STEPS:
+            # THE CAP SAYS SO IN THE RECORD. Silently keeping the first thousand would make a
+            # truncated history indistinguishable from a run that made a thousand calls.
+            self.record["observation"]["steps_truncated"] = (
+                self.record["observation"].get("steps_truncated", 0) + 1
+            )
+            return
+        steps.append(entry)
+        self.record["observation"]["steps"] = "declared"
+
     def note(self, key: str, value: typing.Any) -> None:  # noqa: ANN401
         """Any, deliberately: a note is whatever number or string the script wants recorded."""
         self._refuse_after_exit("note()")
@@ -2976,6 +3084,10 @@ class Run:
         # `run.write(p)` with no `with` recorded nothing whatever.
         if not self._in_context:
             self._record_imported_code()
+        # ADR-0010. Computed HERE and not at construction, because the environment snapshot
+        # and the tracked-package read both happen during the run: asked earlier the answer
+        # would be "none" for every run that later recorded either.
+        self.record["observation"]["packages_recorded"] = self._observed_packages()
         # A CHECKPOINT MUST NOT CLAIM AN OUTCOME. Called INSIDE the block the run has not
         # finished, so `ok` is a guess and `finished_utc` is a time that has not happened.
         # Measured before this: `run.write(P)` mid-run, then SIGKILL, left a sidecar reading
@@ -3173,6 +3285,17 @@ class Run:
             "cwd": r["cwd"],
             "parameters": r["parameters"],
             "seeds": r["seeds"],
+            # ADR-0010, AND THE `kind` LESSON THIS PROJECTION ALREADY CARRIES. It whitelists,
+            # so a field not named here never reaches the history — and the history is what
+            # `show` and `log` read. `observation` is the one field that MUST travel: two
+            # records that cannot be compared for what they were able to see are two records
+            # a reader will compare anyway.
+            "observation": r["observation"],
+            # THE COUNT, NOT THE LIST. Steps are capped at 1000 per run and a thousand entries
+            # per line would end the property that this file is read with `cat`. The full
+            # detail is in the sidecar, where a reader who wants one run's steps is already
+            # looking; the count here is what says whether there are any.
+            **({"steps": len(r["steps"])} if r.get("steps") else {}),
             "git_commit": r["code"]["git_commit_short"],
             # A SUMMARY, not the list. The full per-file hashes are in the sidecar; the
             # history is appended forever, and 50 modules per line would multiply it. One

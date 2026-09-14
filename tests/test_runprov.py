@@ -5011,6 +5011,198 @@ def test_nothing_imports_a_stdlib_module_younger_than_requires_python():
     )
 
 
+# --------------------------------------------------------------------------- T-25, ADR-0010
+
+
+def test_value_digest_separates_values_that_json_would_confuse():
+    """The rule's whole job is that unequal values digest unequally.
+
+    `json.dumps` renders `True`, `1` and `1.0` identically, and `[1,2]` the same as `(1,2)`.
+    A digest built on it would call a changed argument unchanged — the exact failure this
+    exists to catch — so the canonical form is TYPE-TAGGED. `isinstance(True, int)` is true
+    in Python, which is why bool is tested before int in the implementation.
+    """
+    d = runprov.hashing._value_digest
+    distinct = [d(True), d(1), d(1.0), d("1"), d(None), d([1, 2]), d((1, 2)), d({"a": 1})]
+    assert len(set(distinct)) == len(distinct), f"two unequal values digest the same: {distinct}"
+
+    # Equal values digest equally, including dicts written in a different order — otherwise
+    # every run would differ from every other and the feature would report noise.
+    assert d({"a": 1, "b": 2}) == d({"b": 2, "a": 1})
+    assert d([1, [2, {"k": "v"}]]) == d([1, [2, {"k": "v"}]])
+    assert d(b"ab") == d(bytearray(b"ab"))
+
+
+def test_value_digest_refuses_rather_than_guesses():
+    """`UNDIGESTIBLE:<type>` is the honest answer, and the type name is half of it.
+
+    Never a `repr`: unstable across runs and versions, and recording it would present an
+    unstable value as a stable one. Never a pickle: irreproducible, and it would put
+    executable bytes inside a provenance record. Same posture as the fifteen formats
+    `open_output` refuses rather than pretending to pin.
+    """
+    d = runprov.hashing._value_digest
+    assert d(object()) == "UNDIGESTIBLE:object"
+    assert d({1: "int key"}) == "UNDIGESTIBLE:dict"  # ordering ints against strs is invented
+    assert d([1, object()]) == "UNDIGESTIBLE:list"  # refusal propagates out of a container
+
+    deep = cur = []
+    for _ in range(runprov.hashing._VALUE_MAX_DEPTH + 2):
+        nxt = []
+        cur.append(nxt)
+        cur = nxt
+    assert d(deep) == "UNDIGESTIBLE:list", "a cycle or a deep nest must refuse, not recurse"
+
+
+def test_value_digest_uses_the_objects_own_hook_and_survives_a_broken_one():
+    """`__runprov_digest__` is the extension point — the same protocol the README documents.
+
+    A hook that raises, or answers with something that is not a string, has not answered the
+    question. It must not take the run down with it: provenance that can break the program it
+    observes is the thing this package refuses to be.
+    """
+    d = runprov.hashing._value_digest
+
+    class Own:
+        def __runprov_digest__(self):
+            return "from-the-object"
+
+    class Raises:
+        def __runprov_digest__(self):
+            raise RuntimeError("boom")
+
+    class NotAString:
+        def __runprov_digest__(self):
+            return 1234
+
+    assert d(Own()) == "from-the-object"
+    assert d(Raises()) == "UNDIGESTIBLE:Raises"
+    assert d(NotAString()) == "UNDIGESTIBLE:NotAString"
+
+
+def test_run_step_records_what_a_function_received_and_returned(tmp_path):
+    """T-25. A digest says a FILE changed; this says an ARGUMENT changed.
+
+    Same inputs twice must give the same digests, or the feature reports noise; a changed
+    input must move both the argument digest and the result's, or it reports nothing.
+    """
+    runprov.configure(root=tmp_path)
+    with runprov.Run("s", {}, provenance=tmp_path / "p.prov.json") as run:
+
+        @run.step
+        def scale(rows, factor=1.0):
+            return [r * factor for r in rows]
+
+        @run.step(name="named")
+        def named(x):
+            return x
+
+        scale([1, 2], factor=2.0)
+        scale([1, 2], factor=2.0)
+        scale([1, 3], factor=2.0)
+        named("x")
+
+    steps = json.loads((tmp_path / "p.prov.json").read_text(encoding="utf-8"))["steps"]
+    # `__qualname__`, so a method records as `Class.method` rather than a bare name two
+    # classes could both claim. A function defined inside another — as here, and as in any
+    # test — carries `<locals>` with it; at module level, where user code lives, the
+    # qualified name and the plain name are the same string.
+    assert [s["step"].rsplit(".", 1)[-1] for s in steps] == ["scale", "scale", "scale", "named"]
+    assert steps[3]["step"] == "named", "an explicit name must win over __qualname__"
+    assert steps[0] == steps[1], "identical calls produced different records"
+    assert steps[2]["args"] != steps[0]["args"], "a changed argument did not move its digest"
+    assert steps[2]["returned"] != steps[0]["returned"], (
+        "a changed argument did not move the result"
+    )
+    assert steps[0]["kwargs"] == {"factor": steps[0]["kwargs"]["factor"]}
+
+    # `functools.wraps`: a decorator that renames the function it wraps breaks tracebacks and
+    # `help()`, and the decorated function is the user's, not ours.
+    assert scale.__name__ == "scale"
+
+
+def test_run_step_records_a_call_that_raised(tmp_path):
+    """A step that failed is a thing that happened. Dropping it is how a record shows a run
+    doing less than it did — and the failing call is usually the interesting one."""
+    runprov.configure(root=tmp_path)
+    with runprov.Run("s", {}, provenance=tmp_path / "p.prov.json") as run:
+
+        @run.step
+        def boom(x):
+            raise ValueError("no")
+
+        with pytest.raises(ValueError):
+            boom(1)
+
+    step = json.loads((tmp_path / "p.prov.json").read_text(encoding="utf-8"))["steps"][0]
+    assert step["raised"] == "ValueError"
+    assert "returned" not in step, "a raising call must not also claim a result"
+
+
+def test_run_step_caps_the_record_and_says_that_it_did(tmp_path):
+    """A loop of ten thousand calls would end the property that the history is read with
+    `cat`. The cap is not the point — SAYING SO is: a truncated record that does not
+    announce the truncation is the defect the observation block exists to prevent."""
+    runprov.configure(root=tmp_path)
+    with runprov.Run("s", {}, provenance=tmp_path / "p.prov.json") as run:
+
+        @run.step
+        def tick(i):
+            return i
+
+        for i in range(runprov.Run.MAX_STEPS + 5):
+            tick(i)
+
+    rec = json.loads((tmp_path / "p.prov.json").read_text(encoding="utf-8"))
+    assert len(rec["steps"]) == runprov.Run.MAX_STEPS
+    assert rec["observation"]["steps_truncated"] == 5
+
+
+def test_every_record_says_what_it_was_able_to_observe(tmp_path):
+    """ADR-0010, and the reason the block is present even when the feature is unused.
+
+    A record with no steps must be distinguishable from a record made where steps could not
+    be observed. Otherwise a reader comparing two runs on two interpreters concludes "nothing
+    changed inside the script" when the truth is "nothing was looked at" — this package's own
+    defect class, arriving through the feature meant to detect it.
+    """
+    runprov.configure(root=tmp_path)
+    with runprov.Run("plain", {}, provenance=tmp_path / "a.prov.json"):
+        pass
+    obs = json.loads((tmp_path / "a.prov.json").read_text(encoding="utf-8"))["observation"]
+    assert obs["steps"] == "none", "a run with no steps must say so rather than omit the field"
+    assert obs["auto_available"] is hasattr(sys, "monitoring")
+    assert obs["packages_recorded"] in {"none", "tracked", "snapshot"}
+    assert obs["auto_backend"] is None, "nothing automatic is implemented yet; ADR-0010 is proposed"
+
+    # AND IT REACHES THE HISTORY, which whitelists its keys — the `kind` lesson that
+    # projection already carries, and the one that swallowed T-24's header on its first run.
+    line = (tmp_path / "provenance" / "runs.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    assert json.loads(line)["observation"]["steps"] == "none"
+
+
+def test_the_history_carries_the_step_count_and_not_the_step_list(tmp_path):
+    """The full detail belongs in the sidecar, where a reader wanting one run's steps is
+    already looking. A thousand entries on a history LINE would end the property that this
+    file is read with `cat` — which is the package's central claim about its own record."""
+    runprov.configure(root=tmp_path)
+    with runprov.Run("s", {}, provenance=tmp_path / "p.prov.json") as run:
+
+        @run.step
+        def f(x):
+            return x
+
+        f(1)
+        f(2)
+
+    line = json.loads(
+        (tmp_path / "provenance" / "runs.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert line["steps"] == 2, "the history should carry the count"
+    sidecar = json.loads((tmp_path / "p.prov.json").read_text(encoding="utf-8"))
+    assert sidecar["steps"][0]["step"].endswith("f"), "the sidecar carries the full entries"
+
+
 def test_the_citation_abstract_opens_with_the_package_description():
     """One package, two descriptions, two audiences — and they had already drifted.
 
