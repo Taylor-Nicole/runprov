@@ -472,6 +472,16 @@ class Project:
     #: distinct argument sets each function saw, which costs a frame read per call and is
     #: therefore asked for rather than assumed. `"off"` disables it.
     auto_steps: str | None = None
+    #: Narrate the run on stderr as it happens: each registered read, each artifact written,
+    #: with the elapsed time. `None` decides from the capability — on when stderr is a
+    #: terminal, off when it is a file, a pipe or a job runner's log, where nobody is watching
+    #: and the lines are somebody else's noise. `"on"` and `"off"` force it.
+    #:
+    #: It answers the two things a long run is asked: *what has it done* and *is it still
+    #: going*. Both come from events runprov already observes, so no script configures
+    #: anything. `RUNPROV_QUIET` silences it like every other routine message, and it never
+    #: touches stdout — that channel belongs to the caller's data.
+    progress: str | None = None
     #: Write a sidecar per RUN instead of one that the next run overwrites.
     #:
     #: `provenance=OUT.with_name("summary.prov.json")` names ONE path, so the tenth run of

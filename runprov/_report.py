@@ -119,6 +119,47 @@ def diagnostic(*lines: str) -> None:
         _write(line)
 
 
+#: How many progress lines one run may print before it stops narrating. A run registering
+#: four thousand inputs would otherwise scroll the terminal it is trying to reassure. When it
+#: bites it SAYS SO, once — the same rule the record follows for a truncated observation.
+PROGRESS_MAX_LINES = 200
+
+
+def progress_enabled(setting: str | None) -> bool:
+    """Whether to narrate. `None` means "decide from the capability", which is a terminal.
+
+    THE DEFAULT IS A TTY TEST, not a preference. Piped into a file, read by a job runner, or
+    running in CI, there is nobody watching and the lines are noise in somebody's log — the
+    same reasoning as `auto_available` in ADR-0010: what is possible decides, and it is
+    stated rather than assumed. `RUNPROV_QUIET` still wins over everything.
+    """
+    if quiet():
+        return False
+    if setting is not None:
+        return setting == "on"
+    stream = sys.stderr
+    try:
+        return bool(stream is not None and stream.isatty())
+    except Exception:  # a stream that cannot answer is not a terminal
+        return False
+
+
+def progress(line: str, *, state: dict[str, int]) -> None:
+    """One narration line, capped, counting its own suppressions.
+
+    `state` carries the count for one run; the cap is per run rather than per process, so a
+    long session of short runs is not silenced by its own history.
+    """
+    shown = state.get("shown", 0)
+    if shown >= PROGRESS_MAX_LINES:
+        if shown == PROGRESS_MAX_LINES:
+            state["shown"] = shown + 1
+            _write(f"  … further progress lines suppressed after {PROGRESS_MAX_LINES}")
+        return
+    state["shown"] = shown + 1
+    _write(line)
+
+
 def summary(*lines: str) -> None:
     """Routine confirmation that the run was recorded. stderr, and `RUNPROV_QUIET` hides it."""
     if quiet():

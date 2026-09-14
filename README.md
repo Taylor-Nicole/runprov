@@ -2261,7 +2261,7 @@ The Windows leg skips ten times what any other does, and it is the only leg that
 assert the coverage floor — skipped tests leave their lines unmeasured, so 100% is
 unreachable there by construction rather than by regression. No other leg may lower it.
 
-Coverage is **100%** of **about 3,140 statements and 1,110 branches**, and the gate is set
+Coverage is **100%** of **about 3,520 statements and 1,190 branches**, and the gate is set
 there with `--cov-branch`.
 
 *Every figure in this section is approximate on purpose.* They exist to convey scale, and an

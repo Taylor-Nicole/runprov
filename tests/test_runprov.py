@@ -5055,6 +5055,77 @@ def _code(filename, qualname="f", varnames=(), argcount=0):
     )
 
 
+def test_progress_narrates_reads_and_writes_relative_to_the_project(tmp_path, capsys):
+    """Both questions a long run is asked — *what has it done* and *is it still going* —
+    answered from events runprov already observes, so no script configures anything.
+
+    Relative paths and the pin's own short digest, because the first version printed absolute
+    paths (most of a terminal width, varying at the end) and a full 64-character sha256 for
+    reads against 16 characters for writes: two lines about the same kind of thing that did
+    not line up with each other or with the artifact's header.
+    """
+    (tmp_path / "in.tsv").write_text("a\tb\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, progress="on")
+    with runprov.Run("narrate", {}, provenance=tmp_path / "n.prov.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("x\n")
+
+    err = capsys.readouterr().err
+    assert "] read  in.tsv" in err, f"no relative read line in: {err}"
+    assert "] wrote out.tsv" in err, f"no relative write line in: {err}"
+    for line in err.splitlines():
+        if "] read" in line or "] wrote" in line:
+            digest = line.split()[-1]
+            assert len(digest) == runprov.hashing.PIN_DIGEST_CHARS, (
+                f"a narration digest is not the pin's short form: {line!r}"
+            )
+    # STDOUT IS THE CALLER'S DATA CHANNEL and must stay empty, always.
+    assert capsys.readouterr().out == ""
+
+
+def test_progress_is_decided_by_the_capability_unless_forced(monkeypatch):
+    """A terminal means somebody is watching. A pipe, a file or a job runner's log means the
+    lines are noise in somebody else's output — the same reasoning as `auto_available`.
+    `RUNPROV_QUIET` wins over everything, because a switch that some messages ignore is a
+    switch nobody trusts."""
+    monkeypatch.delenv(runprov._report.QUIET_ENV, raising=False)
+    assert runprov._report.progress_enabled("on") is True
+    assert runprov._report.progress_enabled("off") is False
+
+    monkeypatch.setattr(sys, "stderr", io.StringIO())  # not a terminal
+    assert runprov._report.progress_enabled(None) is False
+
+    class Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(sys, "stderr", Tty())
+    assert runprov._report.progress_enabled(None) is True
+
+    class Rude(io.StringIO):
+        def isatty(self):
+            raise OSError("detached")
+
+    monkeypatch.setattr(sys, "stderr", Rude())
+    assert runprov._report.progress_enabled(None) is False, (
+        "a stream that cannot answer is not a tty"
+    )
+
+    monkeypatch.setenv(runprov._report.QUIET_ENV, "1")
+    assert runprov._report.progress_enabled("on") is False, "RUNPROV_QUIET must win"
+
+
+def test_progress_stops_narrating_and_says_that_it_stopped():
+    """A run registering four thousand inputs would scroll the terminal it is reassuring. The
+    cap is not the point; announcing it once is — the same rule the record follows for a
+    truncated observation."""
+    state: dict[str, int] = {}
+    for i in range(runprov._report.PROGRESS_MAX_LINES + 10):
+        runprov._report.progress(f"line {i}", state=state)
+    assert state["shown"] == runprov._report.PROGRESS_MAX_LINES + 1
+
+
 def test_observer_counts_only_the_projects_own_functions(tmp_path):
     """The scope IS the design. Measured 2026-09-14: reading 500 lines of TSV produces 1 505
     Python calls, 1 504 of them inside `csv.py`. A cap would fill on those and stop before

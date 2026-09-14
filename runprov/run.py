@@ -60,6 +60,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import traceback
 import types
 import typing
@@ -67,7 +68,7 @@ import uuid
 import weakref
 
 from ._atomic import TEMP_SUFFIX, _sync_dir, atomic_write_text
-from ._report import diagnostic, summary
+from ._report import diagnostic, progress, progress_enabled, summary
 from .environment import archive_lockfiles, lockfiles, manager, write_snapshot
 from .hashing import (
     PIN_ANCHOR,
@@ -757,6 +758,10 @@ class _PinnedWriter:
             os.fsync(self._fh.fileno())
             self._fh.close()
             os.replace(self._tmp, self._dest)
+            # NARRATED HERE, at the moment the artifact appears, rather than at seal time
+            # where the record is assembled. A line that arrives when the file does is
+            # reassurance; the same line twenty minutes later is a report.
+            self._run._say("wrote", _posix(self._dest), self._hash.hexdigest()[:PIN_DIGEST_CHARS])
             # AFTER the publish, never before: a header recorded for an artifact that failed
             # to be written would describe a file that does not exist.
             if self._header is not None and self._record_key is not None:
@@ -979,6 +984,12 @@ class Run:
         # ADR-0010. `None` until `__enter__` starts one; a run used outside a block never
         # observes, because nothing would stop it.
         self._observer: Observer | None = None
+        # NARRATION. Decided once, here, so the TTY test and the quiet check are not repeated
+        # on every registered file — and so a run that starts silent stays silent even if
+        # something later rebinds stderr.
+        self._narrate = progress_enabled(self.project.progress)
+        self._started_monotonic = time.monotonic()
+        self._progress_state: dict[str, int] = {}
         # T-24. Headers captured by `open_output(..., record_header=True)`, keyed by the
         # POSIX path the record will use, merged into the output description at seal time.
         self._headers: dict[str, list[str]] = {}
@@ -2089,6 +2100,7 @@ class Run:
         try:
             entry = describe(p)
             self.record["inputs"].append(entry)
+            self._say("read ", entry.get("path", ""), entry.get("content_sha256"))
         except OSError as exc:
             # A file that EXISTS and cannot be read. `exists()` is true -- stat works --
             # so the check above passes and the failure surfaces from inside `sha256` as a
@@ -2672,6 +2684,34 @@ class Run:
 
         # Bare `@run.step` hands the function straight in; `@run.step(name=...)` does not.
         return decorate if func is None else decorate(func)
+
+    def _say(self, verb: str, path: str, digest: str | None = None) -> None:
+        """One narration line: elapsed, what happened, to what. Silent unless narrating.
+
+        ELAPSED RATHER THAN A CLOCK, because the question a long run is asked is "how long
+        has this been going", and a wall-clock time makes the reader do the subtraction.
+
+        Costs nothing when off: one boolean, decided once at construction. The digest is the
+        short form already used in the pin, so a line here and a line in the artifact are
+        comparable by eye.
+        """
+        if not self._narrate:
+            return
+        elapsed = time.monotonic() - self._started_monotonic
+        # RELATIVE TO THE PROJECT, because an absolute path is most of a terminal width and
+        # the part that varies is the end of it. Absolute when it falls outside the root,
+        # where the full path is the information.
+        shown = path
+        with contextlib.suppress(ValueError):
+            shown = _posix(pathlib.Path(path).relative_to(self.project.root))
+        # THE SAME SHORT FORM THE PIN USES. The first version printed a full 64-character
+        # sha256 for reads and the 16-character form for writes, so two lines about the same
+        # kind of thing did not line up and neither matched the artifact's own header.
+        short = f"  {digest[:PIN_DIGEST_CHARS]}" if digest else ""
+        progress(
+            f"  [{int(elapsed) // 60:02d}:{int(elapsed) % 60:02d}] {verb} {shown}{short}",
+            state=self._progress_state,
+        )
 
     def _observed_packages(self) -> str:
         """Which of the three answers the environment block actually gives. ADR-0010.

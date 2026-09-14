@@ -37,6 +37,7 @@ Project.resolved_sink
 Project.resolved_transformation_log
 Project:allow_late_inputs
 Project:auto_steps
+Project:progress
 Project:code_paths
 Project:env_snapshot_dir
 Project:generation
