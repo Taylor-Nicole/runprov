@@ -90,12 +90,38 @@ So its output is *"these files record nothing"*, never *"everything else is reco
 second is not a claim any static check can make, and a checker that implied it would be the
 defect this package exists to catch.
 
-## Before it ships
+## Validated on real pipelines, 2026-09-15 — and two more rules came out of it
 
-**Validate on a real pipeline, not on this repository.** ADR-0002 set that condition for
-case B and it holds here: this repo has 20 Python files and one example that confused the
-prototype. The seven pipelines this package was built for are the test that matters, and a
-false-positive rate measured on the tool's own source proves very little about them.
+Measured read-only over three of the platform's repositories. **No install, no upgrade, no
+run:** the check parses source, so validating it needed nothing from the pipelines but read
+access — which is worth stating, because "we would have to upgrade runprov everywhere first"
+is the reasonable objection it does not have.
+
+| repo | files | flagged, naive | + entry points only | + transitive imports |
+|---|---|---|---|---|
+| `hcv-acquisition` | 175 | 59 | 30 | **2** |
+| `taxon-corpus` | 152 | 25 | 25 | **2** |
+| `hcv_pipeline_v2` | 647 | — | 14 | **14** |
+
+**Rule 2: the subject is an ENTRY POINT, not any file that opens something.** The naive pass
+flagged 59 of 175 — `lib/fsio.py`, `lib/fasta.py`, `gates/chain.py` — library modules inside
+an installed package. A library function that opens a file is not analysis code; it is called
+*by* analysis code. Derived from the source (`if __name__ == "__main__":`), not from a path
+convention, since `src/` layouts and `scripts/` directories vary per project.
+
+**Rule 3: "uses runprov" is resolved TRANSITIVELY through the project's own modules.** This is
+the one that mattered, and it would have made the check useless without ever looking wrong.
+`hcv-acquisition` has **3** files importing runprov directly and **96** reaching it through
+its own `provenance.py` wrapper. Its stages `import provenance`, not `runprov` — and wrapping
+the library is the *normal* way a platform adopts one. A direct-import test calls all 28
+recording entry points unrecorded: false, and noisy in precisely the way ADR-0002 warned about.
+
+**What the numbers say.** On the two repositories that do use runprov, 2 flagged files out of
+175 and 152, both the same pair (`tooling/golden.py`, `gates/chain.py`) — small enough to
+examine by hand, and plausibly true findings. On `hcv_pipeline_v2`, which reaches runprov
+**nowhere**, 14 of 647: `build_feature_matrix_combined.py`, `classify_sequences.py`,
+`run_train_golden_n9.py` and friends. That is the question this check exists to answer, asked
+of a real pipeline and answered usefully.
 
 ## Alternatives considered
 
