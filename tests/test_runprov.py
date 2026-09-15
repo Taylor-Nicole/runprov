@@ -1151,7 +1151,7 @@ def test_every_module_carries_the_copyright_header():
         # pass on a half-finished edit -- which is how this file lost these tests once.
         assert "AP-HP" in head, m.name
         assert "Hôpital Henri-Mondor" in head, m.name
-        assert "Taylor Thompson" in head, m.name
+        assert "Taylor Nicole Thompson" in head, m.name
         assert "BSD 3-Clause" in head, m.name
         # THE MACHINE-READABLE TAG, and it is checked against `pyproject.toml` rather than
         # against a literal — one fact in two files is this repository's most-repaired defect,
@@ -8702,7 +8702,7 @@ def test_the_yaml_view_flags_a_log_that_stops_before_its_run_does(tmp_path, monk
 
 
 # ------------------------------------------------------- CONSUMER COMPATIBILITY (v1)
-# `tests/fixtures/history_v1.jsonl` is real v1 output, produced by the v1 code at 609299b.
+# `tests/fixtures/history_v1.jsonl` is real v1 output, produced by the v1 code at 2953e56.
 # See tests/fixtures/README.md — a compatibility fixture written from memory tests memory.
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -8792,7 +8792,7 @@ def test_lineage_joins_the_other_way_too_a_v2_producer_read_by_a_v1_consumer(tmp
     hash to look it up by. Mutation testing found this gap — the producer-side breadth
     survived every test until this fixture existed.
 
-    Both records are real: today's code wrote `shared.tsv`, then the v1 code at 609299b read
+    Both records are real: today's code wrote `shared.tsv`, then the v1 code at 2953e56 read
     it, in that order, so the producer-finished-before-consumer-started rule holds honestly
     rather than by an edited timestamp.
     """
@@ -18379,14 +18379,14 @@ def test_every_pinned_tool_in_a_workflow_matches_the_dev_extra():
 def test_the_yaml_view_stays_one_entry_per_run_when_the_schema_is_bumped(tmp_path, monkeypatch):
     """A-28. `YamlLogSink.append` filtered start lines with the literal `"runprov.start.v1"`
     while `__main__` used the imported `START_SCHEMA` — one sentence in two places, which is
-    what `0eb8fe8` and ADR-0003 removed for `PIN_ANCHOR`.
+    what `076b770` and ADR-0003 removed for `PIN_ANCHOR`.
 
     Measured before the fix: bump `START_SCHEMA` to v2, run ONE ordinary run, and
     `transformation_log.yml` gets two `- step:` entries with the first hollow — verbatim the
     outcome the filter exists to prevent, in the file the README positions as the successor
     to the predecessor's manifest, where any `yaml.safe_load` tally would double.
 
-    NOT A TEST THAT THE TWO STRINGS ARE EQUAL. Ledger `301b28b` settled that: "a test holding
+    NOT A TEST THAT THE TWO STRINGS ARE EQUAL. Ledger `9db5b48` settled that: "a test holding
     two constants equal is the defect deferred, not closed" — it passes just as well when both
     copies are wrong together. This bumps the schema and asserts the PROPERTY, which is what
     the literal was silently failing to deliver.
@@ -18502,7 +18502,7 @@ def test_a_promised_name_no_document_mentions_carries_a_recorded_reason():
 
 
 def test_a_late_input_is_refused_by_default_and_the_refusal_is_recorded(tmp_path, monkeypatch):
-    """A-16, second half — Taylor's decision, 2026-08-22. `e366833` made the record say a late
+    """A-16, second half — Taylor's decision, 2026-08-22. `4d37469` made the record say a late
     input happened; this stops it happening.
 
     WHY REFUSING IS THE ONLY REMEDY, and not merely the strictest: the pin is in the
@@ -19041,7 +19041,7 @@ def test_the_commits_the_ci_section_names_are_real_and_in_this_history():
 
 def test_the_ci_section_claims_no_more_than_the_self_hosted_workflow_runs():
     """The other half of L-105, and the reason this section keeps going stale: it describes a
-    thing that changes underneath it. `967c61b` wired `lint` and `build` onto the self-hosted
+    thing that changes underneath it. `932a0f3` wired `lint` and `build` onto the self-hosted
     runner, which makes "the whole gate" true — and would have made it a lie if the wiring were
     ever undone.
 
@@ -19111,9 +19111,9 @@ def test_the_public_surface_matches_what_is_written_down():
     `feat!` and `BREAKING` found nothing — because the three commits responsible were typed
     `refactor:`. Verified here against the history rather than taken on trust:
 
-        7da5478  refactor  withdrew 5 names from the package __all__
-        174f862  refactor  withdrew 5 more
-        b946716  refactor  renamed `Run.write_json` to `Run.output_json`
+        25fd221  refactor  withdrew 5 names from the package __all__
+        8a7452e  refactor  withdrew 5 more
+        f9b5a74  refactor  renamed `Run.write_json` to `Run.output_json`
 
     **A CONVENTION THAT RECORDS INTENT CANNOT SEE A BREAKAGE THE AUTHOR DID NOT INTEND.** Each
     of those was deliberate and none was thought of as breaking, because each was framed as

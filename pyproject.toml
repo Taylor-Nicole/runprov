@@ -63,7 +63,7 @@ license-files = ["LICENSE"]   # redundant (the default glob finds it) but pins i
 # `maintainers` exists so "who wrote it" and "who to write to" are not the same field. It also
 # keeps a personal address off the line that names the institution.
 authors = [
-    { name = "Taylor Thompson" },
+    { name = "Taylor Nicole Thompson" },
     { name = "Assistance Publique – Hôpitaux de Paris (AP-HP)" },
 ]
 # NO EMAIL, deliberately. `Maintainer-email` is rendered on the project page and scraped from
@@ -72,7 +72,7 @@ authors = [
 # page is harvested far harder than a git log, and it is the line that would sit directly
 # under the institution's name.
 maintainers = [
-    { name = "Taylor Thompson" },
+    { name = "Taylor Nicole Thompson" },
 ]
 keywords = ["provenance", "reproducibility", "research-software", "data-lineage",
             "checksum", "audit"]

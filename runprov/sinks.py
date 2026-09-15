@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris (AP-HP),
-#                    Hôpital Henri-Mondor, and Taylor Thompson
+#                    Hôpital Henri-Mondor, and Taylor Nicole Thompson
 # SPDX-License-Identifier: BSD-3-Clause
 # Licensed under the BSD 3-Clause License — see LICENSE.
 """Where the run history goes — the one extension point that earns its keep.
@@ -167,7 +167,7 @@ class YamlLogSink:
         #
         # THE CONSTANT, NOT THE STRING. This tested `== "runprov.start.v1"` as a literal while
         # `__main__` used the imported `START_SCHEMA` — one sentence in two places, which is
-        # what `0eb8fe8` and ADR-0003 removed for `PIN_ANCHOR`. Measured: bumping the schema
+        # what `076b770` and ADR-0003 removed for `PIN_ANCHOR`. Measured: bumping the schema
         # to v2 and running ONE ordinary run gives two `- step:` entries in
         # `transformation_log.yml`, the first of them hollow — verbatim the outcome this
         # filter exists to prevent, in the file the README positions as the successor to the

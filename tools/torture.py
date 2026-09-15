@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris (AP-HP),
-#                    Hôpital Henri-Mondor, and Taylor Thompson
+#                    Hôpital Henri-Mondor, and Taylor Nicole Thompson
 # SPDX-License-Identifier: BSD-3-Clause
 # Licensed under the BSD 3-Clause License — see LICENSE.
 """Damage a real record, then read it back and see what the package says about it.

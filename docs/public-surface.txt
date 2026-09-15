@@ -7,10 +7,10 @@
 # history for `feat!` and `BREAKING` and found nothing — because the three commits that broke
 # them were typed `refactor:`:
 #
-#     7da5478  refactor  withdrew PIN_UNSAFE, VOLATILE, VOLATILE_JSON, default_generation,
+#     25fd221  refactor  withdrew PIN_UNSAFE, VOLATILE, VOLATILE_JSON, default_generation,
 #                        default_run_id from the package __all__
-#     174f862  refactor  withdrew Capture, MemorySink, git, installed_packages, write_snapshot
-#     b946716  refactor  renamed Run.write_json to Run.output_json
+#     8a7452e  refactor  withdrew Capture, MemorySink, git, installed_packages, write_snapshot
+#     f9b5a74  refactor  renamed Run.write_json to Run.output_json
 #
 # A CONVENTION THAT RECORDS INTENT CANNOT SEE A BREAKAGE THE AUTHOR DID NOT INTEND. Every one
 # of those was made deliberately and none was thought of as breaking, because each was framed
@@ -37,13 +37,13 @@ Project.resolved_sink
 Project.resolved_transformation_log
 Project:allow_late_inputs
 Project:auto_steps
-Project:heartbeat
-Project:progress
 Project:code_paths
 Project:env_snapshot_dir
 Project:generation
 Project:hash_imported_code
+Project:heartbeat
 Project:imported_code_max
+Project:progress
 Project:root
 Project:run_id
 Project:run_log

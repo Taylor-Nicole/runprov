@@ -1,6 +1,6 @@
 # 10. A record states what it was able to observe
 
-Date: 2026-09-11, amended 2026-09-14 · Status: **accepted** (stage one shipped `f21ddfc`; stage two specified below) · Ledger: T-25
+Date: 2026-09-11, amended 2026-09-14 · Status: **accepted** (stage one shipped `25fc886`; stage two specified below) · Ledger: T-25
 
 ## Context
 
@@ -119,7 +119,7 @@ installed"* from *"nobody asked"*.
 
 ## Amendment, 2026-09-14 — the automatic backend has two levels, and they are different features
 
-Stage one (`@run.step`) shipped in `f21ddfc`. Building stage two forced two questions the
+Stage one (`@run.step`) shipped in `25fc886`. Building stage two forced two questions the
 original decision did not answer. Both are settled here rather than in the code.
 
 ### Measured first, because "it records everything" was an assertion

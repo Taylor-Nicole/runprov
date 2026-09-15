@@ -7,7 +7,7 @@ tags:
   - research software
   - data lineage
 authors:
-  - name: Taylor Thompson
+  - name: Taylor Nicole Thompson
     orcid: 0009-0004-0091-0319
     affiliation: "1, 2"
 affiliations:

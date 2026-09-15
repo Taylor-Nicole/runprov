@@ -2329,7 +2329,7 @@ notice in its header — clause 1 requires it to travel with any redistribution 
 
 ```
 Copyright (c) 2026, Assistance Publique – Hôpitaux de Paris (AP-HP),
-Hôpital Henri-Mondor, and Taylor Thompson
+Hôpital Henri-Mondor, and Taylor Nicole Thompson
 ```
 
 Clause 3 is why this licence rather than MIT: **the copyright holder's name may not be used
@@ -2356,14 +2356,14 @@ once for exactly that reason.
 
 | | state |
 |---|---|
-| CPython 3.10–3.13 on Linux, self-hosted, **all three gates** | **green at `6065524`** (2026-09-01) — `ci.py lint`, `ci.py test` on all four interpreters, `ci.py build` |
-| macOS 3.12 | **run once and green** — 2026-08-12, run `31592997325`, commit `dec57fe6` |
+| CPython 3.10–3.13 on Linux, self-hosted, **all three gates** | **green at `2e84187`** (2026-09-01) — `ci.py lint`, `ci.py test` on all four interpreters, `ci.py build` |
+| macOS 3.12 | **run once and green** — 2026-08-12, run `31592997325`, commit `faa47a54` |
 | Windows 3.12 | **run once and green** — same run; it skipped 9 of 288 collected there |
-| the hosted matrix on **today's** tree | **not run.** The last fully green matrix was `dec57fe6` |
+| the hosted matrix on **today's** tree | **not run.** The last fully green matrix was `faa47a54` |
 
 **The matrix has run, and the honest gap is that it has not run recently.** As of
 **2026-09-01**: 227 workflow runs — **38 successful**, 184 failed, 5 cancelled. The last fully
-green hosted run was `31592997325` at `dec57fe6`, where every leg passed: lint, build, and all
+green hosted run was `31592997325` at `faa47a54`, where every leg passed: lint, build, and all
 six test legs including macOS and Windows, the latter exercising the `msvcrt` locking fallback
 that exists for it.
 
@@ -2375,7 +2375,7 @@ public removes the billing constraint for standard runners, and is the one actio
 this.**
 
 The self-hosted Linux runner is what answers for today's tree in the meantime, and since
-`967c61b` it runs the **whole** gate — `ci.py lint`, `ci.py test` on all four interpreters,
+`932a0f3` it runs the **whole** gate — `ci.py lint`, `ci.py test` on all four interpreters,
 and `ci.py build`. It is Linux only and says so in its own run summary: a green tick there is
 evidence about Linux and about nothing else.
 

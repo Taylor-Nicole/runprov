@@ -133,4 +133,4 @@ supported format, the failure each design decision came from, and what has actua
 ## Licence
 
 BSD 3-Clause. Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris (AP-HP),
-Hôpital Henri-Mondor, and Taylor Thompson.
+Hôpital Henri-Mondor, and Taylor Nicole Thompson.

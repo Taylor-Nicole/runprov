@@ -809,7 +809,7 @@ ubuntu 3.10/3.11/3.12/3.13, macOS 3.12 and Windows 3.12. (The first ever green m
 | windows 3.12 | 722 | 50 |
 
 Before this, macOS and Windows had run green **once**, on 2026-08-12 (run `31592997325`,
-commit `dec57fe6`), and a hundred commits landed in between: the matrix had not seen `show`,
+commit `faa47a54`), and a hundred commits landed in between: the matrix had not seen `show`,
 `exec`, `verify`, the transformation-log sink, the 3.13 fix or anything since. When it came
 back it was red on both, and the Windows leg could not say why — it aborted at 66% with exit
 15 and no summary. See the entry above for what was behind that, and README, *What has

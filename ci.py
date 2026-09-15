@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Assistance Publique – Hôpitaux de Paris (AP-HP),
-#                    Hôpital Henri-Mondor, and Taylor Thompson
+#                    Hôpital Henri-Mondor, and Taylor Nicole Thompson
 # SPDX-License-Identifier: BSD-3-Clause
 # Licensed under the BSD 3-Clause License — see LICENSE.
 """Run the CI locally — the SAME commands the workflow runs, because it runs these.
@@ -383,10 +383,10 @@ SURFACE_HEADER = """# THE PUBLIC SURFACE, WRITTEN DOWN SO THAT REMOVING ANY OF I
 # history for `feat!` and `BREAKING` and found nothing — because the three commits that broke
 # them were typed `refactor:`:
 #
-#     7da5478  refactor  withdrew PIN_UNSAFE, VOLATILE, VOLATILE_JSON, default_generation,
+#     25fd221  refactor  withdrew PIN_UNSAFE, VOLATILE, VOLATILE_JSON, default_generation,
 #                        default_run_id from the package __all__
-#     174f862  refactor  withdrew Capture, MemorySink, git, installed_packages, write_snapshot
-#     b946716  refactor  renamed Run.write_json to Run.output_json
+#     8a7452e  refactor  withdrew Capture, MemorySink, git, installed_packages, write_snapshot
+#     f9b5a74  refactor  renamed Run.write_json to Run.output_json
 #
 # A CONVENTION THAT RECORDS INTENT CANNOT SEE A BREAKAGE THE AUTHOR DID NOT INTEND. Every one
 # of those was made deliberately and none was thought of as breaking, because each was framed
