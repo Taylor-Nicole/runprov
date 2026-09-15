@@ -628,6 +628,72 @@ than filled with a default.
 `grep`-able — and the YAML view can be rebuilt from it at any time with
 `python -m runprov log --format yaml`.
 
+## Accredited laboratories: what an assessor asks, and what this produces
+
+This was built on a hospital medical-biology platform — Plateforme GenoBioMICS, Hôpital
+Henri-Mondor, AP-HP — where the laboratory is accredited to **ISO 15189** (2022 revision),
+assessed by **COFRAC**, and where accreditation is compulsory rather than optional for
+medical biology in France. That setting shaped the design more than any feature request did,
+and this section exists because the constraint was never written down.
+
+**The question an assessor asks is not "do you keep a log."** It is closer to: *for this
+reported result, show me which data and which version of the method produced it, and show me
+that the record could not have drifted from what actually ran.*
+
+A hand-maintained log answers the first half and structurally cannot answer the second. It
+is a statement **about** a run, written by a person, with nothing connecting it to the run —
+which is why the predecessor this package replaces recorded a called-but-undefined function
+for months, and why one of its logs did not parse at all. Nothing in it was checkable, so
+nothing in it failed.
+
+### What the record gives you, as a by-product of running
+
+* **The pin travels inside the artifact.** A comment block above the first data line carries
+  the content digest of every input. The record cannot be separated from the thing it
+  describes, filed in the wrong folder, or updated later without the artifact changing.
+* **Digests are measured when the file is opened**, by a CPython audit hook, not declared
+  afterwards. A read that bypassed registration is recorded as `unregistered_reads` rather
+  than silently omitted — the record says what it did **not** observe.
+* **`runprov verify` re-derives every digest from the artifact alone** and answers `OK`,
+  `STALE`, `GONE` or `ALTERED`. You can run it before reporting a result; an assessor can run
+  it in front of you. It needs no database, no history and no network.
+* **Failures are recorded as failures**, with `status: "failed"`, the exception and every
+  registered-but-unproduced output listed as `MISSING` — provided `provenance=` was given to
+  the constructor. A run that died halfway is the one most worth having a record of.
+* **Nothing needs to be installed to read it or to check it.** UTF-8 YAML for the history,
+  `sha256sum`'s own format for the digests: `cat`, `grep` and `sha256sum -c` are sufficient.
+  This matters twice — for an assessment on a locked-down workstation, and for retention,
+  because the retention period for a laboratory record outlives any particular tool. There is
+  no database to migrate and no export step that could fail quietly.
+
+### What this is not, and this is the part to read before citing it in a quality document
+
+**It does not make a laboratory compliant with anything.** It produces evidence; your quality
+system decides whether that evidence satisfies a requirement. Those are different claims and
+conflating them would be the same defect this package exists to catch, one level up.
+
+**No clause numbers are claimed here, deliberately.** Mapping these outputs onto the clauses
+of ISO 15189 or onto COFRAC's requirements belongs in your own quality manual, written by the
+person who owns it, against the current text of the standard — not asserted by a README whose
+author has not read that text alongside your procedures. A citation nobody verified is worse
+than no citation, and quality documents are the worst place to learn that.
+
+**It has not been assessed by COFRAC or by any accreditation body**, it is not a medical
+device, and nothing here has been evaluated under IVDR.
+
+**It records; it does not audit** — see [What it does not do](#what-it-does-not-do). It cannot
+tell you that a registered read was the read that *mattered*, or that the method was the right
+method. It records the git commit and whether the tree was dirty when the code is in git; it
+does not judge what that commit contains.
+
+### Introducing it into an accredited workflow
+
+Instrument **one** examination process first, and keep the existing hand-maintained log in
+parallel for one validation cycle. The point of running both is not reassurance — it is to
+find where they **disagree**. Every disagreement is either a defect in how the process was
+instrumented or an error the old log was already making, and you want to know which before
+the record becomes the one you rely on.
+
 ## One continuous history, and reading it back
 
 `runs.jsonl` is created by the first recorded run and **appended to forever** — every run
