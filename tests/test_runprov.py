@@ -18970,6 +18970,23 @@ def test_every_adr_is_listed_in_the_adr_index():
     assert linked, "the index has no links at all; the reader broke"
     assert not linked - {f.name for f in adrs}, f"the index links a missing file: {linked}"
 
+    # AND THE STATUS COLUMN SAYS WHAT THE ADR SAYS. The check above covers the FILENAME and
+    # stopped there, so the index could — and did — carry a status the decision had moved on
+    # from: ADR-0010 was listed as Proposed for a day after it was accepted and shipped. An
+    # index that is wrong about the thing it summarises is worse than no index, because it is
+    # the version a reader trusts without opening the file. The scope pattern, in the guard
+    # written to keep this directory honest.
+    declared = re.compile(r"Status[:*\s]*([A-Za-z]+)", re.I)
+    listed = dict(
+        re.findall(r"\]\((\d{4}-[\w-]+\.md)\)\s*\|[^|]*\|\s*\**([A-Za-z]+)\**\s*\|", index)
+    )
+    for f in adrs:
+        m = declared.search(f.read_text(encoding="utf-8"))
+        assert m, f"{f.name} declares no Status, so the index cannot be checked against it"
+        assert listed.get(f.name, "").lower() == m.group(1).lower(), (
+            f"{f.name} says {m.group(1)!r}; the index says {listed.get(f.name)!r}"
+        )
+
 
 def _orphan_marker(tmp_path, **extra):
     """A marker beside a history file that does not exist — what a killed run leaves."""
