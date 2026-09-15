@@ -1,6 +1,6 @@
 # 11. A static check answers only the case the runtime one cannot
 
-Date: 2026-09-15 · Status: **proposed** · Ledger: L-107 (case A), T-27
+Date: 2026-09-15 · Status: **accepted**, implemented as `runprov/check.py` · Ledger: L-107 (case A), T-27
 
 ## Context
 

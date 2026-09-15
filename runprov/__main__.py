@@ -56,6 +56,7 @@ import subprocess
 import sys
 import typing
 
+from . import check as check_mod
 from . import prune as prune_mod
 from . import show as show_mod
 from ._atomic import TEMP_SUFFIX, atomic_write_text
@@ -1274,6 +1275,22 @@ def _forget(
     return 1 if problems else 0
 
 
+def _check(args: argparse.Namespace) -> int:
+    """ADR-0011. Exit 1 on a finding, so it can gate a build — which is the point of it.
+
+    Also exit 1 on a file that could not be parsed: that file was NOT checked, and a gate
+    that greens on "not checked" is the shape this package exists to catch.
+    """
+    root = pathlib.Path(args.root) if args.root else pathlib.Path(active().root)
+    if not root.is_dir():
+        print(f"check: {root} is not a directory", file=sys.stderr)
+        return 2
+    report = check_mod.scan(root)
+    for line in check_mod.render(report, root):
+        print(line)
+    return 0 if report.ok else 1
+
+
 def _prune(args: argparse.Namespace) -> int:
     """`prune`, the only command in this package that removes a file it did not just write.
 
@@ -1597,6 +1614,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print ONLY the lines that will not parse, with their line numbers, and stop",
     )
+    ck = sub.add_parser("check", help="which entry points open files and record nothing (ADR-0011)")
+    ck.add_argument(
+        "root", nargs="?", default=None, help="directory to sweep (default: the project root)"
+    )
     ln = sub.add_parser("lineage", help="reconstruct the run DAG by joining on digests")
     ln.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     ln.add_argument("--format", choices=("text", "json"), default="text")
@@ -1712,6 +1733,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "prune":
         return _prune(args)
+
+    # BEFORE the run-history lookup below, like `capture` and for the same reason: this reads
+    # SOURCE, not records. A project with no history yet is exactly the one worth asking.
+    if args.cmd == "check":
+        return _check(args)
 
     path = pathlib.Path(args.log) if args.log else active().resolved_run_log()
     if not path.is_file():

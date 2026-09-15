@@ -492,6 +492,47 @@ producing events steadily never beats at all and a twenty-minute computation say
 period, naming what it last did. `configure(heartbeat=0)` disables it and builds no thread;
 the count reaches the record as `observation.heartbeats`.
 
+## `runprov check`: which entry points record nothing at all
+
+`watch.py`, below, sees a script that creates a `Run` and then opens files without
+registering them. It can never see a script that does not import `runprov` at all — code that
+is not imported does not run. That case is answerable only from the source:
+
+```bash
+$ runprov check                    # the project root
+$ runprov check path/to/pipeline   # any directory
+
+checked 647 Python file(s) under pipeline, 111 of them entry points
+14 entry point(s) open files and reach no runprov, so nothing they read or wrote is recorded:
+    scripts/build_feature_matrix_combined.py
+    scripts/classify_sequences.py
+    ...
+Record them with `run.input(path)` and `run.open_output(path)`.
+```
+
+**Exit 1 on a finding, so it can gate a build** — and exit 1 on a file it could not parse,
+because that file was not checked and a gate that greens on "not checked" is the shape this
+package exists to catch. It reads source only: it never imports or runs your code, so it
+works on a pipeline that has never heard of `runprov`.
+
+### The three rules, each from a measurement
+
+| rule | why | measured |
+|---|---|---|
+| scope is **derived** — under the root, not vendored, not this package | a library that opens files is doing its job | flagged 7 of runprov's own modules without it |
+| the subject is an **entry point** (`if __name__ == "__main__"`) | a library function that opens a file is called *by* analysis code, it is not analysis code | 59 flagged → 30 on a real repository |
+| reaching runprov is **transitive** through your own modules | a platform adopts a library by wrapping it | 3 files import runprov directly, **96** reach it through one `provenance.py`; 30 → **2** |
+
+That last rule is the one that decides whether this is usable. Without it, a project with an
+internal wrapper has every recording entry point reported as unrecorded.
+
+### What it cannot see
+
+A file that opens nothing directly and calls a library that does; `getattr(builtins, "open")`,
+`importlib`, `exec` of a string; anything outside the root. Its answer is *"these files record
+nothing"* and never *"everything else is recorded"* — no static check can make the second
+claim, and one that implied it would be this package's own defect class.
+
 ## It tells you when a read bypassed registration
 
 `run.input(p)` makes registration the ordinary way to open a file. It cannot make it the only
@@ -2395,10 +2436,11 @@ that read the same bytes in a different order**, and if that order changes a res
 will not say so.
 
 It cannot tell you a registered read was the read that mattered, and it cannot see a rule
-reimplemented as control flow. It records; it does not audit. The checker that fails a
-build when a script reads or writes something it never registered is a separate tool
-(`scripts/audit/check_declared_writes.py` in the source project), and it is the half that
-makes the record trustworthy rather than merely present.
+reimplemented as control flow. It records; it does not audit. The half that makes the record
+trustworthy rather than merely present is the checking, and it now ships here in two pieces
+that see different things: [`runprov check`](#runprov-check-which-entry-points-record-nothing-at-all)
+reads the source and finds entry points that record nothing at all, and `watch.py` catches a
+registered run that opened something it did not register.
 
 ## Versioning, compatibility, and what is promised
 

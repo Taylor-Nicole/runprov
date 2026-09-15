@@ -9,6 +9,24 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Added
+
+* **`runprov check` — the checker this README promised and this package did not ship (T-27,
+  ADR-0011).** It reads source, so it answers the case `watch.py` states it can never see: a
+  script that never imports `runprov`, whose code therefore never runs. Exit 1 on a finding so
+  it can gate a build, and exit 1 on a file it could not parse, because that file was not
+  checked. It never imports or executes your code, so it works on a pipeline that has never
+  heard of runprov.
+
+  **Three rules, each forced by a measurement on real pipelines rather than chosen.** Scope is
+  derived (without excluding this package, the first prototype flagged seven of runprov's own
+  modules). The subject is an **entry point**, found from `if __name__ == "__main__"` rather
+  than a path convention — 59 flagged files became 30, because a library function that opens a
+  file is called *by* analysis code and is not analysis code. And reaching runprov is resolved
+  **transitively** through the project's own modules: 30 became **2**, because a platform
+  adopts a library by wrapping it — one real repository has 3 files importing runprov and 96
+  reaching it through a single internal `provenance.py`.
+
 ### Fixed
 
 * **`observation.steps` never reported `declared+observed`, the value it was introduced for

@@ -9815,6 +9815,206 @@ def test_every_record_names_the_tool_that_wrote_it(tmp_path):
     assert isinstance(tool["identifies_code"], bool)
 
 
+def _source_tree(tmp_path, files):
+    """Write {relative path: source} and return the root. `own` is elsewhere, so nothing is
+    excluded as 'this package' unless a test asks for it."""
+    for rel, src in files.items():
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(textwrap.dedent(src), encoding="utf-8")
+    return tmp_path
+
+
+_ENTRY = '\nif __name__ == "__main__":\n    main()\n'
+
+
+def test_check_flags_an_entry_point_that_opens_files_and_records_nothing(tmp_path):
+    """T-27, the case `watch.py` can never see: no import means no code runs."""
+    root = _source_tree(
+        tmp_path,
+        {
+            "analyse.py": 'def main():\n    open("data.tsv").read()\n' + _ENTRY,
+            "recorded.py": 'import runprov\ndef main():\n    open("d.tsv").read()\n' + _ENTRY,
+        },
+    )
+    report = runprov.check.scan(root, own=tmp_path / "nowhere")
+    assert [p.name for p in report.flagged] == ["analyse.py"]
+    assert report.examined == 2 and report.entry_points == 2
+    assert report.ok is False
+
+
+def test_check_ignores_a_library_module_that_opens_files(tmp_path):
+    """RULE 2, and it took a real repository to find. A library function that opens a file is
+    not analysis code — it is called BY analysis code. Measured on `hcv-acquisition`: flagging
+    every file that opens something reported 59 of 175, almost all `lib/` and `gates/`
+    modules inside an installed package. Entry points alone took that to 30."""
+    root = _source_tree(tmp_path, {"lib/fsio.py": "def read(p):\n    return open(p).read()\n"})
+    report = runprov.check.scan(root, own=tmp_path / "nowhere")
+    assert report.flagged == [], "a module with no __main__ guard is not the subject"
+    assert report.examined == 1 and report.entry_points == 0
+
+
+def test_check_follows_a_wrapper_module_to_runprov(tmp_path):
+    """RULE 3 — the one that would have made this useless while looking correct.
+
+    A platform adopts a library by WRAPPING it. Measured on `hcv-acquisition`: 3 files import
+    runprov and 96 reach it through one internal `provenance.py`; its stages
+    `import provenance`, never `runprov`. Asking only about direct imports reports all 28 of
+    its recording entry points as unrecorded — false, and noisy in exactly the way ADR-0002
+    said to avoid.
+    """
+    root = _source_tree(
+        tmp_path,
+        {
+            "provenance.py": "import runprov\n",
+            "stage.py": 'import provenance\ndef main():\n    open("d.tsv").read()\n' + _ENTRY,
+        },
+    )
+    report = runprov.check.scan(root, own=tmp_path / "nowhere")
+    assert report.flagged == [], "it reaches runprov through the project's own wrapper"
+
+    # AND THE MUTATION THAT PROVES THE EDGE IS DOING THE WORK: break the wrapper's own import
+    # and the same file must be reported. Without this, a test that passes because NOTHING is
+    # ever flagged looks identical to one that passes because the edge was followed.
+    (root / "provenance.py").write_text("import json\n", encoding="utf-8")
+    assert [p.name for p in runprov.check.scan(root, own=tmp_path / "nowhere").flagged] == [
+        "stage.py"
+    ]
+
+
+def test_check_reads_from_imports_and_leaves_an_entry_point_that_opens_nothing(tmp_path):
+    """Two cases the other tests do not reach, and both are ordinary code.
+
+    `from provenance import record` is how a wrapper is usually imported — more common than
+    `import provenance` — and an import form the check could not read would silently drop the
+    edge that rule 3 exists to follow. Measured the same way as the wrapper test: break the
+    chain and the file must be reported.
+
+    And an entry point that opens NOTHING is not a finding. A CLI that only prints, or calls
+    into a library that does the I/O, records nothing and should not be flagged: this check
+    reports what it can see, and it cannot see through a library call.
+    """
+    root = _source_tree(
+        tmp_path,
+        {
+            "prov.py": "from runprov import Run\n",
+            "stage.py": 'from prov import Run\ndef main():\n    open("d").read()\n' + _ENTRY,
+            "silent.py": "def main():\n    print('hello')\n" + _ENTRY,
+        },
+    )
+    report = runprov.check.scan(root, own=tmp_path / "nowhere")
+    assert report.flagged == [], "a `from` import must follow the same edge as `import`"
+    assert report.entry_points == 2, "silent.py is an entry point; it is just not a finding"
+
+    (root / "prov.py").write_text("from json import loads\n", encoding="utf-8")
+    assert [q.name for q in runprov.check.scan(root, own=tmp_path / "nowhere").flagged] == [
+        "stage.py"
+    ], "with the chain broken the same file must be reported, or the edge proved nothing"
+
+    # `from . import prov` — a relative import carries NO module, only names, and it is
+    # the ordinary form inside a package: `hcv-acquisition`'s stages are written that way.
+    # Read from the names alone, or every intra-package edge is invisible.
+    (root / "prov.py").write_text("from runprov import Run\n", encoding="utf-8")
+    (root / "stage.py").write_text(
+        'from . import prov\ndef main():\n    open("d").read()\n' + _ENTRY,
+        encoding="utf-8",
+    )
+    assert runprov.check.scan(root, own=tmp_path / "nowhere").flagged == []
+
+
+def test_check_follows_a_chain_of_wrappers_and_survives_a_cycle(tmp_path):
+    """Transitively means transitively, and real import graphs have cycles.
+
+    A depth-first walk over a cyclic graph either carries its own visited set or does not
+    terminate; this is a fixed point, so the cycle is simply not a special case. `a` imports
+    `b` imports `c` imports runprov, and `c` imports `a` back.
+    """
+    root = _source_tree(
+        tmp_path,
+        {
+            "a.py": "import b\n",
+            "b.py": "import c\n",
+            "c.py": "import runprov\nimport a\n",
+            "top.py": 'import a\ndef main():\n    open("d.tsv").read()\n' + _ENTRY,
+        },
+    )
+    assert runprov.check.scan(root, own=tmp_path / "nowhere").flagged == []
+
+
+def test_check_reports_a_file_it_could_not_parse_rather_than_skipping_it(tmp_path):
+    """A file that was not read was NOT CHECKED, and folding that into 'clean' is the whole
+    defect this guards against. It is also why `ok` is false on an unparseable file with no
+    findings: a sweep that could not read half the project must not exit 0."""
+    root = _source_tree(tmp_path, {"broken.py": "def main(:\n", "fine.py": "x = 1\n"})
+    report = runprov.check.scan(root, own=tmp_path / "nowhere")
+    assert [p.name for p in report.unparseable] == ["broken.py"]
+    assert report.flagged == [] and report.ok is False
+    text = "\n".join(runprov.check.render(report, root))
+    assert "could NOT be parsed" in text and "NOT checked" in text
+
+
+def test_check_excludes_vendored_code_and_the_package_itself(tmp_path):
+    """Scope, DERIVED. The first prototype flagged seven of runprov's own modules — a library
+    that opens files, which is its job — and a dependency inside a project's own virtualenv is
+    the ordinary layout, not a finding."""
+    root = _source_tree(
+        tmp_path,
+        {
+            ".venv/lib/dep.py": 'def main():\n    open("x").read()\n' + _ENTRY,
+            "build/gen.py": 'def main():\n    open("x").read()\n' + _ENTRY,
+            "mine/runprov/run.py": 'def main():\n    open("x").read()\n' + _ENTRY,
+            "keep.py": 'def main():\n    open("x").read()\n' + _ENTRY,
+        },
+    )
+    report = runprov.check.scan(root, own=root / "mine" / "runprov")
+    assert [p.name for p in report.flagged] == ["keep.py"]
+    assert report.examined == 1, "vendored and own-package files are not even parsed"
+
+
+def test_check_says_what_it_examined_so_a_clean_result_means_something(tmp_path):
+    """ "Nothing found" and "nothing looked at" print the same word otherwise — this project's
+    own recurring failure, and the reason `examined` is in the first line of every report."""
+    lines = runprov.check.render(runprov.check.scan(tmp_path, own=tmp_path / "nowhere"), tmp_path)
+    assert "checked 0 Python file(s)" in lines[0]
+    assert any("no entry point opens files" in line for line in lines)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("open(p)", "open"),
+        ("pd.read_csv(p)", "read_csv"),
+        ("f()()", None),  # a call whose callee is itself a call has no name to match
+    ],
+)
+def test_called_name_reads_the_call_not_the_object(source, expected):
+    """`pd.read_csv` and `open` are both caught by matching the NAME, so the rule needs no
+    list of every library that reads a file. A subscripted or computed callee has no name,
+    and returning None is the honest answer rather than a guess."""
+    call = ast.parse(source).body[0].value
+    assert runprov.check.called_name(call) == expected
+
+
+def test_check_cli_exits_one_on_a_finding_and_two_on_a_bad_root(tmp_path, capsys):
+    """The exit code IS the feature: a gate that cannot fail a build is a convention."""
+    root = _source_tree(tmp_path, {"a.py": 'def main():\n    open("d").read()\n' + _ENTRY})
+    assert runprov.__main__.main(["check", str(root)]) == 1
+    assert "a.py" in capsys.readouterr().out
+
+    assert runprov.__main__.main(["check", str(root / "a.py")]) == 2
+    assert "not a directory" in capsys.readouterr().err
+
+    (root / "a.py").write_text("import runprov\n", encoding="utf-8")
+    assert runprov.__main__.main(["check", str(root)]) == 0
+
+
+def test_check_cli_defaults_to_the_configured_project_root(tmp_path):
+    """No argument means the project, which is the form a build gate uses."""
+    root = _source_tree(tmp_path, {"a.py": 'def main():\n    open("d").read()\n' + _ENTRY})
+    runprov.configure(root=root)
+    assert runprov.__main__.main(["check"]) == 1
+
+
 def test_a_run_records_how_its_environment_could_be_rebuilt(tmp_path, monkeypatch):
     """End to end, through `Run`, so the wiring is tested and not just the helpers."""
     monkeypatch.chdir(tmp_path)

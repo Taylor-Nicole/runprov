@@ -37,4 +37,4 @@ A *Proposed* ADR is the right place to think out loud. It is not a promise.
 | [0008](0008-capture-observes-what-declaration-cannot-reach.md) | `capture` observes what declaration cannot reach | Accepted |
 | [0009](0009-export-is-a-derived-view-in-two-vocabularies.md) | Export is a derived view, in two vocabularies and two scopes | Accepted |
 | [0010](0010-a-record-states-what-it-was-able-to-observe.md) | A record states what it was able to observe | Accepted |
-| [0011](0011-a-static-check-answers-only-the-case-the-runtime-one-cannot.md) | A static check answers only the case the runtime one cannot | **Proposed** |
+| [0011](0011-a-static-check-answers-only-the-case-the-runtime-one-cannot.md) | A static check answers only the case the runtime one cannot | Accepted |
