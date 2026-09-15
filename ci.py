@@ -63,6 +63,73 @@ def lint() -> None:
     run(PY, "-m", "ruff", "format", "--check", "--diff", ".")
     run(PY, "-m", "ruff", "check", ".")
     run(PY, "-m", "mypy", "runprov/")
+    attribution_check()
+
+
+#: A commit message line that names an assistant as CO-AUTHOR. Matched on the trailer's
+#: MEANING -- a `Co-Authored-By:` key whose value names the assistant -- rather than on a
+#: display name: `Claude Opus 5` and `Claude Opus 5 (1M context)` were two spellings of the
+#: same thing, and matching the name would have missed 61 of the 230 removed on 2026-09-15.
+#: A bare `claude` is deliberately NOT enough; this history contains a commit whose SUBJECT
+#: is about the `.claude/` directory, and it is a true statement that must survive.
+_ATTRIBUTION = re.compile(r"^\s*Co-authored-by\s*:.*(claude|anthropic)", re.I | re.M)
+
+
+def _attribution_offenders(log: str) -> list[str]:
+    """The SHAs in `git log --format=%H%x00%B%x00%x00` output whose message carries one.
+
+    A pure function so the decision is testable without a repository, which is the same
+    reason `_coverage_args` is one.
+    """
+    bad = []
+    for chunk in log.split("\0\0\n"):
+        if not chunk.strip():
+            continue
+        sha, _, body = chunk.partition("\0")
+        if _ATTRIBUTION.search(body):
+            bad.append(sha.strip()[:9])
+    return bad
+
+
+def attribution_check() -> None:
+    """Refuse a history that names an assistant as co-author. Run as part of `lint`.
+
+    WHY THIS EXISTS IN CI AND NOT ONLY IN A HOOK. `.git/hooks` is not versioned, so a fresh
+    clone has no hook and the first commit from it is unguarded. This runs wherever `lint`
+    runs, which is every push.
+
+    WHY IT MATTERS MORE THAN IT LOOKS. GitHub parses `Co-Authored-By:` and counts the named
+    account as a contributor. Removing 230 of them on 2026-09-15 cost a rewrite of 272
+    commits, a force-push of a public repository and 253 regenerated SHA citations -- and
+    three closed pull requests STILL hold frozen `refs/pull/*/head` snapshots of the old
+    commits, which GitHub refuses every write to and no API can delete. A trailer that
+    reaches a branch with a pull request is permanent.
+
+    IT CANNOT PASS VACUOUSLY. `git log` returning nothing would otherwise be indistinguishable
+    from a clean history -- the failure this project has caught five times -- so an empty log
+    is an error, not a pass.
+    """
+    proc = subprocess.run(
+        ["git", "log", "--all", "--format=%H%x00%B%x00%x00"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(f"attribution-check: git log failed: {proc.stderr.strip()}")
+    seen = proc.stdout.count("\0\0\n")
+    if seen == 0:
+        raise SystemExit(
+            "attribution-check: git log returned no commits, so this check examined "
+            "nothing. A green that means 'nothing was looked at' is the defect it guards."
+        )
+    bad = _attribution_offenders(proc.stdout)
+    if bad:
+        raise SystemExit(
+            f"attribution-check: {len(bad)} commit(s) name an assistant as co-author: "
+            f"{', '.join(bad[:10])}{' …' if len(bad) > 10 else ''}"
+        )
+    print(f"attribution-check ok — {seen} commits, none naming an assistant as co-author")
 
 
 def _coverage_args() -> list[str]:

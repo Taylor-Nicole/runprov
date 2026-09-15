@@ -60,7 +60,10 @@ ignore = ["RUF003"]
 # physical line a multi-line call reports on, and a detached noqa is a coincidence.
 "run.py" = ["S603", "S607"]
 "__main__.py" = ["S603"]
-"ci.py" = ["S603"]
+# S607 joined S603 here on 2026-09-15, when `attribution_check` gave ci.py its first call to
+# a program that is not `PY`: it asks `git` for the history, and `git` comes from PATH for
+# the same reason project.py takes it from PATH -- an absolute path would be this machine's.
+"ci.py" = ["S603", "S607"]
 
 # `examples/` is teaching code that a reader copies, and it is linted as such. What is
 # switched off and why:
