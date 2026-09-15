@@ -11,6 +11,25 @@ is a fix nobody checked.
 
 ### Added
 
+* **`runprov report <artifact>` — one artifact, one page, for a quality file.** The question
+  an accreditation assessor asks is not the one `log`, `show` or `verify` are shaped for:
+  *for this reported result, show me which data and which version of the method produced it,
+  and show me the record could not have drifted.* This joins those three about ONE file, on a
+  page that can be printed and filed beside the result. It exits on the verdict, so a quality
+  gate can call it.
+
+  A **derived view and nothing more** — every fact is read from the artifact's own pin and the
+  run history, and no field exists that `show` and `verify` cannot also produce. **The limits
+  are printed on the page**, not left in a manual: what it cannot tell you is not incidental,
+  and a quality document that overstates is worse than none because it is the one that gets
+  cited.
+
+* **`show` now names the runprov that wrote each run**, completing U-01. The record gained the
+  field; no view showed it, so only a reader who already suspected something would find it.
+  This also required the `tool` block to travel into the history, which is a whitelist
+  projection — a field not named there never reaches `show` or `log`, and "which runs were
+  made by which version" is a question about the project over time.
+
 * **`runprov check` — the checker this README promised and this package did not ship (T-27,
   ADR-0011).** It reads source, so it answers the case `watch.py` states it can never see: a
   script that never imports `runprov`, whose code therefore never runs. Exit 1 on a finding so

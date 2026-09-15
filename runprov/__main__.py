@@ -58,6 +58,7 @@ import typing
 
 from . import check as check_mod
 from . import prune as prune_mod
+from . import report as report_mod
 from . import show as show_mod
 from ._atomic import TEMP_SUFFIX, atomic_write_text
 from .export import FORMATS as EXPORT_FORMATS
@@ -1275,6 +1276,24 @@ def _forget(
     return 1 if problems else 0
 
 
+def _report(args: argparse.Namespace) -> int:
+    """ADR — one artifact, one page. Exit follows the verdict, so it can gate too.
+
+    2 when the artifact is not there, because a page about a file that does not exist is not
+    a report, it is a mistake with a header on it.
+    """
+    artifact = pathlib.Path(args.artifact)
+    if not artifact.is_file():
+        print(f"report: {artifact} is not a file", file=sys.stderr)
+        return 2
+    project = active()
+    log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
+    result = report_mod.render(artifact, pathlib.Path(project.root), log)
+    for line in result.lines:
+        print(line)
+    return 0 if result.ok else 1
+
+
 def _check(args: argparse.Namespace) -> int:
     """ADR-0011. Exit 1 on a finding, so it can gate a build — which is the point of it.
 
@@ -1614,6 +1633,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print ONLY the lines that will not parse, with their line numbers, and stop",
     )
+    rp = sub.add_parser("report", help="one artifact, one page, for a quality file")
+    rp.add_argument("artifact", help="the artifact to report on")
+    rp.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     ck = sub.add_parser("check", help="which entry points open files and record nothing (ADR-0011)")
     ck.add_argument(
         "root", nargs="?", default=None, help="directory to sweep (default: the project root)"
@@ -1738,6 +1760,9 @@ def main(argv: list[str] | None = None) -> int:
     # SOURCE, not records. A project with no history yet is exactly the one worth asking.
     if args.cmd == "check":
         return _check(args)
+
+    if args.cmd == "report":
+        return _report(args)
 
     path = pathlib.Path(args.log) if args.log else active().resolved_run_log()
     if not path.is_file():

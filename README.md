@@ -677,6 +677,36 @@ than filled with a default.
 
 ## Accredited laboratories: what an assessor asks, and what this produces
 
+`runprov report <artifact>` is this section rendered for one file — the page you print and
+file beside a reported result:
+
+```
+── provenance report — out.tsv ───────────────────────────────────────────────
+
+  artifact      out.tsv
+  verdict       STALE
+
+── the run that produced it ──────────────────────────────────────────────────
+  script        demo      started   2026-09-15T17:50:12Z      status  ok
+
+── the method, and whether it can be got back ────────────────────────────────
+  code          a1b2c3d  (clean)
+  recorded by   runprov 0.3.0  (index)
+
+── inputs it was made from (1) ───────────────────────────────────────────────
+  STALE        ca978112ca1bbdca  in.tsv   (now ccace9a9441321e1)
+
+── what this page cannot tell you ────────────────────────────────────────────
+  It records; it does not audit. …
+```
+
+It is a **derived view and nothing more** — every fact on it is read from the artifact's own
+pin and the run history, and no field exists that `show` and `verify` cannot also produce. It
+exits on the verdict, so a quality gate can call it. **The limits are printed on the page**,
+not left in a manual beside it: a quality document that overstates is worse than none,
+because it is the version that gets cited.
+
+
 This was built on a hospital medical-biology platform — Plateforme GenoBioMICS, Hôpital
 Henri-Mondor, AP-HP — where the laboratory is accredited to **ISO 15189** (2022 revision),
 assessed by **COFRAC**, and where accreditation is compulsory rather than optional for
@@ -2588,7 +2618,7 @@ The Windows leg skips ten times what any other does, and it is the only leg that
 assert the coverage floor — skipped tests leave their lines unmeasured, so 100% is
 unreachable there by construction rather than by regression. No other leg may lower it.
 
-Coverage is **100%** of **about 3,520 statements and 1,190 branches**, and the gate is set
+Coverage is **100%** of **about 3,930 statements and 1,340 branches**, and the gate is set
 there with `--cov-branch`.
 
 *Every figure in this section is approximate on purpose.* They exist to convey scale, and an

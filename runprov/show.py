@@ -119,6 +119,11 @@ def run_view(record: dict[str, typing.Any]) -> dict[str, typing.Any]:
         "seeds": record.get("seeds") or [],
         "failure": record.get("failure"),
         "terminal_log": (record.get("terminal_log") or {}).get("path"),
+        # U-01. WHICH runprov wrote this, surfaced rather than left in the JSON. The record
+        # gained the field so that an artifact could say what produced it; a field no view
+        # shows is one only a reader who already suspects something goes looking for.
+        # Absent for records written before 0.3.0, which is itself the honest answer.
+        "tool": record.get("tool"),
     }
 
 
@@ -810,6 +815,16 @@ def render_run(view: dict[str, typing.Any]) -> str:
         else ("UNKNOWN — git status did not run" if code["unknown"] else "clean")
     )
     out.append(_kv("code", f"{code['commit']}  ({state})"))
+    if view["tool"]:
+        tool = view["tool"]
+        # THE QUALIFIER IS THE POINT, not the version. A dirty checkout and a PyPI install
+        # both print a version string, and only one of them can be followed back to source.
+        how = tool.get("source", "?")
+        if not tool.get("identifies_code"):
+            how += ", DOES NOT IDENTIFY THE CODE"
+        elif tool.get("commit"):
+            how += f" {str(tool['commit'])[:9]}"
+        out.append(_kv("recorded by", f"runprov {tool.get('version', '?')}  ({how})"))
     if view["script_file"]:
         out.append(_kv("script", view["script_file"]))
     if view["cwd"]:

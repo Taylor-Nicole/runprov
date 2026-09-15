@@ -9828,6 +9828,241 @@ def _source_tree(tmp_path, files):
 _ENTRY = '\nif __name__ == "__main__":\n    main()\n'
 
 
+def _reported_run(tmp_path, script="demo"):
+    """A real run, so the report is built from a record this package actually wrote."""
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    with runprov.Run(script, {"t": 1}, provenance=tmp_path / "p.json") as run:
+        with open(run.input(tmp_path / "in.tsv"), encoding="utf-8") as fh:
+            fh.read()
+        with run.open_output(tmp_path / "out.tsv") as out:
+            out.write("b\n")
+    return tmp_path / "out.tsv", tmp_path / "h.jsonl"
+
+
+def test_report_is_one_page_naming_the_run_the_method_and_the_tool(tmp_path):
+    """The assessor's question, joined onto one page: which data, which method, still valid.
+
+    `log` is a timeline, `show` is a page per run, `verify` is a verdict. None of them is
+    the thing you print and file beside a reported result, which is what this is.
+    """
+    artifact, log = _reported_run(tmp_path)
+    result = runprov.report.render(artifact, tmp_path, log)
+    text = "\n".join(result.lines)
+
+    assert result.status == "OK" and result.ok is True
+    assert "provenance report — out.tsv" in text
+    assert "demo" in text, "the run that produced it"
+    assert "in.tsv" in text, "the input it was made from"
+    assert "recorded by" in text and runprov.__version__ in text, "U-01, on the page"
+    assert "cannot tell you" in text, "the limits belong ON the page, not in a manual"
+    assert "does not audit" in text
+
+
+def test_report_names_the_changed_input_and_fails(tmp_path):
+    """The case the page exists for. An assessor is not asking whether it was fine once."""
+    artifact, log = _reported_run(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\nchanged\n", encoding="utf-8")
+
+    result = runprov.report.render(artifact, tmp_path, log)
+    text = "\n".join(result.lines)
+    assert result.status == "STALE" and result.ok is False
+    assert "STALE" in text and "in.tsv" in text
+    assert "(now " in text, "both digests, or a reader cannot see what moved"
+
+
+def test_report_says_when_it_found_no_run_rather_than_omitting_the_section(tmp_path):
+    """ "Absent" and "clean" must not render the same.
+
+    A page that simply dropped the run section would read as though the artifact had no
+    producer, rather than as though none was found — usually a history that was not passed.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    result = runprov.report.render(artifact, tmp_path, tmp_path / "nothing.jsonl")
+    text = "\n".join(result.lines)
+    assert "NOT FOUND in the run history" in text
+    assert "cannot" in text, "and the limits still say the rest of the page is absent"
+    assert result.status == "OK", "the pin still stands on its own"
+
+
+def test_report_survives_a_torn_history_line(tmp_path):
+    """A half-written line is not a reason to refuse the page. The pin is in the artifact."""
+    artifact, log = _reported_run(tmp_path)
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write('{"script": "torn", "outp\n')
+    result = runprov.report.render(artifact, tmp_path, log)
+    assert "demo" in "\n".join(result.lines)
+
+
+def test_report_picks_the_LAST_run_that_wrote_the_artifact(tmp_path):
+    """A file rewritten by a later run is described by that run.
+
+    Naming the first would describe bytes that are no longer on disk — a page that is
+    internally consistent and about the wrong thing.
+    """
+    artifact, log = _reported_run(tmp_path, script="first")
+    runprov.configure(root=tmp_path, run_log=log, auto_steps="off")
+    with runprov.Run("second", {}, provenance=tmp_path / "p2.json") as run:
+        with run.open_output(artifact) as out:
+            out.write("c\n")
+
+    history = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line]
+    assert runprov.report.find_run(history, "out.tsv")["script"] == "second"
+    assert runprov.report.find_run(history, "never-written.tsv") is None
+
+
+def test_report_carries_the_reason_when_the_artifact_itself_is_gone(tmp_path):
+    """A sidecar whose artifact was deleted: GONE, and the page must say WHY.
+
+    The verdict alone reads as a hash mismatch. The reason is the difference between "this
+    changed" and "this is not there any more", which are different findings for an assessor.
+    """
+    artifact, log = _reported_run(tmp_path)
+    side = tmp_path / "out.tsv.prov.txt"
+    side.write_text(artifact.read_text(encoding="utf-8"), encoding="utf-8")
+    artifact.unlink()
+
+    result = runprov.report.render(side, tmp_path, log)
+    text = "\n".join(result.lines)
+    assert result.status == "GONE" and result.ok is False
+    assert "no longer there" in text, "the verdict without the reason is half the finding"
+
+
+def _history_record(**over):
+    """A history-shaped record, so the page's branches are driven by DATA rather than by
+    contriving a run for each one."""
+    base = {
+        "script": "demo",
+        "status": "ok",
+        "started_utc": "2026-09-15T00:00:00Z",
+        "finished_utc": "2026-09-15T00:00:01Z",
+        "run_id": "r1",
+        "command": "python demo.py",
+        "cwd": "/tmp",
+        "outputs": [{"path": "out.tsv"}],
+        "git_commit": "abc1234",
+        "git_status_captured": True,
+        "git_code_dirty": False,
+        "observation": {"steps": "none", "packages_recorded": "none"},
+    }
+    base.update(over)
+    return base
+
+
+@pytest.mark.parametrize(
+    ("over", "expected"),
+    [
+        # A DIRTY TREE, said in the words an assessor needs: the code that ran matches no
+        # commit, so "which version of the method" has no answer for this run.
+        ({"git_code_dirty": True}, "matches no commit"),
+        # A tool that CAN be followed back prints its commit; the other branch prints the
+        # warning, and the two must not look alike.
+        (
+            {
+                "tool": {
+                    "version": "9.9.9",
+                    "source": "vcs",
+                    "identifies_code": True,
+                    "commit": "0123456789abcdef",
+                }
+            },
+            "vcs 0123456789ab",
+        ),
+        # AN INDEX INSTALL IDENTIFIES ITS CODE AND HAS NO COMMIT — PyPI never reuses a
+        # filename, so name plus version is exact. It must print neither a commit it
+        # does not have nor the warning it does not deserve.
+        ({"tool": {"version": "0.3.0", "source": "index", "identifies_code": True}}, "(index)"),
+        # A record from before the `tool` block. Silence here would read as "no tool", and
+        # saying so is the whole of U-01.
+        ({"tool": None}, "predates the `tool` block"),
+        ({"environment": {"python": "3.12.13", "platform": "Linux-x"}}, "3.12.13"),
+        # READS THAT BYPASSED REGISTRATION are the most important line on the page when they
+        # exist — they are files the run read that the pin above does NOT cover.
+        ({"unregistered_reads": ["conf/app.json"]}, "are NOT pinned"),
+    ],
+)
+def test_report_renders_each_record_shape_in_the_words_it_needs(tmp_path, over, expected):
+    artifact, _ = _reported_run(tmp_path)
+    result = runprov.report.page(artifact, tmp_path, [_history_record(**over)])
+    assert expected in "\n".join(result.lines)
+
+
+def test_report_says_none_pinned_rather_than_showing_an_empty_list(tmp_path):
+    """An artifact with no pin at all still gets a page — and the inputs section has to say
+    that nothing was pinned, not render as though the run read nothing."""
+    plain = tmp_path / "out.tsv"
+    plain.write_text("no pin here\n", encoding="utf-8")
+    result = runprov.report.page(plain, tmp_path, [_history_record()])
+    assert "none pinned" in "\n".join(result.lines)
+
+
+def test_report_ignores_a_history_line_that_is_json_but_not_a_record(tmp_path):
+    """`json.loads` succeeding does not make it a run. A list or a bare string parses fine
+    and has no `.get`, so taking it would raise inside a report — the one command that must
+    keep working, since it is read when something has already gone wrong."""
+    artifact, log = _reported_run(tmp_path)
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write('[1, 2, 3]\n"not a record"\n')
+    assert "demo" in "\n".join(runprov.report.render(artifact, tmp_path, log).lines)
+
+
+def test_report_skips_a_blank_history_line(tmp_path):
+    """`runs.jsonl` gains a trailing newline from every append; a blank line is not an error."""
+    artifact, log = _reported_run(tmp_path)
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write("\n   \n")
+    assert "demo" in "\n".join(runprov.report.render(artifact, tmp_path, log).lines)
+
+
+def test_show_prints_the_commit_of_a_tool_that_can_be_followed_back(tmp_path):
+    """`show`'s half of the same distinction. A runprov that identifies its own code prints
+    the commit; one that cannot prints the warning — and they must not read alike."""
+    view = runprov.show.run_view(
+        {
+            "script": "s",
+            "tool": {
+                "version": "0.3.0",
+                "source": "vcs",
+                "identifies_code": True,
+                "commit": "fedcba9876543210",
+            },
+        }
+    )
+    text = runprov.show.render_run(view)
+    assert "vcs fedcba987" in text and "DOES NOT IDENTIFY" not in text
+
+    # And the index case: identifies its code, has no commit, deserves neither the commit
+    # nor the warning.
+    plain = runprov.show.render_run(
+        runprov.show.run_view(
+            {
+                "script": "s",
+                "tool": {"version": "0.3.0", "source": "index", "identifies_code": True},
+            }
+        )
+    )
+    assert "runprov 0.3.0  (index)" in plain
+
+
+def test_report_cli_exits_on_the_verdict_and_refuses_a_missing_file(tmp_path, capsys):
+    """The exit code follows the verdict, so a quality gate can call it."""
+    artifact, log = _reported_run(tmp_path)
+    assert runprov.__main__.main(["report", str(artifact), "--log", str(log)]) == 0
+    assert "provenance report" in capsys.readouterr().out
+
+    assert runprov.__main__.main(["report", str(tmp_path / "absent.tsv")]) == 2
+    assert "is not a file" in capsys.readouterr().err
+
+    (tmp_path / "in.tsv").write_text("moved\n", encoding="utf-8")
+    assert runprov.__main__.main(["report", str(artifact), "--log", str(log)]) == 1
+
+
+def test_report_cli_defaults_to_the_projects_own_history(tmp_path):
+    """No --log means the project's, which is the form a person actually types."""
+    artifact, _ = _reported_run(tmp_path)
+    assert runprov.__main__.main(["report", str(artifact)]) == 0
+
+
 def test_check_flags_an_entry_point_that_opens_files_and_records_nothing(tmp_path):
     """T-27, the case `watch.py` can never see: no import means no code runs."""
     root = _source_tree(

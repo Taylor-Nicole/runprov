@@ -3435,6 +3435,14 @@ class Run:
             # records that cannot be compared for what they were able to see are two records
             # a reader will compare anyway.
             "observation": r["observation"],
+            # U-01, AND THE SAME ARGUMENT ONE STEP ALONG. `observation` travels because two
+            # records that cannot be compared for what they were able to SEE are two records
+            # a reader will compare anyway. Two records that cannot say which runprov WROTE
+            # them are the same problem: the history is what `show` and `log` read, so a
+            # `tool` block that stopped at the sidecar would be invisible in every view and
+            # in every query over the project's history — which is where "which runs were
+            # made by which version" is actually asked.
+            "tool": r["tool"],
             # THE COUNT, NOT THE LIST. Steps are capped at 1000 per run and a thousand entries
             # per line would end the property that this file is read with `cat`. The full
             # detail is in the sidecar, where a reader who wants one run's steps is already
