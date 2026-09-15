@@ -9972,6 +9972,13 @@ def _history_record(**over):
         # filename, so name plus version is exact. It must print neither a commit it
         # does not have nor the warning it does not deserve.
         ({"tool": {"version": "0.3.0", "source": "index", "identifies_code": True}}, "(index)"),
+        # AND THE WARNING ITSELF, which had NO test: a dirty checkout covered it on the
+        # author's machine and `actions/checkout` is clean, so four CI legs went red while
+        # the local gate read 100%. The same accident as run.py 1337/3188, same morning.
+        (
+            {"tool": {"version": "0.3.0", "source": "local", "identifies_code": False}},
+            "DOES NOT IDENTIFY THE CODE",
+        ),
         # A record from before the `tool` block. Silence here would read as "no tool", and
         # saying so is the whole of U-01.
         ({"tool": None}, "predates the `tool` block"),
@@ -10042,6 +10049,18 @@ def test_show_prints_the_commit_of_a_tool_that_can_be_followed_back(tmp_path):
         )
     )
     assert "runprov 0.3.0  (index)" in plain
+
+    # And the warning, which nothing asserted: it was covered only because the author's
+    # working tree happened to be dirty.
+    warned = runprov.show.render_run(
+        runprov.show.run_view(
+            {
+                "script": "s",
+                "tool": {"version": "0.3.0", "source": "local", "identifies_code": False},
+            }
+        )
+    )
+    assert "DOES NOT IDENTIFY THE CODE" in warned
 
 
 def test_report_cli_exits_on_the_verdict_and_refuses_a_missing_file(tmp_path, capsys):
