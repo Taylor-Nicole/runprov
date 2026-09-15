@@ -449,10 +449,16 @@ sample of what a run calls, and a sample that large names every function it uses
 ### Every record says what it was able to observe
 
 ```json
-"observation": {"steps": "declared", "auto_backend": "sys.monitoring",
+"observation": {"steps": "declared+observed", "auto_backend": "sys.monitoring",
                 "auto_available": true, "auto_mode": "census",
                 "packages_recorded": "none"}
 ```
+
+`steps` is **derived from what the record holds**, and takes the four values two facts
+produce: `none`, `declared` (a `@run.step` ran), `observed` (the interpreter saw your
+functions and nothing was decorated), `declared+observed` (both). It is derived rather than
+assigned because it was assigned once, inside `_add_step`, which made `declared+observed`
+unreachable and reported a watched run with no decorators as `none`.
 
 Present whether or not any of this is used, because a record with no steps must be
 distinguishable from a record made where steps **could not** be observed. Otherwise a reader

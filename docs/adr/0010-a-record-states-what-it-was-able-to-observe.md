@@ -1,6 +1,6 @@
 # 10. A record states what it was able to observe
 
-Date: 2026-09-11, amended 2026-09-14 · Status: **accepted** (stage one shipped `25fc886`; stage two specified below) · Ledger: T-25
+Date: 2026-09-11, amended 2026-09-14 and 2026-09-15 · Status: **accepted** (stage one shipped `25fc886`; stage two specified below) · Ledger: T-25, T-26
 
 ## Context
 
@@ -80,7 +80,7 @@ installed"* from *"nobody asked"*.
 
    ```json
    "observation": {
-     "steps": "declared",            // "declared" | "declared+observed" | "none"
+     "steps": "declared",            // "none" | "declared" | "observed" | "declared+observed"
      "auto_backend": null,           // "sys.monitoring" when active
      "auto_available": false,        // capability, not choice: 3.12+ and the extra installed
      "packages_recorded": "none"     // "none" | "tracked" | "snapshot"
@@ -237,3 +237,30 @@ reasoning rejects `smt run` as this package's adoption model.
 **Do nothing, and keep `run.note()`.** Still the honest baseline, and it is what exists today.
 This ADR is not implemented until someone needs the finer grain badly enough to accept the
 `UNDIGESTIBLE` row as a real and frequent answer.
+
+## Amendment, 2026-09-15 — the enum was short by one, and the field never carried the value it exists for
+
+Found by smoke-testing the **published** 0.2.0 wheel, not by the suite. Ledger: T-26.
+
+`observation.steps` was assigned the literal `"declared"` inside `_add_step`, and nothing
+anywhere else ever wrote it except its `"none"` default. So **`declared+observed` — the value
+this field was introduced for, in Decision 3 above — could not occur.** A run with one
+`@run.step` and five observed calls reported `"declared"`:
+
+```
+observation : {"auto_mode": "census", "steps": "declared", …}
+observed    : {"work.py:mine": {"calls": 5}, "work.py:normalise": {"calls": 1}}
+```
+
+Nothing was lost — `observed` and `auto_mode` both held the truth — but the one field meant to
+summarise the declared-versus-observed distinction was the one field that did not carry it.
+
+**The enum was also short by one.** On 3.12+ a run can have observed calls and no decorated
+ones, and this ADR named no value for it: that run reported `"none"`, saying nothing was seen
+inside a script that was watched from start to finish. `"observed"` is added, which makes the
+set the four values two booleans produce rather than three chosen by hand.
+
+**The remedy is the root cause, not the symptom.** The value is now DERIVED at seal time from
+`bool(record["steps"])` and `bool(record["observed"])`, rather than assigned by whichever code
+path happened to run — which is the same correction this project has applied to a dozen
+checks whose scope, not logic, had stopped covering what they named.

@@ -9,6 +9,21 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed
+
+* **`observation.steps` never reported `declared+observed`, the value it was introduced for
+  (T-26).** It was assigned the literal `"declared"` inside `_add_step` and nothing else ever
+  wrote it, so a run with one `@run.step` and five observed calls summarised as `"declared"` —
+  and a run with observed calls and no decorated ones reported `"none"`, saying nothing was
+  seen inside a script that was watched from start to finish. Nothing was lost, because
+  `observed` and `auto_mode` both held the truth; what was wrong is that the one field meant
+  to carry the declared-versus-observed distinction was the one field that did not.
+
+  Found by smoke-testing the **published** 0.2.0 wheel, not by the suite. The value is now
+  **derived at seal time** from `bool(record["steps"])` and `bool(record["observed"])` rather
+  than assigned by whichever code path happened to run, and the enum gains the fourth value
+  ADR-0010 never named: `none` | `declared` | `observed` | `declared+observed`.
+
 ### Added
 
 * **Every record now names the runprov that wrote it, and says whether that name identifies

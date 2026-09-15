@@ -779,6 +779,27 @@ class _PinnedWriter:
         _sync_dir(self._dest.parent)
 
 
+def _steps_summary(*, declared: bool, observed: bool) -> str:
+    """What the record holds about steps, as the four values two booleans can produce.
+
+    ADR-0010 named three — `declared`, `declared+observed`, `none` — and the fourth follows
+    from the same logic: on 3.12+ a run can have observed calls and no decorated ones, and
+    calling that `none` would say nothing was seen inside a script that was watched
+    throughout. A DECLARED step says the author said this matters; an OBSERVED one says only
+    that the interpreter noticed it, and a reader has to be able to tell which a record holds.
+
+    A pure function of two booleans so the whole table is tested without constructing a run —
+    the same reason `Heartbeat.tick` takes its clock.
+    """
+    if declared and observed:
+        return "declared+observed"
+    if declared:
+        return "declared"
+    if observed:
+        return "observed"
+    return "none"
+
+
 class Run:
     """Collects provenance for a single run.
 
@@ -2760,7 +2781,6 @@ class Run:
             )
             return
         steps.append(entry)
-        self.record["observation"]["steps"] = "declared"
 
     def note(self, key: str, value: typing.Any) -> None:  # noqa: ANN401
         """Any, deliberately: a note is whatever number or string the script wants recorded."""
@@ -3199,6 +3219,19 @@ class Run:
                 self.record["observation"]["observed_truncated"] = (
                     self._observer.truncated_functions
                 )
+        # T-26. DERIVED FROM THE RECORD, not assigned by whichever code path happened to run.
+        # `_add_step` used to write the literal "declared" and nothing ever wrote anything
+        # else, so `declared+observed` — the value ADR-0010 introduced this field FOR — could
+        # not occur, and a run with observed calls and no decorated ones reported "none".
+        # The field meant to carry the declared-versus-observed distinction was the one field
+        # that did not carry it.
+        #
+        # Computed HERE, after the observer's counts are folded in, for the same reason
+        # `packages_recorded` is: asked any earlier, the answer describes a run that has not
+        # finished happening.
+        self.record["observation"]["steps"] = _steps_summary(
+            declared=bool(self.record["steps"]), observed=bool(self.record.get("observed"))
+        )
         # A CHECKPOINT MUST NOT CLAIM AN OUTCOME. Called INSIDE the block the run has not
         # finished, so `ok` is a guess and `finished_utc` is a time that has not happened.
         # Measured before this: `run.write(P)` mid-run, then SIGKILL, left a sidecar reading

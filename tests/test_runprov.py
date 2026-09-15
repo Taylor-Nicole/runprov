@@ -5510,6 +5510,78 @@ def test_an_observer_that_spent_its_budget_says_so_in_the_record(tmp_path):
     assert rec["observed"] == {"work.py:f": {"calls": 2}}, "what it saw before stopping stands"
 
 
+@pytest.mark.parametrize(
+    ("declared", "observed", "expected"),
+    [
+        (False, False, "none"),
+        (True, False, "declared"),
+        (False, True, "observed"),
+        (True, True, "declared+observed"),
+    ],
+)
+def test_the_steps_summary_is_the_whole_table_two_booleans_produce(declared, observed, expected):
+    """T-26. All four, including the two the old code could not produce.
+
+    `_add_step` assigned the literal "declared" and nothing else ever wrote the field, so
+    `declared+observed` — the value ADR-0010 introduced it FOR — was unreachable, and a run
+    with observed calls and no decorated ones reported "none". A pure function of two
+    booleans, so the table is asserted rather than inferred from four constructed runs.
+    """
+    assert runprov.run._steps_summary(declared=declared, observed=observed) == expected
+
+
+def test_a_run_with_both_kinds_of_step_says_so_in_one_field(tmp_path):
+    """The record's half of T-26, which the unit test above cannot reach.
+
+    The summary being right is worth nothing if the seal never calls it with what the record
+    actually holds — the same reason `tool_identity` has a test that passes no arguments.
+    Measured on the PUBLISHED 0.2.0 wheel before the fix: one `@run.step` plus five observed
+    calls reported `"declared"`.
+    """
+    mine = tmp_path / "work.py"
+    mine.write_text("x = 1\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, auto_steps="off")
+
+    with runprov.Run("both", {}, provenance=tmp_path / "b.prov.json") as run:
+
+        @run.step
+        def normalise(rows):
+            return list(rows)
+
+        normalise([1, 2])
+        stub = _StubMonitoring()
+        run._observer = runprov.observe.Observer(tmp_path, "census", stub)
+        run._observer.start()
+        stub.callback(_code(mine), 0)
+
+    rec = json.loads((tmp_path / "b.prov.json").read_text(encoding="utf-8"))
+    assert rec["observation"]["steps"] == "declared+observed"
+    assert rec["steps"] and rec["observed"], "both halves must actually be present"
+
+
+def test_observed_calls_with_no_decorator_are_not_reported_as_nothing(tmp_path):
+    """The value ADR-0010's enum never named, and the reason it needed a fourth.
+
+    On 3.12+ a run can be watched from start to finish, see its own functions called, and
+    have no `@run.step` anywhere. Calling that `"none"` says nothing was seen inside a script
+    that was observed throughout — the same failure as a census reporting zero because it
+    enumerated nothing.
+    """
+    mine = tmp_path / "work.py"
+    mine.write_text("x = 1\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, auto_steps="off")
+
+    with runprov.Run("watched", {}, provenance=tmp_path / "w.prov.json") as run:
+        stub = _StubMonitoring()
+        run._observer = runprov.observe.Observer(tmp_path, "census", stub)
+        run._observer.start()
+        stub.callback(_code(mine), 0)
+
+    rec = json.loads((tmp_path / "w.prov.json").read_text(encoding="utf-8"))
+    assert rec["observation"]["steps"] == "observed"
+    assert not rec["steps"], "nothing was declared — that is the point of this case"
+
+
 def test_a_run_that_observed_nothing_says_so_by_omission(tmp_path):
     """`observed` is ABSENT rather than empty when nothing in scope was called, so "no calls"
     stays distinguishable from "not observing" — which `observation.auto_mode` answers."""
