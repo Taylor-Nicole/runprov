@@ -9584,6 +9584,165 @@ def test_a_lock_that_cannot_be_archived_is_recorded_not_fatal(tmp_path, monkeypa
     assert got[0]["sha256"], "the digest is still recorded — only the copy failed"
 
 
+class _Dist:
+    """A stand-in for `importlib.metadata.Distribution`, holding one `direct_url.json`."""
+
+    def __init__(self, direct_url):
+        self._direct_url = direct_url
+
+    def read_text(self, name):
+        assert name == "direct_url.json", name
+        return self._direct_url
+
+
+def _nogit(tmp_path):
+    """A package path with no `.git` anywhere above it, so the checkout branch is skipped."""
+    d = tmp_path / "site-packages" / "runprov"
+    d.mkdir(parents=True, exist_ok=True)  # called more than once per tmp_path
+    return d / "__init__.py"
+
+
+@pytest.mark.parametrize(
+    ("direct_url", "source", "identifies"),
+    [
+        # NO direct_url.json MEANS AN INDEX INSTALL (PEP 610). PyPI never reuses a filename,
+        # so name + version is an exact identification — the ONLY case where a version is.
+        (None, "index", True),
+        ('{"url": "git+https://h/r", "vcs_info": {"commit_id": "a1b2c3d4"}}', "vcs", True),
+        ('{"url": "file:///tmp/x", "dir_info": {"editable": true}}', "local", False),
+        # A VCS entry with no commit_id identifies nothing, whatever it claims to be.
+        ('{"url": "git+https://h/r", "vcs_info": {}}', "local", False),
+    ],
+)
+def test_tool_identity_reads_how_the_package_was_installed(
+    tmp_path, direct_url, source, identifies
+):
+    """U-01. Which runprov wrote this record, and whether that answer identifies the code.
+
+    The four install shapes PEP 610 distinguishes, each with a different answer to "can a
+    reader get this exact code back". Driven through an injected lookup rather than the real
+    environment, so every branch runs on every interpreter and in CI — the `Observer` rule.
+    """
+    got = runprov.environment.tool_identity(
+        package_file=_nogit(tmp_path), distribution=lambda n: _Dist(direct_url)
+    )
+    assert got["source"] == source
+    assert got["identifies_code"] is identifies
+    assert got["version"] == runprov.__version__
+    assert got["name"] == "runprov"
+
+
+def test_tool_identity_says_unknown_rather_than_guessing(tmp_path):
+    """No distribution and no git is an ANSWER, and it is recorded as one.
+
+    `unknown` with `identifies_code: false` is the honest output. Falling back to the version
+    string would produce a record that looks as identifying as a PyPI install and is not —
+    the distinction this whole field exists to draw.
+    """
+    absent = runprov.environment.tool_identity(
+        package_file=_nogit(tmp_path), distribution=lambda n: None
+    )
+    assert absent["source"] == "unknown" and absent["identifies_code"] is False
+
+    def raises(name):
+        raise RuntimeError("metadata unreadable")
+
+    broken = runprov.environment.tool_identity(package_file=_nogit(tmp_path), distribution=raises)
+    assert broken["source"] == "unknown", "an unreadable distribution is an answer, not a crash"
+
+    bad_json = runprov.environment.tool_identity(
+        package_file=_nogit(tmp_path), distribution=lambda n: _Dist("{not json")
+    )
+    assert bad_json["source"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("status", "dirty", "identifies"), [("", False, True), (" M runprov/run.py", True, False)]
+)
+def test_tool_identity_asks_git_directly_and_a_dirty_tree_identifies_nothing(
+    tmp_path, status, dirty, identifies
+):
+    """A live checkout WINS over the installed metadata, and a dirty one says so.
+
+    Two reasons the checkout is asked first, both measured rather than assumed. The metadata
+    goes stale — this repository's own `direct_url.json` still names a drive mount that no
+    longer exists — and an editable install points at the checkout anyway, so the metadata's
+    answer is at best a slower way to reach the same place.
+
+    A DIRTY TREE IS THE CASE WORTH THE PARAMETRISATION. The commit is still recorded, because
+    it says roughly where the code was, but `identifies_code` is false: the files that ran
+    differ from every commit that exists, so no reader can get them back.
+    """
+    (tmp_path / ".git").mkdir()
+    pkg = tmp_path / "runprov"
+    pkg.mkdir()
+    seen = []
+
+    def fake_git(root, *args):
+        seen.append(args[0])
+        return "deadbeefcafe" if args[0] == "rev-parse" else status
+
+    got = runprov.environment.tool_identity(package_file=pkg / "__init__.py", git_command=fake_git)
+    assert got["source"] == "checkout"
+    assert got["commit"] == "deadbeefcafe"
+    assert got["dirty"] is dirty
+    assert got["identifies_code"] is identifies
+    assert seen == ["rev-parse", "status"], "the dirty state must be MEASURED, not assumed"
+
+
+def test_tool_identity_falls_through_when_git_cannot_answer(tmp_path):
+    """A `.git` that git will not talk about is not a checkout answer.
+
+    `project.git` returns None on any failure, including git not being installed. Treating
+    that as a checkout would record `source: checkout` with no commit — worse than `index`,
+    because it looks like the more specific answer.
+    """
+    (tmp_path / ".git").mkdir()
+    pkg = tmp_path / "runprov"
+    pkg.mkdir()
+    got = runprov.environment.tool_identity(
+        package_file=pkg / "__init__.py",
+        git_command=lambda root, *a: None,
+        distribution=lambda n: _Dist(None),
+    )
+    assert got["source"] == "index", "it must fall through, not claim a checkout it cannot name"
+
+
+def test_the_default_lookups_answer_for_this_very_package():
+    """The injected-argument tests prove the branches; this proves the DEFAULTS are wired.
+
+    Every test above replaces both lookups, so all of them would pass if `tool_identity()`
+    ignored its real environment entirely. This one calls it with no arguments — the way the
+    record does — and requires a real answer from the real interpreter.
+    """
+    got = runprov.environment.tool_identity()
+    assert got["source"] in ("index", "vcs", "checkout", "local", "unknown")
+    assert got["version"] == runprov.__version__
+    assert isinstance(got["identifies_code"], bool)
+    assert runprov.environment._distribution("runprov") is not None, "runprov is installed here"
+    assert runprov.environment._distribution("no-such-package-anywhere-3f7a") is None
+
+
+def test_every_record_names_the_tool_that_wrote_it(tmp_path):
+    """U-01, the whole point: UNCONDITIONALLY, with nothing configured.
+
+    Before this, a record named runprov only if the user had set
+    `tracked_packages=("runprov",)` — and `environment.packages` is `()` by default, so the
+    common case was a provenance record that could not say what produced it. Measured on the
+    published 0.2.0 wheel: `environment.packages` was `{}`.
+    """
+    runprov.configure(root=tmp_path, auto_steps="off")
+    with runprov.Run("named", {}, provenance=tmp_path / "n.prov.json"):
+        pass
+    rec = json.loads((tmp_path / "n.prov.json").read_text(encoding="utf-8"))
+    assert rec["environment"]["packages"] == {}, "nothing tracked — the default"
+    tool = rec["tool"]
+    assert tool["name"] == "runprov"
+    assert tool["version"] == runprov.__version__
+    assert tool["source"] in ("index", "vcs", "checkout", "local", "unknown")
+    assert isinstance(tool["identifies_code"], bool)
+
+
 def test_a_run_records_how_its_environment_could_be_rebuilt(tmp_path, monkeypatch):
     """End to end, through `Run`, so the wiring is tested and not just the helpers."""
     monkeypatch.chdir(tmp_path)

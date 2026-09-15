@@ -660,6 +660,11 @@ nothing in it failed.
 * **Failures are recorded as failures**, with `status: "failed"`, the exception and every
   registered-but-unproduced output listed as `MISSING` — provided `provenance=` was given to
   the constructor. A run that died halfway is the one most worth having a record of.
+* **The record names the tool that wrote it**, and says whether that name identifies the
+  code — see [the `tool` block](#which-runprov-wrote-the-record-the-tool-block). "Which
+  version of the method" is a question about the analysis software *and* about the software
+  that recorded it, and a provenance tool that could not answer it about itself would be a
+  poor witness.
 * **Nothing needs to be installed to read it or to check it.** UTF-8 YAML for the history,
   `sha256sum`'s own format for the digests: `cat`, `grep` and `sha256sum -c` are sufficient.
   This matters twice — for an assessment on a locked-down workstation, and for retention,
@@ -1015,6 +1020,50 @@ disk are identical before and after.
 Text by default and YAML with `--format yaml`, deliberately not HTML: this gets read in the
 terminal beside the work, many times a day. The YAML quotes **every scalar**, for the reason
 the section above gives — the predecessor's log dies on a `Note:` somebody typed.
+
+## Which runprov wrote the record: the `tool` block
+
+Every record carries this, with nothing configured:
+
+```json
+"tool": {
+  "name": "runprov",
+  "version": "0.2.0",
+  "source": "index",
+  "identifies_code": true
+}
+```
+
+**This exists because the package was failing its own thesis, and a user found it rather than
+a reviewer.** A project consuming `runprov` reported that ~1 000 of its records said
+`runprov: 0.1.0` — one string covering every commit the package had ever had — so a record
+could not say which code produced it. Worse, measured afterwards: it said that much only
+because they had configured `tracked_packages=("runprov",)`. `packages` is empty by default,
+so the ordinary record did not name this package **at all**.
+
+`identifies_code` is the field that matters, and it is the same distinction `observation`
+draws for steps: *this record names the exact code* versus *this record names a label*.
+
+| `source` | how it was installed | can a reader get the exact code back? |
+|---|---|---|
+| `index` | from PyPI | **yes** — a PyPI filename is never reused, so name + version is exact |
+| `vcs` | `pip install git+…` | **yes** — PEP 610 records the commit, and the record copies it |
+| `checkout` | running from a source tree, clean | **yes** — git is asked directly |
+| `checkout` | running from a source tree, **dirty** | **no** — the commit is recorded, but the files that ran match no commit |
+| `local` | editable or local-path install | **no** — the version is a label somebody typed |
+| `unknown` | no distribution metadata and no git | **no**, and it says so rather than guessing |
+
+Two design points worth stating, because both were measured rather than assumed:
+
+**A live checkout wins over the installed metadata.** PEP 610's `direct_url.json` records
+where an editable install came from, and it goes stale: this repository's own still names a
+drive mount that no longer exists. Asking git about the files on disk cannot go stale that
+way.
+
+**A dirty tree identifies nothing, and the record says so.** The commit is still recorded —
+it says roughly where the code was — but `identifies_code` is `false`, because the files that
+ran differ from every commit that exists. Recording the commit alone would look like the more
+precise answer while being the less honest one.
 
 ## What code actually ran
 

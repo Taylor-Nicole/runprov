@@ -69,7 +69,7 @@ import weakref
 
 from ._atomic import TEMP_SUFFIX, _sync_dir, atomic_write_text
 from ._report import diagnostic, progress, progress_enabled, summary
-from .environment import archive_lockfiles, lockfiles, manager, write_snapshot
+from .environment import archive_lockfiles, lockfiles, manager, tool_identity, write_snapshot
 from .hashing import (
     PIN_ANCHOR,
     PIN_BODY_FIELD,
@@ -972,6 +972,13 @@ class Run:
                 "auto_available": hasattr(sys, "monitoring"),
                 "packages_recorded": "none",
             },
+            # U-01. WHICH runprov WROTE THIS, and whether that answer identifies the code.
+            # Found by the first real consumer, not by a reviewer: ~1 000 records said
+            # `runprov: 0.1.0` — one string covering every commit the package ever had — and
+            # only because they had configured `tracked_packages`. By default a record did
+            # not name this package at all, so an artifact could not say what produced it.
+            # That is the one thing this package exists to make artifacts do.
+            "tool": tool_identity(),
             "seeds": [],
             "inputs": [],
             "outputs": [],

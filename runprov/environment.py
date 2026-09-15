@@ -61,6 +61,116 @@ import typing
 from ._atomic import atomic_write_bytes, atomic_write_text
 from .hashing import _posix
 
+#: How a record can say WHICH runprov produced it, in decreasing order of how much the
+#: answer is worth. U-01: the package existed for ~1 000 records that could not name the code
+#: that wrote them -- this package failing its own thesis, found by the first real consumer
+#: rather than by any reviewer.
+#:
+#: * ``index``    installed from PyPI. Name + version identify the artifact exactly, because
+#:                PyPI never reuses a filename. This is the only case where a VERSION is enough.
+#: * ``vcs``      installed from a git rev. PEP 610 records the commit; the record carries it.
+#: * ``checkout`` running from a source tree. Git is asked directly, and a DIRTY tree
+#:                identifies nothing -- the code differs from every commit that exists.
+#: * ``local``    an editable or local-path install. The version is a label someone typed.
+#: * ``unknown``  no distribution metadata and no git. Said plainly rather than guessed.
+_TOOL_SOURCES = ("index", "vcs", "checkout", "local", "unknown")
+
+
+def tool_identity(
+    *,
+    package_file: pathlib.Path | None = None,
+    distribution: typing.Callable[[str], typing.Any] | None = None,
+    git_command: typing.Callable[..., str | None] | None = None,
+) -> dict[str, typing.Any]:
+    """Which runprov wrote this record, and whether that answer identifies the code.
+
+    IN EVERY RECORD, UNCONDITIONALLY, and that is the point of U-01. Before this, a record
+    named runprov only if the user had configured `tracked_packages=("runprov",)`, and even
+    then it said `0.1.0` -- one string covering every commit the package ever had. An
+    artifact could not say what produced it, which is the one thing this package exists to
+    make artifacts do.
+
+    `identifies_code` IS THE FIELD THAT MATTERS, for the same reason `observation`'s
+    `auto_available` does: it separates "this record names the exact code" from "this record
+    names a label". A dirty checkout and a PyPI install both have a version string, and only
+    one of them can be followed back to source.
+
+    Everything is looked up through arguments so each branch is exercised on every
+    interpreter -- the `Observer` rule, for the same reason.
+    """
+    from . import __version__
+
+    out: dict[str, typing.Any] = {
+        "name": "runprov",
+        "version": __version__,
+        "source": "unknown",
+        "identifies_code": False,
+    }
+    here = pathlib.Path(package_file if package_file is not None else __file__).resolve()
+
+    # A LIVE CHECKOUT WINS OVER THE METADATA, because it is the code that is running and the
+    # metadata can be stale: an editable install records the path it was installed from, and
+    # this very repository's `direct_url.json` still names a drive mount that no longer
+    # exists. Asking git about the files on disk cannot go stale that way.
+    root = next((p for p in here.parents if (p / ".git").exists()), None)
+    if root is not None:
+        ask = git_command if git_command is not None else _git
+        commit = ask(root, "rev-parse", "HEAD")
+        if commit:
+            status = ask(root, "status", "--porcelain", "--", str(here.parent))
+            dirty = bool(status)
+            out.update(
+                source="checkout",
+                commit=commit,
+                dirty=dirty,
+                # A DIRTY TREE IDENTIFIES NOTHING. The commit is recorded anyway because it
+                # says roughly where the code was, but the honest answer to "can a reader get
+                # this code back" is no, and the record says no rather than implying yes.
+                identifies_code=not dirty,
+            )
+            return out
+
+    lookup = distribution if distribution is not None else _distribution
+    try:
+        dist = lookup("runprov")
+        direct = dist.read_text("direct_url.json") if dist is not None else None
+    except Exception:  # a missing or unreadable distribution is an answer, not a crash
+        return out
+    if dist is None:
+        return out
+    if not direct:
+        # NO `direct_url.json` MEANS IT CAME FROM AN INDEX (PEP 610), and a PyPI filename is
+        # never reused, so name + version is an exact identification.
+        out.update(source="index", identifies_code=True)
+        return out
+    try:
+        info = json.loads(direct)
+    except ValueError:
+        return out
+    commit = (info.get("vcs_info") or {}).get("commit_id")
+    if commit:
+        out.update(source="vcs", commit=commit, identifies_code=True)
+    else:
+        out.update(source="local", url=info.get("url"))
+    return out
+
+
+def _distribution(name: str) -> typing.Any:  # noqa: ANN401 - importlib.metadata.Distribution
+    """The installed distribution, or None. Separate so tests can replace it."""
+    import importlib.metadata
+
+    try:
+        return importlib.metadata.distribution(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _git(root: pathlib.Path, *args: str) -> str | None:
+    """`project.git`, imported late. A module-level import here would be a cycle."""
+    from .project import git
+
+    return git(root, *args)
+
 
 def installed_packages(unreadable: list[str] | None = None) -> dict[str, str]:
     """`{name: version}` for the RUNNING interpreter. Never raises.

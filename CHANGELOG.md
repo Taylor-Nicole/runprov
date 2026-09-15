@@ -9,7 +9,30 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+* **Every record now names the runprov that wrote it, and says whether that name identifies
+  the code (U-01).** A new top-level `tool` block, present with nothing configured:
+
+  ```json
+  "tool": {"name": "runprov", "version": "0.2.0", "source": "index", "identifies_code": true}
+  ```
+
+  **The package was failing its own thesis, and a consumer found it rather than a reviewer.**
+  ~1 000 records said `runprov: 0.1.0` — one string covering every commit the package had —
+  so an artifact could not say what produced it. Measured while fixing it, and worse than
+  reported: that much appeared only because they had set `tracked_packages=("runprov",)`.
+  `packages` is `()` by default, so the ordinary record did not name this package at all.
+
+  `source` is derived from **PEP 610**: no `direct_url.json` means an index install, and a
+  PyPI filename is never reused, so name + version is exact; `vcs_info.commit_id` gives the
+  commit for a git install; anything else is `local` and identifies nothing. A live checkout
+  is asked of git directly and **wins over the metadata**, which goes stale — this
+  repository's own `direct_url.json` still names a drive mount that no longer exists. A dirty
+  checkout records its commit and `identifies_code: false`, because the files that ran match
+  no commit that exists.
+
+  Adding a field needs no schema bump; the format promise already says so.
 
 ## [0.2.0] — 2026-09-15
 
