@@ -100,6 +100,19 @@ STALE   results/summary.tsv
 `runprov capture` (record a script that has no `runprov` calls in it at all), and
 `runprov export` (RO-Crate and W3C PROV-JSON).
 
+## Two commands for the questions asked afterwards
+
+**`runprov check`** reads your source and reports entry points that open files and record
+nothing — the case a runtime hook can never see, because code that is not imported does not
+run. It never imports or executes your code, so it works on a pipeline that has never heard
+of `runprov`. Exit 1 on a finding, so it can gate a build.
+
+**`runprov report <artifact>`** is one artifact on one page: the run that produced it, the
+commit and whether the tree was clean, which `runprov` recorded it, every input with its
+digest, and the current verdict. It is a derived view — every fact comes from the artifact's
+own pin and the run history — and it prints what it *cannot* tell you on the page rather than
+leaving that to a manual.
+
 ## What it is not
 
 It records; it does not audit — it cannot tell you that a registered read was the read that
