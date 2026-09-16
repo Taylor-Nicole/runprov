@@ -1076,6 +1076,10 @@ class Run:
         # hook stays as close to free as a hook can be, and so nothing here can fail on a
         # path during the run it is describing.
         self._opened: set[str] = set()
+        # A-11. How many distinct paths the watcher had to drop once `WATCH_MAX_PATHS` was
+        # reached. Zero for almost every run; when it is not zero, the absence of an
+        # unregistered read stops being evidence and the record has to say so.
+        self._opened_dropped = 0
         # THOSE OPENED FOR WRITING, a subset of the above. `capture` classifies by it:
         # a file this run wrote is an output, a file it only read is an input.
         self._opened_write: set[str] = set()
@@ -1718,6 +1722,12 @@ class Run:
                 registered.append(str(w))
                 registered.append(str(self._yaml_twin(w)))
             missed = unregistered(self._opened, registered, self.project.root, exclude=mine)
+            if self._opened_dropped:
+                # RECORDED WHETHER OR NOT ANYTHING WAS MISSED, unlike `unregistered_reads`
+                # itself. The whole point is that after the cap bites, an EMPTY
+                # `unregistered_reads` no longer means "nothing was missed" — so the field
+                # that qualifies it cannot be omitted when the list is empty.
+                self.record["observation"]["unregistered_watch_truncated"] = self._opened_dropped
         except Exception as exc:  # pragma: no cover - defensive; see the docstring
             diagnostic(f"  WARNING: could not check for unregistered reads: {exc}")
             return

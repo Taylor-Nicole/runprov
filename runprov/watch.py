@@ -136,8 +136,26 @@ class _Watcher:
             for run in self._active:
                 if len(run._opened) < WATCH_MAX_PATHS:
                     run._opened.add(name)
-                    if any(ch in mode for ch in "wax+"):
-                        run._opened_write.add(name)
+                elif name not in run._opened:
+                    # AND IT SAYS SO. Audit B, A-11: this was the ONE bound in the package
+                    # that bit silently. `MAX_FUNCTIONS` sets `observed_truncated`,
+                    # `MAX_SIGNATURES` sets `signatures_truncated`, `MAX_CALLS` sets
+                    # `auto_stopped_after_calls`, `imported_code_max` sets `omitted`,
+                    # `PROGRESS_MAX_LINES` says so once — and this one dropped paths and
+                    # recorded nothing, in the direction "no findings".
+                    #
+                    # The cap's stated justification assumes the set holds data files. It holds
+                    # EVERY path the process opens while a run is attached — imports, shared
+                    # objects, locale data — so 2 000 is reached by ordinary work, after which
+                    # a run that missed a read is byte-identical to one that missed none.
+                    # `getattr`, not a bare attribute: the hook is handed whatever object is
+                    # attached, and requiring a field would make a stub — or an older `Run`
+                    # pickled into a long-lived process — raise inside the audit hook, where
+                    # the rule is that describing a run must never end one.
+                    run._opened_dropped = getattr(run, "_opened_dropped", 0) + 1
+                    continue
+                if any(ch in mode for ch in "wax+"):
+                    run._opened_write.add(name)
         except Exception:  # pragma: no cover - defensive; see install()
             return  # never let bookkeeping break the caller
 

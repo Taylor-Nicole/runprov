@@ -593,7 +593,9 @@ def verify_artifact(
     return out
 
 
-def collect(paths: typing.Iterable[pathlib.Path]) -> tuple[list[pathlib.Path], int, int]:
+def collect(
+    paths: typing.Iterable[pathlib.Path],
+) -> tuple[list[pathlib.Path], int, int, list[str]]:
     """Files to examine, how many DIRECTORIES were skipped, and how much write debris.
 
     DEBRIS IS A FILE `_atomic` WAS PART-WAY THROUGH WRITING when the process died — see
@@ -631,12 +633,26 @@ def collect(paths: typing.Iterable[pathlib.Path]) -> tuple[list[pathlib.Path], i
     found: set[pathlib.Path] = set()
     skipped = 0
     debris = 0
+    # A-17. `os.walk` swallows every `scandir` failure by default, so a subdirectory that
+    # cannot be listed — mode 0700 owned by someone else, a mount that went away, an ACL —
+    # contributed NOTHING: absent from `examined`, absent from `artifacts_seen`, and absent
+    # from `directories_skipped`, which counts only the deliberate prunes. A pinned artifact
+    # inside it simply did not exist as far as the report was concerned, and the run exited 0.
+    #
+    # This function's own docstring states the requirement it was missing: "a checker that
+    # quietly narrows what it looked at reads as 'everything is fine' when it means 'I did not
+    # look there'."
+    unreadable: list[str] = []
+
+    def _unreadable(error: OSError) -> None:
+        unreadable.append(str(getattr(error, "filename", "") or error))
+
     for p in paths:
         if not p.is_dir():
             if p.exists():
                 found.add(p)
             continue
-        for dirpath, dirnames, filenames in os.walk(p):
+        for dirpath, dirnames, filenames in os.walk(p, onerror=_unreadable):
             here = pathlib.Path(dirpath)
             pruned = [d for d in dirnames if d in SKIP_DIRS or d.endswith(".egg-info")]
             for d in pruned:
@@ -651,7 +667,7 @@ def collect(paths: typing.Iterable[pathlib.Path]) -> tuple[list[pathlib.Path], i
                     debris += 1
                 else:
                     found.add(f)
-    return sorted(found), skipped, debris
+    return sorted(found), skipped, debris, unreadable
 
 
 def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str, typing.Any]:
@@ -662,7 +678,7 @@ def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str
     finding. The COUNT still has to be visible: it is the difference between "everything
     checks out" and "nothing was checked".
     """
-    examined, skipped, debris = collect(paths)
+    examined, skipped, debris, unreadable = collect(paths)
     # ONE CACHE FOR THE WHOLE REPORT. Shared inputs are the normal case -- a fan-out of
     # N artifacts from one reference file meant N full reads of it -- so the memo has to
     # live across artifacts, not inside one.
@@ -673,6 +689,11 @@ def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str
         "root": str(root),
         "artifacts_seen": len(results),
         "directories_skipped": skipped,
+        # A-17. A place this checker COULD NOT look, which is a third thing again: not a
+        # deliberate prune and not a run's debris. Reported whether or not anything was found
+        # in what remained, because the point is that the count above is a count of what was
+        # REACHABLE, and a reader cannot infer that from a clean result.
+        "directories_unreadable": unreadable,
         # NOT FOLDED INTO `directories_skipped`. One is a place this checker chose not to
         # look; the other is a file a run left behind when it died. A reader repairs those
         # two facts differently, so a single number for both would be the wrong number

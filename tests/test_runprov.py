@@ -11278,6 +11278,139 @@ def test_a_checkpoint_to_the_constructors_own_path_does_not_freeze_the_record(tm
     )
 
 
+def test_check_an_unparseable_file_alone_still_suppresses_the_clean_line(tmp_path):
+    """A sweep with a real subject, nothing flagged, and one file it could not parse.
+
+    None of the three messages is right on its own: there IS something to be negative about
+    (so not A-08's refusal), nothing was flagged (so not the findings list), and the clean
+    line would be a lie about the file that went unread.
+    """
+    root = _source_tree(
+        tmp_path,
+        {
+            "good.py": 'import runprov\ndef main():\n    open("d").read()\n' + _ENTRY,
+            "broken.py": "def main(:\n",
+        },
+    )
+    report = runprov.check.scan(root, own=tmp_path / "nowhere")
+    assert report.examined_nothing is None, "there was a subject; this is not the A-08 case"
+    assert report.flagged == [] and report.unparseable
+    text = "\n".join(runprov.check.render(report, root))
+    assert "could NOT be parsed" in text
+    assert "no entry point opens files" not in text, "not clean: one file went unread"
+
+
+def test_verify_cli_names_an_unreadable_directory_on_stderr(tmp_path, capsys):
+    """[A-17] on the command, not just in `collect`. The summary line is the one thing every
+    reader reads, so the qualification goes above it and on stderr — it is not part of the
+    report a caller may be parsing."""
+    blocked = tmp_path / "restricted"
+    blocked.mkdir()
+    (tmp_path / "plain.tsv").write_text("x\n", encoding="utf-8")
+    blocked.chmod(0o000)
+    try:
+        if os.access(blocked, os.R_OK):  # pragma: no cover - root, or a mode-less filesystem
+            pytest.skip("this user can read a 0o000 directory")
+        runprov.configure(root=tmp_path)
+        runprov.__main__.main(["verify", str(tmp_path)])
+        assert "COULD NOT READ" in capsys.readouterr().err
+    finally:
+        blocked.chmod(0o755)
+
+
+def test_check_refuses_to_green_a_sweep_that_examined_nothing(tmp_path, capsys):
+    """Audit B, A-08 — the regression test.
+
+    `Report.ok` consulted only `flagged` and `unparseable`, so a sweep that parsed ZERO files
+    printed "no entry point opens files without recording them" and exited 0. `runprov check
+    src` when the Python lives in `scripts/` is an ordinary CI typo, and the gate then passes
+    forever having looked at nothing. Exit 2, not 1: the documented meaning is COULD NOT CHECK,
+    and a job has to tell a typo from a finding.
+    """
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    report = runprov.check.scan(empty, own=tmp_path / "nowhere")
+    assert report.examined_nothing and "no Python file" in report.examined_nothing
+    assert not report.ok
+    assert runprov.__main__.main(["check", str(empty)]) == 2
+    assert "no Python file was found" in capsys.readouterr().err
+
+    # and a directory of library modules: parsed, but no subject in it
+    (empty / "lib.py").write_text("def f(p):\n    return open(p).read()\n", encoding="utf-8")
+    report = runprov.check.scan(empty, own=tmp_path / "nowhere")
+    assert report.examined == 1 and report.entry_points == 0
+    assert "none is an entry point" in report.examined_nothing
+    assert runprov.__main__.main(["check", str(empty)]) == 2
+
+
+def test_the_unregistered_watcher_says_when_it_went_blind(tmp_path):
+    """Audit B, A-11 — the single silent bound in a package where every other one announces
+    itself, and its failure direction is "no findings".
+
+    Past `WATCH_MAX_PATHS` the watcher dropped paths and recorded nothing, so a run that
+    missed a read was byte-identical to one that missed none. The cap's justification assumes
+    the set holds data files; it holds EVERY path the process opens while a run is attached,
+    so ordinary work reaches it.
+
+    Driven through the hook directly rather than by opening 2 000 real files — the bound is
+    the subject, not the filesystem.
+    """
+    watcher = runprov.watch._Watcher()
+
+    class _Run:
+        def __init__(self):
+            self._opened, self._opened_write = set(), set()
+
+    run = _Run()
+    watcher._active.append(run)
+    for i in range(runprov.watch.WATCH_MAX_PATHS + 25):
+        watcher._hook("open", (str(tmp_path / f"{i}.tsv"), "r"))
+
+    assert len(run._opened) == runprov.watch.WATCH_MAX_PATHS
+    assert run._opened_dropped == 25, "what was dropped is COUNTED, not discarded"
+
+    # AND THE WRITE TRACKING STILL RUNS BELOW THE CAP. The first version of this fix captured
+    # the write-mode branch into the cap's `elif`, so `_opened_write` only filled AFTER the
+    # cap — caught by an existing test, and the reason `continue` is explicit here.
+    fresh = _Run()
+    watcher._active[:] = [fresh]
+    watcher._hook("open", (str(tmp_path / "w.tsv"), "w"))
+    assert fresh._opened_write == {str(tmp_path / "w.tsv")}
+
+    # RE-OPENING A PATH ALREADY SEEN IS NOT A DROP. A loop reading one file a thousand times
+    # past the cap would otherwise report a thousand dropped paths and make the record claim
+    # the watch was far blinder than it was — `unregistered_watch_truncated` counts DISTINCT
+    # paths it could not keep, which is what a reader needs to judge the absence by.
+    watcher._active[:] = [run]
+    before = run._opened_dropped
+    seen_already = next(iter(run._opened))
+    watcher._hook("open", (seen_already, "r"))
+    assert run._opened_dropped == before, "a path already recorded was not dropped"
+
+
+def test_verify_reports_a_directory_it_could_not_read(tmp_path):
+    """Audit B, A-17. `os.walk` swallows every `scandir` failure by default, so an unreadable
+    subdirectory contributed nothing — absent from `examined`, from `artifacts_seen` and from
+    `directories_skipped`, which counts only deliberate prunes. A pinned artifact inside it
+    did not exist as far as the report was concerned, and the command exited 0.
+    """
+    blocked = tmp_path / "restricted"
+    blocked.mkdir()
+    (blocked / "secret.tsv").write_text("s\n", encoding="utf-8")
+    (tmp_path / "open.tsv").write_text("o\n", encoding="utf-8")
+    blocked.chmod(0o000)
+    try:
+        if os.access(blocked, os.R_OK):  # pragma: no cover - root, or a filesystem without modes
+            pytest.skip("this user can read a 0o000 directory, so the case cannot be built")
+        found, _, _, unreadable = runprov.verify.collect([tmp_path])
+        assert [p.name for p in found] == ["open.tsv"], "the reachable half is still checked"
+        assert any("restricted" in u for u in unreadable), (
+            "and the half it could NOT read is named, not silently dropped"
+        )
+    finally:
+        blocked.chmod(0o755)
+
+
 def test_check_flags_an_entry_point_that_opens_files_and_records_nothing(tmp_path):
     """T-27, the case `watch.py` can never see: no import means no code runs."""
     root = _source_tree(
@@ -11426,7 +11559,11 @@ def test_check_says_what_it_examined_so_a_clean_result_means_something(tmp_path)
     own recurring failure, and the reason `examined` is in the first line of every report."""
     lines = runprov.check.render(runprov.check.scan(tmp_path, own=tmp_path / "nowhere"), tmp_path)
     assert "checked 0 Python file(s)" in lines[0]
-    assert any("no entry point opens files" in line for line in lines)
+    # A-08: the reassuring negative is REFUSED when there was nothing to be negative about.
+    # This used to print "no entry point opens files without recording them" over a sweep that
+    # parsed zero files, and `runprov check src` on a typo'd path exited 0 forever.
+    assert any("NOTHING WAS CHECKED" in line for line in lines)
+    assert not any("no entry point opens files" in line for line in lines)
 
 
 @pytest.mark.parametrize(
@@ -11454,7 +11591,17 @@ def test_check_cli_exits_one_on_a_finding_and_two_on_a_bad_root(tmp_path, capsys
     assert runprov.__main__.main(["check", str(root / "a.py")]) == 2
     assert "not a directory" in capsys.readouterr().err
 
+    # A-08. A file that records but is not an ENTRY POINT leaves nothing to check, which is
+    # exit 2 (could not check) rather than 0 (checked, nothing wrong). A CI job has to tell a
+    # directory with no subject from a clean sweep.
     (root / "a.py").write_text("import runprov\n", encoding="utf-8")
+    assert runprov.__main__.main(["check", str(root)]) == 2
+    assert "none is an entry point" in capsys.readouterr().err
+
+    # and a real entry point that records IS a clean sweep, exit 0
+    (root / "a.py").write_text(
+        'import runprov\ndef main():\n    open("d").read()\n' + _ENTRY, encoding="utf-8"
+    )
     assert runprov.__main__.main(["check", str(root)]) == 0
 
 
@@ -12161,7 +12308,7 @@ def test_verify_collects_files_directories_and_neither(tmp_path):
     (tmp_path / "d").mkdir()
     (tmp_path / "d" / "b.tsv").write_text("b\n", encoding="utf-8")
     (tmp_path / "a.tsv").write_text("a\n", encoding="utf-8")
-    got, skipped, _ = runprov.verify.collect(
+    got, skipped, _, _ = runprov.verify.collect(
         [tmp_path / "d", tmp_path / "d" / "b.tsv", tmp_path / "a.tsv", tmp_path / "nope.tsv"]
     )
     assert [p.name for p in got] == ["a.tsv", "b.tsv"]
@@ -12218,11 +12365,11 @@ def test_verify_does_not_walk_build_and_vcs_directories_but_counts_what_it_skipp
         d.mkdir()
         (d / "noise.tsv").write_text("noise\n", encoding="utf-8")
 
-    found, skipped, _ = runprov.verify.collect([tmp_path])
+    found, skipped, _, _ = runprov.verify.collect([tmp_path])
     assert [p.name for p in found] == ["out.tsv"]
     assert skipped == 5, "five DIRECTORIES pruned, counted rather than dropped"
 
-    named, _, _ = runprov.verify.collect([tmp_path / ".venv" / "noise.tsv"])
+    named, _, _, _ = runprov.verify.collect([tmp_path / ".venv" / "noise.tsv"])
     assert [p.name for p in named] == ["noise.tsv"], "an explicit path is always examined"
 
 
@@ -12238,8 +12385,9 @@ def test_a_dangling_symlink_is_listed_by_the_walk_and_examined_by_nothing(tmp_pa
     (tmp_path / "out.tsv").write_text("x\n", encoding="utf-8")
     (tmp_path / "gone.tsv").symlink_to(tmp_path / "never-existed.tsv")
 
-    found, skipped, debris = runprov.verify.collect([tmp_path])
+    found, skipped, debris, unreadable = runprov.verify.collect([tmp_path])
     assert [p.name for p in found] == ["out.tsv"], found
+    assert unreadable == [], "a tree this checker can read reports nothing unreadable [A-17]"
     assert (skipped, debris) == (0, 0), "a broken link is neither a pruned tree nor debris"
 
 
@@ -12266,7 +12414,7 @@ def test_the_skip_count_does_not_descend_into_what_it_skipped(tmp_path, monkeypa
         "walk",
         lambda p, *a, **k: (walked.append(str(p)), real_walk(p, *a, **k))[1],
     )
-    found, skipped, _ = runprov.verify.collect([tmp_path])
+    found, skipped, _, _ = runprov.verify.collect([tmp_path])
 
     assert [p.name for p in found] == ["out.tsv"]
     assert skipped == 1, "ONE directory pruned, not the 54 entries inside it"

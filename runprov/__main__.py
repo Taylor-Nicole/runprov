@@ -1515,6 +1515,12 @@ def _check(args: argparse.Namespace) -> int:
     report = check_mod.scan(root)
     for line in check_mod.render(report, root):
         print(line)
+    if report.examined_nothing:
+        # A-08. 2 is COULD NOT CHECK, which is what this is: a wrong path or a directory with
+        # no entry point in it. A CI job must be able to tell that from a finding, and from a
+        # clean sweep — three outcomes, three codes.
+        print(f"check: {report.examined_nothing}", file=sys.stderr)
+        return 2
     return 0 if report.ok else 1
 
 
@@ -1696,6 +1702,19 @@ def _verify(args: argparse.Namespace) -> int:
         sys.stdout.write(render_report(report))
 
     seen, pinned = report["artifacts_seen"], report["artifacts_pinned"]
+    # A-17, AND BEFORE EVERY EARLY RETURN. A directory this checker could not read is the
+    # one thing that changes what a clean result means: `os.walk` swallows those failures,
+    # so a pinned artifact inside it did not exist as far as this report was concerned.
+    #
+    # It matters MOST in the `not pinned` branch below, which is exactly where the first
+    # placement of this notice never ran — an unreadable directory holding every pin in the
+    # project reported `NOTHING CHECKED: no pins found` and said nothing about why.
+    for name in report.get("directories_unreadable") or []:
+        print(
+            f"# COULD NOT READ {name} — anything pinned inside it was NOT checked",
+            file=sys.stderr,
+        )
+
     if not pinned:
         # NOT zero. A gate that goes green having checked nothing is worse than no gate,
         # because someone will trust it -- the same rule as `git_status_captured: false`.

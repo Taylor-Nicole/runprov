@@ -164,8 +164,39 @@ class Report(typing.NamedTuple):
 
     @property
     def ok(self) -> bool:
-        """Nothing to report — and nothing that went unread while looking clean."""
-        return not self.flagged and not self.unparseable
+        """Nothing to report — and nothing that went unread while looking clean.
+
+        A-08: this returned True for a sweep that examined NOTHING, which is the property
+        saying "clean" about a question it never asked. `examined_nothing` is consulted here
+        as well as at the exit code, so the two cannot drift apart.
+        """
+        return not self.flagged and not self.unparseable and not self.examined_nothing
+
+    @property
+    def examined_nothing(self) -> str | None:
+        """Why this sweep checked nothing, if it checked nothing. Audit B, A-08.
+
+        `ok` consulted only `flagged` and `unparseable`, so a sweep that parsed ZERO files —
+        `runprov check src` when the Python lives in `scripts/`, an ordinary CI typo — printed
+        "no entry point opens files without recording them" and exited 0. The gate then passes
+        forever, having looked at nothing. A directory of library modules with no `__main__`
+        guard did the same.
+
+        This contradicted two docstrings in this very module, including `Report`'s own: "a
+        sweep that parsed nothing reports the same empty `flagged` as a clean project, and this
+        package exists because those two produce the same green."
+
+        It is exit 2 rather than 1 — the documented meaning is COULD NOT CHECK, not "something
+        is wrong", and a CI job needs to tell a typo from a finding.
+        """
+        if not self.examined:
+            return "no Python file was found here, so nothing was checked"
+        if not self.entry_points:
+            return (
+                f"{self.examined} file(s) parsed and none is an entry point "
+                '(`if __name__ == "__main__"`), so nothing was checked'
+            )
+        return None
 
 
 def sources(root: pathlib.Path, own: pathlib.Path | None = None) -> list[pathlib.Path]:
@@ -229,6 +260,10 @@ def render(report: Report, root: pathlib.Path) -> list[str]:
         )
         lines += [f"    {p}" for p in report.flagged]
         lines.append("Record them with `run.input(path)` and `run.open_output(path)`.")
+    elif report.examined_nothing:
+        # A-08. The reassuring negative is REFUSED when there was no subject to be negative
+        # about, rather than printed with a count above it and hoped to be read together.
+        lines.append(f"NOTHING WAS CHECKED — {report.examined_nothing}")
     elif not report.unparseable:
         # WHAT WAS LOOKED AT, not just what was found. "no entry point records nothing" and
         # "no entry point was examined" are the same sentence without the count above.
