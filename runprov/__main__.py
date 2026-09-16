@@ -1358,7 +1358,7 @@ def _impact(args: argparse.Namespace) -> int:
 
     steps = impact_mod.walk(digest, consumers, graph["edges"], names, outputs_by, args.depth)
     chain = impact_mod.Chain(digest, consumers.get(digest, []), steps, unregistered, runs)
-    for line in impact_mod.render(chain):
+    for line in impact_mod.render(chain, pathlib.Path(project.root)):
         print(line)
     return 1 if chain.steps else 0
 

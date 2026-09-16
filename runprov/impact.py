@@ -35,6 +35,7 @@ from __future__ import annotations
 
 __all__: list[str] = []
 
+import pathlib
 import typing
 
 
@@ -100,7 +101,24 @@ def walk(
     return steps
 
 
-def render(chain: Chain) -> list[str]:
+def shorten(name: str, root: pathlib.Path | None) -> str:
+    """A path relative to the project root, when it is under it.
+
+    NOT COSMETIC AT THIS SCALE. Measured on a real 3 536-line history: one reference file had
+    294 readers and 697 derived artifacts, every line an absolute path 90 characters long
+    before the part that identifies it. `show` prints paths as recorded, which is right for a
+    page about one run; a list of several hundred is a different problem, and an answer nobody
+    can read is an answer nobody uses.
+    """
+    if root is None:
+        return name
+    try:
+        return str(pathlib.Path(name).relative_to(root))
+    except ValueError:  # outside the root: the absolute path IS the useful name
+        return name
+
+
+def render(chain: Chain, root: pathlib.Path | None = None) -> list[str]:
     """The chain, and — every time, not only when empty — what this could not see."""
     out = [f"{chain.digest[:16]}", ""]
     if not chain.steps:
@@ -117,7 +135,7 @@ def render(chain: Chain) -> list[str]:
             head = f"  {step.depth}{'  ' * step.depth}{step.script}"
             if not step.outputs:
                 out.append(f"{head}  (wrote nothing recorded)")
-            out += [f"{head} → {name}" for name in step.outputs]
+            out += [f"{head} → {shorten(name, root)}" for name in step.outputs]
         out += ["", "  Rebuild in that order; `runprov verify <artifact>` confirms each one."]
 
     out += ["", "  NOT SEEN BY THIS QUERY:"]
