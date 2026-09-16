@@ -10210,6 +10210,14 @@ def test_resources_omits_what_it_could_not_measure_rather_than_writing_zero(tmp_
     assert m.source == "none"
     assert any("resource module" in u for u in m.unavailable)
 
+    # U-4, WINDOWS, which is this exact shape and is the reason `rusage=None` had to become
+    # representable at all. Confirmed on the Windows leg: `source: none` with
+    # "resource module: not on this platform", no memory figure, and the run unaffected.
+    assert "max_rss_is_floor" not in record, "no measurement, so nothing to call a floor"
+    assert runprov.resources.render_slurm(m) and "NOT MEASURED" in "\n".join(
+        runprov.resources.render_slurm(m)
+    ), "[R-15] it must refuse to invent a request, not print a small one"
+
 
 def test_resources_labels_the_getrusage_figure_a_floor(tmp_path):
     """[R-9]. RUSAGE_CHILDREN is a MAXIMUM, not a sum: measured, three children holding
@@ -10484,7 +10492,17 @@ def test_resources_reach_the_history_which_is_what_the_subcommand_reads(tmp_path
     ][-1]
     assert "resources" in line, "the subcommand reads the history, so the block must be there"
     assert "max_rss_is_floor" not in line["resources"], "derived, not stored on every line"
-    assert "max_rss_is_floor" in runprov.resources.from_record(line["resources"]).as_record()
+
+    # DERIVED BACK FROM AN INJECTED BLOCK, not from whatever this machine measured. The first
+    # version asserted the note returns from the recorded block, which is true only where a
+    # getrusage measurement happened — on Windows there is no `resource` module at all, so the
+    # source is `none`, there is no memory figure, and correctly no floor note. That is U-4
+    # working, and the test said it was a failure. Fourth time today that a test leaned on what
+    # the host supplies rather than on what it means to assert.
+    got = runprov.resources.from_record(
+        {"wall_seconds": 1.0, "source": "getrusage", "max_rss_bytes": 4096}
+    ).as_record()
+    assert got["max_rss_is_floor"] == runprov.resources.FLOOR_NOTE
 
 
 def test_resources_round_trip_does_not_invent_a_zero(tmp_path):
