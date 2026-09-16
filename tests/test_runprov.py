@@ -11523,12 +11523,19 @@ def test_a_mid_run_checkpoint_does_not_end_the_census(tmp_path):
     observer in its body meant a checkpoint silently ended the census for the rest of the run
     — while the record went on reporting `auto_mode: census`, describing a window that closed
     at the checkpoint as though it covered the run."""
-    runprov.configure(root=tmp_path, auto_steps="census")
+    runprov.configure(root=tmp_path, auto_steps="off")
     prov = tmp_path / "p.json"
     with runprov.Run("mid", {}, provenance=prov) as run:
+        # A STUB OBSERVER, not the real one. `sys.monitoring` is 3.12+, so asserting on a live
+        # census made this pass on two interpreters and fail on the other two — the seventh
+        # time in this session that a test leaned on what the host provides. The subject is
+        # WHERE the stop happens, which is version-independent.
+        run._observer = runprov.observe.Observer(tmp_path, "census", _StubMonitoring())
+        run._observer.start()
+        assert run._observer.active == "census"
         run.write(prov)
-        assert run._observer.active != "off", "the census must still be running after a checkpoint"
-    assert run._observer.active == "off", "and stopped by the time the run ends"
+        assert run._observer.active == "census", "a checkpoint must not end the census"
+    assert run._observer.active == "off", "and `_finish` stops it, for every shape of run"
 
 
 def test_check_flags_an_entry_point_that_opens_files_and_records_nothing(tmp_path):
