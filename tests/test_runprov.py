@@ -10082,6 +10082,369 @@ def test_report_cli_defaults_to_the_projects_own_history(tmp_path):
     assert runprov.__main__.main(["report", str(artifact)]) == 0
 
 
+class _Usage:
+    """A `getrusage` result. Values are chosen so SELF and CHILDREN cannot be confused."""
+
+    def __init__(self, maxrss, utime=1.0, stime=0.5):
+        self.ru_maxrss, self.ru_utime, self.ru_stime = maxrss, utime, stime
+
+
+class _StubResource:
+    """The `resource` module, stubbed. Windows has none, and no machine is both platforms."""
+
+    RUSAGE_SELF, RUSAGE_CHILDREN = 0, 1
+
+    def __init__(self, self_rss=100, child_rss=200, raises=False):
+        self._v = {self.RUSAGE_SELF: _Usage(self_rss), self.RUSAGE_CHILDREN: _Usage(child_rss)}
+        self._raises = raises
+
+    def getrusage(self, who):
+        if self._raises:
+            raise OSError("no")
+        return self._v[who]
+
+
+def _meter(tmp_path, **kw):
+    kw.setdefault("rusage", _StubResource())
+    kw.setdefault("environ", {})
+    kw.setdefault("proc", tmp_path / "proc")
+    kw.setdefault("cgroup_mount", tmp_path / "cg")
+    kw.setdefault("platform", "linux")
+    (tmp_path / "proc").mkdir(exist_ok=True)
+    return runprov.resources.Meter(**kw)
+
+
+def test_resources_block_is_in_every_record_with_canonical_units(tmp_path):
+    """[R-1] unconditionally, and [R-2] bytes and seconds — never `8G` or `500m`.
+
+    A run that measured nothing must be distinguishable from a run nobody asked, which is why
+    the block is present rather than conditional. And the record stores no scheduler's syntax:
+    the two targets disagree about units, so committing to one in the RECORD would corrupt the
+    other at render time.
+    """
+    runprov.configure(root=tmp_path, auto_steps="off")
+    with runprov.Run("r", {}, provenance=tmp_path / "p.json"):
+        pass
+    block = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["resources"]
+    assert "wall_seconds" in block and "source" in block
+    text = json.dumps(block)
+    assert "Mi" not in text and "GiB" not in text, "[R-2] no scheduler syntax in the record"
+
+
+def test_resources_memory_counts_children_and_normalises_the_units(tmp_path):
+    """[R-3] the child is where the memory is, and [R-4] ru_maxrss units differ by platform.
+
+    Measured on this project: a run whose subprocess held 200 MiB reports 15 708 KiB for
+    RUSAGE_SELF and 217 364 for RUSAGE_CHILDREN. Reading SELF alone would size a cluster job
+    from a number 14x too small.
+
+    [R-4] is a 1024x error that looks entirely plausible on whichever platform you tested on:
+    Linux reports kibibytes, macOS reports bytes.
+    """
+    linux = _meter(tmp_path, rusage=_StubResource(self_rss=100, child_rss=200)).read()
+    assert linux.max_rss_bytes == 200 * 1024, "[R-3] the larger of SELF and CHILDREN, [R-4] KiB"
+
+    mac = _meter(
+        tmp_path, rusage=_StubResource(self_rss=100, child_rss=200), platform="darwin"
+    ).read()
+    assert mac.max_rss_bytes == 200, "[R-4] macOS reports bytes, not kibibytes"
+
+
+@pytest.mark.parametrize(
+    ("environ", "line", "owns"),
+    [
+        ({"SLURM_JOB_ID": "42"}, "0::/x", True),
+        ({"KUBERNETES_SERVICE_HOST": "10.0.0.1"}, "0::/x", True),
+        ({}, "0::/kubepods/pod123/abc", True),
+        ({}, "0::/user.slice/user-1000.slice/app.slice/app-code.scope", False),
+        ({}, "", False),
+    ],
+)
+def test_resources_reads_a_cgroup_only_when_the_run_owns_one(environ, line, owns):
+    """[R-6]. Outside a scheduler the cgroup is not yours, and reading it is a disaster
+    dressed as precision: measured on a workstation, the ambient group is the whole desktop
+    session and reports 8 138 MiB — the browser and the editor charged to a script."""
+    assert runprov.resources.owns_cgroup(environ, line) is owns
+
+
+def test_resources_prefers_the_cgroup_and_says_which_mechanism_measured_it(tmp_path):
+    """[R-5]. A cgroup peak and a getrusage peak are DIFFERENT QUANTITIES — the first counts
+    every process concurrently plus page cache, which is what Slurm and Kubernetes enforce.
+    Two records that do not say which they hold are two records someone will compare."""
+    proc, cg = tmp_path / "proc", tmp_path / "cg"
+    proc.mkdir()
+    (proc / "cgroup").write_text("0::/kubepods/pod1\n", encoding="utf-8")
+    (cg / "kubepods" / "pod1").mkdir(parents=True)
+    (cg / "kubepods" / "pod1" / "memory.peak").write_text("524288000\n", encoding="utf-8")
+    (cg / "kubepods" / "pod1" / "cpu.stat").write_text("usage_usec 2500000\n", encoding="utf-8")
+
+    m = _meter(tmp_path, proc=proc, cgroup_mount=cg).read()
+    assert m.source == "cgroup" and m.max_rss_bytes == 524288000
+    assert m.cpu_seconds == 2.5, "cpu.stat is microseconds; the record is seconds [R-2]"
+    assert m.as_record()["source"] == "cgroup"
+    assert "max_rss_is_floor" not in m.as_record(), "a cgroup peak is not the under-reporting one"
+
+
+def test_resources_falls_back_when_the_kernel_has_no_memory_peak(tmp_path):
+    """[R-8]. Measured: this project's own 5.15 kernel has `memory.current` and `cpu.stat`
+    and NO `memory.peak`. `memory.current` is not a peak and must never be substituted for
+    one — the record says what could not be measured instead."""
+    proc, cg = tmp_path / "proc", tmp_path / "cg"
+    proc.mkdir()
+    (proc / "cgroup").write_text("0::/kubepods/pod1\n", encoding="utf-8")
+    (cg / "kubepods" / "pod1").mkdir(parents=True)
+    (cg / "kubepods" / "pod1" / "memory.current").write_text("999\n", encoding="utf-8")
+
+    m = _meter(tmp_path, proc=proc, cgroup_mount=cg).read()
+    assert m.source == "getrusage", "it falls back rather than passing current off as a peak"
+    assert any("memory.peak absent" in u for u in m.unavailable)
+    assert m.as_record()["unavailable"], "[R-8] what could not be measured is stated"
+
+
+def test_resources_omits_what_it_could_not_measure_rather_than_writing_zero(tmp_path):
+    """[R-7]. A zero beside real numbers is a measurement never taken, presented as one that
+    was — this package's defect class, in a new table."""
+    m = _meter(tmp_path, rusage=None).read()
+    record = m.as_record()
+    assert "max_rss_bytes" not in record and "cpu_seconds" not in record
+    assert m.source == "none"
+    assert any("resource module" in u for u in m.unavailable)
+
+
+def test_resources_labels_the_getrusage_figure_a_floor(tmp_path):
+    """[R-9]. RUSAGE_CHILDREN is a MAXIMUM, not a sum: measured, three children holding
+    ~150 MiB concurrently report 162 MiB, not 450. The caveat travels WITH the number,
+    because the number alone gets a job OOM-killed and the tool blamed for it."""
+    record = _meter(tmp_path).read().as_record()
+    assert "concurrent total" in record["max_rss_is_floor"]
+
+
+def test_resources_says_io_covers_this_process_only(tmp_path):
+    """[R-9b]. `/proc/self/io` has no children's equivalent, so a pipeline whose reads happen
+    in samtools reports near zero — the same trap as [R-3] in a less obvious column. Found
+    while REVIEWING the specification, after the first draft let it through."""
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    (proc / "io").write_text("read_bytes: 4096\nwrite_bytes: 8192\n", encoding="utf-8")
+    record = _meter(tmp_path, proc=proc).read().as_record()
+    assert record["io_read_bytes"] == 4096
+    assert record["io_self_only"] is True
+
+
+def test_resources_uses_a_monotonic_clock_and_never_fails_the_run(tmp_path):
+    """[R-10] a wall-clock difference can go BACKWARDS when NTP steps the clock mid-run, and
+    [R-12] measurement that can kill a run is provenance changing what it observes."""
+    ticks = iter([100.0, 100.25])
+    m = runprov.resources.Meter(
+        clock=lambda: next(ticks),
+        rusage=_StubResource(raises=True),
+        environ={},
+        proc=tmp_path / "nothing",
+        cgroup_mount=tmp_path / "none",
+    )
+    got = m.read()
+    assert got.wall_seconds == 0.25
+    assert got.source == "none", "[R-12] a raising getrusage records absence, it does not raise"
+
+
+def test_resources_never_reach_the_artifact_pin(tmp_path):
+    """[R-11]. Peak memory is not part of "does this result still follow from its inputs", and
+    putting it in the header would make two identical runs produce two different pins — which
+    is what `content_digest()` exists to prevent."""
+    runprov.configure(root=tmp_path, auto_steps="off")
+    with runprov.Run("r", {}, provenance=tmp_path / "p.json") as run:
+        with run.open_output(tmp_path / "out.tsv") as out:
+            out.write("a\n")
+    head = (tmp_path / "out.tsv").read_text(encoding="utf-8")
+    for word in ("max_rss", "wall_seconds", "cpu_seconds", "resources"):
+        assert word not in head, f"{word} must not be in the pin [R-11]"
+
+
+def test_resources_tsv_uses_snakemakes_columns_and_snakemakes_units(tmp_path):
+    """[R-13]. The column names were read from Snakemake's SOURCE, since its documentation
+    does not list them, and its memory unit is MiB — so emitting the canonical bytes into a
+    column every consumer reads as MiB is a 1 048 576x error nobody notices until a plot looks
+    wrong. Columns needing psutil or sampling are EMPTY, never 0."""
+    m = runprov.resources.Measurement(
+        wall_seconds=3661.5,
+        cpu_seconds=7.25,
+        max_rss_bytes=200 * 1024 * 1024,
+        max_vms_bytes=400 * 1024 * 1024,
+        io_read_bytes=1024 * 1024,
+        io_write_bytes=None,
+        source="getrusage",
+        unavailable=(),
+        io_self_only=True,
+    )
+    header, row = runprov.resources.snakemake_row(m)
+    assert header == list(runprov.resources.SNAKEMAKE_COLUMNS)
+    cells = dict(zip(header, row, strict=True))  # strict: a short row is a defect, not a trim
+    assert cells["max_rss"] == "200.00", "MiB, not bytes"
+    assert cells["h:m:s"] == "1:01:01"
+    assert cells["max_uss"] == "" and cells["max_pss"] == "" and cells["mean_load"] == ""
+    assert cells["io_out"] == "", "not measured is empty, never 0"
+
+
+def test_resources_tsv_drops_a_vms_that_describes_a_different_process(tmp_path):
+    """The columns of one row must describe one subject.
+
+    Measured while building this: a run whose child held 120 MiB printed `max_rss` 132.39 and
+    `max_vms` 53.69 — a virtual size smaller than the resident one, impossible for a single
+    process because they came from two. Dropped rather than footnoted. [R-13]
+    """
+    m = runprov.resources.Measurement(
+        wall_seconds=1.0,
+        cpu_seconds=1.0,
+        max_rss_bytes=132 * 1024 * 1024,
+        max_vms_bytes=53 * 1024 * 1024,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        source="getrusage",
+        unavailable=(),
+        io_self_only=True,
+    )
+    cells = dict(zip(*runprov.resources.snakemake_row(m), strict=True))
+    assert cells["max_vms"] == "", "incoherent with max_rss, so not emitted"
+
+
+def test_resources_render_each_target_in_its_own_units(tmp_path):
+    """[R-14]. Slurm takes `--mem` in MiB and `--cpus-per-task` as a COUNT; Kubernetes takes
+    binary `Mi` (plain `M` is decimal — a 4.8% error that reads like a typo) and CPU as a RATE
+    in millicores. One number emitted into both syntaxes is wrong in at least one."""
+    m = runprov.resources.Measurement(
+        wall_seconds=100.0,
+        cpu_seconds=200.0,
+        max_rss_bytes=100 * 1024 * 1024,
+        max_vms_bytes=None,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        source="getrusage",
+        unavailable=(),
+        io_self_only=True,
+    )
+    slurm = "\n".join(runprov.resources.render_slurm(m, margin=1.0))
+    assert "--mem=100M" in slurm, "Slurm's --mem is MiB"
+    assert "--cpus-per-task=2" in slurm, "200 cpu-seconds over 100 wall = 2 cores, a COUNT"
+
+    k8s = "\n".join(runprov.resources.render_k8s(m, margin=1.0))
+    assert "memory: 100Mi" in k8s, "binary units; plain M would be decimal and 4.8% wrong"
+    assert 'cpu: "2000m"' in k8s, "a RATE in millicores, not a count"
+    assert k8s.count("memory: 100Mi") == 2, "requests AND limits, which the first version broke"
+
+
+def test_resources_render_is_always_a_floor_with_a_margin(tmp_path):
+    """[R-15]. Never a bare value to paste. A tool that hands somebody a request which kills
+    their job has done worse than nothing."""
+    m = runprov.resources.Measurement(
+        wall_seconds=10.0,
+        cpu_seconds=10.0,
+        max_rss_bytes=1024 * 1024,
+        max_vms_bytes=None,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        source="getrusage",
+        unavailable=(),
+        io_self_only=True,
+    )
+    for text in (
+        "\n".join(runprov.resources.render_slurm(m)),
+        "\n".join(runprov.resources.render_k8s(m)),
+    ):
+        assert "FLOOR" in text and "UNDER-REPORTS" in text
+    cg = m._replace(source="cgroup")
+    assert "enforces" in "\n".join(runprov.resources.render_slurm(cg))
+
+
+def test_resources_declines_a_cgroup_it_cannot_use(tmp_path):
+    """Three ways a cgroup is present and still not an answer, each said rather than guessed.
+
+    v1 names controllers per line and has no comparable peak; an unreadable `/proc/self/cgroup`
+    is not a measurement; and `cpu.stat` can be absent even where the directory is not. Each
+    records absence — [R-7] — rather than a plausible zero.
+    """
+    proc, cg = tmp_path / "proc", tmp_path / "cg"
+    proc.mkdir()
+
+    # v1: no `0::` line at all
+    (proc / "cgroup").write_text("11:memory:/slurm/uid_1000/job_9\n", encoding="utf-8")
+    m = _meter(tmp_path, proc=proc, cgroup_mount=cg, environ={"SLURM_JOB_ID": "9"}).read()
+    assert any("v1" in u for u in m.unavailable) and m.source == "getrusage"
+
+    # the file itself unreadable
+    gone = _meter(tmp_path, proc=tmp_path / "absent", cgroup_mount=cg).read()
+    assert any("unreadable" in u for u in gone.unavailable)
+
+    # the directory exists, `cpu.stat` does not: the peak still counts, the cpu does not
+    (proc / "cgroup").write_text("0::/kubepods/p\n", encoding="utf-8")
+    (cg / "kubepods" / "p").mkdir(parents=True)
+    (cg / "kubepods" / "p" / "memory.peak").write_text("4096\n", encoding="utf-8")
+    partial = _meter(tmp_path, proc=proc, cgroup_mount=cg).read()
+    assert partial.source == "cgroup" and partial.max_rss_bytes == 4096
+    assert partial.cpu_seconds is not None, "it falls back to getrusage's cpu, not to nothing"
+
+
+def test_resources_render_says_what_it_could_not_measure_instead_of_inventing_it(tmp_path):
+    """A render with nothing measured must produce no request at all. [R-7] [R-15]
+
+    The dangerous version is a renderer that emits `--mem=1M` because the number was None and
+    something had to go there. Every path that cannot fill a field says so and leaves it out.
+    """
+    empty = runprov.resources.Measurement(
+        wall_seconds=5.0,
+        cpu_seconds=None,
+        max_rss_bytes=None,
+        max_vms_bytes=None,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        source="none",
+        unavailable=("no resource",),
+        io_self_only=False,
+    )
+    slurm = "\n".join(runprov.resources.render_slurm(empty))
+    assert "--mem" in slurm and "NOT MEASURED" in slurm
+    assert "--cpus-per-task" not in slurm, "no cpu figure, so no cpu request"
+
+    k8s = "\n".join(runprov.resources.render_k8s(empty))
+    assert "resources:" not in k8s and "nothing measured" in k8s
+
+    assert runprov.resources.mean_cores(empty) is None
+    stopped = empty._replace(cpu_seconds=1.0, wall_seconds=0.0)
+    assert runprov.resources.mean_cores(stopped) is None, "no division by a zero interval"
+
+
+def test_resources_reads_past_lines_it_does_not_want_and_survives_a_missing_key(tmp_path):
+    """A present file is not a present field, and the wanted line is rarely the first one.
+
+    Real `/proc/self/status` is ~60 lines with `VmPeak` partway down, and real `cpu.stat`
+    leads with `usage_usec` only by convention. A reader that stopped at line one, or that
+    treated "file exists" as "field found", would record a confident wrong number — so both
+    the scan and the not-found path are exercised. [R-7]
+    """
+    proc, cg = tmp_path / "proc", tmp_path / "cg"
+    proc.mkdir()
+    # a status file with no VmPeak in it at all
+    (proc / "status").write_text("Name:\tpython\nThreads:\t1\n", encoding="utf-8")
+    assert _meter(tmp_path, proc=proc).read().max_vms_bytes is None
+
+    # and a cpu.stat whose wanted line is NOT first
+    (proc / "cgroup").write_text("0::/slurm/job\n", encoding="utf-8")
+    (cg / "slurm" / "job").mkdir(parents=True)
+    (cg / "slurm" / "job" / "memory.peak").write_text("8192\n", encoding="utf-8")
+    (cg / "slurm" / "job" / "cpu.stat").write_text(
+        "nr_periods 0\nnr_throttled 0\nusage_usec 7000000\n", encoding="utf-8"
+    )
+    m = _meter(tmp_path, proc=proc, cgroup_mount=cg, environ={"SLURM_JOB_ID": "1"}).read()
+    assert m.cpu_seconds == 7.0, "it must read past the lines it does not want"
+
+
+def test_resources_cgroup_path_declines_a_line_it_does_not_understand():
+    """`cgroup_path` returns None rather than a guess when there is no v2 line. [R-6]"""
+    mount = pathlib.Path("/sys/fs/cgroup")
+    assert runprov.resources.cgroup_path("0::/a/b", mount) == mount / "a/b"
+    assert runprov.resources.cgroup_path("11:memory:/x", mount) is None
+    assert runprov.resources.cgroup_path("", mount) is None
+
+
 def test_check_flags_an_entry_point_that_opens_files_and_records_nothing(tmp_path):
     """T-27, the case `watch.py` can never see: no import means no code runs."""
     root = _source_tree(
@@ -19471,6 +19834,40 @@ def test_an_artifact_cannot_write_its_own_commentary_into_verifys_output(tmp_pat
     # of 400 A's, and would be its own dishonesty -- the value has to be SHOWN, and shown cut.
     assert "A" * (runprov.verify.FIELD_SHOWN - 1) + "…" in out, "the capped value is not shown"
     assert runprov.verify.FIELD_SHOWN < 400
+
+
+def test_every_resource_requirement_has_a_test():
+    """ADR-0013's specification is checked, not remembered.
+
+    Taylor asked that the build keep corresponding to the specification. The only way that
+    survives a month is mechanically: the requirement list is DERIVED from the ADR, and every
+    `R-n` in it must be named by at least one test in this file. Add a requirement without a
+    test and this goes red; delete one from the ADR and the test that cites it is left
+    pointing at nothing, which the second half catches.
+
+    It is the `docs/adr` index guard one level in — that one checked filenames and let a
+    status drift, so this checks the thing the document is ABOUT rather than that it exists.
+    """
+    adr = _repo_root() / "docs" / "adr" / "0013-what-a-run-consumed-measured-not-declared.md"
+    if not adr.is_file():  # pragma: no cover - docs ship in the sdist, a bare tree may not
+        pytest.skip("ADR-0013 not present")
+    required = set(re.findall(r"^\*\*(R-\d+[a-z]?)\.\*\*", adr.read_text(encoding="utf-8"), re.M))
+    assert len(required) >= 15, f"the requirement sweep found {sorted(required)}; the scope broke"
+
+    tests = pathlib.Path(__file__).read_text(encoding="utf-8")
+    # Cited from a test's own text, not from this file as a whole: the ADR itself is not
+    # allowed to satisfy the requirement by mentioning its own number.
+    # BRACKETED, and the first version was not. A bare `R-4` matched `R-4.4` in an unrelated
+    # test about filename sorting, which silently satisfied a requirement that had no test —
+    # a guard with a false positive, which is worse than no guard because it reports green.
+    cited = set(
+        re.findall(r"\[(R-\d+[a-z]?)\]", tests.split("def test_every_resource_requirement")[0])
+    )
+    missing = sorted(required - cited, key=lambda s: (len(s), s))
+    assert not missing, f"specification requirements with no test naming them: {missing}"
+
+    stale = sorted(cited - required, key=lambda s: (len(s), s))
+    assert not stale, f"tests cite requirements ADR-0013 no longer states: {stale}"
 
 
 def test_every_adr_is_listed_in_the_adr_index():

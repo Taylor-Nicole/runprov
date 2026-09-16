@@ -169,6 +169,100 @@ target, and there will be a third.
 5. `resources.available` says what could not be measured here, the `observation` pattern again:
    no `resource` module on Windows, no `memory.peak` on an older kernel, no cgroup of our own.
 
+## Specification
+
+Numbered so it can be checked rather than remembered. **Every `R-n` below must be named by at
+least one test**, and `test_every_resource_requirement_has_a_test` derives this list from this
+file and fails if one is not — so a requirement added here without a test breaks the build, and
+a requirement deleted from the code stops being claimed here. A specification nobody checks is
+the document this package exists to replace.
+
+### What is recorded
+
+**R-1.** Every record carries a `resources` block, unconditionally, like `tool` and
+`observation`. A run that measured nothing must be distinguishable from a run that was not
+asked.
+
+**R-2.** Units are canonical and dimensionless of any scheduler: **bytes** for memory,
+**seconds** (float) for time. No `8G`, no `500m`, no `MiB` in the record.
+
+**R-3.** Memory includes child processes. `RUSAGE_SELF` alone reports 15 708 KiB for a run whose
+subprocess held 200 MiB; the figure is the maximum of `SELF` and `CHILDREN`.
+
+**R-4.** `ru_maxrss` is normalised to bytes from its platform units — **KiB on Linux, bytes on
+macOS** — and the normalisation is tested, not assumed. Getting this wrong is a 1024× error
+that looks plausible on one platform.
+
+**R-5.** The block records **which mechanism** measured it: `cgroup`, `getrusage`, or `none`.
+A cgroup peak and a `getrusage` peak are different quantities, and a record that does not say
+which it holds will be compared with one that holds the other.
+
+**R-6.** The cgroup is read **only when a marker proves the run owns one** — `SLURM_JOB_ID`,
+`SLURM_STEP_ID`, `KUBERNETES_SERVICE_HOST`, or a cgroup path naming `kubepods`, `docker`,
+`containerd` or `slurm`. Measured here: the ambient cgroup on a workstation is the whole
+desktop session and reads 8 138 MiB.
+
+**R-7.** A figure that could not be measured is **absent**, never `0`. A zero beside real
+numbers is a measurement never taken, presented as one that was.
+
+**R-8.** `resources.available` states what could not be measured and why — no `resource` module,
+no `memory.peak` on this kernel, no cgroup of our own. The `observation` pattern.
+
+**R-9.** A `getrusage` memory figure is labelled a **floor**, in the block, because
+`RUSAGE_CHILDREN` is a maximum and not a sum: three children holding ~150 MiB concurrently
+report 162 MiB. A reader who treats it as a request is OOM-killed.
+
+**R-9b.** **I/O figures cover this process only.** `/proc/self/io` has no children's
+equivalent, so a pipeline whose reads happen in `samtools` reports near zero — the same trap as
+R-3, in a column where it is less obvious. It is labelled self-only in `available`, or omitted;
+it is never presented as the run's I/O. (Found reviewing this specification, not while writing
+it: R-3 names the trap for memory and the first draft let the identical one through for I/O.)
+
+**R-10.** Wall time comes from a **monotonic** clock, not from the difference of two wall-clock
+timestamps, which NTP can move backwards mid-run.
+
+**R-11.** Nothing from this block enters the artifact pin. Peak memory is not part of *does this
+result still follow from its inputs*, and it would make the header differ across identical runs
+— which `content_digest()` exists to prevent.
+
+**R-12.** Measurement never fails the run. Any error records absence, the rule `_report._write`
+and `Observer` already follow.
+
+### What is exported
+
+**R-13.** `runprov resources --format tsv` emits **Snakemake's benchmark column names**, in
+Snakemake's order — `s h:m:s max_rss max_vms max_uss max_pss io_in io_out mean_load cpu_time` —
+with columns this package cannot fill left **empty**, per R-7. Adopting a schema in use is
+cheaper than publishing one, the same reasoning as `sha256sum` format and RO-Crate.
+
+**And the units are Snakemake's, not ours.** Its documentation states memory is **in MiB**, so
+the renderer converts from the canonical bytes of R-2. Emitting bytes into a column every
+existing consumer reads as MiB would be a 1 048 576× error that no one would notice until a
+plot looked wrong — the inverse of R-4, and caught the same way: by reading what the other
+side expects rather than assuming it matches.
+
+**R-14.** `--format slurm` and `--format k8s` render the canonical figures into each target's
+syntax, and the two disagree in ways that corrupt a number silently: Slurm takes `--mem` in
+**MiB** and `--cpus-per-task` as a **count**; Kubernetes takes memory in **binary** units
+(`Mi`/`Gi` — plain `M` is decimal, a 4.8 % error that reads like a typo) and CPU as a **rate in
+millicores**, where `500m` is half a core over time.
+
+**R-15.** Every rendered request is presented as a **floor plus a stated margin**, never as a
+bare value to paste. The tool must not hand somebody a request that kills their job.
+
+### Use cases this must serve
+
+| | situation | expected behaviour |
+|---|---|---|
+| **U-1** | laptop, plain script, sizing a first submission | `getrusage`, floor, margin stated |
+| **U-2** | inside a Slurm step | `cgroup` when `memory.peak` exists, `getrusage` otherwise; source recorded |
+| **U-3** | inside a Kubernetes pod | same as U-2, detected by `KUBERNETES_SERVICE_HOST` or cgroup path |
+| **U-4** | Windows | no `resource` module: source `none`, `available` says so, run unaffected |
+| **U-5** | macOS | `ru_maxrss` in bytes, normalised (R-4) |
+| **U-6** | subprocess-heavy pipeline | `CHILDREN` included (R-3), floor caveat carried (R-9) |
+| **U-7** | feeding existing tooling | Snakemake column names (R-13) |
+| **U-8** | writing the actual request | per-target rendering (R-14), as a floor (R-15) |
+
 ## What this must never claim
 
 * **It is not a profiler.** It says *how much*, never *where it went*.

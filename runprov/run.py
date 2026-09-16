@@ -94,6 +94,7 @@ from .project import (
     is_configured,
     is_repository,
 )
+from .resources import Meter
 from .show import render_yaml
 from .terminal import Capture
 from .watch import attach, detach, own, unregistered
@@ -1005,6 +1006,12 @@ class Run:
             "outputs": [],
             "steps": [],
         }
+        # ADR-0013 R-1/R-10. In `__init__`, NOT in `__enter__`: a `Run` used without a
+        # `with` block never enters, and the first version put it there — 38 tests failed
+        # with AttributeError, every one of them a run built the plain way. Measuring from
+        # construction also covers that run honestly, and for a `with` block the two points
+        # are adjacent. Monotonic, so NTP cannot move it backwards mid-run.
+        self._meter = Meter()
         self._pending: list[pathlib.Path] = []
         # OPEN PINNED WRITERS. A caller who forgets to close one would otherwise lose the
         # artifact entirely, because it lives in a temporary file until close publishes
@@ -3193,6 +3200,13 @@ class Run:
         # and the tracked-package read both happen during the run: asked earlier the answer
         # would be "none" for every run that later recorded either.
         self.record["observation"]["packages_recorded"] = self._observed_packages()
+        # ADR-0013 R-1. UNCONDITIONALLY, like `tool` and `observation`: a run that measured
+        # nothing must be distinguishable from a run nobody asked. Read HERE rather than at
+        # construction for the reason above it — the numbers describe a run that has happened.
+        # No `is not None` guard: `_meter` is built in `__init__`, so the guard the first
+        # version had could not be false — and a branch nothing reaches is a shape nobody
+        # tests, the rule that retired `_finalizing` and `_rule`'s untitled form.
+        self.record["resources"] = self._meter.read().as_record()
         # STOPPED BEFORE THE RECORD IS ASSEMBLED. Signals reach the main thread only, so on a
         # SIGTERM this thread would go on printing "still running" while `__exit__` unwinds —
         # a line that arrives after "record written" is the package lying about itself.

@@ -2587,7 +2587,7 @@ is the one that went green afterwards.
 
 ## Tests
 
-`tests/test_runprov.py`, **about 805 tests**, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, **about 910 tests**, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite — in
 `test_size_is_stat_ed_after_the_hash_not_before` — to
