@@ -10643,6 +10643,274 @@ def test_resources_cgroup_path_declines_a_line_it_does_not_understand():
     assert runprov.resources.cgroup_path("", mount) is None
 
 
+def _hrec(**over):
+    """A completed history record, minimal but of the right shape."""
+    base = {
+        "schema": "runprov.history.v2",
+        "script": "align",
+        "run_uid": "uid-a",
+        "run_id": "r-a",
+        "started_utc": "2026-09-16T00:00:00Z",
+        "finished_utc": "2026-09-16T00:00:01Z",
+        "status": "ok",
+        "parameters": {},
+        "inputs": [],
+        "outputs": [],
+        "steps": [],
+        "git_commit": "aaaa111",
+        "git_status_captured": True,
+        "git_code_dirty": False,
+        "observation": {"auto_available": True, "packages_recorded": "none", "steps": "none"},
+        "environment": {"packages": {}},
+        "resources": {"wall_seconds": 1.0, "source": "getrusage", "max_rss_bytes": 100},
+    }
+    base.update(over)
+    return base
+
+
+def _dim(dims, name):
+    return next(d for d in dims if d.name == name)
+
+
+def test_diff_unchanged_says_what_it_examined(tmp_path):
+    """ "No difference found" and "nothing examined" print the same word otherwise — this
+    project's own recurring failure, and the reason every unchanged line carries its scope."""
+    dims = runprov.diff.compare(_hrec(), _hrec(run_uid="uid-b"))
+    assert all(d.verdict == "unchanged" for d in dims), [
+        d for d in dims if d.verdict != "unchanged"
+    ]
+    assert all(d.settled for d in dims)
+    text = "\n".join(runprov.diff.render(_hrec(), _hrec(), dims))
+    assert "unchanged  (0 vs 0)" in text, "the count examined is on the line, not in a footer"
+
+
+@pytest.mark.parametrize(
+    ("name", "over_a", "over_b", "reason"),
+    [
+        # ADR-0010's own example: the interpreter changed, not the code.
+        (
+            "steps",
+            {"observation": {"auto_available": False}},
+            {"observation": {"auto_available": True}},
+            "different interpreters",
+        ),
+        # A truncated record's absence is not the run's absence.
+        (
+            "steps",
+            {"observation": {"auto_available": True, "observed_truncated": 3}},
+            {"observation": {"auto_available": True}},
+            "truncated",
+        ),
+        # `{}` on one side and a snapshot on the other is a CONFIGURATION change.
+        (
+            "packages",
+            {"observation": {"packages_recorded": "none"}},
+            {"observation": {"packages_recorded": "snapshot"}},
+            "recorded packages as",
+        ),
+        # A dirty tree's commit does not name the code that ran.
+        ("code", {"git_code_dirty": True}, {}, "dirty tree"),
+        ("code", {"git_status_captured": False}, {}, "dirty state is unknown"),
+        # ADR-0013: a cgroup peak and a getrusage peak are different quantities.
+        (
+            "resources",
+            {"resources": {"source": "getrusage", "wall_seconds": 1.0}},
+            {"resources": {"source": "cgroup", "wall_seconds": 1.0}},
+            "different quantities",
+        ),
+        ("resources", {"resources": {}}, {}, "predates the resources block"),
+    ],
+)
+def test_diff_refuses_to_call_an_incomparable_dimension_unchanged(name, over_a, over_b, reason):
+    """The whole design. Each of these is a real field that exists because somebody could
+    otherwise not tell NOT MEASURED from MEASURED AS ZERO, and a diff is where that
+    distinction gets used or thrown away."""
+    dims = runprov.diff.compare(_hrec(**over_a), _hrec(**over_b))
+    d = _dim(dims, name)
+    assert d.verdict == "not comparable", f"{name} reported {d.verdict}"
+    assert reason in (d.blocked or "")
+    assert not d.settled, "an incomparable dimension must not settle the exit code"
+    assert "NOT COMPARABLE" in "\n".join(runprov.diff.render(_hrec(), _hrec(), dims))
+
+
+def test_diff_reports_a_change_it_found_even_when_it_cannot_claim_unchanged():
+    """INCOMPLETE IS NOT INCOMPARABLE, and collapsing them throws away the useful half.
+
+    A run with an unregistered read did not record all its inputs — but an input it DID record
+    and that changed is a true finding. What such a record can never support is the word
+    `unchanged`. Four states from two facts, and this is the cell that distinguishes the
+    design from a binary one.
+    """
+    moved = [{"path": "ref.fa", "sha256": "bbbb"}]
+    a = _hrec(inputs=[{"path": "ref.fa", "sha256": "aaaa"}], unregistered_reads=["conf.json"])
+    d = _dim(runprov.diff.compare(a, _hrec(inputs=moved)), "inputs")
+    assert d.verdict == "changed" and d.differences
+    assert "bypassed registration" in (d.blocked or "")
+    text = "\n".join(runprov.diff.render(a, _hrec(inputs=moved), [d]))
+    assert "not fully comparable" in text
+
+    # and with NOTHING found, the same record may not say unchanged
+    quiet = _dim(
+        runprov.diff.compare(a, _hrec(inputs=[{"path": "ref.fa", "sha256": "aaaa"}])), "inputs"
+    )
+    assert quiet.verdict == "not comparable", "it cannot be the source of 'nothing changed'"
+
+
+def test_diff_a_schema_change_poisons_every_digest_bearing_dimension():
+    """`content_sha256` changed meaning at v1 -> v2, so the same field name holds two different
+    quantities. One precondition rather than the same sentence repeated seven times."""
+    dims = runprov.diff.compare(_hrec(schema="runprov.run.v1"), _hrec())
+    for name in ("inputs", "outputs", "steps"):
+        assert "schema differs" in (_dim(dims, name).blocked or ""), name
+    assert _dim(dims, "parameters").blocked is None, "parameters carry no digest"
+
+
+def test_diff_finds_the_changes_that_are_there():
+    """The ordinary case, which still has to work."""
+    a = _hrec(
+        inputs=[{"path": "ref.fa", "sha256": "aaaa"}, {"path": "gone.tsv", "sha256": "cccc"}],
+        parameters={"threshold": 5},
+        steps=[{"step": "normalise", "args": ["x"], "kwargs": {}, "returned": "y"}],
+    )
+    b = _hrec(
+        run_uid="uid-b",
+        inputs=[{"path": "ref.fa", "sha256": "bbbb"}, {"path": "new.tsv", "sha256": "dddd"}],
+        parameters={"threshold": 7},
+        steps=[{"step": "normalise", "args": ["z"], "kwargs": {}, "returned": "y"}],
+    )
+    dims = runprov.diff.compare(a, b)
+    inputs = "\n".join(_dim(dims, "inputs").differences)
+    assert "ref.fa  aaaa -> bbbb" in inputs
+    assert "gone.tsv  REMOVED" in inputs and "new.tsv  ADDED" in inputs
+    assert _dim(dims, "parameters").differences == ["threshold  5 -> 7"]
+    assert "argument or result digest changed" in _dim(dims, "steps").differences[0]
+
+
+def test_diff_survives_entries_that_are_not_the_shape_it_expects():
+    """A history is read years later, and `inputs` has held more than one shape.
+
+    An entry that is a bare string, or a dict with no path, is skipped rather than crashing
+    the one command someone runs when something has already gone wrong.
+    """
+    odd = _hrec(inputs=["a-bare-string", {"sha256": "aaaa"}, {"path": "real.tsv", "sha256": "bb"}])
+    d = _dim(
+        runprov.diff.compare(odd, _hrec(inputs=[{"path": "real.tsv", "sha256": "cc"}])), "inputs"
+    )
+    assert d.differences == ["real.tsv  bb -> cc"], "the readable entry still compares"
+
+
+def test_diff_treats_a_partial_pin_as_unable_to_say_unchanged():
+    """The other half of [incomplete]: a pin that states it may understate the run."""
+    a = _hrec(pin_partial=True, inputs=[{"path": "x", "sha256": "aa"}])
+    d = _dim(runprov.diff.compare(a, _hrec(inputs=[{"path": "x", "sha256": "aa"}])), "inputs")
+    assert d.verdict == "not comparable" and "understate" in (d.blocked or "")
+
+
+def test_diff_reports_a_package_version_move_and_ignores_equal_ones():
+    """Comparable when both sides recorded packages the same way — the ordinary case."""
+    obs = {"auto_available": True, "packages_recorded": "tracked", "steps": "none"}
+    a = _hrec(observation=obs, environment={"packages": {"numpy": "1.26.0", "pysam": "0.22"}})
+    b = _hrec(observation=obs, environment={"packages": {"numpy": "2.0.1", "pysam": "0.22"}})
+    d = _dim(runprov.diff.compare(a, b), "packages")
+    assert d.verdict == "changed"
+    assert d.differences == ["numpy  1.26.0 -> 2.0.1"], "pysam is equal and says nothing"
+
+
+def test_diff_reports_a_step_that_appeared_or_went_away():
+    """A decorated function added between two runs is a change in what was RECORDED, which is
+    a different fact from its arguments moving — and both belong in the same dimension."""
+    # `keep` is in BOTH runs with identical digests and must say nothing — the branch that
+    # makes "2 steps changed" mean two, rather than every step the run happened to declare.
+    keep = {"step": "keep", "args": ["same"], "kwargs": {}, "returned": "same"}
+    a = _hrec(steps=[{"step": "normalise", "args": ["x"], "kwargs": {}, "returned": "y"}, keep])
+    b = _hrec(steps=[{"step": "rescale", "args": ["x"], "kwargs": {}, "returned": "y"}, keep])
+    dim = _dim(runprov.diff.compare(a, b), "steps")
+    assert "normalise  REMOVED" in dim.differences and "rescale  ADDED" in dim.differences
+    assert not any("keep" in line for line in dim.differences), "an unchanged step is silent"
+    assert dim.examined == "2 vs 2 declared", "and it is still counted as examined"
+
+
+def test_diff_cli_compares_two_runs_named_separately(tmp_path, capsys):
+    """Two addresses, two different runs — the cross-script case the one-address form cannot
+    reach, and the path where the same-run refusal must NOT fire."""
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    for name in ("align", "count"):
+        with runprov.Run(name, {"n": len(name)}, provenance=tmp_path / f"{name}.json"):
+            pass
+    log = str(tmp_path / "h.jsonl")
+    assert runprov.__main__.main(["diff", "align", "count", "--log", log]) == 1
+    out = capsys.readouterr().out
+    assert "A  align" in out and "B  count" in out
+    assert "n  5 -> 5" not in out, "equal parameters say nothing"
+
+
+def test_diff_cli_compares_the_last_two_runs_of_one_script(tmp_path, capsys):
+    """One address means "what changed since last time", which is the question asked."""
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    (tmp_path / "ref.fa").write_text("one\n", encoding="utf-8")
+    for value in (5, 7):
+        with runprov.Run("align", {"threshold": value}, provenance=tmp_path / "p.json") as run:
+            with open(run.input(tmp_path / "ref.fa"), encoding="utf-8") as fh:
+                fh.read()
+        (tmp_path / "ref.fa").write_text("two\n", encoding="utf-8")
+
+    log = str(tmp_path / "h.jsonl")
+    assert runprov.__main__.main(["diff", "align", "--log", log]) == 1, "differences exit 1"
+    out = capsys.readouterr().out
+    assert "threshold  5 -> 7" in out
+    assert "ref.fa" in out
+
+
+def test_diff_cli_never_compares_a_run_with_its_own_start_marker(tmp_path, capsys):
+    """A run writes TWO lines — a start marker and the record — and both are runs to `select`.
+
+    The first version compared a marker with a record and reported that the schema, the
+    packages and the observation block all differed. They did: one of the two was not a
+    finished run. Every dimension was a lie with a true-looking shape.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    for _ in range(2):
+        with runprov.Run("align", {}, provenance=tmp_path / "p.json"):
+            pass
+    lines = [
+        json.loads(x)
+        for x in (tmp_path / "h.jsonl").read_text(encoding="utf-8").splitlines()
+        if x.strip()
+    ]
+    assert any(r.get("schema") == runprov.run.START_SCHEMA for r in lines), "the premise"
+
+    # EXIT 1, and for the right reason: `tmp_path` is not a git repository, so
+    # `git_status_captured` is false and `code` is honestly incomparable. That is the design
+    # working — a gate cannot go green while a dimension could not be compared — and the first
+    # version of this test asserted 0, having assumed two identical runs compare completely.
+    assert runprov.__main__.main(["diff", "align", "--log", str(tmp_path / "h.jsonl")]) == 1
+    out = capsys.readouterr().out
+    assert "schema differs" not in out, "a start marker must never be one side of the diff"
+    assert "NOT COMPARABLE" in out and "dirty state is unknown" in out
+    for dimension in ("inputs", "outputs", "parameters", "packages", "steps"):
+        assert f"{dimension:<12}unchanged" in out, f"{dimension} compared two finished runs"
+
+
+def test_diff_cli_refuses_what_it_cannot_compare(tmp_path, capsys):
+    """Three refusals, each exiting 2 rather than printing a comparison of nothing."""
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    assert runprov.__main__.main(["diff", "x", "--log", str(tmp_path / "none.jsonl")]) == 2
+    assert "no run history" in capsys.readouterr().err
+
+    with runprov.Run("only", {}, provenance=tmp_path / "p.json"):
+        pass
+    log = str(tmp_path / "h.jsonl")
+
+    assert runprov.__main__.main(["diff", "only", "--log", log]) == 2
+    assert "matches 1 run(s)" in capsys.readouterr().err
+
+    assert runprov.__main__.main(["diff", "only", "only", "--log", log]) == 2
+    assert "same run" in capsys.readouterr().err, "comparing a record with itself is not a finding"
+
+    assert runprov.__main__.main(["diff", "nosuch", "other", "--log", log]) == 2
+    assert "nothing matches" in capsys.readouterr().err
+
+
 def test_check_flags_an_entry_point_that_opens_files_and_records_nothing(tmp_path):
     """T-27, the case `watch.py` can never see: no import means no code runs."""
     root = _source_tree(
@@ -20107,6 +20375,33 @@ def test_every_adr_is_listed_in_the_adr_index():
         assert listed.get(f.name, "").lower() == m.group(1).lower(), (
             f"{f.name} says {m.group(1)!r}; the index says {listed.get(f.name)!r}"
         )
+
+    # AND A DECISION THAT HAS SHIPPED IS NOT STILL "PROPOSED". The check above compares the
+    # index with the ADR, so when BOTH were wrong it passed: ADR-0013 said proposed for a day
+    # after `resources.py` shipped implementing it. It checked the documents against each
+    # other and neither against reality.
+    #
+    # The link already exists in the code and needed no new convention: a module's DOCSTRING
+    # names the decision it implements — `resources.py` opens "ADR-0013, T-29". Citing an ADR
+    # from the module that implements it is a claim that the ADR is built, so that ADR cannot
+    # still be proposing it. Read from the docstring rather than the whole file, so a passing
+    # mention of a rejected or future decision in a mid-file comment is not an implementation.
+    status_of = {}
+    for f in adrs:
+        m = declared.search(f.read_text(encoding="utf-8"))
+        status_of[f.name[:4]] = m.group(1).lower() if m else "?"
+
+    shipped = {}
+    for module in sorted((_repo_root() / "runprov").glob("*.py")):
+        doc = ast.get_docstring(ast.parse(module.read_text(encoding="utf-8"))) or ""
+        for number in set(re.findall(r"ADR-(\d{4})", doc)):
+            shipped.setdefault(number, []).append(module.name)
+    assert shipped, "no module cites an ADR; the sweep that links code to decisions broke"
+
+    still_proposed = {n: m for n, m in shipped.items() if status_of.get(n) == "proposed"}
+    assert not still_proposed, (
+        f"ADR(s) implemented in code but still marked proposed: {still_proposed}"
+    )
 
 
 def _orphan_marker(tmp_path, **extra):

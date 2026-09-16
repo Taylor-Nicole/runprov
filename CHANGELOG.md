@@ -9,7 +9,28 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+* **`runprov diff` — why is today different from last month (T-30, ADR-0014).** The question
+  asked most often, and answering it used to mean opening two records side by side. Everything
+  needed was already recorded, including the step argument digests ADR-0010 built expressly so
+  that *"did this function see the same inputs?"* would be answerable.
+
+  **A difference and an incomparability are not the same answer, and that is the whole design.**
+  A run on 3.11 could not see what a run on 3.12 saw; a dirty tree's commit does not name the
+  code that ran; a `getrusage` peak and a cgroup peak are different quantities. A diff that does
+  not know this reports a change of *interpreter* as five functions appearing. So comparability
+  is decided **per dimension**, with three verdicts rather than two, and `unchanged` always
+  states what it was examined over.
+
+  **Incomplete is not incomparable either** — a run with an unregistered read can still report
+  an input that moved; what it can never support is the word `unchanged`. Exit 0 means
+  comparable *and* identical in every dimension.
+
+  `runprov diff align` compares the last two runs of a script; two addresses compare two runs.
+  It refuses to compare a run with itself, and never compares a run with its own in-flight
+  start marker — which the first version did, reporting that the schema, the packages and the
+  observation block all differed, because one of the two was not a finished run.
 
 ## [0.4.0] — 2026-09-16
 

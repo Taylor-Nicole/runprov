@@ -57,6 +57,7 @@ import sys
 import typing
 
 from . import check as check_mod
+from . import diff as diff_mod
 from . import prune as prune_mod
 from . import report as report_mod
 from . import resources as resources_mod
@@ -1277,6 +1278,75 @@ def _forget(
     return 1 if problems else 0
 
 
+def _completed(path: pathlib.Path) -> typing.Iterator[dict[str, typing.Any]]:
+    """The history without its in-flight markers. ADR-0014.
+
+    A run writes TWO lines: a start marker when it begins, and the record when it ends. Both
+    are runs to `select`, and the first version of `diff` happily compared a marker with a
+    record — reporting that the schema, the packages and the observation block all differed,
+    which they did, because one of the two was not a finished run at all. Every dimension was
+    a lie with a true-looking shape.
+
+    Filtered on `START_SCHEMA` rather than on a guessed string or on a missing key, so a
+    change to the marker's shape cannot quietly reopen this.
+    """
+    for record in _stream(path):
+        if record is None or record.get("schema") == START_SCHEMA:
+            continue
+        yield record
+
+
+def _diff(args: argparse.Namespace) -> int:
+    """ADR-0014. Exit 0 ONLY when every dimension was comparable and identical.
+
+    An incomparable dimension exits non-zero like a difference does, because a gate that goes
+    green while half the comparison was impossible is the vacuous pass in a new place.
+    """
+    project = active()
+    log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
+    if not log.is_file():
+        print(f"diff: no run history at {log}", file=sys.stderr)
+        return 2
+
+    # ONE ADDRESS MEANS THE LAST TWO RUNS OF IT, which is the question actually asked: "what
+    # changed since last time". The first version required two addresses, and
+    # `runprov diff align align` resolved both to the same run and reported everything
+    # unchanged — a comparison of a record with itself, presented as a finding.
+    if args.b is None:
+        matches = show_mod.select(_completed(log), args.a, limit=2)
+        if len(matches) < 2:
+            print(
+                f"diff: {args.a!r} matches {len(matches)} run(s) in {log}; "
+                "name two runs explicitly to compare across scripts",
+                file=sys.stderr,
+            )
+            return 2
+        picked = matches[-2:]
+    else:
+        picked = []
+        for target in (args.a, args.b):
+            # `show.select` RESOLVES THE ADDRESS, and reusing it is the point: a second
+            # addressing scheme in one tool is how two commands come to disagree about which
+            # run the user meant.
+            matches = show_mod.select(_completed(log), target, limit=1)
+            if not matches:
+                print(f"diff: nothing matches {target!r} in {log}", file=sys.stderr)
+                return 2
+            picked.append(matches[-1])
+        if picked[0].get("run_uid") == picked[1].get("run_uid"):
+            print(
+                f"diff: {args.a!r} and {args.b!r} both resolve to the same run "
+                f"({str(picked[0].get('run_uid'))[:12]}); there is nothing to compare",
+                file=sys.stderr,
+            )
+            return 2
+
+    dims = diff_mod.compare(picked[0], picked[1])
+    for line in diff_mod.render(picked[0], picked[1], dims):
+        print(line)
+    return 0 if all(d.settled for d in dims) else 1
+
+
 def _resources(args: argparse.Namespace) -> int:
     """ADR-0013. What a run consumed, in the syntax of wherever it is going next.
 
@@ -1704,6 +1774,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print ONLY the lines that will not parse, with their line numbers, and stop",
     )
+    df = sub.add_parser("diff", help="what changed between two runs, and what cannot be compared")
+    df.add_argument("a", help="a run: run_uid prefix, run_id, script name or artifact path")
+    df.add_argument(
+        "b",
+        nargs="?",
+        default=None,
+        help="the other run; omit to compare the last TWO runs matching the first",
+    )
+    df.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     rs = sub.add_parser(
         "resources", help="what a run consumed, as a request you can size a cluster job with"
     )
@@ -1854,6 +1933,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "resources":
         return _resources(args)
+
+    if args.cmd == "diff":
+        return _diff(args)
 
     path = pathlib.Path(args.log) if args.log else active().resolved_run_log()
     if not path.is_file():

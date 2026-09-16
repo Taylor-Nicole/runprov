@@ -1,6 +1,6 @@
 # 14. A difference and an incomparability are not the same answer
 
-Date: 2026-09-16 · Status: **proposed** · Ledger: T-30
+Date: 2026-09-16 · Status: **accepted**, implemented as `runprov/diff.py` · Ledger: T-30
 
 ## Context
 
@@ -36,7 +36,7 @@ of it**, and the diff is wrong in a different way in each:
 | dimension | when the two records are not comparable | what a naive diff reports |
 |---|---|---|
 | **steps** | `observation.auto_available` differs — 3.11 could not see what 3.12 saw | "5 functions appeared" for a change of interpreter |
-| **code** | either record has `tool.identifies_code: false`, or `git_status_captured: false` | a commit-to-commit change, when one side's code exists nowhere and cannot be fetched |
+| **code** | either record has `git_code_dirty: true` or `git_status_captured: false` | a commit-to-commit change, when one side's commit does not name the code that ran |
 | **packages** | `observation.packages_recorded` differs — `none` vs `tracked` vs `snapshot` | "0 → 47 packages", for a configuration change |
 | **resources** | `resources.source` differs — `getrusage` vs `cgroup` | "memory 312 MiB → 8 GiB", for moving from a laptop to Slurm and starting to measure the right quantity |
 | **inputs** | either record carries `pin_partial`, or `unregistered_reads` | "no input changed", over a run whose real inputs were never recorded |
@@ -46,6 +46,30 @@ of it**, and the diff is wrong in a different way in each:
 Every row is a real field that already exists, and every one of them was added because
 somebody could otherwise not tell *not measured* from *measured as zero*. A diff is where that
 distinction finally gets used — or finally gets thrown away.
+
+## Amendment while implementing — two corrections the table got wrong
+
+**1. `tool.identifies_code` is about runprov, not about the user's code.** The first version of
+the table above used it as the precondition for comparing commits, which conflates two
+identities that have nothing to do with each other: `tool` says whether *this package's* code
+can be recovered, and the project's code identity is `git_commit` with `git_code_dirty` and
+`git_status_captured`. A dirty tree is what makes a commit fail to name what ran.
+
+**2. INCOMPLETE is not the same as INCOMPARABLE, and collapsing them loses the useful half.**
+A run with an `unregistered_read` did not record all its inputs — but a *changed* input it did
+record is still a true finding, and refusing to report it would decline the most useful thing
+the command could say. What such a record cannot support is the word **unchanged**.
+
+So the precondition governs which *conclusions* a dimension may draw, not whether it is
+examined at all. Two facts, four states:
+
+| | differences found | none found |
+|---|---|---|
+| **complete** | `changed` | `unchanged`, with what was examined |
+| **incomplete** | `changed`, and *not fully comparable: <reason>* | **`not comparable`** — never `unchanged` |
+
+The bottom-right cell is the whole point: a record that could not see all its inputs must never
+be the source of "nothing changed".
 
 ## Decision
 

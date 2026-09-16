@@ -492,6 +492,56 @@ producing events steadily never beats at all and a twenty-minute computation say
 period, naming what it last did. `configure(heartbeat=0)` disables it and builds no thread;
 the count reaches the record as `observation.heartbeats`.
 
+## `runprov diff`: why is today different from last month
+
+The question asked most often, and the one that used to mean opening two records side by side.
+
+```bash
+$ runprov diff align                 # the last two runs of a script
+$ runprov diff align count           # two runs named separately
+
+A  align  adhoc_20260916T131946Z  2026-09-16T13:19:46Z
+B  align  adhoc_20260916T132014Z  2026-09-16T13:20:14Z
+
+inputs      1 change(s)
+              ref.fa  ec93753459551ffa -> 2c7801c9c95bde45
+outputs     1 change(s)
+              out.tsv  debab87e6e9da196 -> a39eb0632bbc702c
+parameters  1 change(s)
+              threshold  5 -> 7
+packages    unchanged  (0 vs 0)
+steps       unchanged  (0 vs 0 declared)
+code        NOT COMPARABLE — B ran from a dirty tree, so its commit does not name the code
+```
+
+### A difference and an incomparability are not the same answer
+
+Two records can sit side by side and still not support a comparison, and this is the whole
+design. A run on 3.11 could not see what a run on 3.12 saw. A dirty tree's commit does not name
+the code that ran. A `getrusage` peak and a cgroup peak are different quantities. A diff that
+does not know this **reports a change of interpreter as five functions appearing**.
+
+So comparability is decided **per dimension**, and there are three verdicts, not two —
+`changed`, `unchanged`, and `NOT COMPARABLE` with the reason. **`unchanged` always says what it
+was examined over**, because "no difference found" and "nothing examined" print the same word
+otherwise.
+
+**Incomplete is not incomparable either.** A run with an unregistered read did not record all
+its inputs — but an input it *did* record and that moved is a true finding. What such a record
+can never support is the word `unchanged`:
+
+| | differences found | none found |
+|---|---|---|
+| **complete** | `changed` | `unchanged`, with what was examined |
+| **incomplete** | `changed`, *and not fully comparable* | **`not comparable`** — never `unchanged` |
+
+**Exit 0 means comparable and identical in every dimension.** An incomparable dimension exits
+non-zero just as a difference does: a gate that goes green while half the comparison was
+impossible is the same vacuous pass this package exists to catch.
+
+Full reasoning in
+[ADR-0014](docs/adr/0014-a-difference-and-an-incomparability-are-not-the-same-answer.md).
+
 ## `runprov resources`: how much this run actually needed
 
 To put a pipeline on a cluster you must declare `--mem` and `--time` **before** you have ever

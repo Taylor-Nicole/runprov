@@ -40,5 +40,5 @@ A *Proposed* ADR is the right place to think out loud. It is not a promise.
 | [0011](0011-a-static-check-answers-only-the-case-the-runtime-one-cannot.md) | A static check answers only the case the runtime one cannot | Accepted |
 | [0012](0012-a-notebook-run-is-not-linear-and-the-record-must-say-so.md) | A notebook run is not linear, and the record must say so | **Proposed** |
 | [0013](0013-what-a-run-consumed-measured-not-declared.md) | What a run consumed, measured rather than declared | Accepted |
-| [0014](0014-a-difference-and-an-incomparability-are-not-the-same-answer.md) | A difference and an incomparability are not the same answer | **Proposed** |
+| [0014](0014-a-difference-and-an-incomparability-are-not-the-same-answer.md) | A difference and an incomparability are not the same answer | Accepted |
 | [0015](0015-impact-answers-what-did-depend-on-this-never-what-will.md) | `impact` answers what did depend on this, never what will | **Proposed** |
