@@ -11077,6 +11077,9 @@ def test_impact_shortens_a_path_under_the_root_and_leaves_one_outside_it(tmp_pat
     absolute form, because there the absolute path is the useful name.
     """
     root = tmp_path / "project"
+    # POSIX separators on every platform, because that is how the record stores the path this
+    # is displaying. The Windows leg caught the mismatch: `data\\ref.fa` shown for a record
+    # holding `data/ref.fa`.
     assert runprov.impact.shorten(str(root / "data" / "ref.fa"), root) == "data/ref.fa"
     assert runprov.impact.shorten("/elsewhere/ref.fa", root) == "/elsewhere/ref.fa"
     assert runprov.impact.shorten("/elsewhere/ref.fa", None) == "/elsewhere/ref.fa"

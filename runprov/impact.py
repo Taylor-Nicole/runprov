@@ -113,7 +113,12 @@ def shorten(name: str, root: pathlib.Path | None) -> str:
     if root is None:
         return name
     try:
-        return str(pathlib.Path(name).relative_to(root))
+        # `.as_posix()`, NOT `str()`. Audit B follow-on: the record stores every path
+        # `_posix`-normalised, so a display that used the native separator disagreed with the
+        # thing it was displaying — `data\\ref.fa` on Windows for a record holding
+        # `data/ref.fa`. Found by the Windows leg, where my test had asserted the POSIX form
+        # and the code produced the native one; the test was right about what it wanted.
+        return pathlib.Path(name).relative_to(root).as_posix()
     except ValueError:  # outside the root: the absolute path IS the useful name
         return name
 
