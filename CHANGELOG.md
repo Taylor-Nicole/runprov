@@ -9,7 +9,29 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+* **`resources` — what a run actually consumed, and `runprov resources` to render it (T-29,
+  ADR-0013).** To put a pipeline on a cluster you must declare `--mem` and `--time` before you
+  have run it there, and `#SBATCH --mem=64G` is a statement of BELIEF — a hand-maintained log
+  in a different domain. Every record now carries the measurement; the command renders it as
+  Snakemake benchmark columns, a Slurm preamble, or Kubernetes `requests`/`limits`.
+
+  **It is a floor, and it says so.** Slurm and Kubernetes enforce against the **cgroup** —
+  every process concurrently, plus page cache — while `RUSAGE_CHILDREN` is the high-water mark
+  of the largest **single** child: measured, three children holding ~150 MiB at once report
+  162 MiB, not 450. A figure pasted into `--mem=` without that caveat gets the job OOM-killed.
+  When the run owns a cgroup (Slurm step, container) it reads `memory.peak`, which **is** the
+  enforced quantity, and the record names which mechanism answered. Outside one it refuses the
+  ambient group: on a workstation that is the desktop session, 8 138 MiB.
+
+  Units are canonical in the record — bytes and seconds — because the two targets disagree in
+  ways that corrupt a number silently: Kubernetes memory in `M` rather than `Mi` is a 4.8%
+  error that reads like a typo, and its CPU is a **rate** in millicores, not a core count.
+
+  **The specification is checked, not remembered.** ADR-0013 numbers sixteen requirements and
+  `test_every_resource_requirement_has_a_test` derives that list from the ADR, failing if any
+  has no test citing it.
 
 ## [0.3.0] — 2026-09-16
 

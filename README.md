@@ -492,6 +492,50 @@ producing events steadily never beats at all and a twenty-minute computation say
 period, naming what it last did. `configure(heartbeat=0)` disables it and builds no thread;
 the count reaches the record as `observation.heartbeats`.
 
+## `runprov resources`: how much this run actually needed
+
+To put a pipeline on a cluster you must declare `--mem` and `--time` **before** you have ever
+run it there. `#SBATCH --mem=64G` is a statement about what the author *believes* the job
+needs — which is a hand-maintained log, in a different domain. Every run now records what it
+consumed, and this renders it into the syntax of wherever it is going next.
+
+```bash
+$ runprov resources                      # the last run
+align  (adhoc_20260916T104755Z)
+
+  measured by  getrusage
+  wall         0.18 s
+  cpu          0.32 s
+  peak memory  312.4 MiB
+               FLOOR — the maximum of any one child, not the concurrent total
+
+$ runprov resources --format slurm --margin 2
+#SBATCH --mem=625M
+#SBATCH --cpus-per-task=4
+#SBATCH --time=00:01:00
+```
+
+`--format tsv` emits **Snakemake's benchmark columns**, so existing tooling reads it without
+being told anything; `--format k8s` renders `requests`/`limits`.
+
+### It is a floor, and the record says so
+
+**The number a scheduler enforces is not the number `getrusage` reports**, and the difference
+runs in the dangerous direction. Slurm's `--mem` and Kubernetes' memory limit are enforced
+against the **cgroup** — every process concurrently, plus page cache — while
+`RUSAGE_CHILDREN` is the high-water mark of the **largest single child**. Measured: three
+children holding ~150 MiB at once report **162 MiB, not 450**. So every figure is a floor,
+every render says so, and the margin is yours to set.
+
+When the run *does* own a cgroup — inside a Slurm step or a container, detected from
+`SLURM_JOB_ID`, `KUBERNETES_SERVICE_HOST` or the cgroup path — it reads `memory.peak`
+instead, which **is** the enforced quantity, and the record says which mechanism answered.
+Outside one it refuses to read the ambient group: measured on a workstation, that is the whole
+desktop session at 8 138 MiB.
+
+Full specification, numbered and checked by a test that derives the list from it:
+[ADR-0013](docs/adr/0013-what-a-run-consumed-measured-not-declared.md).
+
 ## `runprov check`: which entry points record nothing at all
 
 `watch.py`, below, sees a script that creates a `Run` and then opens files without

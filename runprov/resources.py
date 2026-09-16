@@ -152,11 +152,38 @@ class Measurement(typing.NamedTuple):
         if self.source == "getrusage" and self.max_rss_bytes is not None:
             # R-9. RUSAGE_CHILDREN is a MAXIMUM, not a sum. The caveat travels WITH the
             # number, because the number alone gets a job OOM-killed.
-            out["max_rss_is_floor"] = (
-                "the maximum of any one child, not the concurrent total; "
-                "a scheduler enforces the cgroup total, which is larger"
-            )
+            out["max_rss_is_floor"] = FLOOR_NOTE
         return out
+
+
+#: The prose caveat is DERIVED from `source`, never stored twice. It is ~120 characters and
+#: the history is appended forever; ten thousand runs would carry ten thousand copies of one
+#: sentence. The history therefore projects the block without it, the same shape as `steps`
+#: carrying a count rather than a list, and `from_record` puts it back.
+FLOOR_NOTE = (
+    "the maximum of any one child, not the concurrent total; "
+    "a scheduler enforces the cgroup total, which is larger"
+)
+
+
+def from_record(block: typing.Mapping[str, typing.Any]) -> Measurement:
+    """Rebuild a `Measurement` from a recorded block, so the renderers can read a history.
+
+    A field the record does not carry comes back as None rather than 0 — R-7 holds in both
+    directions, and a round trip that invented zeros would launder an absent measurement into
+    a present one.
+    """
+    return Measurement(
+        wall_seconds=float(block.get("wall_seconds") or 0.0),
+        cpu_seconds=block.get("cpu_seconds"),
+        max_rss_bytes=block.get("max_rss_bytes"),
+        max_vms_bytes=block.get("max_vms_bytes"),
+        io_read_bytes=block.get("io_read_bytes"),
+        io_write_bytes=block.get("io_write_bytes"),
+        source=str(block.get("source", "none")),
+        unavailable=tuple(block.get("unavailable") or ()),
+        io_self_only=bool(block.get("io_self_only")),
+    )
 
 
 class Meter:

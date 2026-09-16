@@ -3457,6 +3457,14 @@ class Run:
             # in every query over the project's history — which is where "which runs were
             # made by which version" is actually asked.
             "tool": r["tool"],
+            # ADR-0013. In the history too, for the reason `tool` is — the history is what
+            # `resources` and `log` read, and "how much did this pipeline need" is a question
+            # about the project OVER TIME, which is precisely what the history is for.
+            #
+            # WITHOUT the prose caveat, which is derived from `source` by `from_record`. It is
+            # ~120 characters and this file is appended forever; the same reasoning that puts
+            # a COUNT of steps here rather than the list.
+            "resources": {k: v for k, v in r["resources"].items() if k != "max_rss_is_floor"},
             # THE COUNT, NOT THE LIST. Steps are capped at 1000 per run and a thousand entries
             # per line would end the property that this file is read with `cat`. The full
             # detail is in the sidecar, where a reader who wants one run's steps is already

@@ -10464,6 +10464,140 @@ def test_resources_declines_the_ambient_cgroup_and_reads_vmpeak_by_injection(tmp
     assert m.max_vms_bytes == 47852 * 1024, "kB in /proc, bytes in the record"
 
 
+def test_resources_reach_the_history_which_is_what_the_subcommand_reads(tmp_path):
+    """The history is a WHITELIST projection, and a block that stopped at the sidecar would be
+    invisible to `runprov resources`. `tool` was caught by exactly this and `resources` was
+    written with the same hole — found by running the subcommand against a real history and
+    getting nothing. [R-1]
+
+    The prose caveat is the one field that does NOT travel: it is ~120 characters, the history
+    is appended forever, and `from_record` derives it back from `source`. Same reasoning as
+    `steps` carrying a count rather than the list.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    with runprov.Run("r", {}, provenance=tmp_path / "p.json"):
+        pass
+    line = [
+        json.loads(x)
+        for x in (tmp_path / "h.jsonl").read_text(encoding="utf-8").splitlines()
+        if x.strip()
+    ][-1]
+    assert "resources" in line, "the subcommand reads the history, so the block must be there"
+    assert "max_rss_is_floor" not in line["resources"], "derived, not stored on every line"
+    assert "max_rss_is_floor" in runprov.resources.from_record(line["resources"]).as_record()
+
+
+def test_resources_round_trip_does_not_invent_a_zero(tmp_path):
+    """[R-7] holds in both directions. A round trip that turned an absent figure into 0 would
+    launder a measurement nobody took into one that looks taken."""
+    thin = runprov.resources.from_record({"wall_seconds": 2.0, "source": "none"})
+    assert thin.max_rss_bytes is None and thin.cpu_seconds is None
+    assert "max_rss_bytes" not in thin.as_record()
+
+
+def test_resources_cli_renders_each_format_from_the_history(tmp_path, capsys):
+    """[R-13] [R-14]. The command exists so the numbers reach the place they are needed."""
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    with runprov.Run("align", {}, provenance=tmp_path / "p.json"):
+        pass
+    log = str(tmp_path / "h.jsonl")
+
+    assert runprov.__main__.main(["resources", "--log", log]) == 0
+    assert "measured by" in capsys.readouterr().out
+
+    assert runprov.__main__.main(["resources", "--log", log, "--format", "tsv"]) == 0
+    head = capsys.readouterr().out.splitlines()[0]
+    assert head.split("\t") == list(runprov.resources.SNAKEMAKE_COLUMNS)
+
+    assert runprov.__main__.main(["resources", "--log", log, "--format", "slurm"]) == 0
+    assert "#SBATCH --mem=" in capsys.readouterr().out
+
+    assert runprov.__main__.main(["resources", "--log", log, "--format", "k8s"]) == 0
+    assert "memory:" in capsys.readouterr().out
+
+
+def test_resources_cli_refuses_rather_than_printing_a_request_from_nothing(tmp_path, capsys):
+    """[R-15]. A request rendered from no measurement looks exactly like a measured one, which
+    makes it the worst output this command could produce. It exits 2 and says why."""
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    assert runprov.__main__.main(["resources", "--log", str(tmp_path / "none.jsonl")]) == 2
+    assert "no run history" in capsys.readouterr().err
+
+    # a history that exists and holds no resources block — a run from before 0.4.0
+    (tmp_path / "old.jsonl").write_text(
+        json.dumps({"script": "old", "run_id": "r"}) + "\n[not json\n", encoding="utf-8"
+    )
+    assert runprov.__main__.main(["resources", "--log", str(tmp_path / "old.jsonl")]) == 2
+    assert "recorded a resources block" in capsys.readouterr().err
+
+
+def test_resources_cli_text_view_on_a_cgroup_run_with_no_cpu_figure(tmp_path, capsys):
+    """The view a run from inside Slurm produces, which this machine cannot generate.
+
+    A cgroup measurement is NOT labelled a floor — it is the quantity the scheduler enforces,
+    so labelling it one would understate a number that is already right. And a run with no cpu
+    figure prints neither a cpu line nor a mean-cores line rather than a zero [R-7]. Both come
+    from a hand-written history, because the only machines that produce them are a cluster and
+    a container.
+    """
+    log = tmp_path / "h.jsonl"
+    log.write_text(
+        "\n"  # a blank line: `runs.jsonl` gains one from every append
+        + json.dumps(
+            {
+                "script": "on_slurm",
+                "run_id": "job-42",
+                "resources": {
+                    "wall_seconds": 3600.0,
+                    "source": "cgroup",
+                    "max_rss_bytes": 8 * 1024 * 1024 * 1024,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    runprov.configure(root=tmp_path, run_log=log)
+    assert runprov.__main__.main(["resources", "--log", str(log)]) == 0
+    out = capsys.readouterr().out
+    assert "measured by  cgroup" in out
+    assert "8192.0 MiB" in out
+    assert "FLOOR" not in out, "a cgroup peak IS what the scheduler enforces"
+    assert "mean cores" not in out and "not measured" in out
+
+
+def test_resources_cli_selects_by_script_and_takes_the_most_recent(tmp_path, capsys):
+    """The run being sized is the last one, and a named script narrows to that script."""
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    for name in ("align", "count", "align"):
+        with runprov.Run(name, {}, provenance=tmp_path / f"{name}.json"):
+            pass
+    log = str(tmp_path / "h.jsonl")
+
+    assert runprov.__main__.main(["resources", "--log", log]) == 0
+    assert capsys.readouterr().out.startswith("align"), "the most recent run"
+
+    assert runprov.__main__.main(["resources", "--log", log, "count"]) == 0
+    assert capsys.readouterr().out.startswith("count")
+
+    assert runprov.__main__.main(["resources", "--log", log, "nosuch"]) == 2
+    assert "nosuch" in capsys.readouterr().err
+
+
+def test_resources_cli_margin_is_applied_and_visible(tmp_path, capsys):
+    """[R-15]. The margin is the user's to set, and the rendered note states which was used."""
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    with runprov.Run("r", {}, provenance=tmp_path / "p.json"):
+        pass
+    log = str(tmp_path / "h.jsonl")
+    assert (
+        runprov.__main__.main(["resources", "--log", log, "--format", "slurm", "--margin", "3"])
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "x3" in out, "the margin used is printed, not silently applied"
+
+
 def test_resources_cgroup_path_declines_a_line_it_does_not_understand():
     """`cgroup_path` returns None rather than a guess when there is no v2 line. [R-6]"""
     mount = pathlib.Path("/sys/fs/cgroup")

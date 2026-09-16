@@ -59,6 +59,7 @@ import typing
 from . import check as check_mod
 from . import prune as prune_mod
 from . import report as report_mod
+from . import resources as resources_mod
 from . import show as show_mod
 from ._atomic import TEMP_SUFFIX, atomic_write_text
 from .export import FORMATS as EXPORT_FORMATS
@@ -1276,6 +1277,76 @@ def _forget(
     return 1 if problems else 0
 
 
+def _resources(args: argparse.Namespace) -> int:
+    """ADR-0013. What a run consumed, in the syntax of wherever it is going next.
+
+    Exit 2 when there is nothing to report — no history, no matching run, or a run recorded
+    before this block existed. A renderer that printed a request from no measurement would be
+    the worst possible output, because it looks exactly like a measured one.
+    """
+    project = active()
+    log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
+    if not log.is_file():
+        print(f"resources: no run history at {log}", file=sys.stderr)
+        return 2
+
+    found = None
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or "resources" not in record:
+            continue
+        if args.script and record.get("script") != args.script:
+            continue
+        found = record  # the LAST match: the most recent run is the one being sized
+
+    if found is None:
+        which = f" for {args.script!r}" if args.script else ""
+        print(f"resources: no run{which} in {log} recorded a resources block", file=sys.stderr)
+        return 2
+
+    m = resources_mod.from_record(found["resources"])
+    if args.format == "tsv":
+        header, row = resources_mod.snakemake_row(m)
+        print("\t".join(header))
+        print("\t".join(row))
+    elif args.format == "slurm":
+        print("\n".join(resources_mod.render_slurm(m, args.margin)))
+    elif args.format == "k8s":
+        print("\n".join(resources_mod.render_k8s(m, args.margin)))
+    else:
+        print("\n".join(_resources_text(found, m)))
+    return 0
+
+
+def _resources_text(record: dict[str, typing.Any], m: resources_mod.Measurement) -> list[str]:
+    """The default view: the numbers, in units a person reads, and what was NOT measured."""
+    mib = resources_mod.MIB
+
+    def size(value: int | None) -> str:
+        return "not measured" if value is None else f"{value / mib:.1f} MiB"
+
+    out = [f"{record.get('script', '?')}  ({record.get('run_id', '?')})", ""]
+    out.append(f"  measured by  {m.source}")
+    out.append(f"  wall         {m.wall_seconds:.2f} s")
+    out.append(
+        "  cpu          " + ("not measured" if m.cpu_seconds is None else f"{m.cpu_seconds:.2f} s")
+    )
+    cores = resources_mod.mean_cores(m)
+    if cores is not None:
+        out.append(f"  mean cores   {cores:.2f}")
+    out.append(f"  peak memory  {size(m.max_rss_bytes)}")
+    if m.source == "getrusage" and m.max_rss_bytes is not None:
+        out.append(f"               FLOOR — {resources_mod.FLOOR_NOTE}")
+    for note in m.unavailable:
+        out.append(f"  not measured {note}")
+    return out
+
+
 def _report(args: argparse.Namespace) -> int:
     """ADR — one artifact, one page. Exit follows the verdict, so it can gate too.
 
@@ -1633,6 +1704,23 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print ONLY the lines that will not parse, with their line numbers, and stop",
     )
+    rs = sub.add_parser(
+        "resources", help="what a run consumed, as a request you can size a cluster job with"
+    )
+    rs.add_argument("script", nargs="?", default=None, help="a script name; omit for the last run")
+    rs.add_argument(
+        "--format",
+        choices=("text", "tsv", "slurm", "k8s"),
+        default="text",
+        help="tsv uses Snakemake's benchmark columns; slurm and k8s render a request",
+    )
+    rs.add_argument(
+        "--margin",
+        type=float,
+        default=1.5,
+        help="multiply the measured floor by this before rendering a request (default 1.5)",
+    )
+    rs.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     rp = sub.add_parser("report", help="one artifact, one page, for a quality file")
     rp.add_argument("artifact", help="the artifact to report on")
     rp.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
@@ -1763,6 +1851,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "report":
         return _report(args)
+
+    if args.cmd == "resources":
+        return _resources(args)
 
     path = pathlib.Path(args.log) if args.log else active().resolved_run_log()
     if not path.is_file():
