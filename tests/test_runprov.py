@@ -10515,10 +10515,29 @@ def test_resources_round_trip_does_not_invent_a_zero(tmp_path):
 
 def test_resources_cli_renders_each_format_from_the_history(tmp_path, capsys):
     """[R-13] [R-14]. The command exists so the numbers reach the place they are needed."""
-    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
-    with runprov.Run("align", {}, provenance=tmp_path / "p.json"):
-        pass
+    # A HAND-WRITTEN HISTORY WITH KNOWN FIGURES, not a real run. The first version ran one and
+    # asserted `#SBATCH --mem=` appeared — true only where memory was measured, and Windows has
+    # no `resource` module, so it correctly rendered "# --mem: NOT MEASURED" and the test called
+    # that a failure. Rendering is a pure function of the block; giving it the block is the
+    # whole test, and it then means the same thing on every platform.
     log = str(tmp_path / "h.jsonl")
+    pathlib.Path(log).write_text(
+        json.dumps(
+            {
+                "script": "align",
+                "run_id": "r1",
+                "resources": {
+                    "wall_seconds": 100.0,
+                    "cpu_seconds": 200.0,
+                    "max_rss_bytes": 100 * 1024 * 1024,
+                    "source": "getrusage",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    runprov.configure(root=tmp_path, run_log=pathlib.Path(log))
 
     assert runprov.__main__.main(["resources", "--log", log]) == 0
     assert "measured by" in capsys.readouterr().out
