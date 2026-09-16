@@ -100,7 +100,7 @@ STALE   results/summary.tsv
 `runprov capture` (record a script that has no `runprov` calls in it at all), and
 `runprov export` (RO-Crate and W3C PROV-JSON).
 
-## Two commands for the questions asked afterwards
+## Three commands for the questions asked afterwards
 
 **`runprov check`** reads your source and reports entry points that open files and record
 nothing — the case a runtime hook can never see, because code that is not imported does not
@@ -112,6 +112,23 @@ commit and whether the tree was clean, which `runprov` recorded it, every input 
 digest, and the current verdict. It is a derived view — every fact comes from the artifact's
 own pin and the run history — and it prints what it *cannot* tell you on the page rather than
 leaving that to a manual.
+
+**`runprov resources`** answers the question that stands between a laptop and a cluster: how
+much did this actually need? Every record now carries what the run consumed, and the command
+renders it as Snakemake benchmark columns, a Slurm preamble, or Kubernetes
+`requests`/`limits`.
+
+```
+$ runprov resources --format slurm
+#SBATCH --mem=469M
+#SBATCH --cpus-per-task=3
+```
+
+**It is a floor and it says so.** Slurm and Kubernetes enforce against the *cgroup* — every
+process at once, plus page cache — while `RUSAGE_CHILDREN` is the peak of the largest *single*
+child: three children holding ~150 MiB simultaneously report 162 MiB, not 450. Inside a Slurm
+step or a container it reads `memory.peak` instead, which **is** the enforced number, and the
+record says which mechanism answered.
 
 ## What it is not
 
