@@ -9752,6 +9752,11 @@ def test_tool_identity_asks_git_directly_and_a_dirty_tree_identifies_nothing(
 
     def fake_git(root, *args):
         seen.append(args[0])
+        if args[0] == "ls-files":
+            # A-02: the repository must be asked whether it TRACKS this package before its
+            # HEAD is believed. A venv inside the user's own repo is the ordinary layout, and
+            # without this probe every record named the user's commit as runprov's.
+            return "runprov/environment.py"
         return "deadbeefcafe" if args[0] == "rev-parse" else status
 
     got = runprov.environment.tool_identity(package_file=pkg / "__init__.py", git_command=fake_git)
@@ -9759,7 +9764,10 @@ def test_tool_identity_asks_git_directly_and_a_dirty_tree_identifies_nothing(
     assert got["commit"] == "deadbeefcafe"
     assert got["dirty"] is dirty
     assert got["identifies_code"] is identifies
-    assert seen == ["rev-parse", "status"], "the dirty state must be MEASURED, not assumed"
+    assert seen == ["ls-files", "rev-parse", "status"], (
+        "the repository is asked whether it tracks this package BEFORE its HEAD is believed, "
+        "and the dirty state is MEASURED rather than assumed"
+    )
 
 
 def test_tool_identity_falls_through_when_git_cannot_answer(tmp_path):
@@ -9907,8 +9915,15 @@ def test_report_picks_the_LAST_run_that_wrote_the_artifact(tmp_path):
             out.write("c\n")
 
     history = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line]
-    assert runprov.report.find_run(history, "out.tsv")["script"] == "second"
-    assert runprov.report.find_run(history, "never-written.tsv") is None
+    assert runprov.report.find_run(history, str(artifact))["script"] == "second"
+    assert runprov.report.find_run(history, str(tmp_path / "never-written.tsv")) is None
+
+    # AND A BARE BASENAME NO LONGER MATCHES ANYTHING — Audit B, A-05. This test used to pass
+    # `"out.tsv"`, which identifies no file, and got the right answer only because `find_run`
+    # compared basenames. That is the defect: `sample_01/summary.csv` and
+    # `sample_99/summary.csv` were the same artifact, and a quality page for one named the
+    # other's run, command and commit while listing the first's inputs underneath.
+    assert runprov.report.find_run(history, "out.tsv") is None
 
 
 def test_report_carries_the_reason_when_the_artifact_itself_is_gone(tmp_path):
@@ -9928,9 +9943,16 @@ def test_report_carries_the_reason_when_the_artifact_itself_is_gone(tmp_path):
     assert "no longer there" in text, "the verdict without the reason is half the finding"
 
 
-def _history_record(**over):
+def _history_record(cwd=None, **over):
     """A history-shaped record, so the page's branches are driven by DATA rather than by
-    contriving a run for each one."""
+    contriving a run for each one.
+
+    `cwd` IS REQUIRED TO MATCH THE ARTIFACT, and it did not before Audit B, A-05. The fixture
+    said `/tmp` while the tests put the artifact under `tmp_path`, so the record described a
+    run that wrote a DIFFERENT file — and every one of these tests passed anyway, because
+    `find_run` matched on the basename. The fixture was only ever connected to the artifact by
+    the defect it was supposed to be exercising around.
+    """
     base = {
         "script": "demo",
         "status": "ok",
@@ -9938,7 +9960,7 @@ def _history_record(**over):
         "finished_utc": "2026-09-15T00:00:01Z",
         "run_id": "r1",
         "command": "python demo.py",
-        "cwd": "/tmp",
+        "cwd": str(cwd) if cwd is not None else "/tmp",
         "outputs": [{"path": "out.tsv"}],
         "git_commit": "abc1234",
         "git_status_captured": True,
@@ -9990,7 +10012,7 @@ def _history_record(**over):
 )
 def test_report_renders_each_record_shape_in_the_words_it_needs(tmp_path, over, expected):
     artifact, _ = _reported_run(tmp_path)
-    result = runprov.report.page(artifact, tmp_path, [_history_record(**over)])
+    result = runprov.report.page(artifact, tmp_path, [_history_record(cwd=tmp_path, **over)])
     assert expected in "\n".join(result.lines)
 
 
@@ -9999,7 +10021,7 @@ def test_report_says_none_pinned_rather_than_showing_an_empty_list(tmp_path):
     that nothing was pinned, not render as though the run read nothing."""
     plain = tmp_path / "out.tsv"
     plain.write_text("no pin here\n", encoding="utf-8")
-    result = runprov.report.page(plain, tmp_path, [_history_record()])
+    result = runprov.report.page(plain, tmp_path, [_history_record(cwd=tmp_path)])
     assert "none pinned" in "\n".join(result.lines)
 
 
@@ -10887,8 +10909,12 @@ def test_diff_cli_never_compares_a_run_with_its_own_start_marker(tmp_path, capsy
     out = capsys.readouterr().out
     assert "schema differs" not in out, "a start marker must never be one side of the diff"
     assert "NOT COMPARABLE" in out and "dirty state is unknown" in out
-    for dimension in ("inputs", "outputs", "parameters", "packages", "steps"):
+    for dimension in ("inputs", "outputs", "parameters", "packages"):
         assert f"{dimension:<12}unchanged" in out, f"{dimension} compared two finished runs"
+    # `steps` is NOT among them: the history records a COUNT, and A-03 established that two
+    # runs counting the same is not grounds for `unchanged` — two different steps count the
+    # same. It reports NOT COMPARABLE, which is the honest answer from a count.
+    assert "steps" in out and "COUNT of steps" in out
 
 
 def test_diff_cli_refuses_what_it_cannot_compare(tmp_path, capsys):
@@ -11102,6 +11128,151 @@ def test_impact_connectivity_comes_from_the_single_lineage_walk(tmp_path):
     assert graph["edges"], "the chain has edges, so the walk has something to follow"
     digest = runprov.sha256(tmp_path / "ref.fa")
     assert digest in consumers, "the seed lookup uses the same digest rule as the join"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "UNDIGESTIBLE:DataFrame",
+        "",
+        ["ok", "UNDIGESTIBLE:Model"],
+        ("UNDIGESTIBLE:ndarray",),
+        {"seed": "UNDIGESTIBLE:Generator"},
+    ],
+)
+def test_diff_recognises_a_marker_at_any_depth(value):
+    """Audit B, A-06. `_value_digest` writes `UNDIGESTIBLE:<type>` for anything it will not
+    canonicalise, and an entry the run could not hash records an empty digest. Equal markers
+    are not equal values — and they arrive nested, inside the args list or the kwargs dict."""
+    assert runprov.diff._undigested(value) is True
+    assert runprov.diff._undigested("a1b2c3", ["d4e5"], {"k": "f6"}) is False
+
+
+def test_diff_will_not_call_two_unhashable_files_unchanged():
+    """A-06, the files half. `_pairs` maps an UNHASHABLE or MISSING entry to `""`, and
+    `"" == ""` is two absences meeting, not agreement."""
+    same = {"inputs": [{"path": "big.bin", "sha256": ""}]}
+    d = next(x for x in runprov.diff.compare(same, dict(same)) if x.name == "inputs")
+    assert d.verdict == "not comparable" and "no digest recorded for big.bin" in d.blocked
+    assert not d.settled, "it must not settle the exit code"
+
+
+def test_diff_will_not_call_two_undigestible_steps_unchanged():
+    """A-06 for steps, which is where it bites hardest.
+
+    A pipeline decorating its model fit with `@run.step` passes a DataFrame; two runs a month
+    apart over different data both record `args: ["UNDIGESTIBLE:DataFrame"]`. Before this,
+    `runprov diff` printed `steps unchanged (1 vs 1 declared)` and exited 0 — a CI gate going
+    green asserting the step saw the same arguments when nothing was ever compared.
+    """
+    same = {
+        "steps": [
+            {
+                "step": "fit",
+                "args": ["UNDIGESTIBLE:DataFrame"],
+                "kwargs": {},
+                "returned": "UNDIGESTIBLE:Model",
+            }
+        ]
+    }
+    d = next(x for x in runprov.diff.compare(same, dict(same)) if x.name == "steps")
+    assert d.verdict == "not comparable" and not d.settled
+    assert "two markers matched, not two values" in d.blocked
+
+
+def test_diff_counts_steps_from_either_shape():
+    """`_step_count` reads the history's integer AND the sidecar's list, because a diff can be
+    handed one of each — a fresh sidecar against an archived history line. [A-03]"""
+    assert runprov.diff._step_count({"steps": 3}) == 3
+    assert runprov.diff._step_count({"steps": [{"step": "a"}, {"step": "b"}]}) == 2
+    assert runprov.diff._step_count({}) == 0
+
+
+def test_diff_reads_step_digests_when_the_record_carries_them():
+    """A-03's other side: the SIDECAR holds the list, and there the digests ARE comparable.
+
+    The fix must not reduce every record to counts — a sidecar-shaped record still supports
+    the full comparison, which is what `@run.step` exists for.
+    """
+    a = {"steps": [{"step": "fit", "args": ["a1"], "kwargs": {}, "returned": "r1"}]}
+    b = {"steps": [{"step": "fit", "args": ["a2"], "kwargs": {}, "returned": "r1"}]}
+    d = next(x for x in runprov.diff.compare(a, b) if x.name == "steps")
+    assert d.differences == ["fit  argument or result digest changed"]
+    assert d.blocked is None, "a list of digests is fully comparable"
+
+
+def test_report_resolve_survives_a_name_that_is_not_a_path():
+    """A-05. A record can hold something that is not a usable path — a `kind` entry, a name
+    with a null byte. It compares as itself rather than raising inside the one command a
+    reader opens when something has already gone wrong."""
+    assert runprov.report._resolve("out\x00.tsv") == "out\x00.tsv"
+
+
+def test_report_still_finds_the_run_when_the_artifact_cannot_be_hashed(tmp_path, monkeypatch):
+    """A-05. The digest is the primary key, and hashing can fail — a FIFO, a permission. The
+    page must fall back to the recorded path rather than losing the run entirely."""
+    artifact, log = _reported_run(tmp_path)
+
+    def refuse(path, *a, **k):
+        raise OSError("cannot read")
+
+    monkeypatch.setattr(runprov.report.hashing, "sha256", refuse)
+    result = runprov.report.render(artifact, tmp_path, log)
+    assert "demo" in "\n".join(result.lines), "the path match still finds it"
+
+
+def test_a_run_with_no_provenance_path_records_nothing_and_that_is_documented(tmp_path):
+    """A-01's other branch, and the test I got backwards first.
+
+    A `Run` with no `provenance=` and no `write()` records NOTHING, EVER — the README says so
+    in a table titled "Three shapes that record nothing, and the one that does". I asserted it
+    appended a history line, on the assumption that the deferred append covers this shape; it
+    does not, because there is no record to defer. The documented behaviour is the correct
+    one, and asserting it here stops the same wrong assumption arriving twice.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    with runprov.Run("bare", {}) as run:
+        with run.open_output(tmp_path / "out.tsv") as out:
+            out.write("x\n")
+    assert not (tmp_path / "h.jsonl").exists(), "no provenance=, no record — by design"
+
+
+def test_a_checkpoint_to_the_constructors_own_path_does_not_freeze_the_record(tmp_path):
+    """Audit B, A-01 — the regression test for the highest finding of the audit.
+
+    `_finish` skipped `write()` whenever the caller had already checkpointed to the
+    constructor's path, and `_persist` re-serialises without re-deriving. `outputs` is rebuilt
+    from `_pending` only inside `write()`, as are `resources` and the observation fold-ins — so
+    the run sealed itself `status: "ok"` with a later artifact ABSENT from the sidecar AND the
+    history, no MISSING entry and no warning, and `resources.wall_seconds` frozen at the
+    checkpoint. `runprov resources --format slurm` then sized a cluster job from it.
+
+    The pattern is the one README.md recommends in as many words.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    prov = tmp_path / "p.prov.json"
+    (tmp_path / "in.txt").write_text("hello\n", encoding="utf-8")
+
+    with runprov.Run("demo", {}, provenance=prov) as run:
+        run.write(prov)  # the checkpoint the README recommends
+        run.input(tmp_path / "in.txt")
+        (tmp_path / "late.tsv").write_text("a\tb\n", encoding="utf-8")
+        run.output(tmp_path / "late.tsv")
+
+    rec = json.loads(prov.read_text(encoding="utf-8"))
+    assert rec["status"] == "ok"
+    assert [pathlib.Path(o["path"]).name for o in rec["outputs"]] == ["late.tsv"], (
+        "an artifact produced after the checkpoint must not vanish from a record sealed ok"
+    )
+    history = [
+        json.loads(x)
+        for x in (tmp_path / "h.jsonl").read_text(encoding="utf-8").splitlines()
+        if x.strip()
+    ]
+    final = [r for r in history if r.get("status")][-1]
+    assert [pathlib.Path(o["path"]).name for o in final["outputs"]] == ["late.tsv"], (
+        "and it must not vanish from the append-only history either"
+    )
 
 
 def test_check_flags_an_entry_point_that_opens_files_and_records_nothing(tmp_path):

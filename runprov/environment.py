@@ -115,8 +115,29 @@ def tool_identity(
     root = next((p for p in here.parents if (p / ".git").exists()), None)
     if root is not None:
         ask = git_command if git_command is not None else _git
-        commit = ask(root, "rev-parse", "HEAD")
+        # AND THE REPOSITORY MUST ACTUALLY TRACK THIS PACKAGE. Audit B, A-02: this walked up
+        # to ANY enclosing `.git` and believed it. In the ordinary layout — a virtualenv inside
+        # the user's own analysis repository, which is what `uv add runprov` and
+        # `python -m venv .venv && pip install runprov` both produce — the nearest `.git` is
+        # the USER'S project, so every record reported `source: "checkout"` with the user's own
+        # HEAD as runprov's commit and `identifies_code: true`.
+        #
+        # That is worse than a missing answer and worse than the defect U-01 fixed: the record
+        # then carries the SAME commit at `code.git_commit` and at `tool.commit`, so it looks
+        # self-consistent, and a reviewer checking out `tool.commit` to obtain the runprov that
+        # wrote the record gets the analysis project instead. `tool` travels into the history
+        # too, so the wrong commit reaches every view.
+        #
+        # `ls-files --error-unmatch` is the question itself — "does this repository track this
+        # file?" — rather than a guess about layout, so a vendored copy that IS tracked still
+        # answers yes and a virtualenv never does.
+        tracked = ask(root, "ls-files", "--error-unmatch", "--", str(here))
+        commit = ask(root, "rev-parse", "HEAD") if tracked is not None else None
         if commit:
+            # SCOPED TO THE PACKAGE, and that scope is only meaningful now that the
+            # repository is known to track it. Before the check above, this asked about a
+            # gitignored virtualenv directory, which always answers "clean" — a guard whose
+            # scope had stopped covering what it names, reporting `dirty: false` always.
             status = ask(root, "status", "--porcelain", "--", str(here.parent))
             dirty = bool(status)
             out.update(

@@ -41,6 +41,29 @@ import typing
 #: output reads like an explanation rather than an alphabet.
 DIMENSIONS = ("inputs", "outputs", "code", "parameters", "packages", "steps", "resources")
 
+#: A recorded value that is NOT a digest. Audit B, A-06: `_value_digest` writes
+#: `"UNDIGESTIBLE:<type>"` for anything it will not canonicalise, so two entirely different
+#: DataFrames both record `UNDIGESTIBLE:DataFrame` and compare EQUAL. An empty string is the
+#: same hole one step along — `_pairs` maps an `UNHASHABLE` or `MISSING` entry to `""`, and
+#: `"" == ""` reads as unchanged.
+#:
+#: Equal markers are not equal values. A dimension holding one cannot support `unchanged`,
+#: which is the four-state table this module was written to enforce, applied to itself.
+_NOT_A_DIGEST = "UNDIGESTIBLE"
+
+
+def _undigested(*values: typing.Any) -> bool:  # noqa: ANN401 - whatever the record holds
+    """True when any value is a marker rather than a digest, at any depth."""
+    for value in values:
+        if isinstance(value, str) and (not value or value.startswith(_NOT_A_DIGEST)):
+            return True
+        if isinstance(value, (list, tuple)) and _undigested(*value):
+            return True
+        if isinstance(value, dict) and _undigested(*value.values()):
+            return True
+    return False
+
+
 CHANGED, UNCHANGED, INCOMPARABLE = "changed", "unchanged", "not comparable"
 
 
@@ -102,6 +125,12 @@ def _files(
     """Inputs or outputs. INCOMPLETE when either run knows it did not see everything."""
     left, right = _pairs(a, key), _pairs(b, key)
     blocked = None
+    # A-06. An entry the run could not hash records an empty digest, and `"" == ""` is not
+    # agreement — it is two absences meeting. `_compare_maps` already prints `'?'` for one on
+    # the DIFFERING branch, so the case was seen and handled only where it does no harm.
+    missing = sorted({n for n, d in left.items() if not d} | {n for n, d in right.items() if not d})
+    if missing:
+        blocked = f"no digest recorded for {', '.join(missing[:3])}"
     for record, side in ((a, "A"), (b, "B")):
         if record.get("unregistered_reads"):
             n = len(record["unregistered_reads"])
@@ -140,6 +169,26 @@ def _parameters(
     return Dimension("parameters", lines, f"{len(left)} vs {len(right)}", None)
 
 
+def _packages_of(record: typing.Mapping[str, typing.Any]) -> dict[str, str]:
+    """The tracked packages, from EITHER record shape. Audit B, A-04.
+
+    The history is a projection, and it FLATTENS this field: `run.py:3513` writes a top-level
+    `packages`, while the sidecar keeps `environment.packages`. `_diff` is fed history records
+    — and this read only the sidecar shape, so `left` and `right` were always `{}`, the
+    dimension always reported `unchanged (0 vs 0)`, and it always counted as settled for the
+    exit code. Measured on a real 3 556-line history whose lines carry pyyaml, openpyxl and
+    forty others: diff could not see a single one of them.
+
+    A package version moving is the most common cause of "same script, different numbers",
+    which is the question this command exists to answer.
+    """
+    flat = record.get("packages")
+    if isinstance(flat, dict):
+        return {str(k): str(v) for k, v in flat.items()}
+    nested = (record.get("environment") or {}).get("packages")
+    return {str(k): str(v) for k, v in nested.items()} if isinstance(nested, dict) else {}
+
+
 def _packages(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]) -> Dimension:
     """`packages_recorded` decides this. `{}` on one side and 47 on the other is a change of
     CONFIGURATION, not of environment, and reporting it as the second is the defect."""
@@ -147,13 +196,29 @@ def _packages(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.
     blocked = None
     if how_a != how_b:
         blocked = f"A recorded packages as {how_a!r}, B as {how_b!r}"
-    left = (a.get("environment") or {}).get("packages") or {}
-    right = (b.get("environment") or {}).get("packages") or {}
+    left, right = _packages_of(a), _packages_of(b)
     lines = []
     for name in sorted(set(left) | set(right)):
         if left.get(name) != right.get(name):
             lines.append(f"{name}  {left.get(name, '<absent>')} -> {right.get(name, '<absent>')}")
     return Dimension("packages", lines, f"{len(left)} vs {len(right)}", blocked)
+
+
+def _steps_of(
+    record: typing.Mapping[str, typing.Any],
+) -> dict[typing.Any, dict[str, typing.Any]] | None:
+    """The step entries when the record carries them, or None when it carries only a count."""
+    steps = record.get("steps")
+    if isinstance(steps, list):
+        return {s.get("step"): s for s in steps if isinstance(s, dict)}
+    return None
+
+
+def _step_count(record: typing.Mapping[str, typing.Any]) -> int:
+    steps = record.get("steps")
+    if isinstance(steps, int):
+        return steps
+    return len(steps) if isinstance(steps, list) else 0
 
 
 def _steps(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]) -> Dimension:
@@ -174,8 +239,26 @@ def _steps(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any
             for mark in ("steps_truncated", "observed_truncated", "auto_stopped_after_calls"):
                 if _obs(record, mark):
                     blocked = f"{side} is truncated ({mark}), so an absence is not an absence"
-    left = {s.get("step"): s for s in (a.get("steps") or []) if isinstance(s, dict)}
-    right = {s.get("step"): s for s in (b.get("steps") or []) if isinstance(s, dict)}
+    # THE HISTORY CARRIES A COUNT, THE SIDECAR CARRIES THE LIST. Audit B, A-03: this iterated
+    # whatever it was given, so `runprov diff` raised `TypeError: 'int' object is not iterable`
+    # for any pair where either run declared a step — every project that adopted `@run.step`,
+    # which is the feature the digests exist for. `run.py:3472` writes `len(r["steps"])` and
+    # omits the key when zero; the comment there says THE COUNT, NOT THE LIST in capitals.
+    #
+    # A count is still a comparison, just a weaker one: "2 steps vs 3" is a real finding, and
+    # "2 vs 2" is NOT grounds for `unchanged`, because two different steps count the same.
+    # That is exactly the `blocked` state this module already has, so counts use it rather
+    # than a new shape.
+    left, right = _steps_of(a), _steps_of(b)
+    if left is None or right is None:
+        na, nb = _step_count(a), _step_count(b)
+        lines = [f"count  {na} -> {nb}"] if na != nb else []
+        return Dimension(
+            "steps",
+            lines,
+            f"{na} vs {nb} counted",
+            blocked or "the history records a COUNT of steps, not their digests",
+        )
     lines = []
     for name in sorted(set(left) | set(right), key=str):
         one, two = left.get(name), right.get(name)
@@ -187,6 +270,13 @@ def _steps(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any
             two.get("returned"),
         ):
             lines.append(f"{name}  argument or result digest changed")
+        elif _undigested(
+            one.get("args"), one.get("kwargs"), one.get("returned")
+        ):  # A-06: equal markers, not equal values
+            blocked = blocked or (
+                f"{name} recorded a value that could not be digested, so equality here "
+                "means two markers matched, not two values"
+            )
     return Dimension("steps", lines, f"{len(left)} vs {len(right)} declared", blocked)
 
 

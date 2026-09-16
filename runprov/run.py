@@ -1794,15 +1794,46 @@ class Run:
         # only one armed for a run that dies. Preferring the caller's `write()` target left
         # it absent -- `write()`'s own docstring says a second path is "fine and sometimes
         # useful", which is a promise of TWO records, not a swap of one for the other.
-        if self.provenance_path is not None and not self._wrote(self.provenance_path):
-            self.write(self.provenance_path)
+        # THE RECORD IS REBUILT EXACTLY ONCE BEFORE ANYTHING IS PERSISTED. Audit B, A-01:
+        # this skipped `write()` whenever the caller had already checkpointed to the
+        # constructor's own path, and then only `_persist`ed — which re-serialises the dict
+        # and re-derives NOTHING. But `outputs` is rebuilt from `_pending` only inside
+        # `write()`, as are `resources`, `observation.packages_recorded`, `observation.steps`,
+        # `observed`, and the heartbeat and observer fold-ins.
+        #
+        # So a run that checkpointed and then produced an artifact sealed itself `status: "ok"`
+        # with that artifact ABSENT from both the sidecar and the history — no MISSING entry,
+        # no warning — and with `resources.wall_seconds` frozen at the checkpoint, which
+        # `runprov resources --format slurm` then sizes a cluster job from. Inputs and notes
+        # live on `self.record` by reference and DID travel, so the record looked coherent:
+        # a late input present, a late output silently gone.
+        #
+        # The pattern is the one README.md recommends in as many words, `run.write(PROV)`
+        # inside the block with PROV the constructor's path, so it fires on advice this
+        # package gives. `write()` rebuilds rather than appends, so calling it again is safe —
+        # that is what the doubling fix above it exists to guarantee.
+        rebuild = self.provenance_path or (previously[0] if previously else None)
+        if rebuild is not None:
+            self.write(rebuild)
         # Already on disk, and the status may have just changed under them. Rewrite so every
-        # sidecar carries the truth rather than the optimistic snapshot it held at the time.
+        # sidecar carries the truth rather than the optimistic snapshot it held at the time —
+        # `self.record` has just been rebuilt above, so this now persists the truth rather
+        # than re-serialising the checkpoint.
         for target in previously:
-            self._persist(target)
-        if self._deferred_history is not None and not self._history_appended:
-            path, self._deferred_history = self._deferred_history, None
-            self._append_history(path)
+            if target != rebuild:
+                self._persist(target)
+        # THE DEFERRED-HISTORY APPEND THAT USED TO BE HERE IS GONE, and it is gone because
+        # the A-01 fix made it unreachable rather than because it was wrong. `_deferred_history`
+        # is set only inside `write()`, and any `write()` puts its path into `_written_paths`;
+        # `previously` is captured at the TOP of this method, so a caller who wrote anything
+        # gives `rebuild` a value, the rebuild `write()` runs with `_in_context` already false,
+        # and that call appends the history itself. With no write and no `provenance=`, there
+        # is nothing deferred. Every path now appends inside `write()`.
+        #
+        # Kept as a comment rather than as an `if` nobody can enter: a branch nothing reaches
+        # is a shape nobody tests, which is the rule that retired `_finalizing` and `_rule`'s
+        # untitled form. Verified by coverage, not by reading: it went unreachable the moment
+        # the rebuild became unconditional.
 
     def _seal(self) -> None:
         """Stamp the terminal status and finish time. The run is over by the time this runs.

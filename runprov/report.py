@@ -31,6 +31,7 @@ import json
 import pathlib
 import typing
 
+from . import hashing
 from . import verify as verify_mod
 
 #: The width of the rules, matching `show`'s so a printed page from either looks like the
@@ -49,21 +50,64 @@ def _kv(key: str, value: typing.Any, pad: int = 13) -> str:  # noqa: ANN401 - an
 
 
 def find_run(
-    history: typing.Iterable[dict[str, typing.Any]], artifact: str
+    history: typing.Iterable[dict[str, typing.Any]],
+    artifact: str,
+    digest: str | None = None,
 ) -> dict[str, typing.Any] | None:
     """The LAST run that wrote `artifact`, or None.
 
     The last rather than the first: a file rewritten by a later run is described by that run,
     and a page naming the first would describe bytes that are no longer there. Runs are
     appended in order, so the last match is the most recent.
+
+    MATCHED ON THE DIGEST FIRST, THEN THE WHOLE PATH — never the basename. Audit B, A-05: this
+    compared `pathlib.Path(name).name`, so `sample_01/summary.csv` and `sample_99/summary.csv`
+    were the same artifact. Reproduced: a page for sample 1 named the sample-99 script, its
+    command and its commit, exited 0, and listed sample 1's inputs underneath — internally
+    contradictory and filed with a quality record. Per-sample output directories are the
+    ordinary layout in this package's own field, so the defect fires on the common case.
+
+    The digest comes first because it is the identity this package actually believes in:
+    `lineage` joins on digests rather than paths for the reason L1 records — a path is
+    rewritten by many runs over a project's life. It also finds the run for a file that has
+    since been MOVED, which a path comparison cannot.
+
+    There is deliberately NO basename fallback. Finding nothing is a state this page already
+    renders honestly; finding the wrong run is not recoverable by a reader.
     """
+    want = _resolve(artifact)
     found = None
     for record in history:
+        # AGAINST THE RECORDED CWD, NEVER THE CURRENT ONE. A record holds the path as the run
+        # saw it, which is often relative; resolving it here would anchor it to wherever the
+        # reader happens to stand. The suite already holds this rule for inputs
+        # (`test_a_relative_input_is_rechecked_against_the_recorded_cwd_not_the_current_one`)
+        # and the first version of this fix did not carry it over.
+        base = record.get("cwd")
         for out in record.get("outputs") or []:
             name = out.get("path") if isinstance(out, dict) else out
-            if name and pathlib.Path(str(name)).name == pathlib.Path(artifact).name:
+            if (
+                isinstance(out, dict)
+                and digest
+                and any(
+                    out.get(key) == digest for key in ("sha256", "content_sha256", "sha256_tree")
+                )
+            ):
+                found = record
+            elif name and _resolve(str(name), base) == want:
                 found = record
     return found
+
+
+def _resolve(name: str, base: str | None = None) -> str:
+    """A path in one comparable form, anchored to `base` when it is relative."""
+    try:
+        path = pathlib.Path(name)
+        if base and not path.is_absolute():
+            path = pathlib.Path(base) / path
+        return str(path.resolve())
+    except (OSError, ValueError):  # a name that is not a usable path compares as itself
+        return name
 
 
 class Page(typing.NamedTuple):
@@ -91,7 +135,13 @@ def page(
     """The page. Separate from printing so the wording itself is testable."""
     result = verify_mod.verify_artifact(artifact, root)
     status = result.get("status", "?")
-    run = find_run(history, str(artifact))
+    # THE DIGEST OF THE BYTES ON DISK NOW, so a moved or renamed artifact still finds its run,
+    # and two files sharing a basename cannot be confused for one another. A-05.
+    try:
+        digest: str | None = hashing.sha256(artifact)
+    except OSError:
+        digest = None
+    run = find_run(history, str(artifact), digest)
 
     out = [_rule(f"provenance report — {artifact.name}"), ""]
     out.append(_kv("artifact", artifact))
