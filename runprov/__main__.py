@@ -1370,6 +1370,14 @@ def _diff(args: argparse.Namespace) -> int:
     green while half the comparison was impossible is the vacuous pass in a new place.
     """
     project = active()
+    # A-21. `select`'s run_uid bucket tests `startswith(target)`, and every string starts with
+    # `""` — so an empty address matched EVERY record and `runprov diff ""` compared the last
+    # two runs in the history regardless of script, printing a confident change table for two
+    # runs the caller never named. An address that identifies nothing is a usage mistake.
+    for value, which in ((args.a, "first"), (args.b, "second")):
+        if value is not None and not str(value).strip():
+            print(f"diff: the {which} run address is empty", file=sys.stderr)
+            return 2
     log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
     if not log.is_file():
         print(f"diff: no run history at {log}", file=sys.stderr)

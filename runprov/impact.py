@@ -126,7 +126,16 @@ def shorten(name: str, root: pathlib.Path | None) -> str:
 def render(chain: Chain, root: pathlib.Path | None = None) -> list[str]:
     """The chain, and — every time, not only when empty — what this could not see."""
     out = [f"{chain.digest[:16]}", ""]
-    if not chain.steps:
+    if not chain.steps and chain.seeds:
+        # A-09. `--depth 0` truncated the walk to nothing while `seeds` was non-empty, and the
+        # page then printed the ONE sentence this module's docstring says must never be false.
+        # A truncation that reads as an absence is the defect this command exists to avoid,
+        # arriving through an option added for convenience.
+        out.append(
+            f"  {len(chain.seeds)} recorded run(s) read these bytes, and the walk was "
+            "TRUNCATED before any of them — raise --depth to see what derives from it."
+        )
+    elif not chain.steps:
         # NOT "nothing depends on this". The distinction is the whole point: one is a fact
         # about the history, the other is a claim about the world, and only the first is true.
         out.append("  no recorded run read these bytes.")

@@ -26,14 +26,16 @@ pip install runprov
 ## Adoption is one call
 
 `run.input(p)` **returns the path it was given**, so it is written on the way to the `open`
-that was already there:
+that was already there. **`provenance=` is not optional**: it is what arms the record, and a
+run without it writes nothing at all — including when the script crashes, which is when you
+most want the record.
 
 ```python
 from runprov import Run, configure
 
 configure(root=".")
 
-with Run("summarise", {"threshold": 5}) as run:
+with Run("summarise", {"threshold": 5}, provenance="provenance/summarise.json") as run:
     with open(run.input("data/measurements.tsv"), encoding="utf-8") as fh:
         rows = fh.read().splitlines()
     with run.open_output("results/summary.tsv") as out:

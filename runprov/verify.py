@@ -194,7 +194,7 @@ NO_PIN = "NO PIN"
 #: its own vocabulary — and the two modules differ by exactly the two states only one source
 #: of evidence can support: `MODIFIED` needs the artifact's own recorded digest, which lives
 #: in the history and never in a pin; `NO PIN` needs the bytes.
-STATES = frozenset({OK, STALE, GONE, UNVERIFIABLE, NO_PIN})
+STATES = frozenset({OK, STALE, GONE, ALTERED, UNVERIFIABLE, NO_PIN})
 
 #: Statuses that mean the artifact cannot be trusted as current. `GONE` is included
 #: deliberately: an input that no longer exists cannot be compared, but it is not a neutral
@@ -433,7 +433,17 @@ def check_input(
     # documents as supported. This rejects how the pin SPELLS the path, which is the thing a
     # foreign pin controls.
     spelled = pathlib.PurePosixPath(name)
-    if spelled.is_absolute() or ".." in spelled.parts:
+    # A-16. `PurePosixPath("C:/data/x.tsv").is_absolute()` is FALSE and the name carries no
+    # backslash, so a drive-qualified spelling passed both guards — and `root / name` DISCARDS
+    # the left operand when the right is absolute, which is the escape they exist to stop. The
+    # existing backslash check catches `C:\\data`; this catches `C:/data`, and UNC names.
+    # Judged under BOTH grammars, so it is testable on Linux rather than only on the Windows
+    # leg, where a foreign pin would have been read as a local absolute path.
+    if (
+        pathlib.PureWindowsPath(name).is_absolute()
+        or spelled.is_absolute()
+        or ".." in spelled.parts
+    ):
         return {**out, "status": UNVERIFIABLE, "reason": "names a path outside the project root"}
     if "\\" in name:
         return {**out, "status": UNVERIFIABLE, "reason": "escaped name — no unambiguous path"}

@@ -280,6 +280,32 @@ def _steps(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any
     return Dimension("steps", lines, f"{len(left)} vs {len(right)} declared", blocked)
 
 
+#: How much a resource figure has to move before it is a FINDING rather than noise. Audit B,
+#: A-07: `wall_seconds` and `cpu_seconds` are continuous measurements recorded to microseconds,
+#: so exact inequality made `resources` report a change for every pair of runs ever compared —
+#: the dimension was never `unchanged`, `settled` was never true, and `runprov diff` could
+#: therefore never exit 0. A gate that cannot pass is a gate nobody keeps.
+#:
+#: A ratio rather than an absolute, because these span microseconds to hours; 5% is chosen to
+#: be well below anything a reader would call a difference and well above clock jitter. It is
+#: a DISPLAY threshold only — the record keeps every digit.
+RESOURCE_NOISE = 0.05
+
+
+def _materially(key: str, one: typing.Any, two: typing.Any) -> bool:  # noqa: ANN401
+    """True when two resource figures differ by more than measurement noise."""
+    if one == two:
+        return False
+    try:
+        a, b = float(one), float(two)
+    except (TypeError, ValueError):
+        return True  # not numbers: any difference is a real one
+    if key == "max_rss_bytes":
+        return a != b  # a memory high-water mark is a count, not a continuous reading
+    largest = max(abs(a), abs(b))
+    return largest == 0 or abs(a - b) / largest > RESOURCE_NOISE
+
+
 def _resources(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]) -> Dimension:
     """ADR-0013: a cgroup peak and a `getrusage` peak are different quantities.
 
@@ -298,8 +324,9 @@ def _resources(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing
     lines = []
     for key in ("max_rss_bytes", "cpu_seconds", "wall_seconds"):
         one, two = left.get(key), right.get(key)
-        if one is not None and two is not None and one != two:
-            lines.append(f"{key}  {one} -> {two}")
+        if one is None or two is None or not _materially(key, one, two):
+            continue
+        lines.append(f"{key}  {one} -> {two}")
     return Dimension(
         "resources", lines, f"{left.get('source', '—')} / {right.get('source', '—')}", blocked
     )

@@ -476,7 +476,13 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
                     # unreadable directory above. Counted, so the tree hash's population is
                     # stated rather than assumed.
                     skipped.append(_posix(fp))
-        files.sort()
+        # A-14. SORTED BY THE RECORDED SPELLING, never by native `Path` order. `PurePath.__lt__`
+        # compares `_str_normcase` — case-folded and backslash-separated on Windows, the exact
+        # forward-slash string on POSIX — so `A.txt` and `a.txt` order one way on Linux and the
+        # other on Windows, and the SAME tree hashes to two different `sha256_tree` values. A
+        # digest whose value depends on the machine cannot answer "is this the same tree",
+        # which is the only question it is asked.
+        files.sort(key=_posix)
         rec["kind"] = "directory"
         rec["n_files"] = len(files)
         rec["n_unreadable_dirs"] = len(unreadable)

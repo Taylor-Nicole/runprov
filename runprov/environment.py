@@ -58,7 +58,7 @@ import platform
 import sys
 import typing
 
-from ._atomic import atomic_write_bytes, atomic_write_text
+from ._atomic import atomic_write_bytes
 from .hashing import _posix
 
 #: How a record can say WHICH runprov produced it, in decreasing order of how much the
@@ -332,7 +332,15 @@ def write_snapshot(directory: pathlib.Path) -> dict[str, typing.Any]:
     path = directory / f"env-{d[:16]}.txt"
     existed = path.is_file()
     if not existed:
-        atomic_write_text(path, text)
+        # A-15. BYTES, not text. `atomic_write_text` opens with `newline=None`, which
+        # translates every "\n" to "\r\n" on Windows — deliberately, and its own comment
+        # forbids changing that globally because it would alter the bytes of every sidecar.
+        # But this file is CONTENT-ADDRESSED: `d` is the sha256 of `text`, the name is
+        # `env-{d[:16]}.txt`, and the record carries `"sha256": d`. With the translation, the
+        # file on disk hashed to something else on Windows, so the one digest whose whole job
+        # is to identify these bytes did not — and `sha256sum -c` on the recorded line failed
+        # for a file nobody had touched.
+        atomic_write_bytes(path, text.encode())
     rec: dict[str, typing.Any] = {
         "path": _posix(path),
         "sha256": d,

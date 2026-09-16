@@ -11411,6 +11411,126 @@ def test_verify_reports_a_directory_it_could_not_read(tmp_path):
         blocked.chmod(0o755)
 
 
+def test_diff_ignores_measurement_noise_but_not_a_real_move():
+    """Audit B, A-07. `wall_seconds` and `cpu_seconds` are continuous readings to the
+    microsecond, so exact inequality made `resources` report a change for EVERY pair of runs
+    ever compared — the dimension was never `unchanged`, `settled` was never true, and
+    `runprov diff` could therefore never exit 0. A gate that cannot pass is a gate nobody
+    keeps."""
+    base = {"source": "getrusage", "wall_seconds": 10.0, "cpu_seconds": 4.0, "max_rss_bytes": 100}
+    quiet = dict(base, wall_seconds=10.000004, cpu_seconds=4.000001)
+    d = next(
+        x
+        for x in runprov.diff.compare({"resources": base}, {"resources": quiet})
+        if x.name == "resources"
+    )
+    assert d.verdict == "unchanged" and d.settled
+
+    loud = dict(base, wall_seconds=30.0)
+    d = next(
+        x
+        for x in runprov.diff.compare({"resources": base}, {"resources": loud})
+        if x.name == "resources"
+    )
+    assert d.differences == ["wall_seconds  10.0 -> 30.0"]
+
+    # A MEMORY HIGH-WATER MARK IS A COUNT, not a continuous reading: one byte more is one
+    # byte more, and smoothing it would hide exactly the growth a reader is watching for.
+    bytes_moved = dict(base, max_rss_bytes=101)
+    d = next(
+        x
+        for x in runprov.diff.compare({"resources": base}, {"resources": bytes_moved})
+        if x.name == "resources"
+    )
+    assert d.differences == ["max_rss_bytes  100 -> 101"]
+    assert runprov.diff._materially("cpu_seconds", "a", "b") is True, "non-numbers always differ"
+    assert runprov.diff._materially("wall_seconds", 0.0, 0.0) is False
+
+
+def test_impact_says_truncated_rather_than_no_recorded_run(tmp_path, capsys):
+    """Audit B, A-09. `--depth 0` emptied `steps` while `seeds` was non-empty, and the page
+    then printed the one sentence the module docstring says must never be false. A truncation
+    that reads as an absence is the defect this command exists to avoid, arriving through an
+    option added for convenience."""
+    log = _pipeline(tmp_path)
+    runprov.__main__.main(["impact", str(tmp_path / "ref.fa"), "--log", str(log), "--depth", "0"])
+    out = capsys.readouterr().out
+    assert "TRUNCATED" in out and "raise --depth" in out
+    assert "no recorded run read these bytes" not in out
+
+
+def test_diff_refuses_an_empty_run_address(tmp_path, capsys):
+    """Audit B, A-21. `select`'s run_uid bucket tests `startswith(target)`, and every string
+    starts with `""` — so an empty address matched every record and `runprov diff ""` compared
+    the last two runs in the history regardless of script, printing a confident change table
+    for two runs the caller never named."""
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    for _ in range(2):
+        with runprov.Run("x", {}, provenance=tmp_path / "p.json"):
+            pass
+    log = str(tmp_path / "h.jsonl")
+    assert runprov.__main__.main(["diff", "", "--log", log]) == 2
+    assert "first run address is empty" in capsys.readouterr().err
+    assert runprov.__main__.main(["diff", "x", "  ", "--log", log]) == 2
+    assert "second run address is empty" in capsys.readouterr().err
+
+
+def test_open_output_preserves_a_tightened_permission(tmp_path):
+    """Audit B, A-13. `open_output` copied `_atomic`'s temp-file-then-rename idiom — down to
+    the temp-name expression — but not the mode handling that exists because a rename brings
+    the temporary file's permissions with it. Republishing a result whose mode had been
+    tightened to 0600 handed it back at the umask default, WIDENING it silently: on a shared
+    analysis directory, a file becoming group-readable with nobody touching its permissions."""
+    if os.name == "nt":  # pragma: no cover - POSIX modes
+        pytest.skip("POSIX permissions")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    out = tmp_path / "r.tsv"
+    out.write_text("v1\n", encoding="utf-8")
+    out.chmod(0o600)
+    with runprov.Run("rw", {}, provenance=tmp_path / "p.json") as run:
+        with run.open_output(out) as fh:
+            fh.write("v2\n")
+    assert out.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_run_that_writes_nothing_still_stops_its_thread_and_its_observer(tmp_path):
+    """Audit B, A-12. The heartbeat and the observer were stopped in `write()`, so a
+    `with Run(...)` with no `provenance=` — the shape documented as writing neither record —
+    never stopped either, and both lived on for the life of the PROCESS: a thread still
+    beating and a `sys.monitoring` tool id still held, after the run it described had ended."""
+    runprov.configure(root=tmp_path, heartbeat=1, auto_steps="census")
+    before = threading.active_count()
+    with runprov.Run("noprov", {}):
+        pass
+    assert threading.active_count() == before, "the heartbeat thread outlived its run"
+    if hasattr(sys, "monitoring"):
+        assert sys.monitoring.get_tool(runprov.observe.TOOL_ID) is None, "tool id not released"
+
+
+def test_a_run_with_no_observer_finishes_cleanly(tmp_path):
+    """`_finish` stops the observer when there is one; on 3.10 and 3.11, and whenever
+    `auto_steps="off"`, there is not. The branch that skips it is the ordinary case on half
+    the supported interpreters. [A-10]"""
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off", heartbeat=0)
+    with runprov.Run("plain", {}, provenance=tmp_path / "p.json") as run:
+        run._observer = None  # the shape a 3.11 run has all the way through
+    rec = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert rec["status"] == "ok" and rec["observation"]["auto_mode"] == "off"
+
+
+def test_a_mid_run_checkpoint_does_not_end_the_census(tmp_path):
+    """Audit B, A-10. `write()` is documented as callable inside the block, and stopping the
+    observer in its body meant a checkpoint silently ended the census for the rest of the run
+    — while the record went on reporting `auto_mode: census`, describing a window that closed
+    at the checkpoint as though it covered the run."""
+    runprov.configure(root=tmp_path, auto_steps="census")
+    prov = tmp_path / "p.json"
+    with runprov.Run("mid", {}, provenance=prov) as run:
+        run.write(prov)
+        assert run._observer.active != "off", "the census must still be running after a checkpoint"
+    assert run._observer.active == "off", "and stopped by the time the run ends"
+
+
 def test_check_flags_an_entry_point_that_opens_files_and_records_nothing(tmp_path):
     """T-27, the case `watch.py` can never see: no import means no code runs."""
     root = _source_tree(
@@ -16902,8 +17022,12 @@ def test_the_two_checkers_have_one_vocabulary_and_only_one_spelling_of_it(tmp_pa
     assert show_states - verify_states == {runprov.show.MODIFIED}, (
         "show may say exactly one thing verify cannot: MODIFIED, which needs the history"
     )
-    assert verify_states - show_states == {runprov.verify.NO_PIN}, (
-        "verify may say exactly one thing show cannot: NO PIN, which needs the bytes"
+    assert verify_states - show_states == {runprov.verify.NO_PIN, runprov.verify.ALTERED}, (
+        "verify may say exactly two things show cannot, and both need the BYTES: NO PIN, and "
+        "ALTERED — the artifact's own body digest, which `show --stale` never reads because "
+        "it checks inputs. ALTERED was missing from `verify.STATES` (Audit B, A-20) while "
+        "being defined, returned and printed in the summary counts, so this guard — written "
+        "expressly to stop the two vocabularies drifting — could not see it at all"
     )
     for state in show_states | verify_states:
         assert state == state.upper(), f"{state!r} is not upper case; `current` was the last one"

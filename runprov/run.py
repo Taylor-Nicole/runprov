@@ -67,7 +67,7 @@ import typing
 import uuid
 import weakref
 
-from ._atomic import TEMP_SUFFIX, _sync_dir, atomic_write_text
+from ._atomic import TEMP_SUFFIX, _destination_mode, _sync_dir, atomic_write_text
 from ._report import diagnostic, progress, progress_enabled, summary
 from .environment import archive_lockfiles, lockfiles, manager, tool_identity, write_snapshot
 from .hashing import (
@@ -759,7 +759,18 @@ class _PinnedWriter:
             self._fh.flush()
             os.fsync(self._fh.fileno())
             self._fh.close()
+            # A-13. THE DESTINATION'S MODE IS CARRIED ACROSS THE RENAME, the way `_atomic`
+            # already does it. This used the same temp-file-then-`os.replace` idiom — down to
+            # a verbatim copy of the temp-name expression — but not the mode handling that
+            # goes with it, so republishing a result whose permissions had been tightened to
+            # 0600 handed it back at the umask default and WIDENED it silently. On a shared
+            # analysis directory that is a file becoming readable to the group without anyone
+            # touching its permissions.
+            mode = _destination_mode(self._dest)
             os.replace(self._tmp, self._dest)
+            if mode is not None:
+                with contextlib.suppress(OSError):  # a mode we cannot set must not lose the file
+                    os.chmod(self._dest, mode)
             # NARRATED HERE, at the moment the artifact appears, rather than at seal time
             # where the record is assembled. A line that arrives when the file does is
             # reassurance; the same line twenty minutes later is a report.
@@ -1822,6 +1833,21 @@ class Run:
         # inside the block with PROV the constructor's path, so it fires on advice this
         # package gives. `write()` rebuilds rather than appends, so calling it again is safe —
         # that is what the doubling fix above it exists to guarantee.
+        # A-10, A-12. STOPPED HERE, FOR EVERY SHAPE OF RUN, and before the rebuild below so
+        # the record is assembled over a window that is closed. `__exit__` always reaches this;
+        # `write()` may never be called at all.
+        if self._heart is not None:
+            self._heart.stop()
+            # THE COUNT IS TAKEN WHERE THE STOP IS. Moving the stop out of `write()` left the
+            # fold-in behind there, and by the time the rebuild ran `_heart` was already None —
+            # so a narrated run recorded no `heartbeats` at all. A number read in one place and
+            # cleared in another is how it went missing; both now happen here.
+            if self._heart.beats:
+                self.record["observation"]["heartbeats"] = self._heart.beats
+            self._heart = None
+        if self._observer is not None:
+            self._observer.stop()
+
         rebuild = self.provenance_path or (previously[0] if previously else None)
         if rebuild is not None:
             self.write(rebuild)
@@ -3251,17 +3277,22 @@ class Run:
         # STOPPED BEFORE THE RECORD IS ASSEMBLED. Signals reach the main thread only, so on a
         # SIGTERM this thread would go on printing "still running" while `__exit__` unwinds —
         # a line that arrives after "record written" is the package lying about itself.
-        if self._heart is not None:
-            self._heart.stop()
-            if self._heart.beats:
-                self.record["observation"]["heartbeats"] = self._heart.beats
-            self._heart = None
+        # THE HEARTBEAT AND THE OBSERVER ARE NOT TOUCHED HERE. Audit B, A-10 and A-12:
+        # `write()` is documented as callable INSIDE the block, and stopping them in its
+        # body meant a mid-run checkpoint silently ended both for the rest of the run —
+        # the record then claimed a full census over a window that closed at the
+        # checkpoint. And a `with Run(...)` with no `provenance=`, which writes nothing by
+        # design, never reached this code at all, so its thread and its `sys.monitoring`
+        # tool id lived on for the life of the process.
+        #
+        # `_finish` stops both and takes the beat count, before it rebuilds — which is
+        # where "stopped before the record is assembled" belongs, and where it happens for
+        # every shape of run rather than only for the ones that write.
         # ADR-0010. Folded in HERE, where the record is finalised, and stopped first: a
         # callback still firing while the record is serialised would append to a dict being
         # read. `observed` is absent rather than empty when nothing was seen, so "no calls in
         # scope" stays distinguishable from "not observing".
         if self._observer is not None:
-            self._observer.stop()
             if self._observer.records:
                 self.record["observed"] = self._observer.records
             if self._observer.stopped_after is not None:
