@@ -10437,6 +10437,33 @@ def test_resources_reads_past_lines_it_does_not_want_and_survives_a_missing_key(
     assert m.cpu_seconds == 7.0, "it must read past the lines it does not want"
 
 
+def test_resources_declines_the_ambient_cgroup_and_reads_vmpeak_by_injection(tmp_path):
+    """Two Linux-only paths, driven by INJECTED files rather than by the host having /proc.
+
+    Both were covered on Linux and uncovered on macOS, which has no `/proc`: the ambient-cgroup
+    refusal and the VmPeak conversion ran because the real filesystem happened to supply them.
+    That is the third time in one day that a line was covered by the ENVIRONMENT rather than by
+    a test — the same shape as run.py:1337 and the dirty-checkout branch — and the remedy is the
+    same: give the code its inputs instead of borrowing the machine's.
+
+    [R-6] the ambient group is refused: measured on a workstation it is the whole desktop
+    session at 8 138 MiB. [R-2] `/proc` reports kB and the record is bytes.
+    """
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    # A real workstation cgroup line: v2, well-formed, and NOT this run's own.
+    (proc / "cgroup").write_text(
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-code.scope\n",
+        encoding="utf-8",
+    )
+    (proc / "status").write_text("Name:\tpython\nVmPeak:\t   47852 kB\n", encoding="utf-8")
+
+    m = _meter(tmp_path, proc=proc, environ={}).read()
+    assert m.source == "getrusage", "the ambient cgroup is not a measurement of this run"
+    assert any("not this run's own" in u for u in m.unavailable)
+    assert m.max_vms_bytes == 47852 * 1024, "kB in /proc, bytes in the record"
+
+
 def test_resources_cgroup_path_declines_a_line_it_does_not_understand():
     """`cgroup_path` returns None rather than a guess when there is no v2 line. [R-6]"""
     mount = pathlib.Path("/sys/fs/cgroup")
