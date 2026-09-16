@@ -101,6 +101,74 @@ and the ones present cannot miss a transient peak.
 for the same reason it carries `auto_available`: a record with no resource block on Windows must
 not read like a run that used no memory.
 
+## Amendment before implementation — the number a scheduler enforces is not the number `getrusage` reports
+
+Raised by Taylor: the output should serve **Slurm and Kubernetes**, not just be a number. Asking
+that question properly exposes a weakness in the decision above.
+
+### They measure different things, and the difference is in the dangerous direction
+
+| | what it counts |
+|---|---|
+| `getrusage(RUSAGE_CHILDREN)` | the high-water mark of the **largest single child**, no page cache |
+| a scheduler's **cgroup** | every process in the group **concurrently**, plus page cache charged to it |
+
+Slurm's `--mem` and Kubernetes' `resources.limits.memory` are both enforced against the
+**cgroup**, and both kill the job when it is exceeded. So the `getrusage` number is
+systematically **smaller** than the number that does the killing — measured above: three
+concurrent children at ~150 MiB report 162, not 450. **A user who pastes a runprov figure into
+`--mem=` gets OOM-killed**, and would be right to blame the tool.
+
+**Therefore the measurement is reported as a FLOOR, never as an answer.** It is what the run
+provably used; the request has to be above it, and the record says so in the same breath as the
+number. A tool that hands somebody a request that kills their job has done worse than nothing.
+
+### Where the right number lives, when it exists at all
+
+cgroup v2 exposes `memory.peak` — the cgroup's own high-water mark, which **is** the quantity
+Slurm and Kubernetes enforce. Read from one file, no dependency. Two things were measured here
+and both limit it:
+
+* **It is not always present.** This machine runs 5.15 and has `memory.current` and `cpu.stat`
+  but **no `memory.peak`**; it arrived in a later kernel. Absent must be reported as absent.
+* **Outside a scheduler the cgroup is not yours.** The ambient cgroup here is the user's desktop
+  session and reads **8 138 MiB** of `memory.current` — the browser, the editor, everything.
+  Charging that to a script would be a wildly wrong number presented with more authority than
+  the honest small one.
+
+So the cgroup is read **only when the run demonstrably owns one**, detected from markers rather
+than guessed: `SLURM_JOB_ID` / `SLURM_STEP_ID`, `KUBERNETES_SERVICE_HOST`, or a cgroup path
+naming `kubepods`, `docker`, `containerd` or `slurm`. On a laptop none of those is set — checked
+here — and the block falls back to `getrusage` **and records which mechanism produced it**.
+
+**That field is not decoration.** A cgroup peak and a `getrusage` peak are different quantities,
+and two records that do not say which they hold are two records someone will compare anyway —
+the argument `observation` already exists for.
+
+### Units are canonical; scheduler syntax is a thin renderer
+
+The block stores **bytes and seconds**, never `8G` or `500m`. Rendering is separate and per
+target, because the targets disagree in ways that silently corrupt a number:
+
+* **Slurm** takes `--mem` in MiB by default, `--time` as walltime, `--cpus-per-task` as a count.
+* **Kubernetes** takes `memory` in binary units (`Mi`, `Gi`) — and `M`/`G` mean *decimal*, a
+  4.8 % error that looks like a typo — while **CPU is a rate in millicores**, so `cpu: "500m"`
+  is half a core over time, not a core count. Its `requests` schedule and its `limits` kill;
+  exceeding a CPU limit **throttles** rather than killing, which memory does not.
+
+A renderer that emitted one number into both syntaxes would be wrong in at least one of them.
+Canonical storage plus per-target rendering is the only shape that survives adding a third
+target, and there will be a third.
+
+### What this adds to the decision
+
+1. Store bytes and seconds; render per target.
+2. Record **which mechanism** measured it — `cgroup` or `getrusage` — never the number alone.
+3. Read the cgroup only when a marker proves the run owns one.
+4. Present every figure as a **floor with a stated margin**, never as a request to paste.
+5. `resources.available` says what could not be measured here, the `observation` pattern again:
+   no `resource` module on Windows, no `memory.peak` on an older kernel, no cgroup of our own.
+
 ## What this must never claim
 
 * **It is not a profiler.** It says *how much*, never *where it went*.
@@ -108,6 +176,8 @@ not read like a run that used no memory.
   this records the point you measured, not the curve.
 * **`max_rss` under-reports concurrent children**, per measurement 2 above, and the number is
   useless — worse than useless — without that caveat attached to it.
+* **It is not the number your scheduler enforces**, unless it came from a cgroup the run owned
+  — and the record says which. Treated as a request rather than a floor, it gets the job killed.
 * **It does not measure GPU memory.** `nvidia-smi` is a subprocess and a dependency in all but
   name, and a GPU field that is silently absent on a GPU job would be the worst row in the table.
 
