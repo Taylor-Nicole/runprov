@@ -1,6 +1,6 @@
 # 13. What a run consumed, measured rather than declared
 
-Date: 2026-09-16 · Status: **proposed** · Ledger: T-29 · Raised by: Taylor
+Date: 2026-09-16 · Status: **accepted**, implemented as `runprov/resources.py` in 0.4.0 · Ledger: T-29 · Raised by: Taylor
 
 ## Context
 
