@@ -11,6 +11,25 @@ is a fix nobody checked.
 
 ### Added
 
+* **`runprov impact <file>` — what was derived from these bytes, and in what order it rebuilds
+  (T-31, ADR-0015).** `verify` answers that per artifact but only for artifacts you already
+  thought to name; `lineage` holds the DAG and walks it backwards. This is the forward
+  direction, reported with depth because the answer is an **order** — a set of nine filenames
+  does not say which to rebuild first.
+
+  **It answers what *did* derive, never what *will* break**, and that gap is the whole of its
+  honesty: a script that never imported runprov, a read that bypassed registration, a pruned
+  history. **An empty result reads "no recorded run read these bytes", never "nothing depends
+  on this"** — one is a fact about the history, the other a claim about the world, and the
+  second would be a green light to overwrite a reference. The blind spots print on every
+  answer, not only the empty one.
+
+  Connectivity comes from the single walk `lineage` already makes: the digest rule (index on
+  `content_sha256`, `sha256` **and** `sha256_tree`, because preferring one and falling back
+  compares two different keys and invents orphans) is not copied — `_lineage` fills two
+  out-parameters during the passes it already makes, the convention `bad` and `scripts`
+  already follow.
+
 * **`runprov diff` — why is today different from last month (T-30, ADR-0014).** The question
   asked most often, and answering it used to mean opening two records side by side. Everything
   needed was already recorded, including the step argument digests ADR-0010 built expressly so

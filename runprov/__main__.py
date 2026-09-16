@@ -49,6 +49,7 @@ import contextlib
 import json
 import os
 import pathlib
+import re
 import runpy
 import shlex
 import signal
@@ -58,6 +59,8 @@ import typing
 
 from . import check as check_mod
 from . import diff as diff_mod
+from . import hashing
+from . import impact as impact_mod
 from . import prune as prune_mod
 from . import report as report_mod
 from . import resources as resources_mod
@@ -305,6 +308,8 @@ def _lineage(
     source: pathlib.Path | typing.Sequence[dict[str, typing.Any]],
     bad: list[int] | None = None,
     scripts: dict[str, str] | None = None,
+    consumers: dict[str, list[str]] | None = None,
+    outputs_by: dict[str, list[str]] | None = None,
 ) -> dict[str, typing.Any]:
     """Reconstruct the run DAG. JOIN ON THE DIGEST, not the path (L1).
 
@@ -424,6 +429,18 @@ def _lineage(
     runs = 0
     produced: dict[str, list[tuple[str, str]]] = {}
     names = scripts if scripts is not None else {}
+    # OUT-PARAMETERS, like `bad` and `scripts` above and for the same stated reason: they are
+    # not part of the graph `lineage --format json` prints, and `impact` needs them from THIS
+    # traversal rather than from a second one. ADR-0015 requires it — two walks of one history
+    # that disagree about what is connected is a defect this project keeps finding, and the
+    # cheapest way to guarantee they agree is to have only one walk.
+    #
+    # `read_by` is digest -> the runs that read it, the mirror of `produced` and the one thing
+    # `impact` cannot derive from the edges. `made_by` is address -> output PATHS only: what an
+    # artifact is CALLED is presentation, and holding whole records here is the memory defect
+    # this function's own docstring records.
+    read_by = consumers if consumers is not None else {}
+    made_by = outputs_by if outputs_by is not None else {}
     for r in records():
         runs += 1
         if not r.get("run_uid"):
@@ -437,6 +454,9 @@ def _lineage(
         for o in r.get("outputs") or []:
             for d in digests(o):
                 produced.setdefault(d, []).append((when, here))
+            name = o.get("path") if isinstance(o, dict) else o
+            if name:
+                made_by.setdefault(here, []).append(str(name))
     for v in produced.values():
         v.sort()
 
@@ -450,6 +470,9 @@ def _lineage(
             # a later stage in the same second may read -- second resolution is the reason
             # the ad-hoc run id collides in the first place.
             me = address(r)
+            for d in digests(i):
+                if me not in read_by.setdefault(d, []):
+                    read_by[d].append(me)
             candidates = [c for d in digests(i) for c in produced.get(d, [])]
             before = sorted({c for c in candidates if c[0] <= started and c[1] != me})
             if not before:
@@ -1296,6 +1319,50 @@ def _completed(path: pathlib.Path) -> typing.Iterator[dict[str, typing.Any]]:
         yield record
 
 
+def _impact(args: argparse.Namespace) -> int:
+    """ADR-0015. Exit 1 when something derives from it, 0 when nothing recorded does.
+
+    The 1 is not "something is wrong" in the usual sense — it is "there is work to do", which
+    is the same thing to a caller deciding whether to rebuild. Exit 2 when the question could
+    not be asked at all: no history, or a path that is neither a file nor a digest.
+    """
+    project = active()
+    log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
+    if not log.is_file():
+        print(f"impact: no run history at {log}", file=sys.stderr)
+        return 2
+
+    target = str(args.target)
+    if re.fullmatch(r"[0-9a-f]{16,64}", target):
+        digest = target
+    else:
+        path = pathlib.Path(target)
+        if not path.is_file():
+            print(f"impact: {target} is not a file and not a digest", file=sys.stderr)
+            return 2
+        # HASHED NOW, because the question is about the bytes that are there — "if I change
+        # this file" means the file as it stands, and a digest read out of the history would
+        # answer about a version that may already be gone.
+        digest = hashing.sha256(path)
+
+    consumers: dict[str, list[str]] = {}
+    names: dict[str, str] = {}
+    outputs_by: dict[str, list[str]] = {}
+    graph = _lineage(log, None, names, consumers, outputs_by)
+
+    unregistered = 0
+    runs = 0
+    for record in _completed(log):
+        runs += 1
+        unregistered += len(record.get("unregistered_reads") or [])
+
+    steps = impact_mod.walk(digest, consumers, graph["edges"], names, outputs_by, args.depth)
+    chain = impact_mod.Chain(digest, consumers.get(digest, []), steps, unregistered, runs)
+    for line in impact_mod.render(chain):
+        print(line)
+    return 1 if chain.steps else 0
+
+
 def _diff(args: argparse.Namespace) -> int:
     """ADR-0014. Exit 0 ONLY when every dimension was comparable and identical.
 
@@ -1774,6 +1841,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print ONLY the lines that will not parse, with their line numbers, and stop",
     )
+    im = sub.add_parser(
+        "impact", help="what was derived from this file, and in what order it rebuilds"
+    )
+    im.add_argument("target", help="a path, or a sha256 digest")
+    im.add_argument("--depth", type=int, default=None, help="stop after this many hops")
+    im.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     df = sub.add_parser("diff", help="what changed between two runs, and what cannot be compared")
     df.add_argument("a", help="a run: run_uid prefix, run_id, script name or artifact path")
     df.add_argument(
@@ -1936,6 +2009,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "diff":
         return _diff(args)
+
+    if args.cmd == "impact":
+        return _impact(args)
 
     path = pathlib.Path(args.log) if args.log else active().resolved_run_log()
     if not path.is_file():

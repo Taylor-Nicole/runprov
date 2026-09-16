@@ -1,6 +1,6 @@
 # 15. `impact` answers what *did* depend on this, never what *will*
 
-Date: 2026-09-16 · Status: **proposed** · Ledger: T-31
+Date: 2026-09-16 · Status: **accepted**, implemented as `runprov/impact.py` · Ledger: T-31
 
 ## Context
 

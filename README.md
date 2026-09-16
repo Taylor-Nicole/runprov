@@ -492,6 +492,53 @@ producing events steadily never beats at all and a twenty-minute computation say
 period, naming what it last did. `configure(heartbeat=0)` disables it and builds no thread;
 the count reaches the record as `observation.heartbeats`.
 
+## `runprov impact`: what do I have to re-run?
+
+The reference genome is updated. Seven pipelines, 903 463 data files. **What is now invalid,
+and in what order does it rebuild?**
+
+`verify` answers that per artifact — but only for artifacts you already thought to name, which
+is the hard part. `lineage` holds the DAG and walks it *backwards*. This is the forward
+direction:
+
+```bash
+$ runprov impact refs/hcv_ref.fa
+c14c26c1c137190f
+
+  1 recorded run(s) read these bytes, and 3 artifact(s) derive from them:
+
+  1  align → aligned.tsv
+  2    genotype → genotypes.tsv
+  3      summarise → summary.tsv
+
+  Rebuild in that order; `runprov verify <artifact>` confirms each one.
+
+  NOT SEEN BY THIS QUERY:
+    any script that never imported runprov — `runprov check` finds those
+    any run whose records were pruned, or written to another history
+```
+
+It is a cheap index lookup, not a verification: it says which artifacts are worth hashing, and
+`verify` says whether each still follows from what it was made from.
+
+### It answers what *did* derive, never what *will* break
+
+That gap is the whole of its honesty. *"What will break if I change this"* is not answerable
+from a history; *"which recorded artifacts were derived from these bytes"* is. The difference
+is exactly what this package cannot see — a script that never imported `runprov`, a read that
+bypassed registration, a pruned history, a pipeline that will read the file tomorrow and never
+has.
+
+**So an empty result reads "no recorded run read these bytes", never "nothing depends on
+this".** One is a fact about the history and the other is a claim about the world, and only the
+first is true. The second would be a green light to overwrite a reference. The blind spots are
+printed on **every** answer, not only the empty one.
+
+Connectivity comes from the same walk `lineage` makes — the digest rule and the address rule
+live there and are not copied, because two traversals of one history that disagree about what
+is connected is the defect this guards against. Full reasoning in
+[ADR-0015](docs/adr/0015-impact-answers-what-did-depend-on-this-never-what-will.md).
+
 ## `runprov diff`: why is today different from last month
 
 The question asked most often, and the one that used to mean opening two records side by side.
@@ -2681,12 +2728,12 @@ is the one that went green afterwards.
 
 ## Tests
 
-`tests/test_runprov.py`, **about 910 tests**, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, **about 950 tests**, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite — in
 `test_size_is_stat_ed_after_the_hash_not_before` — to
 assert a call ORDER that no returned value can show. Everything else is substituted by a real
-thing — **about 3,100** uses of `tmp_path` (`grep -oE '\btmp_path\b' tests/test_runprov.py | wc -l`), actual
+thing — **about 3,450** uses of `tmp_path` (`grep -oE '\btmp_path\b' tests/test_runprov.py | wc -l`), actual
 files, actual JSONL, actual `Run` objects — or by a
 narrow simulation of an environment this machine is not (`sys.platform` for Windows,
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
@@ -2712,7 +2759,7 @@ The Windows leg skips ten times what any other does, and it is the only leg that
 assert the coverage floor — skipped tests leave their lines unmeasured, so 100% is
 unreachable there by construction rather than by regression. No other leg may lower it.
 
-Coverage is **100%** of **about 3,930 statements and 1,340 branches**, and the gate is set
+Coverage is **100%** of **about 4,450 statements and 1,540 branches**, and the gate is set
 there with `--cov-branch`.
 
 *Every figure in this section is approximate on purpose.* They exist to convey scale, and an

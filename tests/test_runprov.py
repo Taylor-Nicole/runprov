@@ -10911,6 +10911,185 @@ def test_diff_cli_refuses_what_it_cannot_compare(tmp_path, capsys):
     assert "nothing matches" in capsys.readouterr().err
 
 
+def _pipeline(tmp_path, seed="one\n"):
+    """ref.fa -> align -> genotype -> summarise, each reading the previous one's output."""
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    (tmp_path / "ref.fa").write_text(seed, encoding="utf-8")
+    chain = [
+        ("align", "ref.fa", "aligned.tsv"),
+        ("genotype", "aligned.tsv", "genotypes.tsv"),
+        ("summarise", "genotypes.tsv", "summary.tsv"),
+    ]
+    for name, reads, writes in chain:
+        with runprov.Run(name, {}, provenance=tmp_path / f"{name}.json") as run:
+            with open(run.input(tmp_path / reads), encoding="utf-8") as fh:
+                fh.read()
+            with run.open_output(tmp_path / writes) as out:
+                out.write(f"{name}\n")
+    return tmp_path / "h.jsonl"
+
+
+def test_impact_walks_the_whole_chain_in_rebuild_order(tmp_path, capsys):
+    """A set of nine filenames does not say which to rebuild first, and rebuilding out of
+    order means doing it twice. The answer is an ORDER, so it is reported with depth."""
+    log = _pipeline(tmp_path)
+    assert runprov.__main__.main(["impact", str(tmp_path / "ref.fa"), "--log", str(log)]) == 1
+    out = capsys.readouterr().out
+    assert "3 artifact(s) derive from them" in out
+    order = [line for line in out.splitlines() if "→" in line]
+    assert "align" in order[0] and "genotype" in order[1] and "summarise" in order[2]
+    assert order[0].strip().startswith("1") and order[2].strip().startswith("3")
+
+
+def test_impact_reports_an_empty_result_as_a_fact_about_the_history(tmp_path, capsys):
+    """THE SENTENCE THAT MATTERS. "No recorded run read this" is a fact about the history;
+    "nothing depends on this" is a claim about the world, and only the first is true. The
+    second would be a green light to overwrite a reference."""
+    log = _pipeline(tmp_path)
+    (tmp_path / "unread.fa").write_text("nobody read me\n", encoding="utf-8")
+    assert runprov.__main__.main(["impact", str(tmp_path / "unread.fa"), "--log", str(log)]) == 0
+    out = capsys.readouterr().out
+    assert "no recorded run read these bytes" in out
+    assert "nothing depends" not in out.lower()
+    assert "NOT SEEN BY THIS QUERY" in out, "the blind spots are printed even when empty"
+
+
+def test_impact_always_says_what_it_could_not_see(tmp_path, capsys):
+    """Not only when empty. The gap between "what will break" and "what did derive" is
+    exactly what this package cannot see, and it is a footer on every answer."""
+    log = _pipeline(tmp_path)
+    runprov.__main__.main(["impact", str(tmp_path / "ref.fa"), "--log", str(log)])
+    out = capsys.readouterr().out
+    assert "never imported runprov" in out and "runprov check" in out
+    assert "pruned" in out
+
+
+def test_impact_counts_the_reads_that_bypassed_registration(tmp_path, capsys):
+    """A run that recorded an unregistered read read something the pin does not cover, so the
+    chain from that run may be wider than this can show. Counted, and said."""
+    log = _pipeline(tmp_path)
+    (tmp_path / "conf.json").write_text("{}", encoding="utf-8")
+    with runprov.Run("extra", {}, provenance=tmp_path / "e.json") as run:
+        with open(tmp_path / "conf.json", encoding="utf-8") as fh:  # NOT registered
+            fh.read()
+        with open(run.input(tmp_path / "ref.fa"), encoding="utf-8") as fh:
+            fh.read()
+    runprov.__main__.main(["impact", str(tmp_path / "ref.fa"), "--log", str(log)])
+    assert "bypassed registration" in capsys.readouterr().out
+
+
+def test_impact_accepts_a_digest_directly_and_refuses_a_path_that_is_neither(tmp_path, capsys):
+    """A digest is the real subject; a path is a convenience that gets hashed NOW, because
+    "if I change this file" means the file as it stands."""
+    log = _pipeline(tmp_path)
+    digest = runprov.sha256(tmp_path / "ref.fa")
+    assert runprov.__main__.main(["impact", digest, "--log", str(log)]) == 1
+    assert "3 artifact(s)" in capsys.readouterr().out
+
+    assert runprov.__main__.main(["impact", "not-a-file", "--log", str(log)]) == 2
+    assert "not a file and not a digest" in capsys.readouterr().err
+
+    assert runprov.__main__.main(["impact", "x", "--log", str(tmp_path / "none.jsonl")]) == 2
+    assert "no run history" in capsys.readouterr().err
+
+
+def test_impact_depth_stops_the_walk(tmp_path, capsys):
+    """`--depth 1` answers "what reads this directly", which is a different question and a
+    cheaper one when the chain is long."""
+    log = _pipeline(tmp_path)
+    runprov.__main__.main(["impact", str(tmp_path / "ref.fa"), "--log", str(log), "--depth", "1"])
+    out = capsys.readouterr().out
+    assert "align" in out and "summarise" not in out
+
+
+def test_impact_index_skips_an_output_with_no_path_and_a_repeated_read(tmp_path):
+    """Two branches in the shared traversal, both ordinary and neither reachable from the
+    happy path.
+
+    An output entry can carry no path — a `kind` that is not a file — and a run can read the
+    SAME bytes under two names, which must record the reader once rather than twice. Driven
+    through `_lineage` directly with a hand-written history, because both are shapes a real
+    run produces only rarely and a test should not have to wait for one.
+    """
+    same = "a" * 64
+    records = [
+        {
+            "schema": "runprov.history.v2",
+            "run_uid": "u1",
+            "script": "maker",
+            "started_utc": "2026-01-01T00:00:00Z",
+            "finished_utc": "2026-01-01T00:00:01Z",
+            # one output with a path, one without — the second must not become an entry
+            "outputs": [{"path": "out.tsv", "sha256": same}, {"sha256": "b" * 64}],
+            "inputs": [],
+        },
+        {
+            "schema": "runprov.history.v2",
+            "run_uid": "u2",
+            "script": "reader",
+            "started_utc": "2026-01-01T00:00:02Z",
+            "finished_utc": "2026-01-01T00:00:03Z",
+            "outputs": [],
+            # the SAME digest twice, under two names: one reader, not two
+            "inputs": [{"path": "a.tsv", "sha256": same}, {"path": "b.tsv", "sha256": same}],
+        },
+    ]
+    consumers: dict[str, list[str]] = {}
+    outputs_by: dict[str, list[str]] = {}
+    runprov.__main__._lineage(records, None, {}, consumers, outputs_by)
+
+    assert outputs_by["u1"] == ["out.tsv"], "an output with no path is not an artifact name"
+    assert consumers[same] == ["u2"], "the same reader recorded once, not once per name"
+
+
+def test_impact_walk_survives_a_cycle():
+    """A build graph should be acyclic; a history spans years and paths get rewritten.
+
+    `seen` is what makes the traversal total rather than an assumption about somebody else's
+    pipeline being well formed — without it this does not terminate.
+    """
+    steps = runprov.impact.walk(
+        "d1",
+        consumers={"d1": ["A"]},
+        edges=[("A", "B"), ("B", "C"), ("C", "A")],
+        scripts={"A": "a", "B": "b", "C": "c"},
+        outputs_by={"A": ["a.tsv"], "B": ["b.tsv"], "C": ["c.tsv"]},
+    )
+    assert [s.script for s in steps] == ["a", "b", "c"], "each run once, in order"
+
+
+def test_impact_reports_a_run_that_wrote_nothing_recorded():
+    """A run can read a file and record no output — a check, a report to stderr. It is still
+    part of the chain and saying so is more useful than omitting it."""
+    steps = runprov.impact.walk("d1", {"d1": ["A"]}, [], {"A": "checker"}, {})
+    chain = runprov.impact.Chain("d1", ["A"], steps, 0, 1)
+    assert chain.artifacts == 0
+    assert "wrote nothing recorded" in "\n".join(runprov.impact.render(chain))
+
+
+def test_impact_connectivity_comes_from_the_single_lineage_walk(tmp_path):
+    """ADR-0015's requirement, asserted rather than trusted.
+
+    The digest rule — index on `content_sha256`, `sha256` AND `sha256_tree`, because preferring
+    one and falling back compares two different keys and invents orphans — lives nested inside
+    `_lineage`. Copying it here would be a second traversal that could disagree, so `_lineage`
+    fills the two out-parameters during the passes it already makes. This asserts they ARE
+    filled: if they came back empty, `impact` would silently report that nothing derives from
+    anything.
+    """
+    log = _pipeline(tmp_path)
+    consumers: dict[str, list[str]] = {}
+    names: dict[str, str] = {}
+    outputs_by: dict[str, list[str]] = {}
+    graph = runprov.__main__._lineage(log, None, names, consumers, outputs_by)
+
+    assert consumers, "digest -> readers was not filled"
+    assert outputs_by, "address -> output paths was not filled"
+    assert graph["edges"], "the chain has edges, so the walk has something to follow"
+    digest = runprov.sha256(tmp_path / "ref.fa")
+    assert digest in consumers, "the seed lookup uses the same digest rule as the join"
+
+
 def test_check_flags_an_entry_point_that_opens_files_and_records_nothing(tmp_path):
     """T-27, the case `watch.py` can never see: no import means no code runs."""
     root = _source_tree(
