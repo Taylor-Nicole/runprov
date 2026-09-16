@@ -65,6 +65,9 @@ identifiers:
     value: 10.5281/zenodo.22745568
     description: "Concept DOI — always resolves to the most recent version."
   - type: doi
+    value: 10.5281/zenodo.22795633
+    description: "Version DOI — version 0.4.0, permanently."
+  - type: doi
     value: 10.5281/zenodo.22790258
     description: "Version DOI — version 0.3.0, permanently."
   - type: doi
