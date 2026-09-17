@@ -23921,3 +23921,139 @@ def test_diff_reads_the_code_digest_from_either_record_shape():
     assert runprov.diff._imported_of(flat)["digest"] == "aa" * 32
     assert runprov.diff._imported_of(nested)["digest"] == "bb" * 32
     assert runprov.diff._imported_of({"imported_code": None}) == {}
+
+
+def _out_record(script, path, digest, cwd="/proj", **over):
+    """A history record that wrote one output, for `find_run`'s ranking."""
+    return {
+        "script": script,
+        "run_id": f"r_{script}",
+        "cwd": cwd,
+        "status": "ok",
+        "outputs": [{"path": path, "sha256": digest}],
+        **over,
+    }
+
+
+def test_an_exact_path_beats_a_byte_identical_file_somewhere_else():
+    """Audit D, D-09 — the guard C-01 never got, and the reason coverage is not one.
+
+    C-01 was the highest-severity row of its audit: `report` had begun matching on digest
+    before path, so a byte-identical file written later at a DIFFERENT path did not merely win,
+    it destroyed a correct exact-path match. The repair ranked path above digest and shipped
+    with no test of that ranking.
+
+    Measured afterwards: `report.py` sits at 100% statement AND branch coverage, and reversing
+    the ranking passes 976 of 976 tests. Every branch of `find_run` executes; the priority
+    those branches exist to encode was asserted by nobody. Coverage is a measure of execution.
+    """
+    history = [
+        _out_record("summarise_s01", "s01/summary.csv", "aa" * 32),
+        _out_record("summarise_s99", "s99/summary.csv", "aa" * 32),  # byte-identical, later
+    ]
+    # THE READER NAMED s01, and s99's identical bytes must not take the page away from it.
+    assert runprov.report.find_run(history, "/proj/s01/summary.csv", "aa" * 32)["script"] == (
+        "summarise_s01"
+    ), "an exact recorded path is the strongest identity available and must win outright"
+
+    # AND THE DIGEST IS STILL THE FALLBACK for an artifact that has since been MOVED, which is
+    # the case it was added for — a path comparison cannot answer it.
+    moved = runprov.report.find_run(history, "/archive/kept.csv", "bb" * 32)
+    assert moved is None, "no path, no unique digest: 'not found' is the honest answer"
+    one_only = [_out_record("only", "out/x.csv", "cc" * 32)]
+    assert runprov.report.find_run(one_only, "/archive/kept.csv", "cc" * 32)["script"] == "only"
+
+    # TWO PATHS, ONE DIGEST identifies no single run, so it names none of them.
+    assert runprov.report.find_run(history, "/archive/kept.csv", "aa" * 32) is None
+
+
+def test_the_page_says_when_the_bytes_are_not_the_bytes_that_run_recorded(tmp_path, capsys):
+    """Audit D, D-03. The path branch assigned unconditionally, so when the path-matching
+    record's OWN digest for that path contradicted the bytes on disk, `find_run` held proof it
+    did not describe them and returned it anyway — discarding an unambiguous digest match.
+
+    The page then paired one run's script, command and commit with ANOTHER run's inputs (those
+    come from the artifact's own pin), reported OK and exited 0. Three commands gave three
+    answers for one file: `report` named v1, `verify` named v2, `show --stale` said MODIFIED.
+
+    Reached by publish-by-copy — a staged result copied to a stable name, which is `publishDir`
+    in Nextflow and a `cp` in a Makefile — or by restoring a good copy over a bad run.
+    """
+    history = [
+        _out_record("v1_pipeline", "results/summary.csv", "aa" * 32),
+        _out_record("v2_pipeline", "staging/summary.csv", "bb" * 32),
+    ]
+    match = runprov.report.find_match(history, "/proj/results/summary.csv", "bb" * 32)
+
+    assert match.record["script"] == "v1_pipeline", "the path match stays the named run"
+    assert match.disagrees
+    assert match.recorded == ("aa" * 32)[: runprov.hashing.PIN_DIGEST_CHARS]
+    assert match.elsewhere["script"] == "v2_pipeline"
+    assert match.elsewhere_path == "/proj/staging/summary.csv"
+
+    # EDITED IN PLACE IS NOT THIS, and the distinction is the whole design. There the record IS
+    # the producer, the page correctly reports ALTERED, and no other run's output matches — so
+    # `disagrees` is False and nothing extra is printed. Preferring the digest, or returning no
+    # run, would have stripped the producer from every altered page.
+    edited = runprov.report.find_match([history[0]], "/proj/results/summary.csv", "ff" * 32)
+    assert edited.record["script"] == "v1_pipeline"
+    assert not edited.disagrees, "an edited artifact still names who wrote it"
+
+    # TWO OTHER RUNS HOLDING THOSE BYTES IDENTIFY NONE OF THEM, so the page must not offer one.
+    # The same uniqueness rule the digest FALLBACK uses, applied to the hand-off — offering the
+    # last-appended of several would be C-01's defect wearing the new line as a disguise.
+    ambiguous = runprov.report.find_match(
+        [*history, _out_record("v3_pipeline", "other/summary.csv", "bb" * 32)],
+        "/proj/results/summary.csv",
+        "bb" * 32,
+    )
+    assert ambiguous.record["script"] == "v1_pipeline"
+    assert not ambiguous.disagrees, "two candidates identify no single run"
+    assert ambiguous.elsewhere is None
+
+    # AND THE RECORDED DIGEST COMES FROM `pin_digest`, not a fourth re-derivation of its
+    # precedence: a checker that recomputes it independently can disagree with the pin it is
+    # checking, and that disagreement reads to a user as a stale artifact.
+    content_shaped = [
+        _out_record("v1_pipeline", "results/summary.csv", "aa" * 32),
+        history[1],
+    ]
+    content_shaped[0]["outputs"][0]["content_sha256"] = "dd" * 32
+    from_pin = runprov.report.find_match(content_shaped, "/proj/results/summary.csv", "bb" * 32)
+    assert from_pin.recorded == ("dd" * 32)[: runprov.hashing.PIN_DIGEST_CHARS], (
+        "`content_sha256` wins over `sha256` in a pin, so it must win here too"
+    )
+
+    # AND THE PAGE PRINTS IT. Asserting only on `find_match` leaves the block that renders it
+    # unguarded — the D-10 shape, where the fact reached the data and no reader said it.
+    artifact = tmp_path / "results" / "summary.csv"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("col\nv2\n", encoding="utf-8")
+    disk = runprov.hashing.sha256(artifact)
+    page = runprov.report.page(
+        artifact,
+        tmp_path,
+        [
+            _out_record("v1_pipeline", "results/summary.csv", "aa" * 32, cwd=str(tmp_path)),
+            _out_record("v2_pipeline", "staging/summary.csv", disk, cwd=str(tmp_path)),
+        ],
+    )
+    text = "\n".join(page.lines)
+    assert "BYTES DIFFER" in text, text
+    assert "v2_pipeline" in text and "v1_pipeline" in text
+    assert "staging/summary.csv" in text
+
+
+def test_find_run_keeps_its_name_and_returns_the_record(tmp_path):
+    """Audit D, D-03. `find_match` carries the extra answer; `find_run` is what callers use.
+
+    The prototype passed the new facts through a module-level global. Two readers of one
+    artifact would then have raced, and a second caller would have seen the first one's answer
+    — a wrong record produced by the code that exists to prevent wrong records.
+    """
+    history = [_out_record("only", "out/x.csv", "cc" * 32)]
+    assert runprov.report.find_run(history, "/proj/out/x.csv") == history[0]
+    assert runprov.report.find_match(history, "/proj/out/x.csv").record == history[0]
+    assert runprov.report.find_run([], "/proj/out/x.csv") is None
+    assert runprov.report.find_match([], "/proj/out/x.csv").record is None
+    assert not runprov.report.Match(None).disagrees

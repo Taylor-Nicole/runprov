@@ -49,12 +49,48 @@ def _kv(key: str, value: typing.Any, pad: int = 13) -> str:  # noqa: ANN401 - an
     return f"  {key.ljust(pad)} {value}"
 
 
+class Match(typing.NamedTuple):
+    """Which run produced an artifact, and what the answer could not settle.
+
+    `recorded` is the digest the named run itself recorded for that path; `elsewhere` is the
+    single other run whose recorded output matches the bytes actually on disk, when there is
+    exactly one. Both are None/empty in the ordinary case, and `page()` prints nothing extra.
+
+    RETURNED RATHER THAN STASHED. The prototype for D-03 passed these through a module-level
+    global; two readers of one artifact would then have raced, and a second caller of
+    `find_run` would have seen the first one's answer.
+    """
+
+    record: dict[str, typing.Any] | None
+    recorded: str = ""
+    elsewhere: dict[str, typing.Any] | None = None
+    elsewhere_path: str | None = None
+
+    @property
+    def disagrees(self) -> bool:
+        """The named run recorded a digest for this path, and it is not what is there now."""
+        return bool(self.recorded and self.elsewhere is not None)
+
+
 def find_run(
     history: typing.Iterable[dict[str, typing.Any]],
     artifact: str,
     digest: str | None = None,
 ) -> dict[str, typing.Any] | None:
-    """The LAST run that wrote `artifact`, or None.
+    """The LAST run that wrote `artifact`, or None. `find_match` for the rest of the answer.
+
+    KEPT AS A THIN WRAPPER because callers and tests reach this name and the record is what
+    almost all of them want; `find_match` carries what D-03 needs on top.
+    """
+    return find_match(history, artifact, digest).record
+
+
+def find_match(
+    history: typing.Iterable[dict[str, typing.Any]],
+    artifact: str,
+    digest: str | None = None,
+) -> Match:
+    """The LAST run that wrote `artifact`, and what the match could not settle.
 
     The last rather than the first: a file rewritten by a later run is described by that run,
     and a page naming the first would describe bytes that are no longer there. Runs are
@@ -87,6 +123,7 @@ def find_run(
     # for. And a digest matching outputs at two or more DISTINCT paths identifies nothing, so it
     # returns None: this page renders "no run found" honestly, and naming the wrong run does not.
     by_path = None
+    recorded_for_path = ""
     by_digest: dict[str, dict[str, typing.Any]] = {}
     for record in history:
         # AGAINST THE RECORDED CWD, NEVER THE CURRENT ONE. A record holds the path as the run
@@ -99,6 +136,11 @@ def find_run(
             name = out.get("path") if isinstance(out, dict) else out
             if name and _resolve(str(name), base) == want:
                 by_path = record
+                # WHAT THIS RECORD SAYS THESE BYTES WERE, kept so the caller can compare it
+                # with what they are. Taken with `pin_digest`'s own precedence rather than a
+                # fourth re-derivation of it — a checker that recomputes that precedence
+                # independently is a checker that can disagree with the pin it is checking.
+                recorded_for_path = (hashing.pin_digest(out) if isinstance(out, dict) else "") or ""
             elif (
                 isinstance(out, dict)
                 and digest
@@ -108,10 +150,38 @@ def find_run(
             ):
                 by_digest[_resolve(str(name), base) if name else ""] = record
     if by_path is not None:
-        return by_path
+        # D-03 of Audit D. THE PATH WINS, AND THE DISAGREEMENT IS REPORTED RATHER THAN RESOLVED.
+        # The branch assigned unconditionally, so when the path-matching record's OWN recorded
+        # digest for that path contradicted the bytes on disk, `find_run` held proof the record
+        # did not describe them and returned it anyway — discarding an unambiguous digest hit.
+        # The page then paired one run's script, command and commit with another run's inputs
+        # (those come from the artifact's own pin), reported OK, and exited 0: the internally
+        # contradictory page A-05 was filed about, by a third road.
+        #
+        # PREFERRING THE DIGEST THERE WAS TRIED AND IS WORSE. A skeptic broke it in one attempt:
+        # run A writes `results/out.bin`, run B records an EMPTY `archive/placeholder.bin`, an
+        # interrupted rewrite truncates A's output to nothing — and the remedy names B, which
+        # never touched that path, on an empty-file collision. Degenerate collisions (empty
+        # results, header-only CSVs, `.done` sentinels) are the class C-01 was filed over.
+        #
+        # RETURNING NOTHING IS WORSE STILL: the disagreement condition also holds when the
+        # artifact was simply EDITED IN PLACE, where this record IS the producer and the page
+        # correctly reports ALTERED. Blanking the run there would strip the producer from every
+        # altered page — the one place "who wrote this, and when" matters most.
+        #
+        # So the strongest identity stays the headline and the reader is handed the rest: this
+        # is the package's own rule, report what you cannot tell rather than guess.
+        other = {p: r for p, r in by_digest.items() if r is not by_path}
+        return Match(
+            by_path,
+            recorded=recorded_for_path,
+            elsewhere=next(iter(other.values())) if len(other) == 1 else None,
+            elsewhere_path=next(iter(other)) if len(other) == 1 else None,
+        )
     if len(by_digest) == 1:
-        return next(iter(by_digest.values()))
-    return None  # nothing matched, or the bytes sit at two paths and identify no single run
+        return Match(next(iter(by_digest.values())))
+    # Nothing matched, or the bytes sit at two paths and identify no single run.
+    return Match(None)
 
 
 def _resolve(name: str, base: str | None = None) -> str:
@@ -156,7 +226,8 @@ def page(
         digest: str | None = hashing.sha256(artifact)
     except OSError:
         digest = None
-    run = find_run(history, str(artifact), digest)
+    match = find_match(history, str(artifact), digest)
+    run = match.record
 
     out = [_rule(f"provenance report — {artifact.name}"), ""]
     out.append(_kv("artifact", artifact))
@@ -186,6 +257,26 @@ def page(
     out.append(_kv("run_id", run.get("run_id", "?")))
     out.append(_kv("command", run.get("command", "?")))
     out.append(_kv("cwd", run.get("cwd", "?")))
+    if match.disagrees:
+        # D-03 of Audit D. THE LOUDEST LINE ON THE PAGE WHEN IT IS PRESENT, because everything
+        # above it describes a run and everything below describes the artifact, and this says
+        # the two may not belong together. Both digests are recorded facts and the comparison
+        # is the one `show --stale` already performs; nothing here is inferred.
+        #
+        # THE EXIT CODE DOES NOT MOVE (Taylor's decision, 2026-09-17). `report` exits on
+        # `verify`'s verdict, and `verify` is right: the artifact's pin is internally
+        # consistent and the inputs it names still hash correctly. What is wrong is which
+        # HISTORY RECORD attached to it, which is a property of the history and not of the
+        # file. Making `report` fail where `verify` passes would leave two commands disagreeing
+        # about one artifact. The precedent is the UNREGISTERED block below, which is the
+        # loudest thing on this page and never moves the exit code either.
+        out.append(_kv("BYTES DIFFER", f"this run recorded {match.recorded} for this path;"))
+        out.append(_kv("", f"the file now hashes {str(digest or '?')[: hashing.PIN_DIGEST_CHARS]}"))
+        out.append(_kv("", f"those bytes are the output {match.elsewhere_path}"))
+        # BOUND, not re-read through the property: `disagrees` proves it is not None and mypy
+        # cannot see that through a NamedTuple property. A local says it once.
+        wrote_them = match.elsewhere or {}
+        out.append(_kv("", f"recorded by the run {wrote_them.get('script', '?')}"))
 
     out += ["", _rule("the method, and whether it can be got back"), ""]
     commit = run.get("git_commit") or "none recorded"

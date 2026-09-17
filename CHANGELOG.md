@@ -84,6 +84,30 @@ is a fix nobody checked.
   project's record on remembered rules is seven misses for the scope pattern and three for
   `README-pypi.md`, so the harness may not depend on one.
 
+### Fixed — `runprov report` says when the bytes are not the bytes that run recorded
+
+* **A page could pair one run's identity with another run's inputs, and report OK.** The
+  path-matching branch of `find_run` assigned unconditionally, so when the named record's own
+  recorded digest for that path contradicted the bytes on disk, it had proof the record did not
+  describe them and returned it anyway — discarding an unambiguous digest match. The run block
+  came from that record and the "inputs it was made from" block from the artifact's own pin,
+  i.e. from a different run. Three commands gave three answers for one file: `report` named
+  v1, `verify` named v2, `show --stale` said MODIFIED. Reached by publish-by-copy (a staged
+  result copied to a stable name) or by restoring a good copy over a bad run.
+
+  **The path match stays the named run and the disagreement is now printed**: *this run
+  recorded X for this path; the file now hashes Y; those bytes are the output Z recorded by run
+  W*. Both digests are recorded facts and the comparison is the one `show --stale` already
+  performs — nothing is inferred. Two alternatives were prototyped and are worse: preferring
+  the digest names a run that never touched the path when an interrupted rewrite leaves an
+  empty file colliding with some other empty output, and returning no run strips the producer
+  from every ALTERED page, which is where "who wrote this" matters most.
+
+  The exit code does not move. `report` exits on `verify`'s verdict, and `verify` is right —
+  the pin is internally consistent and its inputs still hash correctly. What is wrong is which
+  history record attached to the file, which is a property of the history. The precedent is the
+  UNREGISTERED block, the loudest line on the page, which has never moved the exit code either.
+
 ### Fixed — `runprov diff` compares the code that ran, not only the commit
 
 * **A changed analysis script passed the gate when the commit did not move.** `git status`
