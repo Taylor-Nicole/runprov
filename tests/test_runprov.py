@@ -23613,9 +23613,14 @@ def test_the_tree_digest_is_the_unfolded_order_and_keeps_the_folded_one_only_whe
         for p in sorted((root / "refs").rglob("*"))
         if p.is_file()
     ]
-    native_windows = sorted(
-        pairs, key=lambda kv: pathlib.PureWindowsPath(kv[0])._str_normcase.split("\\")
-    )
+    # THE PUBLIC COMPARISON, not a private attribute. `PurePath.__lt__` IS the key the released
+    # versions sorted by — that is the whole point — and its internals are versioned: 3.10 and
+    # 3.11 use `_cparts` / `casefold_parts`, 3.12+ uses a different private name. The first
+    # draft of this line reached inside for one of them and went red on the two oldest legs
+    # while being right about the behaviour — this project's own "probe, never reach inside"
+    # rule, earned again, one turn after a reviewer had told me that attribute moved between
+    # versions. Sorting the paths themselves is correct on every version by construction.
+    native_windows = sorted(pairs, key=lambda kv: pathlib.PureWindowsPath(kv[0]))
     stream = hashlib.sha256()
     for name, digest in native_windows:
         stream.update(name.encode() + b"\0")
