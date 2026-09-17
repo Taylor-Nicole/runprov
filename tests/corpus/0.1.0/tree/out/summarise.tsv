@@ -4,6 +4,6 @@
 #   commit     : NONE — no commit to name (yet)
 #   body       : 04f6cc74f9048cd6
 #   inputs (1), content digest:
-#     6ae20eb940089b3c  out/genotype.tsv
+#     ec083d6cbf379cfd  out/genotype.tsv
 stage	rows
 summarise	1

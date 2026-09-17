@@ -1,9 +1,9 @@
 "schema": "runprov.run.v2"
 "script": "align"
-"run_uid": "c23184f753df4c4fa7ce73ac23d65955"
-"run_id": "adhoc_20260917T082943Z"
+"run_uid": "e8a957840fa84f2394debecf196a1a0f"
+"run_id": "adhoc_20260917T103120Z"
 "generation": "(default)"
-"started_utc": "2026-09-17T08:29:43Z"
+"started_utc": "2026-09-17T10:31:20Z"
 "command": "python /mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py @@RUNPROV_CORPUS_ROOT@@"
 "argv":
   - "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py"
@@ -31,7 +31,7 @@
     - "pyproject.toml"
     - "Makefile"
   "script_file": "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py"
-  "script_sha256": "accb44dab7d620cdeff5441b675c1c8b416d739a4011530cc0a879e5b9cea0a5"
+  "script_sha256": "07d70859bc1727a3f879ad5f690cf2bdf2f26fb602d44c6fd2ad4cf5a828ab33"
   "imported":
     "count": 0
     "omitted": 0
@@ -78,18 +78,18 @@
     "path": "data/refs"
     "symlink": false
     "size_bytes": 4096
-    "mtime_utc": "2026-09-17T08:29:43Z"
+    "mtime_utc": "2026-09-17T10:31:20Z"
     "kind": "directory"
-    "n_files": 5
+    "n_files": 7
     "n_unreadable_dirs": 0
     "n_skipped_nonregular": 0
     "n_symlinked_dirs_not_followed": 0
-    "sha256_tree": "b9fb8778123fa888a72235b3d0dd44fd2dffd6929e91979a03ac63f9828373fa"
+    "sha256_tree": "08a4ccf578bdc67512c81c363328733039353be2036714d01928293ead838cc0"
   -
     "path": "data/m.tsv"
     "symlink": false
     "size_bytes": 27
-    "mtime_utc": "2026-09-17T08:29:43Z"
+    "mtime_utc": "2026-09-17T10:31:20Z"
     "kind": "file"
     "sha256": "0a9ba34b0fd0084fae165e20f0d6d3b148b44fef66c9878b56df3e9393d61984"
     "content_sha256": "f6d2cdf31b5ebd54975e4d04b76218cd687ae47eb2cea5844460b6fa21423ea0"
@@ -98,10 +98,10 @@
     "path": "out/align.tsv"
     "symlink": false
     "size_bytes": 306
-    "mtime_utc": "2026-09-17T08:29:43Z"
+    "mtime_utc": "2026-09-17T10:31:20Z"
     "kind": "file"
-    "sha256": "f745d3245d975fdadc27681d2a8f9d754dc8b7657eaeec7d93889f4332589825"
-    "content_sha256": "567189165e668fde540ca06a2ee8a669b49aae340b3f69463b3f07e6242bbf7e"
+    "sha256": "1c404db254534b6b79099db8215ed9e507715dd2d7acd48f4001e4dfa6e55c25"
+    "content_sha256": "0649b981d92310be727f38c35ca6072b956b2ab319c9635f9db641c473ee7ef3"
 "steps":
   -
     "step": "main.<locals>.tally"
@@ -117,10 +117,12 @@
   "rows_seen": 3
 "unregistered_reads":
   - "data/lookup.csv"
+  - "data/refs/Panel-QC/report.tsv"
+  - "data/refs/README.md"
   - "data/refs/panel-v2/a.fa"
   - "data/refs/panel.old/a.fa"
   - "data/refs/panel/a.fa"
   - "data/refs/ref.fa"
   - "data/refs/ref.fa.fai"
 "status": "ok"
-"finished_utc": "2026-09-17T08:29:43Z"
+"finished_utc": "2026-09-17T10:31:20Z"

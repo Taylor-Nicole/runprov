@@ -1,10 +1,10 @@
 {
   "schema": "runprov.run.v2",
   "script": "summarise",
-  "run_uid": "80e045307851429c9dd84a6d93a721c9",
-  "run_id": "adhoc_20260917T082946Z",
+  "run_uid": "18dbc110aee54eaf9d30dc6e311d398f",
+  "run_id": "adhoc_20260917T103131Z",
   "generation": "(default)",
-  "started_utc": "2026-09-17T08:29:46Z",
+  "started_utc": "2026-09-17T10:31:31Z",
   "command": "python /mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py @@RUNPROV_CORPUS_ROOT@@",
   "argv": [
     "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py",
@@ -35,7 +35,7 @@
       "Makefile"
     ],
     "script_file": "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py",
-    "script_sha256": "accb44dab7d620cdeff5441b675c1c8b416d739a4011530cc0a879e5b9cea0a5",
+    "script_sha256": "07d70859bc1727a3f879ad5f690cf2bdf2f26fb602d44c6fd2ad4cf5a828ab33",
     "imported": {
       "count": 0,
       "omitted": 0,
@@ -92,10 +92,10 @@
       "path": "out/genotype.tsv",
       "symlink": false,
       "size_bytes": 281,
-      "mtime_utc": "2026-09-17T08:29:46Z",
+      "mtime_utc": "2026-09-17T10:31:31Z",
       "kind": "file",
-      "sha256": "ed053653b4fed6d2f7b9e437529bd206c38b7607717edb8dbad9051d5910c83e",
-      "content_sha256": "6ae20eb940089b3ca927f26ee3c51132dd9c4b6fb0c20cc8b4e62c99d8c601d3"
+      "sha256": "9c116611dbdb82a40fdbab7ea4c2c70c1f477fd42a95945442af1b550476fa6f",
+      "content_sha256": "ec083d6cbf379cfd32dc521fe8e68419b2d6740570e12fa7a0ba91e3e625cac6"
     }
   ],
   "outputs": [
@@ -103,10 +103,10 @@
       "path": "out/summarise.tsv",
       "symlink": false,
       "size_bytes": 286,
-      "mtime_utc": "2026-09-17T08:29:46Z",
+      "mtime_utc": "2026-09-17T10:31:31Z",
       "kind": "file",
-      "sha256": "2870cff06377566b76099fc37506c1f1e182634983efb7e134bf94c6a01f3f75",
-      "content_sha256": "37fb9509c5d6c226044680dfc03a4f7754abdd3b1f1013b3eada186aca586f61"
+      "sha256": "2c01d8802d594c064fd5967eafea6a7f9fd0b7caaf6157427e1b9b12cb46ad0d",
+      "content_sha256": "85ce7b2a942bd2b90f2b54ea62f4a37bc504234854ed33819fa3e86bbb818fb1"
     }
   ],
   "steps": [
@@ -129,15 +129,15 @@
     "rows_seen": 1
   },
   "status": "ok",
-  "finished_utc": "2026-09-17T08:29:46Z",
+  "finished_utc": "2026-09-17T10:31:31Z",
   "resources": {
-    "wall_seconds": 0.00917,
+    "wall_seconds": 0.023848,
     "source": "getrusage",
-    "cpu_seconds": 0.180548,
+    "cpu_seconds": 0.289429,
     "max_rss_bytes": 26935296,
-    "max_vms_bytes": 58019840,
+    "max_vms_bytes": 58028032,
     "io_read_bytes": 0,
-    "io_write_bytes": 110592,
+    "io_write_bytes": 118784,
     "unavailable": [
       "cgroup: not this run's own (no scheduler or container)"
     ],

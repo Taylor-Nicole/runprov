@@ -1,12 +1,14 @@
 {
-  "generated_utc": "2026-09-17T08:29:46Z",
-  "scenario_sha256": "accb44dab7d620cdeff5441b675c1c8b416d739a4011530cc0a879e5b9cea0a5",
+  "generated_utc": "2026-09-17T10:31:31Z",
+  "scenario_sha256": "07d70859bc1727a3f879ad5f690cf2bdf2f26fb602d44c6fd2ad4cf5a828ab33",
   "versions": {
     "0.1.0": {
-      "captured_utc": "2026-09-17T08:29:35Z",
+      "captured_utc": "2026-09-17T10:31:00Z",
       "files": [
         "data/lookup.csv",
         "data/m.tsv",
+        "data/refs/Panel-QC/report.tsv",
+        "data/refs/README.md",
         "data/refs/panel-v2/a.fa",
         "data/refs/panel.old/a.fa",
         "data/refs/panel/a.fa",
@@ -53,10 +55,12 @@
       }
     },
     "0.2.0": {
-      "captured_utc": "2026-09-17T08:29:39Z",
+      "captured_utc": "2026-09-17T10:31:12Z",
       "files": [
         "data/lookup.csv",
         "data/m.tsv",
+        "data/refs/Panel-QC/report.tsv",
+        "data/refs/README.md",
         "data/refs/panel-v2/a.fa",
         "data/refs/panel.old/a.fa",
         "data/refs/panel/a.fa",
@@ -102,10 +106,12 @@
       }
     },
     "0.3.0": {
-      "captured_utc": "2026-09-17T08:29:43Z",
+      "captured_utc": "2026-09-17T10:31:21Z",
       "files": [
         "data/lookup.csv",
         "data/m.tsv",
+        "data/refs/Panel-QC/report.tsv",
+        "data/refs/README.md",
         "data/refs/panel-v2/a.fa",
         "data/refs/panel.old/a.fa",
         "data/refs/panel/a.fa",
@@ -151,10 +157,12 @@
       }
     },
     "0.4.0": {
-      "captured_utc": "2026-09-17T08:29:46Z",
+      "captured_utc": "2026-09-17T10:31:31Z",
       "files": [
         "data/lookup.csv",
         "data/m.tsv",
+        "data/refs/Panel-QC/report.tsv",
+        "data/refs/README.md",
         "data/refs/panel-v2/a.fa",
         "data/refs/panel.old/a.fa",
         "data/refs/panel/a.fa",

@@ -11,12 +11,12 @@
 
 - step: "align"
   script: "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py"
-  date: "2026-09-17T08:29:39Z"
+  date: "2026-09-17T10:31:11Z"
   input: "data/refs, data/m.tsv"
   output: "out/align.tsv"
   run_command: "python /mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py @@RUNPROV_CORPUS_ROOT@@"
   cwd: "@@RUNPROV_CORPUS_ROOT@@"
-  run_id: "adhoc_20260917T082939Z"
+  run_id: "adhoc_20260917T103111Z"
   generation: "(default)"
   git_commit: "?"
   status: "ok"
@@ -24,19 +24,19 @@
   summary: {"rows_seen": 3}
   requirements_file: "prov/env/env-17d17787b3a9cebb.txt"
   input_sha256:
-    - "b9fb8778123fa888a72235b3d0dd44fd2dffd6929e91979a03ac63f9828373fa  data/refs"
+    - "08a4ccf578bdc67512c81c363328733039353be2036714d01928293ead838cc0  data/refs"
     - "0a9ba34b0fd0084fae165e20f0d6d3b148b44fef66c9878b56df3e9393d61984  data/m.tsv"
   output_sha256:
-    - "f745d3245d975fdadc27681d2a8f9d754dc8b7657eaeec7d93889f4332589825  out/align.tsv"
+    - "1c404db254534b6b79099db8215ed9e507715dd2d7acd48f4001e4dfa6e55c25  out/align.tsv"
 
 - step: "genotype"
   script: "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py"
-  date: "2026-09-17T08:29:39Z"
+  date: "2026-09-17T10:31:11Z"
   input: "out/align.tsv"
   output: "out/genotype.tsv"
   run_command: "python /mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py @@RUNPROV_CORPUS_ROOT@@"
   cwd: "@@RUNPROV_CORPUS_ROOT@@"
-  run_id: "adhoc_20260917T082939Z"
+  run_id: "adhoc_20260917T103111Z"
   generation: "(default)"
   git_commit: "?"
   status: "ok"
@@ -44,18 +44,18 @@
   summary: {"rows_seen": 1}
   requirements_file: "prov/env/env-17d17787b3a9cebb.txt"
   input_sha256:
-    - "f745d3245d975fdadc27681d2a8f9d754dc8b7657eaeec7d93889f4332589825  out/align.tsv"
+    - "1c404db254534b6b79099db8215ed9e507715dd2d7acd48f4001e4dfa6e55c25  out/align.tsv"
   output_sha256:
-    - "ed053653b4fed6d2f7b9e437529bd206c38b7607717edb8dbad9051d5910c83e  out/genotype.tsv"
+    - "9c116611dbdb82a40fdbab7ea4c2c70c1f477fd42a95945442af1b550476fa6f  out/genotype.tsv"
 
 - step: "summarise"
   script: "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py"
-  date: "2026-09-17T08:29:39Z"
+  date: "2026-09-17T10:31:12Z"
   input: "out/genotype.tsv"
   output: "out/summarise.tsv"
   run_command: "python /mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py @@RUNPROV_CORPUS_ROOT@@"
   cwd: "@@RUNPROV_CORPUS_ROOT@@"
-  run_id: "adhoc_20260917T082939Z"
+  run_id: "adhoc_20260917T103112Z"
   generation: "(default)"
   git_commit: "?"
   status: "ok"
@@ -63,6 +63,6 @@
   summary: {"rows_seen": 1}
   requirements_file: "prov/env/env-17d17787b3a9cebb.txt"
   input_sha256:
-    - "ed053653b4fed6d2f7b9e437529bd206c38b7607717edb8dbad9051d5910c83e  out/genotype.tsv"
+    - "9c116611dbdb82a40fdbab7ea4c2c70c1f477fd42a95945442af1b550476fa6f  out/genotype.tsv"
   output_sha256:
-    - "2870cff06377566b76099fc37506c1f1e182634983efb7e134bf94c6a01f3f75  out/summarise.tsv"
+    - "2c01d8802d594c064fd5967eafea6a7f9fd0b7caaf6157427e1b9b12cb46ad0d  out/summarise.tsv"

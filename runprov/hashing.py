@@ -476,40 +476,6 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
                     # unreadable directory above. Counted, so the tree hash's population is
                     # stated rather than assumed.
                     skipped.append(_posix(fp))
-        # SORTED BY `.parts`, and the choice of key is the whole of it. A-14 (Audit B) is that
-        # bare `files.sort()` uses `PurePath.__lt__`, which compares `_parts_normcase` —
-        # CASE-FOLDED on Windows — so `A.txt` and `a.txt` order one way there and another on
-        # POSIX, and the same tree hashes to two values. A digest that depends on the machine
-        # cannot answer the only question it is asked.
-        #
-        # THE FIRST REPAIR WAS WORSE THAN THE DEFECT, and C-03 (Audit C) caught it: sorting on
-        # the rendered string `_posix` changed the order ON POSIX TOO, because `PurePath`
-        # compares PART-WISE while a string comparison lets the separator `/` (0x2f) compete
-        # with every character below it — `.`, `-`, `,`, space. `data.csv` and `data/x.csv`
-        # swapped, and every directory input pinned by an earlier version then verified STALE
-        # with nothing on disk touched. This ledger's standing rule is that THE TREE HASH DOES
-        # NOT MOVE; a fix that invalidates stored records is not a fix.
-        #
-        # `.parts` is the tuple `PurePath` already orders by, minus the case folding — so it is
-        # byte-identical to the historical POSIX order (verified against the recorded digest)
-        # and, being unfolded, identical on Windows as well.
-        #
-        # AND THAT LAST PROPERTY IS BOUGHT, NOT FREE. D-08 (Audit D). The sentence that stood
-        # here said "platform independence bought WITHOUT MOVING A SINGLE EXISTING DIGEST",
-        # and it was false: there is no key that equals both the folded and the unfolded
-        # order, so making this digest machine-independent NECESSARILY moves one platform.
-        # A-14 moved Windows; C-03 restored POSIX and left Windows where A-14 had put it, and
-        # inherited the false claim. Measured over this project's own domain tree, 69 of 339
-        # directories (20 %) order differently under the two keys — any tree mixing a
-        # capitalised and a lowercase entry, which is most of them.
-        #
-        # So a directory input pinned by 0.1.0-0.4.0 ON WINDOWS verifies STALE here with
-        # nothing on disk touched. That is disclosed in CHANGELOG.md as a record-format
-        # exception to this ledger's standing "the tree hash does not move" rule, and
-        # `verify` recognises the old order and says so by name rather than reporting a bare
-        # STALE — the C-11 precedent, where a pre-fix Windows population was migrated rather
-        # than documented away.
-        files.sort(key=lambda q: q.parts)
         rec["kind"] = "directory"
         rec["n_files"] = len(files)
         rec["n_unreadable_dirs"] = len(unreadable)
@@ -526,6 +492,22 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
         # next to reading a 40 GB reference directory. A second `describe()` on the failing
         # path would have re-read the whole tree to answer a question about its order.
         pairs = [(f.relative_to(path).as_posix(), sha256(f)) for f in files]
+        # THE ORDER IS THE WHOLE OF IT, and it lives in exactly ONE place — this key — because
+        # it has now been got wrong twice and the second time was a repair of the first.
+        #
+        # A-14 (Audit B): a bare `files.sort()` uses `PurePath.__lt__`, which compares a
+        # CASE-FOLDED key on Windows, so `A.txt` and `a.txt` order one way there and another
+        # on POSIX and the same tree hashed to two values. C-03 (Audit C): the first repair
+        # sorted the rendered string, which changed the order ON POSIX TOO, because `PurePath`
+        # compares PART-WISE while a string comparison lets the separator `/` (0x2f) compete
+        # with every character below it — `.`, `-`, `,`, space. `data.csv` and `data/x.csv`
+        # swapped, and every directory pinned by an earlier version verified STALE with
+        # nothing touched.
+        #
+        # D-11 (Audit D): until now the list was ALSO sorted above, before `pairs` was built,
+        # which left two keys that had to agree and nothing checking that they did. That sort
+        # was dead the moment the stream started ordering its own input; a second key that
+        # cannot drift is better than a second key that agrees today.
         rec["sha256_tree"] = _tree_stream(pairs, lambda n: tuple(n.split("/")))
         # THE ORDER THE RELEASED VERSIONS USED ON WINDOWS, kept only when it DIFFERS. For the
         # ~80 % of trees whose names do not mix case the two orders coincide and no field is

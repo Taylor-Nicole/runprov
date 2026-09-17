@@ -76,6 +76,19 @@ INPUTS = {
     "data/refs/panel/a.fa": ">p1\nAAAA\n",
     "data/refs/panel.old/a.fa": ">p2\nCCCC\n",
     "data/refs/panel-v2/a.fa": ">p3\nGGGG\n",
+    # AND MIXED CASE, which the first version of this fixture did not have — D-11 of Audit D.
+    # The three names above were chosen so that `/` competes with `.` and `-`, and every one
+    # of them is lowercase, so the OTHER way a tree order can move was invisible here:
+    # `PurePath.__lt__` compares a CASE-FOLDED key on Windows and only there, so `README.md`
+    # and `data/` order one way on that platform and another on POSIX. The corpus was built to
+    # catch a digest that moves between versions and could not have caught the one that
+    # actually had (D-08), because folded and unfolded coincide for every all-lowercase name.
+    #
+    # Measured on a real project tree: 20 % of directories order differently under the two
+    # keys. With these two entries this fixture is one of them, so a Windows corpus leg now
+    # re-derives a digest that a case-folded sort would not produce.
+    "data/refs/README.md": "# reference panel\n",
+    "data/refs/Panel-QC/report.tsv": "metric\tvalue\npass\t1\n",
 }
 
 #: The chain, three deep, so `lineage`, `impact` and `report` have a real DAG to walk rather
