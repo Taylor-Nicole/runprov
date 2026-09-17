@@ -517,6 +517,20 @@ def _already_in_git(root: pathlib.Path, path: pathlib.Path) -> str | None:
     return blob if git(root, "cat-file", "-e", blob) is not None else None
 
 
+def _holds(path: pathlib.Path, want: str) -> bool:
+    """Is `path` a file whose bytes hash to `want`? False for absent, unreadable or wrong.
+
+    The one question a content-addressed store may ask about a file it is about to skip.
+    `is_file()` answers a different one, and D-05 and C-11 are both what happens when the
+    two are confused: a truncated or translated file keeps its digest-derived name and is
+    reported `reused: true` for ever.
+    """
+    try:
+        return path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == want
+    except OSError:  # guards-ok: a file that cannot be read cannot be proved reusable
+        return False
+
+
 def archive_lockfiles(root: pathlib.Path, directory: pathlib.Path) -> list[dict[str, typing.Any]]:
     """Copy each lock file into `directory`, named by its own digest — unless git has it.
 
@@ -543,7 +557,17 @@ def archive_lockfiles(root: pathlib.Path, directory: pathlib.Path) -> list[dict[
             out.append(dict(rec, archived=False, git_blob=blob, note="git already stores it"))
             continue
         target = directory / f"lock-{rec['sha256'][:16]}-{rec['name']}"
-        rec = dict(rec, archived=True, path=_posix(target), reused=target.is_file())
+        # D-05 of Audit D, and C-11's sibling one function along — the remedy was already
+        # written next door and was applied to the package snapshot only. The name is derived
+        # from the digest, so an existing file at that name is not evidence about its BYTES:
+        # a torn write from before `atomic_write_bytes` (`_atomic.py` describes this exact
+        # state) leaves a prefix under a name claiming a digest it does not have, every later
+        # run sees the name, sets `reused: true`, and never writes it again. The record then
+        # asserts a `sha256` that does not describe the file it points at — for ever.
+        #
+        # BYTES, NOT NAME. `sha256` here is of the SOURCE lock, which is what the archived copy
+        # must equal, so the check is exact rather than a re-derivation of some other quantity.
+        rec = dict(rec, archived=True, path=_posix(target), reused=_holds(target, rec["sha256"]))
         if not rec["reused"]:
             try:
                 directory.mkdir(parents=True, exist_ok=True)

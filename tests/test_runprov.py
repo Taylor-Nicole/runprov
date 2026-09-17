@@ -24057,3 +24057,105 @@ def test_find_run_keeps_its_name_and_returns_the_record(tmp_path):
     assert runprov.report.find_run([], "/proj/out/x.csv") is None
     assert runprov.report.find_match([], "/proj/out/x.csv").record is None
     assert not runprov.report.Match(None).disagrees
+
+
+def test_an_archived_lockfile_that_does_not_hash_to_its_own_name_is_rewritten(
+    tmp_path, monkeypatch
+):
+    """Audit D, D-05 — C-11's sibling, one function along, with the remedy already next door.
+
+    Both functions name a file after a prefix of a digest and publish `sha256` beside `reused`,
+    and C-11's argument applies unchanged: the name is DERIVED from the digest, so an existing
+    file at that name is not evidence about its bytes. A torn write from before
+    `atomic_write_bytes` — the state `_atomic.py`'s own comment describes — leaves a prefix
+    under a name claiming a digest it does not have; every later run sees the name, sets
+    `reused: true`, and never writes it again. The record then asserts a `sha256` that does not
+    describe the file it points at, for ever, and `reused: true` reads to a reader as
+    corroboration that the environment's declaration has not moved.
+    """
+    root, store = tmp_path / "proj", tmp_path / "arch"
+    root.mkdir()
+    (root / "requirements.txt").write_text("numpy==2.1.0\npandas==2.2.0\n", encoding="utf-8")
+
+    first = runprov.environment.archive_lockfiles(root, store)[0]
+    assert first["reused"] is False and first["archived"] is True
+    copy = pathlib.Path(first["path"])
+    assert hashlib.sha256(copy.read_bytes()).hexdigest() == first["sha256"]
+
+    assert runprov.environment.archive_lockfiles(root, store)[0]["reused"] is True, "unchanged"
+
+    # THE TORN WRITE: the right name, a prefix of the bytes.
+    copy.write_bytes(copy.read_bytes()[:16])
+    again = runprov.environment.archive_lockfiles(root, store)[0]
+    assert again["reused"] is False, "a copy that does not hash to its own name is not reusable"
+    assert hashlib.sha256(copy.read_bytes()).hexdigest() == again["sha256"], "and it is rewritten"
+
+    # UNREADABLE IS NOT REUSABLE EITHER, and the read must not end the run. Injected rather
+    # than chmod'ed, so this asserts the same thing on every platform and as every user.
+    def _refuse(self):
+        raise OSError("EACCES")
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", _refuse)
+    assert runprov.environment._holds(copy, again["sha256"]) is False
+
+
+def test_the_digest_fallback_counts_distinct_runs_not_distinct_paths():
+    """Audit D, D-06. Keying the ambiguity guard on the PATH got it wrong in both directions.
+
+    Two runs that wrote byte-identical bytes to the SAME recorded path — which is every re-run
+    of a deterministic pipeline — collapsed to one key, so the guard passed and the
+    LAST-appended run was named, with its command and its commit, for an artifact the reader
+    had found somewhere else entirely. And one run that wrote identical bytes to TWO paths
+    counted as two, so a moved artifact that a single run plainly produced was reported NOT
+    FOUND. The question is "which run", so runs are what must be counted.
+    """
+    twice = [
+        _out_record("summarise", "out/summary.csv", "aa" * 32, run_uid="u1", run_id="r1"),
+        _out_record("summarise", "out/summary.csv", "aa" * 32, run_uid="u2", run_id="r2"),
+    ]
+    assert runprov.report.find_run(twice, "/archive/2026-05/summary.csv", "aa" * 32) is None, (
+        "two runs wrote those bytes; naming the newest is a guess dressed as an answer"
+    )
+
+    # ONE RUN, TWO PATHS is not ambiguous — it is one answer, and the old rule refused it.
+    one_run = [
+        {
+            "script": "emit",
+            "run_uid": "u9",
+            "cwd": "/proj",
+            "outputs": [
+                {"path": "out/a.csv", "sha256": "bb" * 32},
+                {"path": "out/b.csv", "sha256": "bb" * 32},
+            ],
+        }
+    ]
+    found = runprov.report.find_run(one_run, "/archive/moved.csv", "bb" * 32)
+    assert found is not None and found["script"] == "emit"
+
+    # And a record with no identity at all still works, because tests build such mappings.
+    bare = [{"outputs": [{"path": "out/x.csv", "sha256": "cc" * 32}]}]
+    assert runprov.report.find_run(bare, "/archive/x.csv", "cc" * 32) is not None
+
+
+def test_impact_does_not_call_a_sum_of_per_run_counts_a_floor_on_paths(capsys):
+    """Audit D, D-07. C-06 made the watch count DISTINCT paths per run, then the reader written
+    for it summed those across runs and printed "at least N path(s) were dropped".
+
+    A sum of per-run distinct counts is a count of (run, path) drop EVENTS. It is neither
+    distinct across the history nor a floor on distinct paths: a hundred runs that each dropped
+    the same 2 000 system paths sum to 200 000 for 2 000 files. That is the same overstatement
+    C-06 removed per-run — "the value can exceed the number of files on the disk" — arriving
+    through the reader added to fix it. It overstates a blind spot rather than hiding one, so
+    it is not a false green; it is a wrong sentence about a permanent record, which this
+    package ranks highly enough to fix.
+    """
+    chain = runprov.impact.Chain("abc123", [], [], 0, 100, 200_000)
+    text = "\n".join(runprov.impact.render(chain))
+    assert "200000 read(s) were dropped" in text, text
+    assert "across the 100 run(s)" in text
+    assert "may repeat between runs" in text, "the reader is told what the number is not"
+    assert "at least" not in text, "a sum over runs is not a floor on distinct paths"
+
+    assert runprov.impact.Chain("abc123", [], [], 0, 1).watch_drops == 0
+    quiet = "\n".join(runprov.impact.render(runprov.impact.Chain("abc123", [], [], 0, 1)))
+    assert "dropped by the watch" not in quiet, "silent when nothing was dropped"

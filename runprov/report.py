@@ -124,7 +124,17 @@ def find_match(
     # returns None: this page renders "no run found" honestly, and naming the wrong run does not.
     by_path = None
     recorded_for_path = ""
-    by_digest: dict[str, dict[str, typing.Any]] = {}
+    # KEYED BY RUN, NOT BY PATH. D-06 of Audit D: keying on the path got the uniqueness rule
+    # wrong in BOTH directions. Two runs that wrote byte-identical bytes to the SAME recorded
+    # path — a deterministic pipeline re-run, which is every re-run of a correct pipeline —
+    # collapsed to one key, so `len(...) == 1` passed and the LAST-appended was named, with its
+    # command and its commit, for an artifact the reader had found somewhere else. And one run
+    # that wrote identical bytes to TWO paths counted as two, so a moved artifact that a single
+    # run plainly produced was reported NOT FOUND.
+    #
+    # `run_uid` is the run's own identity and is what the question is actually about. `id()` is
+    # the fallback for a hand-built mapping in a test, which is a real caller here.
+    by_digest: dict[typing.Any, tuple[str, dict[str, typing.Any]]] = {}
     for record in history:
         # AGAINST THE RECORDED CWD, NEVER THE CURRENT ONE. A record holds the path as the run
         # saw it, which is often relative; resolving it here would anchor it to wherever the
@@ -148,7 +158,8 @@ def find_match(
                     out.get(key) == digest for key in ("sha256", "content_sha256", "sha256_tree")
                 )
             ):
-                by_digest[_resolve(str(name), base) if name else ""] = record
+                run_key = record.get("run_uid") or record.get("run_id") or id(record)
+                by_digest[run_key] = (_resolve(str(name), base) if name else "", record)
     if by_path is not None:
         # D-03 of Audit D. THE PATH WINS, AND THE DISAGREEMENT IS REPORTED RATHER THAN RESOLVED.
         # The branch assigned unconditionally, so when the path-matching record's OWN recorded
@@ -171,15 +182,11 @@ def find_match(
         #
         # So the strongest identity stays the headline and the reader is handed the rest: this
         # is the package's own rule, report what you cannot tell rather than guess.
-        other = {p: r for p, r in by_digest.items() if r is not by_path}
-        return Match(
-            by_path,
-            recorded=recorded_for_path,
-            elsewhere=next(iter(other.values())) if len(other) == 1 else None,
-            elsewhere_path=next(iter(other)) if len(other) == 1 else None,
-        )
+        other = [(p, r) for p, r in by_digest.values() if r is not by_path]
+        one = other[0] if len(other) == 1 else (None, None)
+        return Match(by_path, recorded=recorded_for_path, elsewhere=one[1], elsewhere_path=one[0])
     if len(by_digest) == 1:
-        return Match(next(iter(by_digest.values())))
+        return Match(next(iter(by_digest.values()))[1])
     # Nothing matched, or the bytes sit at two paths and identify no single run.
     return Match(None)
 

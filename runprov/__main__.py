@@ -1352,17 +1352,20 @@ def _impact(args: argparse.Namespace) -> int:
 
     unregistered = 0
     runs = 0
-    truncated = 0
+    watch_drops = 0
     for record in _completed(log):
         runs += 1
         unregistered += len(record.get("unregistered_reads") or [])
         # C-06 of Audit C: the blind-spot tally counted only the reads the runs managed to
         # REPORT, and was silent about the ones the watch dropped before they could be.
-        truncated += (record.get("observation") or {}).get("unregistered_watch_truncated") or 0
+        # SUMMED ACROSS RUNS, which makes it drop EVENTS rather than distinct paths — D-07 of
+        # Audit D. The per-run field is a distinct-path floor; adding those up is not one, and
+        # the line that prints it says so now instead of claiming a floor it cannot support.
+        watch_drops += (record.get("observation") or {}).get("unregistered_watch_truncated") or 0
 
     steps = impact_mod.walk(digest, consumers, graph["edges"], names, outputs_by, args.depth)
     chain = impact_mod.Chain(
-        digest, consumers.get(digest, []), steps, unregistered, runs, truncated
+        digest, consumers.get(digest, []), steps, unregistered, runs, watch_drops
     )
     for line in impact_mod.render(chain, pathlib.Path(project.root)):
         print(line)

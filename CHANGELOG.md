@@ -84,6 +84,28 @@ is a fix nobody checked.
   project's record on remembered rules is seven misses for the scope pattern and three for
   `README-pypi.md`, so the harness may not depend on one.
 
+### Fixed — three smaller ones from the same pass
+
+* **An archived lock file was reused by NAME, not by content.** The name is derived from the
+  digest, so an existing file at it is not evidence about its bytes: a torn write from before
+  atomic writes leaves a prefix under a name claiming a digest it does not have, and every
+  later run sees the name, records `reused: true`, and never rewrites it. The record then
+  asserts a `sha256` that does not describe the file it points at. Same defect and same remedy
+  as the environment snapshot, one function along, applied there and not here.
+
+* **`runprov report`'s digest fallback counted distinct PATHS, not distinct RUNS.** Two runs
+  writing byte-identical bytes to the same recorded path — every re-run of a deterministic
+  pipeline — collapsed to one, so the ambiguity guard passed and the newest run was named for
+  an artifact found somewhere else. And one run that wrote identical bytes to two paths counted
+  as two, so a moved artifact a single run plainly produced was reported NOT FOUND. Wrong in
+  both directions from one key; the question is "which run", so runs are counted.
+
+* **`runprov impact` called a sum of per-run counts a floor on paths.** Each run records the
+  distinct paths its watch dropped; adding those across runs gives drop EVENTS, and a hundred
+  runs dropping the same 2 000 system paths printed "at least 200 000 path(s)". The number is
+  fine and the sentence about it was not — the same overstatement removed per-run, arriving
+  through the reader added to fix it.
+
 ### Fixed — `runprov report` says when the bytes are not the bytes that run recorded
 
 * **A page could pair one run's identity with another run's inputs, and report OK.** The

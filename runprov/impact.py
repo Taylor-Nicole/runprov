@@ -56,11 +56,18 @@ class Chain(typing.NamedTuple):
     steps: list[Step]
     unregistered: int
     runs_examined: int
-    #: C-06 of Audit C. Distinct paths the audit-hook watch had to drop across the runs
-    #: examined — a FLOOR, saturating at its own cap. DEFAULTED, because `Chain` is
-    #: constructed positionally in `__main__` and in a dozen tests, and a required sixth
-    #: field would have made adding the blind spot a breaking change nobody made.
-    watch_truncated: int = 0
+    #: C-06 of Audit C, corrected by D-07 of Audit D. The SUM over the runs examined of each
+    #: run's distinct-dropped-path count — which is a count of (run, path) drop events, and is
+    #: NOT a count of distinct paths across the history and NOT a floor on one. A hundred runs
+    #: that each dropped the same 2 000 system paths sum to 200 000 for 2 000 files, and the
+    #: page said "at least 200 000 path(s) were dropped": the same overstatement C-06 removed
+    #: per-run, reintroduced by the reader written for it. The number is fine; the sentence
+    #: about it was wrong, and the name says what it is now.
+    #:
+    #: DEFAULTED, because `Chain` is constructed positionally in `__main__` and in a dozen
+    #: tests, and a required sixth field would have made adding the blind spot a breaking
+    #: change nobody made.
+    watch_drops: int = 0
 
     @property
     def artifacts(self) -> int:
@@ -163,13 +170,21 @@ def render(chain: Chain, root: pathlib.Path | None = None) -> list[str]:
             f"    {chain.unregistered} read(s) bypassed registration in the "
             f"{chain.runs_examined} run(s) examined — those files are not in any pin"
         )
-    if chain.watch_truncated:
+    if chain.watch_drops:
         # C-06. `unregistered` above counts reads the runs REPORTED; this counts the ones they
         # could not report, and the two are different blind spots. Without it a history whose
         # runs all hit the cap prints a NOT SEEN block that omits the largest thing not seen.
+        #
+        # D-07: THE SENTENCE NOW MATCHES THE QUANTITY. It said "at least N path(s) were
+        # dropped", which a sum over runs is not — a hundred runs dropping the same 2 000
+        # system paths would have printed "at least 200 000", for 2 000 files. It is a count of
+        # DROP EVENTS, the number of runs is already on the line, and a reader can see that the
+        # per-run figure is what is bounded. Overstating a blind spot is not a false green, but
+        # it is the exact class of claim C-06 was filed to remove.
         out.append(
-            f"    at least {chain.watch_truncated} path(s) were dropped by the watch itself "
-            f"in the {chain.runs_examined} run(s) examined — those reads were never reported"
+            f"    {chain.watch_drops} read(s) were dropped by the watch itself across the "
+            f"{chain.runs_examined} run(s) examined — those reads were never reported, and "
+            f"the paths behind them may repeat between runs"
         )
     out.append("    any script that never imported runprov — `runprov check` finds those")
     out.append("    any run whose records were pruned, or written to another history")
