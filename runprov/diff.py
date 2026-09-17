@@ -74,6 +74,15 @@ class Dimension(typing.NamedTuple):
     differences: list[str]
     examined: str
     blocked: str | None  # why this dimension cannot support "unchanged", if it cannot
+    #: REPORTED BUT NEVER DECISIVE. A cost is not part of "is this the same run": two runs of
+    #: one script never agree on wall time, so letting timing settle the exit code is the same
+    #: defect A-07 named — a gate that cannot pass — arriving through a threshold instead of an
+    #: operator. Measured after the A-07 repair: two identical runs still differed 6.5ms vs
+    #: 3.4ms, 48%, far above any threshold worth calling noise at that scale.
+    #:
+    #: The figures are still PRINTED, because "it needed four times the memory" is exactly what
+    #: a reader wants; they simply do not decide whether anything changed.
+    informational: bool = False
 
     @property
     def verdict(self) -> str:
@@ -88,7 +97,7 @@ class Dimension(typing.NamedTuple):
         The exit code is built from this, so a gate cannot go green while half the comparison
         was impossible — the vacuous pass, in a new place.
         """
-        return self.verdict == UNCHANGED
+        return self.informational or self.verdict == UNCHANGED
 
 
 def _obs(record: typing.Mapping[str, typing.Any], key: str) -> typing.Any:  # noqa: ANN401
@@ -252,10 +261,23 @@ def _steps(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any
     left, right = _steps_of(a), _steps_of(b)
     if left is None or right is None:
         na, nb = _step_count(a), _step_count(b)
-        lines = [f"count  {na} -> {nb}"] if na != nb else []
+        # C-02 of Audit C. Blocking on EVERY count pair made `steps` incomparable for every
+        # history-versus-history diff — which is every diff this command actually performs, since
+        # `_diff` is fed history records — so `runprov diff` still could never exit 0. That
+        # recreates A-07: fixed in the same commit, for the same command, three findings apart.
+        #
+        # A count is weak evidence, not an absence of evidence. Two runs that BOTH declared no
+        # steps agree completely: the key is omitted when zero, so "nothing declared" is a
+        # recorded fact rather than an unreadable one. Two EQUAL NON-ZERO counts are the only
+        # case a count cannot settle — two different steps count the same — and only that case
+        # is blocked.
+        if na != nb:
+            return Dimension("steps", [f"count  {na} -> {nb}"], f"{na} vs {nb} counted", blocked)
+        if na == 0:
+            return Dimension("steps", [], "0 vs 0 declared", blocked)
         return Dimension(
             "steps",
-            lines,
+            [],
             f"{na} vs {nb} counted",
             blocked or "the history records a COUNT of steps, not their digests",
         )
@@ -328,7 +350,11 @@ def _resources(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing
             continue
         lines.append(f"{key}  {one} -> {two}")
     return Dimension(
-        "resources", lines, f"{left.get('source', '—')} / {right.get('source', '—')}", blocked
+        "resources",
+        lines,
+        f"{left.get('source', '—')} / {right.get('source', '—')}",
+        blocked,
+        informational=True,
     )
 
 

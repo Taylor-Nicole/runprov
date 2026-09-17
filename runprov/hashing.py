@@ -476,13 +476,25 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
                     # unreadable directory above. Counted, so the tree hash's population is
                     # stated rather than assumed.
                     skipped.append(_posix(fp))
-        # A-14. SORTED BY THE RECORDED SPELLING, never by native `Path` order. `PurePath.__lt__`
-        # compares `_str_normcase` — case-folded and backslash-separated on Windows, the exact
-        # forward-slash string on POSIX — so `A.txt` and `a.txt` order one way on Linux and the
-        # other on Windows, and the SAME tree hashes to two different `sha256_tree` values. A
-        # digest whose value depends on the machine cannot answer "is this the same tree",
-        # which is the only question it is asked.
-        files.sort(key=_posix)
+        # SORTED BY `.parts`, and the choice of key is the whole of it. A-14 (Audit B) is that
+        # bare `files.sort()` uses `PurePath.__lt__`, which compares `_parts_normcase` —
+        # CASE-FOLDED on Windows — so `A.txt` and `a.txt` order one way there and another on
+        # POSIX, and the same tree hashes to two values. A digest that depends on the machine
+        # cannot answer the only question it is asked.
+        #
+        # THE FIRST REPAIR WAS WORSE THAN THE DEFECT, and C-03 (Audit C) caught it: sorting on
+        # the rendered string `_posix` changed the order ON POSIX TOO, because `PurePath`
+        # compares PART-WISE while a string comparison lets the separator `/` (0x2f) compete
+        # with every character below it — `.`, `-`, `,`, space. `data.csv` and `data/x.csv`
+        # swapped, and every directory input pinned by an earlier version then verified STALE
+        # with nothing on disk touched. This ledger's standing rule is that THE TREE HASH DOES
+        # NOT MOVE; a fix that invalidates stored records is not a fix.
+        #
+        # `.parts` is the tuple `PurePath` already orders by, minus the case folding — so it is
+        # byte-identical to the historical POSIX order (verified against the recorded digest)
+        # and, being unfolded, identical on Windows as well. Platform independence bought
+        # without moving a single existing digest.
+        files.sort(key=lambda q: q.parts)
         rec["kind"] = "directory"
         rec["n_files"] = len(files)
         rec["n_unreadable_dirs"] = len(unreadable)

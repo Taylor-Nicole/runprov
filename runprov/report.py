@@ -76,7 +76,18 @@ def find_run(
     renders honestly; finding the wrong run is not recoverable by a reader.
     """
     want = _resolve(artifact)
-    found = None
+    # COLLECTED SEPARATELY, THEN RANKED. C-01 of Audit C: the two kinds of match were both
+    # last-wins inside ONE loop, so a run that wrote BYTE-IDENTICAL bytes at a different path
+    # later in the history overrode — and DESTROYED — the exact-path match for the artifact the
+    # reader actually named. That is A-05 returning by another road: a basename collision became
+    # a content collision, and unlike the old code this one discarded a correct answer.
+    #
+    # An exact recorded path is the strongest identity available, so it wins outright. The
+    # digest is the FALLBACK, for an artifact that has been moved since — the case it was added
+    # for. And a digest matching outputs at two or more DISTINCT paths identifies nothing, so it
+    # returns None: this page renders "no run found" honestly, and naming the wrong run does not.
+    by_path = None
+    by_digest: dict[str, dict[str, typing.Any]] = {}
     for record in history:
         # AGAINST THE RECORDED CWD, NEVER THE CURRENT ONE. A record holds the path as the run
         # saw it, which is often relative; resolving it here would anchor it to wherever the
@@ -86,17 +97,21 @@ def find_run(
         base = record.get("cwd")
         for out in record.get("outputs") or []:
             name = out.get("path") if isinstance(out, dict) else out
-            if (
+            if name and _resolve(str(name), base) == want:
+                by_path = record
+            elif (
                 isinstance(out, dict)
                 and digest
                 and any(
                     out.get(key) == digest for key in ("sha256", "content_sha256", "sha256_tree")
                 )
             ):
-                found = record
-            elif name and _resolve(str(name), base) == want:
-                found = record
-    return found
+                by_digest[_resolve(str(name), base) if name else ""] = record
+    if by_path is not None:
+        return by_path
+    if len(by_digest) == 1:
+        return next(iter(by_digest.values()))
+    return None  # nothing matched, or the bytes sit at two paths and identify no single run
 
 
 def _resolve(name: str, base: str | None = None) -> str:

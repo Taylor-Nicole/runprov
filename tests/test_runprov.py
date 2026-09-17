@@ -10751,7 +10751,13 @@ def test_diff_refuses_to_call_an_incomparable_dimension_unchanged(name, over_a, 
     d = _dim(dims, name)
     assert d.verdict == "not comparable", f"{name} reported {d.verdict}"
     assert reason in (d.blocked or "")
-    assert not d.settled, "an incomparable dimension must not settle the exit code"
+    if not d.informational:
+        # `resources` is REPORTED BUT NEVER DECISIVE (Audit C, C-02's other half): a cost is
+        # not part of "is this the same run", and two runs of one script never agree on wall
+        # time — measured at 6.5ms vs 3.4ms for two identical runs, 48%, far above any
+        # threshold worth calling noise. Letting it settle the exit code is A-07's defect
+        # arriving through an operator instead of a threshold.
+        assert not d.settled, "an incomparable dimension must not settle the exit code"
     assert "NOT COMPARABLE" in "\n".join(runprov.diff.render(_hrec(), _hrec(), dims))
 
 
@@ -10909,12 +10915,14 @@ def test_diff_cli_never_compares_a_run_with_its_own_start_marker(tmp_path, capsy
     out = capsys.readouterr().out
     assert "schema differs" not in out, "a start marker must never be one side of the diff"
     assert "NOT COMPARABLE" in out and "dirty state is unknown" in out
-    for dimension in ("inputs", "outputs", "parameters", "packages"):
+    for dimension in ("inputs", "outputs", "parameters", "packages", "steps"):
         assert f"{dimension:<12}unchanged" in out, f"{dimension} compared two finished runs"
-    # `steps` is NOT among them: the history records a COUNT, and A-03 established that two
-    # runs counting the same is not grounds for `unchanged` — two different steps count the
-    # same. It reports NOT COMPARABLE, which is the honest answer from a count.
-    assert "steps" in out and "COUNT of steps" in out
+    # `steps` IS among them again. A-03's repair blocked every count pair, which made the
+    # dimension incomparable for every history-versus-history diff and so recreated A-07 —
+    # C-02 of Audit C. Two runs that both declared NO steps agree completely: the key is
+    # omitted when zero, so "nothing declared" is a recorded fact, not an unreadable one. Only
+    # two equal NON-ZERO counts cannot settle, because two different steps count the same.
+    assert "0 vs 0 declared" in out
 
 
 def test_diff_cli_refuses_what_it_cannot_compare(tmp_path, capsys):
@@ -11189,6 +11197,51 @@ def test_diff_counts_steps_from_either_shape():
     assert runprov.diff._step_count({"steps": 3}) == 3
     assert runprov.diff._step_count({"steps": [{"step": "a"}, {"step": "b"}]}) == 2
     assert runprov.diff._step_count({}) == 0
+
+
+def test_diff_compares_step_counts_from_the_history_shape():
+    """Audit C, C-02 — the regression test for a fix that recreated the defect beside it.
+
+    `_diff` is fed HISTORY records, where `steps` is a COUNT and the key is omitted when zero.
+    A-03's repair blocked every count pair, so `steps` was incomparable for every diff the
+    command actually performs and `runprov diff` still could never exit 0 — which is A-07,
+    fixed in the same commit, for the same command, three findings apart.
+
+    A count is weak evidence, not an absence of it. Only two EQUAL NON-ZERO counts cannot
+    settle, because two different steps count the same.
+    """
+    obs = {"observation": {"auto_available": True, "packages_recorded": "none"}}
+    none_either_side = next(
+        x for x in runprov.diff.compare(dict(obs), dict(obs)) if x.name == "steps"
+    )
+    assert none_either_side.verdict == "unchanged" and none_either_side.settled
+
+    moved = next(
+        x for x in runprov.diff.compare(dict(obs, steps=2), dict(obs, steps=3)) if x.name == "steps"
+    )
+    assert moved.differences == ["count  2 -> 3"]
+
+    same_count = next(
+        x for x in runprov.diff.compare(dict(obs, steps=2), dict(obs, steps=2)) if x.name == "steps"
+    )
+    assert same_count.verdict == "not comparable", "two different steps count the same"
+
+
+def test_diff_reports_cost_without_letting_it_decide():
+    """Audit C. A cost is not part of "is this the same run", and two runs of one script never
+    agree on wall time — measured at 6.5ms against 3.4ms for two identical runs, 48%, far
+    above any threshold worth calling noise. Letting timing settle the exit code is A-07's
+    defect arriving through an operator rather than a threshold.
+
+    The figures are still PRINTED: "it needed four times the memory" is exactly what a reader
+    wants. They simply do not decide whether anything changed.
+    """
+    a = {"resources": {"source": "getrusage", "wall_seconds": 1.0, "max_rss_bytes": 100}}
+    b = {"resources": {"source": "getrusage", "wall_seconds": 9.0, "max_rss_bytes": 400}}
+    d = next(x for x in runprov.diff.compare(a, b) if x.name == "resources")
+    assert d.verdict == "changed" and d.differences, "the figures are reported"
+    assert d.settled, "and they do not decide the exit code"
+    assert "max_rss_bytes  100 -> 400" in "\n".join(runprov.diff.render(a, b, [d]))
 
 
 def test_diff_reads_step_digests_when_the_record_carries_them():
