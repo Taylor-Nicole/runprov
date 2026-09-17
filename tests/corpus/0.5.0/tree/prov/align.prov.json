@@ -1,0 +1,170 @@
+{
+  "schema": "runprov.run.v2",
+  "script": "align",
+  "run_uid": "cd9f75091b8c4f5fb1c94f6b78181d60",
+  "run_id": "adhoc_20260917T143041Z",
+  "generation": "(default)",
+  "started_utc": "2026-09-17T14:30:41Z",
+  "command": "python /mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py @@RUNPROV_CORPUS_ROOT@@",
+  "argv": [
+    "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py",
+    "@@RUNPROV_CORPUS_ROOT@@"
+  ],
+  "cwd": "@@RUNPROV_CORPUS_ROOT@@",
+  "parameters": {
+    "stage": 0
+  },
+  "code": {
+    "project_root": ".",
+    "git_commit": null,
+    "git_commit_short": null,
+    "git_branch": null,
+    "git_status_captured": false,
+    "git_code_dirty": false,
+    "git_dirty_code_files": [],
+    "git_dirty_outside_code_paths": [],
+    "git_tree_dirty": false,
+    "git_other_changes": 0,
+    "git_dirty_other_files": [],
+    "git_other_files_omitted": 0,
+    "code_paths": [
+      "src",
+      "scripts",
+      "conf",
+      "pyproject.toml",
+      "Makefile"
+    ],
+    "script_file": "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py",
+    "script_sha256": "07d70859bc1727a3f879ad5f690cf2bdf2f26fb602d44c6fd2ad4cf5a828ab33",
+    "imported": {
+      "count": 0,
+      "omitted": 0,
+      "digest": null,
+      "files": []
+    }
+  },
+  "environment": {
+    "python": "3.12.13",
+    "platform": "Linux-5.15.0-186-generic-x86_64-with-glibc2.35",
+    "hostname": "corpus-host",
+    "cpu_count": 8,
+    "packages": {},
+    "manager": {
+      "detected": [
+        "venv"
+      ],
+      "evidence": {
+        "VIRTUAL_ENV": "set"
+      }
+    },
+    "lockfiles": [],
+    "snapshot": {
+      "path": "prov/env/env-896324c64d10e9b5.txt",
+      "sha256": "896324c64d10e9b548ce8236d33fd2bb37d636d98282299c766d9a3aec486aab",
+      "n_packages": 2,
+      "n_unreadable": 0,
+      "python": "3.12.13",
+      "reused": false,
+      "lockfiles": []
+    }
+  },
+  "history": {
+    "destination": "prov/history.jsonl",
+    "sink": "TeeSink",
+    "project_source": "configured"
+  },
+  "observation": {
+    "steps": "declared",
+    "auto_backend": null,
+    "auto_available": true,
+    "packages_recorded": "snapshot",
+    "auto_mode": "off"
+  },
+  "tool": {
+    "name": "runprov",
+    "version": "0.5.0",
+    "source": "index",
+    "identifies_code": true
+  },
+  "seeds": [],
+  "inputs": [
+    {
+      "path": "data/refs",
+      "symlink": false,
+      "size_bytes": 4096,
+      "mtime_utc": "2026-09-17T14:30:41Z",
+      "kind": "directory",
+      "n_files": 7,
+      "n_unreadable_dirs": 0,
+      "n_skipped_nonregular": 0,
+      "n_symlinked_dirs_not_followed": 0,
+      "sha256_tree": "08a4ccf578bdc67512c81c363328733039353be2036714d01928293ead838cc0",
+      "sha256_tree_casefolded": "3479e78c61e1d95c4d8bee2ec1ac28c9e730b8afde3529588ef3afb03e6ef8bd"
+    },
+    {
+      "path": "data/m.tsv",
+      "symlink": false,
+      "size_bytes": 27,
+      "mtime_utc": "2026-09-17T14:30:41Z",
+      "kind": "file",
+      "sha256": "0a9ba34b0fd0084fae165e20f0d6d3b148b44fef66c9878b56df3e9393d61984",
+      "content_sha256": "f6d2cdf31b5ebd54975e4d04b76218cd687ae47eb2cea5844460b6fa21423ea0"
+    }
+  ],
+  "outputs": [
+    {
+      "path": "out/align.tsv",
+      "symlink": false,
+      "size_bytes": 306,
+      "mtime_utc": "2026-09-17T14:30:41Z",
+      "kind": "file",
+      "sha256": "1c404db254534b6b79099db8215ed9e507715dd2d7acd48f4001e4dfa6e55c25",
+      "content_sha256": "0649b981d92310be727f38c35ca6072b956b2ab319c9635f9db641c473ee7ef3"
+    }
+  ],
+  "steps": [
+    {
+      "step": "main.<locals>.tally",
+      "args": [
+        "62191b2847eb7136"
+      ],
+      "kwargs": {
+        "factor": "cad38c8cc221350c"
+      },
+      "returned": "736a3bc70f6975ff"
+    }
+  ],
+  "signals": {
+    "SIGTERM": "armed",
+    "SIGHUP": "armed"
+  },
+  "notes": {
+    "rows_seen": 3
+  },
+  "unregistered_reads": [
+    "data/lookup.csv",
+    "data/refs/Panel-QC/report.tsv",
+    "data/refs/README.md",
+    "data/refs/panel-v2/a.fa",
+    "data/refs/panel.old/a.fa",
+    "data/refs/panel/a.fa",
+    "data/refs/ref.fa",
+    "data/refs/ref.fa.fai"
+  ],
+  "status": "ok",
+  "finished_utc": "2026-09-17T14:30:41Z",
+  "resources": {
+    "wall_seconds": 0.028951,
+    "source": "getrusage",
+    "cpu_seconds": 0.199491,
+    "max_rss_bytes": 27000832,
+    "max_vms_bytes": 58028032,
+    "io_read_bytes": 53248,
+    "io_write_bytes": 53248,
+    "unavailable": [
+      "cgroup: not this run's own (no scheduler or container)"
+    ],
+    "io_self_only": true,
+    "max_rss_is_floor": "the maximum of any one child, not the concurrent total; a scheduler enforces the cgroup total, which is larger"
+  }
+}
