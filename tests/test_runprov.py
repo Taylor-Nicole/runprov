@@ -23989,7 +23989,11 @@ def test_the_page_says_when_the_bytes_are_not_the_bytes_that_run_recorded(tmp_pa
     assert match.disagrees
     assert match.recorded == ("aa" * 32)[: runprov.hashing.PIN_DIGEST_CHARS]
     assert match.elsewhere["script"] == "v2_pipeline"
-    assert match.elsewhere_path == "/proj/staging/summary.csv"
+    # DERIVED, NOT SPELLED. The ninth host-dependent test of this session: `_resolve` returns
+    # the platform's own spelling, so a hard-coded `/proj/staging/summary.csv` was right on
+    # POSIX and `D:\proj\staging\summary.csv` on Windows, and the assertion failed on the one
+    # leg while the code was correct on both. Ask the same function the code asks.
+    assert match.elsewhere_path == runprov.report._resolve("staging/summary.csv", "/proj")
 
     # EDITED IN PLACE IS NOT THIS, and the distinction is the whole design. There the record IS
     # the producer, the page correctly reports ALTERED, and no other run's output matches — so
@@ -24041,7 +24045,8 @@ def test_the_page_says_when_the_bytes_are_not_the_bytes_that_run_recorded(tmp_pa
     text = "\n".join(page.lines)
     assert "BYTES DIFFER" in text, text
     assert "v2_pipeline" in text and "v1_pipeline" in text
-    assert "staging/summary.csv" in text
+    assert pathlib.Path("staging/summary.csv").name in text
+    assert runprov.report._resolve("staging/summary.csv", str(tmp_path)) in text
 
 
 def test_find_run_keeps_its_name_and_returns_the_record(tmp_path):
