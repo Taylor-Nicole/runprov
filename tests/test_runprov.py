@@ -23474,3 +23474,138 @@ def test_every_byte_asserted_fixture_is_protected_from_line_ending_translation()
         "bytes whose digests are asserted:\n  " + "\n  ".join(unprotected[:10]) + "\n"
         "Add the directory to .gitattributes with `-text`."
     )
+
+
+# ------------------------------------------------------------------- Audit D (2026-09-17)
+def _mixed_case_tree(root: pathlib.Path) -> pathlib.Path:
+    """A directory whose names order DIFFERENTLY under the two conventions.
+
+    `Panel/` and `README.md` are capitalised and `annotations.tsv`/`data/` are not, so the
+    case-folded key (what `PurePath.__lt__` uses on Windows, and only there) and the unfolded
+    `.parts` key disagree. An all-lowercase fixture cannot show any of this — which is exactly
+    why the cross-version corpus missed D-08 despite being built for this class of defect.
+    """
+    refs = root / "refs"
+    for rel, text in (
+        ("Panel/a.fa", ">p\nAAAA\n"),
+        ("README.md", "# refs\n"),
+        ("annotations.tsv", "a\tb\n"),
+        ("data/x.csv", "x,y\n"),
+    ):
+        (refs / rel).parent.mkdir(parents=True, exist_ok=True)
+        (refs / rel).write_text(text, encoding="utf-8", newline="\n")
+    return refs
+
+
+def test_the_tree_digest_is_the_unfolded_order_and_keeps_the_folded_one_only_when_it_differs():
+    """Audit D, D-08. Making `sha256_tree` machine-independent NECESSARILY moves one platform.
+
+    There is no sort key that equals both the case-folded and the unfolded order, so A-14 was
+    always a record-format change; the comment here claimed the opposite ("platform
+    independence bought without moving a single existing digest") and C-03 inherited it. What
+    actually happened: A-14 moved Windows, C-03 restored POSIX and left Windows moved.
+
+    The legacy order is kept ONLY where it differs, so ~80 % of trees gain no field at all and
+    its presence says something true about the tree rather than about this package's history.
+    """
+    root = pathlib.Path(tempfile.mkdtemp())
+    described = runprov.hashing.describe(_mixed_case_tree(root))
+    folded = described["sha256_tree_casefolded"]
+    assert folded != described["sha256_tree"], "the fixture must actually distinguish the keys"
+
+    # THE FOLDED VALUE IS WHAT WINDOWS ACTUALLY PRODUCED, not an invented second hash. Built
+    # here from `PureWindowsPath`'s own ordering over the same (name, digest) pairs.
+    pairs = [
+        (
+            p.relative_to(described["path"] if False else root / "refs").as_posix(),
+            runprov.hashing.sha256(p),
+        )
+        for p in sorted((root / "refs").rglob("*"))
+        if p.is_file()
+    ]
+    native_windows = sorted(
+        pairs, key=lambda kv: pathlib.PureWindowsPath(kv[0])._str_normcase.split("\\")
+    )
+    stream = hashlib.sha256()
+    for name, digest in native_windows:
+        stream.update(name.encode() + b"\0")
+        stream.update(digest.encode() + b"\0")
+    assert folded == stream.hexdigest(), "the migration aid must recognise what 0.1.0-0.4.0 wrote"
+
+    # An all-lowercase tree orders identically under both keys and carries no extra field.
+    low = root / "low"
+    (low / "panel").mkdir(parents=True)
+    (low / "panel" / "a.fa").write_text(">p\n", encoding="utf-8", newline="\n")
+    (low / "readme.md").write_text("x\n", encoding="utf-8", newline="\n")
+    assert "sha256_tree_casefolded" not in runprov.hashing.describe(low)
+
+
+def test_a_directory_pinned_by_a_pre_0_5_0_windows_run_is_told_why_it_is_stale():
+    """Audit D, D-08 — the migration aid, and the two things it must NOT do.
+
+    A Windows user of 0.1.0-0.4.0 with `run.input("refs/")` upgrades and every directory pin
+    goes STALE with nothing on disk touched. Measured over this project's own domain tree, 69
+    of 339 directories order differently under the two keys. The C-11 precedent says migrate
+    such a population rather than document it away.
+
+    STILL STALE: the pin no longer identifies this tree under the digest this version computes
+    and the user must re-pin, so OK would be a green over a record that needs action, and a
+    fifth status would move README.md's exit-code table for a one-time migration. What changes
+    is that the page names the cause instead of reporting an unexplained mismatch.
+    """
+    root = pathlib.Path(tempfile.mkdtemp())
+    refs = _mixed_case_tree(root)
+    legacy = runprov.hashing.describe(refs)["sha256_tree_casefolded"][
+        : runprov.hashing.PIN_DIGEST_CHARS
+    ]
+
+    result = runprov.verify.check_input(legacy, "refs", root)
+    assert result["status"] == runprov.verify.STALE, "re-pinning is required, so it is not OK"
+    assert "ON WINDOWS" in result["reason"] and "re-pin" in result["reason"]
+
+    # AND A REAL CHANGE STILL GETS A BARE STALE. The migration aid must not explain away a
+    # directory whose contents actually moved — that would be the worst possible false green,
+    # since it reads as "nothing is wrong, just an old pin".
+    (refs / "data" / "x.csv").write_text("x,y\n9,9\n", encoding="utf-8", newline="\n")
+    changed = runprov.verify.check_input(legacy, "refs", root)
+    assert changed["status"] == runprov.verify.STALE
+    assert "reason" not in changed, f"a genuinely changed tree must not be excused: {changed}"
+
+
+def test_the_verify_cache_carries_both_digests_so_the_tree_is_walked_once(monkeypatch):
+    """Audit D, D-08. The legacy comparison may not cost a second walk.
+
+    `verify` fans out over many artifacts sharing inputs, and the inputs a scientific artifact
+    pins are the expensive ones — a reference genome, a 40 GB matrix. Answering "was this
+    pinned in the old order?" by calling `describe` again would re-read the whole tree on the
+    already-failing path. Both digests come from one walk and are memoised together.
+    """
+    root = pathlib.Path(tempfile.mkdtemp())
+    _mixed_case_tree(root)
+
+    # COUNTED, NOT INFERRED. The first version of this test removed the tree and expected the
+    # cache to answer anyway — but `check_input` tests `exists()` before it reaches the cache,
+    # deliberately, so it returned GONE and proved nothing about walking. The walk itself is
+    # what has to be counted.
+    walks = []
+    real = runprov.hashing.describe
+
+    def counting(path, *a, **k):
+        walks.append(pathlib.Path(path))
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(runprov.verify, "describe", counting)
+
+    cache: dict[pathlib.Path, tuple[str, str] | Exception] = {}
+    first = runprov.verify.check_input("0" * runprov.hashing.PIN_DIGEST_CHARS, "refs", root, cache)
+    assert first["status"] == runprov.verify.STALE
+    assert list(cache) == [root / "refs"]
+    current, legacy = cache[root / "refs"]
+    assert current and legacy and current != legacy, cache
+
+    again = runprov.verify.check_input(legacy, "refs", root, cache)
+    assert again["status"] == runprov.verify.STALE and "ON WINDOWS" in again["reason"]
+    assert len(walks) == 1, (
+        f"the tree was walked {len(walks)} times for two checks; the legacy digest must come "
+        f"from the same walk as the current one, not from a second `describe`"
+    )

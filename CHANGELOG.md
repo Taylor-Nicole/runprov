@@ -84,6 +84,34 @@ is a fix nobody checked.
   project's record on remembered rules is seven misses for the scope pattern and three for
   `README-pypi.md`, so the harness may not depend on one.
 
+### Changed — one recorded digest moves, and only on Windows
+
+* **`sha256_tree` for a directory input pinned by 0.1.0–0.4.0 ON WINDOWS has moved. POSIX
+  records are unchanged.** This is the one exception to this project's standing rule that the
+  tree hash does not move, and it is written here because the previous two attempts at this
+  were not.
+
+  `PurePath.__lt__` compares a **case-folded** key on Windows and only there, so the released
+  versions hashed `README.md` and `data/` in one order on Windows and another on Linux — the
+  same tree, two digests, which is a digest that cannot answer the only question it is asked.
+  Fixing that necessarily moves one platform: **there is no sort key that equals both the
+  folded and the unfolded order.** Measured over a real project tree, 69 of 339 directories
+  (20%) order differently under the two, which is any tree mixing a capitalised and a
+  lowercase entry.
+
+  **`runprov verify` recognises the old order and says so.** A directory pinned that way
+  reports `STALE` with the reason *"this matches the tree digest a pre-0.5.0 run recorded ON
+  WINDOWS, where the order was case-folded; the contents are unchanged — re-pin"*. Still
+  STALE, deliberately: the pin no longer identifies the tree under the digest this version
+  computes and re-pinning is required, so `OK` would be a green over a record that needs
+  action. A genuinely changed directory still gets a bare `STALE` with no excuse attached.
+
+  The check is not weakened by the fallback. The hashed stream is `name\0digest\0` per file
+  with fixed-width digests, so it determines the **ordered** (name, digest) list — a stream
+  matching in folded order has the same names and the same file digests as the pinned tree,
+  i.e. it is that tree. Both digests come from one walk, so a 40 GB reference directory is not
+  re-read to answer a question about its order.
+
 ### Fixed
 
 * **Two audits over the same code, 32 distinct defects, and the second was aimed at the

@@ -492,8 +492,23 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
         #
         # `.parts` is the tuple `PurePath` already orders by, minus the case folding — so it is
         # byte-identical to the historical POSIX order (verified against the recorded digest)
-        # and, being unfolded, identical on Windows as well. Platform independence bought
-        # without moving a single existing digest.
+        # and, being unfolded, identical on Windows as well.
+        #
+        # AND THAT LAST PROPERTY IS BOUGHT, NOT FREE. D-08 (Audit D). The sentence that stood
+        # here said "platform independence bought WITHOUT MOVING A SINGLE EXISTING DIGEST",
+        # and it was false: there is no key that equals both the folded and the unfolded
+        # order, so making this digest machine-independent NECESSARILY moves one platform.
+        # A-14 moved Windows; C-03 restored POSIX and left Windows where A-14 had put it, and
+        # inherited the false claim. Measured over this project's own domain tree, 69 of 339
+        # directories (20 %) order differently under the two keys — any tree mixing a
+        # capitalised and a lowercase entry, which is most of them.
+        #
+        # So a directory input pinned by 0.1.0-0.4.0 ON WINDOWS verifies STALE here with
+        # nothing on disk touched. That is disclosed in CHANGELOG.md as a record-format
+        # exception to this ledger's standing "the tree hash does not move" rule, and
+        # `verify` recognises the old order and says so by name rather than reporting a bare
+        # STALE — the C-11 precedent, where a pre-fix Windows population was migrated rather
+        # than documented away.
         files.sort(key=lambda q: q.parts)
         rec["kind"] = "directory"
         rec["n_files"] = len(files)
@@ -506,16 +521,20 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
             rec["skipped_nonregular"] = sorted(skipped)
         if unreadable:
             rec["unreadable_dirs"] = sorted(unreadable)
-        h = hashlib.sha256()
-        for f in files:
-            # ADR-029 R9. `name || hex-digest` with no separator is not injective by
-            # construction. The review called the second preimage "trivial"; it is not --
-            # it needs a preimage attack on SHA-256, and one could not be built. The NUL
-            # costs nothing and removes the argument rather than defending it. NUL because
-            # it is the one byte a POSIX filename cannot contain.
-            h.update(f.relative_to(path).as_posix().encode() + b"\0")
-            h.update(sha256(f).encode() + b"\0")
-        rec["sha256_tree"] = h.hexdigest()
+        # HASHED ONCE, ORDERED TWICE. Every file is read exactly once into this pair list;
+        # the two digests below are two orderings of it, and sorting a list in memory is free
+        # next to reading a 40 GB reference directory. A second `describe()` on the failing
+        # path would have re-read the whole tree to answer a question about its order.
+        pairs = [(f.relative_to(path).as_posix(), sha256(f)) for f in files]
+        rec["sha256_tree"] = _tree_stream(pairs, lambda n: tuple(n.split("/")))
+        # THE ORDER THE RELEASED VERSIONS USED ON WINDOWS, kept only when it DIFFERS. For the
+        # ~80 % of trees whose names do not mix case the two orders coincide and no field is
+        # added at all, so the record does not carry a migration aid it has no use for — and
+        # where it IS present it states something true about the tree rather than about this
+        # package's history. `verify` is its only reader.
+        folded = _tree_stream(pairs, lambda n: tuple(s.lower() for s in n.split("/")))
+        if folded != rec["sha256_tree"]:
+            rec["sha256_tree_casefolded"] = folded
     else:
         rec["kind"] = "file"
         rec["sha256"] = sha256(path)
@@ -588,6 +607,26 @@ PIN_ANCHOR = "provenance — this artifact and what produced it"
 #: moved would be answering the wrong question confidently.
 PIN_BODY_FIELD = "body"
 PIN_BODY_PENDING = "0" * PIN_DIGEST_CHARS
+
+
+def _tree_stream(pairs: list[tuple[str, str]], key: typing.Callable[[str], tuple[str, ...]]) -> str:
+    """`name\\0digest\\0` per file, in the order `key` puts the names. ADR-029 R9.
+
+    `name || hex-digest` with no separator is not injective by construction. The review called
+    the second preimage "trivial"; it is not — it needs a preimage attack on SHA-256, and one
+    could not be built. The NUL costs nothing and removes the argument rather than defending
+    it. NUL because it is the one byte a POSIX filename cannot contain.
+
+    THE KEY IS AN ARGUMENT so that the two orderings share one implementation. They must agree
+    on everything except the comparison, or the legacy digest `verify` computes to recognise a
+    pre-0.5.0 Windows pin would differ from what those versions actually wrote, and the
+    migration aid would recognise nothing.
+    """
+    h = hashlib.sha256()
+    for name, digest in sorted(pairs, key=lambda kv: key(kv[0])):
+        h.update(name.encode() + b"\0")
+        h.update(digest.encode() + b"\0")
+    return h.hexdigest()
 
 
 def pin_digest(entry: dict[str, typing.Any]) -> str:

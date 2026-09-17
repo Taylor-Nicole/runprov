@@ -389,7 +389,7 @@ def check_input(
     want: str,
     name: str,
     root: pathlib.Path,
-    cache: dict[pathlib.Path, str | Exception] | None = None,
+    cache: dict[pathlib.Path, tuple[str, str] | Exception] | None = None,
 ) -> dict[str, typing.Any]:
     """One pinned input, re-derived and compared. See the module docstring on refusals.
 
@@ -462,14 +462,53 @@ def check_input(
         got_or_exc = cache[target]
     else:
         try:
-            got_or_exc = pin_digest(describe(target))
+            described = describe(target)
+            # BOTH DIGESTS FROM ONE `describe`, so the legacy comparison below costs no second
+            # walk of the tree. `sha256_tree_casefolded` is present only for a directory whose
+            # names order differently under the two conventions; for a file it is absent and
+            # the legacy slot is empty, which is the same as having no legacy answer.
+            got_or_exc = (
+                pin_digest(described),
+                str(described.get("sha256_tree_casefolded", ""))[:PIN_DIGEST_CHARS],
+            )
         except (OSError, ValueError) as exc:  # unreadable now, or a FIFO where a file was
             got_or_exc = exc
         if cache is not None:
             cache[target] = got_or_exc
     if isinstance(got_or_exc, Exception):
         return {**out, "status": UNVERIFIABLE, "reason": str(got_or_exc)}
-    return {**out, "status": OK if got_or_exc == want else STALE, "found": got_or_exc}
+    got, legacy = got_or_exc
+    if got == want:
+        return {**out, "status": OK, "found": got}
+    if legacy and legacy == want:
+        # D-08 of Audit D. A DIRECTORY PINNED BY 0.1.0-0.4.0 ON WINDOWS, where the tree digest
+        # was built in case-folded order (`PurePath.__lt__` compares a case-folded key on that
+        # platform and only there). Making the digest machine-independent necessarily moved
+        # one platform's value, and this is that population meeting the new one.
+        #
+        # STILL STALE, DELIBERATELY. The pin no longer identifies this tree under the digest
+        # this version computes, and the user must re-pin; OK would be a green over a record
+        # that needs action, and a fifth status would move the exit-code table in README.md
+        # for a one-time migration. What changes is that the page SAYS WHICH THIS IS instead
+        # of reporting an unexplained mismatch over a directory nobody touched.
+        #
+        # THE CHECK IS NOT WEAKENED. The hashed stream is `name\0digest\0` per file with
+        # fixed-width digests, so it determines the ORDERED (name, digest) list — a stream
+        # that matches in folded order has the same names and the same file digests as the
+        # pinned tree, i.e. it IS that tree. The added exposure is one more 64-bit preimage
+        # against a 16-hex pin, 2^-64 to 2^-63, and there is no structural route by which a
+        # genuinely changed directory reaches it.
+        return {
+            **out,
+            "status": STALE,
+            "found": got,
+            "reason": (
+                "this matches the tree digest a pre-0.5.0 run recorded ON WINDOWS, where the "
+                "order was case-folded; the contents are unchanged — re-pin to adopt the "
+                "platform-independent digest"
+            ),
+        }
+    return {**out, "status": STALE, "found": got}
 
 
 def _body_verdict(path: pathlib.Path, first: dict[str, typing.Any]) -> bool | None:
@@ -507,7 +546,7 @@ def _body_verdict(path: pathlib.Path, first: dict[str, typing.Any]) -> bool | No
 def verify_artifact(
     path: pathlib.Path,
     root: pathlib.Path,
-    cache: dict[pathlib.Path, str | Exception] | None = None,
+    cache: dict[pathlib.Path, tuple[str, str] | Exception] | None = None,
 ) -> dict[str, typing.Any]:
     """One artifact: every pin in it, every input in those, and a status for the whole.
 
@@ -697,7 +736,7 @@ def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str
     # ONE CACHE FOR THE WHOLE REPORT. Shared inputs are the normal case -- a fan-out of
     # N artifacts from one reference file meant N full reads of it -- so the memo has to
     # live across artifacts, not inside one.
-    cache: dict[pathlib.Path, str | Exception] = {}
+    cache: dict[pathlib.Path, tuple[str, str] | Exception] = {}
     results = [verify_artifact(p, root, cache) for p in examined]
     pinned = [r for r in results if r["status"] != NO_PIN]
     return {
