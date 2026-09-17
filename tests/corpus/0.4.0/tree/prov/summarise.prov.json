@@ -1,0 +1,147 @@
+{
+  "schema": "runprov.run.v2",
+  "script": "summarise",
+  "run_uid": "80e045307851429c9dd84a6d93a721c9",
+  "run_id": "adhoc_20260917T082946Z",
+  "generation": "(default)",
+  "started_utc": "2026-09-17T08:29:46Z",
+  "command": "python /mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py @@RUNPROV_CORPUS_ROOT@@",
+  "argv": [
+    "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py",
+    "@@RUNPROV_CORPUS_ROOT@@"
+  ],
+  "cwd": "@@RUNPROV_CORPUS_ROOT@@",
+  "parameters": {
+    "stage": 2
+  },
+  "code": {
+    "project_root": ".",
+    "git_commit": null,
+    "git_commit_short": null,
+    "git_branch": null,
+    "git_status_captured": false,
+    "git_code_dirty": false,
+    "git_dirty_code_files": [],
+    "git_dirty_outside_code_paths": [],
+    "git_tree_dirty": false,
+    "git_other_changes": 0,
+    "git_dirty_other_files": [],
+    "git_other_files_omitted": 0,
+    "code_paths": [
+      "src",
+      "scripts",
+      "conf",
+      "pyproject.toml",
+      "Makefile"
+    ],
+    "script_file": "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py",
+    "script_sha256": "accb44dab7d620cdeff5441b675c1c8b416d739a4011530cc0a879e5b9cea0a5",
+    "imported": {
+      "count": 0,
+      "omitted": 0,
+      "digest": null,
+      "files": []
+    }
+  },
+  "environment": {
+    "python": "3.12.13",
+    "platform": "Linux-5.15.0-186-generic-x86_64-with-glibc2.35",
+    "hostname": "corpus-host",
+    "cpu_count": 8,
+    "packages": {},
+    "manager": {
+      "detected": [
+        "venv"
+      ],
+      "evidence": {
+        "VIRTUAL_ENV": "set"
+      }
+    },
+    "lockfiles": [],
+    "snapshot": {
+      "path": "prov/env/env-6bade4c377543771.txt",
+      "sha256": "6bade4c377543771861248498a09f378afd43bfd2546f39420923ac6af3ede02",
+      "n_packages": 2,
+      "n_unreadable": 0,
+      "python": "3.12.13",
+      "reused": true,
+      "lockfiles": []
+    }
+  },
+  "history": {
+    "destination": "prov/history.jsonl",
+    "sink": "TeeSink",
+    "project_source": "configured"
+  },
+  "observation": {
+    "steps": "declared",
+    "auto_backend": null,
+    "auto_available": true,
+    "packages_recorded": "snapshot",
+    "auto_mode": "off"
+  },
+  "tool": {
+    "name": "runprov",
+    "version": "0.4.0",
+    "source": "index",
+    "identifies_code": true
+  },
+  "seeds": [],
+  "inputs": [
+    {
+      "path": "out/genotype.tsv",
+      "symlink": false,
+      "size_bytes": 281,
+      "mtime_utc": "2026-09-17T08:29:46Z",
+      "kind": "file",
+      "sha256": "ed053653b4fed6d2f7b9e437529bd206c38b7607717edb8dbad9051d5910c83e",
+      "content_sha256": "6ae20eb940089b3ca927f26ee3c51132dd9c4b6fb0c20cc8b4e62c99d8c601d3"
+    }
+  ],
+  "outputs": [
+    {
+      "path": "out/summarise.tsv",
+      "symlink": false,
+      "size_bytes": 286,
+      "mtime_utc": "2026-09-17T08:29:46Z",
+      "kind": "file",
+      "sha256": "2870cff06377566b76099fc37506c1f1e182634983efb7e134bf94c6a01f3f75",
+      "content_sha256": "37fb9509c5d6c226044680dfc03a4f7754abdd3b1f1013b3eada186aca586f61"
+    }
+  ],
+  "steps": [
+    {
+      "step": "main.<locals>.tally",
+      "args": [
+        "3ee260925b049e81"
+      ],
+      "kwargs": {
+        "factor": "cad38c8cc221350c"
+      },
+      "returned": "cad38c8cc221350c"
+    }
+  ],
+  "signals": {
+    "SIGTERM": "armed",
+    "SIGHUP": "armed"
+  },
+  "notes": {
+    "rows_seen": 1
+  },
+  "status": "ok",
+  "finished_utc": "2026-09-17T08:29:46Z",
+  "resources": {
+    "wall_seconds": 0.00917,
+    "source": "getrusage",
+    "cpu_seconds": 0.180548,
+    "max_rss_bytes": 26935296,
+    "max_vms_bytes": 58019840,
+    "io_read_bytes": 0,
+    "io_write_bytes": 110592,
+    "unavailable": [
+      "cgroup: not this run's own (no scheduler or container)"
+    ],
+    "io_self_only": true,
+    "max_rss_is_floor": "the maximum of any one child, not the concurrent total; a scheduler enforces the cgroup total, which is larger"
+  }
+}

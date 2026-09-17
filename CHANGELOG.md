@@ -51,6 +51,39 @@ is a fix nobody checked.
   start marker — which the first version did, reporting that the schema, the packages and the
   observation block all differed, because one of the two was not a finished run.
 
+### Added
+
+* **A cross-version record corpus — the suite can now read records it did not write.** Every
+  other test in this project builds a record with the same code that reads it, which leaves one
+  failure structurally invisible: **a record written by last year's version that this year's
+  version reads differently, or refuses.** `tests/corpus/` closes it. Each released wheel is
+  installed from PyPI, one fixed scenario is run under it, and the resulting tree is kept.
+
+  **It is a measurement, not a fixture somebody typed.** The artifacts and the environment
+  snapshot are copied byte for byte and never edited — the artifact carries the pin whose body
+  digest `verify` re-derives, and the snapshot's filename *is* the digest of its body, so a
+  corpus that had to be rewritten to be moved would be measuring the rewriter. Only the record
+  files are normalised, and only to replace an absolute root; measured first, not assumed —
+  with relative paths the sole absolute values reaching a record are `cwd` and `command`.
+
+  **Verified by reinstating the defect it was built for.** Putting Audit C's C-03 sort key back
+  turns the directory-pinning artifact STALE in all four captured versions at once. Seven more
+  mutations — the pin's body field, the history schema, the steps shape, `content_digest`, the
+  manifest, one artifact byte, and an edit to the scenario itself — are all caught. One of them
+  found a real hole while it was being written: `verify` reporting OK does not prove the body
+  was *checked*, so `body_checked` is now asserted beside the verdict.
+
+  `data/refs` is a directory whose subdirectory names are chosen rather than illustrative:
+  `panel/`, `panel.old/` and `panel-v2/` sort in **opposite** orders under a string key and a
+  parts key, because `/` is 0x2f while `.` is 0x2e and `-` is 0x2d. Flat filenames sort
+  identically under both, so a corpus built from those would have *looked* like it covered
+  C-03 and would not.
+
+  The version list is derived from the directory, the command list from the parser, and a
+  released version that is never captured fails the suite one release later — because this
+  project's record on remembered rules is seven misses for the scope pattern and three for
+  `README-pypi.md`, so the harness may not depend on one.
+
 ### Fixed
 
 * **Two audits over the same code, 32 distinct defects, and the second was aimed at the

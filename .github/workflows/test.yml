@@ -46,6 +46,11 @@ jobs:
       # commands instead, the two would drift and "it passes locally" would stop meaning
       # anything.
       - run: python ci.py lint
+      # THE CORPUS FIXTURE'S OWN HONESTY, once rather than on every matrix leg: whether the
+      # PACKAGE still agrees with those records is asked by `ci.py test`, which runs
+      # everywhere. This asks whether the committed trees carry a path from the machine that
+      # built them, and proves its own scanner with a planted one.
+      - run: python ci.py corpus
 
   test:
     runs-on: ${{ matrix.os }}

@@ -1,0 +1,203 @@
+{
+  "generated_utc": "2026-09-17T08:29:46Z",
+  "scenario_sha256": "accb44dab7d620cdeff5441b675c1c8b416d739a4011530cc0a879e5b9cea0a5",
+  "versions": {
+    "0.1.0": {
+      "captured_utc": "2026-09-17T08:29:35Z",
+      "files": [
+        "data/lookup.csv",
+        "data/m.tsv",
+        "data/refs/panel-v2/a.fa",
+        "data/refs/panel.old/a.fa",
+        "data/refs/panel/a.fa",
+        "data/refs/ref.fa",
+        "data/refs/ref.fa.fai",
+        "out/align.tsv",
+        "out/genotype.tsv",
+        "out/summarise.tsv",
+        "prov/align.prov.json",
+        "prov/align.prov.yml",
+        "prov/env/env-1473a91200d16f76.txt",
+        "prov/genotype.prov.json",
+        "prov/genotype.prov.yml",
+        "prov/history.jsonl",
+        "prov/summarise.prov.json",
+        "prov/summarise.prov.yml",
+        "prov/transformation_log.yml",
+        "scenario.json"
+      ],
+      "generated_by_python": "3.12",
+      "scenario": {
+        "artifacts": [
+          "out/align.tsv",
+          "out/genotype.tsv",
+          "out/summarise.tsv"
+        ],
+        "chain": [
+          "align",
+          "genotype",
+          "summarise"
+        ],
+        "project_settings_unavailable": [
+          "auto_steps",
+          "progress"
+        ],
+        "project_settings_used": [
+          "env_snapshot_dir",
+          "root",
+          "run_log"
+        ],
+        "python": "3.12",
+        "runprov": "0.1.0",
+        "step": false
+      }
+    },
+    "0.2.0": {
+      "captured_utc": "2026-09-17T08:29:39Z",
+      "files": [
+        "data/lookup.csv",
+        "data/m.tsv",
+        "data/refs/panel-v2/a.fa",
+        "data/refs/panel.old/a.fa",
+        "data/refs/panel/a.fa",
+        "data/refs/ref.fa",
+        "data/refs/ref.fa.fai",
+        "out/align.tsv",
+        "out/genotype.tsv",
+        "out/summarise.tsv",
+        "prov/align.prov.json",
+        "prov/align.prov.yml",
+        "prov/env/env-17d17787b3a9cebb.txt",
+        "prov/genotype.prov.json",
+        "prov/genotype.prov.yml",
+        "prov/history.jsonl",
+        "prov/summarise.prov.json",
+        "prov/summarise.prov.yml",
+        "prov/transformation_log.yml",
+        "scenario.json"
+      ],
+      "generated_by_python": "3.12",
+      "scenario": {
+        "artifacts": [
+          "out/align.tsv",
+          "out/genotype.tsv",
+          "out/summarise.tsv"
+        ],
+        "chain": [
+          "align",
+          "genotype",
+          "summarise"
+        ],
+        "project_settings_unavailable": [],
+        "project_settings_used": [
+          "auto_steps",
+          "env_snapshot_dir",
+          "progress",
+          "root",
+          "run_log"
+        ],
+        "python": "3.12",
+        "runprov": "0.2.0",
+        "step": true
+      }
+    },
+    "0.3.0": {
+      "captured_utc": "2026-09-17T08:29:43Z",
+      "files": [
+        "data/lookup.csv",
+        "data/m.tsv",
+        "data/refs/panel-v2/a.fa",
+        "data/refs/panel.old/a.fa",
+        "data/refs/panel/a.fa",
+        "data/refs/ref.fa",
+        "data/refs/ref.fa.fai",
+        "out/align.tsv",
+        "out/genotype.tsv",
+        "out/summarise.tsv",
+        "prov/align.prov.json",
+        "prov/align.prov.yml",
+        "prov/env/env-0ef5febc14e744f3.txt",
+        "prov/genotype.prov.json",
+        "prov/genotype.prov.yml",
+        "prov/history.jsonl",
+        "prov/summarise.prov.json",
+        "prov/summarise.prov.yml",
+        "prov/transformation_log.yml",
+        "scenario.json"
+      ],
+      "generated_by_python": "3.12",
+      "scenario": {
+        "artifacts": [
+          "out/align.tsv",
+          "out/genotype.tsv",
+          "out/summarise.tsv"
+        ],
+        "chain": [
+          "align",
+          "genotype",
+          "summarise"
+        ],
+        "project_settings_unavailable": [],
+        "project_settings_used": [
+          "auto_steps",
+          "env_snapshot_dir",
+          "progress",
+          "root",
+          "run_log"
+        ],
+        "python": "3.12",
+        "runprov": "0.3.0",
+        "step": true
+      }
+    },
+    "0.4.0": {
+      "captured_utc": "2026-09-17T08:29:46Z",
+      "files": [
+        "data/lookup.csv",
+        "data/m.tsv",
+        "data/refs/panel-v2/a.fa",
+        "data/refs/panel.old/a.fa",
+        "data/refs/panel/a.fa",
+        "data/refs/ref.fa",
+        "data/refs/ref.fa.fai",
+        "out/align.tsv",
+        "out/genotype.tsv",
+        "out/summarise.tsv",
+        "prov/align.prov.json",
+        "prov/align.prov.yml",
+        "prov/env/env-6bade4c377543771.txt",
+        "prov/genotype.prov.json",
+        "prov/genotype.prov.yml",
+        "prov/history.jsonl",
+        "prov/summarise.prov.json",
+        "prov/summarise.prov.yml",
+        "prov/transformation_log.yml",
+        "scenario.json"
+      ],
+      "generated_by_python": "3.12",
+      "scenario": {
+        "artifacts": [
+          "out/align.tsv",
+          "out/genotype.tsv",
+          "out/summarise.tsv"
+        ],
+        "chain": [
+          "align",
+          "genotype",
+          "summarise"
+        ],
+        "project_settings_unavailable": [],
+        "project_settings_used": [
+          "auto_steps",
+          "env_snapshot_dir",
+          "progress",
+          "root",
+          "run_log"
+        ],
+        "python": "3.12",
+        "runprov": "0.4.0",
+        "step": true
+      }
+    }
+  }
+}

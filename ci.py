@@ -542,6 +542,18 @@ def torture() -> None:
     run(PY, str(ROOT / "tools" / "torture.py"))
 
 
+def corpus() -> None:
+    """Self-check the cross-version record corpus. NOT the gate over it — that is in the suite.
+
+    This asks whether the committed FIXTURE is honest (no paths from the machine that built
+    it, a manifest that matches the scenario on disk, a working leak scanner proved by a
+    planted path). Whether the PACKAGE still agrees with those records is a different
+    question, and it belongs in `ci.py test` where it runs on every leg of the matrix rather
+    than in a step somebody has to remember.
+    """
+    run(PY, str(ROOT / "tools" / "corpus.py"), "verify")
+
+
 STEPS = {
     "lint": lint,
     "test": test,
@@ -549,6 +561,7 @@ STEPS = {
     "setup": setup,
     "surface": surface,
     "torture": torture,
+    "corpus": corpus,
     "release-check": release_check,
 }
 

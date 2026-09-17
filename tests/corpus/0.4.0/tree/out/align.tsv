@@ -1,0 +1,10 @@
+# provenance — this artifact and what produced it
+#   script     : align
+#   generation : (default)
+#   commit     : NONE — no commit to name (yet)
+#   body       : 3b387824517fb40d
+#   inputs (2), content digest:
+#     b9fb8778123fa888  data/refs
+#     f6d2cdf31b5ebd54  data/m.tsv
+stage	rows
+align	3

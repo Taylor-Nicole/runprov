@@ -1,0 +1,9 @@
+# provenance — this artifact and what produced it
+#   script     : genotype
+#   generation : (default)
+#   commit     : NONE — no commit to name (yet)
+#   body       : f7b328270c177d4b
+#   inputs (1), content digest:
+#     567189165e668fde  out/align.tsv
+stage	rows
+genotype	1

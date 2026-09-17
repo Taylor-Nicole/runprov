@@ -1,0 +1,133 @@
+{
+  "schema": "runprov.run.v2",
+  "script": "genotype",
+  "run_uid": "2d770b3bbab341fba0cede3f6584b7da",
+  "run_id": "adhoc_20260917T082943Z",
+  "generation": "(default)",
+  "started_utc": "2026-09-17T08:29:43Z",
+  "command": "python /mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py @@RUNPROV_CORPUS_ROOT@@",
+  "argv": [
+    "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py",
+    "@@RUNPROV_CORPUS_ROOT@@"
+  ],
+  "cwd": "@@RUNPROV_CORPUS_ROOT@@",
+  "parameters": {
+    "stage": 1
+  },
+  "code": {
+    "project_root": ".",
+    "git_commit": null,
+    "git_commit_short": null,
+    "git_branch": null,
+    "git_status_captured": false,
+    "git_code_dirty": false,
+    "git_dirty_code_files": [],
+    "git_dirty_outside_code_paths": [],
+    "git_tree_dirty": false,
+    "git_other_changes": 0,
+    "git_dirty_other_files": [],
+    "git_other_files_omitted": 0,
+    "code_paths": [
+      "src",
+      "scripts",
+      "conf",
+      "pyproject.toml",
+      "Makefile"
+    ],
+    "script_file": "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py",
+    "script_sha256": "accb44dab7d620cdeff5441b675c1c8b416d739a4011530cc0a879e5b9cea0a5",
+    "imported": {
+      "count": 0,
+      "omitted": 0,
+      "digest": null,
+      "files": []
+    }
+  },
+  "environment": {
+    "python": "3.12.13",
+    "platform": "Linux-5.15.0-186-generic-x86_64-with-glibc2.35",
+    "hostname": "corpus-host",
+    "cpu_count": 8,
+    "packages": {},
+    "manager": {
+      "detected": [
+        "venv"
+      ],
+      "evidence": {
+        "VIRTUAL_ENV": "set"
+      }
+    },
+    "lockfiles": [],
+    "snapshot": {
+      "path": "prov/env/env-0ef5febc14e744f3.txt",
+      "sha256": "0ef5febc14e744f3c87a149447894aee28c33221a81417cf47697cc8568b5e6f",
+      "n_packages": 2,
+      "n_unreadable": 0,
+      "python": "3.12.13",
+      "reused": true,
+      "lockfiles": []
+    }
+  },
+  "history": {
+    "destination": "prov/history.jsonl",
+    "sink": "TeeSink",
+    "project_source": "configured"
+  },
+  "observation": {
+    "steps": "declared",
+    "auto_backend": null,
+    "auto_available": true,
+    "packages_recorded": "snapshot",
+    "auto_mode": "off"
+  },
+  "tool": {
+    "name": "runprov",
+    "version": "0.3.0",
+    "source": "index",
+    "identifies_code": true
+  },
+  "seeds": [],
+  "inputs": [
+    {
+      "path": "out/align.tsv",
+      "symlink": false,
+      "size_bytes": 306,
+      "mtime_utc": "2026-09-17T08:29:43Z",
+      "kind": "file",
+      "sha256": "f745d3245d975fdadc27681d2a8f9d754dc8b7657eaeec7d93889f4332589825",
+      "content_sha256": "567189165e668fde540ca06a2ee8a669b49aae340b3f69463b3f07e6242bbf7e"
+    }
+  ],
+  "outputs": [
+    {
+      "path": "out/genotype.tsv",
+      "symlink": false,
+      "size_bytes": 281,
+      "mtime_utc": "2026-09-17T08:29:43Z",
+      "kind": "file",
+      "sha256": "ed053653b4fed6d2f7b9e437529bd206c38b7607717edb8dbad9051d5910c83e",
+      "content_sha256": "6ae20eb940089b3ca927f26ee3c51132dd9c4b6fb0c20cc8b4e62c99d8c601d3"
+    }
+  ],
+  "steps": [
+    {
+      "step": "main.<locals>.tally",
+      "args": [
+        "39bd6ed2211ac0c0"
+      ],
+      "kwargs": {
+        "factor": "cad38c8cc221350c"
+      },
+      "returned": "cad38c8cc221350c"
+    }
+  ],
+  "signals": {
+    "SIGTERM": "armed",
+    "SIGHUP": "armed"
+  },
+  "notes": {
+    "rows_seen": 1
+  },
+  "status": "ok",
+  "finished_utc": "2026-09-17T08:29:43Z"
+}

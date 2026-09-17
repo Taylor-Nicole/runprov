@@ -23172,3 +23172,261 @@ def test_the_pypi_readme_names_every_command_the_cli_offers(capsys):
         f"README-pypi.md is frozen into the wheel and does not name: {missing}. Add them to "
         f"the page, or add them to not_on_the_pypi_page with the reason."
     )
+
+
+# ----------------------------------------------------- the cross-version record corpus
+# `tools/corpus.py` and `tools/corpus_scenario.py` build these trees by installing each
+# RELEASED wheel from PyPI and running one fixed scenario under it. What follows holds today's
+# package to records today's package did not write — the only hole the rest of this file
+# structurally cannot cover, because every other test builds a record with the code that reads
+# it. Audit C's C-03 lived in that hole: `sha256_tree` silently moved on Linux and macOS inside
+# a fix meant to stop it depending on the machine, every directory input pinned by 0.1.0-0.4.0
+# would have verified STALE with nothing touched, and the suite was green throughout.
+from tools import corpus as corpus_tool  # noqa: E402 - after the fixtures it shares
+
+CORPUS_VERSIONS = corpus_tool.corpus_versions()
+
+#: How to point each command at a materialised tree, from inside it. DERIVED against the
+#: parser below, so a new subcommand fails this file until it is either given a recipe or
+#: named as a deliberate omission WITH ITS REASON — the shape that stopped `README-pypi.md`
+#: shipping a release behind for the fourth time.
+CORPUS_RECIPES: dict[str, list[str]] = {
+    "log": ["log", "--log", "prov/history.jsonl"],
+    "show": ["show", "--log", "prov/history.jsonl"],
+    "lineage": ["lineage", "--log", "prov/history.jsonl"],
+    "verify": ["verify", "out/align.tsv"],
+    "report": ["report", "out/summarise.tsv", "--log", "prov/history.jsonl"],
+    "impact": ["impact", "data/m.tsv", "--log", "prov/history.jsonl"],
+    "resources": ["resources", "--log", "prov/history.jsonl"],
+    "diff": ["diff", "align", "genotype", "--log", "prov/history.jsonl"],
+    "export": ["export", "prov/align.prov.json"],
+    "check": ["check", "."],
+}
+
+#: Not pointed at the corpus, with the reason. `exec` and `capture` CREATE a run rather than
+#: reading one, so they would write into the fixture rather than interrogate it; `prune`
+#: deletes in-flight markers, and a test that mutates the corpus is a test that changes its
+#: own subject between runs.
+CORPUS_NOT_READERS = {"exec", "capture", "prune"}
+
+
+def _corpus_commands(capsys) -> list[str]:
+    with contextlib.suppress(SystemExit):
+        runprov.__main__.main(["--help"])
+    found = re.search(r"\{([a-z,]+)\}", capsys.readouterr().out)
+    assert found, "the help text no longer lists its subcommands; this test reads nothing"
+    return found.group(1).split(",")
+
+
+@pytest.mark.skipif(not CORPUS_VERSIONS, reason="no corpus — tools/corpus.py generate --all")
+@pytest.mark.parametrize("version", CORPUS_VERSIONS)
+def test_a_record_written_by_a_released_version_still_verifies(version, tmp_path, monkeypatch):
+    """THE ORACLE. Every artifact every released wheel ever wrote must still verify OK.
+
+    This is the assertion the whole harness exists for, and it is cheap only because the
+    expensive half — installing four wheels from PyPI and running a fixed scenario under each
+    — was paid once and committed. `verify` re-derives the pinned digests from the artifact
+    alone, so a green here means today's hashing agrees with 0.1.0's, 0.2.0's, 0.3.0's and
+    0.4.0's, byte for byte, including `sha256_tree` over a nested directory.
+
+    VERIFIED AS A POSITIVE CONTROL, which is the only reason to believe it: reinstating C-03's
+    sort key in a copied tree turns the `align` artifact STALE in all four versions at once.
+    The other two artifacts stay OK because only `align` pins the directory, and that is the
+    correct answer rather than a weakness — a control that reddened everything would not
+    distinguish this defect from a broken harness.
+    """
+    tree = corpus_tool.materialise(version, tmp_path / "tree")
+    monkeypatch.chdir(tree)
+    runprov.configure(root=".", run_log="prov/history.jsonl")
+
+    artifacts = sorted(p.name for p in (tree / "out").glob("*.tsv"))
+    assert artifacts, f"{version} materialised no artifacts — an empty tree passes everything"
+
+    for name in artifacts:
+        result = runprov.verify.verify_artifact(pathlib.Path("out") / name, pathlib.Path("."))
+        assert result["status"] == runprov.verify.OK, (
+            f"{version} wrote out/{name} and this version no longer agrees with its pin: "
+            f"{result.get('status')} {result.get('reason', '')}"
+        )
+        # OK IS NOT ENOUGH ON ITS OWN, and a mutation proved it rather than a review: renaming
+        # `PIN_BODY_FIELD` from `body` makes the reader find no body digest in these older
+        # artifacts, skip the check entirely — which is CORRECT for an artifact written before
+        # that field existed — and still report OK. The status then means "nothing was found
+        # wrong with what I looked at", and what it looked at had quietly become nothing.
+        # `body_checked` is the positive companion, and these artifacts all carry a body.
+        assert result["body_checked"] is True, (
+            f"out/{name}: the artifact's own bytes were NOT re-derived, so OK means nothing"
+        )
+        assert result["pins"] >= 1, f"out/{name}: no pin block was read"
+        statuses = {i.get("name"): i.get("status") for i in result["inputs"]}
+        assert statuses, f"out/{name}: the pin names no inputs, so no digest was re-derived"
+        assert set(statuses.values()) == {runprov.verify.OK}, f"out/{name}: {statuses}"
+
+
+@pytest.mark.skipif(not CORPUS_VERSIONS, reason="no corpus — tools/corpus.py generate --all")
+@pytest.mark.parametrize("version", CORPUS_VERSIONS)
+def test_every_command_reads_a_history_written_by_a_released_version(
+    version, tmp_path, monkeypatch, capsys
+):
+    """No command may traceback on an old record, and none may invent a verdict for one.
+
+    The exit-code contract (`__main__.py`) is the whole assertion: 0 checked-and-clean, 1
+    checked-and-something-is-wrong, 2 could-not-check. A traceback is none of the three, and
+    it is what a reader of a year-old history actually meets when a field has quietly changed
+    shape. Audit B's A-03 was exactly this — `runprov diff` raised `TypeError: 'int' object is
+    not iterable` for any project that had ever used `@run.step`, because the history stores a
+    COUNT of steps and the sidecar stores the list.
+    """
+    tree = corpus_tool.materialise(version, tmp_path / "tree")
+    monkeypatch.chdir(tree)
+
+    commands = _corpus_commands(capsys)
+    unrecipe = [c for c in commands if c not in CORPUS_RECIPES and c not in CORPUS_NOT_READERS]
+    assert not unrecipe, (
+        f"new subcommand(s) {unrecipe} are not exercised against the corpus. Add a recipe to "
+        f"CORPUS_RECIPES, or name them in CORPUS_NOT_READERS with the reason."
+    )
+
+    checked = 0
+    for name, argv in CORPUS_RECIPES.items():
+        if name not in commands:  # pragma: no cover - a command was removed, not added
+            continue
+        runprov.configure(root=".", run_log="prov/history.jsonl")
+        try:
+            code = runprov.__main__.main(list(argv))
+        except SystemExit as exc:  # argparse's own exits are still exits, not tracebacks
+            code = exc.code if isinstance(exc.code, int) else 2
+        except Exception as exc:  # the thing under test is that this never happens
+            pytest.fail(f"{version}: `runprov {' '.join(argv)}` raised {type(exc).__name__}: {exc}")
+        capsys.readouterr()
+        assert code in (0, 1, 2), f"{version}: `runprov {name}` exited {code}"
+        checked += 1
+    assert checked >= 8, f"only {checked} commands were run against {version}"
+
+
+@pytest.mark.skipif(not CORPUS_VERSIONS, reason="no corpus — tools/corpus.py generate --all")
+def test_the_corpus_describes_the_scenario_that_actually_exists(tmp_path):
+    """A corpus is only meaningful as *what version X did with scenario S*.
+
+    Edit the scenario without rebuilding the trees and every assertion above still passes while
+    describing a scenario that no longer exists — a green over nothing, which is the failure
+    this harness was built to stop and therefore the one it may not introduce. The scenario's
+    digest is recorded at generation and compared here.
+
+    Also asserted: the corpus carries no absolute path from the machine that built it, with a
+    PLANTED one to prove the scanner works. "No leaks found" and "nothing was scanned" are the
+    same green.
+    """
+    manifest = json.loads((corpus_tool.CORPUS / "MANIFEST.json").read_text(encoding="utf-8"))
+    assert manifest["scenario_sha256"] == corpus_tool.scenario_digest(), (
+        "tools/corpus_scenario.py has changed since the corpus was built. Regenerate it with "
+        "`python tools/corpus.py generate --all`, or the trees describe a scenario that is gone."
+    )
+    assert sorted(manifest["versions"]) == sorted(CORPUS_VERSIONS)
+
+    for version in CORPUS_VERSIONS:
+        tree = corpus_tool.CORPUS / version / "tree"
+        assert not corpus_tool.leaks(tree), f"{version} carries paths from the build machine"
+
+    planted = corpus_tool.materialise(CORPUS_VERSIONS[0], tmp_path / "planted")
+    (planted / "prov" / "planted.json").write_text('{"cwd": "/home/someone/x"}', encoding="utf-8")
+    assert corpus_tool.leaks(planted), (
+        "the leak scanner does not work, so its silence means nothing"
+    )
+
+
+@pytest.mark.skipif(len(CORPUS_VERSIONS) < 2, reason="needs two released versions")
+def test_identical_bytes_produced_identical_digests_in_every_released_version():
+    """The sharpest thing the corpus makes sayable, and it needs no re-derivation at all.
+
+    Every version ran the same scenario over byte-identical inputs, so every version should
+    have PINNED the same digests. Comparing the recorded values directly — 0.1.0's against
+    0.4.0's — states "the digest has not moved" as a fact about what was written, rather than
+    inferring it from today's reader agreeing with today's re-derivation.
+
+    `data/refs` is the one that matters and it is asserted by name: it is a DIRECTORY, so its
+    entry is a `sha256_tree` over nested paths whose separator competes with `.` and `-`, and
+    that is the exact quantity C-03 moved. A test that happened to cover only flat files would
+    read as covering this and would not.
+    """
+    pinned: dict[str, dict[str, str]] = {}
+    for version in CORPUS_VERSIONS:
+        tree = corpus_tool.CORPUS / version / "tree"
+        blocks = runprov.verify.read_pins(tree / "out" / "align.tsv")
+        assert blocks, f"{version}: align.tsv carries no pin"
+        pinned[version] = {name: digest for digest, name in blocks[0]["entries"]}
+        assert "data/refs" in pinned[version], (
+            f"{version} pinned {sorted(pinned[version])} — the DIRECTORY input is missing, so "
+            f"sha256_tree is not under test and C-03 could recur unseen"
+        )
+
+    reference = pinned[CORPUS_VERSIONS[0]]
+    for version, entries in pinned.items():
+        assert entries == reference, (
+            f"{version} recorded different digests from {CORPUS_VERSIONS[0]} for byte-identical "
+            f"inputs. A digest that moves between releases re-pins every artifact at once — "
+            f"the failure the record-format promise in README.md exists to forbid.\n"
+            f"  {CORPUS_VERSIONS[0]}: {reference}\n  {version}: {entries}"
+        )
+
+
+@pytest.mark.skipif(len(CORPUS_VERSIONS) < 2, reason="needs two released versions")
+def test_the_record_schema_has_not_moved_across_any_released_version():
+    """`schema` is the field a future reader keys compatibility off, so it is not free to drift.
+
+    If this ever fails the answer is not to update the constant: it is that a record-format
+    change happened, and the README's record-format promise says that is the one kind of
+    change this package documents rather than absorbs. The corpus is what makes the question
+    answerable at all — before it, nothing in the suite had ever seen last year's `schema`.
+    """
+    seen: dict[str, set[str]] = {}
+    for version in CORPUS_VERSIONS:
+        history = corpus_tool.CORPUS / version / "tree" / "prov" / "history.jsonl"
+        records = [
+            json.loads(line)
+            for line in history.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert records, f"{version}: an empty history proves nothing"
+        seen[version] = {r.get("schema", "MISSING") for r in records}
+
+    everything = set().union(*seen.values())
+    assert everything <= {runprov.HISTORY_SCHEMA, runprov.START_SCHEMA}, (
+        f"a released version wrote a schema this one does not name: {everything}"
+    )
+    assert len(set(map(frozenset, seen.values()))) == 1, (
+        f"the schema set moved between releases: {seen}"
+    )
+
+
+def test_the_corpus_keeps_up_with_the_releases_by_itself():
+    """A corpus that has to be REMEMBERED after each release is a corpus that stops growing.
+
+    This project's own record on remembered rules is seven misses for the scope pattern and
+    three for `README-pypi.md`, so the harness may not depend on one. Every released tag must
+    have a captured tree — with a grace period of exactly one release, because the wheel has
+    to exist on PyPI before it can be installed and captured, and `main` going red the instant
+    a tag is pushed would punish the release rather than the omission.
+
+    So: tag 0.5.0 and nothing happens. Tag 0.6.0 without having captured 0.5.0 and this fails,
+    naming the one command that fixes it. The window is a whole release cycle, and the failure
+    is unmissable when it arrives.
+
+    THE SKIP IS LOUD ON PURPOSE. Without tags — a shallow clone, or an sdist with no `.git` —
+    "every tag is covered" is true of the empty set, which is the vacuous pass this file was
+    written to stop. It says it looked at nothing rather than reporting green.
+    """
+    try:
+        released = corpus_tool.released_versions()
+    except (OSError, subprocess.CalledProcessError):  # pragma: no cover - no git here
+        pytest.skip("no git tags visible; this check needs a full clone")
+    if not released:  # pragma: no cover - a shallow clone or an unpacked sdist
+        pytest.skip("no released tags found — nothing to compare the corpus against")
+
+    owed = set(released[:-1]) - set(CORPUS_VERSIONS)
+    assert not owed, (
+        f"released but never captured: {sorted(owed)}. The cross-version gate cannot see a "
+        f"version it has no record from. Run `python tools/corpus.py generate "
+        + " ".join(f"--version {v}" for v in sorted(owed))
+        + "` and commit the trees."
+    )

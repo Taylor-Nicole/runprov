@@ -127,6 +127,22 @@ mutation also asserts its own bytes changed.
 
 A finding prints the flags that reproduce it: `--case a:3 --seed 0 --keep`.
 
+## `python ci.py corpus` — records written by the versions that came before
+
+`tests/corpus/` holds real records produced by every released wheel, captured by installing
+each one from PyPI and running one fixed scenario under it. The suite materialises those trees
+and holds the current package to them: every artifact every release ever wrote must still
+verify OK, every command must read an old history without a traceback, and byte-identical
+inputs must have produced byte-identical digests in every version.
+
+This closes the one hole the rest of the suite structurally cannot: every other test builds a
+record with the code that reads it. `python ci.py corpus` self-checks the fixture rather than
+the package — that the trees carry no path from the machine that built them, that the manifest
+matches the scenario on disk, and, with a planted path, that the leak scanner works at all.
+
+Regenerating needs the network and is documented in `tests/corpus/README.md`. **Editing
+`tools/corpus_scenario.py` requires regenerating the trees**, and a test enforces it.
+
 ## What the suite skips, and how to un-skip it
 
 **A green run is not a complete run**, and the count is printed so you can tell the

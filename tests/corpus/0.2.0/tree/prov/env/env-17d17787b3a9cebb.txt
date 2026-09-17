@@ -1,0 +1,6 @@
+# environment snapshot — content-addressed; the filename IS the digest of this body
+# python   : 3.12.13
+# platform : Linux-5.15.0-186-generic-x86_64-with-glibc2.35
+# packages : 2
+pip==25.0.1
+runprov==0.2.0

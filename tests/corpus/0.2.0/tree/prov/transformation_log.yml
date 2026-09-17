@@ -1,0 +1,68 @@
+# MAINTAINED by runprov — one entry appended per run. This is a VIEW;
+# the record of truth is the run history beside it, and this file can be
+# rebuilt at any time with `python -m runprov log --format yaml`. Do not hand-edit —
+# the source of truth is the append-only run history, and every path below
+# carries the SHA-256 that was measured when the file was read or written.
+#
+# Field names are the transformation log's, so anything that could read that file
+# can read this one. Two deliberate differences: every scalar is QUOTED, so `date`
+# loads as an ISO-8601 string rather than as a bare YAML timestamp, and a key is
+# omitted when the run did not use the feature rather than filled with a default.
+
+- step: "align"
+  script: "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py"
+  date: "2026-09-17T08:29:39Z"
+  input: "data/refs, data/m.tsv"
+  output: "out/align.tsv"
+  run_command: "python /mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py @@RUNPROV_CORPUS_ROOT@@"
+  cwd: "@@RUNPROV_CORPUS_ROOT@@"
+  run_id: "adhoc_20260917T082939Z"
+  generation: "(default)"
+  git_commit: "?"
+  status: "ok"
+  params: {"stage": 0}
+  summary: {"rows_seen": 3}
+  requirements_file: "prov/env/env-17d17787b3a9cebb.txt"
+  input_sha256:
+    - "b9fb8778123fa888a72235b3d0dd44fd2dffd6929e91979a03ac63f9828373fa  data/refs"
+    - "0a9ba34b0fd0084fae165e20f0d6d3b148b44fef66c9878b56df3e9393d61984  data/m.tsv"
+  output_sha256:
+    - "f745d3245d975fdadc27681d2a8f9d754dc8b7657eaeec7d93889f4332589825  out/align.tsv"
+
+- step: "genotype"
+  script: "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py"
+  date: "2026-09-17T08:29:39Z"
+  input: "out/align.tsv"
+  output: "out/genotype.tsv"
+  run_command: "python /mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py @@RUNPROV_CORPUS_ROOT@@"
+  cwd: "@@RUNPROV_CORPUS_ROOT@@"
+  run_id: "adhoc_20260917T082939Z"
+  generation: "(default)"
+  git_commit: "?"
+  status: "ok"
+  params: {"stage": 1}
+  summary: {"rows_seen": 1}
+  requirements_file: "prov/env/env-17d17787b3a9cebb.txt"
+  input_sha256:
+    - "f745d3245d975fdadc27681d2a8f9d754dc8b7657eaeec7d93889f4332589825  out/align.tsv"
+  output_sha256:
+    - "ed053653b4fed6d2f7b9e437529bd206c38b7607717edb8dbad9051d5910c83e  out/genotype.tsv"
+
+- step: "summarise"
+  script: "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py"
+  date: "2026-09-17T08:29:39Z"
+  input: "out/genotype.tsv"
+  output: "out/summarise.tsv"
+  run_command: "python /mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py @@RUNPROV_CORPUS_ROOT@@"
+  cwd: "@@RUNPROV_CORPUS_ROOT@@"
+  run_id: "adhoc_20260917T082939Z"
+  generation: "(default)"
+  git_commit: "?"
+  status: "ok"
+  params: {"stage": 2}
+  summary: {"rows_seen": 1}
+  requirements_file: "prov/env/env-17d17787b3a9cebb.txt"
+  input_sha256:
+    - "ed053653b4fed6d2f7b9e437529bd206c38b7607717edb8dbad9051d5910c83e  out/genotype.tsv"
+  output_sha256:
+    - "2870cff06377566b76099fc37506c1f1e182634983efb7e134bf94c6a01f3f75  out/summarise.tsv"

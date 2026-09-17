@@ -1,0 +1,24 @@
+{
+  "artifacts": [
+    "out/align.tsv",
+    "out/genotype.tsv",
+    "out/summarise.tsv"
+  ],
+  "chain": [
+    "align",
+    "genotype",
+    "summarise"
+  ],
+  "project_settings_unavailable": [
+    "auto_steps",
+    "progress"
+  ],
+  "project_settings_used": [
+    "env_snapshot_dir",
+    "root",
+    "run_log"
+  ],
+  "python": "3.12",
+  "runprov": "0.1.0",
+  "step": false
+}
