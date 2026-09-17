@@ -23609,3 +23609,76 @@ def test_the_verify_cache_carries_both_digests_so_the_tree_is_walked_once(monkey
         f"the tree was walked {len(walks)} times for two checks; the legacy digest must come "
         f"from the same walk as the current one, not from a second `describe`"
     )
+
+
+def test_diff_says_when_a_run_did_not_finish(tmp_path):
+    """Audit D, D-02. Seven dimensions and not one of them read `status`.
+
+    A script that writes its table and THEN raises — a post-processing step blowing up after
+    the output is on disk — records identical inputs, outputs, parameters, packages and commit
+    to its successful predecessor. `runprov diff` reported every dimension `unchanged` and
+    exited 0, while the traceback sat in the same history line it had just read, and `runprov
+    log` printed `FAILED RuntimeError: …` from that very line.
+
+    A BARE INEQUALITY IS NOT THE FIX, which is the part the finding itself missed: when BOTH
+    runs crash identically the statuses agree, so `!=` settles and the command reports a clean
+    green comparison forever. The per-side evidence lines are what close that.
+    """
+    ok = _hrec(status="ok")
+    crashed = _hrec(status="failed", failure={"type": "RuntimeError", "message": "blew up\nline2"})
+
+    d = _dim(runprov.diff.compare(ok, crashed), "status")
+    assert d.verdict == "changed" and not d.settled
+    assert "status  ok -> failed" in d.differences
+    assert any("B failed: RuntimeError: blew up" in line for line in d.differences)
+    assert not any("line2" in line for line in d.differences), "one line of the message, not all"
+
+    # BOTH CRASHED: the statuses agree and it is still a finding.
+    both = _dim(runprov.diff.compare(crashed, crashed), "status")
+    assert both.verdict == "changed" and not both.settled, "two failures are not 'unchanged'"
+    assert len(both.differences) == 2, both.differences
+
+    # AND AN ORDINARY PAIR STAYS GREEN, or the gate is unusable — A-07's lesson.
+    clean = _dim(runprov.diff.compare(ok, ok), "status")
+    assert clean.verdict == "unchanged" and clean.settled and clean.examined == "ok vs ok"
+
+    # A failed run with no failure block is still a finding; `status` is what the history
+    # projection guarantees, `failure` is only the evidence and can be truncated away.
+    bare = _dim(runprov.diff.compare(ok, _hrec(status="failed")), "status")
+    assert any("no failure block recorded" in line for line in bare.differences)
+
+
+def test_diff_refuses_to_compare_a_run_that_has_not_finished():
+    """Audit D, D-02 — the two shapes that must BLOCK rather than compare.
+
+    `compare()` is pure and public and is fed hand-built mappings by callers and by this file,
+    so `status` can be absent; and `running` reaches a mid-run sidecar, where it describes a
+    run that has not finished rather than one that failed. Reporting either as a difference
+    would be a confident wrong answer, which is worse than refusing.
+    """
+    ok = _hrec(status="ok")
+    for other, why in (
+        (_hrec(status="running"), "has not finished"),
+        ({k: v for k, v in ok.items() if k != "status"}, "does not say whether"),
+    ):
+        d = _dim(runprov.diff.compare(ok, other), "status")
+        assert d.verdict == "not comparable", f"{other.get('status')!r} -> {d.verdict}"
+        assert why in (d.blocked or ""), d.blocked
+        assert not d.settled, "a gate may not go green over a run that may still be going"
+
+
+def test_diff_marks_a_failed_run_on_the_header_line_too(tmp_path, capsys):
+    """Audit D, D-02. When BOTH runs failed the `status` row reads as agreement at a glance.
+
+    A reader scanning the table sees `unchanged` down the column; the fact that neither run
+    finished has to be where the runs are named. `show` already puts the state in exactly that
+    position, so this is the package agreeing with itself rather than a new convention.
+    """
+    crashed = _hrec(status="failed", failure={"type": "RuntimeError", "message": "x"})
+    lines = runprov.diff.render(crashed, crashed, runprov.diff.compare(crashed, crashed))
+    assert lines[0].startswith("A ") and lines[0].endswith("[failed]"), lines[0]
+    assert lines[1].endswith("[failed]"), lines[1]
+
+    ok = _hrec(status="ok")
+    clean = runprov.diff.render(ok, ok, runprov.diff.compare(ok, ok))
+    assert "[" not in clean[0], f"an ordinary run carries no marker: {clean[0]}"

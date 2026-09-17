@@ -84,6 +84,28 @@ is a fix nobody checked.
   project's record on remembered rules is seven misses for the scope pattern and three for
   `README-pypi.md`, so the harness may not depend on one.
 
+### Fixed — `runprov diff` says when a run did not finish
+
+* **A run that CRASHED compared `unchanged` against one that succeeded, and exited 0.**
+  `compare()` had seven dimensions and none of them read `status` or `failure`, though the
+  history carries both deliberately. A script that writes its table and then raises — a
+  post-processing step blowing up after the output is already on disk — records identical
+  inputs, outputs, parameters, packages and commit to its predecessor, so every dimension
+  reported `unchanged` while the traceback sat in the same history line the diff had just
+  read, and `runprov log` printed `FAILED RuntimeError: …` from that very line.
+
+  **A bare inequality would not have fixed it:** when both runs crash identically the statuses
+  agree, so `runprov diff <script>` reported a clean green comparison **forever**. The new
+  `status` dimension therefore emits a per-side evidence line — `B failed: RuntimeError: …` —
+  whenever either side did not finish, and `render` marks the header lines `[failed]` so the
+  fact is visible at a glance where `show` already puts it.
+
+  An absent `status`, or a `running` one from a mid-run sidecar, BLOCKS rather than compares:
+  a run that has not finished cannot be said to match or differ. Poisoning every dimension
+  when a run failed was prototyped and rejected — `code`, `parameters` and `packages` are
+  recorded at start and fully known for a crashed run, and blanking them would contradict
+  ADR-0014's own amendment that incomplete is not incomparable.
+
 ### Changed — one recorded digest moves, and only on Windows
 
 * **`sha256_tree` for a directory input pinned by 0.1.0–0.4.0 ON WINDOWS has moved. POSIX

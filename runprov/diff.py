@@ -183,6 +183,62 @@ def _code(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]
     return Dimension("code", differences, f"{left or 'none'} / {right or 'none'}", blocked)
 
 
+def _status(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]) -> Dimension:
+    """Did each run SUCCEED. Audit D, D-02.
+
+    `compare()` had seven dimensions and none of them read `status` or `failure`, though the
+    history projection carries both deliberately — `run.py`'s own comment there says
+    `grep '"status": "failed"' runs.jsonl` is the whole query. So a script that wrote its
+    table and THEN raised — a post-processing step blowing up after the output is on disk —
+    produced a record with identical inputs, outputs, parameters, packages and commit to its
+    successful predecessor, and `runprov diff` reported every dimension `unchanged` and exited
+    0. The traceback was sitting in the same history line the diff had just read.
+
+    WORSE, AND THE REASON A BARE `!=` IS NOT THE FIX: when BOTH runs crash identically, the
+    statuses match, so an inequality test settles and `runprov diff <script>` reports a clean
+    green comparison forever. Hence the per-side evidence lines — a `failed` side is a finding
+    whether or not the other side agrees with it.
+
+    NOT A POISONED COMPARISON. Marking every dimension incomparable when a run failed was
+    prototyped and rejected: `code`, `parameters` and `packages` are recorded at START and are
+    fully known for a crashed run, and blanking them contradicts ADR-0014's own amendment that
+    INCOMPLETE is not INCOMPARABLE — it would lose the half that is still true.
+
+    A missing `status` BLOCKS rather than compares. `compare()` is pure and public and is fed
+    hand-built mappings; and `running` can reach a mid-run sidecar, where it describes a run
+    that has not finished rather than one that failed.
+    """
+    left, right = a.get("status"), b.get("status")
+    if not left or not right:
+        return Dimension(
+            "status",
+            [],
+            f"{left or '<absent>'} vs {right or '<absent>'}",
+            "one of the two records does not say whether the run finished",
+        )
+    if left == RUNNING or right == RUNNING:
+        return Dimension(
+            "status", [], f"{left} vs {right}", "a run that has not finished cannot be compared"
+        )
+    lines = []
+    if left != right:
+        lines.append(f"status  {left} -> {right}")
+    # THE EVIDENCE, PER SIDE, so failed-vs-failed is a finding too. `failure` alone would not
+    # do: a record can be `failed` with the failure block truncated or absent, and `status` is
+    # the field the history projection guarantees.
+    for record, side, state in ((a, "A", left), (b, "B", right)):
+        if state != OK_STATUS:
+            failure = record.get("failure") or {}
+            first = str(failure.get("message", "")).splitlines() or [""]
+            detail = (
+                f"{failure.get('type', '?')}: {first[0][:60]}"
+                if failure
+                else "no failure block recorded"
+            )
+            lines.append(f"{side} {state}: {detail}")
+    return Dimension("status", lines, f"{left} vs {right}", None)
+
+
 def _parameters(
     a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]
 ) -> Dimension:
@@ -327,6 +383,12 @@ def _steps(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any
 #: A ratio rather than an absolute, because these span microseconds to hours; 5% is chosen to
 #: be well below anything a reader would call a difference and well above clock jitter. It is
 #: a DISPLAY threshold only — the record keeps every digit.
+#: The two terminal states a run can reach, and the one it wears while still going. Read from
+#: `run.py` rather than re-spelled: a diff that invents its own vocabulary for the record's
+#: states is a diff that disagrees with `log` and `show` about the same line.
+OK_STATUS = "ok"
+RUNNING = "running"
+
 RESOURCE_NOISE = 0.05
 
 
@@ -383,6 +445,9 @@ def compare(
 ) -> list[Dimension]:
     """Every dimension, each with its own precondition. Pure, so the table is testable."""
     dims = [
+        # FIRST, because it is the precondition on reading any of the others: "the outputs did
+        # not change" means something different when one of the two runs died partway.
+        _status(a, b),
         _files(a, b, "inputs"),
         _files(a, b, "outputs"),
         _code(a, b),
@@ -407,11 +472,19 @@ def render(
     a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any], dims: list[Dimension]
 ) -> list[str]:
     """The three states, spelled out. `unchanged` always says what it examined."""
-    out = [
-        f"A  {a.get('script', '?')}  {a.get('run_id', '?')}  {a.get('started_utc', '?')}",
-        f"B  {b.get('script', '?')}  {b.get('run_id', '?')}  {b.get('started_utc', '?')}",
-        "",
-    ]
+
+    # `[failed]` ON THE HEADER LINES, not only in the dimension. D-02: when both runs failed
+    # the statuses agree, and a reader scanning the table sees seven `unchanged` rows with no
+    # hint that neither run finished. `show` already puts the state in exactly this position.
+    def _who(record: typing.Mapping[str, typing.Any], side: str) -> str:
+        state = record.get("status")
+        mark = "" if state == OK_STATUS else f"  [{state or 'status not recorded'}]"
+        return (
+            f"{side}  {record.get('script', '?')}  {record.get('run_id', '?')}  "
+            f"{record.get('started_utc', '?')}{mark}"
+        )
+
+    out = [_who(a, "A"), _who(b, "B"), ""]
     for d in dims:
         if d.verdict == UNCHANGED:
             # WHAT WAS EXAMINED, because "no difference found" and "nothing examined" print the
