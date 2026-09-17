@@ -23430,3 +23430,47 @@ def test_the_corpus_keeps_up_with_the_releases_by_itself():
         + " ".join(f"--version {v}" for v in sorted(owed))
         + "` and commit the trees."
     )
+
+
+def test_every_byte_asserted_fixture_is_protected_from_line_ending_translation():
+    """Git's default on Windows is `core.autocrlf=true`, which rewrites LF to CRLF ON CHECKOUT.
+
+    For a directory whose whole purpose is that its BYTES are pinned, that is fatal and silent:
+    the corpus artifacts carry pins `verify` re-derives, and the environment snapshot's
+    filename IS the digest of its body, so a translated checkout makes every artifact report
+    STALE and every snapshot report a digest that does not describe it — on one platform only,
+    which is the kind of failure that reaches a user before it reaches a developer.
+
+    `.gitattributes` already carried `tests/fixtures/** -text` with a comment saying Windows CI
+    had caught exactly this. Then `tests/corpus/` arrived and the list did not grow: THE SCOPE
+    PATTERN, in the file that documents the scope pattern, for the eighth time in this project.
+
+    So this derives the directories from disk rather than naming them, and asks git itself.
+    """
+    protected = [d for d in (REPO / "tests").iterdir() if d.is_dir() and d.name != "__pycache__"]
+    assert protected, "no fixture directories found; this test is reading nothing"
+
+    files = [
+        p for d in protected for p in d.rglob("*") if p.is_file() and "__pycache__" not in p.parts
+    ]
+    assert len(files) > 20, f"only {len(files)} fixture files seen; expected the corpus and more"
+
+    asked = subprocess.run(
+        ["git", "check-attr", "text", "--", *[str(p.relative_to(REPO)) for p in files]],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+    )
+    if asked.returncode:  # pragma: no cover - no git here (an unpacked sdist)
+        pytest.skip("git is not available to answer")
+
+    unprotected = [
+        line.rsplit(": text: ", 1)[0]
+        for line in asked.stdout.splitlines()
+        if line and not line.endswith(": text: unset")
+    ]
+    assert not unprotected, (
+        "these fixture files can be rewritten LF->CRLF by a Windows checkout, which changes "
+        "bytes whose digests are asserted:\n  " + "\n  ".join(unprotected[:10]) + "\n"
+        "Add the directory to .gitattributes with `-text`."
+    )

@@ -150,7 +150,17 @@ def scenario_digest() -> str:
     the failure this whole harness was built to stop — so it may not be introduced by the
     harness itself.
     """
-    return hashlib.sha256(SCENARIO.read_bytes()).hexdigest()
+    # NORMALISED TEXT, NOT RAW BYTES, and Windows CI taught this rather than review. A `.py`
+    # file checked out under `core.autocrlf=true` arrives with CRLF, so hashing its bytes gave
+    # a different answer on Windows than on the machine that built the corpus — and the check
+    # meant to prove the scenario had not changed failed on a platform where nothing had.
+    #
+    # This is the same rule as A-15 and C-11 inside the package itself: a content-addressed
+    # thing must hash what it MEANS, not how the filesystem spelled it today. Fixing it here
+    # rather than with a `.gitattributes` entry makes it independent of anyone's git config,
+    # which is the stronger of the two fixes.
+    text = SCENARIO.read_text(encoding="utf-8").replace("\r\n", "\n")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 # --------------------------------------------------------------------------- generation
