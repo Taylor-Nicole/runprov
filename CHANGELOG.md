@@ -84,6 +84,37 @@ is a fix nobody checked.
   project's record on remembered rules is seven misses for the scope pattern and three for
   `README-pypi.md`, so the harness may not depend on one.
 
+### Fixed — cost can fail the gate again, because the noise model was the defect
+
+* **`runprov diff` could never fail on `resources` — including when the two figures were not
+  the same quantity.** A `getrusage` peak compared against a cgroup peak printed `NOT
+  COMPARABLE — different quantities` and exited **0**, which ADR-0014 clause 4 forbids and
+  which that ADR's rejected-alternatives section refuses by name.
+
+  The cause was three attempts at the wrong problem. Every pair of runs differs in cost, so
+  letting cost decide the exit code made a gate that could never pass; the fix reached for was
+  to declare the whole dimension non-decisive, and that swallowed incomparability along with
+  noise. **The defect was the noise model.** Measured over twelve identical runs on one
+  machine: `wall_seconds` spreads 111% but only 0.035 s, while `max_rss_bytes` spreads 1%.
+  **Time noise is absolute; memory noise is relative** — so a relative band alone could never
+  absorb sub-second wall jitter, which is why it kept failing and kept being worked around.
+
+  A difference is now material only when it clears **both** a 5% band and an absolute floor
+  (0.5 s, 0.5 s, 8 MiB — roughly 14x and 33x the measured noise). With that, cost settles on
+  exactly the same terms as every other dimension: jitter produces no difference at all, a real
+  regression exits 1, and an incomparable pair exits non-zero. Nothing is exempt, and ADR-0014
+  is amended with the measurement rather than with an exception.
+
+  Two runs that **both** predate the `resources` block are now comparable and agree — they
+  measured nothing, in the same sense in which two runs that both declared no steps agree.
+  Blocking on absence would have made every history written by 0.1.0–0.3.0 permanently
+  non-zero, which is the gate-that-cannot-pass arriving a third time.
+
+* **A zero-step comparison keeps its truncation reason.** `steps` reports `0 vs 0` both for two
+  runs that declared none and for a run whose observation was cut off, and the branch that
+  distinguishes them could drop that reason with the suite green — `unchanged`, settled, gate
+  passed over a census both runs knew was partial.
+
 ### Fixed — `runprov diff` says when a run did not finish
 
 * **A run that CRASHED compared `unchanged` against one that succeeded, and exited 0.**

@@ -10741,7 +10741,14 @@ def test_diff_unchanged_says_what_it_examined(tmp_path):
             {"resources": {"source": "cgroup", "wall_seconds": 1.0}},
             "different quantities",
         ),
-        ("resources", {"resources": {}}, {}, "predates the resources block"),
+        # EXACTLY ONE SIDE. Both-absent is no longer incomparable (D-01): two runs that both
+        # predate the block agree completely about cost in the only sense available.
+        (
+            "resources",
+            {"resources": {"source": "getrusage", "wall_seconds": 1.0}},
+            {"resources": {}},
+            "predates the resources block",
+        ),
     ],
 )
 def test_diff_refuses_to_call_an_incomparable_dimension_unchanged(name, over_a, over_b, reason):
@@ -10752,13 +10759,15 @@ def test_diff_refuses_to_call_an_incomparable_dimension_unchanged(name, over_a, 
     d = _dim(dims, name)
     assert d.verdict == "not comparable", f"{name} reported {d.verdict}"
     assert reason in (d.blocked or "")
-    if not d.informational:
-        # `resources` is REPORTED BUT NEVER DECISIVE (Audit C, C-02's other half): a cost is
-        # not part of "is this the same run", and two runs of one script never agree on wall
-        # time — measured at 6.5ms vs 3.4ms for two identical runs, 48%, far above any
-        # threshold worth calling noise. Letting it settle the exit code is A-07's defect
-        # arriving through an operator instead of a threshold.
-        assert not d.settled, "an incomparable dimension must not settle the exit code"
+    # NO EXEMPTION, D-01 of Audit D. This assertion was narrowed with `if not d.informational:`
+    # so that `resources` could skip it — and that exemption was the defect: a dimension
+    # declared non-decisive had its INCOMPARABILITY made non-decisive too, so `runprov diff`
+    # printed "NOT COMPARABLE — A measured by 'getrusage', B by 'cgroup'" and exited 0. ADR-0014
+    # clause 4 says an incomparable dimension exits non-zero, and line 139 of that ADR
+    # explicitly REJECTS reporting one as unchanged with a note. The exemption is gone, the
+    # flag it keyed on is gone, and cost now settles or not on the same terms as everything
+    # else — by whether it was comparable and whether it found anything.
+    assert not d.settled, "an incomparable dimension must not settle the exit code"
     assert "NOT COMPARABLE" in "\n".join(runprov.diff.render(_hrec(), _hrec(), dims))
 
 
@@ -11228,21 +11237,95 @@ def test_diff_compares_step_counts_from_the_history_shape():
     assert same_count.verdict == "not comparable", "two different steps count the same"
 
 
-def test_diff_reports_cost_without_letting_it_decide():
-    """Audit C. A cost is not part of "is this the same run", and two runs of one script never
-    agree on wall time — measured at 6.5ms against 3.4ms for two identical runs, 48%, far
-    above any threshold worth calling noise. Letting timing settle the exit code is A-07's
-    defect arriving through an operator rather than a threshold.
+def test_a_real_cost_regression_fails_the_gate_and_jitter_does_not():
+    """Audit D, D-01 — and this test asserted the OPPOSITE yesterday, which is the finding.
 
-    The figures are still PRINTED: "it needed four times the memory" is exactly what a reader
-    wants. They simply do not decide whether anything changed.
+    The reasoning behind that version was sound and the remedy was not. Cost figures really do
+    differ between every pair of runs, so letting them decide the exit code made a gate that
+    could never pass — A-07's defect. The answer taken then was to declare the whole dimension
+    non-decisive (`informational`), and that swallowed INCOMPARABILITY along with noise: a run
+    measured by `getrusage` against one measured by a cgroup printed "NOT COMPARABLE" and
+    exited 0, contradicting ADR-0014 clause 4 and the alternative that ADR explicitly rejects.
+
+    The real defect was the noise MODEL, not the exit code. Measured over twelve identical runs
+    on one machine: wall time spreads 111 % but only 0.035 s, while memory spreads 1 %. Time
+    noise is ABSOLUTE, memory noise is RELATIVE — so a relative band alone could never work for
+    time, which is why it kept failing and kept getting worked around. Material now means
+    larger than the band AND larger than a floor, and with that the dimension settles or not on
+    exactly the same terms as every other one.
     """
-    a = {"resources": {"source": "getrusage", "wall_seconds": 1.0, "max_rss_bytes": 100}}
-    b = {"resources": {"source": "getrusage", "wall_seconds": 9.0, "max_rss_bytes": 400}}
-    d = next(x for x in runprov.diff.compare(a, b) if x.name == "resources")
-    assert d.verdict == "changed" and d.differences, "the figures are reported"
-    assert d.settled, "and they do not decide the exit code"
-    assert "max_rss_bytes  100 -> 400" in "\n".join(runprov.diff.render(a, b, [d]))
+    base = {"source": "getrusage", "wall_seconds": 30.0, "max_rss_bytes": 512 * 1024 * 1024}
+
+    def resources(**over):
+        return _dim(
+            runprov.diff.compare({"resources": base}, {"resources": dict(base, **over)}),
+            "resources",
+        )
+
+    # JITTER: above the 5 % band on the short scale, below the floor in its own units.
+    assert resources(wall_seconds=30.4).settled, "0.4 s is not a slowdown"
+    assert resources(max_rss_bytes=512 * 1024 * 1024 + 4096).settled, "4 KiB is not growth"
+
+    # A REAL MOVE fails the gate, which it could not do at all yesterday.
+    slower = resources(wall_seconds=90.0)
+    assert slower.verdict == "changed" and not slower.settled
+    assert slower.differences == ["wall_seconds  30.0 -> 90.0"]
+    fatter = resources(max_rss_bytes=8 * 1024 * 1024 * 1024)
+    assert not fatter.settled, "sixteen times the memory must be able to fail a gate"
+
+    # THE TWO CONDITIONS, ISOLATED. Everything above is rejected or accepted by both at once,
+    # so either one could be deleted and the assertions would still hold — which is what the
+    # per-hunk mutations found. These two cases each turn on exactly one of them.
+    def at(baseline, moved):
+        pair = (
+            {"source": "getrusage", "wall_seconds": baseline},
+            {"source": "getrusage", "wall_seconds": moved},
+        )
+        return _dim(
+            runprov.diff.compare({"resources": pair[0]}, {"resources": pair[1]}), "resources"
+        )
+
+    # BAND ONLY: 1 s on an hour clears the 0.5 s floor and is 0.03 % — noise on that scale.
+    assert at(3600.0, 3601.0).settled, "a second on an hour is not a regression"
+    # FLOOR ONLY: 0.4 s on a 1 s run is 29 %, far past the band, and is scheduler jitter.
+    assert at(1.0, 1.4).settled, "0.4 s on a short run is jitter, whatever the percentage"
+    # AND A 10 % REGRESSION ON A LONG JOB IS NOT EXCUSED BY THE FLOOR.
+    assert not resources(wall_seconds=33.1).settled, "3.1 s on a 30 s job is a real move"
+    assert not at(3600.0, 4200.0).settled, "ten minutes on an hour is a real move"
+
+    # INCOMPARABLE STILL FAILS, which is the half `informational` had silently swallowed.
+    cgroup = _dim(
+        runprov.diff.compare({"resources": base}, {"resources": dict(base, source="cgroup")}),
+        "resources",
+    )
+    assert cgroup.verdict == "not comparable" and not cgroup.settled
+    assert "different quantities" in cgroup.blocked
+
+
+def test_two_runs_that_both_predate_the_resources_block_are_comparable():
+    """Audit D, D-01. The obvious fix for the above would have broken every legacy history.
+
+    `_resources` blocked whenever the block was missing — and 0.1.0, 0.2.0 and 0.3.0 wrote no
+    `resources` block at all, so restoring incomparability-fails-the-gate would have made every
+    pair of records from those versions permanently exit 1. That is A-07's gate-that-cannot-pass
+    arriving a THIRD time, and the message was literally false there too: "one of the two runs
+    predates" when both did.
+
+    Two runs that both predate it agree completely about cost in the only sense available —
+    neither measured it. That is C-02's reasoning about two runs that both declared no steps,
+    applied one dimension over. The corpus is what made this measurable rather than theoretical.
+    """
+    neither = _dim(runprov.diff.compare({}, {}), "resources")
+    assert neither.verdict == "unchanged" and neither.settled
+    assert neither.examined == "neither run measured cost", neither.examined
+    assert neither.blocked is None
+
+    one_side = _dim(
+        runprov.diff.compare({}, {"resources": {"source": "getrusage", "wall_seconds": 1.0}}),
+        "resources",
+    )
+    assert one_side.verdict == "not comparable" and not one_side.settled
+    assert "A predates the resources block" in one_side.blocked
 
 
 def test_diff_reads_step_digests_when_the_record_carries_them():
@@ -11494,15 +11577,22 @@ def test_diff_ignores_measurement_noise_but_not_a_real_move():
     # kibibytes between two identical executions, so the one figure it protected was the one
     # that jitters most, and the dimension could never settle on any real pair of runs. A
     # growth worth reporting is orders of magnitude, not one byte.
-    for moved, expected in ((101, []), (400, ["max_rss_bytes  100 -> 400"])):
-        d = next(
-            x
-            for x in runprov.diff.compare(
+    # AND THE FLOOR, D-01 of Audit D. This asserted that 100 -> 400 BYTES was a finding, which
+    # it is not: 300 bytes is not a memory regression at any scale, and a relative band alone
+    # said it was. `max_rss_bytes` needs the same treatment in the other direction from
+    # `wall_seconds` — memory jitters by a little in relative terms, time by a lot.
+    for moved, expected in (
+        (101, []),
+        (400, []),
+        (100 + 64 * 1024 * 1024, [f"max_rss_bytes  100 -> {100 + 64 * 1024 * 1024}"]),
+    ):
+        d = _dim(
+            runprov.diff.compare(
                 {"resources": base}, {"resources": dict(base, max_rss_bytes=moved)}
-            )
-            if x.name == "resources"
+            ),
+            "resources",
         )
-        assert d.differences == expected, f"{moved} bytes against a 100-byte baseline"
+        assert d.differences == expected, f"max_rss_bytes moved to {moved}"
     assert runprov.diff._materially("cpu_seconds", "a", "b") is True, "non-numbers always differ"
     assert runprov.diff._materially("wall_seconds", 0.0, 0.0) is False
 
@@ -23682,3 +23772,44 @@ def test_diff_marks_a_failed_run_on_the_header_line_too(tmp_path, capsys):
     ok = _hrec(status="ok")
     clean = runprov.diff.render(ok, ok, runprov.diff.compare(ok, ok))
     assert "[" not in clean[0], f"an ordinary run carries no marker: {clean[0]}"
+
+
+def test_a_zero_step_comparison_still_carries_its_truncation_reason():
+    """Audit D, D-10. C-02's `0 vs 0 declared` fast path is the one exit from `_steps` whose
+    `blocked` propagation nothing asserted — and suppressing it was green.
+
+    Two runs that both declared no steps agree, which is what that branch is for. But a run
+    whose step observation was CUT OFF also reports zero, and those two are not the same fact.
+    Drop the reason on the way out and `steps` reads `unchanged`, settles, and the gate passes
+    over a census both runs know is partial — A-07 and C-02's own defect in mirror image,
+    arriving through the branch that fixed them.
+
+    The existing guard could not see it: its `steps` cases go through `_hrec()`, which carries
+    a step LIST, so they never reach the count branch at all.
+    """
+    for mark in ("steps_truncated", "observed_truncated", "auto_stopped_after_calls"):
+        a = {"observation": {mark: 3, "auto_available": True}}
+        b = {"observation": {"auto_available": True}}
+        d = _dim(runprov.diff.compare(a, b), "steps")
+        assert d.examined == "0 vs 0 declared", d.examined
+        assert d.blocked and mark in d.blocked, f"{mark} did not survive the zero-step branch"
+        assert d.verdict == "not comparable" and not d.settled
+
+    # A differing `auto_available` is the other way a zero can mean two things.
+    d = _dim(
+        runprov.diff.compare(
+            {"observation": {"auto_available": True}}, {"observation": {"auto_available": False}}
+        ),
+        "steps",
+    )
+    assert d.blocked and "different amounts" in d.blocked
+    assert not d.settled
+
+    # AND TWO GENUINELY STEPLESS RUNS STILL AGREE, or the branch is pointless.
+    clean = _dim(
+        runprov.diff.compare(
+            {"observation": {"auto_available": True}}, {"observation": {"auto_available": True}}
+        ),
+        "steps",
+    )
+    assert clean.verdict == "unchanged" and clean.settled and clean.blocked is None

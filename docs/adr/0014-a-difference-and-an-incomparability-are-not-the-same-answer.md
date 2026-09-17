@@ -91,7 +91,41 @@ never as "no change".**
    **an incomparable dimension also exits non-zero**, because a gate that greens while half the
    comparison was impossible is the vacuous pass in a new place. A user who wants "ignore what
    cannot be compared" says so explicitly.
-5. **It is a derived view.** It computes nothing that is not already recorded, and no field
+5. **A cost difference must clear a threshold in BOTH senses to count.** Amended 2026-09-17
+   after D-01 of Audit D; clause 4 above is unchanged and the exception people kept reaching
+   for is not granted.
+
+   Every pair of runs differs in cost, so a naive reading of clause 4 makes a gate that can
+   never pass. That was met three times: A-07 saw the symptom, C-09 widened a relative band,
+   and a third attempt removed cost from the exit code altogether — which also removed its
+   INCOMPARABILITY from the exit code, so a `getrusage` peak against a cgroup peak printed
+   NOT COMPARABLE and exited 0. That is precisely what "Rejected alternatives" below refuses,
+   and it made five documents false at once.
+
+   The defect was the noise MODEL. Measured over twelve identical runs, one machine, one input:
+
+   | figure | relative spread | absolute spread |
+   |---|---|---|
+   | `wall_seconds` | 111.6 % | 0.035 s |
+   | `cpu_seconds` | 21.5 % | 0.052 s |
+   | `max_rss_bytes` | 1.0 % | 0.24 MiB |
+
+   **Time noise is absolute; memory noise is relative.** A relative band alone can never absorb
+   sub-second wall jitter, which is why it kept failing and kept being worked around; an
+   absolute floor alone would excuse a 10 % regression on an eight-hour job. So a difference is
+   **material only when it exceeds both a 5 % relative band and an absolute floor** — 0.5 s for
+   the two time figures, 8 MiB for the memory peak, roughly 14x and 33x the noise above.
+
+   With that, cost settles or does not on exactly the same terms as every other dimension:
+   noise produces no differences at all, a real regression produces one and exits 1, and an
+   incomparable pair exits non-zero as clause 4 has always said. Nothing is exempt.
+
+   One consequence, stated because it is the kind of thing that becomes a support question: two
+   runs that BOTH predate the `resources` block are comparable and agree — they measured
+   nothing, in the same sense in which two runs that both declared no steps agree. Blocking on
+   absence would make every history written by 0.1.0-0.3.0 permanently non-zero.
+
+6. **It is a derived view.** It computes nothing that is not already recorded, and no field
    exists in its output that `show` could not also produce. A diff able to say something the
    records do not would be a second source of truth.
 

@@ -77,12 +77,6 @@ class Dimension(typing.NamedTuple):
     #: REPORTED BUT NEVER DECISIVE. A cost is not part of "is this the same run": two runs of
     #: one script never agree on wall time, so letting timing settle the exit code is the same
     #: defect A-07 named — a gate that cannot pass — arriving through a threshold instead of an
-    #: operator. Measured after the A-07 repair: two identical runs still differed 6.5ms vs
-    #: 3.4ms, 48%, far above any threshold worth calling noise at that scale.
-    #:
-    #: The figures are still PRINTED, because "it needed four times the memory" is exactly what
-    #: a reader wants; they simply do not decide whether anything changed.
-    informational: bool = False
 
     @property
     def verdict(self) -> str:
@@ -97,7 +91,7 @@ class Dimension(typing.NamedTuple):
         The exit code is built from this, so a gate cannot go green while half the comparison
         was impossible — the vacuous pass, in a new place.
         """
-        return self.informational or self.verdict == UNCHANGED
+        return self.verdict == UNCHANGED
 
 
 def _obs(record: typing.Mapping[str, typing.Any], key: str) -> typing.Any:  # noqa: ANN401
@@ -391,6 +385,28 @@ RUNNING = "running"
 
 RESOURCE_NOISE = 0.05
 
+#: AND AN ABSOLUTE FLOOR PER FIGURE, because a relative band alone cannot work for time.
+#: D-01 of Audit D, measured over twelve IDENTICAL runs on one machine, same input:
+#:
+#:     wall_seconds   spread 111.6 %   but only 0.035 s
+#:     cpu_seconds    spread  21.5 %   but only 0.052 s
+#:     max_rss_bytes  spread   1.0 %          0.24 MiB
+#:
+#: **Time noise is ABSOLUTE; memory noise is RELATIVE.** That is why the 5 % band worked for
+#: memory and could never work for wall time — on a short run, a few milliseconds of scheduler
+#: jitter is a doubling. A-07 saw the symptom (a gate that could never pass) and C-09 tried a
+#: wider relative band; neither fixed the model, and the third attempt was to stop letting cost
+#: decide the exit code at all, which made five documents false at once.
+#:
+#: A difference is material only if it clears the band AND the floor. These floors are ~14x
+#: and ~33x the noise measured above, which is loose enough that ordinary jitter never fires
+#: and tight enough that anything a person would call a regression does.
+RESOURCE_FLOOR = {
+    "wall_seconds": 0.5,
+    "cpu_seconds": 0.5,
+    "max_rss_bytes": 8 * 1024 * 1024,
+}
+
 
 def _materially(key: str, one: typing.Any, two: typing.Any) -> bool:  # noqa: ANN401
     """True when two resource figures differ by more than measurement noise."""
@@ -404,10 +420,16 @@ def _materially(key: str, one: typing.Any, two: typing.Any) -> bool:  # noqa: AN
     # high-water mark is "a count, not a continuous reading". It is not a count of anything
     # stable: `ru_maxrss` moves by tens to hundreds of kibibytes between two identical
     # executions — allocator behaviour, ASLR, whatever the interpreter imported first — so the
-    # one figure the exemption protected was the one that jitters most. It goes in the band
-    # with the others; a real growth is orders of magnitude, not five per cent.
+    # one figure the exemption protected was the one that jitters most.
+    #
+    # BOTH TESTS, D-01 of Audit D. A relative band alone cannot absorb time jitter (see
+    # `RESOURCE_FLOOR`), and an absolute floor alone would let a 10 % regression on an
+    # eight-hour job through. Material means the difference is large next to the measurement
+    # AND large in its own units.
+    gap = abs(a - b)
     largest = max(abs(a), abs(b))
-    return largest == 0 or abs(a - b) / largest > RESOURCE_NOISE
+    relative = largest == 0 or gap / largest > RESOURCE_NOISE
+    return relative and gap > RESOURCE_FLOOR.get(key, 0.0)
 
 
 def _resources(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]) -> Dimension:
@@ -418,8 +440,19 @@ def _resources(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing
     """
     left, right = a.get("resources") or {}, b.get("resources") or {}
     blocked = None
-    if not left or not right:
-        blocked = "one of the two runs predates the resources block"
+    if bool(left) != bool(right):
+        # EXACTLY ONE SIDE, not "either side". D-01 of Audit D: this blocked whenever the
+        # block was missing, and 0.1.0 through 0.3.0 wrote no `resources` block at all — so
+        # every pair of records from those versions was permanently incomparable and their
+        # histories could never exit 0. The gate that cannot pass, which is A-07's own defect,
+        # arriving a third time. The message was also literally false there: "one of the two
+        # runs predates" when both did.
+        #
+        # Two runs that BOTH predate the block agree completely about cost in the only sense
+        # available — neither measured it — which is C-02's reasoning about two runs that both
+        # declared no steps, applied here.
+        which = "A" if not left else "B"
+        blocked = f"{which} predates the resources block, so there is nothing to compare it to"
     elif left.get("source") != right.get("source"):
         blocked = (
             f"A measured by {left.get('source')!r}, B by {right.get('source')!r} — "
@@ -434,9 +467,10 @@ def _resources(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing
     return Dimension(
         "resources",
         lines,
-        f"{left.get('source', '—')} / {right.get('source', '—')}",
+        "neither run measured cost"
+        if not left and not right
+        else f"{left.get('source', '—')} / {right.get('source', '—')}",
         blocked,
-        informational=True,
     )
 
 
