@@ -1,6 +1,6 @@
 # 16. A history shows whether it has been edited
 
-**Status:** Proposed — T-32. Specification for a feature that is not built.
+**Status:** Accepted — T-32, built 2026-09-17.
 
 ## Context
 
@@ -72,9 +72,20 @@ so a crash produces **one** broken link at a known place rather than a silent re
 
 ## Verification
 
-**R-8.** `runprov verify --history [LOG]` reports the chain and uses the existing exit-code
-contract without extending it: **0** intact, **1** broken, **2** could not check — no history,
-unreadable, or no chained line in it.
+**R-8.** **`runprov chain [LOG]`** reports the chain and uses the existing exit-code contract
+without extending it: **0** intact, **1** broken, **2** could not check — no history, unreadable,
+or no chained line in it.
+
+> **Amended 2026-09-17, during the build, before any code was written.** This requirement first
+> said `runprov verify --history`. Implementing it surfaced a contract it would have broken:
+> `_verify`'s own docstring states that it *deliberately never touches the history* — "the pin
+> is in the artifact, which is the whole point of putting it there: a committed result can be
+> checked by someone who has the repository and nothing else" — and `--log` is already accepted
+> there and ignored, with a printed note explaining why. Adding `--history` would have made one
+> command's exit code answer two different questions, which is the objection ADR-0018 R-10
+> raises against folding the policy gate into `check`, and this package has given every distinct
+> question its own subcommand. Recorded rather than quietly changed, because a specification
+> that is edited to match the code is not a specification.
 
 **R-9.** The report states **what it checked, not only what it found**: how many lines were
 examined, from which line the chain begins, and how many predate it. "Intact" over a file whose
@@ -109,10 +120,24 @@ leads with, and would be worth less than no chain at all — because it would be
 
 ## Legitimate discontinuities
 
-**R-13.** `prune` removes lines, so it **breaks the chain by design**. It must append a
-`runprov.chain.v1` **rebuild marker** recording the UTC time, how many lines were removed and
-why, and re-chain from there. A discontinuity a reader can account for is not a finding; a
-silent re-chain would make `prune` the tool for laundering a history.
+**R-13.** **Nothing in this package removes a history line, so no rebuild mechanism exists.**
+
+> **Corrected 2026-09-17, during the build, and the original requirement was written on a false
+> premise.** It said `prune` removes lines and must therefore append a rebuild marker and
+> re-chain. It does not: `prune` unlinks in-flight MARKER FILES inside a `.incomplete`
+> directory, and `prune.py`'s own docstring states in capitals that the history is **what it is
+> not allowed to touch** — "`runs.jsonl` is the append-only record and is what makes an
+> interruption permanent". Verified in the code before this was written.
+>
+> So the requirement is inverted rather than dropped: **the chain has no legitimate
+> discontinuity, and any break is a finding.** That is a stronger guarantee than the one first
+> specified, and it is free. Should a future command ever need to remove a line, the rebuild
+> marker described here is the design — but it is not built for a caller that does not exist,
+> and a mechanism for laundering a history is not one to build speculatively.
+>
+> Recorded rather than quietly deleted: a specification edited to match the code is not a
+> specification, and the fact that a requirement was wrong is more useful to the next reader
+> than the tidy version would be.
 
 **R-14.** Rotation needs no support. A new file starts at `GENESIS`; the old file stays
 verifiable on its own. A chain spanning files would need an index, which is a store, which is

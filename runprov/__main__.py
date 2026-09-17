@@ -57,6 +57,7 @@ import subprocess
 import sys
 import typing
 
+from . import chain as chain_mod
 from . import check as check_mod
 from . import diff as diff_mod
 from . import hashing
@@ -1703,6 +1704,50 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
     return 0
 
 
+def _chain(args: argparse.Namespace) -> int:
+    """`chain` — ADR-0016. Whether the history has been edited since it was written.
+
+    ITS OWN SUBCOMMAND, and R-8 records why it is not a flag on `verify`: that command's
+    docstring states it deliberately never touches the history, because the pin lives in the
+    artifact's bytes so a committed result stays checkable by someone holding the repository and
+    nothing else. Answering a second question there would make one exit code mean two things.
+
+    The three codes are the package's, unchanged: 0 checked and intact, 1 checked and BROKEN, 2
+    COULD NOT CHECK — no history, unreadable, or nothing in it chained yet.
+    """
+    log = pathlib.Path(args.log) if args.log else active().run_log
+    if log is None:
+        print("# no history configured and none named", file=sys.stderr)
+        return CANNOT_CHECK
+    report = chain_mod.verify(log)
+    if args.format == "json":
+        print(
+            json.dumps(
+                {
+                    "schema": "runprov.chain.v1",
+                    "path": hashing._posix(log),
+                    "status": report.status,
+                    "lines": report.lines,
+                    "links_checked": report.checked,
+                    "chained_from": report.chained_from,
+                    "unchained_before": report.unchained,
+                    "broken": [
+                        {"line": b.line, "claimed": b.claimed, "computed": b.computed}
+                        for b in report.broken
+                    ],
+                    "unreadable": [b.line for b in report.unreadable],
+                },
+                indent=2,
+            )
+        )
+    else:
+        for line in chain_mod.render(report, pathlib.Path(log)):
+            print(line)
+    if report.status == chain_mod.BROKEN:
+        return 1
+    return 0 if report.status == chain_mod.INTACT else CANNOT_CHECK
+
+
 def _verify(args: argparse.Namespace) -> int:
     """`verify`, and it deliberately never touches the history.
 
@@ -1980,6 +2025,12 @@ def main(argv: list[str] | None = None) -> int:
     # with SUPPRESS and never read, it was a flag that did nothing and said nothing.
     vf.add_argument("--log", default=None, help=argparse.SUPPRESS)
     vf.add_argument("--format", choices=("text", "json"), default="text")
+    ch = sub.add_parser(
+        "chain",
+        help="has the run history been edited since it was written? (ADR-0016)",
+    )
+    ch.add_argument("log", nargs="?", default=None, help="the history (default: the project's)")
+    ch.add_argument("--format", choices=("text", "json"), default="text")
     cp = sub.add_parser(
         "capture",
         help="run a Python script AS a recorded run, with no changes to the script",
@@ -2025,6 +2076,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "exec":
         return _exec(args)
 
+    if args.cmd == "chain":
+        return _chain(args)
     if args.cmd == "verify":
         return _verify(args)
 

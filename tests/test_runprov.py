@@ -8191,8 +8191,14 @@ def test_the_first_record_in_a_new_history_has_no_leading_newline(tmp_path):
     an unreadable 'record' in every history's first position."""
     p = tmp_path / "fresh.jsonl"
     runprov.JsonlSink(p).append({"n": 1})
-    assert p.read_bytes().startswith(b'{"n": 1}')
+    # ASSERTED ON THE LEADING BYTE, which is what this test is named for. It used to assert the
+    # whole prefix `{"n": 1}`, so ADR-0016 adding `prev` to the line broke a test about
+    # NEWLINES — a test that fails for a reason it is not about costs a reader the time to
+    # discover that, and would have read as a chain defect.
+    assert not p.read_bytes().startswith(b"\n")
+    assert p.read_bytes().startswith(b"{")
     assert len(p.read_text(encoding="utf-8").splitlines()) == 1
+    assert json.loads(p.read_text(encoding="utf-8"))["n"] == 1
 
 
 def test_the_reader_counts_the_torn_fragment_it_could_not_read(tmp_path):
@@ -23291,6 +23297,7 @@ CORPUS_RECIPES: dict[str, list[str]] = {
     "diff": ["diff", "align", "genotype", "--log", "prov/history.jsonl"],
     "export": ["export", "prov/align.prov.json"],
     "check": ["check", "."],
+    "chain": ["chain", "prov/history.jsonl"],
 }
 
 #: Not pointed at the corpus, with the reason. `exec` and `capture` CREATE a run rather than
@@ -24164,3 +24171,408 @@ def test_impact_does_not_call_a_sum_of_per_run_counts_a_floor_on_paths(capsys):
     assert runprov.impact.Chain("abc123", [], [], 0, 1).watch_drops == 0
     quiet = "\n".join(runprov.impact.render(runprov.impact.Chain("abc123", [], [], 0, 1)))
     assert "dropped by the watch" not in quiet, "silent when nothing was dropped"
+
+
+# ------------------------------------------------------------------ T-32 / ADR-0016: the chain
+def _chained(path: pathlib.Path, count: int = 3) -> list[bytes]:
+    """`count` records appended through the real sink, so the chain is the one runprov writes."""
+    sink = runprov.JsonlSink(path)
+    for i in range(count):
+        sink.append({"schema": "runprov.history.v2", "run_id": f"r{i}", "status": "ok"})
+    return path.read_bytes().rstrip(b"\n").split(b"\n")
+
+
+def test_each_history_line_carries_the_digest_of_the_one_before_it(tmp_path):
+    """ADR-0016 [R-1] [R-2] [R-3] [R-4]. The chain itself.
+
+    Nothing detected a retroactive edit before this: change line 40 and `log`, `show`, `diff`,
+    `impact` and `report` all repeat the new value with no sign anything moved. That is the
+    difference between *we keep a history* and *the history is evidence*.
+    """
+    p = tmp_path / "h.jsonl"
+    lines = _chained(p, 3)
+
+    assert json.loads(lines[0])["prev"] == runprov.chain.GENESIS, "[R-3] the first line"
+    for i in (1, 2):
+        # [R-1] [R-2] the digest is of the PRECEDING LINE'S BYTES AS WRITTEN — no
+        # canonicalisation, no re-serialisation. A verifier hashes what it reads.
+        assert json.loads(lines[i])["prev"] == hashlib.sha256(lines[i - 1]).hexdigest()
+    assert len(json.loads(lines[1])["prev"]) == 64, "[R-1] full lower-case hex"
+
+    # [R-4] A history that predates the chain is ANCHORED by the next append, not left as a
+    # fresh island — the difference between protecting existing histories and only future ones.
+    old = tmp_path / "old.jsonl"
+    old.write_bytes(b'{"schema": "runprov.history.v2", "run_id": "before"}\n')
+    runprov.JsonlSink(old).append({"schema": "runprov.history.v2", "run_id": "after"})
+    grown = old.read_bytes().rstrip(b"\n").split(b"\n")
+    assert "prev" not in json.loads(grown[0]), "the pre-existing line is not rewritten"
+    assert json.loads(grown[1])["prev"] == hashlib.sha256(grown[0]).hexdigest()
+
+
+def test_the_chain_is_computed_inside_the_lock_and_after_the_torn_line_repair(tmp_path):
+    """ADR-0016 [R-6] [R-7]. Where the digest is read is the whole correctness of it.
+
+    [R-6] Outside the lock, two concurrent runs chain to the same predecessor and the second
+    silently orphans the first. [R-7] Before the repair, a fragment left by a killed process is
+    not yet the last line, so chaining past it would turn one broken link at a known place into
+    a silent join — the loss would be invisible, which is the defect the repair exists to end.
+    """
+    p = tmp_path / "h.jsonl"
+    runprov.JsonlSink(p).append({"n": 1})
+    with p.open("ab") as fh:  # what a SIGKILL mid-append leaves
+        fh.write(b'{"n": 2, "torn"')
+    runprov.JsonlSink(p).append({"n": 3})
+
+    lines = p.read_bytes().rstrip(b"\n").split(b"\n")
+    assert len(lines) == 3, lines
+    assert json.loads(lines[2])["prev"] == hashlib.sha256(lines[1]).hexdigest(), (
+        "[R-7] the fragment the repair closed IS the predecessor; chaining past it would hide it"
+    )
+    # [R-6] the serialisation happens under the lock, so the source cannot read the file first.
+    source = inspect.getsource(runprov.sinks.JsonlSink.append)
+    assert source.index("_exclusive") < source.index("chain.previous_digest")
+    assert source.index("chain.previous_digest") < source.index("json.dumps")
+
+    # AND CONCURRENCY IS THE POINT OF [R-6]: eight writers, twenty-four appends, and the chain
+    # must still be a chain. Without the lock covering the READ, two writers take the same
+    # predecessor and the second silently orphans the first — a break that looks like tampering.
+    busy = tmp_path / "many.jsonl"
+
+    def one(i):
+        runprov.JsonlSink(busy).append({"n": i})
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(one, range(24)))
+    got = busy.read_bytes().rstrip(b"\n").split(b"\n")
+    assert len(got) == 24, f"{len(got)} of 24 records survived"
+    assert runprov.chain.verify(busy).status == runprov.chain.INTACT
+
+
+def test_the_chain_report_says_what_it_checked_and_which_line_moved(tmp_path, capsys):
+    """ADR-0016 [R-8] [R-9] [R-10] [R-13]. The report, and the three exit codes.
+
+    [R-9] "intact" over a file whose chain covers three of nine hundred lines is the vacuous
+    pass this project has fixed in five places, so the count of what was examined travels with
+    the verdict. [R-10] A break at line N means line N-1 is what moved — N's claim is a
+    statement about its predecessor — and a reader told only "line N breaks" inspects the wrong
+    line, which costs them the time and then their confidence in the answer.
+    """
+    p = tmp_path / "h.jsonl"
+    _chained(p, 4)
+    assert runprov.__main__.main(["chain", str(p)]) == 0, "[R-8] intact is 0"
+    intact = capsys.readouterr().out
+    assert "INTACT" in intact and "4 link(s) checked of 4 line(s)" in intact  # [R-9]
+
+    lines = p.read_text(encoding="utf-8").splitlines()
+    lines[1] = lines[1].replace('"status": "ok"', '"status": "failed"')
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    assert runprov.__main__.main(["chain", str(p)]) == 1, "[R-8] broken is 1"
+    out = capsys.readouterr().out
+    assert "LINE 2 IS WHAT CHANGED" in out, f"[R-10] {out}"
+    assert "line 3 claims its predecessor was" in out, "[R-10] both digests, and whose claim"
+    # [R-13] There is no legitimate discontinuity: nothing in this package removes a history
+    # line — `prune` unlinks in-flight MARKER files and its docstring says the history is what
+    # it is not allowed to touch. So a break is always a finding.
+    assert "prune" not in out
+
+    assert runprov.__main__.main(["chain", str(tmp_path / "absent.jsonl")]) == 2  # [R-8]
+    assert "CANNOT CHECK" in capsys.readouterr().out
+
+
+def test_an_unchained_or_unreadable_history_is_cannot_check_never_tampering(tmp_path, capsys):
+    """ADR-0016 [R-5] [R-11]. Corruption and editing are different findings.
+
+    [R-11] A package that reports a bad disk sector as tampering will be disbelieved the first
+    time it happens, and then disbelieved when it is right. [R-5] But once a file contains a
+    chained line, a later line WITHOUT one is a break — that is what splicing an old-format
+    record in would look like, and exempting it would leave the obvious forgery undetected.
+    """
+    p = tmp_path / "h.jsonl"
+    p.write_bytes(b'{"run_id": "a"}\n{"run_id": "b"}\n')
+    assert runprov.__main__.main(["chain", str(p)]) == 2, "[R-8] nothing chained: could not check"
+    assert "none of them chained" in capsys.readouterr().out
+
+    torn = tmp_path / "torn.jsonl"
+    _chained(torn, 3)
+    with torn.open("ab") as fh:
+        fh.write(b"{not json at all\n")
+    report = runprov.chain.verify(torn)
+    assert [link.line for link in report.unreadable] == [4], "[R-11] counted, not accused"
+    assert not report.broken, "[R-11] a corrupt line is not an accusation"
+
+    # [R-5] an old-format line spliced in after the chain began
+    spliced = tmp_path / "spliced.jsonl"
+    _chained(spliced, 2)
+    with spliced.open("ab") as fh:
+        fh.write(b'{"run_id": "forged", "status": "ok"}\n')
+    assert [link.line for link in runprov.chain.verify(spliced).broken] == [3]
+
+
+def test_the_chain_is_verifiable_with_sha256sum_and_nothing_else(tmp_path):
+    """ADR-0016 [R-12]. The claim the README leads with, applied to the chain.
+
+    A chain that needed this package to check it would be worth less than no chain, because it
+    would be believed. This runs the recipe printed in the ADR, with the package's own module
+    not imported at all — `sha256sum`, `sed`, and a shell loop.
+    """
+    p = tmp_path / "h.jsonl"
+    _chained(p, 5)
+    recipe = tmp_path / "check.sh"
+    recipe.write_text(
+        'n=0; prev="GENESIS"; bad=0\n'
+        "while IFS= read -r line; do\n"
+        "  n=$((n+1))\n"
+        '  claimed=$(printf \'%s\' "$line" | sed -n \'s/.*"prev": *"\\([^"]*\\)".*/\\1/p\')\n'
+        '  [ "$claimed" = "$prev" ] || { echo "BREAK $n"; bad=1; }\n'
+        "  prev=$(printf '%s' \"$line\" | sha256sum | cut -d' ' -f1)\n"
+        "done < " + str(p) + "\n"
+        'echo "bad=$bad"\n',
+        encoding="utf-8",
+    )
+    if not shutil.which("sha256sum"):  # pragma: no cover - not on this leg
+        pytest.skip("sha256sum is not available here")
+    clean = subprocess.run(["sh", str(recipe)], capture_output=True, text=True, check=False)
+    assert "bad=0" in clean.stdout, clean.stdout
+
+    lines = p.read_text(encoding="utf-8").splitlines()
+    lines[2] = lines[2].replace('"run_id": "r2"', '"run_id": "rX"')
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    edited = subprocess.run(["sh", str(recipe)], capture_output=True, text=True, check=False)
+    assert "BREAK 4" in edited.stdout, f"the shell recipe must catch it too: {edited.stdout}"
+    assert "bad=1" in edited.stdout
+
+
+def test_prev_is_a_property_of_the_file_and_reaches_nothing_else(tmp_path, monkeypatch):
+    """ADR-0016 [R-14] [R-15] [R-16] [R-17] [R-18]. What the new field must NOT touch.
+
+    [R-15] is the one that would have bitten: `prev` differs between any two lines by
+    construction, so a `diff` that compared it would report a change on every pair ever
+    compared — A-07's gate-that-cannot-pass, arriving through a field added for another purpose.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=".", run_log="h.jsonl", auto_steps="off")
+    with runprov.Run("s", {}, provenance="p.json") as run:
+        run.input("in.tsv")
+        with run.open_output("out.tsv") as fh:
+            fh.write("x\n")
+
+    history = [json.loads(x) for x in (tmp_path / "h.jsonl").read_text().splitlines() if x]
+    done = [r for r in history if r.get("schema") == runprov.HISTORY_SCHEMA][-1]
+    assert "prev" in done, "the history line carries it"
+
+    # [R-18] the sidecar stands alone and has no predecessor
+    assert "prev" not in json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    # [R-17] the pin answers whether a result follows from its inputs; a log file's integrity
+    # is not part of that question
+    assert "prev" not in (tmp_path / "out.tsv").read_text(encoding="utf-8")
+    # [R-16] RO-Crate and PROV are provenance vocabularies; this is one file's storage
+    for shape in (runprov.export.to_ro_crate([done]), runprov.export.to_prov_json([done])):
+        assert "prev" not in json.dumps(shape)
+    # [R-15] and no dimension may compare it
+    assert not any(d.differences for d in runprov.diff.compare(done, dict(done, prev="f" * 64))), (
+        "a field that differs by construction must never decide a gate"
+    )
+
+    # [R-14] rotation needs no support: a new file starts at GENESIS and the old one stays
+    # verifiable on its own.
+    (tmp_path / "h.jsonl").rename(tmp_path / "h.1.jsonl")
+    runprov.JsonlSink(tmp_path / "h.jsonl").append({"n": 1})
+    assert json.loads((tmp_path / "h.jsonl").read_text())["prev"] == runprov.chain.GENESIS
+    assert runprov.chain.verify(tmp_path / "h.1.jsonl").status == runprov.chain.INTACT
+
+
+def test_every_chain_requirement_has_a_test():
+    """ADR-0016's specification is checked, not remembered — the ADR-0013 mechanism, reused.
+
+    The requirement list is DERIVED from the ADR and every `R-n` must be named by a test.
+    Bracketed, because a bare `R-1` matches `R-10` and would silently satisfy a requirement
+    that has no test — a guard with a false positive, which is worse than no guard.
+    """
+    adr = _repo_root() / "docs" / "adr" / "0016-a-history-shows-whether-it-has-been-edited.md"
+    if not adr.is_file():  # pragma: no cover - docs ship in the sdist, a bare tree may not
+        pytest.skip("ADR-0016 not present")
+    required = set(re.findall(r"^\*\*(R-\d+)\.\*\*", adr.read_text(encoding="utf-8"), re.M))
+    assert len(required) >= 18, f"the requirement sweep found {sorted(required)}; the scope broke"
+
+    tests = pathlib.Path(__file__).read_text(encoding="utf-8")
+    cited = set(re.findall(r"\[(R-\d+)\]", tests.split("def test_every_chain_requirement")[0]))
+    missing = sorted(required - cited, key=lambda s: (len(s), s))
+    assert not missing, f"ADR-0016 requirements with no test naming them: {missing}"
+
+
+def test_the_chain_answers_the_awkward_shapes_without_guessing(tmp_path, monkeypatch, capsys):
+    """ADR-0016, the edges. Each of these is a real file state, not a coverage exercise.
+
+    A history file is appended to by crashing processes on shared filesystems for years. The
+    shapes below are what that produces, and a verifier that raises on one of them is a
+    verifier nobody runs twice.
+    """
+    # A file that is one bare newline: an empty last line, which is still a line with a digest.
+    lone = tmp_path / "lone.jsonl"
+    lone.write_bytes(b"\n")
+    runprov.JsonlSink(lone).append({"n": 1})
+    grown = lone.read_bytes().rstrip(b"\n").split(b"\n")
+    assert json.loads(grown[1])["prev"] == hashlib.sha256(b"").hexdigest()
+
+    # A first line longer than the tail block, so the backwards read must loop rather than
+    # find its newline in the first chunk. The cheap implementation passes the small case and
+    # fails here, silently, on exactly the long records this package writes.
+    big = tmp_path / "big.jsonl"
+    runprov.JsonlSink(big).append({"pad": "x" * (runprov.chain._TAIL_BLOCK * 3)})
+    runprov.JsonlSink(big).append({"n": 2})
+    lines = big.read_bytes().rstrip(b"\n").split(b"\n")
+    assert len(lines[0]) > runprov.chain._TAIL_BLOCK * 3
+    assert json.loads(lines[1])["prev"] == hashlib.sha256(lines[0]).hexdigest()
+    assert runprov.chain.verify(big).status == runprov.chain.INTACT
+
+    # A file whose LAST line was never terminated — the state a SIGKILL leaves, read before any
+    # later append has repaired it. The fragment is a line, it is unreadable, and it is counted:
+    # dropping it because it has no newline would understate the file by exactly the record
+    # nobody knew was lost, which is the defect the sink's own repair was written for.
+    unterminated = tmp_path / "cut.jsonl"
+    _chained(unterminated, 2)
+    with unterminated.open("ab") as fh:
+        fh.write(b'{"n": 3, "prev": "')
+    cut = runprov.chain.verify(unterminated)
+    assert cut.lines == 3, "the fragment is a line"
+    assert [link.line for link in cut.unreadable] == [3]
+    assert not cut.broken and cut.status == runprov.chain.INTACT
+
+    # An unreadable file is CANNOT_CHECK, never an accusation, and never an exception.
+    def _refuse(self):
+        raise OSError("EACCES")
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", _refuse)
+    blocked = runprov.chain.verify(tmp_path / "anything.jsonl")
+    assert blocked.status == runprov.chain.CANNOT_CHECK and blocked.checked == 0
+    monkeypatch.undo()
+
+    # The rendered line for an unreadable link, and `Link.detail`'s non-broken form.
+    torn = tmp_path / "torn.jsonl"
+    _chained(torn, 2)
+    with torn.open("ab") as fh:
+        fh.write(b"{ not json\n")
+    assert runprov.__main__.main(["chain", str(torn)]) == 0, "a torn line does not accuse"
+    assert "COULD NOT CHECK  line 3" in capsys.readouterr().out
+
+
+def test_chain_uses_the_configured_history_when_none_is_named(tmp_path, monkeypatch, capsys):
+    """ADR-0016 [R-8]. `runprov chain` with no argument asks about the project's own history.
+
+    And with no history configured at all it is CANNOT_CHECK rather than a traceback or a
+    guess at a filename — the same answer every other command gives for the same state.
+    """
+    monkeypatch.chdir(tmp_path)
+    _chained(tmp_path / "h.jsonl", 2)
+    runprov.configure(root=".", run_log="h.jsonl")
+    assert runprov.__main__.main(["chain"]) == 0
+    assert "INTACT" in capsys.readouterr().out
+
+    runprov.configure(root=".", run_log=None)
+    assert runprov.__main__.main(["chain"]) == 2
+    assert "no history configured" in capsys.readouterr().err
+
+    # --format json, per ADR-0017's shape, with the path POSIX-spelled so a record written on
+    # Windows reads the same on Linux.
+    runprov.configure(root=".", run_log="h.jsonl")
+    assert runprov.__main__.main(["chain", "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == "runprov.chain.v1"
+    assert payload["status"] == "INTACT" and payload["links_checked"] == 2
+    assert payload["broken"] == [] and payload["unreadable"] == []
+    assert "\\" not in payload["path"]
+
+
+def test_the_chain_reads_the_tail_and_not_the_whole_history(tmp_path):
+    """ADR-0016's `_TAIL_BLOCK`, and the reason it is a loop rather than one read.
+
+    The history is appended to forever. Reading the file to find its last line would be O(n)
+    per append and O(n^2) over a project — the exact cost `YamlLogSink`'s docstring refuses,
+    on the exact file it refuses it for, and it would arrive silently in year two rather than
+    in a test.
+
+    THIS ASSERTS THE COST, NOT THE ANSWER, and it exists because a mutation proved the answer
+    was not enough: replacing the chunked loop with a single whole-file read gives the SAME
+    digest, so no assertion about correctness can distinguish them. When a mutation is
+    equivalent the property being protected is not the one under test — here it is the read
+    volume, so the read volume is what is counted.
+    """
+
+    class Counting:
+        """Passes seek/tell through and tallies every byte actually read."""
+
+        def __init__(self, fh):
+            self._fh, self.total = fh, 0
+
+        def seek(self, *a):
+            return self._fh.seek(*a)
+
+        def tell(self):
+            return self._fh.tell()
+
+        def read(self, n):
+            data = self._fh.read(n)
+            self.total += len(data)
+            return data
+
+    p = tmp_path / "long.jsonl"
+    sink = runprov.JsonlSink(p)
+    for i in range(400):
+        sink.append({"schema": "runprov.history.v2", "run_id": f"r{i}", "pad": "x" * 200})
+    size = p.stat().st_size
+    assert size > runprov.chain._TAIL_BLOCK * 10, "the fixture must be much larger than a block"
+
+    with p.open("rb") as fh:
+        counter = Counting(fh)
+        runprov.chain.previous_digest(counter)  # type: ignore[arg-type]
+    assert counter.total <= runprov.chain._TAIL_BLOCK * 2, (
+        f"read {counter.total} bytes of a {size}-byte history to find its last line; the append "
+        f"cost must not grow with the file"
+    )
+
+
+def test_the_chain_does_not_reach_the_record_the_caller_still_holds(tmp_path):
+    """ADR-0016 [R-17] [R-18], protected by construction rather than by ordering.
+
+    The sink copies the record before adding `prev`. Mutating the caller's dict instead would
+    work today — the sidecar happens to be written first — and would silently start leaking the
+    field into sidecars and pins the moment that order changed. A mutation proved it: writing
+    into the caller's dict survived the whole suite.
+
+    The seam is the sink's own argument, so that is what is asserted.
+    """
+    p = tmp_path / "h.jsonl"
+    record = {"schema": "runprov.history.v2", "run_id": "r0"}
+    before = dict(record)
+    runprov.JsonlSink(p).append(record)
+
+    assert record == before, f"append() mutated its caller's record: {record}"
+    assert "prev" in json.loads(p.read_text(encoding="utf-8")), "and the file still got it"
+
+
+def test_the_chain_report_counts_links_and_not_lines(tmp_path, capsys):
+    """ADR-0016 [R-9]. `checked` and `lines` differ exactly when it matters.
+
+    On a history that predates the chain they are far apart, and that gap IS the qualification:
+    "INTACT" over nine hundred lines of which three are chained is the vacuous pass this
+    project has fixed in five places. A mutation returning `lines` for `checked` survived every
+    earlier test, because every one of them used a fully chained file where the two are equal.
+    """
+    p = tmp_path / "h.jsonl"
+    p.write_bytes(
+        b"".join(b'{"schema": "runprov.history.v2", "run_id": "old%d"}\n' % i for i in range(6))
+    )
+    runprov.JsonlSink(p).append({"schema": "runprov.history.v2", "run_id": "new"})
+
+    report = runprov.chain.verify(p)
+    assert report.lines == 7
+    assert report.chained_from == 7
+    assert report.unchained == 6
+    assert report.checked == 1, "one link, not seven lines"
+
+    assert runprov.__main__.main(["chain", str(p)]) == 0
+    out = capsys.readouterr().out
+    assert "1 link(s) checked of 7 line(s)" in out, out
+    assert "6 line(s) predate the chain" in out, "the reader must see how little was checked"

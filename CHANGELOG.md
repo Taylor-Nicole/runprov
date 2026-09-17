@@ -9,6 +9,32 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Added
+
+* **`runprov chain` — has the run history been edited since it was written?** (T-32, ADR-0016.)
+  Every history line now carries `prev`, the sha256 of the line before it, so an edit, a
+  deletion or a reordering breaks every link after it. Nothing detected that before: change
+  line 40 and `log`, `show`, `diff`, `impact` and `report` all repeat the new value with no
+  sign anything moved.
+
+  **Tamper-evident, not tamper-proof, and the command says so.** Each digest is public, so
+  whoever can edit the file can also append a forged line or rewrite from a point and re-chain.
+  What this catches is retroactive editing by someone who did not re-chain — the realistic case,
+  where a number looks wrong and someone opens the history in an editor to fix a "typo".
+
+  **Checkable with `sha256sum` and nothing else.** That is why `prev` is a plain top-level
+  string and why the digest is over the line's bytes as written rather than any canonical form.
+  The nine-line shell recipe is in the ADR and in the suite: it agrees with the package, and it
+  reports an edit to line 3 as line 4 breaking — the line *after* the one that changed, which
+  is the counter-intuitive part the report states outright.
+
+  A history written before the chain is **anchored by the next append**, not left behind: one
+  run is enough to make editing the last pre-chain line detectable. The report always states
+  how many links it checked against how many lines exist, because "INTACT" over a file whose
+  chain covers three of nine hundred lines would be the vacuous pass this project keeps fixing.
+  A torn or corrupt line is `COULD NOT CHECK`, never an accusation.
+
+
 ## [0.5.0] — 2026-09-17
 
 ### Added

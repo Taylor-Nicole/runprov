@@ -97,7 +97,14 @@ STALE   results/summary.tsv
         (pinned 17ffe7054ecf0cc8, now a3d2c39b016f6a7e)
 ```
 
-`OK`, `STALE`, `GONE` and `ALTERED` are the four verdicts. Also available:
+`OK`, `STALE`, `GONE` and `ALTERED` are the four verdicts.
+
+**`runprov chain`** asks the question one level up: **has the run history itself been edited
+since it was written?** Each line carries the digest of the one before it, so an edit, a
+deletion or a reordering breaks every link after it. Tamper-**evident**, not tamper-proof — and
+checkable with `sha256sum` and nine lines of shell, with this package uninstalled.
+
+Also available:
 `runprov log` (the run history as YAML or a table), `runprov show` (what one run did),
 `runprov capture` (record a script that has no `runprov` calls in it at all), and
 `runprov export` (RO-Crate and W3C PROV-JSON).

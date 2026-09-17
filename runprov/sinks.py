@@ -55,6 +55,7 @@ import pathlib
 import sys
 import typing
 
+from . import chain
 from ._report import diagnostic
 
 if typing.TYPE_CHECKING:  # pragma: no cover
@@ -88,7 +89,10 @@ class JsonlSink:
         self.path = pathlib.Path(path)
 
     def append(self, record: dict[str, typing.Any]) -> None:
-        line = json.dumps(record, default=str) + "\n"
+        # THE LINE IS SERIALISED INSIDE THE LOCK NOW, and it used to be serialised here. ADR-0016
+        # R-6: `prev` is the digest of the line this one will physically follow, so it cannot be
+        # known until the file is held — and computing it outside the lock is a race in which two
+        # concurrent runs chain to the same predecessor and the second silently orphans the first.
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             # BINARY, and explicitly UTF-8 encoded here. Text mode cannot seek to inspect the
@@ -114,6 +118,17 @@ class JsonlSink:
                         fh.seek(-1, os.SEEK_END)
                         if fh.read(1) != b"\n":
                             fh.write(b"\n")
+                    # AND THE CHAIN IS READ AFTER THAT REPAIR, ADR-0016 R-7. A fragment closed
+                    # by the newline above IS the predecessor this line follows; chaining to
+                    # what was there before the repair would re-anchor the chain past a torn
+                    # line and turn one broken link at a known place into a silent join.
+                    #
+                    # NOT MUTATED INTO THE CALLER'S DICT. `prev` is a property of this FILE and
+                    # not of the run: the in-memory record, the sidecar and the pin must not
+                    # carry it (R-17, R-18), and a copy is how that stays true by construction
+                    # rather than by everyone downstream remembering.
+                    chained = dict(record, **{chain.FIELD: chain.previous_digest(fh)})
+                    line = json.dumps(chained, default=str) + "\n"
                     fh.write(line.encode("utf-8"))
                     fh.flush()
                     os.fsync(fh.fileno())
