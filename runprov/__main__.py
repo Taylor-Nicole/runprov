@@ -1352,14 +1352,28 @@ def _impact(args: argparse.Namespace) -> int:
 
     unregistered = 0
     runs = 0
+    truncated = 0
     for record in _completed(log):
         runs += 1
         unregistered += len(record.get("unregistered_reads") or [])
+        # C-06 of Audit C: the blind-spot tally counted only the reads the runs managed to
+        # REPORT, and was silent about the ones the watch dropped before they could be.
+        truncated += (record.get("observation") or {}).get("unregistered_watch_truncated") or 0
 
     steps = impact_mod.walk(digest, consumers, graph["edges"], names, outputs_by, args.depth)
-    chain = impact_mod.Chain(digest, consumers.get(digest, []), steps, unregistered, runs)
+    chain = impact_mod.Chain(
+        digest, consumers.get(digest, []), steps, unregistered, runs, truncated
+    )
     for line in impact_mod.render(chain, pathlib.Path(project.root)):
         print(line)
+    if chain.seeds and not chain.steps:
+        # C-07 of Audit C. A-09 named two halves and only the sentence was fixed: `--depth 0`
+        # empties `steps` while `seeds` stays non-empty, and this returned 0 — the code that
+        # means "checked, and nothing is wrong", identical to the code for a file nothing ever
+        # read. A pre-overwrite guard written as `runprov impact ref.fa --depth 0 || abort`
+        # goes green and the reference is overwritten with three derived artifacts in the
+        # history. 2 is COULD NOT CHECK, which is exactly what a truncated walk is.
+        return CANNOT_CHECK
     return 1 if chain.steps else 0
 
 

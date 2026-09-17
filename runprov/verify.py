@@ -440,7 +440,12 @@ def check_input(
     # Judged under BOTH grammars, so it is testable on Linux rather than only on the Windows
     # leg, where a foreign pin would have been read as a local absolute path.
     if (
+        # C-04 of Audit C: `PureWindowsPath("C:data/x").is_absolute()` is FALSE — a
+        # DRIVE-RELATIVE name is not absolute — and `root / "C:data/x"` still discards the left
+        # operand on Windows, which is the escape these guards exist to stop. `.drive` catches
+        # both spellings at once and needs no case analysis.
         pathlib.PureWindowsPath(name).is_absolute()
+        or pathlib.PureWindowsPath(name).drive
         or spelled.is_absolute()
         or ".." in spelled.parts
     ):

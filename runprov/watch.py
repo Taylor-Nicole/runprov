@@ -152,7 +152,26 @@ class _Watcher:
                     # attached, and requiring a field would make a stub — or an older `Run`
                     # pickled into a long-lived process — raise inside the audit hook, where
                     # the rule is that describing a run must never end one.
-                    run._opened_dropped = getattr(run, "_opened_dropped", 0) + 1
+                    # C-06 of Audit C. DISTINCT PATHS, WHICH IS WHAT THE FIELD PROMISES —
+                    # `+ 1` per audit EVENT counted opens, and a dropped path never enters
+                    # `_opened`, so a loop re-reading one reference file 1 000 times recorded
+                    # `unregistered_watch_truncated: 1000` for a single lost file. A reader
+                    # judging whether an empty `unregistered_reads` can be trusted was told
+                    # the watch lost a thousand files when it lost one: an overstatement
+                    # written into the permanent record, which is the worst class of defect
+                    # this package has.
+                    #
+                    # THE SECOND SET IS BOUNDED BY THE SAME CAP, so the memory this bound
+                    # exists to protect is at most doubled and never unbounded. Once it fills
+                    # the count stops rising, which makes it a FLOOR — every reader below says
+                    # "at least", because a saturated count that reads as exact is the same
+                    # kind of lie in the other direction.
+                    dropped = getattr(run, "_opened_dropped_paths", None)
+                    if dropped is None:  # a stub, or a Run from before this field existed
+                        dropped = run._opened_dropped_paths = set()
+                    if len(dropped) < WATCH_MAX_PATHS:
+                        dropped.add(name)
+                    run._opened_dropped = len(dropped)
                     continue
                 if any(ch in mode for ch in "wax+"):
                     run._opened_write.add(name)

@@ -248,6 +248,19 @@ def page(
             _kv("UNREGISTERED", f"{len(unregistered)} file(s) were read and are NOT pinned:")
         )
         out += [f"               {p}" for p in unregistered[:10]]
+    if obs.get("unregistered_watch_truncated"):
+        # C-06 of Audit C. It belongs HERE above all: the list printed above is the page's
+        # answer to "was anything read that is not pinned?", and when the watch hit its cap
+        # that list is a sample rather than the answer. Without this line an empty
+        # UNREGISTERED reads as "nothing was missed" on the one page a reader consults to
+        # judge a single artifact — the conflation the `observation` block exists to end.
+        out.append(
+            _kv(
+                "WATCH TRUNCATED",
+                f"at least {obs['unregistered_watch_truncated']} further path(s) were "
+                "dropped; the line above is a sample, not a census",
+            )
+        )
 
     out += ["", *_limits(found_run=True)]
     return Page(out, status)

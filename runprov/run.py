@@ -703,7 +703,28 @@ class _PinnedWriter:
         # wrong spelling loses the header silently — it did, on the first run of this code,
         # and the record simply came back without the field.
         self._record_key = record_key
+        # C-08 of Audit C. A-13 fixed the PUBLISHED mode and left the temp file at the umask
+        # default for the whole write block — so a result tightened to 0600 sat beside its own
+        # destination as a world-readable `.name.<hex>.runprov-tmp` for as long as the run took
+        # to produce it, which on an eight-hour job is eight hours. `_atomic` opens with the
+        # destination's mode for exactly this reason; this copied the idiom and not the care.
+        self._dest_mode = _destination_mode(dest)
         self._fh = open(self._tmp, "w", encoding="utf-8", newline="")
+        if self._dest_mode is not None:
+            # C-08 of Audit C. A-13 fixed the PUBLISHED mode and left the temp file at the
+            # umask default for the whole write block — so a result tightened to 0600 sat
+            # beside its own destination as a group-readable `.name.<hex>.runprov-tmp` for as
+            # long as the run took to produce it, which on an eight-hour job is eight hours.
+            #
+            # CHMOD RATHER THAN AN `os.open` WITH THE MODE, which is what `_atomic` does and
+            # what the first repair here copied: two tests inspect the `open()` call this class
+            # makes, because `newline=""` is load-bearing (`open_output` must not translate
+            # line endings), and bypassing `open` broke that seam. The residual exposure is the
+            # microseconds between creation and this line, against hours before — and the
+            # window is closed entirely by `_atomic` for every record this package writes
+            # itself. Stated rather than smoothed over, because it is not zero.
+            with contextlib.suppress(OSError):
+                os.chmod(self._tmp, self._dest_mode)
         try:
             self._fh.write(head)
         except BaseException:
@@ -1091,6 +1112,9 @@ class Run:
         # reached. Zero for almost every run; when it is not zero, the absence of an
         # unregistered read stops being evidence and the record has to say so.
         self._opened_dropped = 0
+        # C-06. The paths themselves, so the count above is of DISTINCT files rather than of
+        # open events. Bounded by `WATCH_MAX_PATHS` like `_opened`, and a floor once full.
+        self._opened_dropped_paths: set[str] = set()
         # THOSE OPENED FOR WRITING, a subset of the above. `capture` classifies by it:
         # a file this run wrote is an output, a file it only read is an input.
         self._opened_write: set[str] = set()
@@ -1856,6 +1880,12 @@ class Run:
         # `self.record` has just been rebuilt above, so this now persists the truth rather
         # than re-serialising the checkpoint.
         for target in previously:
+            # SPELLING EQUALITY IS ENOUGH HERE, unlike in `_wrote`, because `rebuild` is
+            # `previously[0]` itself when it comes from this list — the same object, not a
+            # second spelling of it. Two spellings of one file in `previously` cost one extra
+            # `_persist` of the record that was just rebuilt, which is a duplicate write of
+            # the right thing; `_wrote`'s resolve can raise, and that is not worth trading a
+            # harmless repeat for.
             if target != rebuild:
                 self._persist(target)
         # THE DEFERRED-HISTORY APPEND THAT USED TO BE HERE IS GONE, and it is gone because
@@ -3142,14 +3172,26 @@ class Run:
         before the setting existed -- and overwriting is the thing it exists to prevent. Two
         of the three documented ways to get a sidecar ignored it.
 
-        Not applied to `self.provenance_path`, which `__init__` has already stamped:
-        `_finish()` hands that same path back here at exit, and stamping a stamped name
-        produces `summary.<t>.<uid>.<t>.<uid>.prov.json`.
+        NOT APPLIED TO A NAME THIS RUN HAS ALREADY STAMPED, and the scope of that exclusion
+        is DERIVED rather than listed. It read `p != self.provenance_path` — the constructor's
+        path, stamped in `__init__` — and that was the complete set until A-01 made `_finish`
+        rebuild through `write()` for every shape of run. `_finish` then handed back
+        `_written_paths[0]`, a name a previous `write()` had already stamped, and it was
+        stamped a SECOND time: `summary.<t>.<uid>.<t>.<uid>.prov.json`, the exact name this
+        paragraph and `test_the_constructors_sidecar_is_not_stamped_twice` exist to forbid.
+        The rebuilt record landed in that phantom twin while the sidecar the caller named —
+        the path this method HANDED BACK — kept the checkpoint's `status: "running"`,
+        `finished_utc: null` and empty `outputs`, permanently, on a run that succeeded.
+        C-05 of Audit C; the scope pattern, arriving in a third place.
+
+        `_written_paths` holds post-stamp names, so plain membership is exact here and total:
+        no `resolve()`, nothing to raise, and a second `write()` of the same spelling stamps
+        to the same name (the stamp is fixed for the run) and is recognised by `_wrote`.
 
         Returns the path written, so a caller can register or log it.
         """
         p = pathlib.Path(path)
-        if p != self.provenance_path:
+        if p != self.provenance_path and p not in self._written_paths:
             p = self._sidecar_name(p)
         if (
             self.project.env_snapshot_dir is not None

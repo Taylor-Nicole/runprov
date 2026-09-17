@@ -144,6 +144,22 @@ def _files(
         if record.get("unregistered_reads"):
             n = len(record["unregistered_reads"])
             blocked = f"{side} recorded {n} read(s) that bypassed registration"
+        elif _obs(record, "unregistered_watch_truncated"):
+            # C-06 of Audit C. A-11 made the watcher SAY when it went blind and then nothing
+            # asked. Both runs hitting the cap record `unregistered_reads: []` — the reads
+            # that bypassed registration were dropped before they could be reported — so this
+            # printed `inputs unchanged (3 vs 3)` and exited 0 over a census both runs knew
+            # was incomplete. That is the vacuous pass ADR-0014 was written against, reached
+            # through the very field added to prevent it.
+            #
+            # HERE AND NOT IN `_steps`' mark list, where the row's finding pointed: this is a
+            # bound on observed FILE READS, and putting it there would qualify the wrong
+            # dimension while leaving this one green.
+            blocked = (
+                f"{side}'s watch dropped at least "
+                f"{_obs(record, 'unregistered_watch_truncated')} path(s), so its inputs are "
+                "a partial census"
+            )
         elif record.get("pin_partial"):
             blocked = f"{side}'s pin states it may understate the run"
     return Dimension(key, _compare_maps(left, right, key), f"{len(left)} vs {len(right)}", blocked)
@@ -322,8 +338,12 @@ def _materially(key: str, one: typing.Any, two: typing.Any) -> bool:  # noqa: AN
         a, b = float(one), float(two)
     except (TypeError, ValueError):
         return True  # not numbers: any difference is a real one
-    if key == "max_rss_bytes":
-        return a != b  # a memory high-water mark is a count, not a continuous reading
+    # C-09 of Audit C. The first version exempted `max_rss_bytes` on the grounds that a
+    # high-water mark is "a count, not a continuous reading". It is not a count of anything
+    # stable: `ru_maxrss` moves by tens to hundreds of kibibytes between two identical
+    # executions — allocator behaviour, ASLR, whatever the interpreter imported first — so the
+    # one figure the exemption protected was the one that jitters most. It goes in the band
+    # with the others; a real growth is orders of magnitude, not five per cent.
     largest = max(abs(a), abs(b))
     return largest == 0 or abs(a - b) / largest > RESOURCE_NOISE
 

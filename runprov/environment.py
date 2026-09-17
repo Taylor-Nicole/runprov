@@ -330,7 +330,15 @@ def write_snapshot(directory: pathlib.Path) -> dict[str, typing.Any]:
     directory = pathlib.Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"env-{d[:16]}.txt"
-    existed = path.is_file()
+    # C-11 of Audit C. The name is derived from the digest, so a snapshot written by a PRE-FIX
+    # version on Windows sits at exactly the path this would reuse — holding CRLF, and hashing
+    # to something other than the `d` the record asserts. Deciding by NAME alone left every
+    # such file wrong forever while reporting it as present. The CONTENT is checked, and a file
+    # that does not hash to its own name is rewritten.
+    try:
+        existed = path.is_file() and digest(path.read_bytes().decode("utf-8", "replace")) == d
+    except OSError:  # guards-ok: a snapshot that cannot be read cannot be proved reusable
+        existed = False
     if not existed:
         # A-15. BYTES, not text. `atomic_write_text` opens with `newline=None`, which
         # translates every "\n" to "\r\n" on Windows — deliberately, and its own comment

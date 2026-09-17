@@ -51,6 +51,55 @@ is a fix nobody checked.
   start marker — which the first version did, reporting that the schema, the packages and the
   observation block all differed, because one of the two was not a finished run.
 
+### Fixed
+
+* **Two audits over the same code, 32 distinct defects, and the second was aimed at the
+  first's repairs.** Audit B put 30 read-only reviewers over the package and found 21; four
+  MORE were then introduced by the fixes themselves, caught only by tests written before them.
+  So Audit C put 30 more over the diff of the repairs, each told what a change *claimed* to do:
+  11 further defects, three high. The rate is the finding worth recording — a fix is as likely
+  to be wrong as the code it fixes, and only a reader who did not write it has caught either.
+
+  **`sha256_tree` moved and nothing said so.** A fix meant to stop the directory digest
+  depending on the machine changed it on Linux and macOS instead: `PurePath.__lt__` compares
+  part-wise, the sort it replaced compared the rendered string, and `/` competes with `.` and
+  `-` there. Every directory input pinned before it verified STALE with nothing on disk
+  touched. The digest is back where it was, pinned by its literal value in the suite.
+
+  **Three commands could never exit 0.** `diff` marked `steps` NOT COMPARABLE for every pair
+  of history records (the history stores a count, the sidecar stores the list), and smoothed
+  every resource figure except `max_rss_bytes` — the one that actually jitters between two
+  identical runs. `impact --depth 0` truncated its walk to nothing and exited 0, the code that
+  means *checked, and nothing is wrong*, so a pre-overwrite guard went green over a file three
+  artifacts derive from. It exits 2 — COULD NOT CHECK — which is what a truncated walk is.
+
+  **`runprov report` named the wrong run.** Matching on content before path meant a
+  byte-identical file written later somewhere else did not merely win, it destroyed a correct
+  exact-path match. Path wins; a digest match decides only when it is unique.
+
+  **A checkpointed sidecar was left saying `running` on a run that succeeded**, with a
+  phantom double-stamped twin beside it holding the real record — because the rule "do not
+  re-stamp a name already stamped" was written as a list of one name, and a later change
+  routed a second name through it. The exclusion is derived now. That is the third time this
+  package has shipped the same shape of defect, and the rule is in the ledger.
+
+  **Bounds that announce themselves, and readers that listen.** The audit-hook watch counted
+  open *events* rather than distinct paths, so one reference file read a thousand times past
+  the cap recorded a thousand lost files — an overstatement in the permanent record. It counts
+  distinct paths, saturating, and says "at least". The field it writes was read by nothing:
+  `diff`, `report` and `impact` all still judged completeness from `unregistered_reads` alone,
+  which is EMPTY when the watch went blind. All three consult it now, and `diff` refuses
+  `unchanged` over a census either run knew was partial.
+
+  Also: drive-RELATIVE names (`C:data/x`) escaped the project root on Windows where
+  drive-qualified ones no longer did; a pinned artifact's temporary file sat at the umask
+  default for the whole write block, so a result restricted to 0600 was group-readable for as
+  long as the run took; and an environment snapshot written by a pre-fix version on Windows
+  was reported `reused: true` forever, its recorded sha256 not describing its own bytes.
+
+  Every fix carries a regression test, and each was mutation-checked in a copied tree as a
+  positive control: twelve mutations, twelve caught.
+
 ## [0.4.0] — 2026-09-16
 
 ### Added

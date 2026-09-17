@@ -56,6 +56,11 @@ class Chain(typing.NamedTuple):
     steps: list[Step]
     unregistered: int
     runs_examined: int
+    #: C-06 of Audit C. Distinct paths the audit-hook watch had to drop across the runs
+    #: examined — a FLOOR, saturating at its own cap. DEFAULTED, because `Chain` is
+    #: constructed positionally in `__main__` and in a dozen tests, and a required sixth
+    #: field would have made adding the blind spot a breaking change nobody made.
+    watch_truncated: int = 0
 
     @property
     def artifacts(self) -> int:
@@ -157,6 +162,14 @@ def render(chain: Chain, root: pathlib.Path | None = None) -> list[str]:
         out.append(
             f"    {chain.unregistered} read(s) bypassed registration in the "
             f"{chain.runs_examined} run(s) examined — those files are not in any pin"
+        )
+    if chain.watch_truncated:
+        # C-06. `unregistered` above counts reads the runs REPORTED; this counts the ones they
+        # could not report, and the two are different blind spots. Without it a history whose
+        # runs all hit the cap prints a NOT SEEN block that omits the largest thing not seen.
+        out.append(
+            f"    at least {chain.watch_truncated} path(s) were dropped by the watch itself "
+            f"in the {chain.runs_examined} run(s) examined — those reads were never reported"
         )
     out.append("    any script that never imported runprov — `runprov check` finds those")
     out.append("    any run whose records were pruned, or written to another history")

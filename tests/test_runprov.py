@@ -37,6 +37,7 @@ import pathlib
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tarfile
@@ -11487,15 +11488,21 @@ def test_diff_ignores_measurement_noise_but_not_a_real_move():
     )
     assert d.differences == ["wall_seconds  10.0 -> 30.0"]
 
-    # A MEMORY HIGH-WATER MARK IS A COUNT, not a continuous reading: one byte more is one
-    # byte more, and smoothing it would hide exactly the growth a reader is watching for.
-    bytes_moved = dict(base, max_rss_bytes=101)
-    d = next(
-        x
-        for x in runprov.diff.compare({"resources": base}, {"resources": bytes_moved})
-        if x.name == "resources"
-    )
-    assert d.differences == ["max_rss_bytes  100 -> 101"]
+    # `max_rss_bytes` IS IN THE BAND TOO, and this test asserted the opposite until C-09 of
+    # Audit C. The exemption read well — "a high-water mark is a count, not a continuous
+    # reading" — and was wrong about the measurement: `ru_maxrss` moves by tens to hundreds of
+    # kibibytes between two identical executions, so the one figure it protected was the one
+    # that jitters most, and the dimension could never settle on any real pair of runs. A
+    # growth worth reporting is orders of magnitude, not one byte.
+    for moved, expected in ((101, []), (400, ["max_rss_bytes  100 -> 400"])):
+        d = next(
+            x
+            for x in runprov.diff.compare(
+                {"resources": base}, {"resources": dict(base, max_rss_bytes=moved)}
+            )
+            if x.name == "resources"
+        )
+        assert d.differences == expected, f"{moved} bytes against a 100-byte baseline"
     assert runprov.diff._materially("cpu_seconds", "a", "b") is True, "non-numbers always differ"
     assert runprov.diff._materially("wall_seconds", 0.0, 0.0) is False
 
@@ -16821,6 +16828,14 @@ def test_every_module_declares_its_surface_and_none_of_them_invents_one():
         "a/../../outside.tsv",
         "/etc/passwd",
         "sub/../../outside.tsv",
+        # A-16 widened the guard to drive-QUALIFIED names; C-04 of Audit C found the row
+        # beside it. `PureWindowsPath("C:data/x").is_absolute()` is FALSE — a drive-RELATIVE
+        # name is not absolute, it means "the current directory on drive C" — and
+        # `root / "C:data/x"` still discards the left operand on Windows. `.drive` is what
+        # catches both spellings, so both are tabled here and judged under both grammars.
+        "C:/data/outside.tsv",
+        "C:data/outside.tsv",
+        "//server/share/outside.tsv",
     ],
 )
 def test_verify_will_not_hash_a_pinned_name_that_leaves_the_project(tmp_path, name):
@@ -22870,3 +22885,242 @@ def test_export_describes_a_thin_record_without_inventing_anything():
     # none means something different from one that does not mention them.
     empty = runprov.export.to_prov_json([])
     assert set(empty) == {"prefix"}, empty
+
+
+# --------------------------------------------------------------------------- Audit C (2026-09-17)
+def test_a_checkpointed_sidecar_is_not_stamped_twice_and_is_not_left_running(tmp_path, capsys):
+    """Audit C, C-05. The scope pattern in a third place.
+
+    `write()` refused to re-stamp exactly ONE name — `self.provenance_path`, the constructor's,
+    stamped in `__init__` — and that was the complete set until A-01 made `_finish` rebuild the
+    record through `write()` for every shape of run. `_finish` then handed back
+    `_written_paths[0]`, a name a previous `write()` had ALREADY stamped, and it was stamped a
+    second time.
+
+    The consequence is not cosmetic. The rebuilt record landed in the phantom
+    `s.<t>.<uid>.<t>.<uid>.prov.json`, and the skip guard below the rebuild then compared the
+    original stamped path against the un-stamped `rebuild` value, found them equal, and skipped
+    the re-persist — so the sidecar the caller named, the one `write()` HANDED BACK for logging
+    or archiving, kept the checkpoint's `status: "running"` and empty `outputs` permanently, on
+    a run that succeeded.
+
+    The remedy is the one this project keeps relearning: DERIVE the exclusion (any name this
+    run has already written) rather than extend a list of one.
+    """
+    runprov.configure(
+        root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off", sidecar_per_run=True
+    )
+    with runprov.Run("demo", {}) as run:
+        returned = run.write(tmp_path / "s.prov.json")  # the documented mid-run checkpoint
+        (tmp_path / "late.tsv").write_text("a\n", encoding="utf-8")
+        run.output(tmp_path / "late.tsv")
+
+    written = sorted(p.name for p in tmp_path.glob("*.prov.json"))
+    assert len(written) == 1, f"one sidecar, not a phantom twin beside it: {written}"
+    assert returned.name == written[0], "and it is the path write() handed back"
+    assert written[0].count("Z.") == 1, f"stamped once: {written[0]}"
+
+    sealed = json.loads(returned.read_text(encoding="utf-8"))
+    assert sealed["status"] == "ok", "the caller's own sidecar carries the terminal status"
+    assert sealed["finished_utc"], "not a checkpoint's null"
+    assert [pathlib.Path(o["path"]).name for o in sealed["outputs"]] == ["late.tsv"], (
+        "and the late artifact, which the pre-fix record dropped entirely"
+    )
+    capsys.readouterr()
+
+
+def test_the_dropped_watch_count_is_distinct_paths_and_reaches_the_record(tmp_path, monkeypatch):
+    """Audit C, C-06 and C-10 — the two halves A-11 left.
+
+    C-06: `+= 1` fired per audit EVENT, and a dropped path never enters `_opened`, so a loop
+    re-reading one reference file 1 000 times past the cap recorded
+    `unregistered_watch_truncated: 1000` for a single lost file. The field's own docstring, the
+    commit that added it and the test beside it all say DISTINCT paths. An overstatement
+    written into the permanent record is the worst class of defect this package has.
+
+    C-10: A-11's regression test drove a local stub and stopped at the private counter, so the
+    record field the whole row exists to produce survived being deleted outright — mutating
+    `if self._opened_dropped:` to `if False:` left the suite green. It is asserted on a REAL
+    run here, in the history line, which is where a reader three years later finds it.
+    """
+    monkeypatch.setattr(runprov.watch, "WATCH_MAX_PATHS", 3)  # INJECTED: the bound is the
+    cap = runprov.watch.WATCH_MAX_PATHS  # subject, not this host's open-file behaviour
+    watcher = runprov.watch._Watcher()
+
+    class _Run:
+        def __init__(self):
+            self._opened, self._opened_write = set(), set()
+
+    run = _Run()
+    watcher._active.append(run)
+    for i in range(cap + 1):
+        watcher._hook("open", (str(tmp_path / f"{i}.tsv"), "r"))
+    assert len(run._opened) == cap and run._opened_dropped == 1, "one distinct path over it"
+
+    for _ in range(1000):  # the ordinary shape: a loop re-reading one reference file
+        watcher._hook("open", (str(tmp_path / "reference.fa"), "r"))
+    assert run._opened_dropped == 2, (
+        "a thousand opens of ONE further path is one further path — this read 1001 before C-06"
+    )
+
+    watcher._hook("open", (str(tmp_path / "second.fa"), "r"))
+    assert run._opened_dropped == cap, "and a genuinely distinct one does count"
+
+    # AND IT IS A FLOOR, DECLARED AS ONE. The set of dropped paths is bounded by the SAME cap
+    # as `_opened`, so the memory this bound exists to protect is at most doubled and never
+    # unbounded. Past that the count stops rising — which is why every reader says "at least",
+    # a saturated count that reads as exact being the same lie in the other direction.
+    for i in range(20):
+        watcher._hook("open", (str(tmp_path / f"extra{i}.tsv"), "r"))
+    assert run._opened_dropped == cap, "saturated, and honest about being a floor"
+    assert len(run._opened_dropped_paths) == cap
+
+
+def test_the_truncated_watch_is_recorded_and_every_reader_says_so(tmp_path, monkeypatch, capsys):
+    """Audit C, C-06 (second half) and C-10. The field was written by one line and read by
+    nothing: `grep -rn unregistered_watch_truncated runprov/` returned only the write site.
+
+    Every reader that exists to say "this absence is not evidence" still keyed on
+    `unregistered_reads` alone — so two runs that both hit the cap both record an EMPTY list,
+    `runprov diff` printed `inputs unchanged (3 vs 3)` and exited 0 over a census both runs
+    knew was incomplete, `runprov report` printed its observation block with no qualification,
+    and `runprov impact` omitted the largest thing it had not seen.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runprov.watch, "WATCH_MAX_PATHS", 1)  # INJECTED, not this host's load
+    (tmp_path / "data").mkdir()
+    for name in ("in.tsv", "lookup.csv", "other.csv"):
+        (tmp_path / "data" / name).write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+
+    with runprov.Run("misses", provenance=tmp_path / "p.json") as run:
+        with open(run.input(tmp_path / "data" / "in.tsv"), encoding="utf-8") as fh:
+            fh.read()
+        for name in ("lookup.csv", "other.csv"):
+            with open(tmp_path / "data" / name, encoding="utf-8") as fh:
+                fh.read()
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("x\n")
+    capsys.readouterr()
+
+    record = _lines(tmp_path / "h.jsonl")[-1]
+    dropped = record["observation"]["unregistered_watch_truncated"]
+    assert dropped >= 1, "the cap bit, and the record says so — in the history, not in a stub"
+
+    # `runprov report` — the page a reader consults to judge ONE artifact.
+    page = runprov.report.page(tmp_path / "out.tsv", tmp_path, [record])
+    assert any("WATCH TRUNCATED" in line for line in page.lines), page.lines
+
+    # `runprov diff` — the gate. Two records that both hit the cap must not compare clean.
+    dimension = next(d for d in runprov.diff.compare(record, record) if d.name == "inputs")
+    assert dimension.blocked and "partial census" in dimension.blocked
+    assert not dimension.settled, "a gate may not go green over a census known to be partial"
+
+    # `runprov impact` — the blind-spot tally, which counted only the reads a run MANAGED to
+    # report and was silent about the ones dropped before they could be.
+    #
+    # THROUGH THE COMMAND, not by constructing a `Chain` by hand. The first version of this
+    # assertion built one with the count already in it, which tested `render` and left the
+    # wiring that FILLS the field unguarded — mutating the sum in `_impact` to `+= 0` kept the
+    # suite green. A line can be covered without being tested; the seam has to be the real one.
+    runprov.__main__.main(
+        ["impact", str(tmp_path / "data" / "in.tsv"), "--log", str(tmp_path / "h.jsonl")]
+    )
+    assert "dropped by the watch itself" in capsys.readouterr().out
+
+
+def test_a_truncated_impact_walk_cannot_check_rather_than_passing(tmp_path, capsys):
+    """Audit C, C-07. A-09 named two halves and only the sentence was fixed.
+
+    `--depth 0` empties `steps` while `seeds` stays non-empty, and the command returned 0 —
+    the code that means "checked, and nothing is wrong", identical to the code for a file
+    nothing ever read. A pre-overwrite guard written as `runprov impact ref.fa --depth 0 ||
+    abort` goes green and the reference is overwritten with derived artifacts in the history.
+    `--depth 0` is the natural spelling for "just the direct readers", and for "no limit" in
+    many tools.
+
+    2 is COULD NOT CHECK (`__main__.py`'s own convention), which is exactly what a walk cut off
+    before it reached a single consumer is. A-09's test asserted only the new message, so the
+    exit code could have stayed 0 forever without the suite noticing — it is asserted here.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    (tmp_path / "ref.fa").write_text(">r\nACGT\n", encoding="utf-8")
+    with runprov.Run("align", provenance=tmp_path / "a.prov.json") as run:
+        run.input(tmp_path / "ref.fa")
+        with run.open_output(tmp_path / "aligned.tsv") as fh:
+            fh.write("x\n")
+    capsys.readouterr()
+
+    argv = ["impact", str(tmp_path / "ref.fa"), "--log", str(tmp_path / "h.jsonl")]
+    assert runprov.__main__.main(argv) == 1, "something derives from it: checked, and it matters"
+    assert "artifact(s) derive" in capsys.readouterr().out
+
+    assert runprov.__main__.main([*argv, "--depth", "0"]) == 2, (
+        "truncated is COULD NOT CHECK, not a clean bill of health"
+    )
+    assert "TRUNCATED" in capsys.readouterr().out
+
+
+def test_a_pinned_sidecars_temporary_file_is_not_world_readable_while_it_is_written(tmp_path):
+    """Audit C, C-08. A-13 tightened the PUBLISHED mode and left the temp file at the umask
+    default for the whole write block — so a result deliberately restricted to 0600 sat beside
+    its own destination as a group-readable `.name.<hex>.runprov-tmp` for as long as the run
+    took to produce it, which on an eight-hour job is eight hours. The window A-13 closed at
+    the end was open at the start.
+
+    The mode is applied immediately after creation rather than passed to `os.open`: two tests
+    inspect the `open()` call this class makes, because `newline=""` is load-bearing, and
+    bypassing `open` broke that seam. The residual exposure is microseconds against hours, and
+    it is not zero.
+    """
+    # A `.tsv`, because the pin goes INSIDE the artifact for a format that holds a comment —
+    # which is what makes `_PinnedWriter` the handle, and the temp file the subject here.
+    dest = tmp_path / "restricted.tsv"
+    dest.write_text("old\n", encoding="utf-8")
+    dest.chmod(0o600)
+
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    seen = []
+    with runprov.Run("tight", provenance=tmp_path / "p.json") as run:
+        with run.open_output(dest) as fh:
+            # MID-WRITE, which is the whole window: the mode is asserted while the body is
+            # still streaming, not after `os.replace` has published it.
+            seen.append(stat.S_IMODE(pathlib.Path(fh._tmp).stat().st_mode))
+            fh.write("x\n")
+
+    assert seen == [0o600], f"the temp file carries the destination's mode from birth: {seen}"
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o600, "and the published file still does"
+
+
+def test_a_snapshot_whose_bytes_do_not_match_its_name_is_rewritten(tmp_path, monkeypatch):
+    """Audit C, C-11. A-15 fixed the bytes NEW snapshots are written with and left every
+    pre-fix one wrong forever.
+
+    The name is derived from the digest, so a snapshot written by an older version on Windows
+    — CRLF, hashing to something other than the `d` its own name asserts — sits at exactly the
+    path `write_snapshot` would reuse. Deciding by NAME alone reported it `reused: true`, which
+    is the record's way of saying "the environment has not moved", over a file whose recorded
+    sha256 does not describe it. `sha256sum -c` on that line fails for a file nobody touched.
+    """
+    store = tmp_path / "env"
+    first = runprov.environment.write_snapshot(store)
+    assert first["reused"] is False
+    path = pathlib.Path(first["path"])
+
+    assert runprov.environment.write_snapshot(store)["reused"] is True, "identical: reused"
+
+    # The pre-fix Windows shape, reproduced exactly: the right name, the wrong bytes.
+    good = path.read_bytes()
+    path.write_bytes(good.replace(b"\n", b"\r\n"))
+    again = runprov.environment.write_snapshot(store)
+    assert again["reused"] is False, "content that does not hash to its own name is not reusable"
+    assert path.read_bytes() == good, "and it is rewritten, not left wrong forever"
+    assert runprov.environment.digest(path.read_text(encoding="utf-8")) == again["sha256"]
+
+    # UNREADABLE IS NOT REUSABLE EITHER, and the read must not end the run. Injected rather
+    # than chmod'ed, so this is the same assertion on every platform and as every user.
+    def _refuse(self):
+        raise OSError("EACCES")
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", _refuse)
+    assert runprov.environment.write_snapshot(store)["reused"] is False
