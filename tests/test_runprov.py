@@ -23078,6 +23078,15 @@ def test_a_pinned_sidecars_temporary_file_is_not_world_readable_while_it_is_writ
     dest = tmp_path / "restricted.tsv"
     dest.write_text("old\n", encoding="utf-8")
     dest.chmod(0o600)
+    # THE DESTINATION'S OWN MODE, READ BACK, not the literal 0o600 that was asked for —
+    # eighth instance this session of a test leaning on what the HOST supplies. Windows has
+    # no POSIX mode bits: `chmod` there toggles the read-only attribute and nothing else, so
+    # `stat()` reports 0o666 for the same call and the literal failed on that leg alone. The
+    # invariant this row is about is "the temp file carries the DESTINATION's mode", which is
+    # true on both and is what is asserted.
+    restricted = stat.S_IMODE(dest.stat().st_mode)
+    if os.name == "posix":  # and where the mode means something, it still means 0o600
+        assert restricted == 0o600
 
     runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
     seen = []
@@ -23088,8 +23097,8 @@ def test_a_pinned_sidecars_temporary_file_is_not_world_readable_while_it_is_writ
             seen.append(stat.S_IMODE(pathlib.Path(fh._tmp).stat().st_mode))
             fh.write("x\n")
 
-    assert seen == [0o600], f"the temp file carries the destination's mode from birth: {seen}"
-    assert stat.S_IMODE(dest.stat().st_mode) == 0o600, "and the published file still does"
+    assert seen == [restricted], f"the temp file carries the destination's mode from birth: {seen}"
+    assert stat.S_IMODE(dest.stat().st_mode) == restricted, "and the published file still does"
 
 
 def test_a_snapshot_whose_bytes_do_not_match_its_name_is_rewritten(tmp_path, monkeypatch):
@@ -23124,3 +23133,42 @@ def test_a_snapshot_whose_bytes_do_not_match_its_name_is_rewritten(tmp_path, mon
 
     monkeypatch.setattr(pathlib.Path, "read_bytes", _refuse)
     assert runprov.environment.write_snapshot(store)["reused"] is False
+
+
+def test_the_pypi_readme_names_every_command_the_cli_offers(capsys):
+    """The gap that shipped at 0.3.0, at 0.4.0 and again at 0.5.0 — caught each time by a
+    person looking, which is not a gate.
+
+    `README-pypi.md` is frozen into the wheel at upload and is the ONLY page most people who
+    install this ever read; the repository README is not on PyPI. Three releases in a row added
+    a command and left that page describing the previous release.
+
+    DERIVED FROM THE PARSER, never a list beside one: a list is exactly what fell out of date.
+    The omissions are the part that is stated by hand, because they are decisions — and a
+    decision that has to be written down is one somebody has to defend when it changes.
+    """
+
+    def _commands(capsys):
+        with contextlib.suppress(SystemExit):
+            runprov.__main__.main(["--help"])
+        found = re.search(r"\{([a-z,]+)\}", capsys.readouterr().out)
+        assert found, "the help text no longer lists its subcommands; this test reads nothing"
+        return found.group(1).split(",")
+
+    #: Deliberately not on the PyPI page. `exec` and `prune` are operational rather than
+    #: analytical — one runs a foreign script, the other trims a history — and the page is an
+    #: argument for adopting the package, not its manual. `lineage` is the DAG that `diff` and
+    #: `impact` are the two useful questions about; both of those ARE on the page.
+    not_on_the_pypi_page = {"exec", "prune", "lineage"}
+
+    page = pathlib.Path(runprov.__file__).resolve().parent.parent / "README-pypi.md"
+    if not page.is_file():  # pragma: no cover - an installed wheel, not a checkout
+        pytest.skip("not a source checkout")
+    text = page.read_text(encoding="utf-8")
+    commands = _commands(capsys)
+    assert len(commands) > 5, "the parser shape moved; this test is reading nothing"
+    missing = [c for c in commands if c not in not_on_the_pypi_page and f"runprov {c}" not in text]
+    assert not missing, (
+        f"README-pypi.md is frozen into the wheel and does not name: {missing}. Add them to "
+        f"the page, or add them to not_on_the_pypi_page with the reason."
+    )

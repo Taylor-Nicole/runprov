@@ -102,7 +102,7 @@ STALE   results/summary.tsv
 `runprov capture` (record a script that has no `runprov` calls in it at all), and
 `runprov export` (RO-Crate and W3C PROV-JSON).
 
-## Three commands for the questions asked afterwards
+## Five commands for the questions asked afterwards
 
 **`runprov check`** reads your source and reports entry points that open files and record
 nothing — the case a runtime hook can never see, because code that is not imported does not
@@ -125,6 +125,18 @@ $ runprov resources --format slurm
 #SBATCH --mem=469M
 #SBATCH --cpus-per-task=3
 ```
+
+**`runprov diff <a> <b>`** — why is today different from last month. Everything needed was
+already recorded; what is new is that **a difference and an incomparability are not the same
+answer**. A run on 3.11 could not see what a run on 3.12 saw, and a dirty tree's commit does
+not name the code that ran — so those dimensions report NOT COMPARABLE rather than
+`unchanged`. Exit 0 means comparable *and* identical in every dimension.
+
+**`runprov impact <file>`** — what was derived from these bytes, and in what order it rebuilds.
+The forward direction, reported with depth because the answer is an **order**. It answers what
+*did* derive, never what *will* break: an empty result reads "no recorded run read these
+bytes", never "nothing depends on this". The blind spots print on every answer, not only the
+empty one.
 
 **It is a floor and it says so.** Slurm and Kubernetes enforce against the *cgroup* — every
 process at once, plus page cache — while `RUSAGE_CHILDREN` is the peak of the largest *single*
