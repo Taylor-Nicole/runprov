@@ -159,12 +159,50 @@ def _files(
     return Dimension(key, _compare_maps(left, right, key), f"{len(left)} vs {len(right)}", blocked)
 
 
-def _code(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]) -> Dimension:
-    """The project's commit — NOT `tool`, which is about runprov's own code.
+def _imported_of(record: typing.Mapping[str, typing.Any]) -> dict[str, typing.Any]:
+    """The hashed first-party code block, from EITHER record shape.
 
-    A DIRTY TREE IS WHAT BREAKS THIS, not anything about the package: the commit is recorded,
-    and the files that ran differ from it, so a commit-to-commit line would name a change that
-    is not the change.
+    THE HISTORY FLATTENS IT and the sidecar does not: `run.py` writes a top-level
+    `imported_code`, while the live record keeps `code.imported`. Reading only one shape is
+    how A-04 made `packages` compare `{}` against `{}` on every real history, and how A-03
+    crashed `steps` — twice in one audit, in this same function's neighbours. `diff` is fed
+    history records; the unit tests build sidecar-shaped ones; both must work.
+    """
+    flat = record.get("imported_code")
+    if isinstance(flat, dict):
+        return flat
+    nested = (record.get("code") or {}).get("imported")
+    return nested if isinstance(nested, dict) else {}
+
+
+def _code(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]) -> Dimension:
+    """The project's commit AND the digest of the first-party code that actually ran.
+
+    A DIRTY TREE IS WHAT BREAKS THE COMMIT, not anything about the package: the commit is
+    recorded, and the files that ran differ from it, so a commit-to-commit line would name a
+    change that is not the change.
+
+    AND THE COMMIT IS NOT THE CODE, which is D-04 of Audit D. `git status` reports neither a
+    gitignored module nor a script outside the repository, so `git_code_dirty` is False, the
+    commits match, and this reported `unchanged` — while the same history line carried a
+    different `imported_code.digest`. `run.code()` on an out-of-repo script is the documented
+    purpose of that API, and README.md says of this digest, in as many words, that it "answers
+    *did any first-party code change between these two runs*" — the question this command
+    exists to ask. ADR-0014's own precondition table already named `imported_code.omitted`; the
+    ADR contemplated the field and the implementation dropped it.
+
+    EXACTLY ONE SIDE CARRYING A DIGEST BLOCKS rather than compares. `imported_code` entered the
+    history WITHOUT a `HISTORY_SCHEMA` bump, so two records can legitimately share
+    `runprov.history.v2` and disagree about whether the field exists — and `hash_imported_code`
+    can be off on one machine and on the other. Comparing there would report a code change for
+    every pair straddling 2026-08-13, which is a confident wrong answer rather than a refusal.
+
+    `omitted` IS A NOTE AND NOT A BLOCK (Taylor's decision, 2026-09-17). Past
+    `imported_code_max` the digest covers only the kept prefix, so equality means the first N
+    files agree — a real qualification, which goes in `examined` where the scope of a
+    comparison belongs. Blocking on it would stop any project with more than 200 first-party
+    modules from ever exiting 0, which is the gate-that-cannot-pass this package has now built
+    three times; `configure(imported_code_max=…)` is there for anyone who wants strictness.
     """
     left, right = a.get("git_commit"), b.get("git_commit")
     blocked = None
@@ -174,7 +212,30 @@ def _code(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]
         elif record.get("git_code_dirty"):
             blocked = f"{side} ran from a dirty tree, so its commit does not name the code"
     differences = [f"commit  {left or '?'} -> {right or '?'}"] if left != right else []
-    return Dimension("code", differences, f"{left or 'none'} / {right or 'none'}", blocked)
+
+    mine, theirs = _imported_of(a), _imported_of(b)
+    one, two = str(mine.get("digest") or ""), str(theirs.get("digest") or "")
+    examined = f"{left or 'none'} / {right or 'none'}"
+    if one and two:
+        if one != two:
+            differences.append(f"first-party code  {one[:16]} -> {two[:16]}")
+        examined += f", code {one[:8]} / {two[:8]}"
+        scope = [
+            f"{side}'s code digest covers {kept.get('count')} of "
+            f"{(kept.get('count') or 0) + (kept.get('omitted') or 0)} files"
+            for kept, side in ((mine, "A"), (theirs, "B"))
+            if kept.get("omitted")
+        ]
+        if scope:
+            examined += " — " + "; ".join(scope)
+    elif one or two:
+        which = "A" if one else "B"
+        blocked = blocked or (
+            f"only {which} recorded a digest of its first-party code, so the code itself "
+            "cannot be compared"
+        )
+        examined += f", code {which} only"
+    return Dimension("code", differences, examined, blocked)
 
 
 def _status(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]) -> Dimension:

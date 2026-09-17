@@ -508,13 +508,13 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
         # which left two keys that had to agree and nothing checking that they did. That sort
         # was dead the moment the stream started ordering its own input; a second key that
         # cannot drift is better than a second key that agrees today.
-        rec["sha256_tree"] = _tree_stream(pairs, lambda n: tuple(n.split("/")))
+        rec["sha256_tree"] = _tree_stream(pairs, _PARTS)
         # THE ORDER THE RELEASED VERSIONS USED ON WINDOWS, kept only when it DIFFERS. For the
         # ~80 % of trees whose names do not mix case the two orders coincide and no field is
         # added at all, so the record does not carry a migration aid it has no use for — and
         # where it IS present it states something true about the tree rather than about this
         # package's history. `verify` is its only reader.
-        folded = _tree_stream(pairs, lambda n: tuple(s.lower() for s in n.split("/")))
+        folded = _tree_stream(pairs, lambda n: tuple(s.lower() for s in _PARTS(n)))
         if folded != rec["sha256_tree"]:
             rec["sha256_tree_casefolded"] = folded
     else:
@@ -589,6 +589,22 @@ PIN_ANCHOR = "provenance — this artifact and what produced it"
 #: moved would be answering the wrong question confidently.
 PIN_BODY_FIELD = "body"
 PIN_BODY_PENDING = "0" * PIN_DIGEST_CHARS
+
+
+def _PARTS(name: str) -> tuple[str, ...]:  # noqa: N802 - a constant-like key function
+    """The ordering key: `PurePath.parts`, the same primitive the released versions sorted by.
+
+    THE SAME ALGORITHM, ON A CLEANER LABEL — and the distinction is not pedantic. The first
+    version of this re-derived `.parts` as `name.split("/")`, which agrees for every name
+    `as_posix()` can actually produce and disagrees for six shapes out of ten otherwise:
+    `a//b`, `./a`, `a/`, `a/./b`, `""` and `"."` all split into something `PurePath` collapses.
+    "That cannot reach here" is exactly the argument that shipped A-14 and then C-03, both of
+    which moved a recorded digest, so it does not get to be the argument a third time.
+
+    Reusing the primitive means there is no second implementation to drift from the first. It
+    costs one `PurePosixPath` per file per ordering, which is nothing beside hashing the file.
+    """
+    return pathlib.PurePosixPath(name).parts
 
 
 def _tree_stream(pairs: list[tuple[str, str]], key: typing.Callable[[str], tuple[str, ...]]) -> str:

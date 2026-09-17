@@ -84,6 +84,29 @@ is a fix nobody checked.
   project's record on remembered rules is seven misses for the scope pattern and three for
   `README-pypi.md`, so the harness may not depend on one.
 
+### Fixed — `runprov diff` compares the code that ran, not only the commit
+
+* **A changed analysis script passed the gate when the commit did not move.** `git status`
+  reports neither a gitignored module nor a script outside the repository, so `git_code_dirty`
+  was False, the commits matched, and `code` reported `unchanged` — while the same history line
+  carried a different `imported_code.digest`. `run.code()` on an out-of-repo script is the
+  documented purpose of that API, and the README says of that digest, in as many words, that it
+  answers *did any first-party code change between these two runs*. ADR-0014's own precondition
+  table already named `imported_code.omitted`; the implementation was handed the field and did
+  not look at it. Reproduced end to end: edit a `run.code()` script between two runs of a clean
+  tree and the command exited 0. It exits 1 and names both digests.
+
+  **Exactly one side carrying a digest blocks rather than compares.** `imported_code` entered
+  the history without a `HISTORY_SCHEMA` bump, so two records legitimately share
+  `runprov.history.v2` and disagree about whether the field exists — and `hash_imported_code`
+  can be off on one machine and on elsewhere. Comparing there would report a code change for
+  every pair straddling that date. Neither side carrying one is agreement, not a refusal.
+
+  **A truncated digest is a note, not a block.** Past `imported_code_max` the digest covers the
+  kept prefix, which the page now states; blocking on it would stop any project with more than
+  200 first-party modules from ever exiting 0. `configure(imported_code_max=…)` is there for
+  anyone who wants strictness.
+
 ### Fixed — cost can fail the gate again, because the noise model was the defect
 
 * **`runprov diff` could never fail on `resources` — including when the two figures were not

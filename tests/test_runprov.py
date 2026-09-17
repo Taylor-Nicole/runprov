@@ -23818,3 +23818,106 @@ def test_a_zero_step_comparison_still_carries_its_truncation_reason():
         "steps",
     )
     assert clean.verdict == "unchanged" and clean.settled and clean.blocked is None
+
+
+def test_diff_compares_the_code_that_ran_not_only_the_commit():
+    """Audit D, D-04. `git status` reports neither a gitignored module nor a script outside
+    the repository, so `git_code_dirty` is False, the commits match, and `code` said
+    `unchanged` — while the same history line carried a different `imported_code.digest`.
+
+    `run.code()` on an out-of-repo script is the documented purpose of that API, README.md says
+    this digest "answers *did any first-party code change between these two runs*", and
+    ADR-0014's own precondition table already named `imported_code.omitted`. The ADR
+    contemplated the field; the implementation was handed it and did not look.
+
+    Reproduced end to end before this: edit a `run.code()` script between two runs of a clean
+    git tree and `runprov diff` exited 0. It exits 1 and names the digests.
+    """
+
+    def rec(digest, **over):
+        return _hrec(git_commit="abc1234", imported_code={"count": 2, "digest": digest, **over})
+
+    changed = _dim(runprov.diff.compare(rec("aa" * 32), rec("bb" * 32)), "code")
+    assert changed.differences == [f"first-party code  {'aa' * 8} -> {'bb' * 8}"]
+    assert not changed.settled, "a changed analysis script must be able to fail a gate"
+
+    same = _dim(runprov.diff.compare(rec("aa" * 32), rec("aa" * 32)), "code")
+    assert same.verdict == "unchanged" and same.settled
+    assert "code aaaaaaaa / aaaaaaaa" in same.examined, same.examined
+
+    # THE COMMIT IS STILL COMPARED. The digest is an addition, not a replacement.
+    moved = _dim(
+        runprov.diff.compare(
+            _hrec(git_commit="abc1234", imported_code={"digest": "aa" * 32, "count": 1}),
+            _hrec(git_commit="def5678", imported_code={"digest": "aa" * 32, "count": 1}),
+        ),
+        "code",
+    )
+    assert moved.differences == ["commit  abc1234 -> def5678"]
+
+
+def test_diff_refuses_to_compare_code_when_only_one_run_recorded_a_digest():
+    """Audit D, D-04. `imported_code` entered the history WITHOUT a `HISTORY_SCHEMA` bump.
+
+    So two records legitimately share `runprov.history.v2` and disagree about whether the field
+    exists — this repository's own `provenance/runs.jsonl` holds such a line — and
+    `hash_imported_code` can be off on one machine and on elsewhere. Comparing there would
+    report a code change for every pair straddling 2026-08-13: a confident wrong answer, which
+    is worse than a refusal.
+    """
+    with_digest = _hrec(git_commit="abc1234", imported_code={"count": 2, "digest": "aa" * 32})
+    without = _hrec(git_commit="abc1234")
+
+    d = _dim(runprov.diff.compare(with_digest, without), "code")
+    assert d.verdict == "not comparable" and not d.settled
+    assert "only A recorded a digest" in d.blocked, d.blocked
+
+    # NEITHER SIDE IS NOT A REFUSAL. Two runs that both predate the field, or both have the
+    # feature off, agree about first-party code in the only sense available — the same
+    # reasoning as two runs that both declared no steps, and as two that both measured no cost.
+    both_absent = _dim(runprov.diff.compare(without, without), "code")
+    assert both_absent.verdict == "unchanged" and both_absent.settled
+    assert both_absent.blocked is None
+    assert "code" not in both_absent.examined.split(",")[-1] or "only" not in both_absent.examined
+
+
+def test_a_truncated_code_digest_is_noted_and_does_not_block():
+    """Audit D, D-04 — Taylor's decision, 2026-09-17.
+
+    Past `imported_code_max` the digest covers only the kept prefix of the sorted file list, so
+    equality means the first N files agree. ADR-0014's table asks for a truncated field to
+    block the dimension — applied literally that would stop any project with more than 200
+    first-party modules from EVER exiting 0, which is the gate-that-cannot-pass this package
+    has now built three times.
+
+    So it is a NOTE, in `examined`, where the scope of a comparison belongs. Anyone who wants
+    strictness has `configure(imported_code_max=…)`.
+    """
+    capped = _hrec(
+        git_commit="abc1234", imported_code={"count": 200, "digest": "aa" * 32, "omitted": 100}
+    )
+    whole = _hrec(git_commit="abc1234", imported_code={"count": 200, "digest": "aa" * 32})
+
+    d = _dim(runprov.diff.compare(capped, whole), "code")
+    assert d.settled, "a capped digest must not make the gate unpassable"
+    assert d.blocked is None
+    assert "A's code digest covers 200 of 300 files" in d.examined, d.examined
+
+
+def test_diff_reads_the_code_digest_from_either_record_shape():
+    """Audit D, D-04. The history FLATTENS this field and the sidecar does not.
+
+    `run.py` writes a top-level `imported_code`; the live record keeps `code.imported`. Reading
+    only one shape is how A-04 made `packages` compare `{}` against `{}` on every real history
+    and how A-03 crashed `steps` — twice in one audit, in this function's own neighbours. The
+    suite builds sidecar-shaped records and the command is fed history ones, so a reader that
+    handles one shape is self-consistent and wrong.
+    """
+    flat = {"git_commit": "abc1234", "imported_code": {"count": 1, "digest": "aa" * 32}}
+    nested = {"git_commit": "abc1234", "code": {"imported": {"count": 1, "digest": "bb" * 32}}}
+
+    d = _dim(runprov.diff.compare(flat, nested), "code")
+    assert d.differences == [f"first-party code  {'aa' * 8} -> {'bb' * 8}"], d.differences
+    assert runprov.diff._imported_of(flat)["digest"] == "aa" * 32
+    assert runprov.diff._imported_of(nested)["digest"] == "bb" * 32
+    assert runprov.diff._imported_of({"imported_code": None}) == {}
