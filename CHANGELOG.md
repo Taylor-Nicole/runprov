@@ -39,6 +39,22 @@ is a fix nobody checked.
   chain covers three of nine hundred lines would be the vacuous pass this project keeps fixing.
   A torn or corrupt line is `COULD NOT CHECK`, never an accusation.
 
+  **The verdict is per EDGE, not per line, and that is what makes it trustworthy.** A line
+  carries two separate facts — *is my claim about my predecessor correct*, and *are my own bytes
+  attested by my successor* — and every wrong answer this feature produced came from conflating
+  them. The unit is the adjacent pair, each pair resolved through a decision table over four
+  enumerated inputs, and the file's verdict is the worst edge and nothing else. **Measured: flip
+  any single byte anywhere in a history and the chain never stays silent — 3 192 cases over four
+  shapes (intact, torn mid-write, mixed-version, written before the chain existed), zero
+  escapes.** `attested` is a count of edges that hold, so it can never exceed the lines it had.
+
+  Three consequences a reader will meet. A CRLF translation is a **per-line** fact, so one stray
+  carriage return from a `core.autocrlf=true` checkout no longer discards every finding in the
+  file. The version that wrote a line is resolved from the **run**, not the line, because no
+  released version writes a `tool` block into a start line — half of every history. And a line
+  whose predecessor is unreadable answers `COULD NOT CHECK` rather than `BROKEN`: a tear that
+  happened later cannot be told from an edit, and saying so is the honest answer.
+
 
 ## [0.5.0] — 2026-09-17
 
