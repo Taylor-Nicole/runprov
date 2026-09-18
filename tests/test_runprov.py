@@ -10163,13 +10163,15 @@ def test_resources_block_is_in_every_record_with_canonical_units(tmp_path):
 
 
 def test_resources_memory_counts_children_and_normalises_the_units(tmp_path):
-    """[ADR-0013 R-3] the child is where the memory is, and [ADR-0013 R-4] ru_maxrss units differ by platform.
+    """[ADR-0013 R-3] the child is where the memory is, and [ADR-0013 R-4] ru_maxrss units differ
+    by platform.
 
     Measured on this project: a run whose subprocess held 200 MiB reports 15 708 KiB for
     RUSAGE_SELF and 217 364 for RUSAGE_CHILDREN. Reading SELF alone would size a cluster job
     from a number 14x too small.
 
-    [ADR-0013 R-4] is a 1024x error that looks entirely plausible on whichever platform you tested on:
+    [ADR-0013 R-4] is a 1024x error that looks entirely plausible on whichever platform you tested
+    on:
     Linux reports kibibytes, macOS reports bytes.
     """
     linux = _meter(tmp_path, rusage=_StubResource(self_rss=100, child_rss=200)).read()
@@ -10201,7 +10203,8 @@ def test_resources_reads_a_cgroup_only_when_the_run_owns_one(environ, line, owns
 
 
 def test_resources_prefers_the_cgroup_and_says_which_mechanism_measured_it(tmp_path):
-    """[ADR-0013 R-5]. A cgroup peak and a getrusage peak are DIFFERENT QUANTITIES — the first counts
+    """[ADR-0013 R-5]. A cgroup peak and a getrusage peak are DIFFERENT QUANTITIES — the first
+    counts
     every process concurrently plus page cache, which is what Slurm and Kubernetes enforce.
     Two records that do not say which they hold are two records someone will compare."""
     proc, cg = tmp_path / "proc", tmp_path / "cg"
@@ -10235,7 +10238,8 @@ def test_resources_falls_back_when_the_kernel_has_no_memory_peak(tmp_path):
 
 
 def test_resources_omits_what_it_could_not_measure_rather_than_writing_zero(tmp_path):
-    """[ADR-0013 R-7]. A zero beside real numbers is a measurement never taken, presented as one that
+    """[ADR-0013 R-7]. A zero beside real numbers is a measurement never taken, presented as one
+    that
     was — this package's defect class, in a new table."""
     m = _meter(tmp_path, rusage=None).read()
     record = m.as_record()
@@ -10261,7 +10265,8 @@ def test_resources_labels_the_getrusage_figure_a_floor(tmp_path):
 
 
 def test_resources_says_io_covers_this_process_only(tmp_path):
-    """[ADR-0013 R-9b]. `/proc/self/io` has no children's equivalent, so a pipeline whose reads happen
+    """[ADR-0013 R-9b]. `/proc/self/io` has no children's equivalent, so a pipeline whose reads
+    happen
     in samtools reports near zero — the same trap as [ADR-0013 R-3] in a less obvious column. Found
     while REVIEWING the specification, after the first draft let it through."""
     proc = tmp_path / "proc"
@@ -10273,7 +10278,8 @@ def test_resources_says_io_covers_this_process_only(tmp_path):
 
 
 def test_resources_uses_a_monotonic_clock_and_never_fails_the_run(tmp_path):
-    """[ADR-0013 R-10] a wall-clock difference can go BACKWARDS when NTP steps the clock mid-run, and
+    """[ADR-0013 R-10] a wall-clock difference can go BACKWARDS when NTP steps the clock mid-run,
+    and
     [ADR-0013 R-12] measurement that can kill a run is provenance changing what it observes."""
     ticks = iter([100.0, 100.25])
     m = runprov.resources.Meter(
@@ -10291,7 +10297,8 @@ def test_resources_uses_a_monotonic_clock_and_never_fails_the_run(tmp_path):
 
 
 def test_resources_never_reach_the_artifact_pin(tmp_path):
-    """[ADR-0013 R-11]. Peak memory is not part of "does this result still follow from its inputs", and
+    """[ADR-0013 R-11]. Peak memory is not part of "does this result still follow from its inputs",
+    and
     putting it in the header would make two identical runs produce two different pins — which
     is what `content_digest()` exists to prevent."""
     runprov.configure(root=tmp_path, auto_steps="off")
@@ -10351,7 +10358,8 @@ def test_resources_tsv_drops_a_vms_that_describes_a_different_process(tmp_path):
 
 
 def test_resources_render_each_target_in_its_own_units(tmp_path):
-    """[ADR-0013 R-14]. Slurm takes `--mem` in MiB and `--cpus-per-task` as a COUNT; Kubernetes takes
+    """[ADR-0013 R-14]. Slurm takes `--mem` in MiB and `--cpus-per-task` as a COUNT; Kubernetes
+    takes
     binary `Mi` (plain `M` is decimal — a 4.8% error that reads like a typo) and CPU as a RATE
     in millicores. One number emitted into both syntaxes is wrong in at least one."""
     m = runprov.resources.Measurement(
@@ -10376,7 +10384,8 @@ def test_resources_render_each_target_in_its_own_units(tmp_path):
 
 
 def test_resources_render_is_always_a_floor_with_a_margin(tmp_path):
-    """[ADR-0013 R-15]. Never a bare value to paste. A tool that hands somebody a request which kills
+    """[ADR-0013 R-15]. Never a bare value to paste. A tool that hands somebody a request which
+    kills
     their job has done worse than nothing."""
     m = runprov.resources.Measurement(
         wall_seconds=10.0,
@@ -10541,7 +10550,8 @@ def test_resources_reach_the_history_which_is_what_the_subcommand_reads(tmp_path
 
 
 def test_resources_round_trip_does_not_invent_a_zero(tmp_path):
-    """[ADR-0013 R-7] holds in both directions. A round trip that turned an absent figure into 0 would
+    """[ADR-0013 R-7] holds in both directions. A round trip that turned an absent figure into 0
+    would
     launder a measurement nobody took into one that looks taken."""
     thin = runprov.resources.from_record({"wall_seconds": 2.0, "source": "none"})
     assert thin.max_rss_bytes is None and thin.cpu_seconds is None
@@ -10549,7 +10559,8 @@ def test_resources_round_trip_does_not_invent_a_zero(tmp_path):
 
 
 def test_resources_cli_renders_each_format_from_the_history(tmp_path, capsys):
-    """[ADR-0013 R-13] [ADR-0013 R-14]. The command exists so the numbers reach the place they are needed."""
+    """[ADR-0013 R-13] [ADR-0013 R-14]. The command exists so the numbers reach the
+    place they are needed."""
     # A HAND-WRITTEN HISTORY WITH KNOWN FIGURES, not a real run. The first version ran one and
     # asserted `#SBATCH --mem=` appeared — true only where memory was measured, and Windows has
     # no `resource` module, so it correctly rendered "# --mem: NOT MEASURED" and the test called
@@ -10589,7 +10600,8 @@ def test_resources_cli_renders_each_format_from_the_history(tmp_path, capsys):
 
 
 def test_resources_cli_refuses_rather_than_printing_a_request_from_nothing(tmp_path, capsys):
-    """[ADR-0013 R-15]. A request rendered from no measurement looks exactly like a measured one, which
+    """[ADR-0013 R-15]. A request rendered from no measurement looks exactly like a measured one,
+    which
     makes it the worst output this command could produce. It exits 2 and says why."""
     runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
     assert runprov.__main__.main(["resources", "--log", str(tmp_path / "none.jsonl")]) == 2
@@ -10608,7 +10620,8 @@ def test_resources_cli_text_view_on_a_cgroup_run_with_no_cpu_figure(tmp_path, ca
 
     A cgroup measurement is NOT labelled a floor — it is the quantity the scheduler enforces,
     so labelling it one would understate a number that is already right. And a run with no cpu
-    figure prints neither a cpu line nor a mean-cores line rather than a zero [ADR-0013 R-7]. Both come
+    figure prints neither a cpu line nor a mean-cores line rather than a zero [ADR-0013 R-7]. Both
+    come
     from a hand-written history, because the only machines that produce them are a cluster and
     a container.
     """
@@ -10657,7 +10670,8 @@ def test_resources_cli_selects_by_script_and_takes_the_most_recent(tmp_path, cap
 
 
 def test_resources_cli_margin_is_applied_and_visible(tmp_path, capsys):
-    """[ADR-0013 R-15]. The margin is the user's to set, and the rendered note states which was used."""
+    """[ADR-0013 R-15]. The margin is the user's to set, and the rendered note states
+    which was used."""
     runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
     with runprov.Run("r", {}, provenance=tmp_path / "p.json"):
         pass
@@ -24219,10 +24233,13 @@ def test_each_history_line_carries_the_digest_of_the_one_before_it(tmp_path):
 
 
 def test_the_chain_is_computed_inside_the_lock_and_after_the_torn_line_repair(tmp_path):
-    """ADR-0016 [ADR-0016 R-6] [ADR-0016 R-7]. Where the digest is read is the whole correctness of it.
+    """ADR-0016 [ADR-0016 R-6] [ADR-0016 R-7]. Where the digest is read is the whole correctness of
+    it.
 
-    [ADR-0016 R-6] Outside the lock, two concurrent runs chain to the same predecessor and the second
-    silently orphans the first. [ADR-0016 R-7] Before the repair, a fragment left by a killed process is
+    [ADR-0016 R-6] Outside the lock, two concurrent runs chain to the same predecessor and the
+    second
+    silently orphans the first. [ADR-0016 R-7] Before the repair, a fragment left by a killed
+    process is
     not yet the last line, so chaining past it would turn one broken link at a known place into
     a silent join — the loss would be invisible, which is the defect the repair exists to end.
     """
@@ -24235,14 +24252,17 @@ def test_the_chain_is_computed_inside_the_lock_and_after_the_torn_line_repair(tm
     lines = p.read_bytes().rstrip(b"\n").split(b"\n")
     assert len(lines) == 3, lines
     assert json.loads(lines[2])["prev"] == hashlib.sha256(lines[1]).hexdigest(), (
-        "[ADR-0016 R-7] the fragment the repair closed IS the predecessor; chaining past it would hide it"
+        "[ADR-0016 R-7] the fragment the repair closed IS the predecessor; "
+        "chaining past it would hide it"
     )
-    # [ADR-0016 R-6] the serialisation happens under the lock, so the source cannot read the file first.
+    # [ADR-0016 R-6] the serialisation happens under the lock, so the source cannot read the file
+    # first.
     source = inspect.getsource(runprov.sinks.JsonlSink.append)
     assert source.index("_exclusive") < source.index("chain.previous_digest")
     assert source.index("chain.previous_digest") < source.index("json.dumps")
 
-    # AND CONCURRENCY IS THE POINT OF [ADR-0016 R-6]: eight writers, twenty-four appends, and the chain
+    # AND CONCURRENCY IS THE POINT OF [ADR-0016 R-6]: eight writers, twenty-four appends, and the
+    # chain
     # must still be a chain. Without the lock covering the READ, two writers take the same
     # predecessor and the second silently orphans the first — a break that looks like tampering.
     busy = tmp_path / "many.jsonl"
@@ -24258,9 +24278,11 @@ def test_the_chain_is_computed_inside_the_lock_and_after_the_torn_line_repair(tm
 
 
 def test_the_chain_report_says_what_it_checked_and_which_line_moved(tmp_path, capsys):
-    """ADR-0016 [ADR-0016 R-8] [ADR-0016 R-9] [ADR-0016 R-10] [ADR-0016 R-13]. The report, and the three exit codes.
+    """ADR-0016 [ADR-0016 R-8] [ADR-0016 R-9] [ADR-0016 R-10] [ADR-0016 R-13]. The report, and the
+    three exit codes.
 
-    [ADR-0016 R-9] "intact" over a file whose chain covers three of nine hundred lines is the vacuous
+    [ADR-0016 R-9] "intact" over a file whose chain covers three of nine hundred lines is the
+    vacuous
     pass this project has fixed in five places, so the count of what was examined travels with
     the verdict. [ADR-0016 R-10] A break at line N means line N-1 is what moved — N's claim is a
     statement about its predecessor — and a reader told only "line N breaks" inspects the wrong
@@ -24282,7 +24304,8 @@ def test_the_chain_report_says_what_it_checked_and_which_line_moved(tmp_path, ca
     assert "line 3 claims its predecessor was" in out, (
         "[ADR-0016 R-10] both digests, and whose claim"
     )
-    # [ADR-0016 R-13] There is no legitimate discontinuity: nothing in this package removes a history
+    # [ADR-0016 R-13] There is no legitimate discontinuity: nothing in this package removes a
+    # history
     # line — `prune` unlinks in-flight MARKER files and its docstring says the history is what
     # it is not allowed to touch. So a break is always a finding.
     assert "prune" not in out
@@ -24294,8 +24317,10 @@ def test_the_chain_report_says_what_it_checked_and_which_line_moved(tmp_path, ca
 def test_an_unchained_or_unreadable_history_is_cannot_check_never_tampering(tmp_path, capsys):
     """ADR-0016 [ADR-0016 R-5] [ADR-0016 R-11]. Corruption and editing are different findings.
 
-    [ADR-0016 R-11] A package that reports a bad disk sector as tampering will be disbelieved the first
-    time it happens, and then disbelieved when it is right. [ADR-0016 R-5] But once a file contains a
+    [ADR-0016 R-11] A package that reports a bad disk sector as tampering will be disbelieved the
+    first
+    time it happens, and then disbelieved when it is right. [ADR-0016 R-5] But once a file contains
+    a
     chained line, a later line WITHOUT one is a break — that is what splicing an old-format
     record in would look like, and exempting it would leave the obvious forgery undetected.
     """
@@ -24357,7 +24382,8 @@ def test_the_chain_is_verifiable_with_sha256sum_and_nothing_else(tmp_path):
 
 
 def test_prev_is_a_property_of_the_file_and_reaches_nothing_else(tmp_path, monkeypatch):
-    """ADR-0016 [ADR-0016 R-14] [ADR-0016 R-15] [ADR-0016 R-16] [ADR-0016 R-17] [ADR-0016 R-18]. What the new field must NOT touch.
+    """ADR-0016 [ADR-0016 R-14] [ADR-0016 R-15] [ADR-0016 R-16] [ADR-0016 R-17] [ADR-0016 R-18].
+    What the new field must NOT touch.
 
     [ADR-0016 R-15] is the one that would have bitten: `prev` differs between any two lines by
     construction, so a `diff` that compared it would report a change on every pair ever
@@ -24377,7 +24403,8 @@ def test_prev_is_a_property_of_the_file_and_reaches_nothing_else(tmp_path, monke
 
     # [ADR-0016 R-18] the sidecar stands alone and has no predecessor
     assert "prev" not in json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
-    # [ADR-0016 R-17] the pin answers whether a result follows from its inputs; a log file's integrity
+    # [ADR-0016 R-17] the pin answers whether a result follows from its inputs; a log file's
+    # integrity
     # is not part of that question
     assert "prev" not in (tmp_path / "out.tsv").read_text(encoding="utf-8")
     # [ADR-0016 R-16] RO-Crate and PROV are provenance vocabularies; this is one file's storage
@@ -24485,7 +24512,8 @@ def test_the_chain_answers_the_awkward_shapes_without_guessing(tmp_path, monkeyp
 
 
 def test_chain_uses_the_configured_history_when_none_is_named(tmp_path, monkeypatch, capsys):
-    """ADR-0016 [ADR-0016 R-8]. `runprov chain` with no argument asks about the project's own history.
+    """ADR-0016 [ADR-0016 R-8]. `runprov chain` with no argument asks about the project's own
+    history.
 
     And with no history configured at all it is CANNOT_CHECK rather than a traceback or a
     guess at a filename — the same answer every other command gives for the same state.
