@@ -12,10 +12,15 @@ is a fix nobody checked.
 ### Added
 
 * **`runprov chain` — has the run history been edited since it was written?** (T-32, ADR-0016.)
-  Every history line now carries `prev`, the sha256 of the line before it, so an edit, a
-  deletion or a reordering breaks every link after it. Nothing detected that before: change
-  line 40 and `log`, `show`, `diff`, `impact` and `report` all repeat the new value with no
-  sign anything moved.
+  Every history line now carries `prev`, the sha256 of the line before it, so an edit — or a
+  deletion or reordering anywhere but the very end — breaks every link after it. Nothing
+  detected that before: change line 40 and `log`, `show`, `diff`, `impact` and `report` all
+  repeat the new value with no sign anything moved.
+
+  **The newest line is attested by nothing until the next run appends**, because a line cannot
+  contain its own digest, and for the same reason a truncation of the tail cannot be seen from
+  the file alone. The report says both, every time, rather than printing a coverage figure it
+  cannot support.
 
   **Tamper-evident, not tamper-proof, and the command says so.** Each digest is public, so
   whoever can edit the file can also append a forged line or rewrite from a point and re-chain.

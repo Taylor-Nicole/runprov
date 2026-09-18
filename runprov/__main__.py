@@ -1728,9 +1728,11 @@ def _chain(args: argparse.Namespace) -> int:
                     "path": hashing._posix(log),
                     "status": report.status,
                     "lines": report.lines,
-                    "links_checked": report.checked,
+                    "attested": report.attested,
                     "chained_from": report.chained_from,
-                    "unchained_before": report.unchained,
+                    "unchained": [{"line": u.line, "wrote": u.wrote} for u in report.unchained],
+                    "unattested": [u.line for u in report.unattested],
+                    "translated": report.translated,
                     "broken": [
                         {"line": b.line, "claimed": b.claimed, "computed": b.computed}
                         for b in report.broken

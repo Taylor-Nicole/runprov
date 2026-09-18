@@ -100,7 +100,7 @@ class JsonlSink:
             # a history whose bytes depend on the writer's locale is the defect `header()`
             # already learned.
             with open(self.path, "ab+") as fh:
-                with _exclusive(fh):
+                with _exclusive(fh) as holds_lock:
                     # R7. A process SIGKILLed mid-append leaves a line with no terminator --
                     # measured, 5 of 12 trials. O_APPEND then puts the NEXT write at that
                     # fragment's end, so the new record is concatenated onto it and BOTH are
@@ -127,7 +127,22 @@ class JsonlSink:
                     # not of the run: the in-memory record, the sidecar and the pin must not
                     # carry it (R-17, R-18), and a copy is how that stays true by construction
                     # rather than by everyone downstream remembering.
-                    chained = dict(record, **{chain.FIELD: chain.previous_digest(fh)})
+                    # `prev` FIRST IN THE LINE, ADR-0016 R-19, and the position is the whole
+                    # of it. It used to be written last — measured at 46 % of the way in, with
+                    # 75 bytes of digest trailing it — so a truncation destroyed the one field
+                    # whose entire purpose is to survive one. With it first, a torn line usually
+                    # still carries a verifiable claim about its predecessor: a crash costs
+                    # nothing, and an edit hidden behind a deliberate truncation is UPGRADED to
+                    # a detection, because the surviving claim disagrees with the edited line.
+                    #
+                    # NO LOCK, NO CLAIM (R-22). Under the documented unlocked fallback two
+                    # writers read the same tail and both claim it, so the chain would call a
+                    # complete and correct file tampered — measured with ENOLCK: 80/80 records
+                    # present, four false accusations. An honest absence is a coverage gap.
+                    if holds_lock:
+                        chained = {chain.FIELD: chain.previous_digest(fh), **record}
+                    else:
+                        chained = dict(record)
                     line = json.dumps(chained, default=str) + "\n"
                     fh.write(line.encode("utf-8"))
                     fh.flush()
@@ -260,7 +275,7 @@ import contextlib  # noqa: E402 - kept next to its only user for readability
 
 
 @contextlib.contextmanager
-def _exclusive(fh: typing.IO[typing.Any]) -> typing.Iterator[None]:
+def _exclusive(fh: typing.IO[typing.Any]) -> typing.Iterator[bool]:
     """Exclusive lock for the duration of the block.
 
     Two implementations, and the Windows half exists only because Windows CI FAILED: 24
@@ -311,7 +326,10 @@ def _exclusive(fh: typing.IO[typing.Any]) -> typing.Iterator[None]:
             "Concurrent writers may interleave."
         )
     try:
-        yield
+        # YIELDS WHETHER A LOCK IS ACTUALLY HELD. ADR-0016 R-22: chaining under the unlocked
+        # fallback lets two writers claim the same predecessor, so a file in which every record
+        # landed correctly gets reported as tampered. The caller has to be able to tell.
+        yield locked is not None
     finally:
         if locked == "fcntl":
             import fcntl

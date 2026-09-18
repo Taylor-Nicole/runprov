@@ -100,9 +100,10 @@ STALE   results/summary.tsv
 `OK`, `STALE`, `GONE` and `ALTERED` are the four verdicts.
 
 **`runprov chain`** asks the question one level up: **has the run history itself been edited
-since it was written?** Each line carries the digest of the one before it, so an edit, a
-deletion or a reordering breaks every link after it. Tamper-**evident**, not tamper-proof — and
-checkable with `sha256sum` and nine lines of shell, with this package uninstalled.
+since it was written?** Each line carries the digest of the one before it, so an edit — or a
+deletion or reordering anywhere but the very end — breaks every link after it, and the report
+says plainly what it could not cover. Tamper-**evident**, not tamper-proof, and checkable with
+`sha256sum` and nine lines of shell with this package uninstalled.
 
 Also available:
 `runprov log` (the run history as YAML or a table), `runprov show` (what one run did),

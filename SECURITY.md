@@ -63,6 +63,21 @@ Stated plainly, because "it is only provenance" is not an argument:
 
 ## Out of scope
 
-Provenance records you have chosen to publish; the contents of files you asked it to hash;
-and anything requiring an attacker who can already write to your project directory, since at
-that point they can edit the scripts.
+Provenance records you have chosen to publish, and the contents of files you asked it to hash.
+
+**PREVENTING an attacker who can already write to your project directory** — at that point they
+can edit the scripts, and nothing this package does stops them.
+
+That sentence used to end "…and anything requiring an attacker who can already write to your
+project directory", which — read literally, as Audit E did — put `runprov chain` out of scope on
+the day it shipped, since detecting an edited history is exactly a claim about someone who can
+write one. The distinction it was missing is between **preventing** and **DETECTING**:
+
+* `runprov chain` **detects** a history edited after it was written, and says so plainly
+  (ADR-0016). It is **tamper-evident, not tamper-proof**: whoever can write the file can also
+  append a forged line, or rewrite from a point and re-chain everything after it, because the
+  digests are public. What it catches is retroactive editing by someone who did not re-chain,
+  which is the realistic case — and it catches it with `sha256sum` alone, so the evidence does
+  not depend on this software being installed or trusted.
+* It **prevents** nothing, and a report from it is evidence to be read by a person, never a
+  guarantee that nothing happened.

@@ -1,6 +1,20 @@
 # 16. A history shows whether it has been edited
 
-**Status:** Accepted — T-32, built 2026-09-17.
+**Status:** Accepted — T-32, built 2026-09-17, **substantially amended 2026-09-18 after Audit E**.
+
+> **WHAT AUDIT E CHANGED, AND WHY IT IS AN AMENDMENT RATHER THAN A BUGFIX.** The first build
+> satisfied all eighteen requirements below, reached 100 % branch coverage, and passed 17 of 17
+> mutations derived from its own diff. Five read-only reviewers then found sixteen defects, and
+> the important ones were not implementation errors — **R-5 was unimplementable as written**,
+> and R-9, R-10 and R-11 specified behaviour that is wrong once you look at what the file can
+> actually contain. Mutation testing proves the code does what the specification says; only a
+> reader can tell you the specification is wrong.
+>
+> **The root cause of half of it was one serialisation choice nobody had questioned:** `prev`
+> was written LAST in the line — measured at 46 % of the way in, with 75 bytes of digest
+> trailing it — so **the one field whose job is to survive truncation sat where a tear destroys
+> it first.** That made two defects look like an unavoidable trade between "a torn line must
+> never accuse" and "a torn line must not conceal". It is not a trade; it is R-19 below.
 
 ## Context
 
@@ -57,9 +71,39 @@ pre-upgrade line, so the chain anchors the old content immediately rather than s
 island. This is the whole difference between a feature that protects existing histories and one
 that protects only future ones.
 
-**R-5.** Once a file contains a chained line, **every subsequent line must carry `prev`.** A
-line with no `prev` after one that has it is a break, not an exemption — it is what splicing an
-old-format line in would look like.
+**R-5.** Once a file contains a chained line, a later line with no `prev` is judged **by the
+version that wrote it**, which the record already states:
+
+* `tool.version` names a release from **before** the chain existed → a **coverage gap**, not a
+  break. The report names the version and the line count, so the finding is actionable: *"7
+  lines written by runprov 0.5.0, which cannot chain — upgrade that machine to close the gap."*
+* `tool.version` names a **chain-capable** release, or there is no `tool` block at all after the
+  chain began → a **break**. A current version that wrote no `prev` is exactly the splice this
+  requirement exists for.
+
+> **Amended 2026-09-18 after Audit E (E-02), and the original was unimplementable.** It said a
+> line with no `prev` is a break because that is "what splicing an old-format line in would look
+> like". It is also exactly what **a colleague running a supported release** looks like — 0.1.0
+> through 0.5.0 are on PyPI, none of them writes `prev`, and from the file alone the two are
+> byte-identical. Reproduced with a real 0.5.0 wheel: one ordinary run by one colleague marked
+> the history tampered **permanently**, since R-13 gives nothing the power to clear it.
+>
+> Taylor's decision (2026-09-18) was to keep it strict — *"otherwise people will never update"* —
+> and the first proposal for making that survivable was a human acknowledgement line. Taylor
+> rejected it on the right grounds: *"most people will just open it and say okay without really
+> verifying."* An acknowledgement with no evidence behind it is a button that makes red go away,
+> which is a laundering mechanism with extra steps.
+>
+> The evidence a human would have been asked for is **already in the record**. `tool.version`
+> has been written into every history line since 0.3.0 (U-01), so the verifier can attribute an
+> unchained line without asking anyone. Nobody clicks anything, the message names the machine to
+> fix, and the gap closes by itself when it is fixed.
+>
+> **The residual, stated rather than hidden:** a forger can copy a `tool` block naming an old
+> release. That is acceptable and is what tamper-evidence means — the claim is then ON the
+> record, dated and specific, and an assessor who sees a 0.5.0 line in a project that upgraded in
+> September has a question to ask. What is not acceptable is a mechanism that cannot tell the
+> difference at all, which is what shipped.
 
 **R-6.** `prev` is computed and written **inside the same exclusive lock that performs the
 append.** Reading the previous line outside the lock is a race in which two concurrent runs
@@ -82,24 +126,81 @@ or no chained line in it.
 > is in the artifact, which is the whole point of putting it there: a committed result can be
 > checked by someone who has the repository and nothing else" — and `--log` is already accepted
 > there and ignored, with a printed note explaining why. Adding `--history` would have made one
-> command's exit code answer two different questions, which is the objection ADR-0018 R-10
+> command's exit code answer two different questions, which is the objection ADR-0018 R-9
 > raises against folding the policy gate into `check`, and this package has given every distinct
 > question its own subcommand. Recorded rather than quietly changed, because a specification
 > that is edited to match the code is not a specification.
 
+
+**The verdict is decided in this order: BROKEN dominates (1); otherwise CANNOT_CHECK (2) if
+nothing is chained OR any line is unattested; otherwise INTACT (0).**
+
+> **Amended 2026-09-18 after Audit E (E-05, E-10).** The first version consulted only `broken`,
+> so a file in which ONE link of six could be checked printed `INTACT` and exited 0 — the
+> vacuous pass, delivered as a green gate, in the command built to detect exactly that. Edit
+> line 5, truncate line 6, and the accusation vanishes: the attack needs a text editor and no
+> hashing at all, which makes it **strictly easier** than the re-chaining this ADR already
+> concedes.
+>
+> `--format json` must carry the same verdict. Three mutations of that payload — forcing
+> `"status": "INTACT"`, reporting `lines` as `links_checked`, and deleting the coverage keys —
+> all survived the suite, because its only test used a clean two-line history where every field
+> equals its correct value numerically.
 **R-9.** The report states **what it checked, not only what it found**: how many lines were
 examined, from which line the chain begins, and how many predate it. "Intact" over a file whose
 chain covers three of nine hundred lines is the vacuous pass this project has fixed in five
 places.
 
+
+**The count is of ATTESTED LINES — verified hash-edges — never of comparisons performed**, and
+it can never equal the number of lines.
+
+> **Amended 2026-09-18 after Audit E (E-04, E-09).** The first version counted comparisons, which
+> is wrong by one in every history born after this feature: line 1's comparison is against the
+> `GENESIS` sentinel, which attests no bytes at all — any forger writes `"prev": "GENESIS"` for
+> free. Verified by editing each line of a six-line history in turn: lines 1 and 6 edit
+> undetected, lines 2-5 break. Six comparisons, five attested lines, and the report said six of
+> six. Printing `N of N` asserts coverage the mechanism cannot have — R-9's own sentence
+> producing the failure R-9 exists to prevent. The arithmetic could also go NEGATIVE
+> (`INTACT: -7 link(s) checked of 10 line(s)`) because it subtracted unreadable lines from
+> before the chain began.
 **R-10.** A break names **the line number and both digests** — claimed and computed — and says
 that **the line before it is the one that changed**, because that is the counter-intuitive part
 and a reader will otherwise inspect the wrong line.
 
+
+**Every clause of that sentence must be true of the break being reported**, and where one is
+not, the message says what actually happened instead.
+
+> **Amended 2026-09-18 after Audit E (E-07).** The first version formatted one sentence for every
+> break and so produced three false statements: **"LINE 0 IS WHAT CHANGED"** when the first line
+> was deleted, naming a line that does not exist; **"line 0 hashes to GENESIS"**, presenting the
+> sentinel as a digest; and **"LINE N-1 IS WHAT CHANGED"** for a line that made no claim at all,
+> where R-10's own reasoning — "N's claim is a statement about its predecessor" — does not hold
+> because there is no claim. A diagnostic that sends a reader to an untouched line costs them
+> the time and then their confidence in the answer, which is what R-10 exists to buy.
 **R-11.** An **unreadable or torn line** is reported as `CANNOT_CHECK` for that link, never as
 tampering. Corruption and editing are different findings and a package that confuses them will
 be disbelieved the first time a disk goes bad.
 
+
+**And it must not ABSOLVE either.** An unreadable line at position *i* destroys the only
+statement anything makes about line *i-1*, so line *i-1* becomes **unattested** — reported as
+such, and decisive under R-8.
+
+> **Amended 2026-09-18 after Audit E (E-05, E-06). The code violated this in BOTH directions at
+> once.** A mid-file torn line was reported `COULD NOT CHECK` *and* accused — "LINE 3 IS WHAT
+> CHANGED… the history was edited after it was written" — because the walk compared against the
+> previous line's bytes without asking whether that predecessor was readable. A bad disk sector
+> accused the user. Meanwhile an end-of-file torn line concealed an edit to its predecessor
+> entirely, reporting `INTACT` and exit 0. **The two errors cancel in the only case the test
+> suite exercised**, which is why 17 of 17 mutations passed over them.
+>
+> An earlier proposal distinguished corruption at the END of a file from corruption in the
+> MIDDLE. **That distinction does not hold**, killed by measurement rather than argument: an
+> honest crash file permits a silent edit of the fragment's predecessor. An unreadable line
+> costs exactly one thing wherever it sits. Position is not the axis — whether the unreadable
+> line's `prev` survived is, which is what R-19 and R-20 make possible.
 **R-12.** **The chain is verifiable with `sha256sum` alone**, with runprov uninstalled, and the
 ADR carries the recipe. Measured before this was written: a nine-line `sh` loop using
 `sha256sum` and `sed` detects an edit to line 3 by reporting line 4 broken.
@@ -182,3 +283,67 @@ reformat" is not a property wanted from a file whose whole claim is that its byt
 **Do nothing, and say the history is append-only.** The honest reading of today's state. It is
 what this ADR replaces, because "append-only" describes how the package writes the file and not
 how anyone else can.
+
+
+## Added after Audit E
+
+**R-19.** **`prev` is the FIRST field of the serialised line.** Not the last, which is where it
+was: measured at 46 % of the way into the line with 75 bytes of digest trailing it, so a
+truncation destroyed the field whose entire purpose is to survive one. R-2 is untouched — the
+bytes are still hashed as written — and R-12's `sed` recipe is untouched.
+
+This single change is what makes R-11's two halves compatible instead of a trade. With `prev`
+first, a torn line usually still carries an intact, verifiable claim about its predecessor: the
+crash costs nothing, and an edit hidden behind a deliberate truncation is *upgraded to a
+detection*, because the surviving `prev` disagrees with the edited line.
+
+**R-20.** When a line cannot be parsed as JSON, the reader makes **one anchored attempt** on its
+raw bytes — `^\{"prev": "(GENESIS|[0-9a-f]{64})"` — and uses the claim if it matches. Anchored
+and exact-shape, and only for lines the parser has already refused, so garbage cannot match.
+This is not a second parser: it reads one fixed prefix that R-19 guarantees the position of.
+
+**R-21.** A history whose lines end **CRLF** is reported as `CANNOT_CHECK` **naming the cause**,
+never as tampering.
+
+> Audit E (E-01). Reproduced with a real `git clone --config core.autocrlf=true` — git's Windows
+> default — on a history committed with LF: **every line from the second onward reported BROKEN**,
+> each naming a specific innocent line. `README.md` recommends tracking `provenance/` in git, and
+> this project's own `.gitattributes` protects `tests/fixtures/**` and `tests/corpus/**` and
+> nothing a user would have. The bytes genuinely did change, so `INTACT` would be false; what is
+> false is calling it tampering. The message names the cause and the fix (`-text`), which turns
+> the maximal false accusation into one actionable sentence.
+
+**R-22.** When the append could not take an exclusive lock, the line is written **with no chain
+claim at all** rather than with one that may be wrong.
+
+> Audit E (E-03). `_exclusive` documents a no-lock fallback for NFS, CIFS and containers, and
+> its own measurement records that 8 processes × 20 appends produced 160/160 intact records
+> there. Chaining under that fallback lets two writers claim the same predecessor, so the file
+> is complete and correct and the chain calls it tampered — reproduced with `ENOLCK`: 80/80
+> records present, 4 false accusations naming untouched lines. **A degraded mode that used to
+> lose nothing must not be promoted into one that manufactures a verdict.** An honest absence of
+> claim is reported under R-5 as a coverage gap.
+
+**R-23.** The report states that **the newest line is not yet attested**, and that **truncation
+of the tail cannot be detected from this file alone.**
+
+> Audit E (E-04). Line N's bytes are attested only by line N+1, so the last line is attested by
+> nothing — and after the next append the chain actively **certifies** a tail forgery rather than
+> merely failing to notice it. Both are genuinely undetectable from one file: a line cannot
+> contain its own digest, and nothing in a file says how long it used to be. A head-anchor
+> sibling file and a sidecar anchor were both examined and rejected with measurements — the
+> sidecar is written *before* its own history line, so it cannot attest the newest one and closes
+> nothing. What is fixable is the report, and this project's stated character is to say what it
+> cannot tell you rather than to guess.
+>
+> The CHANGELOG and `README-pypi.md` sentence "an edit, a **deletion** or a reordering breaks
+> every link after it" is corrected with it: for a tail deletion there are no links after it, so
+> the claim is vacuously true and reads as a detection.
+
+**R-24.** A history line that is valid JSON but **not an object** is `CANNOT_CHECK`, never an
+exception.
+
+> Audit E (E-11). `json.loads(b"[1, 2, 3]")` succeeds and has no `.get`. Every fixture for R-11
+> fed *syntactically invalid* JSON, so the half of the guard that handles "or not an object" was
+> asserted by nothing and a mutation removing it survived. `verify`'s own docstring promises it
+> never raises, and a verifier that raises is one nobody runs twice.
