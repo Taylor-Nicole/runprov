@@ -24658,17 +24658,28 @@ def test_the_chain_is_verifiable_with_sha256sum_and_nothing_else(tmp_path):
         '  claimed=$(printf \'%s\' "$line" | sed -n \'s/.*"prev": *"\\([^"]*\\)".*/\\1/p\')\n'
         '  [ "$claimed" = "$prev" ] || { echo "BREAK $n"; bad=1; }\n'
         "  prev=$(printf '%s' \"$line\" | sha256sum | cut -d' ' -f1)\n"
-        "done < " + str(p) + "\n"
+        # THE BARE FILENAME, with the script run from its directory. A Windows path
+        # (`C:\\Users\\…`) interpolated into a shell redirect has its backslashes eaten
+        # as escapes, so the loop read nothing, `bad` stayed 0, and this reported that the
+        # recipe had missed an edit it was never shown. Twelfth host-dependent test today.
+        "done < " + p.name + "\n"
         'echo "bad=$bad"\n',
         encoding="utf-8",
     )
-    clean = subprocess.run(["sh", str(recipe)], capture_output=True, text=True, check=False)
+    clean = subprocess.run(
+        ["sh", recipe.name], cwd=tmp_path, capture_output=True, text=True, check=False
+    )
     assert "bad=0" in clean.stdout, clean.stdout
 
     lines = p.read_text(encoding="utf-8").splitlines()
     lines[2] = lines[2].replace('"run_id": "r2"', '"run_id": "rX"')
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    edited = subprocess.run(["sh", str(recipe)], capture_output=True, text=True, check=False)
+    # NEWLINE="" so the platform does not translate LF to CRLF on the way out: every digest
+    # here was taken over LF bytes, and letting the rewrite change them would exercise R-21 by
+    # accident instead of the edit this case is about.
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
+    edited = subprocess.run(
+        ["sh", recipe.name], cwd=tmp_path, capture_output=True, text=True, check=False
+    )
     assert "BREAK 4" in edited.stdout, f"the shell must catch it too: {edited.stdout}"
     assert runprov.chain.verify(p).status == runprov.chain.BROKEN, "and so must the package"
 
