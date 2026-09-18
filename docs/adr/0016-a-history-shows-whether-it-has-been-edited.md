@@ -347,3 +347,125 @@ exception.
 > fed *syntactically invalid* JSON, so the half of the guard that handles "or not an object" was
 > asserted by nothing and a mutation removing it survived. `verify`'s own docstring promises it
 > never raises, and a verifier that raises is one nobody runs twice.
+
+
+---
+
+# The decision table
+
+**Added 2026-09-18, after Audit F, and before any code is written against it. This section is
+the specification of the reader; everything above it specifies the writer.**
+
+## Why this section exists
+
+Two full repair rounds produced 26 defects. They are not scattered: **15 of the 26 are in one
+half of the feature** — turning a file's partial evidence into one of three words. The other
+half (compute a digest, put it first, make no claim under no lock) has been stable since the
+second day.
+
+That half has a state space nobody holds in their head, and I tried to three times. Each time
+the mutation pass came back complete — 17 of 17, then 16 of 16 — because **mutation testing
+proves the code does what the design says, and the design was an incomplete enumeration.**
+
+## The reframing that makes it tractable
+
+The defects have one root: **I was computing a status per LINE, and a line carries two
+different facts that I kept conflating** —
+
+* is *this line's claim about its predecessor* verifiable and correct?
+* are *this line's own bytes* attested by its successor?
+
+Those are different questions with different answers, and E-05, E-06, F-01 and F-04 are all
+what happens when they share a variable.
+
+**So the unit of judgement is the EDGE, not the line.** Every adjacent pair `(n-1, n)` is one
+edge, carrying line *n*'s claim about line *n-1*. An edge has exactly one status; a line's bytes
+are attested if and only if the edge above it HOLDS; and the file's verdict is a fold over
+edges. That is the whole model, and it is small enough to enumerate.
+
+## The enumerated inputs
+
+| dimension | values |
+|---|---|
+| `claim` | `NONE` · `GENESIS` · `DIGEST` — what line *n* says, after R-20's raw-bytes recovery |
+| `predecessor` | `NONE_FIRST` · `READABLE` · `UNREADABLE` — the state of line *n-1* |
+| `agreement` | `NA` · `MATCHES` · `DIFFERS` — the claim against `digest(line n-1 AS IT SITS)` |
+| `writer` | `PRE_CHAIN` · `CAPABLE` · `UNSTATED` · `UNREADABLE` — who wrote line *n* |
+| `started` | `NO` · `YES` — had any earlier line carried a claim? |
+
+**216 combinations. 133 are structurally impossible and 83 require a written verdict** — and
+the impossibility of each of the 133 is itself asserted, because a cell assumed impossible is
+how F-07 shipped. An
+impossible cell must be *demonstrated* impossible, never assumed — assuming is what produced
+F-07, where R-5's no-`tool` arm had no fixture because every fixture happened to carry one.
+
+## The rules, in precedence order
+
+**R-25.** The edge status is decided by the FIRST rule that applies:
+
+| # | condition | edge status | why |
+|---|---|---|---|
+| 0 | `claim = GENESIS`, `predecessor ≠ NONE_FIRST` | `BROKEN` | `GENESIS` is a SENTINEL, not a digest. A line with a predecessor claiming it makes an impossible statement whatever that predecessor's state — no tear can make bytes hash to the literal string — so rule 9 must not downgrade it |
+| 1 | `predecessor = NONE_FIRST`, `claim = GENESIS` | `HOLDS_TRIVIAL` | the first line has no predecessor; it attests nothing and that is not a fault |
+| 2 | `predecessor = NONE_FIRST`, `claim = DIGEST` | `BROKEN` | it claims a predecessor and has none — lines removed from the front |
+| 3 | `predecessor = NONE_FIRST`, `claim = NONE`, `writer = UNREADABLE` | `UNCHECKABLE` | the first line is TORN. It did not "predate the chain" — we cannot read what it said |
+| 3b | `predecessor = NONE_FIRST`, `claim = NONE` | `UNCHAINED` | a file that begins before the chain existed |
+| 4 | `claim = NONE`, `started = NO` | `UNCHAINED` | R-4's pre-chain prefix; unverifiable and NOT fixable, so never decisive |
+| 5 | `claim = NONE`, `writer = PRE_CHAIN` | `GAP` | R-5. Unverifiable and FIXABLE — decisive, and the report names the version |
+| 6 | `claim = NONE`, `writer = UNREADABLE` | `UNCHECKABLE` | line *n* is torn and R-20 recovered nothing; it made no statement we can read |
+| 7 | `claim = NONE`, `writer ∈ {CAPABLE, UNSTATED}` | `BROKEN` | R-5's splice: a release that can chain wrote no claim |
+| 8 | `predecessor = UNREADABLE`, `agreement = MATCHES` | `HOLDS` | the honest crash. R-7 repairs the fragment BEFORE the successor reads it, so the claim is over the fragment as it sits — measured, it matches exactly |
+| 9 | `predecessor = UNREADABLE`, `agreement = DIFFERS` | `UNCHECKABLE` | a tear that happened AFTER the fact and an edit are indistinguishable from the file. Never `BROKEN` (R-11) and never silent (F-01) |
+| 10 | `agreement = MATCHES` | `HOLDS` | |
+| 11 | `agreement = DIFFERS` | `BROKEN` | |
+
+**R-26.** The file's verdict is the worst edge, and nothing else:
+
+    any BROKEN            -> BROKEN        exit 1
+    else any UNCHECKABLE
+         or any GAP       -> CANNOT_CHECK  exit 2
+    else                  -> INTACT        exit 0
+
+`UNCHAINED` is disclosed and never decisive — no upgrade can retroactively chain a line already
+written, and making it decisive means no project predating the feature can ever exit 0.
+
+**R-27.** `attested` is the count of edges whose status is `HOLDS`. Not `HOLDS_TRIVIAL`, which
+attests nothing. Not a subtraction from a total, which is how it came to overcount (F-04) and
+to go negative (E-09) — a count of a status cannot do either.
+
+**R-28.** **CRLF is a per-line fact, never a file-level bail-out.** A line whose terminator was
+translated has had its bytes changed, so its edge is `UNCHECKABLE` and the report names the
+cause. It does not suppress the judgement of other lines. The file-level early return is exactly
+what let one `\r` byte discard every finding and print "not tampering" (F-03).
+
+**R-29.** **The writer of a line is resolved from the RUN, not the line.** No released version
+writes a `tool` block into a `runprov.start.v1` line — half of every history — so reading the
+line alone makes every start line `UNSTATED`, which rule 7 calls a splice (F-02). Resolution
+order: the line's own `tool.version`; else the `tool.version` of the completed record sharing
+its `run_uid`; else `UNSTATED`. Any JSON shape must be tolerated — a `tool` that is a string,
+a list or `null` resolves to `UNSTATED` and never raises (F-05).
+
+> **Rules 0 and 3 were added on review, before any code.** Running the eleven rules as written
+> over all 216 combinations showed two cells with the wrong verdict: a mid-file line claiming
+> `GENESIS` behind a torn predecessor fell to rule 9 and was downgraded to `UNCHECKABLE`, which
+> an attacker can trigger by tearing one line; and a torn FIRST line was reported as
+> "predates the chain" — **F-06's wrong message, reproduced inside the table written to prevent
+> it.** Both were found by executing the table, not by reading it, which is the whole argument
+> for having one.
+
+**R-30.** **The table is TOTAL, and a test proves it.** The test enumerates all 216 input
+combinations, asserts each falls under exactly one rule of R-25, and asserts that every cell
+marked impossible cannot be constructed. A cell that is reachable must have a fixture.
+
+**R-31.** **THE ACCEPTANCE GATE: no single-byte edit may go unnoticed.** A test takes a history,
+flips **every byte** in the chained region one at a time, and asserts the verdict is never
+`INTACT`.
+
+> This is not a supplement to the table; it is the check that does not depend on my having
+> enumerated it correctly. Measured on the CURRENT code before this section was written: **623
+> byte positions in a five-line history, 0.1 seconds, and 163 of them leave the verdict
+> INTACT** — all one defect class, F-01. One assertion, no reasoning, and it finds in a tenth of
+> a second what four reviewers and sixteen mutations took a day to surface.
+>
+> It runs over several shapes: intact, containing a torn line, containing an unlocked run,
+> mixed-version, and CRLF-translated.

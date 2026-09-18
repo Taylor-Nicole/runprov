@@ -159,6 +159,63 @@ def claimed_by(line: bytes) -> str | None:
     return value if isinstance(value, str) else None
 
 
+#: ADR-0016 R-25. The status of ONE EDGE — the adjacent pair (n-1, n), carrying line n's claim
+#: about line n-1. THE EDGE IS THE UNIT OF JUDGEMENT, and that is the change Audit F forced: a
+#: line carries two different facts — whether its own claim is correct, and whether its bytes
+#: are attested by its successor — and every defect in the judgement half came from those two
+#: sharing one variable. An edge has exactly one status, a line's bytes are attested iff the
+#: edge above it HOLDS, and the file's verdict is a fold. That model is small enough to
+#: enumerate; the per-line one never was, and it was enumerated by intuition three times.
+HOLDS = "HOLDS"
+HOLDS_TRIVIAL = "HOLDS_TRIVIAL"  # the first line: nothing precedes it, so it attests nothing
+UNCHAINED = "UNCHAINED"  # predates the chain — unverifiable and NOT fixable, never decisive
+GAP = "GAP"  # a release too old to chain wrote it — unverifiable and FIXABLE, so decisive
+UNCHECKABLE = "UNCHECKABLE"  # the evidence is gone; say so rather than guess either way
+
+#: The enumerated inputs. Small, closed, and named so the table can be executed over them.
+CLAIMS = ("NONE", "GENESIS", "DIGEST")
+PREDECESSORS = ("NONE_FIRST", "READABLE", "UNREADABLE")
+AGREEMENTS = ("NA", "MATCHES", "DIFFERS")
+WRITERS = ("PRE_CHAIN", "CAPABLE", "UNSTATED", "UNREADABLE")
+
+
+def classify(claim: str, predecessor: str, agreement: str, writer: str, started: bool) -> str:
+    """ADR-0016 R-25: the status of one edge, by the FIRST rule that applies.
+
+    TOTAL over the enumerated inputs, and a test asserts that (R-30) by running all 216
+    combinations through it. Two of the rules below were added when the table was first
+    executed rather than read — rule 0, because tearing a line must not downgrade an
+    impossible `GENESIS` claim, and the split in rule 3, because a torn first line did not
+    "predate the chain". Both were wrong in the table as written, and reading it had not
+    shown that.
+    """
+    if claim == "GENESIS" and predecessor != "NONE_FIRST":
+        return BROKEN  # rule 0: a sentinel is not a digest, whatever the predecessor's state
+    if predecessor == "NONE_FIRST":
+        if claim == "GENESIS":
+            return HOLDS_TRIVIAL  # rule 1
+        if claim == "DIGEST":
+            return BROKEN  # rule 2: claims a predecessor and has none — lines removed in front
+        return UNCHECKABLE if writer == "UNREADABLE" else UNCHAINED  # rules 3, 3b
+    if claim == "NONE":
+        if not started:
+            return UNCHAINED  # rule 4: R-4's pre-chain prefix
+        if writer == "PRE_CHAIN":
+            return GAP  # rule 5: names the version; closes when that machine is upgraded
+        if writer == "UNREADABLE":
+            return UNCHECKABLE  # rule 6: torn, and R-20 recovered nothing — it said nothing
+        return BROKEN  # rule 7: a release that can chain wrote no claim — the splice
+    if predecessor == "UNREADABLE":
+        # rule 8: the honest crash. R-7 repairs the fragment BEFORE the successor reads it, so
+        # the claim is over the fragment AS IT SITS — measured, it matches exactly. The first
+        # two designs skipped this comparison on a premise that was never checked, and skipping
+        # it is what let a run be erased with a text editor under a green verdict.
+        # rule 9: and when it differs, a tear that happened AFTER the fact and an edit are
+        # indistinguishable from the file alone. Never BROKEN (R-11), never silent (F-01).
+        return HOLDS if agreement == "MATCHES" else UNCHECKABLE
+    return HOLDS if agreement == "MATCHES" else BROKEN  # rules 10, 11
+
+
 class Link(typing.NamedTuple):
     """One line's place in the chain."""
 
@@ -202,227 +259,213 @@ class Link(typing.NamedTuple):
 
 
 class Report(typing.NamedTuple):
-    """What the chain says, and what it was able to look at.
-
-    R-9. `attested` and `unattested` are not decoration: "intact" over a file whose chain covers
-    three of nine hundred lines is the vacuous pass this project has fixed in five places, and
-    the only defence is that the count of what was examined travels with the verdict.
-    """
+    """The edges, and the fold over them. ADR-0016 R-26, R-27."""
 
     lines: int
+    edges: list[Link]
     chained_from: int | None
-    #: Lines written before the chain existed, or by a release too old to write one (R-5).
-    unchained: list[Link]
-    broken: list[Link]
-    unreadable: list[Link]
-    #: Lines whose bytes NOTHING verified because their successor was unreadable and carried no
-    #: surviving claim (R-11). THE LAST LINE IS NOT IN HERE: it is unattested by construction —
-    #: nothing follows it yet — which is a standing fact about every history, disclosed by
-    #: `render` under R-23 and never a verdict. Putting it here made an untouched history report
-    #: CANNOT_CHECK, so `chain` could never return 0: the gate that cannot pass, which this
-    #: project has now built four times and caught the fifth before it shipped.
-    unattested: list[Link]
-    #: R-21. Set when the file's line endings were translated after it was written.
-    translated: bool = False
+    #: R-28. Lines whose terminator was translated after they were written.
+    translated: int = 0
 
     @property
     def status(self) -> str:
-        """R-8. BROKEN dominates; then anything unverifiable; then INTACT.
+        """R-26. The file's verdict is its worst edge, and nothing else.
 
-        The first version consulted only `broken`, so a file in which ONE link of six could be
-        checked printed INTACT and exited 0 — the vacuous pass, delivered as a green gate, by
-        the command built to detect exactly that.
+        The whole rule, in three lines. Every earlier version of this decided the verdict from
+        a hand-assembled set of conditions — `broken`, `translated`, `chained_from`,
+        `unattested`, a stale-writer check — and every one of them missed a state. A fold over
+        an enumerated status cannot.
         """
-        if self.broken:
+        kinds = {link.status for link in self.edges}
+        if BROKEN in kinds:
             return BROKEN
-        if self.translated or self.chained_from is None or self.unattested:
+        if UNCHECKABLE in kinds or GAP in kinds:
             return CANNOT_CHECK
-        # R-5, and this is where Taylor's decision (2026-09-18) has its effect. A line written
-        # after the chain began by a release too old to chain is UNVERIFIABLE AND FIXABLE: the
-        # machine can be upgraded and the gap closes. So it decides the verdict, and a gate
-        # stays non-zero until somebody does it — which is the whole reason the strict reading
-        # was chosen over tolerating mixed versions.
-        #
-        # Lines BEFORE `chained_from` are unverifiable and NOT fixable — no upgrade can chain a
-        # line that was already written — so they are disclosed and never decisive. Making them
-        # decisive would mean no project that predates the feature could ever exit 0, which is
-        # the gate that cannot pass.
-        if any(link.wrote for link in self.unchained):
-            return CANNOT_CHECK
+        if self.chained_from is None:
+            return CANNOT_CHECK  # nothing in this file is chained; there is no claim to check
         return INTACT
 
     @property
     def attested(self) -> int:
-        """Lines whose bytes a successor's claim actually proved unchanged.
+        """R-27. The number of edges that HOLD — each attests the line beneath it.
 
-        EDGES, NOT COMPARISONS, and the difference is not pedantry: line 1's comparison is
-        against the `GENESIS` sentinel, which attests no bytes — a forger writes
-        `"prev": "GENESIS"` for free. Counting it made the report claim `N of N` coverage that
-        the mechanism cannot have, and the arithmetic could go negative besides.
+        A COUNT OF A STATUS, never a subtraction from a total. The subtraction is how this came
+        to overcount lines that made no claim (F-04) and to go negative (E-09); a count of a
+        status can do neither. `HOLDS_TRIVIAL` is excluded because the first line attests
+        nothing: there is nothing beneath it.
         """
-        if self.chained_from is None:
-            return 0
-        failed = {link.line for link in self.broken} | {link.line for link in self.unreadable}
-        lost = {link.line for link in self.unattested}
-        # Line n-1 is attested when line n made a claim that was checked and held. The last
-        # line is never attested — nothing follows it — so the range stops one short of it.
-        return sum(
-            1
-            for n in range(max(self.chained_from, 2), self.lines + 1)
-            if n not in failed and (n - 1) not in lost
-        )
+        return sum(1 for link in self.edges if link.status == HOLDS)
+
+    def of(self, status: str) -> list[Link]:
+        """Every edge with this status, for the renderer and for callers."""
+        return [link for link in self.edges if link.status == status]
+
+
+def _writers(records: dict[int, dict[str, typing.Any]]) -> dict[str, str]:
+    """`{run_uid: version}` from every record that states both. ADR-0016 R-29.
+
+    THE WRITER IS A PROPERTY OF THE RUN, NOT THE LINE, and this is the miss that cost the most:
+    no released version writes a `tool` block into a `runprov.start.v1` line, which is half of
+    every history. Reading the line alone makes every start line `UNSTATED`, and rule 7 calls
+    that a splice — so one ordinary run by a colleague on a released wheel reported BROKEN.
+    Measured against the real bytes in `tests/corpus/0.5.0`.
+    """
+    found: dict[str, str] = {}
+    for record in records.values():
+        tool = record.get("tool")
+        version = tool.get("version") if isinstance(tool, dict) else None
+        uid = record.get("run_uid") or record.get("run_id")
+        if isinstance(version, str) and isinstance(uid, str):
+            found.setdefault(uid, version)
+    return found
+
+
+def _writer_of(record: dict[str, typing.Any] | None, by_run: dict[str, str]) -> str:
+    """One of `WRITERS`. Total over any JSON shape — a `tool` that is a string, a list or
+    null resolves to `UNSTATED` and never raises (F-05)."""
+    if record is None:
+        return "UNREADABLE"
+    tool = record.get("tool")
+    version = tool.get("version") if isinstance(tool, dict) else None
+    if not isinstance(version, str):
+        uid = record.get("run_uid") or record.get("run_id")
+        version = by_run.get(uid) if isinstance(uid, str) else None
+    if not isinstance(version, str):
+        return "UNSTATED"
+    parts = re.findall(r"\d+", version)[:3]
+    if not parts:
+        return "UNSTATED"
+    return "PRE_CHAIN" if tuple(int(x) for x in parts) < CHAINS_FROM else "CAPABLE"
 
 
 def verify(path: str | pathlib.Path) -> Report:
-    """Walk the chain. Never raises for a missing or unreadable file — that is `CANNOT_CHECK`."""
+    """Walk the edges. Never raises for a missing or unreadable file — that is `CANNOT_CHECK`."""
     p = pathlib.Path(path)
     try:
         raw = p.read_bytes()
     except OSError:
-        return Report(0, None, [], [], [], [])
-
-    # R-21. A git checkout with `core.autocrlf=true` — the Windows default — rewrites every line
-    # ending, so every digest taken over LF bytes disagrees with the CRLF bytes now on disk.
-    # Reproduced with a real clone: EVERY line from the second onward reported BROKEN, each
-    # naming a specific innocent line. The bytes genuinely did change, so INTACT would be false;
-    # what is false is calling it tampering. Name the cause and the fix instead.
-    if b"\r\n" in raw:
-        return Report(raw.count(b"\n"), None, [], [], [], [], translated=True)
+        return Report(0, [], None)
 
     lines = raw.split(b"\n")
     if lines and lines[-1] == b"":
         lines.pop()  # the final newline is a terminator, not an empty line
+    if not lines:
+        return Report(0, [], None)
 
-    chained_from: int | None = None
-    unchained: list[Link] = []
-    broken: list[Link] = []
-    unreadable: list[Link] = []
-    readable: set[int] = set()
+    # R-28. CRLF IS A PER-LINE FACT. A raw carriage return cannot appear inside a JSON line —
+    # JSON escapes control characters — so a trailing one is always a terminator that was
+    # translated after the line was written. Deciding this per line rather than per FILE is what
+    # stops one stray byte discarding every finding and printing "not tampering" (F-03).
+    translated = [line.endswith(b"\r") for line in lines]
 
+    records: dict[int, dict[str, typing.Any]] = {}
     for index, line in enumerate(lines, start=1):
         try:
-            record = json.loads(line)
-            readable.add(index)
+            parsed = json.loads(line)
         except ValueError:
-            # R-11, and it must not ACCUSE. A torn line is a fact about a disk, not about a
-            # person; the package that confuses them is disbelieved the first time one goes bad.
-            unreadable.append(Link(index, CANNOT_CHECK))
-            record = {}
+            continue
+        if isinstance(parsed, dict):  # R-24: valid JSON that is not an object says nothing
+            records[index] = parsed
+    by_run = _writers(records)
+
+    edges: list[Link] = []
+    chained_from: int | None = None
+    for index, line in enumerate(lines, start=1):
         claimed = claimed_by(line)
-
-        if claimed is None:
-            if chained_from is None:
-                unchained.append(Link(index, CANNOT_CHECK))  # R-3/R-4: predates the chain
-                continue
-            if index in unreadable_lines(unreadable):
-                continue  # already counted; its predecessor is handled below
-            # R-5, judged by the version that wrote it rather than by the absence alone.
-            wrote = _version_of(record) if isinstance(record, dict) else None
-            named = (record.get("tool") or {}).get("version") if isinstance(record, dict) else None
-            if wrote is not None and wrote < CHAINS_FROM:
-                unchained.append(Link(index, CANNOT_CHECK, wrote=str(named)))
-                continue
-            broken.append(Link(index, BROKEN, None, None, wrote=str(named) if named else None))
-            continue
-
-        if chained_from is None:
+        claim = "NONE" if claimed is None else ("GENESIS" if claimed == GENESIS else "DIGEST")
+        if claim != "NONE" and chained_from is None:
             chained_from = index
-        if index > 1 and (index - 1) not in readable:
-            # R-11, and this is the half that survived the first repair. A claim about a line
-            # that is ITSELF torn cannot be checked: the bytes on disk are a fragment, so the
-            # digest will differ for a reason that has nothing to do with editing. Comparing
-            # anyway is how a bad disk sector came to print "LINE 3 IS WHAT CHANGED". The link
-            # is unverifiable and the predecessor is unattested — both are said, neither accuses.
+
+        if index == 1:
+            predecessor, agreement = "NONE_FIRST", "NA"
+        elif translated[index - 2]:
+            # The predecessor's bytes were changed by the translation, so its digest cannot
+            # match and the disagreement says nothing about anyone's honesty.
+            edges.append(Link(index, UNCHECKABLE, claimed, None, wrote="translated"))
             continue
-        expected = GENESIS if index == 1 else digest_of(lines[index - 2])
-        if claimed != expected:
-            broken.append(Link(index, BROKEN, claimed, expected))
+        else:
+            predecessor = "READABLE" if (index - 1) in records else "UNREADABLE"
+            if claim == "NONE":
+                agreement = "NA"
+            else:
+                agreement = "MATCHES" if claimed == digest_of(lines[index - 2]) else "DIFFERS"
 
-    # R-11's other half, and R-23. A line is UNATTESTED when the line after it could not be read
-    # AND that fragment carried no surviving claim — `prev` is written first (R-19) precisely so
-    # that is rare. The last line is unattested by construction: nothing follows it.
-    unattested: list[Link] = []
-    if chained_from is not None:
-        for link in unreadable:
-            previous = link.line - 1
-            if previous < chained_from or previous < 1:
-                continue
-            # Line `previous` is unattested when the line after it could not vouch for it —
-            # either because that line carried no surviving claim (R-20 failed to recover one),
-            # or because `previous` is itself torn, so there are no original bytes to compare.
-            if previous not in readable:
-                # Already reported as unreadable, which is a STRONGER statement about it than
-                # "unattested". Saying both would pad the list with the same finding twice and
-                # make a shredded file look like ten problems instead of one.
-                continue
-            if claimed_by(lines[link.line - 1]) is None:
-                unattested.append(Link(previous, CANNOT_CHECK))
-    return Report(len(lines), chained_from, unchained, broken, unreadable, unattested)
-
-
-def unreadable_lines(links: list[Link]) -> set[int]:
-    """The line numbers in a list of links. Named so the walk above reads as prose."""
-    return {link.line for link in links}
+        writer = _writer_of(records.get(index), by_run)
+        status = classify(claim, predecessor, agreement, writer, chained_from is not None)
+        named = None
+        if status in (GAP, BROKEN):
+            # NAMED ON A BREAK TOO, not only on a gap. R-10 requires the message to be true of
+            # the break it found, and "written by a version it does not name" is false when the
+            # record names one — it is the difference between a reader chasing a machine and a
+            # reader chasing a ghost.
+            record = records.get(index) or {}
+            tool = record.get("tool")
+            named = tool.get("version") if isinstance(tool, dict) else None
+            named = named or by_run.get(str(record.get("run_uid") or record.get("run_id")))
+        edges.append(
+            Link(
+                index,
+                status,
+                claimed,
+                None if predecessor == "NONE_FIRST" else digest_of(lines[index - 2]),
+                wrote=named,
+            )
+        )
+    return Report(len(lines), edges, chained_from, sum(translated))
 
 
 def render(report: Report, path: pathlib.Path) -> list[str]:
-    """The report, stating what was checked and not only what was found (R-9, R-23)."""
+    """The report. R-9: states what it checked, not only what it found."""
     out = [f"# chain — {path}"]
-    if report.translated:  # R-21
-        return [
-            *out,
-            "  CANNOT CHECK: this file's line endings were translated after it was written (CRLF).",
-            "  Every digest was taken over the bytes as written, so none of them can match. This",
-            "  is a git checkout with `core.autocrlf=true`, not tampering — add a line to",
-            "  `.gitattributes` so the history is never translated:",
-            "",
-            f"      {path.name} -text",
-        ]
     if report.lines == 0:
         return [*out, "  CANNOT CHECK: no history to read."]
     if report.chained_from is None:
-        out.append(
+        return [
+            *out,
             f"  CANNOT CHECK: {report.lines} line(s), none of them chained. This history was "
-            f"written before the chain existed; the next run to append will anchor it."
-        )
-        return out
+            f"written before the chain existed; the next run to append will anchor it.",
+        ]
 
     out.append(
         f"  {report.status}: {report.attested} line(s) attested of {report.lines}, "
         f"chained from line {report.chained_from}"
     )
-    # R-5. Name the version and the count, so the finding is something a person can act on
-    # rather than a state they must accept.
-    stale = [link for link in report.unchained if link.wrote]
-    if stale:
-        by_version: dict[str, int] = {}
-        for link in stale:
-            by_version[link.wrote or "?"] = by_version.get(link.wrote or "?", 0) + 1
-        for version, count in sorted(by_version.items()):
-            out.append(
-                f"    {count} line(s) written by runprov {version}, which cannot chain — "
-                f"upgrade that machine to close the gap"
-            )
-    predate = len(report.unchained) - len(stale)
-    if predate:
-        out.append(f"    {predate} line(s) predate the chain")
-    for link in report.unreadable:
-        out.append(f"    COULD NOT CHECK  {link.detail}")
-    for link in report.broken:
+    if report.translated:
+        # R-28. Named, and scoped to the lines it actually affected — not a verdict for the file.
+        out.append(
+            f"    {report.translated} line(s) had their endings translated to CRLF after they "
+            f"were written, so their digests cannot match. This is a git checkout with "
+            f"`core.autocrlf=true`, not tampering — add `{path.name} -text` to `.gitattributes`."
+        )
+    stale: dict[str, int] = {}
+    for link in report.of(GAP):
+        stale[link.wrote or "a version it does not name"] = (
+            stale.get(link.wrote or "a version it does not name", 0) + 1
+        )
+    for version, count in sorted(stale.items()):
+        out.append(
+            f"    {count} line(s) written by runprov {version}, which cannot chain — "
+            f"upgrade that machine to close the gap"
+        )
+    if report.of(UNCHAINED):
+        out.append(f"    {len(report.of(UNCHAINED))} line(s) predate the chain")
+    for link in report.of(UNCHECKABLE):
+        if link.wrote == "translated":
+            continue  # already summarised above
+        out.append(
+            f"    COULD NOT CHECK  line {link.line}: nothing readable vouches for line "
+            f"{link.line - 1}, and a tear that happened later cannot be told from an edit"
+        )
+    for link in report.of(BROKEN):
         out.append(f"    BROKEN  {link.detail}")
 
-    # R-23, always, and not only when something is wrong: the newest line is attested by
-    # nothing, because a line cannot contain its own digest and nothing follows it yet.
+    # R-23, always: the newest line is attested by nothing, because a line cannot contain its
+    # own digest and nothing follows it yet.
     out.append(
         f"    line {report.lines} is the newest and nothing attests it yet; a later run will. "
         f"Truncation of the tail cannot be seen from this file alone."
     )
-    for link in report.unattested:
-        out.append(
-            f"    NOT ATTESTED  line {link.line}: line {link.line + 1} is unreadable and "
-            f"carried no surviving claim, so nothing vouches for these bytes"
-        )
-    if report.broken:
+    if report.of(BROKEN):
         out.append(
             "  A break means the history was edited after it was written, OR that a line was "
             "deleted or reordered. It does not say which, and it cannot say who."

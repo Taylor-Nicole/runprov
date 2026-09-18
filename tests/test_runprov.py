@@ -24356,9 +24356,10 @@ def test_a_torn_line_never_accuses_and_never_absolves(tmp_path):
     cut = raw.rfind(b"\n", 0, len(raw) - 1)
     crash.write_bytes(raw[: cut + 1] + raw[cut + 1 :][: len(raw[cut + 1 :]) // 2])
     report = runprov.chain.verify(crash)
-    assert [link.line for link in report.unreadable] == [4], "the fragment is reported"
-    assert not report.broken, "[ADR-0016 R-11] and it accuses nobody"
-    assert not report.unattested, "[ADR-0016 R-20] its surviving claim still attests line 3"
+    assert not report.of(runprov.chain.BROKEN), "[ADR-0016 R-11] it accuses nobody"
+    assert not report.of(runprov.chain.UNCHECKABLE), (
+        "[ADR-0016 R-20] the fragment kept its claim, so line 3 is still attested"
+    )
     assert _chain_exit(crash) == 0, "a crash must not cost a project its gate, for ever"
 
     # A mid-file tear: still no accusation, and the line it can no longer vouch for is named.
@@ -24366,8 +24367,13 @@ def test_a_torn_line_never_accuses_and_never_absolves(tmp_path):
     lines = _chain_history(mid, 5)
     mid.write_bytes(b"\n".join([*lines[:2], lines[2][:20], *lines[3:]]) + b"\n")
     report = runprov.chain.verify(mid)
-    assert not report.broken, "[ADR-0016 R-11] a torn line is a fact about a disk, not a person"
-    assert [link.line for link in report.unattested] == [2], "and line 2 lost its only witness"
+    assert not report.of(runprov.chain.BROKEN), (
+        "[ADR-0016 R-11] a torn line is a fact about a disk, not about a person"
+    )
+    # BOTH edges around a torn line: the one it makes (its claim is unreadable) and the one
+    # above it (its bytes cannot be compared). My first expectation here was [3] — a torn
+    # line costs TWO edges, not one, and the model says so where intuition did not.
+    assert [e.line for e in report.of(runprov.chain.UNCHECKABLE)] == [3, 4]
     assert _chain_exit(mid) == 2, "unverifiable is not intact"
 
     # The concealment attempt: edit a line, truncate the line that would have accused it.
@@ -24408,7 +24414,7 @@ def test_the_verdict_is_broken_then_unverifiable_then_intact(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "CANNOT_CHECK"
     assert payload["attested"] == 0 and payload["lines"] == 6
-    assert payload["unattested"] == [1]
+    assert [e["line"] for e in payload["edges"] if e["status"] == "UNCHECKABLE"] == [2, 3, 4, 5, 6]
 
 
 def test_a_break_says_only_what_is_true_of_the_break_it_found(tmp_path):
@@ -24426,19 +24432,19 @@ def test_a_break_says_only_what_is_true_of_the_break_it_found(tmp_path):
     edited.write_bytes(
         b"\n".join([*lines[:1], lines[1].replace(b'"ok"', b'"NO"'), *lines[2:]]) + b"\n"
     )
-    detail = runprov.chain.verify(edited).broken[0].detail
+    detail = runprov.chain.verify(edited).of(runprov.chain.BROKEN)[0].detail
     assert "LINE 2 IS WHAT CHANGED" in detail and "line 3 claims" in detail
 
     beheaded = tmp_path / "beheaded.jsonl"
     beheaded.write_bytes(b"\n".join(lines[1:]) + b"\n")
-    detail = runprov.chain.verify(beheaded).broken[0].detail
+    detail = runprov.chain.verify(beheaded).of(runprov.chain.BROKEN)[0].detail
     assert "LINE 0" not in detail and "GENESIS" not in detail, detail
     assert "removed from the front" in detail, detail
 
     spliced = tmp_path / "spliced.jsonl"
     forged = json.dumps({"run_id": "x", "tool": {"version": "0.6.0"}}).encode()
     spliced.write_bytes(b"\n".join([*lines, forged]) + b"\n")
-    detail = runprov.chain.verify(spliced).broken[0].detail
+    detail = runprov.chain.verify(spliced).of(runprov.chain.BROKEN)[0].detail
     assert "IS WHAT CHANGED" not in detail, "no claim was made, so no predecessor is accused"
     assert "carries no chain claim" in detail and "0.6.0" in detail
 
@@ -24467,8 +24473,8 @@ def test_an_unchained_line_is_judged_by_the_version_that_wrote_it(tmp_path, caps
             + b"\n"
         )
     report = runprov.chain.verify(old)
-    assert not report.broken, "a supported release is not a forger"
-    assert [link.wrote for link in report.unchained] == ["0.5.0"]
+    assert not report.of(runprov.chain.BROKEN), "a supported release is not a forger"
+    assert [e.wrote for e in report.of(runprov.chain.GAP)] == ["0.5.0"]
     assert runprov.__main__.main(["chain", str(old)]) == 2, (
         "but it IS unverifiable, and it is FIXABLE — which is what gives the strict reading teeth"
     )
@@ -24510,7 +24516,9 @@ def test_a_translated_checkout_is_named_rather_than_called_tampering(tmp_path, c
     p.write_bytes(p.read_bytes().replace(b"\n", b"\r\n"))
 
     report = runprov.chain.verify(p)
-    assert report.translated and not report.broken, "nobody edited this file"
+    assert report.translated == 4 and not report.of(runprov.chain.BROKEN), (
+        "nobody edited this file, and the count is per LINE rather than a verdict"
+    )
     assert runprov.__main__.main(["chain", str(p)]) == 2
     out = capsys.readouterr().out
     assert "translated" in out and "-text" in out, out
@@ -24553,7 +24561,7 @@ def test_the_report_counts_attested_lines_and_says_the_newest_is_not_one(tmp_pat
     # which is a PRE-CHAIN line. That is [ADR-0016 R-4] anchoring doing its work, and it is why
     # one run is enough to make editing the last pre-chain line detectable.
     assert (got.lines, got.attested) == (7, 2), (got.lines, got.attested)
-    assert got.chained_from == 6 and len(got.unchained) == 5
+    assert got.chained_from == 6 and len(got.of(runprov.chain.UNCHAINED)) == 5
 
 
 def test_a_line_that_is_json_but_not_an_object_cannot_raise(tmp_path):
@@ -24573,7 +24581,7 @@ def test_a_line_that_is_json_but_not_an_object_cannot_raise(tmp_path):
     p.write_bytes(b"[1, 2, 3]\n")
     runprov.JsonlSink(p).append({"schema": "runprov.history.v2", "run_id": "after"})
     report = runprov.chain.verify(p)  # must not raise
-    assert report.lines == 2 and not report.broken
+    assert report.lines == 2 and not report.of(runprov.chain.BROKEN)
 
 
 def test_the_chain_survives_the_shapes_a_real_history_file_reaches(tmp_path, monkeypatch, capsys):
@@ -24625,8 +24633,9 @@ def test_the_chain_survives_the_shapes_a_real_history_file_reaches(tmp_path, mon
     lines = _chain_history(doubled, 5)
     doubled.write_bytes(b"\n".join([*lines[:2], lines[2][:15], lines[3][:15], lines[4]]) + b"\n")
     report = runprov.chain.verify(doubled)
-    assert [link.line for link in report.unreadable] == [3, 4]
-    assert [link.line for link in report.unattested] == [2], "line 3 is unreadable, not unattested"
+    assert [e.line for e in report.of(runprov.chain.UNCHECKABLE)] == [3, 4, 5], (
+        "two adjacent torn lines cost three edges: the two they make and the one above them"
+    )
 
     # A torn line BEFORE the chain begins has no attested predecessor to lose — there is no
     # line 0, and nothing before `chained_from` was ever attested by anything. The walk must
@@ -24635,8 +24644,9 @@ def test_the_chain_survives_the_shapes_a_real_history_file_reaches(tmp_path, mon
     headless.write_bytes(b"{ torn from an older crash\n")
     runprov.JsonlSink(headless).append({"schema": "runprov.history.v2", "run_id": "after"})
     report = runprov.chain.verify(headless)
-    assert [link.line for link in report.unreadable] == [1]
-    assert report.unattested == [], "there is no line 0 to be unattested"
+    assert report.edges[0].status == runprov.chain.UNCHECKABLE, (
+        "a torn FIRST line did not predate the chain — we cannot read what it said"
+    )
     assert report.chained_from == 2
 
 
@@ -24767,6 +24777,365 @@ def test_prev_is_a_property_of_the_file_and_reaches_nothing_else(tmp_path, monke
     assert not any(d.differences for d in runprov.diff.compare(done, dict(done, prev="f" * 64))), (
         "a field that differs by construction must never decide a gate"
     )
+
+
+CHAIN_CELLS = list(
+    itertools.product(
+        runprov.chain.CLAIMS,
+        runprov.chain.PREDECESSORS,
+        runprov.chain.AGREEMENTS,
+        runprov.chain.WRITERS,
+        (False, True),
+    )
+)
+
+
+def test_the_decision_table_is_total_over_its_own_inputs():
+    """ADR-0016 [ADR-0016 R-25] [ADR-0016 R-30]. The table, executed rather than read.
+
+    Fifteen of the twenty-six defects in this feature were in one half of it — turning a file's
+    partial evidence into one of three words — and that half has 216 input combinations folded
+    over a file. I enumerated them by intuition three times, and three times a mutation pass
+    came back complete because mutation testing proves the code does what the DESIGN says.
+
+    So the inputs are a closed set and the classifier is total over it. Running the table is
+    also what found two wrong cells BEFORE any code existed: a torn predecessor downgrading an
+    impossible `GENESIS` claim, and a torn first line reported as "predates the chain" — the
+    second being a defect from the previous round, reproduced inside the table written to
+    prevent it. Reading the table had not shown either.
+    """
+    statuses = {runprov.chain.classify(*cell) for cell in CHAIN_CELLS}
+    assert None not in statuses, "the table must decide every combination of its own inputs"
+    assert statuses <= {
+        runprov.chain.HOLDS,
+        runprov.chain.HOLDS_TRIVIAL,
+        runprov.chain.UNCHAINED,
+        runprov.chain.GAP,
+        runprov.chain.UNCHECKABLE,
+        runprov.chain.BROKEN,
+    }, statuses
+    assert len(CHAIN_CELLS) == 216, "the input space moved; the table must move with it"
+
+    # THE CELLS THAT DECIDE THE FEATURE, asserted individually rather than left to the sweep.
+    # Each is a defect this project actually shipped.
+    assert runprov.chain.classify("GENESIS", "READABLE", "DIFFERS", "CAPABLE", True) == (
+        runprov.chain.BROKEN
+    ), "rule 0: a sentinel is not a digest"
+    assert runprov.chain.classify("GENESIS", "UNREADABLE", "DIFFERS", "CAPABLE", True) == (
+        runprov.chain.BROKEN
+    ), "rule 0 again: tearing a line must not downgrade an impossible claim"
+    assert runprov.chain.classify("NONE", "NONE_FIRST", "NA", "UNREADABLE", False) == (
+        runprov.chain.UNCHECKABLE
+    ), "a torn first line did not 'predate the chain'"
+    assert runprov.chain.classify("DIGEST", "UNREADABLE", "MATCHES", "CAPABLE", True) == (
+        runprov.chain.HOLDS
+    ), "the honest crash: the claim is over the fragment as it sits, and it matches"
+    assert runprov.chain.classify("DIGEST", "UNREADABLE", "DIFFERS", "CAPABLE", True) == (
+        runprov.chain.UNCHECKABLE
+    ), "a later tear and an edit are indistinguishable — never BROKEN, never silent"
+    assert runprov.chain.classify("NONE", "READABLE", "NA", "PRE_CHAIN", True) == (
+        runprov.chain.GAP
+    ), "unverifiable AND fixable"
+    assert runprov.chain.classify("NONE", "READABLE", "NA", "CAPABLE", True) == (
+        runprov.chain.BROKEN
+    ), "a release that can chain wrote no claim: the splice"
+    assert runprov.chain.classify("NONE", "READABLE", "NA", "CAPABLE", False) == (
+        runprov.chain.UNCHAINED
+    ), "before the chain started, the same shape is history rather than a finding"
+
+
+def test_the_verdict_is_the_worst_edge_and_nothing_else(tmp_path):
+    """ADR-0016 [ADR-0016 R-26] [ADR-0016 R-27]. The fold, and the count.
+
+    Every earlier version assembled the verdict from a hand-picked set of conditions — broken,
+    translated, nothing-chained, unattested, stale-writer — and every one of them missed a
+    state. A fold over a closed status type cannot. And `attested` counts a status rather than
+    subtracting from a total, which is how it came to overcount lines that made no claim and to
+    go negative.
+    """
+    p = tmp_path / "h.jsonl"
+    _chain_history(p, 5)
+    report = runprov.chain.verify(p)
+    assert report.status == runprov.chain.INTACT
+    assert report.attested == 4, "five lines, four edges that hold; the first attests nothing"
+    assert report.attested == len(report.of(runprov.chain.HOLDS))
+    assert report.attested >= 0 and report.attested < report.lines
+
+    # BROKEN dominates everything, including a gap and an uncheckable edge in the same file.
+    # THE TWO MUST LAND IN DIFFERENT PLACES, and the first version of this fixture did not:
+    # editing line 3 and tearing line 4 produces no BROKEN at all, because the torn line 4 is
+    # the only thing that could have accused line 3, and a torn line never accuses. That is the
+    # model working — and it is why the edit goes at line 2, whose accuser (line 3) is intact.
+    mixed = tmp_path / "mixed.jsonl"
+    lines = _chain_history(mixed, 6)
+    edited = lines[1].replace(b'"status": "ok"', b'"status": "NO"')
+    mixed.write_bytes(b"\n".join([lines[0], edited, *lines[2:4], lines[4][:20], lines[5]]) + b"\n")
+    worst = runprov.chain.verify(mixed)
+    assert worst.of(runprov.chain.BROKEN) and worst.of(runprov.chain.UNCHECKABLE)
+    assert worst.status == runprov.chain.BROKEN, "the worst edge decides, not the most common"
+
+
+def test_crlf_is_a_per_line_fact_and_cannot_suppress_a_finding(tmp_path):
+    """ADR-0016 [ADR-0016 R-28]. Audit F, F-03.
+
+    The previous version tested for `\r\n` ANYWHERE in the file and returned before walking a
+    single line, then printed "not tampering" as a statement of fact. Two bytes — one line
+    re-terminated — discarded every break in the file and replaced it with an affirmative
+    denial. Deciding it per line makes that impossible by construction.
+    """
+    p = tmp_path / "h.jsonl"
+    lines = _chain_history(p, 5)
+    forged = lines[2].replace(b'"status": "ok"', b'"status": "FORGED"')
+    body = b"\n".join([*lines[:2], forged, *lines[3:]])
+    cut = body.index(b"\n")
+    p.write_bytes(body[:cut] + b"\r\n" + body[cut + 1 :] + b"\n")
+
+    report = runprov.chain.verify(p)
+    assert report.translated == 1, "one line, not the file"
+    assert report.of(runprov.chain.BROKEN), "the forgery survives the CRLF byte"
+    assert report.status == runprov.chain.BROKEN
+
+    # And a wholly translated checkout is named, not accused.
+    clean = tmp_path / "clean.jsonl"
+    _chain_history(clean, 4)
+    clean.write_bytes(clean.read_bytes().replace(b"\n", b"\r\n"))
+    whole = runprov.chain.verify(clean)
+    assert whole.translated == 4 and not whole.of(runprov.chain.BROKEN)
+    assert "not tampering" in "\n".join(runprov.chain.render(whole, clean))
+
+
+def test_the_writer_of_a_line_is_resolved_from_the_run(tmp_path, capsys):
+    """ADR-0016 [ADR-0016 R-29]. Audit F, F-02 — the miss that cost the most.
+
+    NO RELEASED VERSION writes a `tool` block into a `runprov.start.v1` line, and those are half
+    of every history. Reading the line alone makes every one of them `UNSTATED`, which rule 7
+    calls a splice — so one ordinary run by a colleague on a released wheel reported BROKEN over
+    a file nobody touched. Verified against the real bytes in `tests/corpus/0.5.0`.
+    """
+    p = tmp_path / "h.jsonl"
+    _chain_history(p, 2)
+    real = [
+        line
+        for line in (_repo_root() / "tests/corpus/0.5.0/tree/prov/history.jsonl")
+        .read_bytes()
+        .split(b"\n")
+        if line.strip()
+    ][:2]
+    assert b'"schema": "runprov.start.v1"' in real[0], "the fixture must be a real start line"
+    assert b'"tool"' not in real[0], "and real start lines carry no tool block — the whole point"
+    with p.open("ab") as fh:
+        fh.write(b"\n".join(real) + b"\n")
+
+    report = runprov.chain.verify(p)
+    assert not report.of(runprov.chain.BROKEN), "a real released run is not a forgery"
+    assert len(report.of(runprov.chain.GAP)) == 2, "both of its lines are gaps, named by version"
+    assert {e.wrote for e in report.of(runprov.chain.GAP)} == {"0.5.0"}
+    assert runprov.__main__.main(["chain", str(p)]) == 2
+    assert "written by runprov 0.5.0" in capsys.readouterr().out
+
+    # A VERSION STRING THIS PACKAGE CANNOT PARSE. `tool.version` is written by whoever built
+    # the wheel, and a distribution that stamps "nightly" or a git describe is not a forger —
+    # it is a writer we cannot place, which rule 7 calls a splice under Taylor's strict reading.
+    # Asserted so the strictness is a decision on the page rather than an accident of parsing.
+    unparseable = tmp_path / "nightly.jsonl"
+    _chain_history(unparseable, 2)
+    with unparseable.open("ab") as fh:
+        fh.write(
+            json.dumps(
+                {"schema": "runprov.history.v2", "run_id": "n", "tool": {"version": "nightly"}}
+            ).encode()
+            + b"\n"
+        )
+    assert runprov.chain._writer_of({"tool": {"version": "nightly"}}, {}) == "UNSTATED"
+    assert runprov.chain.verify(unparseable).status == runprov.chain.BROKEN
+
+    # An unreadable file, a missing one, and an EMPTY one: CANNOT_CHECK, never an exception
+    # (R-24's rule one level up — `verify`'s docstring promises it never raises). The empty file
+    # is its own branch: `b"".split(b"\n")` is `[b""]`, one empty line that the terminator rule
+    # then pops, leaving nothing to walk.
+    assert runprov.chain.verify(tmp_path / "absent.jsonl").status == runprov.chain.CANNOT_CHECK
+    empty = tmp_path / "empty.jsonl"
+    empty.write_bytes(b"")
+    assert runprov.chain.verify(empty).lines == 0
+    assert runprov.chain.verify(empty).status == runprov.chain.CANNOT_CHECK
+
+    # `Link.detail` for a status that is not BROKEN — the renderer asks every edge.
+    assert "HOLDS" in runprov.chain.Link(3, runprov.chain.HOLDS).detail
+
+    # Any JSON shape resolves, and nothing raises (F-05).
+    for shape in ("0.5.0", ["0.5.0"], None, 12345):
+        odd = tmp_path / f"odd{abs(hash(str(shape)))}.jsonl"
+        _chain_history(odd, 2)
+        with odd.open("ab") as fh:
+            fh.write(json.dumps({"schema": "runprov.history.v2", "tool": shape}).encode() + b"\n")
+        assert runprov.chain.verify(odd).status in (
+            runprov.chain.BROKEN,
+            runprov.chain.CANNOT_CHECK,
+        ), shape
+
+
+@pytest.mark.parametrize("shape", ["intact", "torn", "mixed-version", "pre-chain"])
+def test_no_single_byte_edit_escapes_the_chain(shape, tmp_path):
+    """ADR-0016 [ADR-0016 R-31]. THE ACCEPTANCE GATE, and the only claim here that does not
+    depend on my having enumerated the cases correctly.
+
+    Flip every byte in the chained region, one at a time, and require that the verdict is never
+    INTACT. It reasons about nothing. Measured against the code as it stood before the decision
+    table: **623 positions in a five-line history, 0.1 seconds, 163 of them left the verdict
+    INTACT** — all one defect class, which four reviewers and sixteen mutations had taken a day
+    to surface.
+
+    The last line is excluded because nothing attests it: a line cannot contain its own digest,
+    and R-23 states that limit on every report rather than hiding it.
+    """
+    p = tmp_path / "h.jsonl"
+    _chain_history(p, 4)
+    if shape == "torn":
+        raw = p.read_bytes()
+        cut = raw.rfind(b"\n", 0, len(raw) - 1)
+        p.write_bytes(raw[: cut + 1] + raw[cut + 1 :][: len(raw[cut + 1 :]) // 2])
+        runprov.JsonlSink(p).append({"schema": "runprov.history.v2", "run_id": "after"})
+    elif shape == "mixed-version":
+        with p.open("ab") as fh:
+            fh.write(
+                json.dumps(
+                    {"schema": "runprov.history.v2", "run_id": "o", "tool": {"version": "0.5.0"}}
+                ).encode()
+                + b"\n"
+            )
+    elif shape == "pre-chain":
+        p.write_bytes(b'{"schema": "runprov.history.v2", "run_id": "old"}\n' * 3 + p.read_bytes())
+
+    original = p.read_bytes()
+    last = original.rfind(b"\n", 0, len(original) - 1) + 1
+    escaped = []
+    for position in range(last):
+        if original[position : position + 1] == b"\n":
+            continue
+        mutated = bytearray(original)
+        mutated[position] = ord("X") if mutated[position] != ord("X") else ord("Y")
+        p.write_bytes(bytes(mutated))
+        if runprov.chain.verify(p).status == runprov.chain.INTACT:
+            escaped.append(position)
+    p.write_bytes(original)
+    assert not escaped, (
+        f"{len(escaped)} of {last} byte positions can be changed with the verdict still INTACT; "
+        f"first at byte {escaped[0] if escaped else None}"
+    )
+
+
+def test_the_chain_reads_the_tail_and_not_the_whole_history(tmp_path):
+    """The cost of an append must not grow with the file. Restored after Audit F, F-10.
+
+    THIS TEST HAS BEEN DELETED ONCE, by the hand that wrote it, one day after writing it — in a
+    wholesale rewrite of the block it lived in. Its own docstring had said why it exists, and
+    the rewrite took it anyway, so the mutation it guards went unguarded until a reviewer
+    diffed the old assertions against the new.
+
+    It asserts the COST, not the answer, and that is the point: replacing the chunked backwards
+    read with a single whole-file read gives the SAME digest, so no assertion about correctness
+    can distinguish them. When a mutation is equivalent, the property worth protecting is not
+    the one under test — here it is the read volume, so the read volume is counted.
+    """
+
+    class Counting:
+        def __init__(self, fh):
+            self._fh, self.total = fh, 0
+
+        def seek(self, *a):
+            return self._fh.seek(*a)
+
+        def tell(self):
+            return self._fh.tell()
+
+        def read(self, n):
+            data = self._fh.read(n)
+            self.total += len(data)
+            return data
+
+    p = tmp_path / "long.jsonl"
+    sink = runprov.JsonlSink(p)
+    for i in range(400):
+        sink.append({"schema": "runprov.history.v2", "run_id": f"r{i}", "pad": "x" * 200})
+    size = p.stat().st_size
+    assert size > runprov.chain._TAIL_BLOCK * 10, "the fixture must dwarf a single block"
+
+    with p.open("rb") as fh:
+        counter = Counting(fh)
+        runprov.chain.previous_digest(counter)  # type: ignore[arg-type]
+    assert counter.total <= runprov.chain._TAIL_BLOCK * 2, (
+        f"read {counter.total} bytes of a {size}-byte history to find its last line; an append "
+        f"that reads the whole file is O(n) per run and O(n^2) over a project"
+    )
+
+
+def test_the_chain_does_not_reach_the_record_the_caller_still_holds(tmp_path):
+    """ADR-0016 R-17, R-18 at the seam rather than at the outputs. Restored after F-10.
+
+    The sink copies the record before adding `prev`. Mutating the caller's dict instead works
+    today — the sidecar happens to be written first — and would start leaking the field into
+    sidecars and pins the moment that order changed. R-17/R-18's own test checks the OUTPUTS,
+    which is the ordering accident this one exists not to rely on.
+    """
+    p = tmp_path / "h.jsonl"
+    record = {"schema": "runprov.history.v2", "run_id": "r0"}
+    before = dict(record)
+    runprov.JsonlSink(p).append(record)
+
+    assert record == before, f"append() mutated its caller's record: {record}"
+    assert "prev" in json.loads(p.read_text(encoding="utf-8")), "and the file still got it"
+
+
+def test_chain_uses_the_configured_history_when_none_is_named(tmp_path, monkeypatch, capsys):
+    """ADR-0016 [ADR-0016 R-8]. `runprov chain` with no argument. Restored after F-10.
+
+    THE PRIMARY INVOCATION HAD NO TEST. Its test was deleted in the rewrite, and a mutation
+    making bare `runprov chain` fail in every configured project survived the whole suite —
+    the command's normal use, dead, and green. The only surviving assertion was the
+    no-history-configured case, which is the unusual one.
+    """
+    monkeypatch.chdir(tmp_path)
+    _chain_history(tmp_path / "h.jsonl", 3)
+    runprov.configure(root=".", run_log="h.jsonl")
+
+    assert runprov.__main__.main(["chain"]) == 0, "no argument means the project's own history"
+    assert "INTACT" in capsys.readouterr().out
+
+    assert runprov.__main__.main(["chain", "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == "runprov.chain.v1", "the shape is versioned, per ADR-0017"
+    assert payload["attested"] == 2 and payload["lines"] == 3
+    assert "\\" not in payload["path"], "POSIX-spelled, so a Windows record reads the same"
+
+    runprov.configure(root=".", run_log=None)
+    assert runprov.__main__.main(["chain"]) == 2
+    assert "no history configured" in capsys.readouterr().err
+
+
+def test_a_break_names_the_digest_a_reader_can_check_it_against(tmp_path, capsys):
+    """ADR-0016 [ADR-0016 R-10], the clause nothing asserted. Audit F, F-09.
+
+    R-10's first requirement is that a break names BOTH digests — claimed and computed. The
+    test that cited R-10 asserted two OTHER clauses of the sentence, so printing the claimed
+    digest where the computed one belongs survived the suite: a self-contradictory message
+    asserting the two are equal while reporting them unequal, and no value for the reader to
+    run `sha256sum` against. That is the exact failure R-10 exists to buy off.
+    """
+    p = tmp_path / "h.jsonl"
+    lines = _chain_history(p, 4)
+    edited = lines[1].replace(b'"status": "ok"', b'"status": "NO"')
+    p.write_bytes(b"\n".join([lines[0], edited, *lines[2:]]) + b"\n")
+
+    broken = runprov.chain.verify(p).of(runprov.chain.BROKEN)[0]
+    truth = hashlib.sha256(edited).hexdigest()
+    assert broken.computed == truth, "the computed digest must be the real one, not a copy"
+    assert broken.claimed != broken.computed, "they differ; that is why this is a break"
+    assert broken.computed in broken.detail and broken.claimed in broken.detail
+
+    assert runprov.__main__.main(["chain", str(p), "--format", "json"]) == 1
+    edges = json.loads(capsys.readouterr().out)["edges"]
+    edge = next(e for e in edges if e["status"] == "BROKEN")
+    assert edge["computed"] == truth and edge["claimed"] != truth
 
 
 def test_every_chain_requirement_has_a_test():

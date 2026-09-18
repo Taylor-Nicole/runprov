@@ -1730,14 +1730,21 @@ def _chain(args: argparse.Namespace) -> int:
                     "lines": report.lines,
                     "attested": report.attested,
                     "chained_from": report.chained_from,
-                    "unchained": [{"line": u.line, "wrote": u.wrote} for u in report.unchained],
-                    "unattested": [u.line for u in report.unattested],
                     "translated": report.translated,
-                    "broken": [
-                        {"line": b.line, "claimed": b.claimed, "computed": b.computed}
-                        for b in report.broken
+                    # EVERY EDGE, with its status and both digests. The payload used to carry
+                    # hand-picked buckets, and three mutations of it survived the suite because
+                    # its only test used a clean file where every field equalled its correct
+                    # value. One list of a closed status type cannot drift from the text.
+                    "edges": [
+                        {
+                            "line": e.line,
+                            "status": e.status,
+                            "claimed": e.claimed,
+                            "computed": e.computed,
+                            "wrote": e.wrote,
+                        }
+                        for e in report.edges
                     ],
-                    "unreadable": [b.line for b in report.unreadable],
                 },
                 indent=2,
             )
