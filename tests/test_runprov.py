@@ -24305,14 +24305,20 @@ def test_no_lock_means_no_chain_claim_rather_than_a_false_accusation(tmp_path, m
     record landed correctly gets reported as tampered — reproduced with ENOLCK: 80/80 records
     present, four accusations naming untouched lines.
     """
+    # BOTH MECHANISMS, because `_exclusive` uses `fcntl` on POSIX and `msvcrt` on Windows.
+    # Blocking only `fcntl` left Windows fully locked, so this asserted the UNLOCKED behaviour
+    # of a LOCKED append and failed on that leg alone — the eleventh test of this session to
+    # lean on what the host supplies. Name what the CODE depends on, not what this machine has.
+    # `test_no_locking_available_says_so` already had it right, four thousand lines up.
     real = __import__
-    monkeypatch.setattr(
-        builtins,
-        "__import__",
-        lambda name, *a, **k: (
-            (_ for _ in ()).throw(ImportError(name)) if name == "fcntl" else real(name, *a, **k)
-        ),
-    )
+    mechanisms = ("fcntl", "msvcrt")
+
+    def without_locking(name, *a, **k):
+        if name in mechanisms:
+            raise ImportError(name)
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", without_locking)
     p = tmp_path / "h.jsonl"
     for i in range(4):
         runprov.JsonlSink(p).append({"schema": "runprov.history.v2", "run_id": f"r{i}"})
