@@ -321,8 +321,16 @@ claim at all** rather than with one that may be wrong.
 > there. Chaining under that fallback lets two writers claim the same predecessor, so the file
 > is complete and correct and the chain calls it tampered — reproduced with `ENOLCK`: 80/80
 > records present, 4 false accusations naming untouched lines. **A degraded mode that used to
-> lose nothing must not be promoted into one that manufactures a verdict.** An honest absence of
-> claim is reported under R-5 as a coverage gap.
+> lose nothing must not be promoted into one that manufactures a verdict.**
+>
+> **AMENDED after Audit G (G-01).** This clause used to end *"an honest absence of claim is
+> reported under R-5 as a coverage gap"*, and that was false — and **unreachable by
+> construction**. R-5 fires only on `writer = PRE_CHAIN`, which means a version below
+> `CHAINS_FROM`; the release that writes the unlocked line is at or above it, so it resolves
+> `CAPABLE` and rule 7 called it a splice. Measured: three ordinary locked appends followed by
+> three unlocked ones gave **BROKEN, three untouched lines accused**, every record present and
+> every byte as written. The honest absence is now reported under rule 7 as `UNCLAIMED` — see
+> R-25, and R-32 for why that is not an accusation.
 
 **R-23.** The report states that **the newest line is not yet attested**, and that **truncation
 of the tail cannot be detected from this file alone.**
@@ -393,8 +401,18 @@ edges. That is the whole model, and it is small enough to enumerate.
 | `writer` | `PRE_CHAIN` · `CAPABLE` · `UNSTATED` · `UNREADABLE` — who wrote line *n* |
 | `started` | `NO` · `YES` — had any earlier line carried a claim? |
 
-**216 combinations. 133 are structurally impossible and 83 require a written verdict** — and
-the impossibility of each of the 133 is itself asserted, because a cell assumed impossible is
+**216 combinations, of which only some are reachable** — and the reachable set is COMPUTED by
+the test from `verify`'s own construction, never written down here.
+
+> **CORRECTED after Audit G (G-14).** This paragraph used to read *"133 are structurally
+> impossible and 83 require a written verdict"* and claimed the impossibility of each was
+> asserted. **Nothing asserted it, and the number was wrong by 31.** Derived three independent
+> ways that agree exactly — an instrumented `classify` driven by `verify`, an analytic
+> derivation from the walk's constraints, and a third re-derivation during adjudication — the
+> true split is **52 reachable / 164 impossible**. A repairer implementing R-30 against the old
+> number would have edited the code until 83 cells were reachable. The lesson is not a better
+> number: **52 is a property of the WALK, not of the table**, and it moves whenever
+> `chained_from` does, so it must be computed where it is used. A cell assumed impossible is
 how F-07 shipped. An
 impossible cell must be *demonstrated* impossible, never assumed — assuming is what produced
 F-07, where R-5's no-`tool` arm had no fixture because every fixture happened to carry one.
@@ -413,7 +431,7 @@ F-07, where R-5's no-`tool` arm had no fixture because every fixture happened to
 | 4 | `claim = NONE`, `started = NO` | `UNCHAINED` | R-4's pre-chain prefix; unverifiable and NOT fixable, so never decisive |
 | 5 | `claim = NONE`, `writer = PRE_CHAIN` | `GAP` | R-5. Unverifiable and FIXABLE — decisive, and the report names the version |
 | 6 | `claim = NONE`, `writer = UNREADABLE` | `UNCHECKABLE` | line *n* is torn and R-20 recovered nothing; it made no statement we can read |
-| 7 | `claim = NONE`, `writer ∈ {CAPABLE, UNSTATED}` | `BROKEN` | R-5's splice: a release that can chain wrote no claim |
+| 7 | `claim = NONE`, `writer ∈ {CAPABLE, UNSTATED}` | `UNCLAIMED` | a release that can chain wrote no claim. Detected and disclosed, **never an accusation** — R-32 |
 | 8 | `predecessor = UNREADABLE`, `agreement = MATCHES` | `HOLDS` | the honest crash. R-7 repairs the fragment BEFORE the successor reads it, so the claim is over the fragment as it sits — measured, it matches exactly |
 | 9 | `predecessor = UNREADABLE`, `agreement = DIFFERS` | `UNCHECKABLE` | a tear that happened AFTER the fact and an edit are indistinguishable from the file. Never `BROKEN` (R-11) and never silent (F-01) |
 | 10 | `agreement = MATCHES` | `HOLDS` | |
@@ -423,7 +441,8 @@ F-07, where R-5's no-`tool` arm had no fixture because every fixture happened to
 
     any BROKEN            -> BROKEN        exit 1
     else any UNCHECKABLE
-         or any GAP       -> CANNOT_CHECK  exit 2
+         or any GAP
+         or any UNCLAIMED -> CANNOT_CHECK  exit 2
     else                  -> INTACT        exit 0
 
 `UNCHAINED` is disclosed and never decisive — no upgrade can retroactively chain a line already
@@ -469,3 +488,50 @@ flips **every byte** in the chained region one at a time, and asserts the verdic
 >
 > It runs over several shapes: intact, containing a torn line, containing an unlocked run,
 > mixed-version, and CRLF-translated.
+
+**R-32.** **A LINE THAT MADE NO CLAIM IS NOT AN ACCUSATION.** `UNCLAIMED` is a fifth edge status:
+decisive (it forces `CANNOT_CHECK`, exit 2, so it can never be mistaken for a clean bill),
+disclosed by name in both renderings, and **never `BROKEN`**. Approved by Taylor, 2026-09-20.
+
+> **What this costs, stated plainly, because it is a real loss.** Rule 7 was the only rule that
+> caught a forger appending an unchained line **at the very end** of a history. Measured during
+> adjudication:
+>
+>     mid-file splice   -> BROKEN with rule 7, BROKEN without it   (rule 11, at the next edge)
+>     mid-file overwrite-> BROKEN with rule 7, BROKEN without it   (rule 11)
+>     TAIL splice       -> BROKEN with rule 7, CANNOT_CHECK without
+>
+> So the exchange is: **detection of a lazy tail-splice, for never accusing an intact file.**
+>
+> **Why that trade is right.** The forger this rule caught is one who appended a line and did
+> not compute `prev` — while the nine-line `sha256sum` recipe for computing it is printed in
+> this package's own module docstring, so any forger who reads the documentation is unaffected.
+> Against that, rule 7 as an accusation produced **two classes of permanent false accusation
+> over complete, correct files**, neither needing an adversary:
+>
+> * **G-01** — an append that could not take the lock (NFS, CIFS, a container without `flock`),
+>   which R-22 requires to carry no claim. Every record lands; three untouched lines are named
+>   as tampered; and because R-13 forbids clearing a finding, the only way to remove it is to
+>   edit the history — the act this feature exists to detect.
+> * **G-05** — a `runprov.start.v1` line from a run that is still going or was killed. The same
+>   bytes report `GAP` once the run's completion record arrives, so the verdict depended on
+>   whether a process had finished, and for a killed run it never does.
+>
+> **A tamper-detector that cries wolf over correct files is worse than none**, because the next
+> real break is discounted. Exit 2 still means *look at this*; nothing becomes silently green,
+> and the acceptance gate of R-31 is untouched — no new `INTACT` is produced by this change.
+>
+> **The table stays at 216 cells.** The rejected remedy for G-01 was a fourth `CLAIMS` value, a
+> sentinel the sink would write on the unlocked path. It was measured and refused: it helps no
+> history already on disk, it contradicts R-22's "no claim at all", it costs 72 extra cells and
+> six documentation citations — and **it hands a tail-forger a free downgrade**, since typing
+> the sentinel into a spliced line buys exactly the `BROKEN` → `CANNOT_CHECK` move this rule
+> otherwise charges for. The status is a property of the JUDGEMENT, not a new thing to write
+> into the file, and that is why it costs nothing.
+
+> **The report must name the cause it cannot distinguish.** An `UNCLAIMED` edge has two
+> innocent explanations and one guilty one, and the sentence says so rather than picking:
+> *"line N carries no chain claim. A run that could not take the file lock writes none (it
+> prints a NOTE when that happens), and a run still in flight has not written its completion
+> record yet — but so would a line inserted by hand. This is not evidence of an edit."* It must
+> never say *"upgrade that machine"*, which belongs to rule 5 alone and is false here.
