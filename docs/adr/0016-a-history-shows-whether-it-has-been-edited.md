@@ -472,9 +472,23 @@ a list or `null` resolves to `UNSTATED` and never raises (F-05).
 > it.** Both were found by executing the table, not by reading it, which is the whole argument
 > for having one.
 
-**R-30.** **The table is TOTAL, and a test proves it.** The test enumerates all 216 input
-combinations, asserts each falls under exactly one rule of R-25, and asserts that every cell
-marked impossible cannot be constructed. A cell that is reachable must have a fixture.
+**R-30.** **The table is TOTAL, and a test proves it.** One test enumerates all 216 input
+combinations and asserts the status of every one of them against a transcription of R-25 made
+from THIS DOCUMENT — the whole map, and never a count of it. A second test partitions the same
+216 cells into the ones `verify`'s walk can construct and the ones it cannot, derives that
+split twice — analytically from the walk, and by measuring an instrumented `classify` over a
+corpus of histories — and asserts the two agree. So every reachable cell has a file that
+produces it, and no cell called impossible was ever reached.
+
+> **CORRECTED after Audit G (G-04, G-14).** This paragraph used to say the test asserted *"each
+> falls under exactly one rule of R-25"* and *"that every cell marked impossible cannot be
+> constructed"*. The second is now true — it is the partition this paragraph describes, and
+> nothing computed it before. The first is NOT asserted and cannot be: R-25 is first-match, so
+> several rules' conditions hold of the same cell by design and a return value cannot expose
+> the overlap. What is asserted in its place is that no rule
+> of R-25 is shadowed into deciding nothing. And what the test did assert was that the 216
+> statuses were a SUBSET of the ones the module names — which no rule change can disturb, and
+> which is why deleting rule 1 left the whole suite green.
 
 **R-31.** **THE ACCEPTANCE GATE: no single-byte edit may go unnoticed.** A test takes a history,
 flips **every byte** in the chained region one at a time, and asserts the verdict is never

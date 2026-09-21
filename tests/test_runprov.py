@@ -25025,6 +25025,136 @@ def test_the_decision_table_is_total_over_its_own_inputs():
     ), "before the chain started, the same shape is history rather than a finding"
 
 
+def _reachable_by_construction(cell):
+    """Can `verify`'s walk hand `classify` this cell? Read off the walk, not off a list.
+
+    Every clause below is one line of `verify`, and the count of cells that satisfy them is a
+    property of the WALK and not of the table — it moves whenever `chained_from` moves. That is
+    why nothing here is a number.
+    """
+    claim, predecessor, agreement, _writer, started = cell
+    if predecessor == "NONE_FIRST":
+        # `index == 1` is the only source of NONE_FIRST, and it sets `agreement` to NA with it.
+        # `chained_from` is still None on the way in, so `started` is whether THIS line claims.
+        return agreement == "NA" and started == (claim != "NONE")
+    if claim == "NONE":
+        return agreement == "NA"  # the walk compares nothing when there is nothing to compare
+    # And it always compares when there IS: `agreement` is NA for a claim only at index 1.
+    if agreement == "NA":
+        return False
+    # `chained_from` is assigned BEFORE `classify` is called, so a line that claims has started.
+    if not started:
+        return False
+    # `GENESIS` is a sentinel; `digest_of` returns 64 hex, so the two can never be equal.
+    return not (claim == "GENESIS" and agreement == "MATCHES")
+
+
+def _corpus_line(claim, writer, run, prev=None):
+    """One history line of a named shape, for the corpus below.
+
+    `UNREADABLE` is not a separate dimension: a line the parser refuses is both
+    `writer = UNREADABLE` and, for its successor, `predecessor = UNREADABLE`, and R-20 still
+    recovers its claim from the raw bytes.
+    """
+    record = {}
+    if claim == "GENESIS":
+        record["prev"] = runprov.chain.GENESIS
+    elif claim == "DIGEST":
+        record["prev"] = prev or "b" * 64
+    record["schema"] = "runprov.history.v2"
+    record["run_id"] = run
+    if writer in ("PRE_CHAIN", "CAPABLE"):
+        record["tool"] = {"version": "0.5.0" if writer == "PRE_CHAIN" else "0.6.0"}
+    if writer != "UNREADABLE":
+        return json.dumps(record).encode()
+    # A crash truncates the tail of a line, and `prev` is written first (R-19), so the claim
+    # survives in the fragment — which is the state R-20 exists for.
+    head = b'{"prev": "%s", ' % record["prev"].encode() if "prev" in record else b"{"
+    return head + b'"schema": "runprov.histo'
+
+
+def test_the_reachable_cells_are_computed_and_the_rest_are_refused(tmp_path, monkeypatch):
+    """ADR-0016 [ADR-0016 R-25] [ADR-0016 R-30]. Which of the 216 cells the walk can build.
+
+    R-30 says an impossible cell must be DEMONSTRATED impossible and never assumed, because
+    assuming is what produced F-07 — R-5's no-`tool` arm had no fixture because every fixture
+    happened to carry one. The ADR then asserted the demonstration existed. Audit G, G-14:
+    nothing computed it, AND THE NUMBER WAS WRONG BY 31. The paragraph claimed 133 cells were
+    structurally impossible and 83 required a verdict; the split is 52 reachable and 164
+    impossible, so a repairer implementing R-30 against the document would have edited the
+    code until 83 cells were reachable.
+
+    THE LESSON IS NOT A BETTER NUMBER. 52 is a property of the WALK and not of the table: it
+    moves whenever `chained_from` moves, so writing it down anywhere — here or in the ADR —
+    reproduces the defect one layer along. So neither half of this test contains it. The
+    reachable set is derived twice, independently, and the two are compared:
+
+    * ANALYTICALLY, from `verify`'s own construction — `_reachable_by_construction`, whose
+      every clause is one line of the walk;
+    * BY MEASUREMENT, from an instrumented `classify` driven by `verify` over a corpus of
+      every one- and two-line history the shapes below can spell. Two lines saturate it: every
+      dimension a third line could vary is already varied by the second.
+
+    Measurement alone would not be enough — an unreached cell and an unreachable one look the
+    same — and the derivation alone is a list somebody wrote. Together, each is the other's
+    fixture: every cell the derivation calls reachable has a FILE that produces it, and every
+    cell it calls impossible is one the corpus never reached.
+    """
+    reachable = {cell for cell in CHAIN_CELLS if _reachable_by_construction(cell)}
+    impossible = [cell for cell in CHAIN_CELLS if cell not in reachable]
+    assert reachable and impossible, "a partition with an empty half proves nothing"
+
+    reached = set()
+    shipped = runprov.chain.classify
+
+    def watched(*cell):
+        reached.add(cell)
+        return shipped(*cell)
+
+    monkeypatch.setattr(runprov.chain, "classify", watched)
+
+    firsts = [(c, w) for c in runprov.chain.CLAIMS for w in runprov.chain.WRITERS]
+    seconds = [(c, w) for c in (*runprov.chain.CLAIMS, "MATCH") for w in runprov.chain.WRITERS]
+    for number, (claim, writer) in enumerate(firsts):
+        first = _corpus_line(claim, writer, "one")
+        alone = tmp_path / f"one-{number}.jsonl"
+        alone.write_bytes(first + b"\n")
+        runprov.chain.verify(alone)
+        for index, (next_claim, next_writer) in enumerate(seconds):
+            follower = _corpus_line(
+                "DIGEST" if next_claim == "MATCH" else next_claim,
+                next_writer,
+                "two",
+                prev=runprov.chain.digest_of(first) if next_claim == "MATCH" else None,
+            )
+            pair = tmp_path / f"two-{number}-{index}.jsonl"
+            pair.write_bytes(first + b"\n" + follower + b"\n")
+            runprov.chain.verify(pair)
+
+    assert not reached - reachable, (
+        "the walk built a cell the derivation calls structurally impossible, so the derivation "
+        f"is wrong about `verify`: {sorted(reached - reachable)}"
+    )
+    assert not reachable - reached, (
+        "the derivation calls these cells reachable and no file produces one, so either the "
+        f"derivation is wrong or the corpus stopped spelling a shape: {sorted(reachable - reached)}"
+    )
+
+    # WHY G-04'S TRANSCRIPTION MAY WIDEN R-25's RULES 9 AND 11 to the `else` of their scope.
+    # The cells that widening decides are cells where a line carries a claim and the walk
+    # reported no comparison, and every one of them is on the impossible side of this
+    # partition — so the widening answers nothing `verify` can ask.
+    uncompared_claims = {
+        cell
+        for cell in CHAIN_CELLS
+        if cell[0] != "NONE" and cell[1] != "NONE_FIRST" and cell[2] == "NA"
+    }
+    assert uncompared_claims and not uncompared_claims & reachable, (
+        "a line that claims a predecessor is always compared against it; if that has stopped "
+        "being true, R25_TABLE's two widened rows now decide cells the walk really reaches"
+    )
+
+
 def test_the_verdict_is_the_worst_edge_and_nothing_else(tmp_path):
     """ADR-0016 [ADR-0016 R-26] [ADR-0016 R-27]. The fold, and the count.
 
