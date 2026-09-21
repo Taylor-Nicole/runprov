@@ -55,6 +55,17 @@ is a fix nobody checked.
   whose predecessor is unreadable answers `COULD NOT CHECK` rather than `BROKEN`: a tear that
   happened later cannot be told from an edit, and saying so is the honest answer.
 
+  **A line that made no chain claim is reported `UNCLAIMED`, never as tampering.** It is
+  decisive — exit 2, so it can never be read as a clean bill — and it is named on the report
+  with the causes it cannot tell apart: an append that could not take the file lock writes no
+  claim by design, a run still in flight has not written its completion record yet, and so
+  would a line inserted by hand. Both innocent cases produce files in which every record is
+  present and every byte is as written, and nothing in this package can clear a finding, so
+  calling them a break made the only remedy *editing the history*. What this gives up is
+  stated rather than hidden: a line appended at the very end by someone who did not compute
+  `prev` is now exit 2 instead of exit 1. A splice anywhere else still breaks the chain at the
+  next link, and no history that was `BROKEN` becomes `INTACT`.
+
 
 ## [0.5.0] — 2026-09-17
 

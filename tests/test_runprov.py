@@ -24418,12 +24418,24 @@ def test_the_verdict_is_broken_then_unverifiable_then_intact(tmp_path, capsys):
 
 
 def test_a_break_says_only_what_is_true_of_the_break_it_found(tmp_path):
-    """ADR-0016 [ADR-0016 R-10]. Audit E, E-07.
+    """ADR-0016 [ADR-0016 R-10] [ADR-0016 R-32]. Audit E, E-07.
 
     One sentence was formatted for every break, so it produced three false statements: "LINE 0
     IS WHAT CHANGED" for a deleted first line, naming a line that does not exist; "line 0 hashes
     to GENESIS", presenting the sentinel as a digest; and "LINE N-1 IS WHAT CHANGED" for a line
     that made no claim at all, where this requirement's own reasoning does not hold.
+
+    THE VERDICT ON THE THIRD CASE CHANGED UNDER [ADR-0016 R-32], and this test asserted the old
+    one. E-07 fixed the SENTENCE printed for a line that made no claim; Audit G found that the
+    verdict behind the sentence was wrong too. A tail-appended line with no `prev` is what a
+    forger who did not compute the digest leaves — and equally what an append that could not
+    take the lock (G-01) and a start line whose run is still in flight (G-05) leave, over files
+    in which every record is present and every byte is original. Rule 7 therefore answers
+    `UNCLAIMED`, not `BROKEN`, and this case now belongs to the UNCLAIMED rows rather than the
+    BROKEN ones. R-10's own scope shrinks with it: BROKEN can now arise only from rules 0, 2
+    and 11, all of which have a claim, so `Link.detail`'s claimless arm was deleted as
+    unreachable. What this test still guards is that the two remaining breaks say only what is
+    true of themselves.
     """
     p = tmp_path / "h.jsonl"
     lines = _chain_history(p, 4)
@@ -24441,16 +24453,26 @@ def test_a_break_says_only_what_is_true_of_the_break_it_found(tmp_path):
     assert "LINE 0" not in detail and "GENESIS" not in detail, detail
     assert "removed from the front" in detail, detail
 
+    # The line that made no claim: STILL not accused of moving its predecessor, and now not
+    # accused at all. [ADR-0016 R-32] — the same bytes are what an unlocked append and an
+    # in-flight run leave behind, so the claimless arm of `Link.detail` is gone with the
+    # verdict that reached it, and there is no BROKEN edge here to ask for a detail.
     spliced = tmp_path / "spliced.jsonl"
     forged = json.dumps({"run_id": "x", "tool": {"version": "0.6.0"}}).encode()
     spliced.write_bytes(b"\n".join([*lines, forged]) + b"\n")
-    detail = runprov.chain.verify(spliced).of(runprov.chain.BROKEN)[0].detail
-    assert "IS WHAT CHANGED" not in detail, "no claim was made, so no predecessor is accused"
-    assert "carries no chain claim" in detail and "0.6.0" in detail
+    report = runprov.chain.verify(spliced)
+    assert not report.of(runprov.chain.BROKEN), "a line that made no claim accuses nobody"
+    assert [e.line for e in report.of(runprov.chain.UNCLAIMED)] == [5]
+    assert report.status == runprov.chain.CANNOT_CHECK, "disclosed, decisive, and not an edit"
+
+    # And every sentence `Link.detail` can still produce comes from a break that HAS a claim.
+    for link in (*runprov.chain.verify(edited).edges, *runprov.chain.verify(beheaded).edges):
+        assert link.status != runprov.chain.BROKEN or link.claimed is not None
 
 
 def test_an_unchained_line_is_judged_by_the_version_that_wrote_it(tmp_path, capsys):
-    """ADR-0016 [ADR-0016 R-5]. Audit E, E-02 — the row that made the original unimplementable.
+    """ADR-0016 [ADR-0016 R-5] [ADR-0016 R-32]. Audit E, E-02 — the row that made the original
+    unimplementable.
 
     R-5 first said a line with no `prev` after the chain began is a break, because that is what
     splicing an old-format line in looks like. It is also exactly what A COLLEAGUE RUNNING A
@@ -24462,6 +24484,15 @@ def test_an_unchained_line_is_judged_by_the_version_that_wrote_it(tmp_path, caps
     because a rule that shrugs is a rule nobody acts on. A human acknowledgement was proposed
     and rejected on the right grounds — "most people will just open it and say okay without
     really verifying" — so the judgement is made from evidence already in the record.
+
+    WHAT CHANGED UNDER [ADR-0016 R-32], and it is the other half of the same argument. E-02
+    rescued the PRE_CHAIN case by reading `tool.version`; Audit G found the CAPABLE and
+    UNSTATED cases needed the same rescue for the same reason, and could not get it from the
+    record because there is nothing in the record to read. The exit code for the chain-capable
+    unclaimed line therefore moves from 1 to 2. R-5's strictness is untouched and this test
+    still asserts it: a 0.5.0 line is a GAP, it is decisive, and the report names the machine.
+    That sentence — "upgrade that machine" — belongs to rule 5 ALONE, and rule 7's own sentence
+    must never borrow it, because the machine is unnamed and an in-flight run needs no upgrade.
     """
     old = tmp_path / "old.jsonl"
     _chain_history(old, 3)
@@ -24481,13 +24512,18 @@ def test_an_unchained_line_is_judged_by_the_version_that_wrote_it(tmp_path, caps
     out = capsys.readouterr().out
     assert "1 line(s) written by runprov 0.5.0" in out and "upgrade that machine" in out, out
 
-    # A CHAIN-CAPABLE release that wrote no `prev` is the splice this requirement exists for.
+    # A CHAIN-CAPABLE release that wrote no `prev` is DISCLOSED, not accused — [ADR-0016 R-32].
+    # Exit 2, not 1: it is the same shape as an unlocked append and an in-flight start line.
     forged = tmp_path / "forged.jsonl"
     _chain_history(forged, 3)
     with forged.open("ab") as fh:
         fh.write(json.dumps({"run_id": "x", "tool": {"version": "0.6.0"}}).encode() + b"\n")
-    assert runprov.__main__.main(["chain", str(forged)]) == 1
-    assert "carries no chain claim" in capsys.readouterr().out
+    assert runprov.__main__.main(["chain", str(forged)]) == 2
+    unclaimed = capsys.readouterr().out
+    assert "carries no chain claim" in unclaimed and "UNCLAIMED" in unclaimed, unclaimed
+    assert "upgrade that machine" not in unclaimed, (
+        "rule 5's advice, on a line that names no machine and may need no upgrade at all"
+    )
 
     # And the PRE-CHAIN prefix is disclosed and never decisive: no upgrade can retroactively
     # chain a line that was already written, so making it decisive would mean no project that
@@ -24791,7 +24827,8 @@ CHAIN_CELLS = list(
 
 
 def test_the_decision_table_is_total_over_its_own_inputs():
-    """ADR-0016 [ADR-0016 R-25] [ADR-0016 R-30]. The table, executed rather than read.
+    """ADR-0016 [ADR-0016 R-25] [ADR-0016 R-30] [ADR-0016 R-32]. The table, executed rather
+    than read.
 
     Fifteen of the twenty-six defects in this feature were in one half of it — turning a file's
     partial evidence into one of three words — and that half has 216 input combinations folded
@@ -24803,6 +24840,15 @@ def test_the_decision_table_is_total_over_its_own_inputs():
     impossible `GENESIS` claim, and a torn first line reported as "predates the chain" — the
     second being a defect from the previous round, reproduced inside the table written to
     prevent it. Reading the table had not shown either.
+
+    RULE 7'S CELL CHANGED UNDER [ADR-0016 R-32] and this test asserted the old value, which is
+    why the change lands here rather than only in the walk: `UNCLAIMED` is a fifth edge status
+    and the enumeration of statuses has to grow with it. WHAT MUST NOT CHANGE, and is asserted
+    below because it was the rejected remedy: the INPUT space stays at 216 cells. The refused
+    fix for G-01 was a fourth `CLAIMS` value — a sentinel written on the unlocked path — which
+    takes the table to 288, contradicts R-22's "no claim at all", helps no history already on
+    disk, and hands a tail-forger a free BROKEN -> CANNOT_CHECK downgrade for the price of
+    typing the word. The status is a property of the JUDGEMENT, so it costs no cells at all.
     """
     statuses = {runprov.chain.classify(*cell) for cell in CHAIN_CELLS}
     assert None not in statuses, "the table must decide every combination of its own inputs"
@@ -24812,9 +24858,14 @@ def test_the_decision_table_is_total_over_its_own_inputs():
         runprov.chain.UNCHAINED,
         runprov.chain.GAP,
         runprov.chain.UNCHECKABLE,
+        runprov.chain.UNCLAIMED,
         runprov.chain.BROKEN,
     }, statuses
     assert len(CHAIN_CELLS) == 216, "the input space moved; the table must move with it"
+    assert len(runprov.chain.CLAIMS) == 3, (
+        "[ADR-0016 R-32] a fifth STATUS costs no cells; a fourth CLAIM would cost 72 and buy "
+        "a tail-forger the downgrade this rule otherwise charges for"
+    )
 
     # THE CELLS THAT DECIDE THE FEATURE, asserted individually rather than left to the sweep.
     # Each is a defect this project actually shipped.
@@ -24837,8 +24888,11 @@ def test_the_decision_table_is_total_over_its_own_inputs():
         runprov.chain.GAP
     ), "unverifiable AND fixable"
     assert runprov.chain.classify("NONE", "READABLE", "NA", "CAPABLE", True) == (
-        runprov.chain.BROKEN
-    ), "a release that can chain wrote no claim: the splice"
+        runprov.chain.UNCLAIMED
+    ), "[ADR-0016 R-32] a release that can chain wrote no claim: disclosed, never accused"
+    assert runprov.chain.classify("NONE", "READABLE", "NA", "UNSTATED", True) == (
+        runprov.chain.UNCLAIMED
+    ), "[ADR-0016 R-32] and a writer we cannot place is not a forger either"
     assert runprov.chain.classify("NONE", "READABLE", "NA", "CAPABLE", False) == (
         runprov.chain.UNCHAINED
     ), "before the chain started, the same shape is history rather than a finding"
@@ -24954,12 +25008,24 @@ def test_crlf_is_a_per_line_fact_and_cannot_suppress_a_finding(tmp_path):
 
 
 def test_the_writer_of_a_line_is_resolved_from_the_run(tmp_path, capsys):
-    """ADR-0016 [ADR-0016 R-29]. Audit F, F-02 — the miss that cost the most.
+    """ADR-0016 [ADR-0016 R-29] [ADR-0016 R-32]. Audit F, F-02 — the miss that cost the most.
 
     NO RELEASED VERSION writes a `tool` block into a `runprov.start.v1` line, and those are half
-    of every history. Reading the line alone makes every one of them `UNSTATED`, which rule 7
-    calls a splice — so one ordinary run by a colleague on a released wheel reported BROKEN over
-    a file nobody touched. Verified against the real bytes in `tests/corpus/0.5.0`.
+    of every history. Reading the line alone makes every one of them `UNSTATED`, which sends it
+    to rule 7 — so one ordinary run by a colleague on a released wheel reported BROKEN over a
+    file nobody touched. Verified against the real bytes in `tests/corpus/0.5.0`.
+
+    THE UNPARSEABLE-VERSION CASE BELOW ASSERTED BROKEN, AND ITS OWN COMMENT ARGUED AGAINST IT:
+    "a distribution that stamps 'nightly' … is not a forger — it is a writer we cannot place".
+    The test wrote down the objection and then pinned the behaviour it objects to. Under
+    [ADR-0016 R-32] the objection wins, and it is a spec change rather than a bugfix: rule 7's
+    row in R-25 now answers `UNCLAIMED` for both `CAPABLE` and `UNSTATED`. Audit G's G-05 is
+    the same cell reached without any exotic version string — the BYTE-IDENTICAL 0.5.0 start
+    line read `GAP` once its run's completion record arrived and `BROKEN` while the run was
+    still going, so the verdict over unchanged bytes depended on whether a process had
+    finished, and for a killed run it never does. Resolution from the run still matters and is
+    still asserted above: it is the difference between a GAP that names the machine to fix and
+    an UNCLAIMED that can only say what it cannot tell you.
     """
     p = tmp_path / "h.jsonl"
     _chain_history(p, 2)
@@ -24984,8 +25050,9 @@ def test_the_writer_of_a_line_is_resolved_from_the_run(tmp_path, capsys):
 
     # A VERSION STRING THIS PACKAGE CANNOT PARSE. `tool.version` is written by whoever built
     # the wheel, and a distribution that stamps "nightly" or a git describe is not a forger —
-    # it is a writer we cannot place, which rule 7 calls a splice under Taylor's strict reading.
-    # Asserted so the strictness is a decision on the page rather than an accident of parsing.
+    # it is a writer we cannot place. [ADR-0016 R-32]: unplaceable is not guilty, so the
+    # verdict is CANNOT_CHECK. Asserted so the decision is on the page rather than an accident
+    # of parsing, exactly as the BROKEN it replaces was.
     unparseable = tmp_path / "nightly.jsonl"
     _chain_history(unparseable, 2)
     with unparseable.open("ab") as fh:
@@ -24996,7 +25063,9 @@ def test_the_writer_of_a_line_is_resolved_from_the_run(tmp_path, capsys):
             + b"\n"
         )
     assert runprov.chain._writer_of({"tool": {"version": "nightly"}}, {}) == "UNSTATED"
-    assert runprov.chain.verify(unparseable).status == runprov.chain.BROKEN
+    nightly = runprov.chain.verify(unparseable)
+    assert nightly.status == runprov.chain.CANNOT_CHECK
+    assert [e.line for e in nightly.of(runprov.chain.UNCLAIMED)] == [3]
 
     # An unreadable file, a missing one, and an EMPTY one: CANNOT_CHECK, never an exception
     # (R-24's rule one level up — `verify`'s docstring promises it never raises). The empty file
@@ -25021,6 +25090,117 @@ def test_the_writer_of_a_line_is_resolved_from_the_run(tmp_path, capsys):
             runprov.chain.BROKEN,
             runprov.chain.CANNOT_CHECK,
         ), shape
+
+
+def test_a_line_that_made_no_claim_is_not_an_accusation(tmp_path, capsys):
+    """ADR-0016 [ADR-0016 R-32]. Audit G, G-01 and G-05 — one status closes both.
+
+    Rule 7 answered BROKEN for any line carrying no `prev` once the chain had started. Measured
+    during adjudication, that caught exactly one thing: a forger who appended a line at the very
+    END of a history and did not compute the digest — while the nine-line `sha256sum` recipe for
+    computing it is printed in `chain.py`'s own module docstring, so a forger who reads the
+    documentation was never caught by it at all. A mid-file splice is caught by rule 11 at the
+    NEXT edge, with rule 7 or without it, and both are asserted below.
+
+    What that narrow detection charged was two classes of PERMANENT false accusation over files
+    in which every record is present and every byte is as written:
+
+    * **G-01** — an append that could not take the lock (NFS, CIFS, a container without
+      `flock`), which [ADR-0016 R-22] REQUIRES to write no claim. Measured: two ordinary locked
+      appends followed by four unlocked ones gave BROKEN, four untouched lines accused. That
+      scenario is asserted end to end by R-22's own test,
+      `test_no_lock_means_no_chain_claim_rather_than_a_false_accusation`.
+    * **G-05** — a `runprov.start.v1` line whose run is still going or was killed. The same
+      bytes reported GAP once the run's completion record arrived, so the verdict over
+      unchanged bytes depended on whether a process had finished, and for a killed run it never
+      does. Asserted here, because it has no other home.
+
+    And [ADR-0016 R-13] gives nothing the power to clear a finding, so the only way to remove
+    either accusation was to edit the history — the act this feature exists to detect. A
+    tamper-detector that cries wolf over correct files is worse than none, because the next
+    real break is discounted. Exit 2 still means LOOK AT THIS: nothing becomes silently green,
+    and [ADR-0016 R-31]'s acceptance gate is untouched because no new INTACT is produced.
+    """
+    p = tmp_path / "base.jsonl"
+    lines = _chain_history(p, 5)
+    unchained = json.dumps(
+        {"schema": "runprov.history.v2", "run_id": "x", "tool": {"version": "0.6.0"}}
+    ).encode()
+
+    # THE TRADE, measured on these files rather than asserted in prose. What is kept:
+    mid = tmp_path / "mid.jsonl"
+    mid.write_bytes(b"\n".join([*lines[:2], unchained, *lines[2:]]) + b"\n")
+    caught = runprov.chain.verify(mid)
+    assert [e.line for e in caught.of(runprov.chain.BROKEN)] == [4], (
+        "a mid-file splice is still an accusation, and it always was rule 11's: the line AFTER "
+        "the spliced one claims a predecessor that is no longer there"
+    )
+    assert _chain_exit(mid) == 1
+    assert runprov.__main__.main(["chain", str(mid)]) == 1
+    accused = capsys.readouterr().out
+    assert "BROKEN  line 4 claims its predecessor was" in accused, accused
+    assert "LINE 3 IS WHAT CHANGED" in accused, accused
+    assert "edited after it was written" in accused, (
+        "and the break paragraph still prints. What R-32 gives up is the accusation against a "
+        "line that made NO claim; the accusation for a link that disagrees is untouched, and "
+        "after this change nothing else in the suite renders one — it reached the page only "
+        "through the verdict that is now UNCLAIMED"
+    )
+
+    # What is given up, stated as an assertion so the loss is on the page and not only in the
+    # ADR: a lazy tail-splice is exit 2 rather than exit 1.
+    tail = tmp_path / "tail.jsonl"
+    tail.write_bytes(b"\n".join([*lines, unchained]) + b"\n")
+    lost = runprov.chain.verify(tail)
+    assert [e.line for e in lost.of(runprov.chain.UNCLAIMED)] == [6]
+    assert _chain_exit(tail) == 2, "still detected and still on the page; no longer accused"
+    assert lost.status != runprov.chain.INTACT, "and no new INTACT is created anywhere"
+
+    # G-05: the BYTE-IDENTICAL real 0.5.0 start line, with and without the completion record
+    # that resolves its writer. One verdict, not two.
+    real = [
+        line
+        for line in (_repo_root() / "tests/corpus/0.5.0/tree/prov/history.jsonl")
+        .read_bytes()
+        .split(b"\n")
+        if line.strip()
+    ][:2]
+    verdicts = {}
+    for taken in (1, 2):
+        q = tmp_path / f"flight{taken}.jsonl"
+        _chain_history(q, 2)
+        with q.open("ab") as fh:
+            fh.write(b"\n".join(real[:taken]) + b"\n")
+        verdicts[taken] = _chain_exit(q)
+    assert (tmp_path / "flight1.jsonl").read_bytes().split(b"\n")[2] == (
+        tmp_path / "flight2.jsonl"
+    ).read_bytes().split(b"\n")[2], "the start line is byte-identical in both files"
+    assert verdicts == {1: 2, 2: 2}, (
+        f"the same bytes must not get one verdict while a process runs and another after it "
+        f"exits — and for a killed run the second never arrives: {verdicts}"
+    )
+
+    # THE SENTENCE. It names both innocent causes AND the guilty one without picking between
+    # them, because the file cannot tell them apart and saying otherwise would be a guess.
+    assert runprov.__main__.main(["chain", str(tail)]) == 2
+    page = capsys.readouterr().out
+    assert "UNCLAIMED  line 6 carries no chain claim" in page, page
+    assert "could not take the file lock" in page, "the first innocent cause, and R-22's own"
+    assert "still in flight" in page, "the second"
+    assert "inserted by hand" in page, "and the guilty one, which is not hidden either"
+    assert "This is not evidence of an edit." in page, page
+    assert "upgrade that machine" not in page, (
+        "[ADR-0016 R-5]'s sentence, and it is false here twice over: this line names no "
+        "machine, and a run still in flight has nothing to upgrade"
+    )
+    assert "edited after it was written" not in page, "no accusation anywhere on the page"
+
+    # The machine-readable rendering carries the same verdict and the same status, so a reader
+    # of one can never see a finding the other does not. E-10's lesson, applied to a new status.
+    assert runprov.__main__.main(["chain", str(tail), "--format", "json"]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "CANNOT_CHECK"
+    assert [e["line"] for e in payload["edges"] if e["status"] == "UNCLAIMED"] == [6]
 
 
 @pytest.mark.parametrize("shape", ["intact", "torn", "mixed-version", "pre-chain"])

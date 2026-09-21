@@ -171,6 +171,19 @@ HOLDS_TRIVIAL = "HOLDS_TRIVIAL"  # the first line: nothing precedes it, so it at
 UNCHAINED = "UNCHAINED"  # predates the chain — unverifiable and NOT fixable, never decisive
 GAP = "GAP"  # a release too old to chain wrote it — unverifiable and FIXABLE, so decisive
 UNCHECKABLE = "UNCHECKABLE"  # the evidence is gone; say so rather than guess either way
+#: R-32. A release that could have chained wrote no claim. DECISIVE — it forces CANNOT_CHECK,
+#: so it can never be mistaken for a clean bill — but NEVER an accusation, because the same
+#: bytes are produced by an append that could not take the lock (R-22) and by a start line
+#: whose run is still going. Rule 7 used to call all three a splice, and the two innocent
+#: classes are permanent: R-13 gives nothing the power to clear a finding, so the only way to
+#: remove it was to edit the history — the act this feature exists to detect.
+#:
+#: IT IS A PROPERTY OF THE JUDGEMENT AND NOT A NEW THING TO WRITE INTO THE FILE, which is why
+#: it costs nothing: `CLAIMS` keeps its three values and the table its 216 cells. The rejected
+#: remedy was a fourth `CLAIMS` value the sink would write on the unlocked path — measured and
+#: refused, because it helps no history already on disk, contradicts R-22's "no claim at all",
+#: and hands a tail-forger a free BROKEN -> CANNOT_CHECK downgrade for the price of typing it.
+UNCLAIMED = "UNCLAIMED"
 
 #: The enumerated inputs. Small, closed, and named so the table can be executed over them.
 CLAIMS = ("NONE", "GENESIS", "DIGEST")
@@ -204,7 +217,15 @@ def classify(claim: str, predecessor: str, agreement: str, writer: str, started:
             return GAP  # rule 5: names the version; closes when that machine is upgraded
         if writer == "UNREADABLE":
             return UNCHECKABLE  # rule 6: torn, and R-20 recovered nothing — it said nothing
-        return BROKEN  # rule 7: a release that can chain wrote no claim — the splice
+        # rule 7: a release that could have chained wrote no claim. DETECTED AND DISCLOSED,
+        # NEVER AN ACCUSATION (R-32). It returned BROKEN until Audit G, and what that bought
+        # was one narrow detection — a TAIL splice by a forger who did not compute `prev`,
+        # while the nine-line `sha256sum` recipe for computing it is in this module's own
+        # docstring. A mid-file splice is still BROKEN at the NEXT edge, by rule 11. What it
+        # charged for that was two classes of permanent false accusation over complete,
+        # correct files: G-01, an append that could not take the lock, and G-05, a start line
+        # whose run is still in flight or was killed.
+        return UNCLAIMED
     if predecessor == "UNREADABLE":
         # rule 8: the honest crash. R-7 repairs the fragment BEFORE the successor reads it, so
         # the claim is over the fragment AS IT SITS — measured, it matches exactly. The first
@@ -237,22 +258,26 @@ class Link(typing.NamedTuple):
         to GENESIS" with a sentinel presented as a digest, and "LINE N-1 IS WHAT CHANGED" for a
         line that had made no claim at all. A diagnostic that sends a reader to an untouched
         line costs them the time and then their confidence in the answer.
+
+        THE "no chain claim" ARM IS GONE, and its absence is the shape of R-32. Since rule 7
+        answers `UNCLAIMED`, a BROKEN edge can only come from rules 0, 2 and 11 — every one of
+        which has a claim — so the arm was not merely wrong, it was unreachable. Deleted
+        rather than left behind a guard: the branch-coverage floor would have failed on it,
+        and a sentence nothing can print is a sentence nobody maintains.
         """
         if self.status != BROKEN:
             return f"line {self.line}: {self.status}"
-        if self.claimed is None:
-            return (
-                f"line {self.line} carries no chain claim, and was written by "
-                f"{self.wrote or 'a version it does not name'} — a release that CAN chain must "
-                f"not append an unchained line"
-            )
+        # Never None on this path, per the paragraph above; `or ""` satisfies the type checker
+        # without an `assert`, which under the 100 % branch floor would be a branch that can
+        # never take its other arm.
+        claimed = self.claimed or ""
         if self.line == 1:
             return (
-                f"line 1 claims a predecessor ({self.claimed[:16]}…) but is the first line of "
+                f"line 1 claims a predecessor ({claimed[:16]}…) but is the first line of "
                 f"the file — one or more lines have been removed from the front"
             )
         return (
-            f"line {self.line} claims its predecessor was {self.claimed} "
+            f"line {self.line} claims its predecessor was {claimed} "
             f"but line {self.line - 1} hashes to {self.computed} — "
             f"LINE {self.line - 1} IS WHAT CHANGED"
         )
@@ -275,11 +300,15 @@ class Report(typing.NamedTuple):
         a hand-assembled set of conditions — `broken`, `translated`, `chained_from`,
         `unattested`, a stale-writer check — and every one of them missed a state. A fold over
         an enumerated status cannot.
+
+        `UNCLAIMED` joined the second line under R-32. It is decisive for the same reason
+        `GAP` is — nothing about the file has been checked at that edge — and non-accusing
+        for the reason `GAP` is not: the cause may be innocent and there is no way to tell.
         """
         kinds = {link.status for link in self.edges}
         if BROKEN in kinds:
             return BROKEN
-        if UNCHECKABLE in kinds or GAP in kinds:
+        if UNCHECKABLE in kinds or GAP in kinds or UNCLAIMED in kinds:
             return CANNOT_CHECK
         if self.chained_from is None:
             return CANNOT_CHECK  # nothing in this file is chained; there is no claim to check
@@ -306,9 +335,14 @@ def _writers(records: dict[int, dict[str, typing.Any]]) -> dict[str, str]:
 
     THE WRITER IS A PROPERTY OF THE RUN, NOT THE LINE, and this is the miss that cost the most:
     no released version writes a `tool` block into a `runprov.start.v1` line, which is half of
-    every history. Reading the line alone makes every start line `UNSTATED`, and rule 7 calls
-    that a splice — so one ordinary run by a colleague on a released wheel reported BROKEN.
-    Measured against the real bytes in `tests/corpus/0.5.0`.
+    every history. Reading the line alone makes every start line `UNSTATED`, which sends it to
+    rule 7 — so one ordinary run by a colleague on a released wheel reported BROKEN. Measured
+    against the real bytes in `tests/corpus/0.5.0`.
+
+    Rule 7 no longer accuses (R-32), so the cost of failing to resolve a writer here is now a
+    `CANNOT_CHECK` rather than a false accusation. Resolving it is still the point: without
+    this, a completed 0.5.0 run reports `GAP` and names the machine to upgrade, which is
+    actionable, and an unresolved one reports `UNCLAIMED`, which is not.
     """
     found: dict[str, str] = {}
     for record in records.values():
@@ -470,6 +504,18 @@ def render(report: Report, path: pathlib.Path) -> list[str]:
         )
     if report.of(UNCHAINED):
         out.append(f"    {len(report.of(UNCHAINED))} line(s) predate the chain")
+    for link in report.of(UNCLAIMED):
+        # R-32. NAME THE CAUSE IT CANNOT DISTINGUISH rather than pick one. There are two
+        # innocent explanations and one guilty, the file cannot tell them apart, and the
+        # sentence says exactly that. It must never say "upgrade that machine": that is
+        # rule 5's advice, it names a machine this line does not name, and for a run still
+        # in flight there is nothing to upgrade.
+        out.append(
+            f"    UNCLAIMED  line {link.line} carries no chain claim. A run that could not "
+            f"take the file lock writes none (it prints a NOTE when that happens), and a run "
+            f"still in flight has not written its completion record yet — but so would a line "
+            f"inserted by hand. This is not evidence of an edit."
+        )
     for link in report.of(UNCHECKABLE):
         if link.wrote == "translated":
             continue  # already summarised above
