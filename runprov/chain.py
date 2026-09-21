@@ -376,24 +376,40 @@ def verify(path: str | pathlib.Path) -> Report:
         if claim != "NONE" and chained_from is None:
             chained_from = index
 
+        terminator_only = False
         if index == 1:
             predecessor, agreement = "NONE_FIRST", "NA"
-        elif translated[index - 2]:
-            # The predecessor's bytes were changed by the translation, so its digest cannot
-            # match and the disagreement says nothing about anyone's honesty.
-            edges.append(Link(index, UNCHECKABLE, claimed, None, wrote="translated"))
-            continue
         else:
             predecessor = "READABLE" if (index - 1) in records else "UNREADABLE"
             if claim == "NONE":
                 agreement = "NA"
             else:
                 agreement = "MATCHES" if claimed == digest_of(lines[index - 2]) else "DIFFERS"
+                if agreement == "DIFFERS" and translated[index - 2]:
+                    # R-28, and Audit G's G-02. The predecessor's terminator was translated, so
+                    # its bytes AS THEY SIT cannot hash to what was claimed. The edge is owed
+                    # exactly ONE further question — does the claim match those bytes with the
+                    # `\r` stripped? — because a match PROVES the terminator was the only thing
+                    # that changed, and nothing weaker does.
+                    #
+                    # WHAT STOOD HERE WAS A PRE-EMPTION: every edge behind a translated line was
+                    # declared UNCHECKABLE before the table saw it. So appending one `\r` to a
+                    # line you had just forged turned BROKEN/exit 1 into CANNOT_CHECK/exit 2
+                    # printing "not tampering", and inside a genuine `core.autocrlf=true`
+                    # checkout — where every edge was pre-empted — no edit was detectable at
+                    # all, ever. F-03's file-level bail-out, one size smaller.
+                    terminator_only = claimed == digest_of(lines[index - 2][:-1])
+                    agreement = "MATCHES" if terminator_only else "DIFFERS"
 
         writer = _writer_of(records.get(index), by_run)
         status = classify(claim, predecessor, agreement, writer, chained_from is not None)
         named = None
-        if status in (GAP, BROKEN):
+        if terminator_only:
+            # R-28. The proof buys the predecessor its innocence and nothing else: the bytes on
+            # disk are not the bytes that were written, so this edge attests nobody. One edge,
+            # named rather than accused, and it suppresses no other line's judgement.
+            status, named = UNCHECKABLE, "translated"
+        elif status in (GAP, BROKEN):
             # NAMED ON A BREAK TOO, not only on a gap. R-10 requires the message to be true of
             # the break it found, and "written by a version it does not name" is false when the
             # record names one — it is the difference between a reader chasing a machine and a
@@ -432,10 +448,15 @@ def render(report: Report, path: pathlib.Path) -> list[str]:
     )
     if report.translated:
         # R-28. Named, and scoped to the lines it actually affected — not a verdict for the file.
+        # IT NO LONGER SAYS "not tampering" (G-02): that was a verdict for the whole file
+        # dressed as a note about some of its lines, and it printed unchanged over a file
+        # carrying a forgery. The sentence now has to be able to stand on the same page as a
+        # BROKEN row without contradicting it, so it reports the cause and stops there.
         out.append(
             f"    {report.translated} line(s) had their endings translated to CRLF after they "
-            f"were written, so their digests cannot match. This is a git checkout with "
-            f"`core.autocrlf=true`, not tampering — add `{path.name} -text` to `.gitattributes`."
+            f"were written, so their digests cannot match — consistent with a git checkout with "
+            f"`core.autocrlf=true`. Add `{path.name} -text` to `.gitattributes`. It is a fact "
+            f"about those lines and suppresses no finding below."
         )
     stale: dict[str, int] = {}
     for link in report.of(GAP):

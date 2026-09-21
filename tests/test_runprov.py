@@ -24876,12 +24876,25 @@ def test_the_verdict_is_the_worst_edge_and_nothing_else(tmp_path):
 
 
 def test_crlf_is_a_per_line_fact_and_cannot_suppress_a_finding(tmp_path):
-    """ADR-0016 [ADR-0016 R-28]. Audit F, F-03.
+    """ADR-0016 [ADR-0016 R-28] [ADR-0016 R-21]. Audit F, F-03 — and Audit G, G-02, which
+    walked back in through the carve-out F-03's own repair left open.
 
-    The previous version tested for `\r\n` ANYWHERE in the file and returned before walking a
-    single line, then printed "not tampering" as a statement of fact. Two bytes — one line
-    re-terminated — discarded every break in the file and replaced it with an affirmative
-    denial. Deciding it per line makes that impossible by construction.
+    The version F-03 replaced tested for `\r\n` ANYWHERE in the file and returned before walking
+    a single line, then printed "not tampering" as a statement of fact. Two bytes — one line
+    re-terminated — discarded every break in the file and replaced it with an affirmative denial.
+
+    THE PER-LINE REPAIR LEFT THE SAME HOLE ONE SIZE SMALLER. `verify` still pre-empted the
+    table for any edge whose PREDECESSOR was translated, and that edge is the only thing that
+    ever accuses a line. So one `\r` appended to the line you had just forged turned BROKEN /
+    exit 1 into CANNOT_CHECK / exit 2, printed "not tampering", and recommended a
+    `.gitattributes` entry that suppresses the finding permanently — and inside a genuine
+    `core.autocrlf=true` checkout, where every edge was pre-empted, nothing was detectable at
+    all, ever. The cost of the evasion was one byte.
+
+    What closes it: a translated terminator earns the edge ONE extra question — does the claim
+    match the predecessor's bytes with the `\r` stripped? A match PROVES the terminator was the
+    only change, and the edge is named UNCHECKABLE rather than accused. Anything else is a
+    change to the CONTENT, and the table judges it exactly as it judges any other disagreement.
     """
     p = tmp_path / "h.jsonl"
     lines = _chain_history(p, 5)
@@ -24895,13 +24908,49 @@ def test_crlf_is_a_per_line_fact_and_cannot_suppress_a_finding(tmp_path):
     assert report.of(runprov.chain.BROKEN), "the forgery survives the CRLF byte"
     assert report.status == runprov.chain.BROKEN
 
-    # And a wholly translated checkout is named, not accused.
+    # G-02, with the `\r` where it actually buys the forger something: on the forged line
+    # ITSELF, so that the edge which would accuse it is the one sitting behind a translated
+    # predecessor. Measured before the fix — BROKEN/exit 1 became CANNOT_CHECK/exit 2.
+    evaded = tmp_path / "evaded.jsonl"
+    clean_lines = _chain_history(evaded, 5)
+    forgery = clean_lines[2].replace(b'"status": "ok"', b'"status": "FORGED"')
+    evaded.write_bytes(b"\n".join([*clean_lines[:2], forgery + b"\r", *clean_lines[3:]]) + b"\n")
+    got = runprov.chain.verify(evaded)
+    assert got.status == runprov.chain.BROKEN, "one `\\r` must not buy a forgery an exit code"
+    assert [e.line for e in got.of(runprov.chain.BROKEN)] == [4], (
+        "and it is the edge ABOVE the forged line that breaks, as it does without the `\\r`"
+    )
+
+    # The same forgery inside a REAL whole-file autocrlf checkout, where EVERY edge is behind a
+    # translated predecessor. This is the case the pre-emption made permanently undetectable.
+    checkout = tmp_path / "checkout.jsonl"
+    co_lines = _chain_history(checkout, 5)
+    forgery = co_lines[2].replace(b'"status": "ok"', b'"status": "FORGED"')
+    checkout.write_bytes(
+        (b"\n".join([*co_lines[:2], forgery, *co_lines[3:]]) + b"\n").replace(b"\n", b"\r\n")
+    )
+    mixed = runprov.chain.verify(checkout)
+    assert mixed.status == runprov.chain.BROKEN, "a checkout is not a place forgeries are safe"
+    assert [e.line for e in mixed.of(runprov.chain.BROKEN)] == [4]
+    assert [e.line for e in mixed.of(runprov.chain.UNCHECKABLE)] == [2, 3, 5], (
+        "the CRLF finding is scoped to the edges that earned it, and the break is not one"
+    )
+
+    # And a wholly translated checkout with nothing edited is named, not accused — [ADR-0016
+    # R-21] and E-01 must not come back as the price of closing G-02.
     clean = tmp_path / "clean.jsonl"
     _chain_history(clean, 4)
     clean.write_bytes(clean.read_bytes().replace(b"\n", b"\r\n"))
     whole = runprov.chain.verify(clean)
     assert whole.translated == 4 and not whole.of(runprov.chain.BROKEN)
-    assert "not tampering" in "\n".join(runprov.chain.render(whole, clean))
+    assert whole.status == runprov.chain.CANNOT_CHECK, "the bytes did change; INTACT would lie"
+    page = "\n".join(runprov.chain.render(whole, clean))
+    assert "core.autocrlf=true" in page and "-text" in page, page
+    assert "not tampering" not in page, (
+        "the sentence is a fact about those lines, not a verdict for the file — it has to be "
+        "able to stand on the same page as a BROKEN row, which it could not while it denied "
+        "tampering outright: that is what it printed, unchanged, over the forged file above"
+    )
 
 
 def test_the_writer_of_a_line_is_resolved_from_the_run(tmp_path, capsys):
