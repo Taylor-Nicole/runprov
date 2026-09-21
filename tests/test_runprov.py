@@ -24859,6 +24859,63 @@ CHAIN_CELLS = list(
     )
 )
 
+#: ADR-0016 R-25's table, TRANSCRIBED FROM THE DOCUMENT AND NOT FROM `classify` — the condition
+#: column of the ADR, in the precedence order the ADR states, as a flat first-match list rather
+#: than the nested branches the module uses. Two independent statements of one specification,
+#: which is the only way a test of a decision table can fail for the right reason: a check
+#: derived from the code it checks agrees with the code by construction.
+#:
+#: Audit G, G-04. What stood here asserted that the 216 statuses were a SUBSET of the six the
+#: module names. `classify` has no `return None` path and every status it can return is already
+#: in that set, so the sweep survived every rule change: measured, deleting rule 1 survived the
+#: ENTIRE suite, and every clean all-0.6.0 history then printed `1 line(s) predate the chain`
+#: at 100 % branch coverage with the requirement citation intact. `HOLDS_TRIVIAL` appeared once
+#: in the whole test file — inside the superset that could not fail from its absence.
+#:
+#: The rejected repair was a `Counter` of the status histogram: it kills all thirteen rules, but
+#: it is six hand-written numbers, a lossy digest whose "fix" on any deliberate rule change is
+#: to paste new counts. THIS PROJECT'S MOST EXPENSIVE RECURRING LESSON IS THAT A HAND-WRITTEN
+#: SCOPE IS WHERE THE DEFECT SITS, so the whole map is compared instead and nothing is counted.
+#:
+#: TWO ROWS ARE WIDENED, deliberately and visibly. The ADR writes rules 9 and 11 as
+#: `agreement = DIFFERS`; in the module each is the `else` of its scope, so it also answers
+#: `agreement = NA`. Transcribed literally the table would abstain wherever a line carries a
+#: claim and the walk reported no comparison — a state `verify` cannot construct. Widening
+#: keeps the transcription TOTAL, which is what R-30 is about, and the cells it covers are
+#: named impossible by `test_the_reachable_cells_are_computed_and_the_rest_are_refused` rather
+#: than left as a silent difference. How many there are is not written down, here or there.
+R25_TABLE = (
+    ("0", lambda c, p, a, w, s: c == "GENESIS" and p != "NONE_FIRST", runprov.chain.BROKEN),
+    ("1", lambda c, p, a, w, s: p == "NONE_FIRST" and c == "GENESIS", runprov.chain.HOLDS_TRIVIAL),
+    ("2", lambda c, p, a, w, s: p == "NONE_FIRST" and c == "DIGEST", runprov.chain.BROKEN),
+    (
+        "3",
+        lambda c, p, a, w, s: p == "NONE_FIRST" and c == "NONE" and w == "UNREADABLE",
+        runprov.chain.UNCHECKABLE,
+    ),
+    ("3b", lambda c, p, a, w, s: p == "NONE_FIRST" and c == "NONE", runprov.chain.UNCHAINED),
+    ("4", lambda c, p, a, w, s: c == "NONE" and not s, runprov.chain.UNCHAINED),
+    ("5", lambda c, p, a, w, s: c == "NONE" and w == "PRE_CHAIN", runprov.chain.GAP),
+    ("6", lambda c, p, a, w, s: c == "NONE" and w == "UNREADABLE", runprov.chain.UNCHECKABLE),
+    (
+        "7",
+        lambda c, p, a, w, s: c == "NONE" and w in ("CAPABLE", "UNSTATED"),
+        runprov.chain.UNCLAIMED,
+    ),
+    ("8", lambda c, p, a, w, s: p == "UNREADABLE" and a == "MATCHES", runprov.chain.HOLDS),
+    ("9", lambda c, p, a, w, s: p == "UNREADABLE", runprov.chain.UNCHECKABLE),  # else of R-25/9
+    ("10", lambda c, p, a, w, s: a == "MATCHES", runprov.chain.HOLDS),
+    ("11", lambda c, p, a, w, s: True, runprov.chain.BROKEN),  # the else of R-25 rule 11
+)
+
+
+def _by_the_adr(cell):
+    """The rule of R-25 that decides `cell`, and the status it gives it — first match wins."""
+    for rule, applies, status in R25_TABLE:
+        if applies(*cell):
+            return rule, status
+    raise AssertionError(f"R-25 as transcribed decides nothing for {cell}")  # pragma: no cover
+
 
 def test_the_decision_table_is_total_over_its_own_inputs():
     """ADR-0016 [ADR-0016 R-25] [ADR-0016 R-30] [ADR-0016 R-32]. The table, executed rather
@@ -24883,10 +24940,39 @@ def test_the_decision_table_is_total_over_its_own_inputs():
     takes the table to 288, contradicts R-22's "no claim at all", helps no history already on
     disk, and hands a tail-forger a free BROKEN -> CANNOT_CHECK downgrade for the price of
     typing the word. The status is a property of the JUDGEMENT, so it costs no cells at all.
+
+    AND THE SWEEP THAT SAID ALL THAT HAD NO DISCRIMINATING POWER (Audit G, G-04). It asserted
+    that the statuses of all 216 cells were a SUBSET of the ones the module names, which no
+    change to any rule can disturb — `classify` has no `return None` path and cannot return a
+    status that is not in the set. Measured: of the thirteen rules of R-25, deleting or
+    inverting six of them left this test green, and deleting rule 1 left the ENTIRE suite
+    green while every clean all-0.6.0 history gained a false `1 line(s) predate the chain`.
+    The whole map is now compared against `R25_TABLE`, a transcription of R-25 from the ADR,
+    and all thirteen are caught — as is the rule-4/5 swap of G-12, which nothing caught before.
     """
-    statuses = {runprov.chain.classify(*cell) for cell in CHAIN_CELLS}
-    assert None not in statuses, "the table must decide every combination of its own inputs"
-    assert statuses <= {
+    shipped = {cell: runprov.chain.classify(*cell) for cell in CHAIN_CELLS}
+    by_the_adr = {cell: _by_the_adr(cell)[1] for cell in CHAIN_CELLS}
+    disagreements = {
+        cell: (by_the_adr[cell], shipped[cell])
+        for cell in CHAIN_CELLS
+        if by_the_adr[cell] != shipped[cell]
+    }
+    assert not disagreements, (
+        f"{len(disagreements)} of {len(CHAIN_CELLS)} cells: the module and ADR-0016 R-25 "
+        "disagree. Each entry is (claim, predecessor, agreement, writer, started): "
+        f"(the ADR, the module). {disagreements}"
+    )
+
+    # No rule of R-25 is dead or shadowed — the transcription is what the module is measured
+    # against, so a rule that quietly stopped deciding anything would weaken the measure
+    # without failing it.
+    assert {_by_the_adr(cell)[0] for cell in CHAIN_CELLS} == {rule for rule, _, _ in R25_TABLE}, (
+        "a rule of R-25 decides no cell: it is shadowed by an earlier rule, or dead"
+    )
+
+    # EVERY status is produced, and no other. `==`, not `<=`: the subset form was G-04 — it
+    # survived every rule change, because a status can only vanish from the left-hand side.
+    assert set(shipped.values()) == {
         runprov.chain.HOLDS,
         runprov.chain.HOLDS_TRIVIAL,
         runprov.chain.UNCHAINED,
@@ -24894,7 +24980,7 @@ def test_the_decision_table_is_total_over_its_own_inputs():
         runprov.chain.UNCHECKABLE,
         runprov.chain.UNCLAIMED,
         runprov.chain.BROKEN,
-    }, statuses
+    }, sorted(set(shipped.values()))
     assert len(CHAIN_CELLS) == 216, "the input space moved; the table must move with it"
     assert len(runprov.chain.CLAIMS) == 3, (
         "[ADR-0016 R-32] a fifth STATUS costs no cells; a fourth CLAIM would cost 72 and buy "
@@ -25120,10 +25206,17 @@ def test_the_writer_of_a_line_is_resolved_from_the_run(tmp_path, capsys):
         _chain_history(odd, 2)
         with odd.open("ab") as fh:
             fh.write(json.dumps({"schema": "runprov.history.v2", "tool": shape}).encode() + b"\n")
-        assert runprov.chain.verify(odd).status in (
-            runprov.chain.BROKEN,
-            runprov.chain.CANNOT_CHECK,
-        ), shape
+        # ONE VERDICT, NOT A DISJUNCTION. This asserted `in (BROKEN, CANNOT_CHECK)` while both
+        # were reachable here; under [ADR-0016 R-32] every one of these shapes resolves to
+        # `UNSTATED` and takes rule 7, so the disjunction went slack and would have survived
+        # rule 7 answering either one. Audit G, carried forward from the R-32 repair to G-04.
+        report = runprov.chain.verify(odd)
+        assert report.status == runprov.chain.CANNOT_CHECK, shape
+        assert [e.status for e in report.edges] == [
+            runprov.chain.HOLDS_TRIVIAL,
+            runprov.chain.HOLDS,
+            runprov.chain.UNCLAIMED,
+        ], f"a `tool` this package cannot read is a writer it cannot place, never a forger: {shape}"
 
 
 def test_a_line_that_made_no_claim_is_not_an_accusation(tmp_path, capsys):
