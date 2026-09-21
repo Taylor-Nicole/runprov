@@ -488,6 +488,36 @@ flips **every byte** in the chained region one at a time, and asserts the verdic
 >
 > It runs over several shapes: intact, containing a torn line, containing an unlocked run,
 > mixed-version, and CRLF-translated.
+>
+> **CORRECTED after Audit G (G-03, G-07, G-10). THIS GATE HAD THREE HAND-WRITTEN SCOPES INSIDE
+> IT AND TWO WERE WRONG**, which is the scope pattern this codebase keeps finding, inside the
+> one mechanism built to be immune to it. They are one repair, not three: fixing any one of
+> them exposes the next, and applied separately they fight.
+>
+> * **Which bytes.** The loop skipped every `\n`. The only escape that existed was at a `\n`:
+>   overwrite the terminator of the last attested line and two records merge into one
+>   unreadable line while the verdict stays `INTACT`, exit 0. A terminator is a record
+>   boundary and is part of what the chain must protect. Nothing is skipped now.
+> * **Which shapes.** Two of the four were already non-`INTACT` before any flip, so
+>   `assert not escaped` was vacuously true and the test passed with the mutation replaced by a
+>   no-op. The precondition is now asserted, and those two shapes are built the way an upgrade
+>   and a pre-chain history really arrive — oldest lines first — rather than by editing a
+>   chained file into a shape no writer produces.
+> * **Which region.** `range(last)` excluded the last line and nothing else, so over a
+>   correctly built pre-chain shape it swept lines that nothing attests **by design** (R-4) and
+>   called 82 disclosed limits defects. The region is derived from the report instead: a line's
+>   bytes are attested if and only if the edge above it `HOLDS`, which is this document's own
+>   model, so the region moves when the model does. R-23's exclusion of the newest line falls
+>   out of that rather than being subtracted.
+>
+> And the test asserts that something WAS examined, because `not escaped` and *nothing was
+> examined* print the same word: on a one-line fixture the old loop ran zero times and passed,
+> and the gate adds no unique coverage, so the 100 % floor could not notice either. The floor
+> is not a number — a number would be a fourth hand-written scope — it is the byte-count
+> identity of the derived region.
+>
+> **The rule this restates: a property test with a hand-written scope is a hand-written test
+> with extra confidence.**
 
 **R-32.** **A LINE THAT MADE NO CLAIM IS NOT AN ACCUSATION.** `UNCLAIMED` is a fifth edge status:
 decisive (it forces `CANNOT_CHECK`, exit 2, so it can never be mistaken for a clean bill),

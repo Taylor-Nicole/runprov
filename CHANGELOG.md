@@ -44,9 +44,24 @@ is a fix nobody checked.
   attested by my successor* — and every wrong answer this feature produced came from conflating
   them. The unit is the adjacent pair, each pair resolved through a decision table over four
   enumerated inputs, and the file's verdict is the worst edge and nothing else. **Measured: flip
-  any single byte anywhere in a history and the chain never stays silent — 3 192 cases over four
-  shapes (intact, torn mid-write, mixed-version, written before the chain existed), zero
-  escapes.** `attested` is a count of edges that hold, so it can never exceed the lines it had.
+  any single byte the report says is attested and the chain never stays silent — 2 152 positions
+  over four shapes (intact, torn mid-write, mixed-version, written before the chain existed),
+  every one of the 255 possible substitutions at each, 548 760 cases, zero escapes.**
+  `attested` is a count of edges that hold, so it can never exceed the lines it had.
+
+  **That sentence used to read "3 192 cases … zero escapes" and it was not true, which is worth
+  recording rather than quietly restating.** The gate that produced it skipped every `\n` byte,
+  and the one escape that existed was at a `\n`: overwrite the terminator between two attested
+  lines and the two records merge into a single unreadable line while the verdict stayed
+  `INTACT` and the exit code stayed 0 — both runs gone from `log`, `show` and `report`, every
+  byte of both still on disk. Two of its four shapes were also already non-`INTACT` before any
+  flip, so nothing could escape them and the assertion held for free. **A destroyed record
+  terminator is now `COULD NOT CHECK`, exit 2, named on both renderings** — and the page says
+  *this is not evidence of an edit*, because what the two merged records used to say cannot be
+  read back, and because an `fsck` zero-filling a block it cannot recover joins two lines
+  exactly as a hand edit would. What the report states is the narrow claim it can stand behind:
+  a truncating crash cannot produce this. An honest crash is untouched and still costs a
+  project nothing.
 
   Three consequences a reader will meet. A CRLF translation is a **per-line** fact, so one stray
   carriage return from a `core.autocrlf=true` checkout no longer discards every finding in the

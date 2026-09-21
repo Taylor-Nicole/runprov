@@ -25237,53 +25237,191 @@ def test_a_line_that_made_no_claim_is_not_an_accusation(tmp_path, capsys):
     assert [e["line"] for e in payload["edges"] if e["status"] == "UNCLAIMED"] == [6]
 
 
-@pytest.mark.parametrize("shape", ["intact", "torn", "mixed-version", "pre-chain"])
-def test_no_single_byte_edit_escapes_the_chain(shape, tmp_path):
-    """ADR-0016 [ADR-0016 R-31]. THE ACCEPTANCE GATE, and the only claim here that does not
-    depend on my having enumerated the cases correctly.
+def test_a_destroyed_record_terminator_is_two_records_and_not_a_tear(tmp_path, capsys):
+    """ADR-0016 [ADR-0016 R-11] [ADR-0016 R-20] [ADR-0016 R-32]. Audit G, G-03 — the one
+    single-byte edit that ever escaped the acceptance gate, and the code half of its repair.
 
-    Flip every byte in the chained region, one at a time, and require that the verdict is never
-    INTACT. It reasons about nothing. Measured against the code as it stood before the decision
-    table: **623 positions in a five-line history, 0.1 seconds, 163 of them left the verdict
-    INTACT** — all one defect class, which four reviewers and sixteen mutations had taken a day
-    to surface.
+    Overwrite the `\\n` that separates the last two attested lines and NOTHING about the chain
+    is disturbed: both records survive byte for byte, the edges on either side still HOLD, and
+    the verdict was INTACT with exit 0 — while `log`, `show` and `report` see one unparseable
+    line where two runs used to be. The gate could not see it because its loop skipped every
+    `\\n`, and the table could not see it because an edge judges the LINK between two lines and
+    this is a fact about the bytes of one.
 
-    The last line is excluded because nothing attests it: a line cannot contain its own digest,
-    and R-23 states that limit on every report rather than hiding it.
+    WHAT DISTINGUISHES IT FROM AN HONEST CRASH IS NOT POSITION AND NOT LENGTH — it is that a
+    crash TRUNCATES a line and never CONCATENATES two. A fragment is a PREFIX of one record, so
+    it contains no record boundary; a merged line contains one. That is the whole discriminator,
+    and it is what lets this be closed without charging a crashed run its exit code, which the
+    two remedies proposed for G-03 could not do: both moved the ordinary crash off exit 0 and
+    contradicted the fixture above that requires a crash to cost nothing, for ever.
+
+    IT IS CANNOT_CHECK AND NOT BROKEN, deliberately, and not merely out of caution. What the
+    two joined records used to say cannot be read back from them, so there is no clause
+    [ADR-0016 R-10] could print that would be true of the break. And the state has an innocent
+    producer: an `fsck` zero-filling a block it cannot recover turns the `\n` inside that block
+    into a NUL, which joins two lines exactly as a hand edit would — G-18's finding, on the
+    recovery path this repository's own parent directory is named after. So the true statement
+    is the narrow one, and it is the one the page prints: a TRUNCATING crash cannot produce
+    this. Exit 2 already means LOOK AT THIS, and [ADR-0016 R-32] is why it stops there.
     """
     p = tmp_path / "h.jsonl"
+    _chain_history(p, 4)
+    original = p.read_bytes()
+    terminators = [i for i, byte in enumerate(original[:-1]) if byte == ord("\n")]
+    assert terminators, "the fixture must have an interior terminator to destroy"
+
+    for position in terminators:
+        mutated = bytearray(original)
+        mutated[position] = ord("X")
+        p.write_bytes(bytes(mutated))
+        report = runprov.chain.verify(p)
+        assert report.merged, (
+            f"byte {position} was a record boundary and it is gone; two records are now one "
+            f"unreadable line, and this is the edit that exited 0"
+        )
+        assert not report.of(runprov.chain.BROKEN), (
+            "[ADR-0016 R-32] the bytes of the two records cannot be read back, so nothing here "
+            "is certain enough to accuse anyone of"
+        )
+        assert report.status == runprov.chain.CANNOT_CHECK
+        assert _chain_exit(p) == 2
+
+    # The page names the cause. A verdict with no reason on it is what [ADR-0016 R-9] forbids.
+    assert runprov.__main__.main(["chain", str(p)]) == 2
+    page = capsys.readouterr().out
+    assert "a record boundary sits inside it" in page, page
+    assert "A truncating crash cannot produce this" in page, page
+    assert "This is not evidence of an edit." in page, (
+        "a zero-filled block joins two lines exactly as a hand edit does (G-18), so the page "
+        "must not let a reader infer the edit from the detection"
+    )
+    assert "edited after it was written" not in page, "detected and disclosed, never accused"
+
+    # And the machine rendering carries the same fact, so neither reader sees less (E-10).
+    assert runprov.__main__.main(["chain", str(p), "--format", "json"]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "CANNOT_CHECK" and payload["merged"] == list(
+        runprov.chain.verify(p).merged
+    )
+
+    # THE OTHER HALF, and the reason the narrower discriminators were refused: an honest crash
+    # still costs nothing. Every truncation of the newest line — the whole space a tear can
+    # leave behind — contains no boundary, so none of them is called a merge.
+    crash = tmp_path / "crash.jsonl"
+    _chain_history(crash, 4)
+    raw = crash.read_bytes()
+    cut = raw.rfind(b"\n", 0, len(raw) - 1)
+    head, last = raw[: cut + 1], raw[cut + 1 :].rstrip(b"\n")
+    for keep in range(len(last)):
+        crash.write_bytes(head + last[:keep])
+        assert not runprov.chain.verify(crash).merged, (
+            f"a {keep}-byte fragment is a PREFIX of one record and carries no boundary; "
+            f"calling it a merge is the false CANNOT_CHECK this discriminator exists to avoid"
+        )
+    crash.write_bytes(head + last[: len(last) // 2])
+    assert _chain_exit(crash) == 0, "a crash must not cost a project its gate, for ever"
+
+
+@pytest.mark.parametrize("shape", ["intact", "torn", "mixed-version", "pre-chain"])
+def test_no_single_byte_edit_escapes_the_chain(shape, tmp_path):
+    """ADR-0016 [ADR-0016 R-31] [ADR-0016 R-23]. THE ACCEPTANCE GATE, and the only claim here
+    that does not depend on my having enumerated the cases correctly.
+
+    Flip every byte the report says is attested, one at a time, and require that the verdict is
+    never INTACT. It reasons about nothing. Measured against the code as it stood before the
+    decision table: **623 positions in a five-line history, 0.1 seconds, 163 of them left the
+    verdict INTACT** — all one defect class, which four reviewers and sixteen mutations had
+    taken a day to surface.
+
+    THREE SCOPES WERE HAND-WRITTEN HERE AND TWO WERE WRONG (Audit G, G-03 / G-07 / G-10), which
+    is why all three are now DERIVED. They are one repair and not three: fixing any one of them
+    exposes the next.
+
+    * WHICH BYTES. The loop used to `continue` on `\\n`. One of the bytes it skipped was the
+      only escape that existed: overwrite the terminator of the last attested line and two
+      records merge into one unreadable line while the verdict stays INTACT and the exit code
+      stays 0. Measured on the shipped fixtures: 453 of 456 positions examined on `intact`,
+      zero escapes among them, and an escape at the one position skipped — byte 455, the `\\n`.
+      A terminator is a record boundary and is part of what the chain must protect, so nothing
+      is skipped now.
+    * WHICH SHAPES. Two of the four were already non-INTACT before any flip — `mixed-version`
+      was CANNOT_CHECK and `pre-chain` was BROKEN — so `not escaped` was vacuously true and the
+      test passed with the mutation replaced by a no-op. A shape whose base verdict is not
+      INTACT cannot witness an escape, so the precondition is ASSERTED rather than assumed, and
+      the two shapes are built the way an upgrade and a pre-chain history really arrive, oldest
+      lines first, rather than by editing a chained file into a shape no writer produces.
+    * WHICH REGION. `range(last)` excluded the last line and nothing else, so on the rebuilt
+      pre-chain shape it swept the lines that NOTHING attests by design (R-4) and reported 83
+      "escapes" that are a disclosed limit rather than defects. The region is now read out of
+      the report: a line's bytes are attested if and only if the edge above it HOLDS, which is
+      the model's own statement, so the region moves when the model does. The last line is
+      still excluded, and not by a subtraction — nothing attests it, which is R-23's limit
+      stated on every report rather than hidden here.
+
+    UNCLAIMED cannot silently shrink that region, and the reason is the precondition rather
+    than luck: under R-26 an UNCLAIMED edge is decisive, so any shape containing one is
+    CANNOT_CHECK and fails the assertion above before a single byte is flipped. The only edge
+    statuses a shape reaching the sweep can carry are HOLDS, HOLDS_TRIVIAL and UNCHAINED.
+
+    And the count of what was examined is asserted, because `not escaped` and "nothing was
+    examined" print the same word: on a one-line fixture the old loop ran zero times and
+    passed, and the gate adds no unique coverage, so the 100 % floor could not notice either.
+    """
+    p = tmp_path / "h.jsonl"
+    if shape == "mixed-version":
+        # An in-place upgrade: the release that cannot chain wrote FIRST, and the chain is
+        # anchored over it. Appending a 0.5.0 line AFTER the chain is a downgrade, which is a
+        # GAP by R-25 rule 5 and can never be INTACT — a shape that cannot witness anything.
+        p.write_bytes(
+            json.dumps(
+                {"schema": "runprov.history.v2", "run_id": "o", "tool": {"version": "0.5.0"}}
+            ).encode()
+            + b"\n"
+        )
+    elif shape == "pre-chain":
+        # R-4's prefix, written before the feature existed, then chained over by a real run.
+        # Prepending to an ALREADY chained file instead makes line 4 claim GENESIS behind a
+        # predecessor, which rule 0 calls BROKEN — which is why that fixture was vacuous.
+        p.write_bytes(b'{"schema": "runprov.history.v2", "run_id": "old"}\n' * 3)
     _chain_history(p, 4)
     if shape == "torn":
         raw = p.read_bytes()
         cut = raw.rfind(b"\n", 0, len(raw) - 1)
         p.write_bytes(raw[: cut + 1] + raw[cut + 1 :][: len(raw[cut + 1 :]) // 2])
         runprov.JsonlSink(p).append({"schema": "runprov.history.v2", "run_id": "after"})
-    elif shape == "mixed-version":
-        with p.open("ab") as fh:
-            fh.write(
-                json.dumps(
-                    {"schema": "runprov.history.v2", "run_id": "o", "tool": {"version": "0.5.0"}}
-                ).encode()
-                + b"\n"
-            )
-    elif shape == "pre-chain":
-        p.write_bytes(b'{"schema": "runprov.history.v2", "run_id": "old"}\n' * 3 + p.read_bytes())
 
     original = p.read_bytes()
-    last = original.rfind(b"\n", 0, len(original) - 1) + 1
+    before = runprov.chain.verify(p)
+    assert before.status == runprov.chain.INTACT, (
+        f"{shape}: a shape that is not INTACT to begin with cannot witness an escape, and "
+        f"`not escaped` would be vacuously true over it — it is {before.status}"
+    )
+
+    # THE REGION, DERIVED: edge n carries line n's claim about line n-1, so line n-1's bytes
+    # are attested exactly when that edge HOLDS. The terminator belongs to the line it ends.
+    attested = {edge.line - 1 for edge in before.edges if edge.status == runprov.chain.HOLDS}
+    positions, at = [], 0
+    for number, line in enumerate(original.split(b"\n")[:-1], start=1):
+        if number in attested:
+            positions.extend(range(at, at + len(line) + 1))
+        at += len(line) + 1
+
     escaped = []
-    for position in range(last):
-        if original[position : position + 1] == b"\n":
-            continue
+    for position in positions:
         mutated = bytearray(original)
         mutated[position] = ord("X") if mutated[position] != ord("X") else ord("Y")
         p.write_bytes(bytes(mutated))
         if runprov.chain.verify(p).status == runprov.chain.INTACT:
             escaped.append(position)
     p.write_bytes(original)
+
+    assert attested, f"{shape}: the report attests no line at all; there is nothing to protect"
+    assert len(positions) == sum(len(original.split(b"\n")[n - 1]) + 1 for n in sorted(attested)), (
+        "every byte of every attested line, and its terminator, exactly once"
+    )
     assert not escaped, (
-        f"{len(escaped)} of {last} byte positions can be changed with the verdict still INTACT; "
-        f"first at byte {escaped[0] if escaped else None}"
+        f"{shape}: {len(escaped)} of {len(positions)} attested byte positions can be changed "
+        f"with the verdict still INTACT; first at byte {escaped[0] if escaped else None}"
     )
 
 

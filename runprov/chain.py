@@ -73,6 +73,45 @@ CANNOT_CHECK = "CANNOT_CHECK"
 #: JSON parser has already refused, so garbage cannot match — this is not a second parser.
 _RAW_CLAIM = re.compile(rb'^\{"prev": "(GENESIS|[0-9a-f]{64})"')
 
+#: Audit G, G-03. A CRASH TRUNCATES A LINE; IT NEVER CONCATENATES TWO. So an unreadable line
+#: that still contains a record BOUNDARY inside it — a closing brace against an opening one, or
+#: a second `prev` anchor — is not a fragment: it is two records whose separating terminator was
+#: destroyed. Overwrite one `\n` and two runs vanish from `log`, `show` and `report` while every
+#: byte of both survives, which is the single-byte edit R-31 exists to forbid and the only one
+#: that ever escaped it.
+#:
+#: REPORTED AS `CANNOT_CHECK`, NEVER AS AN ACCUSATION, and this is not merely caution. What the
+#: two merged records used to say cannot be read back from the line, so there is nothing R-10
+#: could print that would be true of the break. And a destroyed interior terminator has an
+#: innocent producer: Audit G's skeptic built the post-crash byte state and an `fsck` zero-
+#: filling a block it cannot recover — the recovery path this repository's own parent directory
+#: is named after — turns the `\n` inside that block into a NUL, which joins the two lines
+#: exactly as a hand edit would. `re.S` is what makes the pattern see that NUL. So the true
+#: statement is the narrow one: a TRUNCATING crash cannot produce this. Something else might.
+#:
+#: Anchored and exact-shape like `_RAW_CLAIM`, and tried ONLY on lines the JSON parser has
+#: already refused, which is what keeps R-20/R-11's honest crash free: a fragment is a PREFIX of
+#: one record, so it contains no boundary.
+#:
+#: SWEPT BEFORE THIS SHIPPED, because a false positive here costs a user a spurious
+#: CANNOT_CHECK over an intact file, which is the class two waves of repairs have just removed.
+#: Every runprov history reachable from this machine — the five corpus versions, each of them
+#: plus one append by the current code, every `*.jsonl` in the tree, every `*.jsonl` blob ever
+#: committed to any ref, and generated histories carrying lists of objects, nested records and
+#: strings containing the boundary text itself — and EVERY truncation of every one of their
+#: lines, which is the whole space a tear can leave behind: **zero matches**, over 42 sources,
+#: 206 history lines and 194 101 crash fragments.
+#:
+#: The reason is structural rather than luck: a `"` inside a JSON string is always escaped to
+#: `\"`, so the two bytes `{"` cannot occur inside a string VALUE at all. The one shape that
+#: does match is a list of objects serialised with COMPACT separators (`},{"`) — and it is not
+#: hypothetical: 1 294 780 lines of NCBI `datasets` output on this same drive match. Every one
+#: of them is accepted by `json.loads`, so this pattern is never consulted for any of them, and
+#: none is a runprov history. `json.dumps` with its default `", "` writes two bytes between the
+#: braces, and `JsonlSink` passes no `separators`. If it ever does, this pattern must be
+#: re-measured before the change lands.
+_BOUNDARY = re.compile(rb'\}.?\{"|.\{"prev": "(?:GENESIS|[0-9a-f]{64})"', re.S)
+
 #: R-5. The first release that writes a chain. A line with no `prev` whose `tool.version` names
 #: something OLDER is a supported writer and a coverage gap; one naming this or later is a
 #: break. DERIVED from `__init__.__version__` would be wrong — this is the version at which the
@@ -291,6 +330,11 @@ class Report(typing.NamedTuple):
     chained_from: int | None
     #: R-28. Lines whose terminator was translated after they were written.
     translated: int = 0
+    #: G-03. Lines the parser refused that still contain a record boundary — two records whose
+    #: terminator was destroyed. NOT AN EDGE: the edge model judges the link between two lines,
+    #: and this is a fact about the bytes of one line, which is precisely why the gate could
+    #: not see it. Decisive, and never an accusation — see `_BOUNDARY`.
+    merged: tuple[int, ...] = ()
 
     @property
     def status(self) -> str:
@@ -309,6 +353,12 @@ class Report(typing.NamedTuple):
         if BROKEN in kinds:
             return BROKEN
         if UNCHECKABLE in kinds or GAP in kinds or UNCLAIMED in kinds:
+            return CANNOT_CHECK
+        if self.merged:
+            # G-03, and it is folded in HERE rather than expressed as an edge status because a
+            # destroyed terminator is a fact about one line's bytes, not about the link between
+            # two — the edges on either side of a merged line are untouched and both still
+            # HOLD, which is exactly how INTACT/exit 0 was reached over it.
             return CANNOT_CHECK
         if self.chained_from is None:
             return CANNOT_CHECK  # nothing in this file is chained; there is no claim to check
@@ -393,10 +443,15 @@ def verify(path: str | pathlib.Path) -> Report:
     translated = [line.endswith(b"\r") for line in lines]
 
     records: dict[int, dict[str, typing.Any]] = {}
+    merged: list[int] = []
     for index, line in enumerate(lines, start=1):
         try:
             parsed = json.loads(line)
         except ValueError:
+            # G-03. The parser has refused it, so R-20's question is asked of it below; this
+            # one is asked here, of the same lines and nowhere else. See `_BOUNDARY`.
+            if _BOUNDARY.search(line):
+                merged.append(index)
             continue
         if isinstance(parsed, dict):  # R-24: valid JSON that is not an object says nothing
             records[index] = parsed
@@ -461,7 +516,7 @@ def verify(path: str | pathlib.Path) -> Report:
                 wrote=named,
             )
         )
-    return Report(len(lines), edges, chained_from, sum(translated))
+    return Report(len(lines), edges, chained_from, sum(translated), tuple(merged))
 
 
 def render(report: Report, path: pathlib.Path) -> list[str]:
@@ -515,6 +570,18 @@ def render(report: Report, path: pathlib.Path) -> list[str]:
             f"take the file lock writes none (it prints a NOTE when that happens), and a run "
             f"still in flight has not written its completion record yet — but so would a line "
             f"inserted by hand. This is not evidence of an edit."
+        )
+    for number in report.merged:
+        # G-03. The verdict it forces would otherwise appear on the page with no cause named,
+        # and R-9 requires the report to state what it checked. It says what is true of the
+        # bytes and stops: the records that were joined cannot be read back, so nothing here
+        # can be checked either way, and R-32's rule is that this tool does not accuse unless
+        # it is certain.
+        out.append(
+            f"    COULD NOT CHECK  line {number} is not readable, and a record boundary sits "
+            f"inside it — two records whose separating terminator is gone. Neither can be read "
+            f"back, so neither can be checked. A truncating crash cannot produce this, but a "
+            f"lost or zero-filled block can. This is not evidence of an edit."
         )
     for link in report.of(UNCHECKABLE):
         if link.wrote == "translated":

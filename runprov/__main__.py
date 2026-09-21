@@ -1731,6 +1731,9 @@ def _chain(args: argparse.Namespace) -> int:
                     "attested": report.attested,
                     "chained_from": report.chained_from,
                     "translated": report.translated,
+                    # G-03, and E-10's lesson applied to it: the two renderings carry the same
+                    # facts, so a machine reader can never miss a finding the page states.
+                    "merged": list(report.merged),
                     # EVERY EDGE, with its status and both digests. The payload used to carry
                     # hand-picked buckets, and three mutations of it survived the suite because
                     # its only test used a clean file where every field equalled its correct
