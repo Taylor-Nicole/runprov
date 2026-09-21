@@ -24297,13 +24297,30 @@ def test_the_chain_is_computed_inside_the_lock_and_after_the_torn_line_repair(tm
 
 
 def test_no_lock_means_no_chain_claim_rather_than_a_false_accusation(tmp_path, monkeypatch):
-    """ADR-0016 [ADR-0016 R-22]. Audit E, E-03.
+    """ADR-0016 [ADR-0016 R-22] [ADR-0016 R-32]. Audit E, E-03 — and Audit G, G-01, which this
+    test is the reason nobody saw coming.
 
     `_exclusive` documents an unlocked fallback for NFS, CIFS and containers, and its own
     measurement records that 8 processes x 20 appends produced 160/160 intact records there.
     Chaining under it lets two writers claim the same predecessor, so a file in which every
     record landed correctly gets reported as tampered — reproduced with ENOLCK: 80/80 records
     present, four accusations naming untouched lines.
+
+    THIS TEST WAS VACUOUS WITH RESPECT TO THE RULE IT GUARDS, and that is why G-01 escaped
+    every reader who checked that R-22 had a test. Its fixture appended the unlocked records
+    to an EMPTY file, so no line was ever chained, `started` never became true, and all four
+    edges fell to rule 3b/4 — `UNCHAINED` — before rule 7 was reached. Measured on the fixture
+    as it stood: `[UNCHAINED, UNCHAINED, UNCHAINED, UNCHAINED]`, `chained_from = None`. The
+    exit 2 it asserted came from *nothing in this file is chained*, not from any judgement
+    about the unlocked lines at all; and restoring rule 7's `BROKEN` in place left this test
+    PASSING. The guard a reader would point at could not fire.
+
+    A CHAINED PREFIX IS THE SITUATION R-22 IS ACTUALLY ABOUT: a project already recording
+    normally, which then runs somewhere `flock` is unavailable — a colleague on an NFS home, a
+    container without it. That is when an unlocked append lands after a chained line, and it is
+    the only arrangement in which the rule can be reached. So the fixture now begins with two
+    ordinary locked appends, and the assertion is the [ADR-0016 R-32] outcome: `UNCLAIMED`,
+    exit 2, disclosed by name, and no line accused.
     """
     # BOTH MECHANISMS, because `_exclusive` uses `fcntl` on POSIX and `msvcrt` on Windows.
     # Blocking only `fcntl` left Windows fully locked, so this asserted the UNLOCKED behaviour
@@ -24318,16 +24335,33 @@ def test_no_lock_means_no_chain_claim_rather_than_a_false_accusation(tmp_path, m
             raise ImportError(name)
         return real(name, *a, **k)
 
-    monkeypatch.setattr(builtins, "__import__", without_locking)
     p = tmp_path / "h.jsonl"
+    # THE CHAINED PREFIX, written normally, before locking goes away. Without it the rule this
+    # test exists for is unreachable and the assertions below hold for the wrong reason.
+    for i in range(2):
+        runprov.JsonlSink(p).append({"schema": "runprov.history.v2", "run_id": f"ok{i}"})
+
+    monkeypatch.setattr(builtins, "__import__", without_locking)
     for i in range(4):
         runprov.JsonlSink(p).append({"schema": "runprov.history.v2", "run_id": f"r{i}"})
     monkeypatch.undo()
 
     lines = p.read_bytes().rstrip(b"\n").split(b"\n")
-    assert len(lines) == 4, "the degraded path still keeps every record"
-    assert all("prev" not in json.loads(line) for line in lines), (
+    assert len(lines) == 6, "the degraded path still keeps every record"
+    assert [("prev" in json.loads(line)) for line in lines] == [True, True, *[False] * 4], (
         "an unlocked append makes NO claim; a claim it cannot stand behind is worse than none"
+    )
+
+    report = runprov.chain.verify(p)
+    assert report.chained_from == 1, (
+        "the prefix really is chained — without this the walk never reaches rule 7 and every "
+        "assertion below passes for a reason that has nothing to do with R-22"
+    )
+    assert [e.line for e in report.of(runprov.chain.UNCLAIMED)] == [3, 4, 5, 6], (
+        "[ADR-0016 R-32] the four unlocked lines are the rule-7 cell, and it is reached"
+    )
+    assert not report.of(runprov.chain.BROKEN), (
+        "every record landed and no byte moved: G-01's four accusations over a correct file"
     )
     assert _chain_exit(p) == 2, "unverifiable, and never an accusation"
 
