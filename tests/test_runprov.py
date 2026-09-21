@@ -21143,13 +21143,20 @@ def test_every_resource_requirement_has_a_test():
 
     It is the `docs/adr` index guard one level in — that one checked filenames and let a
     status drift, so this checks the thing the document is ABOUT rather than that it exists.
+
+    THE NON-VACUITY FLOOR IS GONE, and nothing replaced the number (Audit G, G-11). It read
+    `len(required) >= 15` against an ADR that has since grown to 16, so it carried a
+    requirement of slack and would carry one more with every requirement added. A floor is a
+    hand-written scope, and a hand-written scope is where this codebase keeps finding the
+    defect; `== 16` only moves the trap, because the obvious edit when R-17 turns it red is to
+    bump the number. `required == cited` needs no number at all: the two directions it folds
+    together were already asserted separately here, so this loses no detection — and the
+    floor was never what caught a deletion.
     """
     adr = _repo_root() / "docs" / "adr" / "0013-what-a-run-consumed-measured-not-declared.md"
     if not adr.is_file():  # pragma: no cover - docs ship in the sdist, a bare tree may not
         pytest.skip("ADR-0013 not present")
     required = set(re.findall(r"^\*\*(R-\d+[a-z]?)\.\*\*", adr.read_text(encoding="utf-8"), re.M))
-    assert len(required) >= 15, f"the requirement sweep found {sorted(required)}; the scope broke"
-
     tests = pathlib.Path(__file__).read_text(encoding="utf-8")
     # Cited from a test's own text, not from this file as a whole: the ADR itself is not
     # allowed to satisfy the requirement by mentioning its own number.
@@ -21162,11 +21169,11 @@ def test_every_resource_requirement_has_a_test():
             tests.split("def test_every_resource_requirement")[0],
         )
     )
-    missing = sorted(required - cited, key=lambda s: (len(s), s))
-    assert not missing, f"specification requirements with no test naming them: {missing}"
-
-    stale = sorted(cited - required, key=lambda s: (len(s), s))
-    assert not stale, f"tests cite requirements ADR-0013 no longer states: {stale}"
+    assert required == cited, (
+        "ADR-0013 and its tests disagree. Requirements the ADR states that no test names: "
+        f"{sorted(required - cited, key=lambda s: (len(s), s))}. Requirements the tests cite "
+        f"that the ADR no longer states: {sorted(cited - required, key=lambda s: (len(s), s))}"
+    )
 
 
 def test_every_adr_is_listed_in_the_adr_index():
@@ -25649,16 +25656,29 @@ def test_every_chain_requirement_has_a_test():
     still marked proposed — but it cannot see a missing requirement test, so what actually
     caught this was counting the citations by hand. That is not a mechanism, and the honest
     statement is that this guard protects the requirements and nothing yet protects this guard.
+
+    AND ITS OWN FLOOR HAD GONE STALE (Audit G, G-11). It read `len(required) >= 24` while
+    ADR-0016 reached 32 requirements, so the whole decision table, its acceptance gate and
+    R-32 — all of R-25 through R-32 — could be deleted from the specification with this guard
+    green. Measured: eight requirement definitions removed, `1 passed`. `not missing` did not
+    notice, because a requirement that is gone from the ADR is not a requirement without a
+    test; it is a test citing nothing, which is the direction this never checked.
+
+    THE REPLACEMENT CARRIES NO NUMBER. `== 32` was refused: a future R-33 turns it red and the
+    obvious edit is to bump it, which is the maintenance trap rather than the guard. Set
+    equality catches a deleted requirement AND a mistyped citation, in both directions, and it
+    is the same shape ADR-0013's sibling guard now uses — the class rather than the instance.
     """
     adr = _repo_root() / "docs" / "adr" / "0016-a-history-shows-whether-it-has-been-edited.md"
     if not adr.is_file():  # pragma: no cover - docs ship in the sdist, a bare tree may not
         pytest.skip("ADR-0016 not present")
     required = set(re.findall(r"^\*\*(R-\d+)\.\*\*", adr.read_text(encoding="utf-8"), re.M))
-    assert len(required) >= 24, f"the requirement sweep found {sorted(required)}; the scope broke"
-
     tests = pathlib.Path(__file__).read_text(encoding="utf-8")
     cited = set(
         re.findall(r"\[ADR-0016 (R-\d+)\]", tests.split("def test_every_chain_requirement")[0])
     )
-    missing = sorted(required - cited, key=lambda s: (len(s), s))
-    assert not missing, f"ADR-0016 requirements with no test naming them: {missing}"
+    assert required == cited, (
+        "ADR-0016 and its tests disagree. Requirements the ADR states that no test names: "
+        f"{sorted(required - cited, key=lambda s: (len(s), s))}. Requirements the tests cite "
+        f"that the ADR no longer states: {sorted(cited - required, key=lambda s: (len(s), s))}"
+    )
