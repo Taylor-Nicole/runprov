@@ -1,8 +1,9 @@
 # Contributing to `runprov`
 
-## Sign your commits — this is the one hard requirement
+## Sign your commits — this is the one hard requirement for a contribution
 
-Every commit must carry a `Signed-off-by:` line. `git commit -s` adds it:
+**Every commit in a pull request must carry a `Signed-off-by:` line**, and CI enforces it on
+the whole range. `git commit -s` adds it:
 
 ```
 Signed-off-by: Your Name <your.email@example.org>
@@ -44,8 +45,37 @@ third party and usually needs a lawyer to read; a DCO is one line and asserts on
 honest contributor can already assert. At this project's size, a CLA would cost more than it
 protects.
 
-CI enforces the sign-off on every pull request. If it fails, the message tells you the
-rebase command.
+CI enforces the sign-off on every pull request (`.github/workflows/dco.yml`, over the whole
+`base..head` range, not just the tip). If it fails, the message tells you the rebase command.
+
+### What this requirement does NOT cover, stated because the history shows it
+
+**The maintainers' direct pushes to `main` are not signed, and are not covered.** Measured on
+2026-09-21: **16 of 352 commits carry a sign-off**, all from 2026-08-07 to 2026-08-11, and every
+commit in the repository is by a copyright holder. The DCO check runs `on: [pull_request]`, so a
+direct push never reaches it.
+
+That is a scope, not an oversight, and the reason is the rationale above: the hazard is an
+**unsigned contribution from someone who is not already a copyright holder** — their copyright
+in it is what cannot later be relicensed without finding them. A commit by a holder creates
+nobody to track down. This section used to open *"every commit must carry"* without that
+distinction, which made a hard requirement out of something 95 % of the history does not do —
+and a rule nobody follows teaches readers to skip the rules that matter.
+
+**The history will not be retro-signed.** Rewriting it to add trailers would change every commit
+SHA, and this project's own records cite SHAs by the hundred — the 2026-09-15 attribution
+rewrite is the worked example: 272 commits rewritten, 253 citations regenerated across four
+locations, and three closed pull requests still hold frozen copies that no write can reach. The
+cost is real and the benefit here is zero, because the commits in question are the holders' own.
+
+### No tool may sign on your behalf
+
+A sign-off is a statement **by a person** that they have the right to submit the work. Automated
+tooling — scripts, bots, coding agents — must never add a `Signed-off-by:` line naming a human
+who did not personally make that certification. If a tool prepares a commit, the person adopting
+it signs it. This is written down because it has already happened here: an agent added a
+sign-off in the maintainer's name to two commits on 2026-09-21, and they were stripped before
+anything was pushed.
 
 ## What a good change looks like here
 
