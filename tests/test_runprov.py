@@ -25419,6 +25419,58 @@ def test_the_writer_of_a_line_is_resolved_from_the_run(tmp_path, capsys):
     assert runprov.__main__.main(["chain", str(p)]) == 2
     assert "written by runprov 0.5.0" in capsys.readouterr().out
 
+    # Audit G, G-20. THE KEY IS `run_uid` — this requirement's own word — and it was
+    # `run_uid or run_id`. `run_id` is a LABEL the caller chooses, and real histories reuse it:
+    # the premise below is read off this repository's own released-wheel corpus rather than
+    # argued, and it was confirmed on a live run while this row was applied, where two runs a
+    # minute apart both recorded `run_id="adhoc_20260923T141046Z"` under two `run_uid`s. A map
+    # keyed on something that does not identify a run lets one run's version answer for another
+    # run's lines, and which one answers is whichever record happened to come first.
+    rows = [
+        json.loads(line)
+        for line in (_repo_root() / "tests/corpus/0.5.0/tree/prov/history.jsonl")
+        .read_bytes()
+        .split(b"\n")
+        if line.strip()
+    ]
+    assert len({r["run_id"] for r in rows}) == 1 and len({r["run_uid"] for r in rows}) == 3, (
+        f"the premise: three runs and ONE `run_id` between them — "
+        f"{sorted({r['run_id'] for r in rows})}"
+    )
+    assert runprov.chain._writers(dict(enumerate(rows, start=1))) == {
+        r["run_uid"]: "0.5.0" for r in rows if isinstance(r.get("tool"), dict)
+    }, "one entry per RUN, each carrying its own version — not one entry for all three"
+    assert runprov.chain._writers({1: {"run_id": "job", "tool": {"version": "0.5.0"}}}) == {}, (
+        "and a record identified only by that label resolves nothing: the writer is a property "
+        "of the RUN. This is the old fallback's only reachable input, and it is not one any "
+        "release writes — the `runprov.run.v1` records that predate `run_uid` carry no `tool` "
+        "block at all, so no history on disk is resolved differently by this"
+    )
+
+    # WHAT IT COSTS, asserted so the loss is on the page and not only in the ADR. A line whose
+    # run is named only by a reused label no longer borrows a sibling's version, so it resolves
+    # UNSTATED and takes rule 7 — which under [ADR-0016 R-32] is `UNCLAIMED`, exit 2 and a
+    # disclosure, where it used to be `GAP`, exit 2 and a machine to upgrade. The exit code is
+    # the same; what is given up is an actionable sentence that was only ever as good as the
+    # label it was read from.
+    labelled = tmp_path / "labelled.jsonl"
+    borrowed_sink = runprov.JsonlSink(labelled)
+    borrowed_sink.append(
+        {"schema": "runprov.history.v2", "run_id": "job", "tool": {"version": "0.6.0"}}
+    )
+    with labelled.open("ab") as fh:
+        fh.write(json.dumps({"schema": "runprov.start.v1", "run_id": "shared"}).encode() + b"\n")
+    borrowed_sink.append(
+        {"schema": "runprov.history.v2", "run_id": "shared", "tool": {"version": "0.5.0"}}
+    )
+    borrowed = runprov.chain.verify(labelled)
+    assert [e.status for e in borrowed.edges] == [
+        runprov.chain.HOLDS_TRIVIAL,
+        runprov.chain.UNCLAIMED,
+        runprov.chain.HOLDS,
+    ], [(e.line, e.status, e.wrote) for e in borrowed.edges]
+    assert _chain_exit(labelled) == 2, "the exit code is unchanged; only the sentence is"
+
     # A VERSION STRING THIS PACKAGE CANNOT PARSE. `tool.version` is written by whoever built
     # the wheel, and a distribution that stamps "nightly" or a git describe is not a forger —
     # it is a writer we cannot place. [ADR-0016 R-32]: unplaceable is not guilty, so the

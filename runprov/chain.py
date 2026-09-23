@@ -448,12 +448,31 @@ def _writers(records: dict[int, dict[str, typing.Any]]) -> dict[str, str]:
     `CANNOT_CHECK` rather than a false accusation. Resolving it is still the point: without
     this, a completed 0.5.0 run reports `GAP` and names the machine to upgrade, which is
     actionable, and an unresolved one reports `UNCLAIMED`, which is not.
+
+    THE KEY IS `run_uid`, WHICH IS WHAT R-29 SAYS, and Audit G's G-20 is what it used to be:
+    `run_uid or run_id`. `run_id` is a LABEL the caller chooses, and real histories reuse it —
+    measured on this machine, two runs a minute apart both recorded
+    `run_id="adhoc_20260923T141046Z"` under two different `run_uid`s, and every history in
+    `tests/corpus/` has three runs sharing one. A map keyed on something that does not identify
+    a run lets one run's version answer for another run's lines, and which one answers is
+    whichever record happened to come first.
+
+    Nothing the package has ever written is resolved differently by this: every record that
+    states a `tool.version` also states a `run_uid`, and the `runprov.run.v1` records that
+    predate `run_uid` carry no `tool` block at all, so they neither fill this map nor read it.
+    What changes is that the collision channel is gone rather than merely unexercised.
+
+    `setdefault` — first version wins — is LEFT AS IT IS AND DELIBERATELY NOT PINNED BY A TEST.
+    Keyed on `run_uid` it decides nothing any release can reach: a run writes exactly ONE
+    versioned record — `runprov.start.v1` carries no `tool` block and the completion record is
+    written once — measured on a real run. An assertion over a `run_uid` stating two versions
+    would freeze a guess about an input no writer produces as though it were a decision.
     """
     found: dict[str, str] = {}
     for record in records.values():
         tool = record.get("tool")
         version = tool.get("version") if isinstance(tool, dict) else None
-        uid = record.get("run_uid") or record.get("run_id")
+        uid = record.get("run_uid")
         if isinstance(version, str) and isinstance(uid, str):
             found.setdefault(uid, version)
     return found
@@ -467,7 +486,10 @@ def _writer_of(record: dict[str, typing.Any] | None, by_run: dict[str, str]) -> 
     tool = record.get("tool")
     version = tool.get("version") if isinstance(tool, dict) else None
     if not isinstance(version, str):
-        uid = record.get("run_uid") or record.get("run_id")
+        # G-20. THE SAME KEY THE MAP WAS BUILT WITH. Looking up under `run_id` while `_writers`
+        # keys on `run_uid` would be asking a map a question in a different vocabulary, and the
+        # only records it could answer for are ones whose label happens to equal somebody's uuid.
+        uid = record.get("run_uid")
         version = by_run.get(uid) if isinstance(uid, str) else None
     if not isinstance(version, str):
         return "UNSTATED"
@@ -578,7 +600,7 @@ def verify(path: str | pathlib.Path) -> Report:
             record = records.get(index) or {}
             tool = record.get("tool")
             named = tool.get("version") if isinstance(tool, dict) else None
-            named = named or by_run.get(str(record.get("run_uid") or record.get("run_id")))
+            named = named or by_run.get(str(record.get("run_uid")))  # G-20: run_uid, per R-29
         edges.append(
             Link(
                 index,
