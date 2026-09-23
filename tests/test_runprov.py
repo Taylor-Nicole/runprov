@@ -26161,6 +26161,55 @@ def test_a_history_with_nothing_chained_says_what_it_could_not_read(tmp_path, ca
     assert "written before the chain existed" in kept, kept
 
 
+def test_r31s_shape_list_is_the_one_the_gate_actually_runs():
+    """ADR-0016 [ADR-0016 R-31] [ADR-0016 R-15]. The prose and the parametrisation, held equal.
+
+    Audit G, G-15: R-31 named five shapes — intact, torn, unlocked run, mixed-version,
+    CRLF-translated — against four that ran. Two it named were never run and one that ran was
+    never named, so a reader budgeting risk from the ADR over-credited the gate by two
+    confirmations. The wording was corrected in `cbf3f49`; NOTHING KEPT IT CORRECT, which is
+    how it drifted in the first place.
+
+    DERIVED FROM BOTH SIDES, never a written list. The requirement's shapes are read out of the
+    ADR sentence and the gate's out of the decorator's own AST, so this cannot be satisfied by
+    editing a third copy — the failure that `test_every_chain_requirement_has_a_test` was
+    rewritten to avoid in G-11, applied to the one other place this project states a set in
+    prose and again in code.
+    """
+    adr = _repo_root() / "docs" / "adr" / "0016-a-history-shows-whether-it-has-been-edited.md"
+    if not adr.is_file():  # pragma: no cover - docs ship in the sdist, a bare tree may not
+        pytest.skip("ADR-0016 not present")
+    # The sentence is a blockquote and wraps, so fold the quote markers and soft breaks away
+    # before matching — a line-oriented read is exactly what hid G-23's third site.
+    prose = re.sub(r"\n>?[ \t]*", " ", adr.read_text(encoding="utf-8"))
+    said = re.search(r"It runs over ([a-z]+) shapes[^:]*:(.+?)\.", prose)
+    assert said, "R-31 no longer states the shapes it runs over"
+    named = set(re.findall(r"\*\*([a-z-]+)\*\*", said.group(2)))
+
+    source = pathlib.Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    run = None
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "test_no_single_byte_edit_escapes_the_chain"
+        ):
+            for dec in node.decorator_list:
+                for arg in getattr(dec, "args", []):
+                    if isinstance(arg, ast.List):
+                        run = {ast.literal_eval(e) for e in arg.elts}
+    assert run, "the acceptance gate is no longer parametrised over shapes"
+
+    assert named == run, (
+        f"ADR-0016 R-31 and the acceptance gate disagree about which shapes it runs. "
+        f"Named in the ADR and not run: {sorted(named - run)}. "
+        f"Run and not named: {sorted(run - named)}. "
+        f"Two shapes were removed from the prose for cause — a CRLF-translated line's digest "
+        f"cannot match, and under R-32 an unlocked append is UNCLAIMED — so neither can meet "
+        f"this gate's asserted INTACT precondition. If a shape is added, add it to both."
+    )
+
+
 def test_every_chain_requirement_has_a_test():
     """ADR-0016's specification is checked, not remembered — the ADR-0013 mechanism, reused.
 
