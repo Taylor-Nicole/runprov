@@ -111,6 +111,43 @@ same names, so a question answered against the record is answerable against the 
 clause 6 and ADR-0009 already require: it computes nothing that is not already recorded, and no
 field exists in it that could not be got from the record and the command's own logic.
 
+**R-12.** **Each payload is the command's OWN structure, serialised — not a shape invented for
+it.** R-1 says one builder and two renderers; this names the builder per command, so that a
+reviewer can check the JSON against something that already exists rather than against prose.
+
+| command | the structure it already computes | notes for the payload |
+|---|---|---|
+| `diff` | `diff.Dimension(name, differences, examined, blocked)`, one per dimension | `blocked` and `examined` are R-7's whole point: `NOT COMPARABLE` is a verdict, not an absence |
+| `impact` | `impact.Chain(digest, seeds, steps, unregistered, runs_examined, watch_drops)` with `Step(depth, address, script, outputs)` | `depth` carries the ORDER, which is the answer; `unregistered` and `watch_drops` are the blind spots R-7 requires on every answer |
+| `check` | `check.Report(examined, entry_points, flagged, unparseable)` | `examined` is the positive companion — "nothing flagged" and "nothing scanned" must not serialise the same |
+| `resources` | `resources.Measurement(...)` | already carries `source` and `unavailable`; `source` says WHICH mechanism answered, which R-7 requires to travel with the number |
+| `show` | the `dict` view `render_run`/`render_project` already take | already a structure; the JSON is that view, and the text stays its rendering |
+| `log` | the filtered record list, plus what was excluded and why | see R-3's note: this is the ANSWER, not `jsonl`'s records |
+| `report` | **none — it has none.** See R-13. | |
+
+**R-13.** **`report` must gain a structure before it can gain a rendering.** `report.Page` is
+`lines: list[str]` and a `status`: the facts become prose inside the builder, so there is nothing
+to serialise. The other six commands serialise what they already have; this one is a refactor.
+
+> Its own docstring records half of this lesson already — the status is RETURNED rather than
+> string-matched back out of the rendered text, because *"the first version of the CLI handler
+> decided its exit code by string-matching its own output, which makes the wording load-bearing:
+> rephrasing a line would silently change what the command returns to a build."* The same
+> argument applies to every other fact on that page, and R-1 is that argument generalised.
+>
+> **So `report` is the row to build FIRST**, not last: it is the only one whose cost is not
+> already paid, and doing it first stops the other six being written against an architecture
+> that turns out not to hold. If it proves larger than the rest combined, that is the honest
+> signal to ship the six and take `report` separately, rather than to discover it at the end.
+
+**R-14.** **A payload names what it could not establish, in the same object as what it found.**
+Not a second call, not a stderr line, not an absence a consumer must infer. `diff` has `blocked`,
+`impact` has `unregistered` and `watch_drops`, `check` has `unparseable`, `resources` has
+`unavailable` and `source`, `chain` has `merged`, `translated` and `unreadable`. **Every one of
+those exists because a reader was once given a clean answer over an incomplete look**, and a
+JSON form that dropped them would re-open every one of those findings at once for exactly the
+consumers least able to notice.
+
 **R-11.** Not a stable API on the first release. It is versioned by R-5 and the README says the
 JSON shape follows the record-format promise: a field's meaning does not change without a new
 schema value.
