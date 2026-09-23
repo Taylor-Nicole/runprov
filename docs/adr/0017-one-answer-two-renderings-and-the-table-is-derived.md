@@ -43,11 +43,39 @@ for by the text rendering**, and that the text rendering introduces no fact abse
 structure. Derived from the structure's own keys, never a hand-typed list — that list is the
 scope pattern, and it would be the ninth instance in this codebase.
 
-**R-3.** `--format text|json`, defaulting to `text`, on: `diff`, `impact`, `report`,
-`resources`, `check`, `verify`, `log`, `show`. `exec`, `capture` and `prune` are excluded
-because they act rather than answer; `lineage` is excluded because `export` already emits it in
-two standard vocabularies, and a third project-specific one would be a fourth thing to keep
-consistent.
+**R-3.** `--format text|json`, defaulting to `text`, on every command that ANSWERS a question.
+`exec`, `capture` and `prune` are excluded because they ACT rather than answer.
+
+> **AMENDED 2026-09-23, after T-32 shipped in 0.6.0.** This requirement named eight commands as
+> a flat list and the list was already wrong when it was written. Measured against the parsers
+> rather than remembered:
+>
+> | | today | what R-3 asks |
+> |---|---|---|
+> | `verify` | `text,json` | **done** — predates this ADR |
+> | `lineage` | `text,json` | **done** — and the old exclusion was FALSE |
+> | `chain` | `text,json` | **done** — shipped in 0.6.0 under T-32, after this ADR was written |
+> | `diff` | *none* | add. ADR-0014's own sketch specified it and it was never built |
+> | `impact` | *none* | add |
+> | `report` | *none* | add |
+> | `check` | *none* | add |
+> | `resources` | `text,tsv,slurm,k8s` | add `json` beside them |
+> | `show` | `text,yaml` | add `json` beside it |
+> | `log` | `text,yaml,jsonl` | add `json` — see below, it is not the same thing as `jsonl` |
+> | `export` | `ro-crate,prov` | excluded: two standard vocabularies already, and this would be a third |
+>
+> **The `lineage` exclusion was factually wrong.** It said `export` covers it, but `lineage`
+> has emitted `--format json` all along. An exclusion justified by a claim about a neighbouring
+> command, written without checking the command itself, is the shape this project keeps finding
+> — so the rule stands in place of the list: **answer or act**, and the list is derived from the
+> parsers by a test rather than written here again.
+>
+> **`log --format jsonl` does not satisfy this and `--format json` is not redundant with it.**
+> `jsonl` is the RECORDS, one per line, as stored. `json` under R-5 is an ANSWER: a single
+> object carrying `schema`, the question's result, and what could not be established. A consumer
+> asking *"what did this command find"* and a consumer asking *"give me the records"* are asking
+> different things, and R-8's null-versus-absent distinction only means something inside the
+> first. The same holds for `show --format yaml`, which is a rendering of a page, not an answer.
 
 **R-4.** JSON goes to **stdout with nothing else on it** — no banner, no warning, no progress.
 Diagnostics go to stderr, which they already do. A caller that has to strip a line before
