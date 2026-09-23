@@ -2728,7 +2728,7 @@ is the one that went green afterwards.
 
 ## Tests
 
-`tests/test_runprov.py`, **about 950 tests**, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, **about 1,050 tests**, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite — in
 `test_size_is_stat_ed_after_the_hash_not_before` — to
@@ -2759,7 +2759,7 @@ The Windows leg skips ten times what any other does, and it is the only leg that
 assert the coverage floor — skipped tests leave their lines unmeasured, so 100% is
 unreachable there by construction rather than by regression. No other leg may lower it.
 
-Coverage is **100%** of **about 4,450 statements and 1,540 branches**, and the gate is set
+Coverage is **100%** of **about 4,950 statements and 1,760 branches**, and the gate is set
 there with `--cov-branch`.
 
 *Every figure in this section is approximate on purpose.* They exist to convey scale, and an

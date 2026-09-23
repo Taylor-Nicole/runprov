@@ -25806,6 +25806,87 @@ def test_a_break_names_the_digest_a_reader_can_check_it_against(tmp_path, capsys
     assert edge["computed"] == truth and edge["claimed"] != truth
 
 
+def test_a_torn_predecessor_and_a_disagreeing_claim_are_told_apart(tmp_path):
+    """ADR-0016 [ADR-0016 R-10] [ADR-0016 R-11] [ADR-0016 R-12] [ADR-0016 R-24]. Audit G, G-13.
+
+    ONE SENTENCE SERVED RULES 6 AND 9, AND THEY HAVE OPPOSITE STRUCTURE. Rule 6 is a line that
+    says nothing readable about its predecessor. Rule 9 is a line that says something EXPLICIT
+    about its predecessor and disagrees with it. The shared sentence — "nothing readable
+    vouches for line N-1" — is true of the first and false of the second, where line N is
+    readable, carries a digest claim about N-1, and contradicts the bytes on disk.
+
+    AND IT PRINTED NEITHER DIGEST, so [ADR-0016 R-12]'s by-hand `sha256sum` check was
+    impossible at the one edge where a reader most needs it: the edge where the tool itself
+    says it cannot decide between a tear and an edit, and hands the reader the decision.
+
+    THE WORDING TRAP, which is why this asserts on two files rather than one. "line N could
+    not be read" is FALSE at rule 6: `[1, 2, 3]` is valid JSON that `json.loads` parses
+    perfectly and [ADR-0016 R-24] treats as saying nothing, so it reaches rule 6 with the
+    parser never having complained. The sentence has to be true of both files, which means
+    saying the line carries no readable runprov RECORD.
+
+    THE THIRD CASE WAS FOUND WHILE SPLITTING THE OTHER TWO, and it is asserted here because
+    the replacement would otherwise have been printed over it. Rule 3 — a torn FIRST line,
+    with chained lines behind it, so the early return in `render` is not taken — reaches the
+    same loop, and the shared sentence named "line 0": a line that does not exist. That is
+    E-07's own defect, surviving in the renderer after it was fixed in `Link.detail`.
+    """
+    p = tmp_path / "h.jsonl"
+    lines = _chain_history(p, 4)
+
+    # Rule 6 at edge 3 and rule 9 at edge 4. Line 3 loses its leading brace, so the parser
+    # refuses it AND [ADR-0016 R-20]'s anchored recovery cannot match: it made no claim.
+    torn = tmp_path / "torn.jsonl"
+    fragment = lines[2][1:]
+    torn.write_bytes(b"\n".join([lines[0], lines[1], fragment, lines[3]]) + b"\n")
+    report = runprov.chain.verify(torn)
+    assert [e.line for e in report.of(runprov.chain.UNCHECKABLE)] == [3, 4]
+    page = runprov.chain.render(report, torn)
+
+    six = next(line for line in page if line.strip().startswith("COULD NOT CHECK  line 3 "))
+    assert "line 3 carries no readable runprov record" in six, six
+    assert "so it made no claim about line 2" in six, six
+    assert "nothing else can vouch for line 2's bytes" in six, six
+
+    nine = next(line for line in page if line.strip().startswith("COULD NOT CHECK  line 4 "))
+    assert "nothing readable vouches for line 3" not in nine, (
+        "line 4 IS readable, DOES vouch for line 3 explicitly, and disagrees with it. That "
+        "is the whole finding, and the old sentence asserted its opposite"
+    )
+    assert json.loads(lines[3])["prev"] in nine, (
+        "[ADR-0016 R-12]: the claimed digest, whole, so the reader can carry the check on"
+    )
+    assert hashlib.sha256(fragment).hexdigest() in nine, (
+        "and the computed one beside it. The two values a reader has to compare by hand are "
+        "exactly the two the sentence never printed"
+    )
+
+    # [ADR-0016 R-24]: the SAME rule 6, reached by a line the parser accepts.
+    listed = tmp_path / "listed.jsonl"
+    listed.write_bytes(b"\n".join([lines[0], lines[1], b"[1, 2, 3]", lines[3]]) + b"\n")
+    assert json.loads(b"[1, 2, 3]") == [1, 2, 3], "valid JSON, and not a record"
+    listed_page = "\n".join(runprov.chain.render(runprov.chain.verify(listed), listed))
+    assert "line 3 carries no readable runprov record" in listed_page, listed_page
+    assert "could not be read" not in listed_page, (
+        "the clause this file falsifies, and the one the obvious rewording reaches for"
+    )
+
+    # Rule 3: a torn FIRST line, with the chain still running behind it.
+    beheaded = tmp_path / "beheaded.jsonl"
+    src = _chain_history(tmp_path / "src.jsonl", 3)
+    beheaded.write_bytes(b"\n".join([src[0][:10], src[1], src[2]]) + b"\n")
+    first = runprov.chain.verify(beheaded)
+    assert first.edges[0].status == runprov.chain.UNCHECKABLE
+    assert first.chained_from == 2, "so `render` reaches the loop rather than returning early"
+    first_page = "\n".join(runprov.chain.render(first, beheaded))
+    assert "line 0" not in first_page, first_page
+    assert "line 1 carries no readable runprov record" in first_page, first_page
+    assert "it vouched for nothing in any case" in first_page, (
+        "the first line attests nothing — that is what HOLDS_TRIVIAL says when it CAN be "
+        "read — so losing it puts no other line's bytes in doubt"
+    )
+
+
 def test_every_chain_requirement_has_a_test():
     """ADR-0016's specification is checked, not remembered — the ADR-0013 mechanism, reused.
 

@@ -525,6 +525,19 @@ def verify(path: str | pathlib.Path) -> Report:
             # disk are not the bytes that were written, so this edge attests nobody. One edge,
             # named rather than accused, and it suppresses no other line's judgement.
             status, named = UNCHECKABLE, "translated"
+        elif status == UNCHECKABLE and claim == "DIGEST":
+            # G-13. RULE 9, MARKED AT CONSTRUCTION, for the reason `translated` is: the walk
+            # knows which rule answered and the renderer cannot recover it from the status
+            # alone. Rules 3, 6 and 9 all answer UNCHECKABLE and they are different findings
+            # — 3 and 6 are lines that said nothing readable, 9 is a line that said something
+            # EXPLICIT about its predecessor and disagrees with it. One sentence served all
+            # three and was true of one.
+            #
+            # `claim == "DIGEST"` IS EXACTLY RULE 9 among the three, and it needs no further
+            # test: rules 3 and 6 are both inside `claim == "NONE"`, and a GENESIS claim is
+            # intercepted by rule 0 before rule 9 can see it. So the claimed digest printed
+            # below is always a well-formed 64-hex value.
+            named = "unvouched"
         elif status in (GAP, BROKEN):
             # NAMED ON A BREAK TOO, not only on a gap. R-10 requires the message to be true of
             # the break it found, and "written by a version it does not name" is false when the
@@ -611,12 +624,48 @@ def render(report: Report, path: pathlib.Path) -> list[str]:
             f"lost or zero-filled block can. This is not evidence of an edit."
         )
     for link in report.of(UNCHECKABLE):
+        # G-13. THREE RULES, THREE SENTENCES. What stood here was one sentence — "nothing
+        # readable vouches for line N-1" — printed for all of them. It is true at rule 6,
+        # FALSE at rule 9, where line N is readable and vouches for N-1 explicitly and
+        # disagrees, and NONSENSE at rule 3, where it named "line 0". And it printed no
+        # digest at all, so R-12's by-hand check was impossible at the one edge where the
+        # tool hands the reader the decision it cannot make.
+        #
+        # "CARRIES NO READABLE RUNPROV RECORD", NEVER "COULD NOT BE READ". Rules 3 and 6 are
+        # reachable by a line `json.loads` parses perfectly: `[1, 2, 3]` is valid JSON that
+        # is not an object, which R-24 treats as saying nothing. A sentence that says the
+        # parser refused it is false over that file, which is a new wrong sentence in place
+        # of the old one — the way this feature has already been "fixed" twice.
         if link.wrote == "translated":
             continue  # already summarised above
-        out.append(
-            f"    COULD NOT CHECK  line {link.line}: nothing readable vouches for line "
-            f"{link.line - 1}, and a tear that happened later cannot be told from an edit"
-        )
+        if link.wrote == "unvouched":
+            # Rule 9. BOTH DIGESTS (R-10, R-12): what line N says its predecessor was, and
+            # what the bytes now sitting there actually hash to. Those are the two values a
+            # reader has to compare, and they were the two never printed.
+            out.append(
+                f"    COULD NOT CHECK  line {link.line} claims its predecessor hashed to "
+                f"{link.claimed}, but line {link.line - 1} carries no readable runprov "
+                f"record and the bytes now at line {link.line - 1} hash to {link.computed}. "
+                f"A tear that happened after line {link.line} was written and an edit to "
+                f"line {link.line - 1} cannot be told apart from this file alone."
+            )
+        elif link.line == 1:
+            # Rule 3: the first line is torn. There is no line 0 to vouch for, and the
+            # first line attests nothing even when it CAN be read — that is what
+            # HOLDS_TRIVIAL says — so losing it puts no other line's bytes in doubt.
+            out.append(
+                "    COULD NOT CHECK  line 1 carries no readable runprov record, so what it "
+                "claimed is unknown. It is the first line, so it vouched for nothing in any "
+                "case."
+            )
+        else:
+            # Rule 6: line N said nothing readable, so the only statement anything made
+            # about line N-1 is gone. R-11's second half — it must not ABSOLVE either.
+            out.append(
+                f"    COULD NOT CHECK  line {link.line} carries no readable runprov record, "
+                f"so it made no claim about line {link.line - 1}; nothing else can vouch for "
+                f"line {link.line - 1}'s bytes."
+            )
     for link in report.of(BROKEN):
         out.append(f"    BROKEN  {link.detail}")
 
