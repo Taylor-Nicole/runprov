@@ -23527,6 +23527,64 @@ def test_the_record_schema_has_not_moved_across_any_released_version():
     )
 
 
+def test_a_captured_history_from_a_chaining_release_verifies(tmp_path):
+    """A corpus tree from a release that writes `prev` must chain. DERIVED FROM THE RECORDS.
+
+    Found on release day for 0.6.0, the first version that chains: every edge of the captured
+    tree was `BROKEN`, and correctly. `_normalise` rewrites the record bytes to take this
+    machine's paths, venv and hostname out of them, and the chain is over the bytes AS WRITTEN
+    (R-1, R-2) — so the scrub invalidated every digest it had signed. The harness and the
+    feature had been built in different worlds and only met when a chaining release was first
+    captured.
+
+    The corpus cannot keep both properties: it exists to be published, so the scrub is not
+    optional, and no scrub can be invisible to a chain over bytes. So `_rechain` rebuilds the
+    links over the records as published and the manifest records that it did. What this asserts
+    is the property that survives — a shipped fixture is internally consistent — and NOT that
+    the bytes are what some run emitted, which the scrub already made untrue.
+
+    WHICH VERSIONS ARE CHECKED IS DERIVED, never listed: a tree is expected to chain exactly
+    when its own records carry `prev`. Add a release and it is covered with nothing to
+    remember; the pre-chain trees stay `CANNOT_CHECK`, which is the right answer for them.
+    """
+    if not CORPUS_VERSIONS:  # pragma: no cover - a bare tree has no corpus
+        pytest.skip("no corpus")
+    manifest = json.loads((corpus_tool.CORPUS / "MANIFEST.json").read_text(encoding="utf-8"))
+    chaining, checked = [], 0
+    for version in CORPUS_VERSIONS:
+        history = corpus_tool.CORPUS / version / "tree" / "prov" / "history.jsonl"
+        if not history.is_file():  # pragma: no cover - every tree has one today
+            continue
+        checked += 1
+        claims = [
+            "prev" in json.loads(line)
+            for line in history.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        report = runprov.chain.verify(history)
+        if any(claims):
+            chaining.append(version)
+            assert report.status == runprov.chain.INTACT, (
+                f"{version} writes `prev` but its captured history is {report.status}. The scrub "
+                f"rewrites the bytes the chain signed, so `_rechain` must rebuild the links over "
+                f"what is published: {[ln.detail for ln in report.of(runprov.chain.BROKEN)][:2]}"
+            )
+            assert manifest["versions"][version].get("rechained"), (
+                f"{version} chains but the manifest does not record that it was re-chained; a "
+                f"reader would take a corpus tree for a forensic one"
+            )
+        else:
+            assert report.status == runprov.chain.CANNOT_CHECK, (
+                f"{version} predates the chain, so nothing in it is chained and the honest "
+                f"verdict is CANNOT_CHECK, not {report.status}"
+            )
+    assert checked == len(CORPUS_VERSIONS), "a corpus tree has no history; the sweep is partial"
+    assert chaining, (
+        "no corpus tree carries `prev`, so this asserts nothing — the corpus has stopped "
+        "covering the chain and a regression in it would be invisible here"
+    )
+
+
 def test_the_corpus_keeps_up_with_the_releases_by_itself():
     """A corpus that has to be REMEMBERED after each release is a corpus that stops growing.
 

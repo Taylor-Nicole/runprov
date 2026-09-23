@@ -1,0 +1,147 @@
+{
+  "schema": "runprov.run.v2",
+  "script": "summarise",
+  "run_uid": "1cd81a3d3a054104820fcebdfef121c3",
+  "run_id": "adhoc_20260923T204529Z",
+  "generation": "(default)",
+  "started_utc": "2026-09-23T20:45:29Z",
+  "command": "python corpus_scenario.py @@RUNPROV_CORPUS_ROOT@@",
+  "argv": [
+    "corpus_scenario.py",
+    "@@RUNPROV_CORPUS_ROOT@@"
+  ],
+  "cwd": "@@RUNPROV_CORPUS_ROOT@@",
+  "parameters": {
+    "stage": 2
+  },
+  "code": {
+    "project_root": ".",
+    "git_commit": null,
+    "git_commit_short": null,
+    "git_branch": null,
+    "git_status_captured": false,
+    "git_code_dirty": false,
+    "git_dirty_code_files": [],
+    "git_dirty_outside_code_paths": [],
+    "git_tree_dirty": false,
+    "git_other_changes": 0,
+    "git_dirty_other_files": [],
+    "git_other_files_omitted": 0,
+    "code_paths": [
+      "src",
+      "scripts",
+      "conf",
+      "pyproject.toml",
+      "Makefile"
+    ],
+    "script_file": "corpus_scenario.py",
+    "script_sha256": "07d70859bc1727a3f879ad5f690cf2bdf2f26fb602d44c6fd2ad4cf5a828ab33",
+    "imported": {
+      "count": 0,
+      "omitted": 0,
+      "digest": null,
+      "files": []
+    }
+  },
+  "environment": {
+    "python": "3.12.13",
+    "platform": "Linux-5.15.0-186-generic-x86_64-with-glibc2.35",
+    "hostname": "corpus-host",
+    "cpu_count": 8,
+    "packages": {},
+    "manager": {
+      "detected": [
+        "venv"
+      ],
+      "evidence": {
+        "VIRTUAL_ENV": "set"
+      }
+    },
+    "lockfiles": [],
+    "snapshot": {
+      "path": "prov/env/env-cf9aac520ea770fe.txt",
+      "sha256": "cf9aac520ea770fefaf212aabcb491919f51435c319fd742d019150cde1c0ba2",
+      "n_packages": 2,
+      "n_unreadable": 0,
+      "python": "3.12.13",
+      "reused": true,
+      "lockfiles": []
+    }
+  },
+  "history": {
+    "destination": "prov/history.jsonl",
+    "sink": "TeeSink",
+    "project_source": "configured"
+  },
+  "observation": {
+    "steps": "declared",
+    "auto_backend": null,
+    "auto_available": true,
+    "packages_recorded": "snapshot",
+    "auto_mode": "off"
+  },
+  "tool": {
+    "name": "runprov",
+    "version": "0.6.0",
+    "source": "index",
+    "identifies_code": true
+  },
+  "seeds": [],
+  "inputs": [
+    {
+      "path": "out/genotype.tsv",
+      "symlink": false,
+      "size_bytes": 281,
+      "mtime_utc": "2026-09-23T20:45:29Z",
+      "kind": "file",
+      "sha256": "9c116611dbdb82a40fdbab7ea4c2c70c1f477fd42a95945442af1b550476fa6f",
+      "content_sha256": "ec083d6cbf379cfd32dc521fe8e68419b2d6740570e12fa7a0ba91e3e625cac6"
+    }
+  ],
+  "outputs": [
+    {
+      "path": "out/summarise.tsv",
+      "symlink": false,
+      "size_bytes": 286,
+      "mtime_utc": "2026-09-23T20:45:29Z",
+      "kind": "file",
+      "sha256": "2c01d8802d594c064fd5967eafea6a7f9fd0b7caaf6157427e1b9b12cb46ad0d",
+      "content_sha256": "85ce7b2a942bd2b90f2b54ea62f4a37bc504234854ed33819fa3e86bbb818fb1"
+    }
+  ],
+  "steps": [
+    {
+      "step": "main.<locals>.tally",
+      "args": [
+        "3ee260925b049e81"
+      ],
+      "kwargs": {
+        "factor": "cad38c8cc221350c"
+      },
+      "returned": "cad38c8cc221350c"
+    }
+  ],
+  "signals": {
+    "SIGTERM": "armed",
+    "SIGHUP": "armed"
+  },
+  "notes": {
+    "rows_seen": 1
+  },
+  "status": "ok",
+  "finished_utc": "2026-09-23T20:45:29Z",
+  "resources": {
+    "wall_seconds": 0.009839,
+    "source": "getrusage",
+    "cpu_seconds": 0.307037,
+    "max_rss_bytes": 27009024,
+    "max_vms_bytes": 58064896,
+    "io_read_bytes": 0,
+    "io_write_bytes": 122880,
+    "unavailable": [
+      "cgroup: not this run's own (no scheduler or container)"
+    ],
+    "io_self_only": true,
+    "max_rss_is_floor": "the maximum of any one child, not the concurrent total; a scheduler enforces the cgroup total, which is larger"
+  }
+}

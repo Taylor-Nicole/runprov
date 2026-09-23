@@ -197,6 +197,55 @@ def released_versions() -> list[str]:
     )
 
 
+def _rechain(tree: pathlib.Path) -> int:
+    """Recompute `prev` over the SCRUBBED bytes. Returns how many lines were re-linked.
+
+    WHY THIS HAS TO EXIST, and it is a real tension rather than a tidy-up. From 0.6.0 a history
+    line carries `prev`, the sha256 of the line before it **as written** (ADR-0016 R-1/R-2 —
+    no canonicalisation, because a verifier hashes what it reads). `_normalise` then rewrites
+    those very bytes to take this machine's paths, venv and hostname out of them. Every digest
+    it signed is stale the moment it does, and `runprov chain` over the captured tree reports
+    BROKEN on every edge — correctly. The bytes really did change.
+
+    The corpus cannot keep both properties. It exists to be PUBLISHED, so the scrub is not
+    optional; and the chain is over bytes, so no scrub can be invisible to it. Shipping the
+    broken tree would mean a tamper-evidence tool distributing an example it accuses, and
+    dropping `prev` from the capture would make the corpus blind to the one feature 0.6.0 adds.
+
+    So the chain is rebuilt over the records as published. The fixture then attests what it can
+    honestly attest — that these bytes are internally consistent — and not that they are the
+    bytes some run once emitted, which the scrub has already made untrue. `rechained` goes in
+    the manifest so nobody reads a corpus tree as a forensic artefact.
+
+    Sequential by necessity: `prev` is the FIRST field (R-19), so rewriting line n changes line
+    n's bytes and therefore line n+1's claim. Each line is hashed only after the one before it
+    has been finalised.
+    """
+    relinked = 0
+    for history in sorted(tree.rglob("*.jsonl")):
+        lines = history.read_bytes().split(b"\n")
+        trailing = lines.pop() if lines and lines[-1] == b"" else None
+        out: list[bytes] = []
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except ValueError:  # pragma: no cover - a corpus tree holds no torn lines
+                out.append(line)
+                continue
+            if not isinstance(record, dict) or "prev" not in record:
+                out.append(line)  # pre-0.6.0, or a line that made no claim (R-22)
+                continue
+            claim = "GENESIS" if not out else hashlib.sha256(out[-1]).hexdigest()
+            # `prev` first, and json.dumps with the same defaults the sink uses, so the line
+            # differs from what was captured in exactly the fields that were scrubbed.
+            rebuilt = {"prev": claim, **{k: v for k, v in record.items() if k != "prev"}}
+            out.append(json.dumps(rebuilt, default=str).encode("utf-8"))
+            relinked += 1
+        body = b"\n".join(out)
+        history.write_bytes(body + b"\n" if trailing is not None else body)
+    return relinked
+
+
 def _normalise(tree: pathlib.Path, root: pathlib.Path, venv_python: pathlib.Path) -> None:
     """Rewrite the record files in place. See the module docstring for what is off limits."""
     swaps = [
@@ -262,6 +311,9 @@ def generate(version: str) -> dict[str, typing.Any]:
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(work, dest)
         _normalise(dest, work, python)
+        # AFTER the scrub, never before: the scrub is what invalidates the digests, so a chain
+        # rebuilt first would be stale again by the time the tree is written out.
+        relinked = _rechain(dest)
 
         remaining = leaks(dest, extra=[str(area), os.path.expanduser("~")])
         if remaining:
@@ -271,9 +323,13 @@ def generate(version: str) -> dict[str, typing.Any]:
             )
         scenario = json.loads((dest / "scenario.json").read_text(encoding="utf-8"))
         files = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file())
-        print(f"  {version}: captured {len(files)} files")
+        note = f", {relinked} line(s) re-chained over the scrubbed bytes" if relinked else ""
+        print(f"  {version}: captured {len(files)} files{note}")
         return {
             "captured_utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            # STATED, because a reader must not mistake a corpus tree for a forensic one. The
+            # scrub rewrote the bytes the chain signed; these links are over what is published.
+            "rechained": relinked,
             "generated_by_python": f"{sys.version_info[0]}.{sys.version_info[1]}",
             "scenario": scenario,
             "files": files,
