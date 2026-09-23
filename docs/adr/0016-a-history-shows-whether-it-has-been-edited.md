@@ -500,8 +500,29 @@ flips **every byte** in the chained region one at a time, and asserts the verdic
 > INTACT** — all one defect class, F-01. One assertion, no reasoning, and it finds in a tenth of
 > a second what four reviewers and sixteen mutations took a day to surface.
 >
-> It runs over several shapes: intact, containing a torn line, containing an unlocked run,
-> mixed-version, and CRLF-translated.
+> It runs over four shapes, and they are the four the parametrisation names: **intact**,
+> **torn**, **mixed-version** and **pre-chain**.
+>
+> **CORRECTED after Audit G (G-15).** This sentence named five shapes — intact, torn, unlocked
+> run, mixed-version, CRLF-translated — against four that ran. Two it named were never run,
+> and one that ran was never named. The ADR is the specification the next repair round is
+> written against, so a reader budgeting risk from it was over-crediting the gate by two
+> confirmations.
+>
+> **And the two are excluded for good, rather than left as future work**, because neither can
+> satisfy this gate's own precondition. A shape whose base verdict is not `INTACT` cannot
+> witness an escape — that is the second bullet below, and it is asserted. Measured, with the
+> two shapes built as they really arrive:
+>
+>     crlf      base = CANNOT_CHECK   edges = {UNCHECKABLE: 3, HOLDS_TRIVIAL: 1}  translated = 4
+>     unlocked  base = CANNOT_CHECK   edges = {UNCLAIMED: 2, HOLDS: 1, HOLDS_TRIVIAL: 1}
+>     intact    base = INTACT
+>
+> A translated line's bytes as they sit genuinely cannot hash to what was claimed, so a
+> CRLF-translated history is `CANNOT_CHECK` by construction and no code change makes it
+> otherwise. An unlocked append carries no claim at all by R-22, which under **R-32** is
+> `UNCLAIMED` — decisive, folding to `CANNOT_CHECK`. Both are real states and both are
+> judged, by R-28 and R-32 and their own tests; what neither can be is a witness here.
 >
 > **CORRECTED after Audit G (G-03, G-07, G-10). THIS GATE HAD THREE HAND-WRITTEN SCOPES INSIDE
 > IT AND TWO WERE WRONG**, which is the scope pattern this codebase keeps finding, inside the
