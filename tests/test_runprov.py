@@ -25349,6 +25349,34 @@ def test_crlf_is_a_per_line_fact_and_cannot_suppress_a_finding(tmp_path):
         "tampering outright: that is what it printed, unchanged, over the forged file above"
     )
 
+    # Audit G, G-19. THE SUMMARY REPLACES THE PER-LINE ROWS; IT DOES NOT ACCOMPANY THEM. The
+    # `continue` in `render` that does the replacing, and the `wrote="translated"` marker it
+    # keys on, were executed by this test and constrained by nothing: removing the `continue`,
+    # and separately renaming the marker, both survived the ENTIRE suite. Measured by return
+    # code, baseline 0 / g19a 0 / g19b 0.
+    #
+    # Either mutation puts a row under the summary above for every translated edge, and what
+    # that row says after wave 4's rewording is that the line "carries no readable runprov
+    # record" — false of a line the parser reads perfectly. The page would then name a git
+    # checkout as the cause and contradict it line by line: F-03's self-contradicting
+    # diagnostic, one `continue` away, on an ordinary `core.autocrlf=true` clone.
+    #
+    # THE WITNESS COMES FIRST, because a negative assertion over an empty set proves nothing —
+    # and it is what kills the marker mutation, which leaves the rows to be suppressed by a
+    # branch that no longer matches.
+    marked = [e for e in whole.of(runprov.chain.UNCHECKABLE) if e.wrote == "translated"]
+    assert len(marked) == 3, (
+        f"three edges sit behind a translated predecessor and are marked as such at "
+        f"construction; without the marker there is nothing for the renderer to suppress: "
+        f"{[(e.line, e.status, e.wrote) for e in whole.edges]}"
+    )
+    rendered = runprov.chain.render(whole, clean)
+    assert not [line for line in rendered if "COULD NOT CHECK" in line], (
+        f"the CRLF summary is the whole finding for these edges. With the per-line rows back, "
+        f"this page tells a reader that their checkout translated the endings AND that each of "
+        f"those same lines carries no readable runprov record: {rendered}"
+    )
+
 
 def test_the_writer_of_a_line_is_resolved_from_the_run(tmp_path, capsys):
     """ADR-0016 [ADR-0016 R-29] [ADR-0016 R-32]. Audit F, F-02 — the miss that cost the most.
