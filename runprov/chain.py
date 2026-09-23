@@ -298,6 +298,16 @@ class Link(typing.NamedTuple):
         line that had made no claim at all. A diagnostic that sends a reader to an untouched
         line costs them the time and then their confidence in the answer.
 
+        A FOURTH SHAPE (Audit G, G-09), and the only one reachable with no forger at all.
+        Rule 0 breaks the edge when a line's `prev` is the GENESIS SENTINEL and something
+        precedes it — which is what concatenating two rotated histories leaves (R-14):
+        `cat old.jsonl new.jsonl > merged.jsonl`, each half INTACT alone, not a byte edited.
+        The rule-11 sentence was formatted over it and read "line 3 claims its predecessor
+        was GENESIS but line 2 hashes to c7cd… — LINE 2 IS WHAT CHANGED" over a line 2 that
+        is byte-for-byte what the old file held. The VERDICT was right; the sentence sent the
+        reader to an untouched line in an untouched file, which is the cost R-10 exists to
+        buy off, at the one break shape E-07 did not enumerate.
+
         THE "no chain claim" ARM IS GONE, and its absence is the shape of R-32. Since rule 7
         answers `UNCLAIMED`, a BROKEN edge can only come from rules 0, 2 and 11 — every one of
         which has a claim — so the arm was not merely wrong, it was unreachable. Deleted
@@ -310,6 +320,23 @@ class Link(typing.NamedTuple):
         # without an `assert`, which under the 100 % branch floor would be a branch that can
         # never take its other arm.
         claimed = self.claimed or ""
+        if claimed == GENESIS:
+            # G-09, rule 0. TWO CLAUSES HAD TO GO AND THEY WERE WRONG DIFFERENTLY. "LINE N-1
+            # IS WHAT CHANGED" was flatly false. "claims its predecessor was GENESIS" was
+            # literally TRUE — its fault is its FORM, setting a sentinel opposite a 64-hex
+            # digest as though the two were comparable quantities. Nothing hashes to the
+            # literal string, so there is no comparison to make and none is offered.
+            #
+            # AND THE CAUSE STAYS OPEN. Two histories joined and a line inserted by hand that
+            # was never chained here leave the same bytes, and this file cannot tell them
+            # apart. Naming one would be the same defect one layer along.
+            return (
+                f"line {self.line} declares itself the first line of a chain — its "
+                f"`{FIELD}` is the {GENESIS} sentinel, not a digest — but {self.line - 1} "
+                f"line(s) precede it. Nothing hashes to the literal string {GENESIS}, so "
+                f"this is not a mismatch to investigate at line {self.line - 1}: it is two "
+                f"histories joined, or a line inserted that was never chained here."
+            )
         if self.line == 1:
             return (
                 f"line 1 claims a predecessor ({claimed[:16]}…) but is the first line of "

@@ -24494,6 +24494,43 @@ def test_a_break_says_only_what_is_true_of_the_break_it_found(tmp_path):
     assert "LINE 0" not in detail and "GENESIS" not in detail, detail
     assert "removed from the front" in detail, detail
 
+    # G-09: THE FOURTH SHAPE, and the only one reachable with no forger at all. Two histories
+    # rotated under [ADR-0016 R-14] and concatenated — `cat old.jsonl new.jsonl > merged.jsonl`
+    # — put a line whose `prev` is the GENESIS sentinel behind two other lines. Rule 0 breaks
+    # that edge, and the VERDICT is right: the file really is two chains spliced. The sentence
+    # was rule 11's, and it read "line 3 claims its predecessor was GENESIS but line 2 hashes
+    # to c7cd… — LINE 2 IS WHAT CHANGED" over a line 2 that is byte-for-byte what the old file
+    # held. Both halves verify INTACT alone, so a reader was sent to an untouched line in an
+    # untouched file — E-07's own failure, at the one break shape E-07 did not enumerate.
+    old_file = tmp_path / "old.jsonl"
+    new_file = tmp_path / "new.jsonl"
+    old_lines = _chain_history(old_file, 2)
+    new_lines = _chain_history(new_file, 2)
+    assert runprov.chain.verify(old_file).status == runprov.chain.INTACT
+    assert runprov.chain.verify(new_file).status == runprov.chain.INTACT, (
+        "each half is a complete, correct history; nothing was edited to reach this state"
+    )
+    merged = tmp_path / "merged.jsonl"
+    merged.write_bytes(b"\n".join([*old_lines, *new_lines]) + b"\n")
+    joined = runprov.chain.verify(merged)
+    assert [e.line for e in joined.of(runprov.chain.BROKEN)] == [3]
+    assert merged.read_bytes().split(b"\n")[1] == old_lines[1], "line 2 was never touched"
+    detail = joined.of(runprov.chain.BROKEN)[0].detail
+    assert "LINE 2 IS WHAT CHANGED" not in detail, detail
+    assert "line 2 hashes to" not in detail, detail
+    assert hashlib.sha256(old_lines[1]).hexdigest() not in detail, (
+        "and no digest of the untouched line is offered as a comparand. That clause was "
+        "wrong in FORM rather than in fact — inviting a comparison between a sentinel and a "
+        "64-hex digest — where 'LINE 2 IS WHAT CHANGED' was flatly false"
+    )
+    assert "line 3 declares itself the first line of a chain" in detail, detail
+    assert "sentinel, not a digest" in detail, detail
+    assert "2 line(s) precede it" in detail, detail
+    assert "or a line inserted that was never chained here" in detail, (
+        "and the cause stays OPEN. Two histories joined and a line inserted by hand that was "
+        "never chained here leave the same bytes, and this file cannot tell them apart"
+    )
+
     # The line that made no claim: STILL not accused of moving its predecessor, and now not
     # accused at all. [ADR-0016 R-32] — the same bytes are what an unlocked append and an
     # in-flight run leave behind, so the claimless arm of `Link.detail` is gone with the
