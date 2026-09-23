@@ -1,6 +1,6 @@
 # 16. A history shows whether it has been edited
 
-**Status:** Accepted — T-32, built 2026-09-17, **substantially amended 2026-09-18 after Audit E**.
+**Status:** Accepted — T-32, built 2026-09-17, **rebuilt 2026-09-18 after Audit E**, **amended 2026-09-20 with R-32 after Audit G**, and corrected through 2026-09-23. Ships in 0.6.0.
 
 > **WHAT AUDIT E CHANGED, AND WHY IT IS AN AMENDMENT RATHER THAN A BUGFIX.** The first build
 > satisfied all eighteen requirements below, reached 100 % branch coverage, and passed 17 of 17

@@ -42,11 +42,11 @@ abstract: >-
   hashed at the moment they are opened, the resulting pin is written into the artifact
   itself rather than only into a sidecar, and the pin is deterministic so that a changed
   header means changed inputs. Zero runtime dependencies.
-version: 0.5.0
+version: 0.6.0
 # REQUIRED BY `ci.py release_check` ONCE THE CHANGELOG STOPS SAYING [Unreleased]: a citation
 # for a released version with no date has no year in it, which is the one field every
 # citation style needs. The check refuses the tag rather than shipping a dateless citation.
-date-released: "2026-09-17"
+date-released: "2026-09-23"
 # SET TO THE TAG DATE, YYYY-MM-DD, and set in the SAME commit that dates the CHANGELOG
 # section -- `python ci.py release-check` (which `build` runs, and which ships beside this
 # file) refuses a release whose CHANGELOG says released while this field is missing, and

@@ -9,6 +9,8 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-23
+
 ### Added
 
 * **`runprov chain` — has the run history been edited since it was written?** (T-32, ADR-0016.)
@@ -110,6 +112,25 @@ is a fix nobody checked.
   code say the same thing: **0** `INTACT`, **1** `BROKEN`, **2** `CANNOT_CHECK`. A missing
   history still emits a well-formed payload — `"lines": 0`, `"edges": []`, exit 2.
 
+
+### Fixed
+
+* **The source distribution no longer carries the path of the machine that built it.**
+  `tests/corpus/` holds records from real runs of every released version, and 40 of those files
+  named this repository's absolute path in `command`, `argv[0]` and `code.script_file` —
+  `_normalise` rewrote the corpus tree's own root but never the scenario script's, which lives
+  outside the tree it normalises. One test also carried the build host's name in a sample of
+  expected output. **The wheel was never affected**: it contains package code and nothing else.
+
+  **0.5.0's sdist on PyPI carries both and cannot be replaced** — 32 files with the path, one
+  with the hostname. Nothing else leaked: no username, no credentials, no data.
+
+  The scanner that should have caught it matched a hand-written list of prefixes — `/home/`,
+  `/Users/`, `/tmp/` and three more — and this repository lives under `/mnt/`. It now asks
+  whether a path is **absolute at all**, which is a property of the string rather than a guess
+  about where people keep their code. A second check sweeps every tracked file for the
+  repository's own resolved path and the running host's name, both read off the machine at test
+  time, because both of these leaks sat outside the corpus trees the first scanner walks.
 
 ## [0.5.0] — 2026-09-17
 
