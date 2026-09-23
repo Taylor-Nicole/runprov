@@ -338,8 +338,18 @@ class Link(typing.NamedTuple):
                 f"histories joined, or a line inserted that was never chained here."
             )
         if self.line == 1:
+            # G-22. THE WHOLE DIGEST, because R-10's both-digests clause held for rule 11 and
+            # not for this one. Sixteen hex characters and an ellipsis is not a value anyone
+            # can paste into `sha256sum`, and R-12 is the reason a digest is printed at all.
+            # There is no computed digest here — the predecessor this line claims is not in
+            # the file — so the one digest that exists is the one that has to be whole.
+            #
+            # THE DEFECT IS THE INCONSISTENCY, not a reader who cannot recover: the value is
+            # the `prev` field of line 1 sitting in front of them, and `--format json` emits
+            # it whole either way. Two sentences from one `detail`, one obeying R-10 and one
+            # not, is how a reader learns to distrust both.
             return (
-                f"line 1 claims a predecessor ({claimed[:16]}…) but is the first line of "
+                f"line 1 claims a predecessor ({claimed}) but is the first line of "
                 f"the file — one or more lines have been removed from the front"
             )
         return (

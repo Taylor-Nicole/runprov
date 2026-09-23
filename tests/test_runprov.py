@@ -25805,6 +25805,24 @@ def test_a_break_names_the_digest_a_reader_can_check_it_against(tmp_path, capsys
     edge = next(e for e in edges if e["status"] == "BROKEN")
     assert edge["computed"] == truth and edge["claimed"] != truth
 
+    # G-22: THE RULE-2 SHAPE, which this test never built. R-10's both-digests clause held
+    # for rule 11 and not for rule 2 — the beheaded file's message printed sixteen hex
+    # characters and an ellipsis. There is no computed digest at rule 2, because the
+    # predecessor the line claims is not in the file, so what R-10 asks for here is the one
+    # digest that exists, whole. A 16-character prefix is not a value anyone can paste into
+    # `sha256sum`, which is the [ADR-0016 R-12] check the sentence is pointing them at.
+    beheaded = tmp_path / "beheaded.jsonl"
+    beheaded.write_bytes(b"\n".join(lines[2:]) + b"\n")
+    gone = runprov.chain.verify(beheaded).of(runprov.chain.BROKEN)[0]
+    assert gone.line == 1 and gone.computed is None, "rule 2: it has no predecessor to hash"
+    assert gone.claimed == hashlib.sha256(lines[1]).hexdigest(), "the line it claims is gone"
+    assert gone.claimed in gone.detail, "the whole digest, as rule 11's sibling already did"
+    assert "…" not in gone.detail, (
+        "and no ellipsis. The finding is the INCONSISTENCY between the two BROKEN sentences "
+        "rather than a reader who cannot recover: the value is the `prev` field of line 1 in "
+        "front of them, and `--format json` emits it whole either way"
+    )
+
 
 def test_a_torn_predecessor_and_a_disagreeing_claim_are_told_apart(tmp_path):
     """ADR-0016 [ADR-0016 R-10] [ADR-0016 R-11] [ADR-0016 R-12] [ADR-0016 R-24]. Audit G, G-13.
