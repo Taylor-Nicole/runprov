@@ -344,9 +344,28 @@ of the tail cannot be detected from this file alone.**
 > nothing. What is fixable is the report, and this project's stated character is to say what it
 > cannot tell you rather than to guess.
 >
-> The CHANGELOG and `README-pypi.md` sentence "an edit, a **deletion** or a reordering breaks
-> every link after it" is corrected with it: for a tail deletion there are no links after it, so
-> the claim is vacuously true and reads as a detection.
+> The CHANGELOG and `README-pypi.md` sentence about what an edit, a **deletion** or a
+> reordering does to the links is corrected with it: for a tail deletion there are no links
+> after it, so the claim is vacuously true and reads as a detection.
+>
+> **CORRECTED A SECOND TIME after Audit G (G-23) — and this note was the third site.** The
+> correction above added "anywhere but the very end" and left the other half of the sentence
+> standing: that the break propagates to every later link. It does not. Each line's claim is
+> about its immediate predecessor's bytes, so exactly **one** link breaks. Measured: edit
+> line 2 of an 8-line history and six links follow the change, `BROKEN = [3]`; delete line 2
+> and five follow, `BROKEN = [2]`. All three sites now read **"breaks the link that vouches
+> for it"** — and this note was one of them, because it quoted the sentence in full while
+> recording the first correction. The quotation is gone with it, deliberately: a grep cannot
+> tell a quotation from a claim, so a retired sentence left standing in quotation marks is a
+> live hit in every sweep that comes after.
+>
+> The row that filed this named two files. Its verification command was a line-oriented
+> `grep -rn` for the sentence across `*.md`, and it could not have reached this one: the
+> phrase wrapped across a line break here, and each continuation line carries a blockquote
+> marker, so the grep never matched and **the check went green with the third instance in
+> place** — a scope defect inside the verification of a finding about scope. A claim that
+> lives in prose has to be looked for the way prose is read, with soft line breaks and
+> blockquote markers folded away first.
 
 **R-24.** A history line that is valid JSON but **not an object** is `CANNOT_CHECK`, never an
 exception.
