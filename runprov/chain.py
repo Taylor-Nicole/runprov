@@ -559,22 +559,15 @@ def verify(path: str | pathlib.Path) -> Report:
     return Report(len(lines), edges, chained_from, sum(translated), tuple(merged))
 
 
-def render(report: Report, path: pathlib.Path) -> list[str]:
-    """The report. R-9: states what it checked, not only what it found."""
-    out = [f"# chain — {path}"]
-    if report.lines == 0:
-        return [*out, "  CANNOT CHECK: no history to read."]
-    if report.chained_from is None:
-        return [
-            *out,
-            f"  CANNOT CHECK: {report.lines} line(s), none of them chained. This history was "
-            f"written before the chain existed; the next run to append will anchor it.",
-        ]
+def _findings(report: Report, path: pathlib.Path) -> list[str]:
+    """Every sentence the edges themselves earn, in R-25's own order.
 
-    out.append(
-        f"  {report.status}: {report.attested} line(s) attested of {report.lines}, "
-        f"chained from line {report.chained_from}"
-    )
+    LIFTED OUT OF `render` FOR G-16. It used to sit inline under the "attested of" header,
+    which is the whole of why the `chained_from is None` early return could print none of it
+    and printed a guess instead. Both callers now render the same findings from the same
+    code, so a file cannot be described two ways depending on which branch reached it.
+    """
+    out: list[str] = []
     if report.translated:
         # R-28. Named, and scoped to the lines it actually affected — not a verdict for the file.
         # IT NO LONGER SAYS "not tampering" (G-02): that was a verdict for the whole file
@@ -668,6 +661,49 @@ def render(report: Report, path: pathlib.Path) -> list[str]:
             )
     for link in report.of(BROKEN):
         out.append(f"    BROKEN  {link.detail}")
+
+    return out
+
+
+def render(report: Report, path: pathlib.Path) -> list[str]:
+    """The report. R-9: states what it checked, not only what it found."""
+    out = [f"# chain — {path}"]
+    if report.lines == 0:
+        return [*out, "  CANNOT CHECK: no history to read."]
+    if report.chained_from is None:
+        # G-16. THE EARLY RETURN PRINTED THE SENTENCE RULE 3 EXISTS TO PREVENT. It decided
+        # from `chained_from` alone and never looked at the edges, so over a torn first line
+        # in front of a pre-chain history it said "written before the chain existed" — F-06's
+        # wrong message, in the renderer, after the table had been amended to stop the walk
+        # saying it. The `--format json` rendering of the same `Report` carried the
+        # UNCHECKABLE edge, so one report was described two contradictory ways.
+        #
+        # DELETING THE RETURN IS WORSE, and that was measured rather than argued: the general
+        # header below then prints "chained from line None". So it is KEPT for the file it is
+        # true of — every edge UNCHAINED, nothing unreadable, nothing merged — and every
+        # other file gets its findings under a header that claims nothing about the cause.
+        head = f"  CANNOT CHECK: {report.lines} line(s), none of them chained."
+        if all(link.status == UNCHAINED for link in report.edges):
+            return [
+                *out,
+                f"{head} This history was written before the chain existed; the next run "
+                f"to append will anchor it.",
+            ]
+        # R-7's repair closes a fragment with a newline rather than discarding it, so the
+        # next record lands BELOW the last line this file has and carries its digest. The
+        # line number is named because "will anchor it" is the clause a reader acts on.
+        return [
+            *out,
+            head,
+            *_findings(report, path),
+            f"    The next run to append will anchor the file from line {report.lines + 1}.",
+        ]
+
+    out.append(
+        f"  {report.status}: {report.attested} line(s) attested of {report.lines}, "
+        f"chained from line {report.chained_from}"
+    )
+    out.extend(_findings(report, path))
 
     # R-23, always: the newest line is attested by nothing, because a line cannot contain its
     # own digest and nothing follows it yet.

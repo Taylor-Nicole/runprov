@@ -25887,6 +25887,69 @@ def test_a_torn_predecessor_and_a_disagreeing_claim_are_told_apart(tmp_path):
     )
 
 
+def test_a_history_with_nothing_chained_says_what_it_could_not_read(tmp_path, capsys):
+    """ADR-0016 [ADR-0016 R-9]. Audit G, G-16.
+
+    `render`'s EARLY RETURN PRINTED THE ONE SENTENCE RULE 3 EXISTS TO PREVENT. Over a torn
+    first line in front of a pre-chain history it said "This history was written before the
+    chain existed; the next run to append will anchor it" — F-06's wrong message, in the
+    renderer, after the table had been amended to stop the walk from saying it. Rule 3 splits
+    a torn first line out of `UNCHAINED` precisely because we cannot read what it said, and
+    the renderer then said it anyway, because it decided from `chained_from` alone and never
+    looked at the edges. It fires on a one-line file that is nothing but a fragment too.
+
+    THE TWO RENDERINGS OF ONE `Report` CONTRADICTED EACH OTHER: `--format json` carried the
+    `UNCHECKABLE` edge and `CANNOT_CHECK`, while the text said the file merely predates the
+    feature. A reader who believes the text runs the next job and expects to be anchored.
+
+    DELETING THE EARLY RETURN IS WORSE, and that was measured rather than assumed — the
+    general header then prints "chained from line None". So the return is KEPT for the file
+    it is true of, which is every edge `UNCHAINED`, and every other file gets the findings
+    under a header that claims nothing about why nothing is chained.
+    """
+    pre = [
+        json.dumps(
+            {"schema": "runprov.history.v2", "run_id": f"p{i}", "tool": {"version": "0.5.0"}}
+        ).encode()
+        for i in range(5)
+    ]
+    fragment = _chain_history(tmp_path / "src.jsonl", 1)[0][:10]
+
+    p = tmp_path / "h.jsonl"
+    p.write_bytes(b"\n".join([fragment, *pre]) + b"\n")
+    report = runprov.chain.verify(p)
+    assert report.chained_from is None, "nothing in this file carries a claim"
+    assert report.edges[0].status == runprov.chain.UNCHECKABLE, "rule 3: line 1 is torn"
+    page = "\n".join(runprov.chain.render(report, p))
+
+    assert "written before the chain existed" not in page, (
+        "rule 3 exists to stop exactly this being said about a line nobody can read"
+    )
+    assert "chained from line None" not in page, page
+    assert "6 line(s), none of them chained" in page, page
+    assert "5 line(s) predate the chain" in page, page
+    assert "line 1 carries no readable runprov record" in page, page
+    assert "anchor the file from line 7" in page, (
+        "and the anchoring line is NAMED. [ADR-0016 R-7]'s repair closes the fragment with a "
+        "newline rather than discarding it, so the next record lands on line 7 and carries "
+        "line 6's digest — the fragment stays where it is, counted and unreadable"
+    )
+
+    # The two renderings of one report must agree, and they did not.
+    assert runprov.__main__.main(["chain", str(p), "--format", "json"]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "CANNOT_CHECK"
+    assert [e["line"] for e in payload["edges"] if e["status"] == "UNCHECKABLE"] == [1]
+
+    # AND THE SENTENCE IS KEPT where it is true of the whole file: every edge UNCHAINED.
+    clean = tmp_path / "clean.jsonl"
+    clean.write_bytes(b"\n".join(pre) + b"\n")
+    only_pre = runprov.chain.verify(clean)
+    assert {e.status for e in only_pre.edges} == {runprov.chain.UNCHAINED}
+    kept = "\n".join(runprov.chain.render(only_pre, clean))
+    assert "written before the chain existed" in kept, kept
+
+
 def test_every_chain_requirement_has_a_test():
     """ADR-0016's specification is checked, not remembered — the ADR-0013 mechanism, reused.
 
