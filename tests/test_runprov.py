@@ -24811,6 +24811,23 @@ def test_the_chain_survives_the_shapes_a_real_history_file_reaches(tmp_path, mon
         "a torn FIRST line did not predate the chain — we cannot read what it said"
     )
     assert report.chained_from == 2
+    # Audit G, G-21. THE WHOLE REPORT, restored. Two whole-report assertions stood here and
+    # were replaced by the single field above, which watches one status of one edge and leaves
+    # the digests unwatched — so letting the walk reach `lines[index - 2]` for index 1 passed
+    # THIS test, the one whose docstring sets the standard ("reports a number it cannot
+    # justify"). Measured on the mutant: this test RETURN CODE 0.
+    #
+    # `lines[-1]` is the file's LAST line, so the first edge reported ITS digest as line 0's,
+    # and `__main__` emits `computed` for every edge in the `--format json` payload — a machine
+    # reader told that a line which does not exist hashes to a specific value.
+    assert report.edges[0].computed is None, (
+        "there is no line 0, so the first edge can hold no computed digest — and the digest it "
+        "held was the file's LAST line, reached by walking backwards off the front"
+    )
+    assert [e.status for e in report.edges] == [
+        runprov.chain.UNCHECKABLE,
+        runprov.chain.HOLDS,
+    ], [e.status for e in report.edges]
 
 
 def test_the_chain_is_verifiable_with_sha256sum_and_nothing_else(tmp_path):
