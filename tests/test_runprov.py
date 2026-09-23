@@ -24373,7 +24373,7 @@ def test_no_lock_means_no_chain_claim_rather_than_a_false_accusation(tmp_path, m
     assert _chain_exit(p) == 2, "unverifiable, and never an accusation"
 
 
-def test_a_torn_line_never_accuses_and_never_absolves(tmp_path):
+def test_a_torn_line_never_accuses_and_never_absolves(tmp_path, capsys):
     """ADR-0016 [ADR-0016 R-11] [ADR-0016 R-20]. Audit E, E-05 and E-06 — BOTH directions.
 
     The first build violated this requirement twice over, and the two errors cancelled in the
@@ -24403,6 +24403,49 @@ def test_a_torn_line_never_accuses_and_never_absolves(tmp_path):
     )
     assert _chain_exit(crash) == 0, "a crash must not cost a project its gate, for ever"
 
+    # Audit G, G-17 and G-08 — RESTORED. This assertion stood at `3dded76` and was replaced by
+    # the negation above rather than joined to it, and with it went the only statement anywhere
+    # that the newest line's own bytes are gone. The edge model cannot hold that fact: an edge
+    # judges the LINK between two lines, and the newest line is the predecessor of no edge, so
+    # `json.loads` refused it, `log`, `show` and `report` could not read it, and the page said
+    # INTACT with no mention of it.
+    #
+    # DISCLOSURE, AND IT MUST CHANGE NO VERDICT — which is why it sits UNDER the exit-code
+    # assertion above rather than replacing it. Making it decisive was measured and refused: it
+    # moves the ordinary crash off exit 0 and contradicts "a crash must not cost a project its
+    # gate, for ever" on the line above.
+    assert report.unreadable == (4,), "the fragment is reported"
+    page = runprov.chain.render(report, crash)
+    assert [line for line in page if line.lstrip().startswith("UNREADABLE  line 4")], page
+    assert "Truncation of the tail cannot be seen from this file alone" not in "\n".join(page), (
+        "[ADR-0016 R-23]'s sentence is about whole lines REMOVED — nothing in a file says how "
+        "long it used to be. It is FALSE over a file whose last line the parser has just "
+        "refused, where the truncation is exactly what IS visible from this file alone."
+    )
+    assert runprov.__main__.main(["chain", str(crash), "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["unreadable"] == [4], payload
+    assert payload["status"] == "INTACT", "the machine reader is told BOTH, and the verdict held"
+
+    # G-08's other half: the same tear ONE BYTE further, side by side. The verdicts differ and
+    # they are RIGHT to differ — R-20's recovery of the claim genuinely is more evidence — so
+    # what this asserts is that the two answers are now legible next to each other, which is
+    # the thing that was missing. The line is unreadable in both, and both say so.
+    further = tmp_path / "further.jsonl"
+    _chain_history(further, 4)
+    raw = further.read_bytes()
+    cut = raw.rfind(b"\n", 0, len(raw) - 1)
+    further.write_bytes(raw[: cut + 1] + raw[cut + 1 :][:74] + b"\n")
+    beyond = runprov.chain.verify(further)
+    assert beyond.status == runprov.chain.CANNOT_CHECK and _chain_exit(further) == 2, (
+        '74 bytes is one short of `{"prev": "` plus 64 hex plus its quote, so [ADR-0016 '
+        "R-20] recovers nothing and the edge is UNCHECKABLE"
+    )
+    assert beyond.unreadable == (4,) and report.unreadable == beyond.unreadable, (
+        "the SAME line is unreadable on both sides of the 75-byte anchor; only the recovered "
+        "claim differs, and the report now states the shared fact in both"
+    )
+
     # A mid-file tear: still no accusation, and the line it can no longer vouch for is named.
     mid = tmp_path / "mid.jsonl"
     lines = _chain_history(mid, 5)
@@ -24416,6 +24459,12 @@ def test_a_torn_line_never_accuses_and_never_absolves(tmp_path):
     # line costs TWO edges, not one, and the model says so where intuition did not.
     assert [e.line for e in report.of(runprov.chain.UNCHECKABLE)] == [3, 4]
     assert _chain_exit(mid) == 2, "unverifiable is not intact"
+    # G-17: the disclosure SUBTRACTS what the edges have already said. Line 3 is unreadable and
+    # two sentences above name it — rule 6 at its own edge and rule 9 at the edge below — so a
+    # third wording of the same fact would be the confusion this row exists to remove.
+    assert report.unreadable == (3,) and not [
+        line for line in runprov.chain.render(report, mid) if "UNREADABLE  line" in line
+    ], runprov.chain.render(report, mid)
 
     # The concealment attempt: edit a line, truncate the line that would have accused it.
     hidden = tmp_path / "hidden.jsonl"

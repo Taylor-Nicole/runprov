@@ -372,6 +372,21 @@ class Report(typing.NamedTuple):
     #: and this is a fact about the bytes of one line, which is precisely why the gate could
     #: not see it. Decisive, and never an accusation — see `_BOUNDARY`.
     merged: tuple[int, ...] = ()
+    #: G-17/G-08. Lines that carry no readable runprov record — the parser refused them, or
+    #: they are valid JSON that is not an object (R-24). NOT AN EDGE either, and for the same
+    #: reason `merged` is not: this is a fact about one line's own bytes, and the edge model
+    #: judges the link between two. The newest line is the predecessor of no edge, so when
+    #: R-20 recovered its claim from its raw bytes the file read INTACT/exit 0 while `log`,
+    #: `show` and `report` could not read that record at all, and nothing anywhere said so.
+    #:
+    #: DISCLOSURE ONLY, and deliberately not folded into `status` — unlike `merged`. R-20's
+    #: recovery genuinely is more evidence, so a torn tail whose claim survived and one torn
+    #: one byte further ARE different situations and keep their different verdicts; the
+    #: defect was that the difference was illegible, not that it was wrong. Making this
+    #: decisive was measured and refused: it moves the ordinary crash off exit 0, which is
+    #: the one thing R-11 and this module's own test ("a crash must not cost a project its
+    #: gate, for ever") forbid.
+    unreadable: tuple[int, ...] = ()
 
     @property
     def status(self) -> str:
@@ -385,6 +400,9 @@ class Report(typing.NamedTuple):
         `UNCLAIMED` joined the second line under R-32. It is decisive for the same reason
         `GAP` is — nothing about the file has been checked at that edge — and non-accusing
         for the reason `GAP` is not: the cause may be innocent and there is no way to tell.
+
+        `unreadable` IS DELIBERATELY ABSENT FROM THIS FOLD (G-17/G-08). It is disclosure and
+        nothing else, and the field's own comment records why making it decisive was refused.
         """
         kinds = {link.status for link in self.edges}
         if BROKEN in kinds:
@@ -493,6 +511,10 @@ def verify(path: str | pathlib.Path) -> Report:
         if isinstance(parsed, dict):  # R-24: valid JSON that is not an object says nothing
             records[index] = parsed
     by_run = _writers(records)
+    # G-17/G-08. READ OFF `records`, which the loop above has just built, so it cannot drift
+    # from what the walk treats as readable: a line is unreadable here exactly when
+    # `_writer_of` will call it UNREADABLE below. No new input, no second parse.
+    unreadable = tuple(i for i in range(1, len(lines) + 1) if i not in records)
 
     edges: list[Link] = []
     chained_from: int | None = None
@@ -566,7 +588,7 @@ def verify(path: str | pathlib.Path) -> Report:
                 wrote=named,
             )
         )
-    return Report(len(lines), edges, chained_from, sum(translated), tuple(merged))
+    return Report(len(lines), edges, chained_from, sum(translated), tuple(merged), unreadable)
 
 
 def _findings(report: Report, path: pathlib.Path) -> list[str]:
@@ -669,6 +691,32 @@ def _findings(report: Report, path: pathlib.Path) -> list[str]:
                 f"so it made no claim about line {link.line - 1}; nothing else can vouch for "
                 f"line {link.line - 1}'s bytes."
             )
+    # G-17/G-08. THE LINES WHOSE OWN BYTES ARE UNREADABLE AND WHICH NOTHING ABOVE HAS NAMED.
+    # Every sentence so far is about an EDGE, and an edge is a statement about the link between
+    # two lines; a line the parser refused is a fact about one line, and the newest line is the
+    # predecessor of no edge at all. So when R-20 recovered its claim from its raw bytes the
+    # page read INTACT with no mention of it, while `log`, `show` and `report` could not read
+    # the record. The same silence covers any unreadable line whose edge came out HOLDS,
+    # HOLDS_TRIVIAL, BROKEN or UNCHAINED rather than UNCHECKABLE.
+    #
+    # THE SENTENCES THAT DO NAME IT ARE SUBTRACTED rather than duplicated, because a page that
+    # says the same thing twice in two wordings is the confusion this row exists to remove:
+    # rules 3 and 6 name the line of their own edge, rule 9 the line BENEATH its edge,
+    # and `merged` has already said something stronger and more specific.
+    named = set(report.merged)
+    for link in report.of(UNCHECKABLE):
+        named.add(link.line - 1 if link.wrote == "unvouched" else link.line)
+    for number in report.unreadable:
+        if number not in named:
+            # "CARRIES NO READABLE RUNPROV RECORD", never "could not be read" — wave 4's
+            # wording trap. `[1, 2, 3]` is valid JSON that is not an object, which R-24 treats
+            # as saying nothing, so it arrives here with the parser never having complained.
+            out.append(
+                f"    UNREADABLE  line {number} carries no readable runprov record, so "
+                f"`log`, `show` and `report` cannot read it back. DISCLOSURE, NOT A FINDING: "
+                f"it changes no verdict, and every edge this line takes part in was judged on "
+                f"the evidence that survived."
+            )
     for link in report.of(BROKEN):
         out.append(f"    BROKEN  {link.detail}")
 
@@ -717,10 +765,25 @@ def render(report: Report, path: pathlib.Path) -> list[str]:
 
     # R-23, always: the newest line is attested by nothing, because a line cannot contain its
     # own digest and nothing follows it yet.
-    out.append(
-        f"    line {report.lines} is the newest and nothing attests it yet; a later run will. "
-        f"Truncation of the tail cannot be seen from this file alone."
-    )
+    #
+    # G-17. THE SECOND CLAUSE WAS PRINTED OVER FILES IT WAS FALSE OF. "Truncation of the tail
+    # cannot be seen from this file alone" is R-23's true statement about whole lines being
+    # REMOVED — nothing in a file says how long it used to be. It is not true of a tail that is
+    # torn part-way through: there `json.loads` refused the line, so the damage is visible in
+    # this file and the report was asserting the opposite of what it had just measured. Both
+    # halves are now said separately, and only the half that holds is claimed.
+    if report.lines in report.unreadable:
+        out.append(
+            f"    line {report.lines} is the newest and nothing attests it yet; a later run "
+            f"will. It is named above as carrying no readable runprov record, and THAT much "
+            f"is visible from this file; what is not is whether whole lines were removed "
+            f"after it."
+        )
+    else:
+        out.append(
+            f"    line {report.lines} is the newest and nothing attests it yet; a later run "
+            f"will. Truncation of the tail cannot be seen from this file alone."
+        )
     if report.of(BROKEN):
         out.append(
             "  A break means the history was edited after it was written, OR that a line was "

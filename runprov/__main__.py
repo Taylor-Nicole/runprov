@@ -1734,6 +1734,10 @@ def _chain(args: argparse.Namespace) -> int:
                     # G-03, and E-10's lesson applied to it: the two renderings carry the same
                     # facts, so a machine reader can never miss a finding the page states.
                     "merged": list(report.merged),
+                    # G-17/G-08, and the same lesson again: the newest line's own bytes being
+                    # unreadable is a fact the text page now states, so the machine reader is
+                    # told it too. Disclosure — `status` above is unchanged by it.
+                    "unreadable": list(report.unreadable),
                     # EVERY EDGE, with its status and both digests. The payload used to carry
                     # hand-picked buckets, and three mutations of it survived the suite because
                     # its only test used a clean file where every field equalled its correct
