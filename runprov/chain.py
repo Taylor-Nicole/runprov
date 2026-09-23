@@ -55,6 +55,14 @@ GENESIS = "GENESIS"
 #: The field. Top-level and plainly named, because a shell one-liner has to find it (R-12).
 FIELD = "prev"
 
+#: G-24(a). THE CONSTANT, NOT THE STRING — `sinks.py` states the rule and every sibling schema
+#: already keeps it (`SCHEMA`, `HISTORY_SCHEMA`, `START_SCHEMA` in `run.py`). This one was
+#: spelled as a literal in `__main__` and respelled again in its test, so the test could not
+#: have noticed the payload being versioned wrongly: two copies of one sentence, asserted
+#: against each other. Defined here rather than in `__main__` because it names THIS module's
+#: report, and `--format json` is only its rendering.
+SCHEMA = "runprov.chain.v1"
+
 #: Read backwards in blocks of this size looking for the previous line's start. The history is
 #: appended to forever, so reading the whole file to find its last line would be O(n) per append
 #: and O(n^2) over a project — the exact cost `YamlLogSink`'s docstring refuses, on the exact
@@ -548,13 +556,22 @@ def verify(path: str | pathlib.Path) -> Report:
 
         terminator_only = False
         if index == 1:
-            predecessor, agreement = "NONE_FIRST", "NA"
+            # G-24(b). `previous` IS ONE MEASUREMENT, taken once. The predecessor's digest was
+            # computed here and again at the `Link` below — 2.00 `digest_of` calls per line,
+            # measured. The cost was never the argument: the walk is linear and this was a
+            # constant factor. The argument is F-09's, and F-09 is in this module's own
+            # history: `agreement` and the `computed` digest the report tells a reader to
+            # `sha256sum` are THE SAME FACT, and two expressions for one fact are two places a
+            # later edit can move apart — leaving a message that says these differ while
+            # printing a value that does not.
+            previous, predecessor, agreement = None, "NONE_FIRST", "NA"
         else:
+            previous = digest_of(lines[index - 2])
             predecessor = "READABLE" if (index - 1) in records else "UNREADABLE"
             if claim == "NONE":
                 agreement = "NA"
             else:
-                agreement = "MATCHES" if claimed == digest_of(lines[index - 2]) else "DIFFERS"
+                agreement = "MATCHES" if claimed == previous else "DIFFERS"
                 if agreement == "DIFFERS" and translated[index - 2]:
                     # R-28, and Audit G's G-02. The predecessor's terminator was translated, so
                     # its bytes AS THEY SIT cannot hash to what was claimed. The edge is owed
@@ -606,7 +623,7 @@ def verify(path: str | pathlib.Path) -> Report:
                 index,
                 status,
                 claimed,
-                None if predecessor == "NONE_FIRST" else digest_of(lines[index - 2]),
+                previous,
                 wrote=named,
             )
         )

@@ -25920,17 +25920,35 @@ def test_chain_uses_the_configured_history_when_none_is_named(tmp_path, monkeypa
     case below, answered where every other missing history is.
     """
     monkeypatch.chdir(tmp_path)
-    _chain_history(tmp_path / "h.jsonl", 3)
-    runprov.configure(root=".", run_log="h.jsonl")
+    # G-24(c). A HISTORY WITH A DIRECTORY COMPONENT, because the assertion about how its path
+    # is spelled needs a separator to be about anything. The fixture named `h.jsonl`, and a
+    # bare filename contains no separator on any platform — so `"\\" not in payload["path"]`
+    # was true on Windows for a reason that had nothing to do with the code. Not a hole: the
+    # property itself is guarded repo-wide by `test_no_recorded_path_is_spelled_with_a_bare_str`,
+    # an AST scan that kills `str(log)` here. This was a FALSE WITNESS, not an uncovered
+    # property, and the fix is to make this assertion able to fail rather than to add a guard.
+    log = pathlib.Path("prov") / "h.jsonl"  # built with the host's separator, as a caller's is
+    (tmp_path / "prov").mkdir()
+    _chain_history(tmp_path / log, 3)
+    runprov.configure(root=".", run_log=log)
 
     assert runprov.__main__.main(["chain"]) == 0, "no argument means the project's own history"
     assert "INTACT" in capsys.readouterr().out
 
     assert runprov.__main__.main(["chain", "--format", "json"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schema"] == "runprov.chain.v1", "the shape is versioned, per ADR-0017"
+    assert payload["schema"] == runprov.chain.SCHEMA == "runprov.chain.v1", (
+        "the shape is versioned, per ADR-0017. BOTH, the way every sibling schema is "
+        "asserted: the constant, because this line respelled the literal and so pinned one "
+        "sentence against its own copy while the payload was free to say anything; and the "
+        "value, because a constant compared only against itself pins nothing at all"
+    )
     assert payload["attested"] == 2 and payload["lines"] == 3
-    assert "\\" not in payload["path"], "POSIX-spelled, so a Windows record reads the same"
+    assert payload["path"] == "/".join(log.parts), (
+        f"POSIX-spelled, so a Windows record reads the same: the components this test "
+        f"configured, joined with forward slashes. On Windows `str({log!r})` is "
+        f"`prov\\h.jsonl`, and this is the assertion that says so — got {payload['path']!r}"
+    )
 
     # THE DEFAULT LAYOUT, which is what a project that names no history has. No `run_log=`,
     # the history where this package puts it, and the same answer the explicit case gives.

@@ -1731,7 +1731,7 @@ def _chain(args: argparse.Namespace) -> int:
         print(
             json.dumps(
                 {
-                    "schema": "runprov.chain.v1",
+                    "schema": chain_mod.SCHEMA,
                     "path": hashing._posix(log),
                     "status": report.status,
                     "lines": report.lines,

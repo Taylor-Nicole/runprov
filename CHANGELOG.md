@@ -81,6 +81,35 @@ is a fix nobody checked.
   `prev` is now exit 2 instead of exit 1. A splice anywhere else still breaks the chain at the
   next link, and no history that was `BROKEN` becomes `INTACT`.
 
+  **`chain --format json` — the payload, named here because nothing else names it.** It is the
+  package's only output carrying a `schema` key, `runprov.chain.v1`, and its shape changed
+  twice while this entry was being written — gaining `merged` and then `unreadable` — with no
+  published description of any of it. Nothing breaks: the command is unreleased and ADR-0017
+  R-11 states the payload is not a stable API on its first release. But a versioned string with
+  nothing written under it invites one round of "v1 meant something else last month", so:
+
+  | key | what it is |
+  |---|---|
+  | `schema` | `runprov.chain.v1` |
+  | `path` | the history read, always POSIX-spelled so a Windows record reads the same |
+  | `status` | `INTACT`, `BROKEN` or `CANNOT_CHECK` — the file's verdict, the worst edge |
+  | `lines` | lines in the file |
+  | `attested` | edges that `HOLDS`; never negative, never more than `lines` |
+  | `chained_from` | the first line carrying a claim, or `null` if none does |
+  | `translated` | how many lines have a CRLF-translated terminator |
+  | `merged` | lines whose record boundary was destroyed, so two records read as one |
+  | `unreadable` | lines that carry no readable record |
+  | `edges` | one object per edge: `line`, `status`, `claimed`, `computed`, `wrote` |
+
+  **`edges` carries every edge, not a selection.** It replaced four hand-picked buckets, and
+  three mutations of those survived the suite because the only test of them used a clean file
+  where every bucket was empty. An edge's `status` is one of `HOLDS`, `HOLDS_TRIVIAL`,
+  `UNCHAINED`, `GAP`, `UNCHECKABLE` or `UNCLAIMED`; `claimed` is the digest that line claims
+  for its predecessor and `computed` the digest of the predecessor's bytes as they sit, so a
+  reader can run `sha256sum` against the two without parsing a sentence. `status` and the exit
+  code say the same thing: **0** `INTACT`, **1** `BROKEN`, **2** `CANNOT_CHECK`. A missing
+  history still emits a well-formed payload — `"lines": 0`, `"edges": []`, exit 2.
+
 
 ## [0.5.0] — 2026-09-17
 
