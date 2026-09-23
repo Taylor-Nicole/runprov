@@ -50,6 +50,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -75,7 +76,20 @@ RECORD_SUFFIXES = (".json", ".jsonl", ".yml")
 #: exact check (the literal root, the literal venv, `$HOME`, the temp dir) is the one that is
 #: complete; this second list catches a path that arrived from somewhere nobody predicted,
 #: which is the only kind worth a second net.
-LEAK_SHAPES = ("/home/", "/Users/", "/tmp/", "/var/folders/", "C:\\", "/root/")  # noqa: S108
+#: AN ABSOLUTE PATH IS A LEAK, AND THE RULE IS DERIVED RATHER THAN LISTED. This was
+#: `LEAK_SHAPES = ("/home/", "/Users/", "/tmp/", …)` — a hand-typed set of prefixes, which is
+#: the scope pattern this file warns about forty lines below and then committed itself. The
+#: repository lives under `/mnt/`, no needle matched it, and **32 files carrying the generating
+#: machine's absolute path shipped in the published 0.5.0 sdist** before anyone noticed.
+#:
+#: So the question is no longer "is it one of these places" but "is it rooted at all". A record
+#: that has been normalised carries NO absolute path except the placeholder; anything else is
+#: either a leak or a normalisation that did not reach. `(?<![\w:@])` keeps URLs and
+#: `scheme://host/path` out, and two segments are required so a bare `/` is not a hit.
+#:
+#: Measured over the whole corpus when this replaced the list: ONE distinct path flagged, the
+#: real leak, in 165 files, with no false positives.
+ABSOLUTE_PATH = re.compile(r"(?<![\w:@])(?:/(?:[\w.+-]+/)+[\w.+-]+|[A-Za-z]:[\\/][\w.\\/+-]+)")
 
 
 # --------------------------------------------------------------------------- shared with tests
@@ -127,7 +141,7 @@ def leaks(tree: pathlib.Path, extra: typing.Iterable[str] = ()) -> list[str]:
     version that wrote it.
     """
     found = []
-    needles = [n for n in (*LEAK_SHAPES, *extra) if n]
+    extra = [n for n in extra if n]
     for path in sorted(tree.rglob("*")):
         if not path.is_file():
             continue
@@ -135,9 +149,14 @@ def leaks(tree: pathlib.Path, extra: typing.Iterable[str] = ()) -> list[str]:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):  # a binary fixture is not a leak vector here
             continue
-        for needle in needles:
+        where = path.relative_to(tree).as_posix()
+        for hit in ABSOLUTE_PATH.findall(text):
+            if ROOT_TOKEN in hit:
+                continue
+            found.append(f"{where}: {hit!r}")
+        for needle in extra:  # a caller may still name something the shape cannot see
             if needle in text:
-                found.append(f"{path.relative_to(tree).as_posix()}: {needle!r}")
+                found.append(f"{where}: {needle!r}")
     return sorted(set(found))
 
 
@@ -189,6 +208,13 @@ def _normalise(tree: pathlib.Path, root: pathlib.Path, venv_python: pathlib.Path
         (str(venv_python), "python"),
         (venv_python.as_posix(), "python"),
         (os.uname().nodename if hasattr(os, "uname") else "", "corpus-host"),
+        # THE SCENARIO'S OWN PATH, which is NOT under the corpus tree and so was reached by
+        # none of the swaps above. It is the repository's path, and it landed in `command`,
+        # `argv[0]` and `code.script_file` of every record — 32 files of it in the published
+        # 0.5.0 sdist. Replaced with the bare name for the reason stated above: a literal keeps
+        # the record readable, and says what ran without saying from where.
+        (SCENARIO.resolve().as_posix(), SCENARIO.name),
+        (str(SCENARIO.resolve()), SCENARIO.name),
     ]
     for path in sorted(tree.rglob("*")):
         if not (path.is_file() and path.name.endswith(RECORD_SUFFIXES)):

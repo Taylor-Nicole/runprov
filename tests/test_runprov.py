@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import pathlib
+import platform
 import re
 import shutil
 import signal
@@ -20531,7 +20532,7 @@ def test_a_marker_that_cannot_answer_does_not_outrank_a_start_line_that_can(tmp_
     and this host — "we could not look" rendered as a verdict with the answer beside it, on
     the same line. Measured before the fix:
 
-        #   ?            align   2026-08-22T09:00:00Z  pid 172377  on PLNX-194045
+        #   ?            align   2026-08-22T09:00:00Z  pid 172377  on corpus-host
 
     The start line exists to answer exactly this (A-03), so whichever source CAN answer
     wins."""
@@ -26207,6 +26208,52 @@ def test_r31s_shape_list_is_the_one_the_gate_actually_runs():
         f"Two shapes were removed from the prose for cause — a CRLF-translated line's digest "
         f"cannot match, and under R-32 an unlocked append is UNCLAIMED — so neither can meet "
         f"this gate's asserted INTACT precondition. If a shape is added, add it to both."
+    )
+
+
+def test_no_committed_file_carries_this_machines_identity():
+    """Nothing that ships may name the machine it was built on. DERIVED FROM THE HOST.
+
+    `tools/corpus.py`'s own leak scanner covers the corpus TREES, which is where a generated
+    record lands — and both leaks found on 2026-09-23 were outside it. **32 files in the
+    published 0.5.0 sdist carried the absolute path of the repository** (`command`, `argv[0]`
+    and `code.script_file`, which `_normalise` never reached because the scenario script lives
+    outside the tree it normalises), and this file itself carried the build host's name in a
+    sample of expected output. A PyPI file cannot be replaced, so 0.5.0 keeps both.
+
+    THE SCOPE IS EVERY TRACKED FILE, not a list of likely ones, and the needles are read off
+    the RUNNING machine rather than written down: the repository's own absolute path, and this
+    host's name. That makes the check true wherever it runs — on CI it asserts CI's paths are
+    absent, here it asserts these ones are — and it needs no maintenance when either changes.
+    The corpus scanner stays: it can see a leak in a file that is generated and not yet
+    committed, which this one cannot.
+    """
+    root = _repo_root()
+    host = platform.node()
+    needles = {str(root.resolve()), root.resolve().as_posix()}
+    if len(host) >= 4:  # a one- or two-character hostname would match everything
+        needles.add(host)
+
+    listed = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=root, capture_output=True, text=True, check=False
+    )
+    if listed.returncode != 0:  # pragma: no cover - a tarball install is not a git checkout
+        pytest.skip("not a git checkout")
+    tracked = [root / n for n in listed.stdout.split("\0") if n]
+    assert len(tracked) > 50, f"only {len(tracked)} tracked files found; the sweep is not sweeping"
+
+    found = []
+    for f in tracked:
+        try:
+            text = f.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue  # a binary fixture is not a leak vector here
+        for needle in needles:
+            if needle in text:
+                found.append(f"{f.relative_to(root).as_posix()}: {needle!r}")
+    assert not found, (
+        "committed files name the machine they were built on, and a published sdist cannot be "
+        f"taken back: {found[:10]}"
     )
 
 

@@ -5,9 +5,9 @@
   "run_id": "adhoc_20260917T103100Z",
   "generation": "(default)",
   "started_utc": "2026-09-17T10:31:00Z",
-  "command": "python /mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py @@RUNPROV_CORPUS_ROOT@@",
+  "command": "python corpus_scenario.py @@RUNPROV_CORPUS_ROOT@@",
   "argv": [
-    "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py",
+    "corpus_scenario.py",
     "@@RUNPROV_CORPUS_ROOT@@"
   ],
   "cwd": "@@RUNPROV_CORPUS_ROOT@@",
@@ -34,7 +34,7 @@
       "pyproject.toml",
       "Makefile"
     ],
-    "script_file": "/mnt/P04SSD4TB/recovered_fsck/flaviviridae_audit/runprov/tools/corpus_scenario.py",
+    "script_file": "corpus_scenario.py",
     "script_sha256": "07d70859bc1727a3f879ad5f690cf2bdf2f26fb602d44c6fd2ad4cf5a828ab33",
     "imported": {
       "count": 0,
