@@ -24788,7 +24788,11 @@ def test_the_chain_survives_the_shapes_a_real_history_file_reaches(tmp_path, mon
     monkeypatch.chdir(tmp_path)
     runprov.configure(root=".", run_log=None)
     assert runprov.__main__.main(["chain"]) == 2
-    assert "no history configured" in capsys.readouterr().err
+    assert "no history to read" in capsys.readouterr().out, (
+        "G-06. A project with no explicit `run_log` is the DEFAULT project, not a project with "
+        "no history: the path resolves to `provenance/runs.jsonl` and it is simply not there. "
+        "One answer for one state — the same sentence `chain <absent path>` gives above."
+    )
 
     # Two torn lines in a row: the second's predecessor is already reported unreadable, so it
     # is not ALSO reported unattested — one finding, not two.
@@ -25905,8 +25909,15 @@ def test_chain_uses_the_configured_history_when_none_is_named(tmp_path, monkeypa
 
     THE PRIMARY INVOCATION HAD NO TEST. Its test was deleted in the rewrite, and a mutation
     making bare `runprov chain` fail in every configured project survived the whole suite —
-    the command's normal use, dead, and green. The only surviving assertion was the
-    no-history-configured case, which is the unusual one.
+    the command's normal use, dead, and green.
+
+    AMENDED FOR G-06, WHICH THIS TEST HELD OPEN. Its closing case configured `run_log=None`
+    and asserted exit 2, and its docstring called that "the unusual one". `run_log=None` is
+    the DEFAULT — every project that does not name a history explicitly — so the case the
+    test called unusual is the documented layout, and it was pinning the defect as correct:
+    `log` and `lineage` read `provenance/runs.jsonl` there and `chain` refused to. The
+    default layout now asserts exit 0, and a root that genuinely has no history is a separate
+    case below, answered where every other missing history is.
     """
     monkeypatch.chdir(tmp_path)
     _chain_history(tmp_path / "h.jsonl", 3)
@@ -25921,9 +25932,27 @@ def test_chain_uses_the_configured_history_when_none_is_named(tmp_path, monkeypa
     assert payload["attested"] == 2 and payload["lines"] == 3
     assert "\\" not in payload["path"], "POSIX-spelled, so a Windows record reads the same"
 
-    runprov.configure(root=".", run_log=None)
+    # THE DEFAULT LAYOUT, which is what a project that names no history has. No `run_log=`,
+    # the history where this package puts it, and the same answer the explicit case gives.
+    default = tmp_path / "default"
+    (default / "provenance").mkdir(parents=True)
+    _chain_history(default / "provenance" / "runs.jsonl", 3)
+    monkeypatch.chdir(default)
+    runprov.configure(root=".")
+    assert runprov.__main__.main(["chain"]) == 0, (
+        "G-06. `runprov chain` with no argument, in the layout the README documents, over an "
+        "intact history. This read `active().run_log` — `None` here — and exited 2."
+    )
+    assert "INTACT" in capsys.readouterr().out
+
+    # A root that genuinely has no history. Not a configuration fault: a resolved path with
+    # nothing at it, answered by `verify` exactly as a named path with nothing at it is.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+    runprov.configure(root=".")
     assert runprov.__main__.main(["chain"]) == 2
-    assert "no history configured" in capsys.readouterr().err
+    assert "no history to read" in capsys.readouterr().out
 
 
 def test_a_break_names_the_digest_a_reader_can_check_it_against(tmp_path, capsys):

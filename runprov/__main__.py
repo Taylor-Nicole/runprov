@@ -1715,10 +1715,17 @@ def _chain(args: argparse.Namespace) -> int:
     The three codes are the package's, unchanged: 0 checked and intact, 1 checked and BROKEN, 2
     COULD NOT CHECK — no history, unreadable, or nothing in it chained yet.
     """
-    log = pathlib.Path(args.log) if args.log else active().run_log
-    if log is None:
-        print("# no history configured and none named", file=sys.stderr)
-        return CANNOT_CHECK
+    # G-06. `resolved_run_log()`, LIKE EVERY OTHER READER. This was the only one of the nine
+    # that read `active().run_log`, which is `None` in any project that does not pass
+    # `run_log=` explicitly — so in the layout this package documents, `log` and `lineage`
+    # answered and `chain` said "no history configured and none named" and exited 2 over an
+    # intact history. The command's own default, dead, on the projects it was written for.
+    #
+    # AND NO `is None` GUARD BEHIND IT: the resolved path is never `None`, so the arm would be
+    # unreachable, and a path that does not exist is already answered one layer down —
+    # `verify` catches the `OSError` and the report reads `CANNOT CHECK: no history to read.`
+    # with exit 2, the same answer it gives for a directory or a file it may not open.
+    log = pathlib.Path(args.log) if args.log else active().resolved_run_log()
     report = chain_mod.verify(log)
     if args.format == "json":
         print(
