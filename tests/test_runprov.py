@@ -10731,6 +10731,80 @@ def test_the_page_samples_the_unregistered_reads_and_the_payload_carries_all_of_
     assert runprov.report.payload(page.report)["unregistered_reads"] == reads
 
 
+def test_a_block_that_is_there_but_empty_reads_as_no_block_at_all(tmp_path):
+    """[ADR-0017 R-8] [ADR-0017 R-10]. Found by mutation: two survivors, one shape.
+
+    `_tool` and `_observation` both ask `if not X`, so a record carrying `"tool": {}` or
+    `"observation": {}` is answered exactly as a record carrying neither. Changing both to
+    `is None` left the whole suite green — the PAGE is unmoved either way, because its fill
+    for a missing field and its sentence for a missing block say the same thing, and nothing
+    looked at the payload for these two shapes at all.
+
+    THE BEHAVIOUR IS THE ONE THAT SHIPPED AND IT IS THE RIGHT ONE, which is why this pins it
+    rather than changing it: a tool block naming no version and no source identifies the
+    writer no better than no tool block does, and an observation block recording no steps and
+    no packages observed nothing. Serialising them as objects full of nulls would say this
+    report LOOKED INSIDE and found each field missing, which is a finer claim than the record
+    supports — the direction R-8 exists to stop.
+
+    `run.get("observation") or {}` also means an explicit `null` arrives here as `{}`, so the
+    `is None` arm the mutation introduced could never fire: for every record without a usable
+    observation block the payload would have carried an object instead of a null.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    for empty, absent in (
+        ({"tool": {}}, {"tool": None}),
+        ({"observation": {}}, {"observation": None}),
+    ):
+        key = next(iter(empty))
+        with_empty = runprov.report.payload(
+            runprov.report.build(artifact, tmp_path, [_history_record(cwd=tmp_path, **empty)])
+        )
+        with_none = runprov.report.payload(
+            runprov.report.build(artifact, tmp_path, [_history_record(cwd=tmp_path, **absent)])
+        )
+        got = with_empty["method"]["tool"] if key == "tool" else with_empty[key]
+        assert got is None, f"an empty {key} block serialises as null, not as an object: {got}"
+        assert with_empty == with_none, (
+            f"a {key} block that is there but empty and one that is not there at all are the "
+            "same fact about the run, and this page has only ever had one answer for it"
+        )
+
+    # AND THE PAGE SAYS SO IN ITS OWN WORDS, which is the half a payload assertion cannot see.
+    lines = runprov.report.page(
+        artifact, tmp_path, [_history_record(cwd=tmp_path, tool={}, observation={})]
+    ).lines
+    assert "predates the `tool` block" in "\n".join(lines)
+    assert "  steps         not recorded" in lines and "  packages      not recorded" in lines
+
+
+def test_the_payload_spells_a_path_the_way_every_record_in_this_package_does(tmp_path, monkeypatch):
+    """[ADR-0017 R-9]. A survivor that no assertion about OUTPUT could ever have caught.
+
+    `_plain` sends a path through `hashing._posix`, and reverting that to `str()` survives the
+    whole suite on this platform because the two agree for every path POSIX can spell. They
+    disagree on Windows, where `str(WindowsPath("data/a.tsv"))` is `data\\a.tsv` — measured on
+    the Windows leg 2026-09-01, where exactly this produced a record no reader could compare.
+
+    So the mutation is EQUIVALENT HERE AND NOT EQUIVALENT WHERE IT MATTERS, and the repository's
+    rule for that is to prevent it structurally by reusing the primitive rather than
+    re-deriving it. `_plain` does reuse it; what nothing held was that it goes on doing so.
+    The repo-wide AST scan cannot see this site — it keys on dict keys and keyword arguments
+    whose name ends in `path`, and this is an `isinstance` arm — so the call itself is the
+    thing asserted, by making the primitive answerable.
+    """
+    artifact, log = _reported_run(tmp_path)
+    report = runprov.report.render(artifact, tmp_path, log).report
+
+    assert runprov.report.payload(report)["artifact"] == runprov.hashing._posix(artifact)
+
+    monkeypatch.setattr(runprov.report.hashing, "_posix", lambda p: "SPELLED-BY-THE-PRIMITIVE")
+    assert runprov.report.payload(report)["artifact"] == "SPELLED-BY-THE-PRIMITIVE", (
+        "the payload spells its path by ASKING the function every recorded path in this "
+        "package is spelled by, rather than by re-deriving the same answer beside it"
+    )
+
+
 class _Usage:
     """A `getrusage` result. Values are chosen so SELF and CHILDREN cannot be confused."""
 
