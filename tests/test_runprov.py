@@ -10112,6 +10112,169 @@ def test_report_cli_defaults_to_the_projects_own_history(tmp_path):
     assert runprov.__main__.main(["report", str(artifact)]) == 0
 
 
+def test_the_page_is_a_function_of_the_report_and_nothing_else(tmp_path):
+    """[ADR-0017 R-1] [ADR-0017 R-13]. One builder, two renderings — and this is the first.
+
+    `report` was the one command of the seven with no structure to serialise: `Page` was
+    `lines: list[str]` and a status, so the facts became prose inside the builder and there
+    was nothing a second rendering could be derived FROM. `Page`'s own docstring had already
+    recorded half of the argument — the status is RETURNED rather than string-matched back
+    out of the rendered text, because the first CLI handler decided its exit code by matching
+    its own output, which made the wording load-bearing. Every other fact on the page was
+    still one rewording away from the same defect.
+
+    THE SIGNATURE IS THE GUARANTEE, and it is the half that reading output cannot check: a
+    renderer handed nothing but the structure cannot state a fact the structure does not
+    hold. Asserted here rather than argued in a comment, because "the renderer only reads the
+    report" is exactly the kind of claim that stays true until someone needs one more value.
+    """
+    artifact, log = _reported_run(tmp_path)
+    page = runprov.report.render(artifact, tmp_path, log)
+
+    params = list(inspect.signature(runprov.report.render_page).parameters)
+    assert params == ["report"], (
+        f"the renderer takes the report and nothing else; it takes {params}"
+    )
+    assert page.lines == runprov.report.render_page(page.report), (
+        "the page a caller was handed is the rendering of the report it was handed"
+    )
+    assert page.status == page.report.verdict == "OK", (
+        "and the verdict a build exits on is READ OFF the structure rather than kept beside "
+        "it — two copies of one verdict are two things that can disagree"
+    )
+    assert page.ok is True
+
+
+def test_the_structure_carries_the_absence_and_the_page_supplies_the_question_mark(tmp_path):
+    """[ADR-0017 R-8] [ADR-0017 R-10]. `?` IS A RENDERING CHOICE, NOT A VALUE.
+
+    `page()` was full of `run.get("script", "?")`, which is harmless while a page is the only
+    thing built: a reader sees `?` and reads "not recorded". It stops being harmless the
+    moment the same facts are serialised, because the FIELD'S VALUE is then the string `?`
+    and no consumer can tell it from a script genuinely called `?` — an absence rendered as
+    a finding, which is the direction this package treats as unrecoverable.
+
+    So the assertion is in both directions at once: the structure says None where the record
+    said nothing, and the page still says `?`.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    bare = {"outputs": [{"path": "out.tsv"}], "cwd": str(tmp_path)}
+    page = runprov.report.page(artifact, tmp_path, [bare])
+    body = page.report.body
+    assert body is not None
+
+    absent = [name for name, value in body.run._asdict().items() if value is None]
+    assert absent == ["script", "status", "started_utc", "finished_utc", "run_id", "command"], (
+        "every field the record does not carry is None in the structure, and `cwd` — which "
+        f"it does carry — is not: got {body.run._asdict()}"
+    )
+    assert "  script        ?" in page.lines, "and the page still says `?`, which is its word"
+    assert "?" not in absent, "the sentinel never reaches the structure, only the page"
+
+
+def test_the_run_block_keeps_the_records_own_field_names(tmp_path):
+    """[ADR-0017 R-9]. `started_utc`, not `started`.
+
+    `started` and `finished` are the page's COLUMN LABELS, and a label is a rendering choice
+    like the `?` above. Renaming a field on the way out would mean a question answered against
+    the history has to be re-asked in a second vocabulary against anything derived from it —
+    for no gain, since the label stays where labels belong.
+    """
+    artifact, log = _reported_run(tmp_path)
+    body = runprov.report.render(artifact, tmp_path, log).report.body
+    assert body is not None
+    record = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    for field in body.run._fields:
+        assert field in record, f"{field} is not a name the record uses"
+    text = "\n".join(
+        runprov.report.render_page(runprov.report.render(artifact, tmp_path, log).report)
+    )
+    assert "  started       " in text and "started_utc" not in text, (
+        "the label is the page's, and it did not follow the field into the structure"
+    )
+
+
+def test_the_pages_caveat_about_itself_is_derived_from_whether_it_found_a_run(tmp_path):
+    """[ADR-0017 R-7] [ADR-0017 R-14]. The fact, not the prose.
+
+    Most of "what this page cannot tell you" is standing text — "it records; it does not
+    audit" is true of every report this package has ever printed, and a caveat true of
+    everything carries no information about anything. Its one CONDITIONAL clause is not:
+    *no run record was found, so everything except the pin and the verdict is absent rather
+    than clean* is a statement about THIS report, and a reader who cannot see it reads a page
+    missing four sections as a page with nothing to report.
+
+    DERIVED FROM `body`, so the caveat cannot disagree with the page it is printed on.
+    """
+    artifact, log = _reported_run(tmp_path)
+    found = runprov.report.render(artifact, tmp_path, log).report
+    missing = runprov.report.render(artifact, tmp_path, tmp_path / "nothing.jsonl").report
+
+    assert found.limits.run_not_found is False and found.body is not None
+    assert missing.limits.run_not_found is True and missing.body is None
+    assert "absent rather than clean" in "\n".join(runprov.report.render_page(missing))
+    assert "absent rather than clean" not in "\n".join(runprov.report.render_page(found))
+
+
+def test_a_disagreement_is_a_block_and_its_absence_is_not_an_empty_one(tmp_path):
+    """[ADR-0017 R-7]. D-03's BYTES DIFFER finding, carried rather than worded.
+
+    A qualification that exists only as prose is a qualification the second rendering of this
+    report can drop — which is precisely the defect this whole feature exists to prevent, and
+    one this project has already shipped twice about one object.
+
+    AND THE ORDINARY CASE IS `None`, not a block of empty strings: *looked, and the run's
+    recorded digest matches the file* is a finding, and "no disagreement" and "no comparison"
+    must not serialise the same.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    disk = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    producer = _history_record(
+        cwd=tmp_path, script="producer", outputs=[{"path": "out.tsv", "sha256": "f" * 64}]
+    )
+    other = _history_record(
+        cwd=tmp_path,
+        script="elsewhere-writer",
+        run_id="r2",
+        outputs=[{"path": "archive/copy.tsv", "sha256": disk}],
+    )
+    page = runprov.report.page(artifact, tmp_path, [producer, other])
+    body = page.report.body
+    assert body is not None and body.bytes_differ is not None
+    assert body.bytes_differ.recorded == "f" * runprov.hashing.PIN_DIGEST_CHARS
+    assert body.bytes_differ.now == disk[: runprov.hashing.PIN_DIGEST_CHARS], (
+        "BOTH SIDES OF ONE COMPARISON ARE SPELLED THE SAME WAY. `recorded` comes back from "
+        "`pin_digest` at the pin's own width; a reader handed sixteen characters on one side "
+        "and sixty-four on the other would find a mismatch in every report ever written"
+    )
+    assert body.bytes_differ.elsewhere_script == "elsewhere-writer"
+    assert "BYTES DIFFER" in "\n".join(page.lines)
+
+    clean = runprov.report.page(artifact, tmp_path, [_history_record(cwd=tmp_path)])
+    assert clean.report.body is not None and clean.report.body.bytes_differ is None
+    assert "BYTES DIFFER" not in "\n".join(clean.lines)
+
+
+def test_an_explicit_null_in_a_record_reads_as_not_recorded_rather_than_as_None(tmp_path):
+    """THE ONE LINE OF THIS PAGE THE SPLIT MOVED, and it is recorded here rather than left
+    to be found.
+
+    `run.get("script", "?")` filled only for an ABSENT key, so a record carrying
+    `"script": null` printed the word `None` — Python's repr, in a document written to be
+    filed beside a clinical result. The builder now reads `run.get("script")` and the page
+    renders every absence with the one word it has for absence.
+
+    Nothing this package writes can produce such a record; it takes a hand-edited or foreign
+    history. The page has never had two words for "the record does not carry this", and
+    `None` was not a second word — it was a leak.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    nulled = _history_record(cwd=tmp_path, script=None, command=None)
+    lines = runprov.report.page(artifact, tmp_path, [nulled]).lines
+    assert "  script        ?" in lines and "  command       ?" in lines
+    assert not [line for line in lines if line.endswith(" None")], lines
+
+
 class _Usage:
     """A `getrusage` result. Values are chosen so SELF and CHILDREN cannot be confused."""
 

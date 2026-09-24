@@ -202,31 +202,222 @@ def _resolve(name: str, base: str | None = None) -> str:
         return name
 
 
+class Run(typing.NamedTuple):
+    """The run that produced the artifact, IN THE RECORD'S OWN NAMES.
+
+    `started_utc` and `finished_utc`, never `started` and `finished`: those two are the
+    page's COLUMN LABELS, and a label is a rendering choice. Keeping the record's spelling
+    here is what lets a question asked of the history be asked of this structure and of
+    anything derived from it, instead of a reader having to learn a second vocabulary for
+    the same seven facts.
+    """
+
+    script: str | None
+    status: str | None
+    started_utc: str | None
+    finished_utc: str | None
+    run_id: str | None
+    command: str | None
+    cwd: str | None
+
+
+class BytesDiffer(typing.NamedTuple):
+    """D-03 as a structure: the named run's own digest for this path is not what is on disk,
+    and the bytes that ARE there were recorded as an output by exactly one other run.
+
+    `None` rather than an empty one in the ordinary case, and the distinction is the honest
+    one: *looked, and the run's recorded digest matches the file*. The page prints nothing
+    there, and this says the same thing without prose.
+
+    `now` IS TRUNCATED TO THE PIN'S OWN WIDTH, and that is not the mistake `_q` exists to
+    prevent. `recorded` comes from `hashing.pin_digest`, which is `PIN_DIGEST_CHARS` wide by
+    this package's convention; a reader handed sixteen characters on one side of a
+    comparison and sixty-four on the other would find a mismatch in every report ever
+    written. Two sides of one comparison are spelled the same way, or it is not one.
+    """
+
+    recorded: str
+    now: str
+    elsewhere_path: str | None
+    elsewhere_script: str | None
+
+
+class Tool(typing.NamedTuple):
+    """The runprov that wrote the record, and whether it can be followed back to code. U-01."""
+
+    version: str | None
+    source: str | None
+    identifies_code: bool | None
+    commit: str | None
+
+
+class Environment(typing.NamedTuple):
+    """The interpreter the run used. See `Method.environment` for when this is there at all."""
+
+    python: str | None
+    platform: str | None
+
+
+class Method(typing.NamedTuple):
+    """Which version of the method ran, and whether it can be got back.
+
+    `tool` is None for a record written before 0.3.0, and `environment` is None for EVERY
+    history — that field is a whitelist projection and stays in the sidecar beside the
+    artifact, which is the right trade for a file appended to forever. Both nulls are doing
+    real work: "this run recorded no tool block" and "the history does not carry this" are
+    findings, and the page says both of them in words rather than going quiet.
+    """
+
+    git_commit: str | None
+    git_status_captured: bool | None
+    git_code_dirty: bool | None
+    tool: Tool | None
+    environment: Environment | None
+
+
+class Input(typing.NamedTuple):
+    """One pinned input, in `verify.check_input`'s own names.
+
+    `name` and `pinned` are read rather than guessed for the reason the rendering already
+    records: the first version of that line invented `path` and `want` and printed `OK ? ?`
+    for a perfectly good input — a page that looks filled in and says nothing.
+    """
+
+    name: str | None
+    status: str | None
+    pinned: str | None
+    found: str | None
+
+
+class Observation(typing.NamedTuple):
+    """What the run was ABLE to observe. ADR-0010, and the page's own blind-spot section.
+
+    None is a record with no `observation` block at all — a run from before that block
+    existed, which is a different fact from a run that observed nothing, and the page
+    already refuses to conflate them.
+
+    `unregistered_watch_truncated` is C-06: when the watch hit its cap the unregistered list
+    is a SAMPLE rather than the answer, and a reader who cannot see this count reads an
+    empty list as "nothing was missed" on the one page consulted to judge one artifact.
+    """
+
+    steps: typing.Any
+    packages_recorded: typing.Any
+    unregistered_watch_truncated: int | None
+
+
+class Body(typing.NamedTuple):
+    """Everything the page states once it has found the run that produced the artifact.
+
+    ONE OPTIONAL RATHER THAN SIX, and that is null-versus-absent made structural. When no run
+    is found this page stops after the verdict: it does not look for a method, an input list
+    or an observation block and then fail to find them — it never looks. Six separate Nones
+    would spell "looked and found none" six times over, about questions the page did not ask;
+    one absent `Body` spells "this page does not reach here", and `Limits.run_not_found` is
+    the fact that says why.
+    """
+
+    run: Run
+    bytes_differ: BytesDiffer | None
+    method: Method
+    inputs: tuple[Input, ...]
+    observation: Observation | None
+    unregistered_reads: tuple[str, ...]
+
+
+class Limits(typing.NamedTuple):
+    """What this page cannot tell you — the FACT, never the prose.
+
+    `_limits()` is mostly standing text. "It records; it does not audit" is true of every
+    report this package has ever printed, and a caveat true of everything carries no
+    information about anything; it belongs in the page and in the documentation, not in a
+    structure. Its one CONDITIONAL clause is the exception, and it is a statement about this
+    report: no run record was found, so everything except the pin and the verdict is absent
+    rather than clean. A reader who could not see that reads a page missing four sections as
+    a page with nothing to report.
+    """
+
+    run_not_found: bool
+
+
+class Report(typing.NamedTuple):
+    """One artifact's page, as facts. The text is a rendering of THIS, and so is the JSON.
+
+    THE ARGUMENT IS `Page`'S OWN, GENERALISED. The status was returned rather than matched
+    back out of the rendered text because the first version of the CLI handler decided its
+    exit code by string-matching its own output, which made the wording load-bearing —
+    rephrasing a line would silently change what the command returned to a build. Everything
+    else on this page was still only prose, so every other fact on it was one rewording away
+    from the same defect, and there was nothing for a second rendering to be derived FROM.
+    """
+
+    artifact: pathlib.Path
+    verdict: str
+    reason: str | None
+    body: Body | None
+
+    @property
+    def limits(self) -> Limits:
+        """DERIVED, so the page's caveat about itself cannot disagree with the page."""
+        return Limits(run_not_found=self.body is None)
+
+
 class Page(typing.NamedTuple):
-    """The page, and the verdict it is about.
+    """The rendered page, and the report it was rendered from.
 
     The status is RETURNED rather than read back out of the rendered text. The first version
     of the CLI handler decided its exit code by string-matching its own output, which makes
     the wording load-bearing: rephrasing a line would silently change what the command
-    returns to a build.
+    returns to a build. It reads off `Report` now rather than being carried beside the lines,
+    because two copies of one verdict are two things that can disagree.
     """
 
     lines: list[str]
-    status: str
+    report: Report
+
+    @property
+    def status(self) -> str:
+        return self.report.verdict
 
     @property
     def ok(self) -> bool:
         return self.status == verify_mod.OK
 
 
-def page(
+def _or(value: typing.Any, fill: typing.Any) -> typing.Any:  # noqa: ANN401 - anything printable
+    """`fill` for a fact the record does not carry. THE FILL IS A RENDERING CHOICE.
+
+    `page()` used to spell these as `run.get("script", "?")`, in the builder, and that was
+    harmless while a page was the only thing built: a reader sees `?` and reads "not
+    recorded". It stops being harmless the moment the same facts are serialised, because
+    then the FIELD'S VALUE is the string `?` and no consumer can tell it from a script
+    genuinely called `?` — an absence rendered as a finding, which is the one direction this
+    package treats as unrecoverable. So the structure carries the absence, and this supplies
+    the word for it, in the same division of labour `_kv` already makes between a fact and
+    the width of the column it is printed in.
+    """
+    return fill if value is None else value
+
+
+def _q(value: typing.Any) -> typing.Any:  # noqa: ANN401 - anything printable
+    """The page's own fill. See `_or`."""
+    return _or(value, "?")
+
+
+def build(
     artifact: pathlib.Path,
     root: pathlib.Path,
     history: typing.Iterable[dict[str, typing.Any]] = (),
-) -> Page:
-    """The page. Separate from printing so the wording itself is testable."""
+) -> Report:
+    """The facts, with nothing worded yet. `render_page` turns them into the page.
+
+    THE ONE BUILDER. Every rendering of this command is a function of what this returns, so
+    a fact can be reworded, re-ordered or dropped from one rendering without any other
+    rendering quietly disagreeing about the artifact — which is the defect this project has
+    now shipped twice, once as a cause the text asserted and the JSON did not carry, and
+    once as two findings the text dropped while the JSON reported them.
+    """
     result = verify_mod.verify_artifact(artifact, root)
-    status = result.get("status", "?")
     # THE DIGEST OF THE BYTES ON DISK NOW, so a moved or renamed artifact still finds its run,
     # and two files sharing a basename cannot be confused for one another. A-05.
     try:
@@ -236,13 +427,136 @@ def page(
     match = find_match(history, str(artifact), digest)
     run = match.record
 
-    out = [_rule(f"provenance report — {artifact.name}"), ""]
-    out.append(_kv("artifact", artifact))
-    out.append(_kv("verdict", status))
-    if result.get("reason"):
-        out.append(_kv("", f"({result['reason']})"))
+    body = None
+    if run is not None:
+        body = Body(
+            run=Run(
+                script=run.get("script"),
+                status=run.get("status"),
+                started_utc=run.get("started_utc"),
+                finished_utc=run.get("finished_utc"),
+                run_id=run.get("run_id"),
+                command=run.get("command"),
+                cwd=run.get("cwd"),
+            ),
+            bytes_differ=_differ(match, digest),
+            method=_method(run),
+            # THE ARTIFACT'S OWN PIN, not the run's outputs — `verify_artifact` read them and
+            # already re-derived every digest. Nothing here is computed a second time.
+            inputs=tuple(_input(entry) for entry in result.get("inputs") or []),
+            observation=_observation(run),
+            unregistered_reads=tuple(run.get("unregistered_reads") or []),
+        )
+    return Report(
+        artifact=artifact,
+        verdict=result.get("status", "?"),
+        reason=result.get("reason"),
+        body=body,
+    )
 
-    if run is None:
+
+def _differ(match: Match, digest: str | None) -> BytesDiffer | None:
+    """The BYTES DIFFER finding, or None when the run's recorded digest matches the file."""
+    if not match.disagrees:
+        return None
+    # BOUND, not re-read through the property: `disagrees` proves it is not None and mypy
+    # cannot see that through a NamedTuple property. A local says it once.
+    wrote_them = match.elsewhere or {}
+    # `digest` IS A STRING HERE, STRUCTURALLY RATHER THAN LUCKILY. `elsewhere` is only ever
+    # filled from `find_match`'s `by_digest`, and that mapping is populated inside a branch
+    # guarded by `digest` being truthy — so a disagreement cannot exist over an artifact this
+    # process could not hash. The `or "?"` that used to sit here could not fire, and an arm
+    # that cannot fire reads as a case that can happen.
+    return BytesDiffer(
+        recorded=match.recorded,
+        now=str(digest)[: hashing.PIN_DIGEST_CHARS],
+        elsewhere_path=match.elsewhere_path,
+        elsewhere_script=wrote_them.get("script"),
+    )
+
+
+def _method(run: dict[str, typing.Any]) -> Method:
+    """Which version of the method ran. The THREE git fields, not the sentence they make."""
+    return Method(
+        git_commit=run.get("git_commit"),
+        git_status_captured=run.get("git_status_captured"),
+        git_code_dirty=run.get("git_code_dirty"),
+        tool=_tool(run),
+        environment=_environment(run),
+    )
+
+
+def _tool(run: dict[str, typing.Any]) -> Tool | None:
+    """The runprov that wrote this record, or None for a record from before 0.3.0.
+
+    None rather than a `Tool` of nulls, because the page says two different sentences here
+    and they must not read alike: a tool block with nothing in it is a runprov that recorded
+    itself badly, and no tool block at all is a run from before it recorded itself. U-01.
+    """
+    tool = run.get("tool")
+    if not tool:
+        return None
+    return Tool(
+        version=tool.get("version"),
+        source=tool.get("source"),
+        identifies_code=tool.get("identifies_code"),
+        commit=tool.get("commit"),
+    )
+
+
+def _environment(run: dict[str, typing.Any]) -> Environment | None:
+    """The interpreter, or None — which is EVERY history.
+
+    The history does not carry `environment`: it is a whitelist projection and that field
+    stays in the sidecar, which is the right trade for a file appended forever. Saying so is
+    not padding — a page that silently omitted the interpreter would read as though the run
+    had not recorded one, and "not on this page" is a different fact from "not recorded".
+    """
+    env = run.get("environment") or {}
+    if not env:
+        return None
+    return Environment(python=env.get("python"), platform=env.get("platform"))
+
+
+def _input(entry: dict[str, typing.Any]) -> Input:
+    """One checked input, in `check_input`'s names."""
+    return Input(
+        name=entry.get("name"),
+        status=entry.get("status"),
+        pinned=entry.get("pinned"),
+        found=entry.get("found"),
+    )
+
+
+def _observation(run: dict[str, typing.Any]) -> Observation | None:
+    """What the run was able to observe, or None for a record carrying no such block."""
+    obs = run.get("observation") or {}
+    if not obs:
+        return None
+    return Observation(
+        steps=obs.get("steps"),
+        packages_recorded=obs.get("packages_recorded"),
+        unregistered_watch_truncated=obs.get("unregistered_watch_truncated"),
+    )
+
+
+def render_page(report: Report) -> list[str]:
+    """The page, from the report AND NOTHING ELSE.
+
+    The signature is the guarantee, and it is the half of the consistency rule that reading
+    output cannot check: a renderer handed only the structure cannot state a fact the
+    structure does not hold. Both defects this split exists to prevent are what happens when
+    a rendering is free to reach past the structure — one asserted a cause its sibling
+    rendering did not carry, the other silently dropped two findings its sibling reported.
+    """
+    out = [_rule(f"provenance report — {report.artifact.name}"), ""]
+    out.append(_kv("artifact", report.artifact))
+    out.append(_kv("verdict", report.verdict))
+    if report.reason:
+        out.append(_kv("", f"({report.reason})"))
+
+    body = report.body
+    if body is None:
         # SAID, NOT OMITTED. A page that simply left the run section out would read as though
         # the artifact had no producer rather than as though none was FOUND, and those are
         # different facts — the second is usually a history that was not passed in.
@@ -253,18 +567,20 @@ def page(
             _kv("", "NOT FOUND in the run history supplied."),
             _kv("", "The pin above still stands on its own; the rest of this page cannot."),
         ]
-        out += ["", *_limits(found_run=False)]
-        return Page(out, status)
+        out += ["", *_limits(report.limits)]
+        return out
 
+    run = body.run
     out += ["", _rule("the run that produced it"), ""]
-    out.append(_kv("script", run.get("script", "?")))
-    out.append(_kv("status", run.get("status", "?")))
-    out.append(_kv("started", run.get("started_utc", "?")))
-    out.append(_kv("finished", run.get("finished_utc", "?")))
-    out.append(_kv("run_id", run.get("run_id", "?")))
-    out.append(_kv("command", run.get("command", "?")))
-    out.append(_kv("cwd", run.get("cwd", "?")))
-    if match.disagrees:
+    out.append(_kv("script", _q(run.script)))
+    out.append(_kv("status", _q(run.status)))
+    out.append(_kv("started", _q(run.started_utc)))
+    out.append(_kv("finished", _q(run.finished_utc)))
+    out.append(_kv("run_id", _q(run.run_id)))
+    out.append(_kv("command", _q(run.command)))
+    out.append(_kv("cwd", _q(run.cwd)))
+    differ = body.bytes_differ
+    if differ is not None:
         # D-03 of Audit D. THE LOUDEST LINE ON THE PAGE WHEN IT IS PRESENT, because everything
         # above it describes a run and everything below describes the artifact, and this says
         # the two may not belong together. Both digests are recorded facts and the comparison
@@ -277,76 +593,78 @@ def page(
         # file. Making `report` fail where `verify` passes would leave two commands disagreeing
         # about one artifact. The precedent is the UNREGISTERED block below, which is the
         # loudest thing on this page and never moves the exit code either.
-        out.append(_kv("BYTES DIFFER", f"this run recorded {match.recorded} for this path;"))
-        out.append(_kv("", f"the file now hashes {str(digest or '?')[: hashing.PIN_DIGEST_CHARS]}"))
-        out.append(_kv("", f"those bytes are the output {match.elsewhere_path}"))
-        # BOUND, not re-read through the property: `disagrees` proves it is not None and mypy
-        # cannot see that through a NamedTuple property. A local says it once.
-        wrote_them = match.elsewhere or {}
-        out.append(_kv("", f"recorded by the run {wrote_them.get('script', '?')}"))
+        out.append(_kv("BYTES DIFFER", f"this run recorded {differ.recorded} for this path;"))
+        out.append(_kv("", f"the file now hashes {differ.now}"))
+        out.append(_kv("", f"those bytes are the output {differ.elsewhere_path}"))
+        out.append(_kv("", f"recorded by the run {_q(differ.elsewhere_script)}"))
 
+    method = body.method
     out += ["", _rule("the method, and whether it can be got back"), ""]
-    commit = run.get("git_commit") or "none recorded"
-    if run.get("git_status_captured") is False:
+    commit = method.git_commit or "none recorded"
+    if method.git_status_captured is False:
         state = "UNKNOWN — git status did not run"
-    elif run.get("git_code_dirty"):
+    elif method.git_code_dirty:
         state = "DIRTY — the code that ran matches no commit"
     else:
         state = "clean"
     out.append(_kv("code", f"{commit}  ({state})"))
 
-    tool = run.get("tool")
-    if tool:
-        how = tool.get("source", "?")
-        if not tool.get("identifies_code"):
+    tool = method.tool
+    if tool is not None:
+        how = _q(tool.source)
+        if not tool.identifies_code:
             how += ", DOES NOT IDENTIFY THE CODE"
-        elif tool.get("commit"):
-            how += f" {str(tool['commit'])[:12]}"
-        out.append(_kv("recorded by", f"runprov {tool.get('version', '?')}  ({how})"))
+        elif tool.commit:
+            how += f" {str(tool.commit)[:12]}"
+        out.append(_kv("recorded by", f"runprov {_q(tool.version)}  ({how})"))
     else:
         # A RECORD FROM BEFORE 0.3.0. Saying so is the point of U-01: the alternative is a
         # page that is silent about its own provenance and looks complete.
         out.append(_kv("recorded by", "not recorded — this run predates the `tool` block"))
 
-    # THE HISTORY DOES NOT CARRY `environment` — it is a whitelist projection and that field
-    # stays in the sidecar, which is the right trade for a file appended forever. Saying so is
-    # not padding: a page that silently omitted the interpreter would read as though the run
-    # had not recorded one, and "not on this page" is a different fact from "not recorded".
-    env = run.get("environment") or {}
-    if env:
-        out.append(_kv("python", env.get("python", "?")))
-        out.append(_kv("platform", env.get("platform", "?")))
+    env = method.environment
+    if env is not None:
+        out.append(_kv("python", _q(env.python)))
+        out.append(_kv("platform", _q(env.platform)))
     else:
         out.append(_kv("environment", "in the sidecar beside the artifact, not in the history"))
 
-    inputs = result.get("inputs") or []
-    out += ["", _rule(f"inputs it was made from ({len(inputs)})"), ""]
-    if not inputs:
+    out += ["", _rule(f"inputs it was made from ({len(body.inputs)})"), ""]
+    if not body.inputs:
         out.append(_kv("", "none pinned"))
-    for entry in inputs:
-        # THE KEYS ARE `name` AND `pinned`, read from `verify_artifact` rather than guessed:
-        # the first version of this line invented `path` and `want` and printed "OK ? ?" for
-        # a perfectly good input — a page that looks filled in and says nothing.
-        mark = entry.get("status", "?")
-        digest = str(entry.get("pinned", "")) or "?"
-        line = f"  {mark:<12} {digest}  {entry.get('name', '?')}"
-        if entry.get("status") != verify_mod.OK and entry.get("found"):
-            line += f"   (now {entry['found']})"
+    for entry in body.inputs:
+        line = f"  {_q(entry.status):<12} {_q(entry.pinned)}  {_q(entry.name)}"
+        if entry.status != verify_mod.OK and entry.found:
+            line += f"   (now {entry.found})"
         out.append(line)
 
-    obs = run.get("observation") or {}
-    unregistered = run.get("unregistered_reads") or []
+    obs = body.observation
+    steps: typing.Any = None
+    packages: typing.Any = None
+    truncated: int | None = None
+    if obs is not None:
+        steps, packages, truncated = (
+            obs.steps,
+            obs.packages_recorded,
+            obs.unregistered_watch_truncated,
+        )
     out += ["", _rule("what the run was able to observe"), ""]
-    out.append(_kv("steps", obs.get("steps", "not recorded")))
-    out.append(_kv("packages", obs.get("packages_recorded", "not recorded")))
+    out.append(_kv("steps", _or(steps, "not recorded")))
+    out.append(_kv("packages", _or(packages, "not recorded")))
+    unregistered = body.unregistered_reads
     if unregistered:
         # THE MOST IMPORTANT LINE ON THE PAGE WHEN IT IS PRESENT, so it is not buried in a
         # count: these files were read and are NOT in the pin above.
+        #
+        # THE COUNT IS THE WHOLE LIST AND THE LINES ARE THE FIRST TEN, which is the one place
+        # a rendering of this report deliberately says less than the report holds. The count
+        # is what makes that legible rather than silent, and a machine reader is handed all of
+        # them — the asymmetry runs in the safe direction and is asserted, not assumed.
         out.append(
             _kv("UNREGISTERED", f"{len(unregistered)} file(s) were read and are NOT pinned:")
         )
         out += [f"               {p}" for p in unregistered[:10]]
-    if obs.get("unregistered_watch_truncated"):
+    if truncated:
         # C-06 of Audit C. It belongs HERE above all: the list printed above is the page's
         # answer to "was anything read that is not pinned?", and when the watch hit its cap
         # that list is a sample rather than the answer. Without this line an empty
@@ -355,17 +673,31 @@ def page(
         out.append(
             _kv(
                 "WATCH TRUNCATED",
-                f"at least {obs['unregistered_watch_truncated']} further path(s) were "
+                f"at least {truncated} further path(s) were "
                 "dropped; the line above is a sample, not a census",
             )
         )
 
-    out += ["", *_limits(found_run=True)]
-    return Page(out, status)
+    out += ["", *_limits(report.limits)]
+    return out
 
 
-def _limits(*, found_run: bool) -> list[str]:
-    """What the page cannot tell you — on the page, not in a manual beside it."""
+def page(
+    artifact: pathlib.Path,
+    root: pathlib.Path,
+    history: typing.Iterable[dict[str, typing.Any]] = (),
+) -> Page:
+    """The page. Separate from printing so the wording itself is testable."""
+    report = build(artifact, root, history)
+    return Page(render_page(report), report)
+
+
+def _limits(limits: Limits) -> list[str]:
+    """What the page cannot tell you — on the page, not in a manual beside it.
+
+    STANDING PROSE PLUS ONE CONDITIONAL CLAUSE, and only the clause is a fact about this
+    report. `Limits` carries that fact; these words are this rendering's way of saying it.
+    """
     lines = [
         _rule("what this page cannot tell you"),
         "",
@@ -377,7 +709,7 @@ def _limits(*, found_run: bool) -> list[str]:
         "  is reported above when it was seen, and cannot be seen at all for a script that",
         "  never imported runprov.",
     ]
-    if not found_run:
+    if limits.run_not_found:
         lines += [
             "",
             "  No run record was found for this artifact, so everything except the pin and",
