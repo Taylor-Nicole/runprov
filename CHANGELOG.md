@@ -49,6 +49,20 @@ line names no version and none resolves from its run — G-05's case, which is t
 of. Verdict and exit code unchanged; what changes is a reader no longer chasing something the
 record denies.
 
+### Fixed — a coverage gap names the version it was judged by
+
+Audit H, H1-6. The `GAP` sentence resolved the writer's version a second time, from the line's
+raw `tool.version` alone, while the judgement had already resolved it from the run (ADR-0016
+R-29). A record whose own version field is not a string was judged on `0.5.0` and reported as
+*"1 line(s) written by runprov 12345"*, and `Link.wrote` — annotated `str | None`, and published
+by `--format json` — held the integer. One expression answers both now.
+
+Also removed, both unreachable and both noted by the same pass: *"a version it does not name"*,
+which a `GAP` edge can never print because rule 5 fires only once a version has resolved, and
+`Link.detail`'s non-`BROKEN` arm, whose only caller iterates the `BROKEN` edges. `_findings`'s
+docstring no longer claims its sentences come out in ADR-0016 R-25's order; they come out
+weakest-claim-first, and it now says so.
+
 ## [0.6.0] — 2026-09-23
 
 ### Added

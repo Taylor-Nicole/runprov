@@ -337,9 +337,15 @@ class Link(typing.NamedTuple):
         which has a claim — so the arm was not merely wrong, it was unreachable. Deleted
         rather than left behind a guard: the branch-coverage floor would have failed on it,
         and a sentence nothing can print is a sentence nobody maintains.
+
+        AND THE NON-BROKEN ARM IS GONE WITH IT (Audit H, H1-8). `if self.status != BROKEN:
+        return f"line {N}: {status}"` was unreachable for the same reason: the sole caller
+        iterates `report.of(BROKEN)`, so no edge with another status is ever asked. It survived
+        only through a hand-built `Link` in a test **whose comment gave a false reason for it**
+        — "the renderer asks every edge", which it does not; it asks the BROKEN ones. A
+        justification that is wrong is worse than none, because the next reader budgets a
+        contract from it. Both are deleted, by the paragraph above's own rule.
         """
-        if self.status != BROKEN:
-            return f"line {self.line}: {self.status}"
         # Never None on this path, per the paragraph above; `or ""` satisfies the type checker
         # without an `assert`, which under the 100 % branch floor would be a branch that can
         # never take its other arm.
@@ -542,20 +548,46 @@ def _writers(records: dict[int, dict[str, typing.Any]]) -> dict[str, str]:
     return found
 
 
+def _resolved_version(record: dict[str, typing.Any] | None, by_run: dict[str, str]) -> str | None:
+    """The `tool.version` a record answers for — its own, else its run's. R-29.
+
+    ONE EXPRESSION FOR THE NAME AND FOR THE JUDGEMENT (Audit H, H1-6). The walk used to
+    resolve the version a second time, inline, to fill `Link.wrote`, and the two expressions
+    were not the same one: the message read the line's RAW `tool.get("version")` while
+    `_writer_of` had already fallen through to the run's. Measured — a record whose own
+    `tool.version` is the integer `12345` and whose `run_uid` resolves to `0.5.0` was judged
+    `GAP` on `0.5.0` and reported as *"1 line(s) written by runprov 12345, which cannot chain"*,
+    with `--format json` emitting `"wrote": 12345` on a field annotated `str | None`.
+
+    That is F-09's shape — two expressions for one fact are two places a later edit can move
+    apart — and it is the same defect the module keeps meeting: a sentence that disagrees with
+    the judgement it describes. There is one expression now, and the annotation is honoured,
+    so a non-string version resolves to nothing rather than to a number printed as a release.
+    """
+    if record is None:
+        return None
+    tool = record.get("tool")
+    version = tool.get("version") if isinstance(tool, dict) else None
+    if isinstance(version, str):
+        return version
+    # G-20. THE SAME KEY THE MAP WAS BUILT WITH. Looking up under `run_id` while `_writers`
+    # keys on `run_uid` would be asking a map a question in a different vocabulary, and the
+    # only records it could answer for are ones whose label happens to equal somebody's uuid.
+    #
+    # `by_run` is `dict[str, str]`, so this arm can only ever produce a string or nothing and
+    # needs no further check. The draft that kept one had a guard no input could fail —
+    # measured, a mutation removing it survived — and a guard that cannot fail reads to the
+    # next person as a case that can happen.
+    uid = record.get("run_uid")
+    return by_run.get(uid) if isinstance(uid, str) else None
+
+
 def _writer_of(record: dict[str, typing.Any] | None, by_run: dict[str, str]) -> str:
     """One of `WRITERS`. Total over any JSON shape — a `tool` that is a string, a list or
     null resolves to `UNSTATED` and never raises (F-05)."""
     if record is None:
         return "UNREADABLE"
-    tool = record.get("tool")
-    version = tool.get("version") if isinstance(tool, dict) else None
-    if not isinstance(version, str):
-        # G-20. THE SAME KEY THE MAP WAS BUILT WITH. Looking up under `run_id` while `_writers`
-        # keys on `run_uid` would be asking a map a question in a different vocabulary, and the
-        # only records it could answer for are ones whose label happens to equal somebody's uuid.
-        uid = record.get("run_uid")
-        version = by_run.get(uid) if isinstance(uid, str) else None
-    numbers = _numbers_in(version)
+    numbers = _numbers_in(_resolved_version(record, by_run))
     if numbers is None:
         return "UNSTATED"
     return "PRE_CHAIN" if numbers < CHAINS_FROM else "CAPABLE"
@@ -678,10 +710,10 @@ def verify(path: str | pathlib.Path) -> Report:
             # AND ON AN `UNCLAIMED` EDGE (Audit H, H1-10), for the same reason: R-32's
             # in-flight clause is true only where the writer is UNSTATED, and rule 7's own
             # inputs are the only place that is known.
-            record = records.get(index) or {}
-            tool = record.get("tool")
-            named = tool.get("version") if isinstance(tool, dict) else None
-            named = named or by_run.get(str(record.get("run_uid")))  # G-20: run_uid, per R-29
+            # H1-6. THE SAME EXPRESSION THE JUDGEMENT USED, three lines above. What stood here
+            # was a second, differently-written resolution of the same fact, and the two could
+            # disagree — see `_resolved_version`.
+            named = _resolved_version(records.get(index), by_run)
         edges.append(
             Link(
                 index,
@@ -695,7 +727,25 @@ def verify(path: str | pathlib.Path) -> Report:
 
 
 def _findings(report: Report, path: pathlib.Path) -> list[str]:
-    """Every sentence the edges themselves earn, in R-25's own order.
+    """Every sentence the edges themselves earn, weakest claim first and the accusation last.
+
+    THE ORDER IS THE PAGE'S, NOT R-25's, and this docstring used to say otherwise (Audit H,
+    H1-5). The emitted order is
+
+        translated · GAP · UNCHAINED · UNCLAIMED · merged · UNCHECKABLE · unreadable · BROKEN
+
+    which is neither R-25's precedence — where `BROKEN` is rule 0 and `UNCLAIMED` is rule 7 —
+    nor its reverse. It is a reading order: facts that suppress no finding first, the states
+    where evidence is missing next, and the one sentence that accuses at the bottom, where a
+    reader who stops early has not stopped before it. Three of the eight are not edge statuses
+    at all — `translated`, `merged` and `unreadable` are facts about single lines — so R-25
+    could not have ordered them in any case. Stated rather than sorted by rule index, because
+    stating it changes no output and sorting it would change every page.
+
+    The other half of what this said is sound and is left standing: every edge status that
+    earns a sentence has one here — `GAP`, `UNCHAINED`, `UNCLAIMED`, `UNCHECKABLE` in each of
+    its three rules, and `BROKEN`. `HOLDS` and `HOLDS_TRIVIAL` earn none by construction: they
+    are the clean case, and they are reported as the attested count in the header above.
 
     LIFTED OUT OF `render` FOR G-16. It used to sit inline under the "attested of" header,
     which is the whole of why the `chained_from is None` early return could print none of it
@@ -717,9 +767,17 @@ def _findings(report: Report, path: pathlib.Path) -> list[str]:
         )
     stale: dict[str, int] = {}
     for link in report.of(GAP):
-        stale[link.wrote or "a version it does not name"] = (
-            stale.get(link.wrote or "a version it does not name", 0) + 1
-        )
+        # H1-7. "A VERSION IT DOES NOT NAME" IS GONE, and it could never have been printed.
+        # Rule 5 fires only on `writer = PRE_CHAIN`, which `_writer_of` returns only when
+        # `_resolved_version` HAS resolved a version string — from the line's own `tool` block
+        # or from its run — and `wrote` is that same value. So the fallback described a state
+        # the walk cannot construct, which is dead prose, of the class this file deleted once
+        # before in `Link.detail`. Swept over 64 record shapes that judge `PRE_CHAIN`: not one
+        # of them reaches it. The `or ""` that remains is what satisfies the type checker
+        # without an `assert`, exactly as in `Link.detail` and for the same reason — under the
+        # 100 % branch floor an assertion here would be a branch with an arm nothing can take.
+        version = link.wrote or ""
+        stale[version] = stale.get(version, 0) + 1
     for version, count in sorted(stale.items()):
         out.append(
             f"    {count} line(s) written by runprov {version}, which cannot chain — "

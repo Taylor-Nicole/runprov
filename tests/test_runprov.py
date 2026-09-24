@@ -24752,6 +24752,61 @@ def test_an_unchained_line_is_judged_by_the_version_that_wrote_it(tmp_path, caps
     assert "3 line(s) predate the chain" in capsys.readouterr().out
 
 
+def test_the_version_a_gap_names_is_the_one_it_was_judged_by(tmp_path, capsys):
+    """ADR-0016 [ADR-0016 R-5] [ADR-0016 R-29]. Audit H, H1-6.
+
+    THE MESSAGE READ THE LINE AND THE JUDGEMENT READ THE RUN, and they are not the same value.
+    `_writer_of` resolves a version from the line's own `tool.version` and, failing that, from
+    the completed record sharing its `run_uid` (R-29); the sentence resolved it again, inline,
+    from the raw `tool.get("version")` alone. So a line whose own version field is not a string
+    was JUDGED on the version its run states and REPORTED with the raw field:
+
+        1 line(s) written by runprov 12345, which cannot chain — upgrade that machine
+
+    and `Link.wrote`, annotated `str | None`, held an int that `--format json` emitted as a
+    number. That is F-09's shape — two expressions for one fact are two places a later edit can
+    move apart — and it is what makes a reader distrust a page: the machine named is not the
+    machine the tool decided about.
+
+    Both GAP lines below belong to the same run and the same 0.5.0 machine, so the report has
+    one sentence to make about them. Before the fix it made two, and one named a number.
+    """
+    p = tmp_path / "h.jsonl"
+    _chain_history(p, 2)
+    uid = "u" * 32
+    with p.open("ab") as fh:
+        for tool in (
+            {"name": "runprov", "version": "0.5.0"},
+            {"name": "runprov", "version": 12345},
+        ):
+            fh.write(
+                json.dumps(
+                    {"schema": "runprov.history.v2", "run_id": "old", "run_uid": uid, "tool": tool}
+                ).encode()
+                + b"\n"
+            )
+
+    report = runprov.chain.verify(p)
+    gaps = report.of(runprov.chain.GAP)
+    assert [e.line for e in gaps] == [3, 4], (
+        "both are judged PRE_CHAIN — the second only through its run, which is R-29's whole "
+        "point and the half the message did not use"
+    )
+    assert [e.wrote for e in gaps] == ["0.5.0", "0.5.0"], [e.wrote for e in gaps]
+    assert all(isinstance(e.wrote, str) or e.wrote is None for e in report.edges), (
+        "`Link.wrote` is annotated `str | None`, and `--format json` publishes it"
+    )
+
+    assert runprov.__main__.main(["chain", str(p)]) == 2
+    page = capsys.readouterr().out
+    assert "2 line(s) written by runprov 0.5.0, which cannot chain" in page, page
+    assert "12345" not in page, "the raw field, printed as though it were a release"
+
+    assert runprov.__main__.main(["chain", str(p), "--format", "json"]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert [e["wrote"] for e in payload["edges"] if e["status"] == "GAP"] == ["0.5.0", "0.5.0"]
+
+
 def test_a_translated_checkout_is_named_rather_than_called_tampering(tmp_path, capsys):
     """ADR-0016 [ADR-0016 R-21]. Audit E, E-01 — the maximal false accusation.
 
@@ -25611,8 +25666,18 @@ def test_the_writer_of_a_line_is_resolved_from_the_run(tmp_path, capsys):
     assert runprov.chain.verify(empty).lines == 0
     assert runprov.chain.verify(empty).status == runprov.chain.CANNOT_CHECK
 
-    # `Link.detail` for a status that is not BROKEN — the renderer asks every edge.
-    assert "HOLDS" in runprov.chain.Link(3, runprov.chain.HOLDS).detail
+    # Audit H, H1-8. WHAT STOOD HERE WAS A HAND-BUILT `Link` WITH A NON-BROKEN STATUS, kept
+    # alive by a comment that stated a false reason for it — "the renderer asks every edge".
+    # It does not: `_findings`'s only call is `for link in report.of(BROKEN)`, so the arm that
+    # answered for any other status was unreachable and the assertion was pinning a contract
+    # nothing uses. Both the arm and the assertion are gone, by the rule the module applied to
+    # the claimless arm before it: a sentence nothing can print is a sentence nobody maintains.
+    # What replaces it is the contract itself, read off the module rather than assumed.
+    module = inspect.getsource(runprov.chain)
+    assert module.count("link.detail") == 1, "one caller, and the assertion below is about it"
+    assert re.findall(
+        r"for link in report\.of\((\w+)\):\n\s*out\.append\([^)]*link\.detail", module
+    ) == ["BROKEN"], "`detail` is asked only of BROKEN edges, which is why it answers only them"
 
     # Any JSON shape resolves, and nothing raises (F-05).
     for shape in ("0.5.0", ["0.5.0"], None, 12345):
