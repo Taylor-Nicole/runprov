@@ -926,6 +926,38 @@ def _findings(report: Report, path: pathlib.Path) -> list[str]:
     return out
 
 
+def payload(report: Report, path: pathlib.Path) -> dict[str, typing.Any]:
+    """The report as one object, for `--format json`. ADR-0017 R-1, R-5, R-9.
+
+    DERIVED FROM THE STRUCTURE'S OWN FIELDS, and it was not. The emitter lived in the CLI
+    handler and named every field by hand, so each new field on `Report` had to be remembered
+    there as well — `merged` in wave 2 and `unreadable` in wave 5 both were, and nothing would
+    have said if they had not been. A hand-written list of what to serialise is the scope
+    pattern aimed at a released output, where a dropped field is a consumer silently missing a
+    finding rather than a test going red.
+
+    `status` and `attested` are ADDED rather than walked: they are computed properties, not
+    fields, and R-10 allows them because they compute nothing the record does not already hold
+    — `status` is the fold over the edges and `attested` counts the ones that HOLD.
+
+    Key ORDER differs from the hand-written version and nothing depends on it: a JSON object is
+    unordered, and the accompanying test compares parsed payloads rather than bytes.
+    """
+
+    def _rendered(name: str, value: typing.Any) -> typing.Any:  # noqa: ANN401 - any field
+        if name == "edges":
+            return [dict(zip(Link._fields, edge, strict=True)) for edge in value]
+        return list(value) if isinstance(value, tuple) else value
+
+    return {
+        "schema": SCHEMA,
+        "path": path.as_posix(),
+        **{name: _rendered(name, value) for name, value in report._asdict().items()},
+        "status": report.status,
+        "attested": report.attested,
+    }
+
+
 def render(report: Report, path: pathlib.Path) -> list[str]:
     """The report. R-9: states what it checked, not only what it found."""
     out = [f"# chain — {path}"]

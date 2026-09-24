@@ -27297,6 +27297,54 @@ def test_no_committed_file_carries_this_machines_identity():
     )
 
 
+def test_every_field_of_the_chain_report_reaches_its_payload(tmp_path):
+    """ADR-0017 [ADR-0017 R-1] [ADR-0017 R-2] [ADR-0017 R-9]. DERIVED FROM `_fields`.
+
+    `chain --format json` shipped in 0.6.0 with its emitter in the CLI handler, naming every
+    field by hand. Measured before this guard existed: the payload was COMPLETE — `merged`
+    (wave 2) and `unreadable` (wave 5) had both been remembered in the second place. **Nothing
+    would have said if they had not been**, and a dropped field in a released output is a
+    consumer silently missing a finding, not a test going red.
+
+    So the assertion is set equality over the structure's OWN field names, in both directions.
+    A field added to `Report` or to `Link` and not carried fails here; a key in the payload that
+    answers to no field fails here too, unless it is one of the three named below with its
+    reason. A hand-written list of expected keys would be the same defect one layer along.
+    """
+    history = tmp_path / "h.jsonl"
+    sink = runprov.JsonlSink(history)
+    for i in range(3):
+        sink.append(
+            {"schema": "runprov.history.v2", "run_id": f"r{i}", "tool": {"version": "0.6.0"}}
+        )
+    report = runprov.chain.verify(history)
+    body = runprov.chain.payload(report, history)
+
+    # `schema` and `path` identify the answer rather than being part of it (R-5); `status` and
+    # `attested` are computed properties, allowed by R-10 because they compute nothing the
+    # record does not already hold.
+    named = {"schema", "path", "status", "attested"}
+    assert set(body) - named == set(report._fields), (
+        f"the payload and `Report` disagree. Carried but not a field: "
+        f"{sorted(set(body) - named - set(report._fields))}. "
+        f"A field that reaches no payload: {sorted(set(report._fields) - set(body))}"
+    )
+    assert "status" in body and "attested" in body, "the computed properties are part of the answer"
+
+    assert body["edges"], "a clean history has edges; this asserts nothing over an empty list"
+    link = set(runprov.chain.Link._fields)
+    for edge in body["edges"]:
+        assert set(edge) == link, (
+            f"an edge and `Link` disagree: carried {sorted(set(edge) - link)}, "
+            f"missing {sorted(link - set(edge))}"
+        )
+
+    # R-9: no field is renamed on the way out, so a question asked of the structure is
+    # answerable of the payload.
+    assert body["lines"] == report.lines and body["chained_from"] == report.chained_from
+    assert json.loads(json.dumps(body)) == body, "the payload must survive a JSON round trip"
+
+
 def test_every_chain_requirement_has_a_test():
     """ADR-0016's specification is checked, not remembered — the ADR-0013 mechanism, reused.
 
