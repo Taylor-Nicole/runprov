@@ -1435,8 +1435,15 @@ def _diff(args: argparse.Namespace) -> int:
             return 2
 
     comparison = diff_mod.build(picked[0], picked[1])
-    for line in diff_mod.render(comparison):
-        print(line)
+    if args.format == "json":
+        # NOTHING ELSE ON STDOUT (R-4). Every diagnostic this command emits already goes to
+        # stderr — the empty address, the missing history, the address that matches nothing and
+        # the two that match the same run — so a caller parses what it is handed instead of
+        # stripping a line first, which is how a caller comes to strip the wrong one.
+        print(json.dumps(diff_mod.payload(comparison), indent=2))
+    else:
+        for line in diff_mod.render(comparison):
+            print(line)
     # READ OFF THE STRUCTURE. The fold used to live here, beside a renderer that states the
     # same three words — two spellings of one verdict, which is the defect ADR-0017 R-1 is
     # about, in the one place where disagreeing means the table and the exit code differ.
@@ -1949,6 +1956,7 @@ def main(argv: list[str] | None = None) -> int:
         help="the other run; omit to compare the last TWO runs matching the first",
     )
     df.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
+    df.add_argument("--format", choices=("text", "json"), default="text")
     rs = sub.add_parser(
         "resources", help="what a run consumed, as a request you can size a cluster job with"
     )

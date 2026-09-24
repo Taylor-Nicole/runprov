@@ -61,6 +61,13 @@ DIMENSIONS = (
     "resources",
 )
 
+#: R-5. The payload's own version, named HERE rather than in `__main__`, because it names THIS
+#: module's answer and `--format json` is only one rendering of it. `chain.SCHEMA` and
+#: `report.SCHEMA` state the same argument, and G-24(a) states the cost of not stating it: a
+#: literal in the emitter and a second literal in its test is one sentence asserted against its
+#: own copy, so the payload was free to be versioned wrongly with the suite green.
+SCHEMA = "runprov.diff.v1"
+
 #: A recorded value that is NOT a digest. Audit B, A-06: `_value_digest` writes
 #: `"UNDIGESTIBLE:<type>"` for anything it will not canonicalise, so two entirely different
 #: DataFrames both record `UNDIGESTIBLE:DataFrame` and compare EQUAL. An empty string is the
@@ -675,6 +682,61 @@ def _or(value: typing.Any) -> typing.Any:  # noqa: ANN401 - anything printable
     unrecoverable. So the structure carries `None` and this supplies the word for it.
     """
     return "?" if value is None else value
+
+
+def _plain(value: typing.Any) -> typing.Any:  # noqa: ANN401 - the structure, whatever it holds
+    """A `Comparison` as JSON-able dicts and lists, DERIVED FROM `_fields` RATHER THAN RE-TYPED.
+
+    A serialiser that names each field is a second spelling of the structure, and two hand-kept
+    spellings of one thing drift in the direction this repository has now found nine times: a
+    field added to the structure is simply missing from the payload, silently, on the rendering
+    nobody reads. Walking `_asdict()` cannot miss one.
+
+    `verdict` AND `settled` ARE ADDED RATHER THAN WALKED, because they are computed properties
+    and not fields — and R-10 allows them because they compute nothing the record does not
+    already hold. They are not a convenience either. `settled` is what the exit code is built
+    from, so a consumer that re-derives a verdict from `differences` alone gets a different
+    answer from the command it is reading: an incomparable dimension has no differences and is
+    still non-zero, which is the entire subject of ADR-0014.
+    """
+    if isinstance(value, Dimension):
+        return {
+            **{name: _plain(item) for name, item in value._asdict().items()},
+            "verdict": value.verdict,
+            "settled": value.settled,
+        }
+    if isinstance(value, tuple) and hasattr(value, "_asdict"):
+        return {name: _plain(item) for name, item in value._asdict().items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    return value
+
+
+def payload(comparison: Comparison) -> dict[str, typing.Any]:
+    """The comparison as one object, for a reader that is not a person. R-1, R-5, R-7, R-9.
+
+    EVERYTHING THE TABLE STATES, INCLUDING WHAT IT COULD NOT COMPARE. `blocked` is why a
+    dimension cannot support the word *unchanged* and `examined` is the scope over which it was
+    looked at; a payload carrying only `differences` would let a consumer read NOT COMPARABLE
+    as *nothing changed*, which is the exact defect ADR-0014 exists to prevent, delivered to
+    the readers least able to notice it. Every one of this module's preconditions was added
+    because somebody could otherwise not tell *not measured* from *measured as zero*.
+
+    NOTHING IS ABSENT HERE, and that is a fact about `diff` rather than a shortcut. `compare()`
+    answers every dimension for every pair of records, so `blocked: null` always means *looked,
+    and nothing stops this one supporting "unchanged"*. R-8's other reading — a key absent
+    because this version did not look — has nowhere to arise, because an incomparability is a
+    value in this command and never a silence.
+
+    THE TABLE IS THE ONE THAT SAYS LESS, in the safe direction: `examined` is printed only on
+    an `unchanged` row, so a changed or incomparable dimension carries its scope here and not
+    on the page. That asymmetry is asserted in its own test rather than left to be discovered.
+    """
+    return {
+        "schema": SCHEMA,
+        **{name: _plain(value) for name, value in comparison._asdict().items()},
+        "settled": comparison.settled,
+    }
 
 
 def render(comparison: Comparison) -> list[str]:

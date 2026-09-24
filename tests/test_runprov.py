@@ -11705,6 +11705,174 @@ def test_diff_cli_compares_the_last_two_runs_of_one_script(tmp_path, capsys):
     assert "ref.fa" in out
 
 
+def _diff_history(path, *records):
+    """A history of finished runs, written directly rather than by running anything.
+
+    THE RECORDS ARE THE FIXTURE, and the sibling test below says why: `tmp_path` is not a git
+    repository, so two real runs there are honestly INCOMPARABLE on `code` and the command can
+    never exit 0 over them. R-6 has to be asserted over a comparison that SETTLES as well as
+    over one that differs and one that is blocked, and only a written history reaches all three.
+    """
+    path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    return str(path)
+
+
+def test_diff_answers_in_json_and_the_exit_code_does_not_move(tmp_path, capsys):
+    """[ADR-0017 R-3] [ADR-0017 R-4] [ADR-0017 R-5] [ADR-0017 R-6] [ADR-0017 R-11].
+
+    A person runs this command and reads it; a team wires it into something — a CI check that
+    posts the differing dimensions, a lab dashboard listing which artifacts moved. Every one of
+    those parses prose today, over a layout that has changed four times in five releases.
+
+    THE EXIT CODE IS THE SAME QUESTION ASKED TWO WAYS, and it is asserted over all three
+    outcomes rather than over the convenient one: settled, changed, and BLOCKED — the third
+    being the case that distinguishes this command, because its `differences` are empty and it
+    is still non-zero. A gate that answered differently depending on how it was asked to print
+    is a gate nobody can reason about.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    later = {"run_uid": "uid-b", "run_id": "r2"}
+    cases = (
+        ("settled", _diff_history(tmp_path / "s.jsonl", _hrec(), _hrec(**later)), 0),
+        (
+            "changed",
+            _diff_history(
+                tmp_path / "c.jsonl", _hrec(), _hrec(**later, parameters={"threshold": 7})
+            ),
+            1,
+        ),
+        (
+            "blocked",
+            _diff_history(tmp_path / "b.jsonl", _hrec(git_code_dirty=True), _hrec(**later)),
+            1,
+        ),
+    )
+    for name, log, code in cases:
+        assert runprov.__main__.main(["diff", "align", "--log", log]) == code, name
+        table = capsys.readouterr().out
+        assert runprov.__main__.main(["diff", "align", "--log", log, "--format", "json"]) == code, (
+            f"{name}: the format is not the question; the comparison is"
+        )
+        # JSON ALONE ON STDOUT: no banner, no note, no progress. This parse is the assertion —
+        # a caller that has to strip a line before parsing is a caller that will strip the
+        # wrong one, and every diagnostic `diff` emits already goes to stderr.
+        body = json.loads(capsys.readouterr().out)
+        assert body["schema"] == runprov.diff.SCHEMA == "runprov.diff.v1", (
+            "the shape is versioned. BOTH, the way every sibling schema is asserted: the "
+            "constant, because respelling the literal here would pin one sentence against "
+            "its own copy; and the value, because a constant compared only against itself "
+            "pins nothing at all"
+        )
+        assert body["settled"] is (code == 0), name
+        assert ("NOT COMPARABLE" in table) is (name == "blocked"), name
+
+    blocked = runprov.__main__.main(["diff", "align", "--log", cases[2][1], "--format", "json"])
+    assert blocked == 1
+    dimensions = json.loads(capsys.readouterr().out)["dimensions"]
+    assert [d["name"] for d in dimensions if d["differences"]] == [], (
+        "and this is why the exit code may not be re-derived from `differences`: the blocked "
+        "comparison found NOTHING and is still non-zero, which is the whole of ADR-0014"
+    )
+
+
+def test_the_json_diff_carries_what_it_could_not_compare(tmp_path):
+    """[ADR-0017 R-7] [ADR-0017 R-10] [ADR-0017 R-12] [ADR-0017 R-14].
+
+    A DIFFERENCE AND AN INCOMPARABILITY ARE NOT THE SAME ANSWER. A payload carrying only
+    `differences` hands a consumer an empty list for a dimension that could not be compared at
+    all — which reads as *nothing changed*, and is the exact defect ADR-0014 exists to prevent,
+    delivered to the readers least able to notice it. `blocked` is why a dimension cannot
+    support the word `unchanged`; `examined` is the scope it was looked at over, which is
+    decision 3 of that ADR; and `settled` is what the exit code is built from.
+    """
+    blocked = runprov.diff.payload(
+        runprov.diff.build(_hrec(git_code_dirty=True), _hrec(run_uid="uid-b"))
+    )
+    code = next(d for d in blocked["dimensions"] if d["name"] == "code")
+    assert code["differences"] == [] and code["verdict"] == "not comparable"
+    assert "dirty tree" in code["blocked"], (
+        "the REASON travels with the refusal: `NOT COMPARABLE` with no cause is a reader "
+        "being told to go and look at the records, which is what this command replaced"
+    )
+    assert code["settled"] is False and blocked["settled"] is False, (
+        "a consumer that recomputes a verdict from `differences` alone gets a different "
+        "answer from the command it is reading"
+    )
+    assert code["examined"] == "aaaa111 / aaaa111", (
+        "and the positive companion is there too — what WAS looked at. `nothing found` and "
+        "`nothing examined` print the same word otherwise"
+    )
+
+    # The fourth cell of ADR-0014's table, and the one that makes it a table rather than a
+    # binary: incomplete is not incomparable, so a change that WAS seen is still reported.
+    partial = runprov.diff.payload(
+        runprov.diff.build(
+            _hrec(inputs=[{"path": "ref.fa", "sha256": "aaaa"}], unregistered_reads=["conf.json"]),
+            _hrec(run_uid="uid-b", inputs=[{"path": "ref.fa", "sha256": "bbbb"}]),
+        )
+    )
+    inputs = next(d for d in partial["dimensions"] if d["name"] == "inputs")
+    assert inputs["verdict"] == "changed" and inputs["differences"]
+    assert "bypassed registration" in inputs["blocked"], (
+        "changed AND not fully comparable is one dimension's answer, so both halves are "
+        "fields on the same object rather than one of them being a note beside it"
+    )
+
+
+def test_the_json_diff_keeps_the_records_own_field_names():
+    """[ADR-0017 R-9]. `started_utc`, not a label.
+
+    A JSON consumer and a reader of the record see the same names, so a question answered
+    against the history is answerable against this output without learning a second vocabulary
+    for the same facts. The names are asserted against a record rather than against a list
+    typed here, which is the only way this can stay true.
+    """
+    record = _hrec()
+    body = runprov.diff.payload(runprov.diff.build(record, _hrec(run_uid="uid-b")))
+    for field in runprov.diff.Side._fields:
+        assert field in record, f"{field} is not a name the record uses"
+    assert set(body["a"]) == set(runprov.diff.Side._fields)
+    assert {d["name"] for d in body["dimensions"]} == set(runprov.diff.DIMENSIONS), (
+        "and a dimension is named by the constant, which is the name the table prints"
+    )
+    assert json.loads(json.dumps(body)) == body, "the payload must survive a JSON round trip"
+
+
+def test_the_json_diff_states_an_incomparability_rather_than_going_quiet():
+    """[ADR-0017 R-8] [ADR-0017 R-14]. Nothing here is absent, and that is the design.
+
+    `"digest": null` is *looked and found none* and an absent key is *this version did not
+    look*; both readings have to survive. `report` needed one optional block to hold the
+    second, because that page stops when it finds no run.
+
+    `diff` HAS NO SUCH SPLIT, and asserting it is not ceremony. `compare()` answers every
+    dimension for every pair of records — an incomparability is a VALUE in this command and
+    never a silence — so `blocked: null` has exactly one meaning, and a consumer never has to
+    infer a finding from a key that is not there. That is ADR-0014 held as a shape.
+    """
+    expected = set(runprov.diff.Comparison._fields) | {"schema", "settled"}
+    fields = set(runprov.diff.Dimension._fields) | {"verdict", "settled"}
+    for a, b in (
+        (_hrec(), _hrec(run_uid="uid-b")),
+        (_hrec(git_code_dirty=True), _hrec(run_uid="uid-b")),
+        ({}, {}),
+    ):
+        body = runprov.diff.payload(runprov.diff.build(a, b))
+        assert set(body) == expected, body.keys()
+        assert len(body["dimensions"]) == len(runprov.diff.DIMENSIONS), (
+            "every dimension, every time. A dimension that dropped out of the list when it "
+            "could not be compared would be the absence this command exists to refuse"
+        )
+        for dimension in body["dimensions"]:
+            assert set(dimension) == fields, dimension
+
+    bare = runprov.diff.payload(runprov.diff.build({}, {}))
+    assert bare["a"] == dict.fromkeys(runprov.diff.Side._fields), (
+        "a record that recorded nothing says so with nulls — *looked, and it is not there* — "
+        "and never with missing keys, which a consumer would read as a shape it does not know"
+    )
+
+
 def test_diff_cli_never_compares_a_run_with_its_own_start_marker(tmp_path, capsys):
     """A run writes TWO lines — a start marker and the record — and both are runs to `select`.
 
