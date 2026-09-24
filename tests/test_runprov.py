@@ -10432,6 +10432,7 @@ def _structure_leaves(node, prefix=()):
     repository has now found nine instances of it. The list is always right on the day it is
     written and it is the thing that goes stale, so the guard below never holds one: it walks
     whatever the structure actually is.
+
     """
     if hasattr(node, "_fields"):
         for name in node._fields:
@@ -11418,13 +11419,96 @@ def _dim(dims, name):
 def test_diff_unchanged_says_what_it_examined(tmp_path):
     """ "No difference found" and "nothing examined" print the same word otherwise — this
     project's own recurring failure, and the reason every unchanged line carries its scope."""
-    dims = runprov.diff.compare(_hrec(), _hrec(run_uid="uid-b"))
+    comparison = runprov.diff.build(_hrec(), _hrec(run_uid="uid-b"))
+    dims = comparison.dimensions
     assert all(d.verdict == "unchanged" for d in dims), [
         d for d in dims if d.verdict != "unchanged"
     ]
     assert all(d.settled for d in dims)
-    text = "\n".join(runprov.diff.render(_hrec(), _hrec(), dims))
+    assert comparison.settled is True, "and the exit code is that fold, read off the structure"
+    text = "\n".join(runprov.diff.render(comparison))
     assert "unchanged  (0 vs 0)" in text, "the count examined is on the line, not in a footer"
+
+
+def test_the_table_is_a_function_of_the_comparison_and_nothing_else():
+    """[ADR-0017 R-1] [ADR-0017 R-12]. One builder, two renderings — this is the builder.
+
+    `render` used to take the two RECORDS as well as the dimensions, because its header names
+    who is being compared. That is harmless while a table is the only rendering and stops
+    being so the moment there is a second: a renderer holding the raw records can state a fact
+    no structure holds, and then the two renderings are free to disagree about it — which this
+    project has shipped twice about one object, in one audit.
+
+    THE SIGNATURE IS THE GUARANTEE, and it is the half of R-2 that reading output cannot
+    check. `report`'s sibling assertion says the same thing one command along.
+    """
+    params = list(inspect.signature(runprov.diff.render).parameters)
+    assert params == ["comparison"], (
+        f"the renderer takes the comparison and nothing else; it takes {params}"
+    )
+    a, b = _hrec(), _hrec(run_uid="uid-b")
+    assert runprov.diff.render(runprov.diff.build(a, b)) == runprov.diff.render(
+        runprov.diff.Comparison(
+            runprov.diff.build(a, b).a, runprov.diff.build(a, b).b, runprov.diff.compare(a, b)
+        )
+    ), "and the table a caller was handed is the rendering of the structure it was handed"
+
+
+def test_the_comparison_carries_the_absence_and_the_table_supplies_the_question_mark():
+    """[ADR-0017 R-8] [ADR-0017 R-10]. `?` IS A RENDERING CHOICE, NOT A VALUE.
+
+    `render` read `record.get("script", "?")` for all three header facts, which is harmless
+    while a table is the only thing built: a reader sees `?` and reads "not recorded". It stops
+    being harmless the moment the same facts are serialised, because the FIELD'S VALUE is then
+    the string `?` and no consumer can tell it from a script genuinely called `?` — an absence
+    rendered as a finding, the one direction this package treats as unrecoverable.
+
+    AND MOVING IT FIXED A SECOND THING, which is the measured difference between this table
+    before the move and after: `.get(key, "?")` supplies its fill only for a key that is
+    ABSENT, so a record carrying an explicit JSON `null` printed the word `None` in the header
+    — `A  None  None  None`. The structure now holds `None` for both, and the fill is supplied
+    by what the field IS rather than by how the key got that way.
+    """
+    comparison = runprov.diff.build({}, {"script": None, "run_id": None, "started_utc": None})
+    assert comparison.a == comparison.b == runprov.diff.Side(None, None, None, None), (
+        "an absent key and an explicit null are the same fact about the run — nothing was "
+        f"recorded — and neither is the string `?`: {comparison.a}, {comparison.b}"
+    )
+    header = runprov.diff.render(comparison)[:2]
+    assert header == [
+        "A  ?  ?  ?  [status not recorded]",
+        "B  ?  ?  ?  [status not recorded]",
+    ], f"and the table still says `?`, which is its word, in both cases: {header}"
+
+
+def test_compare_takes_its_reading_order_from_the_constant_that_had_no_reader():
+    """[ADR-0017 R-12]. ADR-0014 promised this constant a reader and never gave it one.
+
+    `DIMENSIONS` sat in `diff.py` with nothing reading it — the `--only` option ADR-0014's own
+    sketch specified was never built, and an Audit D reviewer found the constant unused. An
+    unread constant is not merely a wasted line: **this one was also wrong**, because `status`
+    was added to `compare()` by D-02 and never added here, so the single statement in this
+    package of *these are the dimensions* had been false ever since, with everything green.
+
+    DERIVED IN BOTH DIRECTIONS, never a second list typed here. A dimension `compare()` builds
+    that the constant does not name raises out of `.index`; a name the constant carries that
+    nothing builds is what this set equality catches. Between them the constant cannot go stale
+    again without something going red.
+    """
+    produced = [d.name for d in runprov.diff.compare(_hrec(), _hrec(run_uid="uid-b"))]
+    assert set(produced) == set(runprov.diff.DIMENSIONS), (
+        "the constant and the comparison disagree. Built but unnamed: "
+        f"{sorted(set(produced) - set(runprov.diff.DIMENSIONS))}. "
+        f"Named but never built: {sorted(set(runprov.diff.DIMENSIONS) - set(produced))}"
+    )
+    assert produced == list(runprov.diff.DIMENSIONS), (
+        "and the ORDER is the constant's, not the function's — it used to be held in both "
+        f"places, which is how the two came apart: {produced}"
+    )
+    assert runprov.diff.DIMENSIONS[0] == "status", (
+        "first, because it is the precondition on reading any of the others: `the outputs "
+        "did not change` means something different when one of the two runs died partway"
+    )
 
 
 @pytest.mark.parametrize(
@@ -11475,8 +11559,8 @@ def test_diff_refuses_to_call_an_incomparable_dimension_unchanged(name, over_a, 
     """The whole design. Each of these is a real field that exists because somebody could
     otherwise not tell NOT MEASURED from MEASURED AS ZERO, and a diff is where that
     distinction gets used or thrown away."""
-    dims = runprov.diff.compare(_hrec(**over_a), _hrec(**over_b))
-    d = _dim(dims, name)
+    comparison = runprov.diff.build(_hrec(**over_a), _hrec(**over_b))
+    d = _dim(comparison.dimensions, name)
     assert d.verdict == "not comparable", f"{name} reported {d.verdict}"
     assert reason in (d.blocked or "")
     # NO EXEMPTION, D-01 of Audit D. This assertion was narrowed with `if not d.informational:`
@@ -11488,7 +11572,8 @@ def test_diff_refuses_to_call_an_incomparable_dimension_unchanged(name, over_a, 
     # flag it keyed on is gone, and cost now settles or not on the same terms as everything
     # else — by whether it was comparable and whether it found anything.
     assert not d.settled, "an incomparable dimension must not settle the exit code"
-    assert "NOT COMPARABLE" in "\n".join(runprov.diff.render(_hrec(), _hrec(), dims))
+    assert not comparison.settled, "and the comparison as a whole does not settle either"
+    assert "NOT COMPARABLE" in "\n".join(runprov.diff.render(comparison))
 
 
 def test_diff_reports_a_change_it_found_even_when_it_cannot_claim_unchanged():
@@ -11501,10 +11586,11 @@ def test_diff_reports_a_change_it_found_even_when_it_cannot_claim_unchanged():
     """
     moved = [{"path": "ref.fa", "sha256": "bbbb"}]
     a = _hrec(inputs=[{"path": "ref.fa", "sha256": "aaaa"}], unregistered_reads=["conf.json"])
-    d = _dim(runprov.diff.compare(a, _hrec(inputs=moved)), "inputs")
+    comparison = runprov.diff.build(a, _hrec(inputs=moved))
+    d = _dim(comparison.dimensions, "inputs")
     assert d.verdict == "changed" and d.differences
     assert "bypassed registration" in (d.blocked or "")
-    text = "\n".join(runprov.diff.render(a, _hrec(inputs=moved), [d]))
+    text = "\n".join(runprov.diff.render(comparison))
     assert "not fully comparable" in text
 
     # and with NOTHING found, the same record may not say unchanged
@@ -24559,12 +24645,12 @@ def test_diff_marks_a_failed_run_on_the_header_line_too(tmp_path, capsys):
     position, so this is the package agreeing with itself rather than a new convention.
     """
     crashed = _hrec(status="failed", failure={"type": "RuntimeError", "message": "x"})
-    lines = runprov.diff.render(crashed, crashed, runprov.diff.compare(crashed, crashed))
+    lines = runprov.diff.render(runprov.diff.build(crashed, crashed))
     assert lines[0].startswith("A ") and lines[0].endswith("[failed]"), lines[0]
     assert lines[1].endswith("[failed]"), lines[1]
 
     ok = _hrec(status="ok")
-    clean = runprov.diff.render(ok, ok, runprov.diff.compare(ok, ok))
+    clean = runprov.diff.render(runprov.diff.build(ok, ok))
     assert "[" not in clean[0], f"an ordinary run carries no marker: {clean[0]}"
 
 

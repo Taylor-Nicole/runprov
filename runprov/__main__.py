@@ -1434,10 +1434,13 @@ def _diff(args: argparse.Namespace) -> int:
             )
             return 2
 
-    dims = diff_mod.compare(picked[0], picked[1])
-    for line in diff_mod.render(picked[0], picked[1], dims):
+    comparison = diff_mod.build(picked[0], picked[1])
+    for line in diff_mod.render(comparison):
         print(line)
-    return 0 if all(d.settled for d in dims) else 1
+    # READ OFF THE STRUCTURE. The fold used to live here, beside a renderer that states the
+    # same three words — two spellings of one verdict, which is the defect ADR-0017 R-1 is
+    # about, in the one place where disagreeing means the table and the exit code differ.
+    return 0 if comparison.settled else 1
 
 
 def _resources(args: argparse.Namespace) -> int:

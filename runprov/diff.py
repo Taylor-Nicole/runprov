@@ -36,10 +36,30 @@ __all__: list[str] = []
 
 import typing
 
-#: The dimensions, in the order a reader wants them: what went in, what the code was, what it
-#: was asked to do, what happened inside, what it cost. Ordered here rather than sorted, so the
-#: output reads like an explanation rather than an alphabet.
-DIMENSIONS = ("inputs", "outputs", "code", "parameters", "packages", "steps", "resources")
+#: The dimensions, in the order a reader wants them: whether it finished, what went in, what
+#: came out, what the code was, what it was asked to do, what happened inside, what it cost.
+#: Ordered here rather than sorted, so the output reads like an explanation rather than an
+#: alphabet.
+#:
+#: AND `compare()` NOW READS IT, which it did not. ADR-0014's sketch promised `--only` and the
+#: constant was left with no reader at all — a promise made in a ratified decision and quietly
+#: not kept, found sitting here by an Audit D reviewer. An unread constant does not merely
+#: waste a line: this one was also WRONG, because `status` was added to `compare()` by D-02
+#: and never added here, so the one statement of "these are the dimensions" had been false
+#: since. The order now lives in the only place that claims to hold it, and a dimension
+#: `compare()` builds that is missing from this tuple raises rather than being dropped.
+DIMENSIONS = (
+    # FIRST, because it is the precondition on reading any of the others: "the outputs did not
+    # change" means something different when one of the two runs died partway.
+    "status",
+    "inputs",
+    "outputs",
+    "code",
+    "parameters",
+    "packages",
+    "steps",
+    "resources",
+)
 
 #: A recorded value that is NOT a digest. Audit B, A-06: `_value_digest` writes
 #: `"UNDIGESTIBLE:<type>"` for anything it will not canonicalise, so two entirely different
@@ -92,6 +112,59 @@ class Dimension(typing.NamedTuple):
         was impossible — the vacuous pass, in a new place.
         """
         return self.verdict == UNCHANGED
+
+
+class Side(typing.NamedTuple):
+    """WHO is being compared, in the record's own names. ADR-0017 R-9, R-12.
+
+    The header states four facts about each run and nothing else, so this carries four. It is
+    deliberately not the whole record: a structure holding a fact no rendering states is a
+    field a reader of either rendering cannot find, and `run_uid` — which the CLI resolves an
+    address through and then never prints — is the one that kept asking to be let in.
+
+    THE ABSENCES ARE ABSENCES HERE. `render` used to read `record.get("script", "?")`, which
+    is harmless while a table is the only thing built and stops being harmless the moment the
+    same facts are serialised: the FIELD'S VALUE is then the string `?` and no consumer can
+    tell it from a script genuinely called `?`. `report` paid for that lesson one row ago.
+    """
+
+    script: str | None
+    run_id: str | None
+    started_utc: str | None
+    status: str | None
+
+
+class Comparison(typing.NamedTuple):
+    """One comparison: who, what moved, and what the comparison could not support.
+
+    THE TOP LEVEL IS NOT JUST A LIST OF DIMENSIONS, because the table's own header is not:
+    every `blocked` message in this module says "A" or "B", and a payload carrying those
+    sentences without saying which runs A and B are would be describing two runs a consumer
+    cannot name.
+
+    AND THERE IS NO OPTIONAL BLOCK, which is the shape `report` has and this does not.
+    `compare()` returns every dimension for every pair of records — a dimension that cannot be
+    compared is INCOMPARABLE, never missing — so `blocked: null` here is always *looked, and
+    nothing stops this dimension supporting "unchanged"*, and there is no second reading in
+    which it means *this version did not look*. That is the whole of ADR-0014 held as a shape
+    rather than as prose, and it is why R-8's null-versus-absent needs no judgement call here.
+    """
+
+    a: Side
+    b: Side
+    dimensions: list[Dimension]
+
+    @property
+    def settled(self) -> bool:
+        """Exit 0 means comparable AND identical, in every dimension. ADR-0014 clause 4.
+
+        READ OFF THE STRUCTURE, not folded in the CLI handler, for `Page.status`'s reason one
+        command along: a verdict computed beside the thing it describes is a second copy of
+        it, and two copies of one verdict are two things that can disagree. A consumer of the
+        payload that recomputes this from `differences` alone gets a different answer from the
+        command it is reading — an incomparable dimension is non-zero and has no differences.
+        """
+        return all(d.settled for d in self.dimensions)
 
 
 def _obs(record: typing.Mapping[str, typing.Any], key: str) -> typing.Any:  # noqa: ANN401
@@ -538,19 +611,28 @@ def _resources(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing
 def compare(
     a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]
 ) -> list[Dimension]:
-    """Every dimension, each with its own precondition. Pure, so the table is testable."""
-    dims = [
-        # FIRST, because it is the precondition on reading any of the others: "the outputs did
-        # not change" means something different when one of the two runs died partway.
-        _status(a, b),
-        _files(a, b, "inputs"),
-        _files(a, b, "outputs"),
-        _code(a, b),
-        _parameters(a, b),
-        _packages(a, b),
-        _steps(a, b),
-        _resources(a, b),
-    ]
+    """Every dimension, each with its own precondition. Pure, so the table is testable.
+
+    THE READING ORDER IS `DIMENSIONS`' AND NOT THIS FUNCTION'S. It used to be both: the
+    constant said it held the order and the list below actually held it, which is how the
+    constant came to be missing `status` with nothing red. Sorting through it means the
+    sentence and the behaviour are one thing, and a dimension built here that the constant
+    does not name raises out of `.index` rather than being quietly dropped — the direction a
+    filter would fail in, and the one that loses a finding.
+    """
+    dims = sorted(
+        (
+            _files(a, b, "inputs"),
+            _files(a, b, "outputs"),
+            _code(a, b),
+            _parameters(a, b),
+            _packages(a, b),
+            _steps(a, b),
+            _resources(a, b),
+            _status(a, b),
+        ),
+        key=lambda d: DIMENSIONS.index(d.name),
+    )
     # A SCHEMA CHANGE POISONS EVERY DIGEST-BEARING DIMENSION AT ONCE. `content_sha256` changed
     # meaning at v1 -> v2, so the same field name holds two different quantities and a
     # per-dimension precondition would have to repeat itself seven times to say so.
@@ -563,24 +645,55 @@ def compare(
     return dims
 
 
-def render(
-    a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any], dims: list[Dimension]
-) -> list[str]:
-    """The three states, spelled out. `unchanged` always says what it examined."""
+def _side(record: typing.Mapping[str, typing.Any]) -> Side:
+    """The four facts the header states, read once. The record's own names, R-9."""
+    return Side(
+        script=record.get("script"),
+        run_id=record.get("run_id"),
+        started_utc=record.get("started_utc"),
+        status=record.get("status"),
+    )
+
+
+def build(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]) -> Comparison:
+    """The comparison, as facts. The table is a rendering of THIS, and so is the payload.
+
+    ONE BUILDER, TWO RENDERERS (ADR-0017 R-1), and the split is here rather than in the CLI
+    because the alternative is what this project has now shipped twice about one object: a
+    second emitter written beside the first, drifting invisibly because nobody reads both.
+    `compare()` is kept as it is — pure, public and the thing ADR-0017's own table names —
+    and this is the wrapper the header needed.
+    """
+    return Comparison(_side(a), _side(b), compare(a, b))
+
+
+def _or(value: typing.Any) -> typing.Any:  # noqa: ANN401 - anything printable
+    """`?` for a fact the record does not carry. THE FILL IS A RENDERING CHOICE.
+
+    `report._or`'s argument, one command along: a `?` that reaches the structure is an absence
+    a consumer cannot tell from a finding, and that is the direction this package treats as
+    unrecoverable. So the structure carries `None` and this supplies the word for it.
+    """
+    return "?" if value is None else value
+
+
+def render(comparison: Comparison) -> list[str]:
+    """The three states, spelled out. `unchanged` always says what it examined.
+
+    IT TAKES THE COMPARISON AND NOTHING ELSE, which is the half of R-2 that reading output
+    cannot check: a renderer handed nothing but the structure cannot state a fact the
+    structure does not hold.
+    """
 
     # `[failed]` ON THE HEADER LINES, not only in the dimension. D-02: when both runs failed
     # the statuses agree, and a reader scanning the table sees seven `unchanged` rows with no
     # hint that neither run finished. `show` already puts the state in exactly this position.
-    def _who(record: typing.Mapping[str, typing.Any], side: str) -> str:
-        state = record.get("status")
-        mark = "" if state == OK_STATUS else f"  [{state or 'status not recorded'}]"
-        return (
-            f"{side}  {record.get('script', '?')}  {record.get('run_id', '?')}  "
-            f"{record.get('started_utc', '?')}{mark}"
-        )
+    def _who(run: Side, side: str) -> str:
+        mark = "" if run.status == OK_STATUS else f"  [{run.status or 'status not recorded'}]"
+        return f"{side}  {_or(run.script)}  {_or(run.run_id)}  {_or(run.started_utc)}{mark}"
 
-    out = [_who(a, "A"), _who(b, "B"), ""]
-    for d in dims:
+    out = [_who(comparison.a, "A"), _who(comparison.b, "B"), ""]
+    for d in comparison.dimensions:
         if d.verdict == UNCHANGED:
             # WHAT WAS EXAMINED, because "no difference found" and "nothing examined" print the
             # same word otherwise — this project's own recurring failure.
