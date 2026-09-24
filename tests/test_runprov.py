@@ -10275,6 +10275,153 @@ def test_an_explicit_null_in_a_record_reads_as_not_recorded_rather_than_as_None(
     assert not [line for line in lines if line.endswith(" None")], lines
 
 
+def test_report_answers_in_json_and_the_exit_code_does_not_move(tmp_path, capsys):
+    """[ADR-0017 R-3] [ADR-0017 R-4] [ADR-0017 R-5] [ADR-0017 R-6] [ADR-0017 R-11].
+
+    A person runs this command and reads it; a team wires it into something — a quality gate
+    that files the page, a dashboard listing which artifacts are STALE. Every one of those
+    parses prose today, over a layout that has changed four times in five releases.
+
+    THE EXIT CODE IS THE SAME QUESTION ASKED TWO WAYS. `--format json` is a rendering choice,
+    and a gate that answers differently depending on how it was asked to print is a gate
+    nobody can reason about — so the stale case is asserted in both formats rather than the
+    clean one twice.
+    """
+    artifact, log = _reported_run(tmp_path)
+    where = ["report", str(artifact), "--log", str(log)]
+
+    assert runprov.__main__.main(where) == 0
+    assert "provenance report" in capsys.readouterr().out
+
+    assert runprov.__main__.main([*where, "--format", "json"]) == 0
+    # JSON ALONE ON STDOUT: no banner, no note, no progress. This parse is the assertion —
+    # a caller that has to strip a line before parsing is a caller that will strip the wrong
+    # one, and `report`'s only diagnostic already goes to stderr.
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == runprov.report.SCHEMA == "runprov.report.v1", (
+        "the shape is versioned. BOTH, the way every sibling schema is asserted: the "
+        "constant, because respelling the literal here would pin one sentence against its "
+        "own copy; and the value, because a constant compared only against itself pins "
+        "nothing at all"
+    )
+    assert payload["verdict"] == "OK" and payload["run"]["script"] == "demo"
+
+    (tmp_path / "in.tsv").write_text("moved\n", encoding="utf-8")
+    assert runprov.__main__.main(where) == 1
+    assert "STALE" in capsys.readouterr().out
+    assert runprov.__main__.main([*where, "--format", "json"]) == 1, (
+        "the format is not the question; the verdict is"
+    )
+    assert json.loads(capsys.readouterr().out)["verdict"] == "STALE"
+
+
+def test_the_json_report_says_it_did_not_look_rather_than_that_it_found_nothing(tmp_path, capsys):
+    """[ADR-0017 R-8] [ADR-0017 R-14]. Null is a finding; an absent key is not a look.
+
+    `"digest": null` is *looked and found none*; the key being absent is *this did not look*.
+    That distinction is load-bearing on this page in three places — a record from before the
+    `tool` block, an `environment` no history carries, and a run that was not found at all —
+    and JSON is the one place it is cheap to get right and easy to flatten by accident.
+
+    AND THE FINDING IS STATED POSITIVELY. A reader must never have to infer "no run record
+    was found" from a key that is not there, so `limits.run_not_found` says it, which is the
+    fact behind the one conditional clause the page's own caveat carries.
+    """
+    artifact, log = _reported_run(tmp_path)
+
+    assert (
+        runprov.__main__.main(
+            ["report", str(artifact), "--log", str(tmp_path / "none.jsonl"), "--format", "json"]
+        )
+        == 0
+    )
+    missing = json.loads(capsys.readouterr().out)
+    assert missing["limits"]["run_not_found"] is True
+    for key in ("run", "method", "inputs", "observation", "unregistered_reads", "bytes_differ"):
+        assert key not in missing, (
+            f"{key} is ABSENT, not null: with no run this page does not look for a method, "
+            "an input list or an observation block and then fail to find them — it stops"
+        )
+
+    assert (
+        runprov.__main__.main(["report", str(artifact), "--log", str(log), "--format", "json"]) == 0
+    )
+    found = json.loads(capsys.readouterr().out)
+    assert found["limits"]["run_not_found"] is False
+    assert found["bytes_differ"] is None and "bytes_differ" in found, (
+        "looked, and the run's recorded digest matches the file — a finding, and it must not "
+        "serialise the same as a page that never compared them"
+    )
+    assert found["method"]["environment"] is None and "environment" in found["method"], (
+        "the history does not carry `environment`; it is a whitelist projection that stays "
+        "in the sidecar. The page says so in words and this says so with a null"
+    )
+    assert found["method"]["tool"]["version"] == runprov.__version__, (
+        "and a tool block that IS there is not the same shape as one that is not"
+    )
+
+
+def test_the_json_report_carries_what_the_page_could_not_check(tmp_path):
+    """[ADR-0017 R-7] [ADR-0017 R-10] [ADR-0017 R-12] [ADR-0017 R-14].
+
+    The qualifications are this package's whole character, and a JSON form carrying only
+    findings would let a consumer build exactly the vacuous green this project keeps fixing:
+    "could not check" read as "nothing wrong", by the readers least able to notice. Audit G
+    found three defects of that class and Audit H found three more.
+
+    `report` HAD NO STRUCTURE TO SERIALISE, which is why this row was built first. What is
+    asserted here is that the payload is the page's own facts and computes nothing else: every
+    field below is read from the artifact's pin or from the run history.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    disk = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    blind = _history_record(
+        cwd=tmp_path,
+        unregistered_reads=[f"conf/f{n}.json" for n in range(13)],
+        observation={
+            "steps": 3,
+            "packages_recorded": 12,
+            "unregistered_watch_truncated": 7,
+        },
+    )
+    payload = runprov.report.payload(runprov.report.build(artifact, tmp_path, [blind]))
+    assert payload["observation"]["unregistered_watch_truncated"] == 7, (
+        "C-06: the watch hit its cap, so the list below is a SAMPLE and not the answer. "
+        "Without this a reader takes an empty list for `nothing was missed`"
+    )
+    assert payload["unregistered_reads"] == [f"conf/f{n}.json" for n in range(13)], (
+        "all thirteen. The page prints the count and the first ten, and this is the one "
+        "place a rendering deliberately says less than the report holds — in the safe "
+        "direction, and the count on the page is what makes it legible rather than silent"
+    )
+
+    differ = runprov.report.payload(
+        runprov.report.build(
+            artifact,
+            tmp_path,
+            [
+                _history_record(
+                    cwd=tmp_path,
+                    script="producer",
+                    outputs=[{"path": "out.tsv", "sha256": "f" * 64}],
+                ),
+                _history_record(
+                    cwd=tmp_path,
+                    script="elsewhere-writer",
+                    run_id="r2",
+                    outputs=[{"path": "archive/copy.tsv", "sha256": disk}],
+                ),
+            ],
+        )
+    )
+    assert differ["run"]["script"] == "producer"
+    assert differ["bytes_differ"]["elsewhere_script"] == "elsewhere-writer", (
+        "D-03. The page's loudest line is a field here, because a qualification that exists "
+        "only as prose is one the other rendering can drop"
+    )
+    assert differ["bytes_differ"]["now"] == disk[: runprov.hashing.PIN_DIGEST_CHARS]
+
+
 class _Usage:
     """A `getrusage` result. Values are chosen so SELF and CHILDREN cannot be confused."""
 

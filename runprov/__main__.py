@@ -1523,8 +1523,17 @@ def _report(args: argparse.Namespace) -> int:
     project = active()
     log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
     result = report_mod.render(artifact, pathlib.Path(project.root), log)
-    for line in result.lines:
-        print(line)
+    if args.format == "json":
+        # NOTHING ELSE ON STDOUT. Every diagnostic this command emits already goes to stderr —
+        # the refusal above is the only one — so a caller parses what it is handed instead of
+        # stripping a line first, which is how a caller comes to strip the wrong one.
+        print(json.dumps(report_mod.payload(result.report), indent=2))
+    else:
+        for line in result.lines:
+            print(line)
+    # THE EXIT CODE DOES NOT MOVE WITH THE FORMAT. `--format json` is a rendering choice, not a
+    # different question, and a gate that answers differently depending on how it was asked to
+    # print is a gate nobody can reason about.
     return 0 if result.ok else 1
 
 
@@ -1988,6 +1997,7 @@ def main(argv: list[str] | None = None) -> int:
     rp = sub.add_parser("report", help="one artifact, one page, for a quality file")
     rp.add_argument("artifact", help="the artifact to report on")
     rp.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
+    rp.add_argument("--format", choices=("text", "json"), default="text")
     ck = sub.add_parser("check", help="which entry points open files and record nothing (ADR-0011)")
     ck.add_argument(
         "root", nargs="?", default=None, help="directory to sweep (default: the project root)"
