@@ -847,6 +847,18 @@ exits on the verdict, so a quality gate can call it. **The limits are printed on
 not left in a manual beside it: a quality document that overstates is worse than none,
 because it is the version that gets cited.
 
+`runprov report <artifact> --format json` is the **same answer for a reader that is not a
+person** — the page and the payload are two renderings of one structure, so neither can state
+something the other does not. It carries what the page could not check as well as what it
+found: `bytes_differ` when the run's own digest for the path is not what is on disk,
+`observation.unregistered_watch_truncated` when the list of unpinned reads is a sample rather
+than a census, and `limits.run_not_found` when no run record was found at all. `null` means
+*looked and found none*; a key that is **absent** means this page did not look — with no run
+there is no method or input section on the page, and there is none in the payload either. The
+exit code is the same in both formats; the payload is versioned by `"schema":
+"runprov.report.v1"`, and its shape follows the record-format promise above: a field's meaning
+does not change without a new schema value.
+
 
 This was built on a hospital medical-biology platform — Plateforme GenoBioMICS, Hôpital
 Henri-Mondor, AP-HP — where the laboratory is accredited to **ISO 15189** (2022 revision),

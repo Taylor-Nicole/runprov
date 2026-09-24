@@ -9,6 +9,30 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Added — `runprov report --format json`, and `report` gained a structure to serialise
+
+ADR-0017, the first row of T-33. `report` was the only one of the seven answering commands
+with nothing to serialise: `Page` was `lines: list[str]` and a status, so its facts became
+prose inside the builder. It is now a builder returning a `Report` and a renderer turning that
+into the page, with the payload and the page both derived from it — one builder, two
+renderings, which is the whole point: this project has shipped two renderings of one answer
+disagreeing twice in one audit, once as a cause the text asserted and the JSON did not carry,
+once as two findings the text dropped while the JSON reported them.
+
+The payload carries what the page could not check, not only what it found: `bytes_differ`,
+`observation.unregistered_watch_truncated`, the full `unregistered_reads` list, and
+`limits.run_not_found`. A null is *looked and found none* and an absent key is *this did not
+look* — with no run record there is no method, input or observation section on the page, and
+none in the payload. Fields keep the record's own names (`started_utc`, not the page's
+`started` label), and the `?` a reader sees for a fact the record does not carry is supplied by
+the renderer rather than stored, so a consumer can never mistake an absence for a script named
+`?`. The exit code is unchanged by the format.
+
+Measured: the text is byte-identical over 30 fixtures covering every branch of the page, with
+one asserted exception — a record carrying an explicit JSON `null` for a scalar field printed
+the word `None` and now prints `?`. A test walks the payload's own leaves and asserts each one
+moves the page when it changes, so a field can no longer reach one rendering and not the other.
+
 ### Fixed — `runprov chain` describes a claimless line by who wrote it, not by where it sits
 
 Audit H, H1-1/H1-2/H1-3. R-25's rule 4 decides `UNCHAINED` by POSITION, so every claimless
