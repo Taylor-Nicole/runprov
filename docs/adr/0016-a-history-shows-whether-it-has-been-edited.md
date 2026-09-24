@@ -179,6 +179,24 @@ not, the message says what actually happened instead.
 > where R-10's own reasoning — "N's claim is a statement about its predecessor" — does not hold
 > because there is no claim. A diagnostic that sends a reader to an untouched line costs them
 > the time and then their confidence in the answer, which is what R-10 exists to buy.
+
+> **AMENDED 2026-09-24, after Audit H (H1-4), under this requirement's own escape clause.**
+> The surviving sentence for rule 11 named a cause, in capitals, that the file cannot know.
+> Measured on a six-line history: **delete line 3 and it prints "LINE 2 IS WHAT CHANGED";
+> swap lines 3 and 4 and it prints the same of lines 2, 3 and 4 in turn** — over lines that
+> are byte-for-byte what the original held. Deletion and reordering are two of the three
+> threats this feature names, and Audit G recorded that no test constructs either: they take
+> the same `DIFFERS` path an edit takes, so no mutation distinguishes them and nobody had
+> read the sentence over one.
+>
+> **What is kept is the part a reader acts on**, which is the whole point of the clause: the
+> discrepancy is at the boundary BELOW line N, not in line N, and a reader who inspects the
+> accused line finds nothing. **What is dropped is the choice of cause.** An edit to line
+> N-1, a deletion between N-1 and N, a reorder and an insertion all leave the same bytes, so
+> the message is the disjunction and names none of them — the reasoning rule 0's arm was
+> already forced into, one break shape along. Both digests stay whole, and an in-place edit
+> is still named as a possible cause rather than lost in the widening.
+
 **R-11.** An **unreadable or torn line** is reported as `CANNOT_CHECK` for that link, never as
 tampering. Corruption and editing are different findings and a package that confuses them will
 be disbelieved the first time a disk goes bad.

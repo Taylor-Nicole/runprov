@@ -26,6 +26,19 @@ only where the whole of its stated precondition holds. It also **stopped discard
 invisible in the text. Verdicts and exit codes are unchanged everywhere, and a genuine
 pre-chain history reads exactly as it did.
 
+### Fixed — a break says where to look, and stops naming a cause the file cannot know
+
+Audit H, H1-4. `BROKEN` printed *"LINE N-1 IS WHAT CHANGED"*, in capitals, over a mid-file
+**deletion** and over a **reorder** — naming a line that is byte-for-byte what the original
+held. Measured on a six-line history: delete line 3 and it accused line 2; swap lines 3 and 4
+and it accused lines 2, 3 and 4 in turn. Deletion and reordering are two of the three threats
+the feature names, and both take the same path an edit takes, so nothing distinguished them.
+
+The sentence keeps the part a reader acts on — the discrepancy is at the boundary **below** the
+named line, not in it — and drops the choice of cause, which an edit, a deletion, a reorder and
+an insertion all leave looking identical. Both digests are still printed whole, and an in-place
+edit is still named as a possible cause.
+
 ## [0.6.0] — 2026-09-23
 
 ### Added

@@ -24594,7 +24594,38 @@ def test_a_break_says_only_what_is_true_of_the_break_it_found(tmp_path):
         b"\n".join([*lines[:1], lines[1].replace(b'"ok"', b'"NO"'), *lines[2:]]) + b"\n"
     )
     detail = runprov.chain.verify(edited).of(runprov.chain.BROKEN)[0].detail
-    assert "LINE 2 IS WHAT CHANGED" in detail and "line 3 claims" in detail
+    assert "line 3 claims" in detail and "LOOK BETWEEN LINES 2 AND 3" in detail, detail
+    assert "line 2 was edited in place" in detail, (
+        "Audit H, H1-4: an in-place edit is still NAMED as a possible cause — the sentence "
+        "stopped naming it as the only one, it did not stop naming it"
+    )
+
+    # H1-4. THE TWO SHAPES NO TEST IN THIS SUITE EVER CONSTRUCTED, which is how "LINE N-1 IS
+    # WHAT CHANGED" came to be printed over lines that are byte-for-byte what the original
+    # held. Deletion and reordering are two of the three threats this module's docstring names,
+    # and both take the same DIFFERS path an edit takes, so no mutation distinguishes them.
+    for name, rebuilt in (
+        ("deleted", [*lines[:1], *lines[2:]]),
+        ("reordered", [lines[0], lines[2], lines[1], lines[3]]),
+    ):
+        victim = tmp_path / f"{name}.jsonl"
+        victim.write_bytes(b"\n".join(rebuilt) + b"\n")
+        breaks = runprov.chain.verify(victim).of(runprov.chain.BROKEN)
+        assert breaks, f"{name} must still be a break; that verdict was never in doubt"
+        first = breaks[0]
+        untouched = victim.read_bytes().rstrip(b"\n").split(b"\n")[first.line - 2]
+        assert untouched in lines, (
+            f"{name}: line {first.line - 1} is byte-for-byte a line of the original — this is "
+            f"the file over which the capitalised accusation was false"
+        )
+        assert f"LINE {first.line - 1} IS WHAT CHANGED" not in first.detail, first.detail
+        assert f"LOOK BETWEEN LINES {first.line - 1} AND {first.line}" in first.detail
+        assert "deleted, reordered, or pushed aside by an insertion" in first.detail, (
+            "the disjunction, with no cause picked — rule 0's reasoning, applied to rule 11"
+        )
+        assert first.claimed in first.detail and first.computed in first.detail, (
+            "[ADR-0016 R-10] [ADR-0016 R-12]: both digests stay whole, whatever the wording"
+        )
 
     beheaded = tmp_path / "beheaded.jsonl"
     beheaded.write_bytes(b"\n".join(lines[1:]) + b"\n")
@@ -25648,8 +25679,13 @@ def test_a_line_that_made_no_claim_is_not_an_accusation(tmp_path, capsys):
     assert _chain_exit(mid) == 1
     assert runprov.__main__.main(["chain", str(mid)]) == 1
     accused = capsys.readouterr().out
-    assert "BROKEN  line 4 claims its predecessor was" in accused, accused
-    assert "LINE 3 IS WHAT CHANGED" in accused, accused
+    assert "BROKEN  line 4 claims its predecessor hashed to" in accused, accused
+    # Audit H, H1-4: the break still points at the boundary below line 4, which is what R-10
+    # buys. What it no longer does is name a cause — and this file is why the old wording was
+    # wrong in a third way the row did not need: the line at 3 here was INSERTED, so "LINE 3 IS
+    # WHAT CHANGED" named a line that had not changed because it had never been there.
+    assert "LOOK BETWEEN LINES 3 AND 4, NOT AT LINE 4" in accused, accused
+    assert "pushed aside by an insertion" in accused, accused
     assert "edited after it was written" in accused, (
         "and the break paragraph still prints. What R-32 gives up is the accusation against a "
         "line that made NO claim; the accusation for a link that disagrees is untouched, and "

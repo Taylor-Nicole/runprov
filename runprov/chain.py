@@ -308,13 +308,19 @@ class Link(typing.NamedTuple):
     def detail(self) -> str:
         """R-10, and every clause of it must be TRUE of the break being reported.
 
-        The counter-intuitive part is that a break at line N means line N-1 is what moved: N's
-        claim is a statement about its predecessor. But that reasoning only holds when there IS
-        a claim and when there IS a predecessor, and the first version formatted one sentence
-        regardless — producing "LINE 0 IS WHAT CHANGED" for a deleted first line, "line 0 hashes
-        to GENESIS" with a sentinel presented as a digest, and "LINE N-1 IS WHAT CHANGED" for a
-        line that had made no claim at all. A diagnostic that sends a reader to an untouched
-        line costs them the time and then their confidence in the answer.
+        The counter-intuitive part is that a break at line N is about the BOUNDARY BELOW IT:
+        N's claim is a statement about its predecessor, so a reader who inspects line N finds
+        nothing. But that reasoning only holds when there IS a claim and when there IS a
+        predecessor, and the first version formatted one sentence regardless — producing
+        "LINE 0 IS WHAT CHANGED" for a deleted first line, "line 0 hashes to GENESIS" with a
+        sentinel presented as a digest, and "LINE N-1 IS WHAT CHANGED" for a line that had made
+        no claim at all. A diagnostic that sends a reader to an untouched line costs them the
+        time and then their confidence in the answer.
+
+        AND THE SURVIVING SENTENCE NAMED A CAUSE IT CANNOT KNOW (Audit H, H1-4): "LINE N-1 IS
+        WHAT CHANGED" is false over a deletion and over a reorder, where line N-1 is
+        byte-for-byte what the original held. Rule 11's arm below says where to look and lets
+        the cause stay open, which is what rule 0's arm had already had to do.
 
         A FOURTH SHAPE (Audit G, G-09), and the only one reachable with no forger at all.
         Rule 0 breaks the edge when a line's `prev` is the GENESIS SENTINEL and something
@@ -370,10 +376,27 @@ class Link(typing.NamedTuple):
                 f"line 1 claims a predecessor ({claimed}) but is the first line of "
                 f"the file — one or more lines have been removed from the front"
             )
+        # AUDIT H, H1-4. "LINE N-1 IS WHAT CHANGED", in capitals, was printed over a mid-file
+        # DELETION and over a REORDER, naming a line that is byte-for-byte what the original
+        # held. Both are among the three threats this module's own docstring names, and Audit G
+        # recorded that no test in the suite constructs either: they take the same DIFFERS path
+        # an edit takes, so no mutation distinguishes them and nobody had read the sentence over
+        # one. Measured on a six-line history — delete line 3 and the page says "LINE 2 IS WHAT
+        # CHANGED"; swap lines 3 and 4 and it says it of lines 2, 3 and 4 in turn.
+        #
+        # THE DISJUNCTION IS THE HONEST FORM, and it is the reasoning rule 0 above already
+        # applies: the file genuinely cannot separate an edit to line N-1 from the removal or
+        # displacement of the line this claim was written against, so it names none of them.
+        # What it CAN say, and what R-10 exists to buy, is where to look — at the boundary
+        # between N-1 and N, not at line N, which is the counter-intuitive part. Both digests
+        # stay whole (R-10, R-12), and an in-place edit is still named as a possible cause.
         return (
-            f"line {self.line} claims its predecessor was {claimed} "
+            f"line {self.line} claims its predecessor hashed to {claimed} "
             f"but line {self.line - 1} hashes to {self.computed} — "
-            f"LINE {self.line - 1} IS WHAT CHANGED"
+            f"LOOK BETWEEN LINES {self.line - 1} AND {self.line}, NOT AT LINE {self.line}: "
+            f"either line {self.line - 1} was edited in place, or the line this claim was "
+            f"written against is no longer between them — deleted, reordered, or pushed "
+            f"aside by an insertion. Nothing in the file separates those."
         )
 
 
