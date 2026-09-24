@@ -613,9 +613,35 @@ disclosed by name in both renderings, and **never `BROKEN`**. Approved by Taylor
 > otherwise charges for. The status is a property of the JUDGEMENT, not a new thing to write
 > into the file, and that is why it costs nothing.
 
-> **The report must name the cause it cannot distinguish.** An `UNCLAIMED` edge has two
-> innocent explanations and one guilty one, and the sentence says so rather than picking:
-> *"line N carries no chain claim. A run that could not take the file lock writes none (it
-> prints a NOTE when that happens), and a run still in flight has not written its completion
-> record yet — but so would a line inserted by hand. This is not evidence of an edit."* It must
-> never say *"upgrade that machine"*, which belongs to rule 5 alone and is false here.
+> **The report must name the cause it cannot distinguish — and only the causes it cannot
+> exclude.** An `UNCLAIMED` edge has innocent explanations and a guilty one, and the sentence
+> says so rather than picking. **Which innocent explanations apply depends on what the line
+> itself states**, so the sentence is conditional:
+>
+> * always: *"line N carries no chain claim. A run that could not take the file lock writes none
+>   (it prints a NOTE when that happens) — but so would a line inserted by hand. This is not
+>   evidence of an edit."*
+> * **only where the writer is `UNSTATED`**, i.e. the line names no version and none resolves
+>   from its run: *"...and a run still in flight has not written its completion record yet..."*
+>
+> It must never say *"upgrade that machine"*, which belongs to rule 5 alone and is false here.
+
+> **AMENDED 2026-09-24, after Audit H (H1-10). Approved by Taylor.** This clause was
+> unconditional, and over a line that names a chain-capable version it is FALSE. Measured on a
+> real 0.6.0 run killed mid-flight through `runprov capture`:
+>
+>     line 1: schema=runprov.start.v1     has prev=True
+>     line 2: schema=runprov.history.v2   has prev=True
+>
+> **A 0.6.0 run in flight writes a chained start line.** So where the line's own bytes say
+> `0.6.0`, a missing completion record cannot be why there is no claim — only the lock can be —
+> and the report was handing the reader a hypothesis the record already ruled out.
+>
+> The clause is right for an `UNSTATED` writer, which is G-05's case: a pre-chain release's start
+> line landing after the chain began, which resolves to `GAP` only once its completion record
+> arrives. So it is scoped rather than deleted.
+>
+> **The principle is the one this requirement already states, applied to itself.** Naming a cause
+> it cannot distinguish is honest; naming a cause it CAN exclude from the file in front of the
+> reader is the same defect as an accusation, one register quieter. The conclusion is unchanged,
+> which is why Audit H filed it low — the cost is a reader chasing something the bytes deny.
