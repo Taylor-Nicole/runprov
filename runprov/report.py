@@ -46,57 +46,6 @@ WIDTH = 78
 SCHEMA = "runprov.report.v1"
 
 
-def _plain(value: typing.Any) -> typing.Any:  # noqa: ANN401 - the structure, whatever it holds
-    """A `Report` as JSON-able dicts and lists, DERIVED FROM `_fields` RATHER THAN RE-TYPED.
-
-    A serialiser that names each field is a second spelling of the structure, and two hand-kept
-    spellings of one thing drift in the direction this repository has now found nine times: a
-    field added to the structure is simply missing from the payload, silently, on the rendering
-    nobody reads. Walking `_asdict()` cannot miss one.
-
-    A path goes out POSIX-spelled, for the reason every recorded path in this package does: a
-    record is read on a different machine from the one that wrote it, and
-    `str(WindowsPath("data/a.tsv"))` is not what a Linux reader is holding.
-    """
-    if isinstance(value, tuple) and hasattr(value, "_asdict"):
-        return {key: _plain(item) for key, item in value._asdict().items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain(item) for item in value]
-    if isinstance(value, pathlib.Path):
-        return hashing._posix(value)
-    return value
-
-
-def payload(report: Report) -> dict[str, typing.Any]:
-    """The report as one object, for a reader that is not a person.
-
-    EVERYTHING THE PAGE STATES, INCLUDING WHAT IT COULD NOT CHECK. `bytes_differ`,
-    `observation`, `unregistered_reads` and `limits` are the qualifications, and a payload
-    carrying only findings would let a consumer read "could not check" as "nothing wrong" —
-    the vacuous green this package exists to refuse. Two audits running have found three
-    defects each of exactly that class.
-
-    THE RUN-DEPENDENT KEYS ARE ABSENT RATHER THAN NULL when no run was found, and that is the
-    null-versus-absent distinction doing real work rather than a tidiness. A null is *looked
-    and found none*; an absent key is *this did not look*. With no run there is no method to
-    describe, no observation block to read and no input section on the page at all — the page
-    stops after the verdict, and so does this. What a reader must never have to INFER from a
-    missing key is the finding itself, so the finding is stated positively and always:
-    `limits.run_not_found`.
-
-    `body` IS FLATTENED rather than nested, and it is the one field that is. It exists so that
-    six optional blocks can be one optional block — the page either reaches them all or reaches
-    none of them — and that is a fact about how the structure is held, not about the artifact.
-    A reader of this payload sees the page's own sections at the top level.
-    """
-    head = {key: _plain(value) for key, value in report._asdict().items() if key != "body"}
-    out: dict[str, typing.Any] = {"schema": SCHEMA, **head}
-    if report.body is not None:
-        out.update(_plain(report.body))
-    out["limits"] = _plain(report.limits)
-    return out
-
-
 def _rule(title: str) -> str:
     """A titled rule. There is no untitled form: the first version had one, nothing called
     it, and a branch nothing reaches is a shape nobody tests."""
@@ -748,6 +697,57 @@ def page(
     """The page. Separate from printing so the wording itself is testable."""
     report = build(artifact, root, history)
     return Page(render_page(report), report)
+
+
+def _plain(value: typing.Any) -> typing.Any:  # noqa: ANN401 - the structure, whatever it holds
+    """A `Report` as JSON-able dicts and lists, DERIVED FROM `_fields` RATHER THAN RE-TYPED.
+
+    A serialiser that names each field is a second spelling of the structure, and two hand-kept
+    spellings of one thing drift in the direction this repository has now found nine times: a
+    field added to the structure is simply missing from the payload, silently, on the rendering
+    nobody reads. Walking `_asdict()` cannot miss one.
+
+    A path goes out POSIX-spelled, for the reason every recorded path in this package does: a
+    record is read on a different machine from the one that wrote it, and
+    `str(WindowsPath("data/a.tsv"))` is not what a Linux reader is holding.
+    """
+    if isinstance(value, tuple) and hasattr(value, "_asdict"):
+        return {key: _plain(item) for key, item in value._asdict().items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    if isinstance(value, pathlib.Path):
+        return hashing._posix(value)
+    return value
+
+
+def payload(report: Report) -> dict[str, typing.Any]:
+    """The report as one object, for a reader that is not a person.
+
+    EVERYTHING THE PAGE STATES, INCLUDING WHAT IT COULD NOT CHECK. `bytes_differ`,
+    `observation`, `unregistered_reads` and `limits` are the qualifications, and a payload
+    carrying only findings would let a consumer read "could not check" as "nothing wrong" —
+    the vacuous green this package exists to refuse. Two audits running have found three
+    defects each of exactly that class.
+
+    THE RUN-DEPENDENT KEYS ARE ABSENT RATHER THAN NULL when no run was found, and that is the
+    null-versus-absent distinction doing real work rather than a tidiness. A null is *looked
+    and found none*; an absent key is *this did not look*. With no run there is no method to
+    describe, no observation block to read and no input section on the page at all — the page
+    stops after the verdict, and so does this. What a reader must never have to INFER from a
+    missing key is the finding itself, so the finding is stated positively and always:
+    `limits.run_not_found`.
+
+    `body` IS FLATTENED rather than nested, and it is the one field that is. It exists so that
+    six optional blocks can be one optional block — the page either reaches them all or reaches
+    none of them — and that is a fact about how the structure is held, not about the artifact.
+    A reader of this payload sees the page's own sections at the top level.
+    """
+    head = {key: _plain(value) for key, value in report._asdict().items() if key != "body"}
+    out: dict[str, typing.Any] = {"schema": SCHEMA, **head}
+    if report.body is not None:
+        out.update(_plain(report.body))
+    out["limits"] = _plain(report.limits)
+    return out
 
 
 def _limits(limits: Limits) -> list[str]:

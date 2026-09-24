@@ -10422,6 +10422,315 @@ def test_the_json_report_carries_what_the_page_could_not_check(tmp_path):
     assert differ["bytes_differ"]["now"] == disk[: runprov.hashing.PIN_DIGEST_CHARS]
 
 
+_UNPERTURBABLE = object()
+
+
+def _structure_leaves(node, prefix=()):
+    """Every leaf of a NamedTuple tree and where it sits — DERIVED FROM `_fields`.
+
+    A hand-typed list of the fields a payload carries is the scope pattern, and this
+    repository has now found nine instances of it. The list is always right on the day it is
+    written and it is the thing that goes stale, so the guard below never holds one: it walks
+    whatever the structure actually is.
+    """
+    if hasattr(node, "_fields"):
+        for name in node._fields:
+            yield from _structure_leaves(getattr(node, name), (*prefix, name))
+    elif isinstance(node, tuple):
+        for index, item in enumerate(node):
+            yield from _structure_leaves(item, (*prefix, index))
+    else:
+        yield prefix, node
+
+
+def _structure_nodes(node, prefix=()):
+    """Every NODE of the same tree, not only its leaves.
+
+    The substitutes below are drawn from what the fixtures hold at each position, and an
+    optional block is a leaf ONLY where it is None — `method.tool` is a `Tool` in one fixture
+    and nothing at all in another, and both are needed to change one into the other.
+    """
+    yield prefix, node
+    if hasattr(node, "_fields"):
+        for name in node._fields:
+            yield from _structure_nodes(getattr(node, name), (*prefix, name))
+    elif isinstance(node, tuple):
+        for index, item in enumerate(node):
+            yield from _structure_nodes(item, (*prefix, index))
+
+
+def _payload_leaves(node, prefix=()):
+    """The same walk over the serialised form."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _payload_leaves(value, (*prefix, key))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _payload_leaves(value, (*prefix, index))
+    else:
+        yield prefix, node
+
+
+def _replaced(node, path, value):
+    """`node` with the leaf at `path` replaced — the inverse of `_structure_leaves`."""
+    step, rest = path[0], path[1:]
+    child = getattr(node, step) if isinstance(step, str) else node[step]
+    fresh = value if not rest else _replaced(child, rest, value)
+    if isinstance(step, str):
+        return node._replace(**{step: fresh})
+    return (*node[:step], fresh, *node[step + 1 :])
+
+
+def _perturbed(value, pool):
+    """A DIFFERENT value for this leaf, taken from what the fixtures themselves hold.
+
+    Drawn from the pool first, so the substitute is a shape this page really meets — a `Tool`
+    where a `Tool` can be, `None` where the record can be silent — rather than one invented
+    by whoever wrote the guard. The type-directed fallbacks are for a field that happens to
+    carry one value across every fixture, like the recorded `cwd`.
+    """
+    for candidate in pool:
+        if candidate is not None and candidate != value:
+            return candidate
+    if value is None:
+        return _UNPERTURBABLE
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, int):
+        return value + 1
+    if isinstance(value, pathlib.PurePath):
+        return value.with_name("mutated-" + value.name)
+    # PREPENDED, NEVER APPENDED, and that is not a style choice. The page prints a tool commit
+    # as `str(commit)[:12]`, so a substitute built by adding a suffix has the same first twelve
+    # characters and the page does not move — a mutation that misses its target, reported as a
+    # field the page drops. It was the isolated-wheel leg of the gate that showed it, because
+    # there the pool holds no second real commit to draw from and this fallback is reached.
+    return f"mutated-{value}"
+
+
+def _grouped(path):
+    """One path per FIELD, not per list element: `inputs[0].name` and `inputs[3].name` are
+    the same field, and a field is what a payload carries."""
+    return tuple("[]" if isinstance(step, int) else step for step in path)
+
+
+def _report_fixtures(tmp_path):
+    """Reports covering every optional block this page has, built from real artifacts.
+
+    DERIVED COVERAGE, NOT A CHOSEN SAMPLE. The guard asserts that the union of these leaves no
+    field of the structure unexercised, so a block added to `Report` that no fixture fills
+    turns it red rather than passing unnoticed — which is the direction the citation guards in
+    this file learned to check the hard way, twice.
+    """
+    artifact, log = _reported_run(tmp_path)
+    disk = hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+    def built(*history):
+        return runprov.report.build(artifact, tmp_path, list(history))
+
+    fixtures = [
+        ("end to end", runprov.report.render(artifact, tmp_path, log).report),
+        ("no run found", runprov.report.render(artifact, tmp_path, tmp_path / "n.jsonl").report),
+        ("a dirty tree", built(_history_record(cwd=tmp_path, git_code_dirty=True))),
+        ("git status did not run", built(_history_record(cwd=tmp_path, git_status_captured=False))),
+        ("no commit recorded", built(_history_record(cwd=tmp_path, git_commit=None))),
+        (
+            "a tool that names its commit",
+            built(
+                _history_record(
+                    cwd=tmp_path,
+                    tool={
+                        "version": "9.9.9",
+                        "source": "vcs",
+                        "identifies_code": True,
+                        "commit": "0123456789abcdef",
+                    },
+                )
+            ),
+        ),
+        (
+            "a tool that cannot name its code",
+            built(
+                _history_record(
+                    cwd=tmp_path,
+                    tool={"version": "0.3.0", "source": "local", "identifies_code": False},
+                )
+            ),
+        ),
+        (
+            # A SECOND REAL COMMIT, so the substitute for `tool.commit` is drawn from these
+            # fixtures on every host. Without it the pool held one fabricated commit plus
+            # whatever the runprov UNDER TEST recorded about itself — which is a commit in a
+            # checkout and nothing in an installed wheel, so the guard measured the machine.
+            "another tool that names its commit",
+            built(
+                _history_record(
+                    cwd=tmp_path,
+                    tool={
+                        "version": "8.8.8",
+                        "source": "vcs",
+                        "identifies_code": True,
+                        "commit": "fedcba9876543210",
+                    },
+                )
+            ),
+        ),
+        ("a record from before the tool block", built(_history_record(cwd=tmp_path, tool=None))),
+        (
+            "an interpreter, where a caller supplies one",
+            built(
+                _history_record(
+                    cwd=tmp_path, environment={"python": "3.12.13", "platform": "Linux-x"}
+                )
+            ),
+        ),
+        ("no observation block", built(_history_record(cwd=tmp_path, observation=None))),
+        (
+            "a watch that hit its cap",
+            built(
+                _history_record(
+                    cwd=tmp_path,
+                    unregistered_reads=["conf/app.json"],
+                    observation={
+                        "steps": 3,
+                        "packages_recorded": 12,
+                        "unregistered_watch_truncated": 7,
+                    },
+                )
+            ),
+        ),
+        (
+            "the bytes on disk are another run's output",
+            built(
+                _history_record(
+                    cwd=tmp_path,
+                    script="producer",
+                    outputs=[{"path": "out.tsv", "sha256": "f" * 64}],
+                ),
+                _history_record(
+                    cwd=tmp_path,
+                    script="elsewhere-writer",
+                    run_id="r2",
+                    outputs=[{"path": "archive/copy.tsv", "sha256": disk}],
+                ),
+            ),
+        ),
+    ]
+    # LAST, BOTH OF THEM, because each changes what is on disk for everything after it.
+    (tmp_path / "in.tsv").write_text("moved\n", encoding="utf-8")
+    fixtures.append(("an input that moved", runprov.report.render(artifact, tmp_path, log).report))
+    side = tmp_path / "out.tsv.prov.txt"
+    side.write_text(artifact.read_text(encoding="utf-8"), encoding="utf-8")
+    artifact.unlink()
+    fixtures.append(("the artifact is gone", runprov.report.render(side, tmp_path, log).report))
+    return fixtures
+
+
+def test_every_field_the_report_payload_carries_is_stated_by_the_page(tmp_path):
+    """[ADR-0017 R-1] [ADR-0017 R-2] [ADR-0017 R-12]. The two renderings cannot disagree.
+
+    TWO RENDERINGS OF ONE ANSWER ARE TWO THINGS THAT CAN DISAGREE, and this project has
+    shipped that defect twice about one object in one audit. G-16 was the text asserting a
+    cause `--format json` did not carry; H1-3 was the text silently dropping two findings the
+    JSON reported, one of them critical. Neither was caught by a verdict test, a property test
+    or a mutation pass, because in both cases the verdict was right.
+
+    DERIVED FROM THE STRUCTURE'S OWN KEYS, NEVER A HAND-TYPED LIST. Both halves walk whatever
+    `Report` actually holds: the first compares the payload's leaves against the structure's,
+    and the second changes each leaf and asserts the PAGE moves. A list of fields would be
+    right on the day it was written and would then be the thing that goes stale — the scope
+    pattern, inside the guard written to prevent the drift.
+
+    THE SECOND HALF IS PER FIELD, NOT PER REPORT, and deliberately so. `Input.found` is
+    printed only for an input that moved, and `bytes_differ` only when there is one — "the
+    page states this field" is a property of the field over the states it can be in, and a
+    guard that demanded every field show in every report would be asserting a page this
+    command does not print.
+
+    The other half of the rule — that the page introduces no fact the structure does not hold
+    — is not checked by reading output at all. It is the renderer's SIGNATURE, asserted in
+    `test_the_page_is_a_function_of_the_report_and_nothing_else`.
+    """
+    fixtures = _report_fixtures(tmp_path)
+    assert not set(runprov.report.Body._fields) & set(runprov.report.Report._fields), (
+        "the payload flattens `body` to the top level, which is lossless only while no field "
+        "of one shadows a field of the other"
+    )
+
+    structural, carried, pool = set(), set(), {}
+    for _name, report in fixtures:
+        structural.update(path for path, _value in _structure_leaves(report))
+        for path, value in _structure_nodes(report):
+            pool.setdefault(path, []).append(value)
+        for path, _value in _payload_leaves(runprov.report.payload(report)):
+            under = ("body", *path) if path[0] in runprov.report.Body._fields else path
+            carried.add(_grouped(under))
+    grouped = {_grouped(path) for path in structural}
+
+    assert carried - grouped == {("schema",), ("limits", "run_not_found")}, (
+        "the payload adds exactly two things to the structure, and each is named by a "
+        "requirement: the schema, which says which SHAPE this is rather than anything about "
+        "the artifact; and the derived caveat, which is the one clause of the page's own "
+        "limits that is a fact about this report. A third would be a fact invented on the "
+        f"way out: {sorted(carried - grouped - {('schema',), ('limits', 'run_not_found')})}"
+    )
+    assert grouped - carried == {("body",)}, (
+        "and nothing the structure holds fails to reach the payload. `body` is the exception "
+        "in one direction only: it is a leaf just when it is None, and the payload states "
+        f"that as `limits.run_not_found` — {sorted(grouped - carried - {('body',)})}"
+    )
+
+    shown, unstated = set(), []
+    for path in sorted(structural, key=repr):
+        for _name, report in fixtures:
+            here = dict(_structure_leaves(report))
+            if path not in here:
+                continue
+            fresh = _perturbed(here[path], pool.get(path, []))
+            if fresh is _UNPERTURBABLE:
+                continue
+            moved = runprov.report.render_page(_replaced(report, path, fresh))
+            if moved != runprov.report.render_page(report):
+                shown.add(path)
+                break
+        else:
+            unstated.append(path)
+    assert not unstated, (
+        "every field this payload carries has to appear in, or be accounted for by, the page "
+        "— change it and the page changes. These did not, in any state the fixtures reach, "
+        "which is either a field the page drops or a field no fixture exercises, and both "
+        f"are findings: {[' -> '.join(map(str, p)) for p in unstated]}"
+    )
+    assert shown == structural
+
+
+def test_the_page_samples_the_unregistered_reads_and_the_payload_carries_all_of_them(tmp_path):
+    """[ADR-0017 R-7]. The one place a rendering says less than the report holds.
+
+    ASSERTED RATHER THAN AVOIDED. The guard above compares fields, and a fixture with eleven
+    unregistered reads would have failed it for a reason that is not a defect — so the
+    asymmetry is stated here instead of being kept out of the fixtures, which is how a known
+    difference becomes an unknown one.
+
+    The direction is the safe one: the machine reader gets all of them, and the page's COUNT
+    is what stops the sample reading as the census. That count is the same argument C-06's
+    WATCH TRUNCATED line makes one level up.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    reads = [f"conf/f{n}.json" for n in range(13)]
+    page = runprov.report.page(
+        artifact, tmp_path, [_history_record(cwd=tmp_path, unregistered_reads=reads)]
+    )
+
+    listed = [line.strip() for line in page.lines if line.startswith(" " * 15)]
+    assert listed == reads[:10], "ten of them on the page, in order"
+    assert "13 file(s) were read and are NOT pinned" in "\n".join(page.lines), (
+        "and the count is all thirteen, which is what makes the ten a sample rather than the "
+        "answer to `was anything read that is not pinned?`"
+    )
+    assert runprov.report.payload(page.report)["unregistered_reads"] == reads
+
+
 class _Usage:
     """A `getrusage` result. Values are chosen so SELF and CHILDREN cannot be confused."""
 
