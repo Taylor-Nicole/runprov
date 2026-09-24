@@ -663,7 +663,7 @@ def verify(path: str | pathlib.Path) -> Report:
             # intercepted by rule 0 before rule 9 can see it. So the claimed digest printed
             # below is always a well-formed 64-hex value.
             named = "unvouched"
-        elif status in (GAP, BROKEN, UNCHAINED):
+        elif status in (GAP, BROKEN, UNCHAINED, UNCLAIMED):
             # NAMED ON A BREAK TOO, not only on a gap. R-10 requires the message to be true of
             # the break it found, and "written by a version it does not name" is false when the
             # record names one — it is the difference between a reader chasing a machine and a
@@ -674,6 +674,10 @@ def verify(path: str | pathlib.Path) -> Report:
             # renderer had nothing to ask — which is why it said "predate the chain" over
             # lines whose own `tool.version` is the release the chain ships in. The verdict is
             # unchanged; what changes is that the sentence can now tell the two apart.
+            #
+            # AND ON AN `UNCLAIMED` EDGE (Audit H, H1-10), for the same reason: R-32's
+            # in-flight clause is true only where the writer is UNSTATED, and rule 7's own
+            # inputs are the only place that is known.
             record = records.get(index) or {}
             tool = record.get("tool")
             named = tool.get("version") if isinstance(tool, dict) else None
@@ -747,16 +751,35 @@ def _findings(report: Report, path: pathlib.Path) -> list[str]:
             f"can give a line a claim it did not write."
         )
     for link in report.of(UNCLAIMED):
-        # R-32. NAME THE CAUSE IT CANNOT DISTINGUISH rather than pick one. There are two
-        # innocent explanations and one guilty, the file cannot tell them apart, and the
-        # sentence says exactly that. It must never say "upgrade that machine": that is
-        # rule 5's advice, it names a machine this line does not name, and for a run still
-        # in flight there is nothing to upgrade.
+        # R-32. NAME THE CAUSE IT CANNOT DISTINGUISH rather than pick one. There are innocent
+        # explanations and a guilty one, the file cannot tell them apart, and the sentence says
+        # exactly that. It must never say "upgrade that machine": that is rule 5's advice, and
+        # it names a machine this line does not name.
+        #
+        # AND ONLY THE CAUSES IT CANNOT EXCLUDE — R-32 as amended 2026-09-24 after Audit H
+        # (H1-10). The in-flight clause used to print unconditionally, and over a line naming a
+        # chain-capable release the record itself rules it out: a 0.6.0 run killed mid-flight
+        # writes a CHAINED start line. Measured, through `runprov.Run` and SIGKILL:
+        #
+        #     line 1: schema=runprov.start.v1  has prev=True
+        #
+        # So where the bytes say 0.6.0, a missing completion record cannot be why there is no
+        # claim; only the lock can be. The clause stays for an UNSTATED writer, which is G-05's
+        # case — a pre-chain release's start line landing after the chain began, which resolves
+        # to GAP only once its completion record arrives — so it is scoped, not deleted.
+        #
+        # THE PRINCIPLE IS THIS REQUIREMENT'S OWN, TURNED ON ITSELF. Naming a cause it cannot
+        # distinguish is honest; naming one the file in front of the reader EXCLUDES is the
+        # same defect as an accusation, one register quieter.
+        flight = (
+            ""
+            if _could_have_chained(link)
+            else " and a run still in flight has not written its completion record yet"
+        )
         out.append(
             f"    UNCLAIMED  line {link.line} carries no chain claim. A run that could not "
-            f"take the file lock writes none (it prints a NOTE when that happens), and a run "
-            f"still in flight has not written its completion record yet — but so would a line "
-            f"inserted by hand. This is not evidence of an edit."
+            f"take the file lock writes none (it prints a NOTE when that happens)"
+            f"{flight} — but so would a line inserted by hand. This is not evidence of an edit."
         )
     for number in report.merged:
         # G-03. The verdict it forces would otherwise appear on the page with no cause named,

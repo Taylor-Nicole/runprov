@@ -25726,13 +25726,20 @@ def test_a_line_that_made_no_claim_is_not_an_accusation(tmp_path, capsys):
         f"exits — and for a killed run the second never arrives: {verdicts}"
     )
 
-    # THE SENTENCE. It names both innocent causes AND the guilty one without picking between
-    # them, because the file cannot tell them apart and saying otherwise would be a guess.
+    # THE SENTENCE. It names the innocent causes AND the guilty one without picking between
+    # them, because the file cannot tell them apart and saying otherwise would be a guess —
+    # AND ONLY THE CAUSES IT CANNOT EXCLUDE ([ADR-0016 R-32], amended after Audit H, H1-10).
+    # This line states `0.6.0`, and a 0.6.0 run killed mid-flight writes a CHAINED start line,
+    # so a missing completion record cannot be why there is no claim here. Measured through
+    # `runprov.Run` and SIGKILL: the start line left behind carries `prev`.
     assert runprov.__main__.main(["chain", str(tail)]) == 2
     page = capsys.readouterr().out
     assert "UNCLAIMED  line 6 carries no chain claim" in page, page
     assert "could not take the file lock" in page, "the first innocent cause, and R-22's own"
-    assert "still in flight" in page, "the second"
+    assert "still in flight" not in page, (
+        "the line names a chain-capable release, and its own bytes exclude this cause. Naming "
+        "a cause the record rules out is the same defect as an accusation, one register quieter"
+    )
     assert "inserted by hand" in page, "and the guilty one, which is not hidden either"
     assert "This is not evidence of an edit." in page, page
     assert "upgrade that machine" not in page, (
@@ -25740,6 +25747,24 @@ def test_a_line_that_made_no_claim_is_not_an_accusation(tmp_path, capsys):
         "machine, and a run still in flight has nothing to upgrade"
     )
     assert "edited after it was written" not in page, "no accusation anywhere on the page"
+
+    # AND THE CLAUSE IS KEPT WHERE IT IS TRUE — an UNSTATED writer, which is G-05's case: a
+    # line that names no version and whose run has written no completion record to resolve one.
+    # It is scoped, not deleted, and asserting only its absence above would have let a repair
+    # that deleted it outright pass.
+    unstated = tmp_path / "unstated.jsonl"
+    unstated.write_bytes(b"\n".join(lines) + b"\n")
+    with unstated.open("ab") as fh:
+        fh.write(json.dumps({"schema": "runprov.start.v1", "run_id": "s"}).encode() + b"\n")
+    assert runprov.chain._writer_of({"schema": "runprov.start.v1", "run_id": "s"}, {}) == (
+        "UNSTATED"
+    ), "the cell this half is about, and rule 7 is reached from it as well as from CAPABLE"
+    assert [e.line for e in runprov.chain.verify(unstated).of(runprov.chain.UNCLAIMED)] == [6]
+    assert runprov.__main__.main(["chain", str(unstated)]) == 2
+    quiet = capsys.readouterr().out
+    assert "UNCLAIMED  line 6 carries no chain claim" in quiet, quiet
+    assert "still in flight has not written its completion record yet" in quiet, quiet
+    assert "upgrade that machine" not in quiet, "still rule 5's advice, and still false here"
 
     # The machine-readable rendering carries the same verdict and the same status, so a reader
     # of one can never see a finding the other does not. E-10's lesson, applied to a new status.

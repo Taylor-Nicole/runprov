@@ -39,6 +39,16 @@ named line, not in it — and drops the choice of cause, which an edit, a deleti
 an insertion all leave looking identical. Both digests are still printed whole, and an in-place
 edit is still named as a possible cause.
 
+### Fixed — the `UNCLAIMED` sentence offers only the causes the record cannot exclude
+
+Audit H, H1-10, against ADR-0016 R-32 as amended. The sentence offered *"a run still in flight
+has not written its completion record yet"* unconditionally. Measured on a real 0.6.0 run killed
+mid-flight: **it writes a chained start line**, so over a line naming a chain-capable release
+that explanation is ruled out by the file's own bytes. The clause is now printed only where the
+line names no version and none resolves from its run — G-05's case, which is the one it is true
+of. Verdict and exit code unchanged; what changes is a reader no longer chasing something the
+record denies.
+
 ## [0.6.0] — 2026-09-23
 
 ### Added
