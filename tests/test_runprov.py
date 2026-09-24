@@ -26220,6 +26220,169 @@ def test_a_history_with_nothing_chained_says_what_it_could_not_read(tmp_path, ca
     assert "written before the chain existed" in kept, kept
 
 
+def test_a_claimless_line_is_described_by_who_wrote_it_not_by_where_it_sits(
+    tmp_path, capsys, monkeypatch
+):
+    """ADR-0016 [ADR-0016 R-4] [ADR-0016 R-9] [ADR-0016 R-22] [ADR-0016 R-25].
+    Audit H, H1-1, H1-2 and H1-3 — three rows, one guard and ONE ROOT CAUSE.
+
+    R-25 RULE 4 ASSIGNS `UNCHAINED` BY POSITION — `claim = NONE, started = NO` — and never asks
+    who wrote the line. That is right for the VERDICT, which is why the status is disclosed and
+    never decisive: a claimless line at the front of a file is unverifiable and not fixable
+    whoever wrote it. It is wrong for the SENTENCE, which said those lines "predate the chain".
+
+    They need not, and the file says so itself. R-22 makes an append that could not take the
+    lock write NO claim at all — NFS, CIFS, a container without `flock` — so a project whose
+    early runs landed on such a mount carries a front block of claimless lines stamped with the
+    CURRENT release. Three ways that reached the reader:
+
+    * **H1-1** — one unlocked run then one locked one prints `2 line(s) predate the chain` over
+      two lines that state `0.6.0`, on an `INTACT`, exit 0 page. The one place in this feature
+      where a false sentence sits on a clean bill.
+    * **H1-2** — when EVERY line is unlocked, nothing is chained, and `render`'s early return
+      said "This history was written before the chain existed; the next run to append will
+      anchor it". Both clauses false: the chain existed, and the next append anchors nothing
+      while the mount is the same. G-16's defect, through a shape G-16's guard did not exclude.
+    * **H1-3** — the same early return DISCARDED `report.unreadable` and `report.merged`, so
+      G-03's critical finding — a destroyed record boundary — was invisible in the text while
+      `--format json` carried it. The code's own comment already stated the precondition,
+      "every edge UNCHAINED, nothing unreadable, nothing merged", and only the first third of
+      it was implemented; nothing tested the other two, which is why they could be absent.
+
+    AND BOTH GENUINE CASES MUST READ EXACTLY AS THEY DID, which is the second half of this
+    test: a history from 0.5.0 and earlier still says "predate the chain" and still gets the
+    early return's sentence. A repair that buys one true sentence with a false one is how this
+    feature has already been "fixed" twice.
+    """
+    real = __import__
+
+    def without_locking(name, *a, **k):
+        # BOTH MECHANISMS: `_exclusive` uses `fcntl` on POSIX and `msvcrt` on Windows, and
+        # blocking one leaves the other leg asserting the UNLOCKED behaviour of a LOCKED append.
+        if name in ("fcntl", "msvcrt"):
+            raise ImportError(name)
+        return real(name, *a, **k)
+
+    def append(path, tag, version):
+        runprov.JsonlSink(path).append(
+            {"schema": "runprov.history.v2", "run_id": tag, "tool": {"version": version}}
+        )
+
+    # H1-1. AN UNLOCKED FRONT BLOCK, THEN ORDINARY APPENDS.
+    mixed = tmp_path / "unlocked_first.jsonl"
+    monkeypatch.setattr(builtins, "__import__", without_locking)
+    append(mixed, "u0", "0.6.0")
+    append(mixed, "u1", "0.6.0")
+    monkeypatch.undo()
+    append(mixed, "l0", "0.6.0")
+    append(mixed, "l1", "0.6.0")
+    claims = [("prev" in json.loads(ln)) for ln in mixed.read_bytes().rstrip(b"\n").split(b"\n")]
+    assert claims == [False, False, True, True], (
+        f"the shape this row is about, and without it the walk never reaches rule 4: {claims}"
+    )
+
+    report = runprov.chain.verify(mixed)
+    assert [e.status for e in report.edges] == [
+        runprov.chain.UNCHAINED,
+        runprov.chain.UNCHAINED,
+        runprov.chain.HOLDS,
+        runprov.chain.HOLDS,
+    ], [(e.line, e.status) for e in report.edges]
+    assert report.status == runprov.chain.INTACT, (
+        "the VERDICT is right and stays right — what was wrong is the sentence wrapped round it"
+    )
+    assert [e.wrote for e in report.of(runprov.chain.UNCHAINED)] == ["0.6.0", "0.6.0"], (
+        "the writer is carried onto UNCHAINED edges; nothing carried one before, which is "
+        "exactly why the renderer had nothing to ask and guessed"
+    )
+
+    capsys.readouterr()
+    assert runprov.__main__.main(["chain", str(mixed)]) == 0
+    page = capsys.readouterr().out
+    assert "2 line(s) predate the chain" not in page, page
+    assert "although runprov 0.6.0 wrote them" in page, page
+    assert "0.6.0 can chain" in page, page
+    assert "This is not evidence of an edit" in page, "disclosed, and never an accusation"
+    assert "upgrade that machine" not in page, (
+        "rule 5's advice, and false here: the machine that wrote these lines is current"
+    )
+
+    # H1-2. EVERY LINE UNLOCKED, so nothing is chained and the early return is reached.
+    everything = tmp_path / "all_unlocked.jsonl"
+    monkeypatch.setattr(builtins, "__import__", without_locking)
+    for i in range(3):
+        append(everything, f"u{i}", "0.6.0")
+    monkeypatch.undo()
+    loose = runprov.chain.verify(everything)
+    assert loose.chained_from is None and {e.status for e in loose.edges} == {
+        runprov.chain.UNCHAINED
+    }, "the cell G-16's guard let through: every edge UNCHAINED, and none of it pre-chain"
+    page = "\n".join(runprov.chain.render(loose, everything))
+    assert "written before the chain existed" not in page, page
+    assert "although runprov 0.6.0 wrote them" in page, page
+
+    # H1-3. A GENUINE PRE-CHAIN HISTORY WITH A DESTROYED RECORD BOUNDARY. Every edge is
+    # UNCHAINED and no writer can chain, so only `merged`/`unreadable` can fail the guard —
+    # which is what makes this file, and not H1-2's, the one that tests those two clauses.
+    old = [
+        json.dumps(
+            {"schema": "runprov.history.v2", "run_id": f"p{i}", "tool": {"version": "0.5.0"}}
+        ).encode()
+        for i in range(3)
+    ]
+    boundary = tmp_path / "boundary.jsonl"
+    raw = b"\n".join(old) + b"\n"
+    cut = len(old[0]) + 1 + len(old[1])
+    assert raw[cut : cut + 1] == b"\n", "the byte about to be destroyed is the terminator"
+    # A lost or zero-filled block, which is how G-03's producer arrives with no forger at all.
+    boundary.write_bytes(raw[:cut] + b"\x00" + raw[cut + 1 :])
+    joined = runprov.chain.verify(boundary)
+    assert joined.merged == (2,) and joined.unreadable == (2,), joined
+    assert {e.status for e in joined.edges} == {runprov.chain.UNCHAINED}
+    page = "\n".join(runprov.chain.render(joined, boundary))
+    assert "written before the chain existed" not in page, page
+    assert "a record boundary sits inside it" in page, (
+        "G-03 is CRITICAL and the early return dropped it from the text while `--format json` "
+        "reported it — the two renderings of one report, disagreeing again"
+    )
+    assert "2 line(s) predate the chain" in page, (
+        "and these lines really do predate it, so that sentence is still the true one"
+    )
+
+    # AND `unreadable` ON ITS OWN, because `merged` implies it and a file carrying both cannot
+    # tell the two clauses apart — the shape of the mutation that survived this test's first
+    # draft. `[1, 2, 3]` is valid JSON that is not an object (R-24), so the parser never
+    # complains, `_BOUNDARY` is never consulted, and the line is unreadable with nothing merged.
+    lone = tmp_path / "not_an_object.jsonl"
+    lone.write_bytes(b"\n".join([old[0], b"[1, 2, 3]", old[2]]) + b"\n")
+    odd = runprov.chain.verify(lone)
+    assert odd.unreadable == (2,) and odd.merged == (), odd
+    assert {e.status for e in odd.edges} == {runprov.chain.UNCHAINED}
+    page = "\n".join(runprov.chain.render(odd, lone))
+    assert "written before the chain existed" not in page, page
+    assert "UNREADABLE  line 2 carries no readable runprov record" in page, (
+        "the disclosure the early return dropped, over a file with no destroyed boundary in it"
+    )
+
+    # THE GENUINE PRE-CHAIN HISTORY, UNCHANGED, in both of its shapes.
+    genuine = tmp_path / "genuine.jsonl"
+    genuine.write_bytes(b"\n".join(old) + b"\n")
+    kept = "\n".join(runprov.chain.render(runprov.chain.verify(genuine), genuine))
+    assert "3 line(s), none of them chained. This history was written before the chain " in kept
+    assert "existed; the next run to append will anchor it." in kept, kept
+
+    anchored = tmp_path / "anchored.jsonl"
+    anchored.write_bytes(b"\n".join(old) + b"\n")
+    append(anchored, "now", "0.6.0")
+    after = runprov.chain.verify(anchored)
+    assert after.status == runprov.chain.INTACT, "R-4: one append anchors what came before it"
+    page = "\n".join(runprov.chain.render(after, anchored))
+    assert "3 line(s) predate the chain" in page, page
+    assert "although runprov" not in page, (
+        "and the new sentence is not printed over lines that genuinely predate the chain"
+    )
+
+
 def test_r31s_shape_list_is_the_one_the_gate_actually_runs():
     """ADR-0016 [ADR-0016 R-31] [ADR-0016 R-15]. The prose and the parametrisation, held equal.
 

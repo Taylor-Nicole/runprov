@@ -127,6 +127,20 @@ _BOUNDARY = re.compile(rb'\}.?\{"|.\{"prev": "(?:GENESIS|[0-9a-f]{64})"', re.S)
 CHAINS_FROM = (0, 6, 0)
 
 
+def _numbers_in(version: object) -> tuple[int, ...] | None:
+    """The release a `tool.version` names, or None when it names none this can order.
+
+    ONE PARSER, THREE CALLERS — `_version_of`, `_writer_of`, and the finding that has to ask
+    whether an `UNCHAINED` line's writer could have written a claim (Audit H, H1-1). Two lines
+    of parsing copied to three places is how a SENTENCE comes to disagree with the JUDGEMENT it
+    describes, which is this file's longest-running defect class and H1-6 one field along.
+    """
+    if not isinstance(version, str):
+        return None
+    parts = re.findall(r"\d+", version)[:3]
+    return tuple(int(x) for x in parts) if parts else None
+
+
 def _version_of(record: typing.Mapping[str, typing.Any]) -> tuple[int, ...] | None:
     """The runprov version that wrote a record, from its own `tool` block. None if unstated.
 
@@ -136,11 +150,7 @@ def _version_of(record: typing.Mapping[str, typing.Any]) -> tuple[int, ...] | No
     something a supported workflow cannot produce.
     """
     tool = record.get("tool")
-    version = tool.get("version") if isinstance(tool, dict) else None
-    if not isinstance(version, str):
-        return None
-    parts = re.findall(r"\d+", version)[:3]
-    return tuple(int(x) for x in parts) if parts else None
+    return _numbers_in(tool.get("version") if isinstance(tool, dict) else None)
 
 
 def digest_of(line: bytes) -> str:
@@ -443,6 +453,29 @@ class Report(typing.NamedTuple):
         return [link for link in self.edges if link.status == status]
 
 
+def _could_have_chained(link: Link) -> bool:
+    """Whether the release that wrote this edge's line was one that writes a claim.
+
+    AUDIT H, H1-1. R-25 rule 4 assigns `UNCHAINED` BY POSITION — `claim = NONE, started = NO` —
+    and never asks who wrote the line. That is right for the VERDICT: a line with no claim at
+    the front of a file is unverifiable and not fixable whoever wrote it, which is why the
+    status is never decisive. It is wrong for the SENTENCE, which said those lines "predate the
+    chain".
+
+    They need not. R-22 makes an append that could not take the lock write NO claim at all —
+    NFS, CIFS, a container without `flock` — so a project whose first runs happened on such a
+    mount has a front block of claimless lines written by the current release. Measured: one
+    unlocked run followed by one locked one gives `INTACT`, exit 0, and `2 line(s) predate the
+    chain` over two lines that state `0.6.0`. That is the one place in this feature where a
+    false sentence sits on a CLEAN BILL, which is the worst place for one.
+
+    The writer is carried onto `UNCHAINED` edges in the walk for this, so the question is asked
+    of the same value `_writer_of` judged by — never of a second reading of the line.
+    """
+    numbers = _numbers_in(link.wrote)
+    return numbers is not None and numbers >= CHAINS_FROM
+
+
 def _writers(records: dict[int, dict[str, typing.Any]]) -> dict[str, str]:
     """`{run_uid: version}` from every record that states both. ADR-0016 R-29.
 
@@ -499,12 +532,10 @@ def _writer_of(record: dict[str, typing.Any] | None, by_run: dict[str, str]) -> 
         # only records it could answer for are ones whose label happens to equal somebody's uuid.
         uid = record.get("run_uid")
         version = by_run.get(uid) if isinstance(uid, str) else None
-    if not isinstance(version, str):
+    numbers = _numbers_in(version)
+    if numbers is None:
         return "UNSTATED"
-    parts = re.findall(r"\d+", version)[:3]
-    if not parts:
-        return "UNSTATED"
-    return "PRE_CHAIN" if tuple(int(x) for x in parts) < CHAINS_FROM else "CAPABLE"
+    return "PRE_CHAIN" if numbers < CHAINS_FROM else "CAPABLE"
 
 
 def verify(path: str | pathlib.Path) -> Report:
@@ -609,11 +640,17 @@ def verify(path: str | pathlib.Path) -> Report:
             # intercepted by rule 0 before rule 9 can see it. So the claimed digest printed
             # below is always a well-formed 64-hex value.
             named = "unvouched"
-        elif status in (GAP, BROKEN):
+        elif status in (GAP, BROKEN, UNCHAINED):
             # NAMED ON A BREAK TOO, not only on a gap. R-10 requires the message to be true of
             # the break it found, and "written by a version it does not name" is false when the
             # record names one — it is the difference between a reader chasing a machine and a
             # reader chasing a ghost.
+            #
+            # AND ON AN `UNCHAINED` EDGE (Audit H, H1-1). Rule 4 decides that status by
+            # POSITION and never looks at the writer, so nothing carried one here and the
+            # renderer had nothing to ask — which is why it said "predate the chain" over
+            # lines whose own `tool.version` is the release the chain ships in. The verdict is
+            # unchanged; what changes is that the sentence can now tell the two apart.
             record = records.get(index) or {}
             tool = record.get("tool")
             named = tool.get("version") if isinstance(tool, dict) else None
@@ -661,8 +698,31 @@ def _findings(report: Report, path: pathlib.Path) -> list[str]:
             f"    {count} line(s) written by runprov {version}, which cannot chain — "
             f"upgrade that machine to close the gap"
         )
-    if report.of(UNCHAINED):
-        out.append(f"    {len(report.of(UNCHAINED))} line(s) predate the chain")
+    # H1-1. TWO SENTENCES, BECAUSE `UNCHAINED` COVERS TWO SITUATIONS AND SAID ONE. Rule 4 is
+    # assigned by position, so a claimless line at the front of a file got "predate the chain"
+    # whatever wrote it — false, and on an INTACT page, for the front block an unlocked mount
+    # leaves (R-22). The verdict does not move: both are disclosed and neither is decisive.
+    predating = 0
+    capable: dict[str, int] = {}
+    for link in report.of(UNCHAINED):
+        wrote = link.wrote if _could_have_chained(link) else None
+        if wrote is None:
+            predating += 1
+        else:
+            capable[wrote] = capable.get(wrote, 0) + 1
+    if predating:
+        out.append(f"    {predating} line(s) predate the chain")
+    for version, count in sorted(capable.items()):
+        # R-32's territory, one file-position earlier. The causes are rule 7's causes minus the
+        # in-flight one, which this line's own bytes exclude: a run of a release that can chain
+        # writes a chained start line even when it is killed before it completes.
+        out.append(
+            f"    {count} line(s) carry no chain claim although runprov {version} wrote them, "
+            f"and {version} can chain — they do NOT predate the chain. A run that could not "
+            f"take the file lock writes no claim (it prints a NOTE when that happens), and so "
+            f"would a line inserted by hand. This is not evidence of an edit, and no later run "
+            f"can give a line a claim it did not write."
+        )
     for link in report.of(UNCLAIMED):
         # R-32. NAME THE CAUSE IT CANNOT DISTINGUISH rather than pick one. There are two
         # innocent explanations and one guilty, the file cannot tell them apart, and the
@@ -779,8 +839,35 @@ def render(report: Report, path: pathlib.Path) -> list[str]:
         # header below then prints "chained from line None". So it is KEPT for the file it is
         # true of — every edge UNCHAINED, nothing unreadable, nothing merged — and every
         # other file gets its findings under a header that claims nothing about the cause.
+        #
+        # AUDIT H, H1-2 AND H1-3: THE COMMENT ABOVE STATED THE PRECONDITION AND A THIRD OF IT
+        # WAS IMPLEMENTED. Only the first clause was tested, so:
+        #
+        # * H1-3 — `report.unreadable` and `report.merged` were DISCARDED by this return.
+        #   Three records, a zero-filled terminator, and the page said only "written before the
+        #   chain existed" while `--format json` carried `merged=(2,) unreadable=(2,)`. G-03 is
+        #   critical and it was invisible in the text; G-16's two renderings disagreed again.
+        # * H1-2 — every edge is `UNCHAINED` over a history written entirely by 0.6.0 on a
+        #   lock-less mount, and BOTH clauses of the sentence are then false: the chain existed,
+        #   and the next append anchors nothing while the mount is the same. G-16's own defect,
+        #   reached by a shape G-16's guard does not exclude.
+        #
+        # So the guard now asks the whole precondition. The genuine pre-chain history — records
+        # from 0.5.0 and earlier, nothing unreadable — is untouched and still gets this sentence.
         head = f"  CANNOT CHECK: {report.lines} line(s), none of them chained."
-        if all(link.status == UNCHAINED for link in report.edges):
+        if (
+            all(link.status == UNCHAINED for link in report.edges)
+            and not any(_could_have_chained(link) for link in report.edges)
+            and not report.unreadable
+            and not report.merged
+            # `merged` IS A SUBSET OF `unreadable` BY CONSTRUCTION — it is appended only inside
+            # the `except ValueError` arm whose `continue` keeps the line out of `records`, and
+            # `unreadable` is every index not in `records`. So the last clause can never decide
+            # this guard on its own, and a mutation removing it survives. Measured, and kept
+            # anyway: the precondition this guard states has three parts, and writing two of
+            # them because the third is currently implied is how the FIRST version of this
+            # comment came to describe behaviour that was not there.
+        ):
             return [
                 *out,
                 f"{head} This history was written before the chain existed; the next run "

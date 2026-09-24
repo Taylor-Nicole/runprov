@@ -9,6 +9,23 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — `runprov chain` describes a claimless line by who wrote it, not by where it sits
+
+Audit H, H1-1/H1-2/H1-3. R-25's rule 4 decides `UNCHAINED` by POSITION, so every claimless
+line at the front of a file was described as predating the chain whatever wrote it. An append
+that could not take the file lock writes no claim by design (ADR-0016 R-22), so a project whose
+early runs landed on NFS, CIFS or a container without `flock` has such a block written by the
+CURRENT release. Measured: one unlocked run then one locked one printed `2 line(s) predate the
+chain` over two lines stating `0.6.0`, on an `INTACT`, exit 0 page.
+
+Those lines now get a sentence that says what is true of them — a release that can chain wrote
+no claim, which the lock explains and a hand-inserted line would too — and the early return
+that says *"written before the chain existed; the next run to append will anchor it"* now fires
+only where the whole of its stated precondition holds. It also **stopped discarding
+`unreadable` and `merged`**: a destroyed record boundary was reported by `--format json` and
+invisible in the text. Verdicts and exit codes are unchanged everywhere, and a genuine
+pre-chain history reads exactly as it did.
+
 ## [0.6.0] — 2026-09-23
 
 ### Added
