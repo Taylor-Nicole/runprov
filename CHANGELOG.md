@@ -28,7 +28,7 @@ none in the payload. Fields keep the record's own names (`started_utc`, not the 
 the renderer rather than stored, so a consumer can never mistake an absence for a script named
 `?`. The exit code is unchanged by the format.
 
-Measured: the text is byte-identical over 30 fixtures covering every branch of the page, with
+Measured: the text is byte-identical over 26 fixtures covering every branch of the page, with
 one asserted exception — a record carrying an explicit JSON `null` for a scalar field printed
 the word `None` and now prints `?`. A test walks the payload's own leaves and asserts each one
 moves the page when it changes, so a field can no longer reach one rendering and not the other.
