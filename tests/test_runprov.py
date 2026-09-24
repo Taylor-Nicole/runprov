@@ -10433,11 +10433,15 @@ def _structure_leaves(node, prefix=()):
     written and it is the thing that goes stale, so the guard below never holds one: it walks
     whatever the structure actually is.
 
+    A LIST DESCENDS LIKE A TUPLE. `report` holds its repeated blocks as tuples and `diff` holds
+    them as lists — `Comparison.dimensions` and `Dimension.differences` both — and a walk that
+    stopped at a list would yield the whole list as one leaf while the payload's walk yielded
+    its elements, so the two sides would disagree about a structure neither had got wrong.
     """
     if hasattr(node, "_fields"):
         for name in node._fields:
             yield from _structure_leaves(getattr(node, name), (*prefix, name))
-    elif isinstance(node, tuple):
+    elif isinstance(node, (list, tuple)):
         for index, item in enumerate(node):
             yield from _structure_leaves(item, (*prefix, index))
     else:
@@ -10455,7 +10459,7 @@ def _structure_nodes(node, prefix=()):
     if hasattr(node, "_fields"):
         for name in node._fields:
             yield from _structure_nodes(getattr(node, name), (*prefix, name))
-    elif isinstance(node, tuple):
+    elif isinstance(node, (list, tuple)):
         for index, item in enumerate(node):
             yield from _structure_nodes(item, (*prefix, index))
 
@@ -10479,6 +10483,11 @@ def _replaced(node, path, value):
     fresh = value if not rest else _replaced(child, rest, value)
     if isinstance(step, str):
         return node._replace(**{step: fresh})
+    if isinstance(node, list):
+        # THE TYPE IS PUT BACK, not merely the value. A list rebuilt as a tuple would still
+        # render, so the substitution would look clean while quietly testing a structure the
+        # command never builds.
+        return [*node[:step], fresh, *node[step + 1 :]]
     return (*node[:step], fresh, *node[step + 1 :])
 
 
@@ -11703,6 +11712,200 @@ def test_diff_cli_compares_the_last_two_runs_of_one_script(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "threshold  5 -> 7" in out
     assert "ref.fa" in out
+
+
+def _row_state(comparison, path):
+    """The verdict of the row this leaf belongs to, or None for a field outside the rows."""
+    return comparison.dimensions[path[1]].verdict if path[0] == "dimensions" else None
+
+
+def _diff_fixtures():
+    """Comparisons reaching every branch of the table, and every state each field can be in.
+
+    DERIVED COVERAGE, NOT A CHOSEN SAMPLE. The guard below asserts that the union of these
+    leaves no field of the structure unexercised, so a field added to `Comparison`, `Side` or
+    `Dimension` that no fixture fills turns it red rather than passing unnoticed — the
+    direction the citation guards in this file learned to check the hard way, twice.
+    """
+    later = {"run_uid": "uid-b", "run_id": "r2", "started_utc": "2026-09-16T00:00:00Z"}
+    pairs = [
+        ("everything unchanged", _hrec(), _hrec(**later)),
+        (
+            "a change in every dimension that can carry one",
+            _hrec(
+                inputs=[{"path": "ref.fa", "sha256": "aaaa"}],
+                outputs=[{"path": "out.tsv", "sha256": "1111"}],
+                steps=[{"step": "normalise", "args": ["x"], "kwargs": {}, "returned": "y"}],
+                observation={"auto_available": True, "packages_recorded": "tracked"},
+                environment={"packages": {"numpy": "1.26.0"}},
+            ),
+            _hrec(
+                **later,
+                git_commit="bbbb222",
+                parameters={"threshold": 7},
+                inputs=[{"path": "ref.fa", "sha256": "bbbb"}],
+                outputs=[{"path": "out.tsv", "sha256": "2222"}],
+                steps=[{"step": "rescale", "args": ["x"], "kwargs": {}, "returned": "y"}],
+                observation={"auto_available": True, "packages_recorded": "tracked"},
+                environment={"packages": {"numpy": "2.0.1"}},
+                resources={
+                    "wall_seconds": 900.0,
+                    "source": "getrusage",
+                    "max_rss_bytes": 800 * 1024 * 1024,
+                },
+            ),
+        ),
+        (
+            "changed AND not fully comparable",
+            _hrec(inputs=[{"path": "ref.fa", "sha256": "aaaa"}], unregistered_reads=["conf.json"]),
+            _hrec(**later, inputs=[{"path": "ref.fa", "sha256": "bbbb"}]),
+        ),
+        ("a dirty tree", _hrec(git_code_dirty=True), _hrec(**later)),
+        (
+            "different interpreters, and a package configuration change",
+            _hrec(observation={"auto_available": False, "packages_recorded": "none"}),
+            _hrec(**later, observation={"auto_available": True, "packages_recorded": "snapshot"}),
+        ),
+        (
+            "a getrusage peak against a cgroup peak, and a schema change",
+            _hrec(schema="runprov.run.v1"),
+            _hrec(**later, resources={"source": "cgroup", "wall_seconds": 1.0}),
+        ),
+        (
+            "both runs failed, which is agreement and still a finding",
+            _hrec(status="failed", failure={"type": "RuntimeError", "message": "boom"}),
+            _hrec(**later, status="failed"),
+        ),
+        ("one run has not finished", _hrec(status="running"), _hrec(**later)),
+        ("a record that says nothing at all", {}, {}),
+    ]
+    return [(name, runprov.diff.build(a, b)) for name, a, b in pairs]
+
+
+def test_every_field_the_diff_payload_carries_is_stated_by_the_table():
+    """[ADR-0017 R-1] [ADR-0017 R-2] [ADR-0017 R-12]. The two renderings cannot disagree.
+
+    TWO RENDERINGS OF ONE ANSWER ARE TWO THINGS THAT CAN DISAGREE, and this project has shipped
+    that defect twice about one object in one audit — G-16 was the text asserting a cause the
+    JSON did not carry, H1-3 was the text silently dropping two findings the JSON reported, one
+    of them critical. Neither was caught by a verdict test, a property test or a mutation pass,
+    because in both cases the verdict was right.
+
+    DERIVED FROM THE STRUCTURE'S OWN KEYS, IN BOTH DIRECTIONS, NEVER A HAND-TYPED LIST. The
+    first half compares the payload's leaves against the structure's; the second changes each
+    leaf and asserts the TABLE moves. A list of fields would be right on the day it was written
+    and would then be the thing that goes stale — the scope pattern, inside the guard written
+    to prevent the drift.
+
+    THE SECOND HALF IS PER FIELD, NOT PER COMPARISON, and deliberately so. `examined` is printed
+    only on a row claiming `unchanged` and `blocked` only where there is one, so "the table
+    states this field" is a property of the field over the states it can be in; a guard
+    demanding every field show in every comparison would be asserting a table this command
+    never prints. The asymmetry that leaves is stated in the test below rather than left to be
+    found.
+    """
+    fixtures = _diff_fixtures()
+    structural, carried, pool = set(), set(), {}
+    for _name, comparison in fixtures:
+        structural.update(path for path, _value in _structure_leaves(comparison))
+        for path, value in _structure_nodes(comparison):
+            pool.setdefault(_grouped(path), []).append(value)
+        for path, _value in _payload_leaves(runprov.diff.payload(comparison)):
+            carried.add(_grouped(path))
+    grouped = {_grouped(path) for path in structural}
+
+    computed = {("schema",), ("settled",)} | {
+        ("dimensions", "[]", name) for name in ("verdict", "settled")
+    }
+    assert carried - grouped == computed, (
+        "the payload adds exactly four things to the structure, and every one is named by a "
+        "requirement: the schema, which says which SHAPE this is rather than anything about "
+        "the runs (R-5); and three computed properties, allowed by R-10 because they compute "
+        "nothing the records do not already hold — a dimension's `verdict` and `settled`, and "
+        "the fold over them the exit code is. A fifth would be a fact invented on the way "
+        f"out: {sorted(carried - grouped - computed)}"
+    )
+    assert grouped - carried == set(), (
+        "and nothing the structure holds fails to reach the payload — a dropped field in a "
+        "released output is a consumer silently missing a finding, not a test going red: "
+        f"{sorted(grouped - carried)}"
+    )
+
+    shown, unstated, silent = set(), [], set()
+    for path in sorted(structural, key=repr):
+        for _name, comparison in fixtures:
+            here = dict(_structure_leaves(comparison))
+            if path not in here:
+                continue
+            fresh = _perturbed(here[path], pool.get(_grouped(path), []))
+            if fresh is _UNPERTURBABLE:
+                continue
+            moved = runprov.diff.render(_replaced(comparison, path, fresh))
+            if moved != runprov.diff.render(comparison):
+                shown.add(path)
+            else:
+                silent.add((_grouped(path), _row_state(comparison, path)))
+        if path not in shown:
+            unstated.append(path)
+    assert not unstated, (
+        "every field this payload carries has to appear in, or be accounted for by, the "
+        "table — change it and the table changes. These did not, in any state the fixtures "
+        "reach, which is either a field the table drops or a field no fixture exercises, and "
+        f"both are findings: {[' -> '.join(map(str, p)) for p in unstated]}"
+    )
+    assert shown == structural
+
+    # AND EVERY STATE IN WHICH A FIELD IS SILENT IS NAMED, which is the half a stop-at-the-
+    # first-success loop cannot see. Measured: with the reason struck off the NOT COMPARABLE
+    # line, this guard still passed — because changing a `blocked` from None to a reason flips
+    # the VERDICT, so the row moved for a reason that was not the field's content. A field
+    # whose only effect on the table is to change which word the row prints is a field whose
+    # CONTENT the table may be dropping, and this is where that shows.
+    assert silent == {
+        (("dimensions", "[]", "examined"), state) for state in ("changed", "not comparable")
+    }, (
+        "`examined` is printed on a row claiming `unchanged` and nowhere else, which is "
+        "ADR-0014 decision 3 and the one asymmetry between these two renderings. Any other "
+        "field-and-state that leaves the table unmoved is a fact the payload carries and the "
+        f"table does not: {sorted(silent)}"
+    )
+
+
+def test_the_table_prints_a_scope_only_where_it_claims_unchanged_and_the_payload_always_has_it():
+    """[ADR-0017 R-7]. The one place a rendering says less than the structure holds.
+
+    ASSERTED RATHER THAN AVOIDED. `examined` is on the table for a row claiming `unchanged`,
+    because that is the row where "no difference found" and "nothing examined" print the same
+    word — ADR-0014 decision 3. A changed or incomparable row does not print it and the payload
+    carries it anyway, which is the safe direction: the machine reader gets the scope of a
+    comparison it was not given on the page.
+
+    A KNOWN ASYMMETRY LEFT UNASSERTED BECOMES AN UNKNOWN ONE, and the guard above compares
+    fields rather than rows, so it cannot see this. `report`'s sampled `unregistered_reads`
+    is the same statement one command along.
+    """
+    comparison = runprov.diff.build(
+        _hrec(git_code_dirty=True, parameters={"threshold": 5}),
+        _hrec(run_uid="uid-b", parameters={"threshold": 7}),
+    )
+    rows = {
+        line.split()[0]: line
+        for line in runprov.diff.render(comparison)
+        if line and not line.startswith((" ", "A ", "B "))
+    }
+    carried = {d["name"]: d for d in runprov.diff.payload(comparison)["dimensions"]}
+
+    assert carried["inputs"]["verdict"] == "unchanged"
+    assert f"({carried['inputs']['examined']})" in rows["inputs"], (
+        "an `unchanged` row states what it was examined over, on the line and not in a footer"
+    )
+    for name, verdict in (("parameters", "changed"), ("code", "not comparable")):
+        assert carried[name]["verdict"] == verdict
+        assert carried[name]["examined"], f"{name} was examined over something"
+        assert carried[name]["examined"] not in rows[name], (
+            f"the {verdict} row does not print its scope, and the payload carries it — the "
+            f"asymmetry is stated here so that it cannot become an unknown one: {rows[name]}"
+        )
 
 
 def _diff_history(path, *records):
