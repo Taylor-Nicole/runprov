@@ -12619,6 +12619,53 @@ def test_every_field_the_impact_payload_carries_is_stated_by_the_page():
     )
 
 
+def test_the_payloads_computed_fields_agree_with_the_page_that_states_them():
+    """[ADR-0017 R-1] [ADR-0017 R-10]. PRESENT IS NOT THE SAME AS CONSISTENT.
+
+    FOUND BY MUTATION M09 OF THIS ROW, which pinned `"artifacts"` to `0` and survived the whole
+    suite. The guard above walks the STRUCTURE's leaves, and `artifacts` and `truncated` are
+    properties rather than fields — so they were asserted to be present in the payload and never
+    once compared against the page. A payload claiming `artifacts: 0` beside a page reading *3
+    artifact(s) derive from them*, over `steps` that list three, is the two renderings flatly
+    contradicting each other: G-16 and H1-3 in a third place, and R-1 exists to make it
+    impossible.
+
+    DERIVED FROM THE PAYLOAD'S OWN KEYS, so a computed field added without a check here turns
+    this red rather than joining `artifacts` in being carried and never verified. That is the
+    same rule as the guard above, applied to the half of the payload the guard cannot reach.
+    """
+
+    def _artifacts(chain, page):
+        stated = [line for line in page if "artifact(s) derive from them" in line]
+        if not chain.steps:
+            return not stated and payload(chain)["artifacts"] == 0
+        return len(stated) == 1 and f"{payload(chain)['artifacts']} artifact(s) derive" in stated[0]
+
+    def _truncated(chain, page):
+        return payload(chain)["truncated"] is any("TRUNCATED" in line for line in page)
+
+    payload = runprov.impact.payload
+    checks = {"artifacts": _artifacts, "truncated": _truncated}
+
+    fixtures = _impact_fixtures()
+    computed = set(payload(fixtures[0][1])) - set(runprov.impact.Chain._fields) - {"schema"}
+    assert set(checks) == computed, (
+        "every field the payload computes rather than carries is checked against the page here — "
+        "`schema` is excluded because it describes the shape rather than the history, and R-5 "
+        "pins it. A computed field with no check is one the payload may state while the page "
+        f"states otherwise, which is the defect R-1 exists to prevent: {sorted(computed)}"
+    )
+
+    for name, chain in fixtures:
+        page = runprov.impact.render(chain, _IMPACT_ROOT)
+        for field, holds in sorted(checks.items()):
+            assert holds(chain, page), (
+                f"`{field}` in the payload disagrees with the page over {name!r}: the payload "
+                f"says {payload(chain)[field]!r} and the page says "
+                f"{[line for line in page if line.strip()]}"
+            )
+
+
 def test_the_page_abbreviates_the_digest_and_the_payload_carries_all_of_it():
     """[ADR-0017 R-9]. THE FOURTH ASYMMETRY, WHICH THE GUARD ABOVE CANNOT SEE.
 

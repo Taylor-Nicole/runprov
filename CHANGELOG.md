@@ -79,6 +79,47 @@ defect class Audit H exists to catch, and no assertion about a verdict can see i
 test that fixes the fixture shape as much as the read: a record carrying both stamps, different,
 with the start reaching the header and the payload and the finish reaching neither.
 
+### Added — `runprov impact --format json`, and a blind spot of zero says so
+
+ADR-0017, the third row of T-33. R-12 already named this command's builder, and it was accurate:
+`Chain(digest, seeds, steps, unregistered, runs_examined, watch_drops)` with
+`Step(depth, address, script, outputs)` was there to be serialised, so this row is a wrapper
+rather than the refactor `report` needed. `payload()` derives from `Chain._asdict()`, so a field
+added to the structure reaches it without anyone remembering; what wants guarding is somebody
+reinstating a hand-written list.
+
+**One defect found while scoping it, and it was already shipped.** The truncation predicate was
+written twice — `not chain.steps and chain.seeds` in `render` to choose the sentence, and
+`chain.seeds and not chain.steps` in `__main__` to choose the exit code: the same question, the
+operands reversed, in two files. A-09 and C-07 were that one defect found twice and fixed twice
+where each was found, which is how the second copy came to exist. They agreed, nothing held them
+together, and this row's payload would have been the third. It is now `Chain.truncated`, derived
+once and read by all three.
+
+**The page and the payload differ in four places, every one an abbreviation in the safe
+direction** — the machine reader is told more than the person, never less. `seeds` reaches the
+page as a count, because a person rebuilding needs how many runs read the bytes and a consumer
+needs which ones. `steps[].address` is on no page in any state, because depth and script are what
+a person rebuilds by while the address is what `runprov show` takes. `runs_examined` is quoted
+only inside a blind-spot sentence, so with both counters zero the scope leaves with the lines that
+cited it, while the payload keeps it — nothing missed over nothing examined is not a clean bill.
+And the page prints `digest[:16]`. **Naming those four as a set is what makes a fifth fail a test
+instead of reaching a consumer.**
+
+Measured: 15 mutations derived from this row's production diff, one per hunk, with the no-op
+control surviving. The derived guard was controlled in both directions — dropping `watch_drops`
+from the payload fails the payload-completeness half naming `watch_drops`, and dropping `depth`
+from the page's step line fails the page-completeness half naming `depth`. Exit codes are
+identical across formats over all three states, not only the one that answers.
+
+**The digest asymmetry needed its own test, and that is the finding worth recording.** The guard
+marks a field as stated when some change to it moves the page, and every substitute the
+perturbation draws differs from the first character — so `digest` was reported as stated,
+correctly, while 48 of its 64 characters reach no page at all. **A perturbation that changes the
+front of a string cannot detect a rendering that shows only the front.** That is the scope pattern
+one level in: not the guard's logic, but the range its substitutions cover, failing to reach what
+it reports on.
+
 ### Fixed — `runprov chain` describes a claimless line by who wrote it, not by where it sits
 
 Audit H, H1-1/H1-2/H1-3. R-25's rule 4 decides `UNCHAINED` by POSITION, so every claimless

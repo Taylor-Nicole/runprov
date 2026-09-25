@@ -539,6 +539,20 @@ live there and are not copied, because two traversals of one history that disagr
 is connected is the defect this guards against. Full reasoning in
 [ADR-0015](docs/adr/0015-impact-answers-what-did-depend-on-this-never-what-will.md).
 
+`runprov impact <file> --format json` is the **same answer for a reader that is not a person** —
+the page and the payload are two renderings of one structure, so neither can state something the
+other does not. It carries what the query could not see as well as what it found: `unregistered`,
+`watch_drops` and `runs_examined` are **always present, including when they are zero**, because
+*looked and found none* and *this version did not look* are different facts and an absent key
+cannot tell them apart. **`truncated` is a field, not something to infer**: `steps` is empty both
+for a walk that was cut off and for a file nothing ever read, and those are opposite answers — a
+consumer deriving a verdict from `steps` alone reads the first as *nothing depends on this*, which
+is the green light to overwrite a reference. Paths here are **as recorded**; the page shortens
+them against the project root for legibility, which a consumer does not know and could not
+resolve. The exit code is the same in both formats — 1 something derives, 0 nothing recorded read
+it, 2 the walk could not answer — and the payload is versioned by `"schema":
+"runprov.impact.v1"`.
+
 ## `runprov diff`: why is today different from last month
 
 The question asked most often, and the one that used to mean opening two records side by side.
