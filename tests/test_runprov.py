@@ -12458,6 +12458,206 @@ def test_impact_shortens_a_path_under_the_root_and_leaves_one_outside_it(tmp_pat
     assert runprov.impact.shorten("/elsewhere/ref.fa", None) == "/elsewhere/ref.fa"
 
 
+_IMPACT_ROOT = pathlib.Path("/proj")
+
+
+def _impact_state(chain):
+    """Which page this chain prints, and whether that page reports a blind spot at all.
+
+    BOTH HALVES DECIDE VISIBILITY, which is why the state is not just the shape. `render` has
+    three shapes — truncated, something derives, nothing read it — and `runs_examined` reaches
+    the page only INSIDE a blind-spot sentence, so with both counters zero the scope leaves with
+    the lines that quoted it. A state naming only the shape would report that silence in three
+    places and explain it in none.
+    """
+    shape = "truncated" if chain.truncated else ("derives" if chain.steps else "no reader")
+    return shape if (chain.unregistered or chain.watch_drops) else f"{shape}, no blind spot"
+
+
+def _impact_fixtures():
+    """Chains reaching every branch of the page, and every state each field can be in.
+
+    BUILT DIRECTLY, and deliberately. `Chain` is what `_impact` hands the renderer, and driving
+    six histories through the CLI to obtain six chains would measure the indexing — which
+    `test_impact_connectivity_comes_from_the_single_lineage_walk` and the four behavioural tests
+    above already do — while making the states below hard to reach on purpose. The guard's
+    subject is the two RENDERINGS of this structure, so the structure is the input.
+
+    DERIVED COVERAGE, NOT A CHOSEN SAMPLE: the guard asserts the union of these leaves nothing on
+    `Chain` or `Step` unexercised, so a field added to either that no fixture fills turns it red
+    rather than passing unnoticed.
+    """
+    step = runprov.impact.Step
+    return [
+        (
+            "a chain three deep",
+            runprov.impact.Chain(
+                "d" * 64,
+                ["u1"],
+                [
+                    step(1, "u1", "align.py", ["/proj/aligned.tsv"]),
+                    step(2, "u2", "genotype.py", ["/proj/gt.tsv", "/proj/gt.log"]),
+                    step(3, "u3", "summarise.py", ["/proj/summary.tsv"]),
+                ],
+                0,
+                3,
+                0,
+            ),
+        ),
+        (
+            "a walk cut off before its first consumer",
+            runprov.impact.Chain("e" * 64, ["u1", "u2"], [], 0, 3, 0),
+        ),
+        ("nothing recorded read these bytes", runprov.impact.Chain("f" * 64, [], [], 0, 3, 0)),
+        (
+            "both blind spots reporting",
+            runprov.impact.Chain(
+                "a" * 64, ["u9"], [step(1, "u9", "load.py", ["/proj/x.tsv"])], 7, 4, 12
+            ),
+        ),
+        (
+            "a run that wrote nothing recorded",
+            runprov.impact.Chain("b" * 64, ["u5"], [step(1, "u5", "probe.py", [])], 0, 2, 0),
+        ),
+        (
+            "an output outside the project root",
+            runprov.impact.Chain(
+                "c" * 64, ["u6"], [step(1, "u6", "export.py", ["/elsewhere/out.tsv"])], 0, 2, 0
+            ),
+        ),
+    ]
+
+
+def test_every_field_the_impact_payload_carries_is_stated_by_the_page():
+    """[ADR-0017 R-1] [ADR-0017 R-2] [ADR-0017 R-12]. The two renderings cannot disagree.
+
+    DERIVED FROM THE STRUCTURE'S OWN KEYS, IN BOTH DIRECTIONS, NEVER A HAND-TYPED LIST. The first
+    half compares the payload's leaves against the structure's; the second changes each leaf and
+    asserts the PAGE moves. A list of fields would be right on the day it was written and would
+    then be the thing that goes stale — the scope pattern, inside the guard written to prevent it.
+
+    THE THIRD ASSERTION IS THE ONE THAT EARNS ITS KEEP. `impact`'s page says less than its payload
+    in three separate places, which is three more than `diff` has, and every one of them is a
+    deliberate abbreviation rather than a dropped fact. Naming them as a SET is what makes a
+    fourth one fail this test instead of being discovered by a consumer: an unasserted asymmetry
+    is indistinguishable from a field the page forgot.
+    """
+    fixtures = _impact_fixtures()
+    structural, carried, pool = set(), set(), {}
+    for _name, chain in fixtures:
+        structural.update(path for path, _value in _structure_leaves(chain))
+        for path, value in _structure_nodes(chain):
+            pool.setdefault(_grouped(path), []).append(value)
+        for path, _value in _payload_leaves(runprov.impact.payload(chain)):
+            carried.add(_grouped(path))
+    grouped = {_grouped(path) for path in structural}
+
+    computed = {("schema",), ("artifacts",), ("truncated",)}
+    assert carried - grouped == computed, (
+        "the payload adds exactly three things to the structure, and each is named by a "
+        "requirement: the schema, which says which SHAPE this is rather than anything about the "
+        "history (R-5); and two computed properties, allowed by R-10 because they compute nothing "
+        "the structure does not already hold — `artifacts`, the count the page states in its own "
+        "sentence, and `truncated`, which a consumer cannot derive from `steps` without "
+        f"reproducing C-07. A fourth would be a fact invented on the way out: "
+        f"{sorted(carried - grouped - computed)}"
+    )
+    assert grouped - carried == set(), (
+        "and nothing the structure holds fails to reach the payload — a dropped field in a "
+        "released output is a consumer silently missing a blind spot, not a test going red: "
+        f"{sorted(grouped - carried)}"
+    )
+
+    shown, unstated, silent = set(), [], set()
+    for path in sorted(structural, key=repr):
+        for _name, chain in fixtures:
+            here = dict(_structure_leaves(chain))
+            if path not in here:
+                continue
+            fresh = _perturbed(here[path], pool.get(_grouped(path), []))
+            if fresh is _UNPERTURBABLE:
+                continue
+            moved = runprov.impact.render(_replaced(chain, path, fresh), _IMPACT_ROOT)
+            if moved != runprov.impact.render(chain, _IMPACT_ROOT):
+                shown.add(path)
+            else:
+                silent.add((_grouped(path), _impact_state(chain)))
+        if path not in shown:
+            unstated.append(path)
+    never = {("seeds", "[]"), ("steps", "[]", "address")}
+    assert {_grouped(path) for path in unstated} == never, (
+        "two fields reach the page in NO state, and both are addresses rather than facts about "
+        "the bytes: a seed is a run_uid and `steps[].address` is a run_uid, and the page names "
+        "runs the way a person rebuilds them — by count, depth and script. They are what "
+        "`runprov show` takes, so a consumer needs them and a reader does not. Any OTHER field "
+        "here is a field the page drops or a field no fixture exercises, and both are findings: "
+        f"{[' -> '.join(map(str, path)) for path in unstated]}"
+    )
+    stated = {path for path in structural if _grouped(path) not in never}
+    assert shown == stated, (
+        "and every remaining field moves the page when it changes, in at least one state it can "
+        f"be in: {sorted(stated - shown, key=repr)}"
+    )
+
+    assert silent == {
+        (("seeds", "[]"), state)
+        for state in ("derives", "derives, no blind spot", "truncated, no blind spot")
+    } | {(("steps", "[]", "address"), state) for state in ("derives", "derives, no blind spot")} | {
+        (("runs_examined",), f"{shape}, no blind spot")
+        for shape in ("derives", "truncated", "no reader")
+    }, (
+        "the page abbreviates in exactly three places, all of them the safe direction — the "
+        "machine reader is told more than the person, never less. `seeds` reaches the page as a "
+        "COUNT, because a reader rebuilding needs how many runs read the bytes and a consumer "
+        "needs which ones. `steps[].address` is not on the page at all, because depth and script "
+        "are what a person rebuilds by while the address is what `runprov show` takes. And "
+        "`runs_examined` is quoted only inside a blind-spot sentence, so with both counters zero "
+        "the scope leaves with the lines that mentioned it — while the payload keeps it, because "
+        "nothing missed over nothing examined is not a clean bill. Any other field-and-state "
+        f"leaving the page unmoved is a fact the payload carries and the page does not: "
+        f"{sorted(silent, key=repr)}"
+    )
+
+
+def test_the_page_abbreviates_the_digest_and_the_payload_carries_all_of_it():
+    """[ADR-0017 R-9]. THE FOURTH ASYMMETRY, WHICH THE GUARD ABOVE CANNOT SEE.
+
+    The page opens with `digest[:16]`, because the question was asked about a file and a reader
+    already knows which one; 64 hex characters at the top of a page about their own reference is
+    noise. The payload carries all 64, because a consumer may be indexing by it.
+
+    IT NEEDS ITS OWN TEST BECAUSE OF HOW PERTURBATION WORKS, and that is the finding worth
+    keeping. The guard above marks a leaf as stated when SOME change to it moves the page, and
+    every substitute it draws differs from the first character — so `digest` is reported as
+    stated, correctly, while 48 of its 64 characters never reach the page at all. **A
+    perturbation that changes the front of a string cannot detect a rendering that shows only the
+    front.** That is the scope pattern one level in: not the guard's logic, but the range its
+    substitutions cover, failing to reach what it reports on.
+    """
+    chain = runprov.impact.Chain(
+        "a" * 16 + "b" * 48,
+        ["u1"],
+        [runprov.impact.Step(1, "u1", "align.py", ["/proj/o.tsv"])],
+        0,
+        2,
+        0,
+    )
+    page = runprov.impact.render(chain, _IMPACT_ROOT)
+    assert page[0] == "a" * 16, f"the page names the bytes by a 16-character prefix: {page[0]!r}"
+    assert runprov.impact.payload(chain)["digest"] == chain.digest, (
+        "and the payload carries the digest whole, so a consumer can index by it"
+    )
+
+    tail = chain._replace(digest="a" * 16 + "c" * 48)
+    assert runprov.impact.render(tail, _IMPACT_ROOT) == page, (
+        "a different file whose digest agrees for 16 characters prints an IDENTICAL page, which "
+        "is what the prefix costs and why this asymmetry is asserted rather than assumed"
+    )
+    assert runprov.impact.payload(tail)["digest"] != runprov.impact.payload(chain)["digest"], (
+        "while the payloads differ — the machine reader can still tell the two apart"
+    )
+
+
 def test_impact_walk_survives_a_cycle():
     """A build graph should be acyclic; a history spans years and paths get rewritten.
 
