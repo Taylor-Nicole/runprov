@@ -1368,8 +1368,18 @@ def _impact(args: argparse.Namespace) -> int:
     chain = impact_mod.Chain(
         digest, consumers.get(digest, []), steps, unregistered, runs, watch_drops
     )
-    for line in impact_mod.render(chain, pathlib.Path(project.root)):
-        print(line)
+    if args.format == "json":
+        # NOTHING ELSE ON STDOUT (R-4). Both of this command's diagnostics — the missing history
+        # and the target that is neither a file nor a digest — already go to stderr and return
+        # before this point, so a caller parses what it is handed instead of stripping a line
+        # first, which is how a caller comes to strip the wrong one.
+        print(json.dumps(impact_mod.payload(chain), indent=2))
+    else:
+        for line in impact_mod.render(chain, pathlib.Path(project.root)):
+            print(line)
+    # R-6. THE EXIT CODE IS BELOW THE FORMAT, not inside either branch: `--format json` is a
+    # rendering choice, and a gate that changed verdict because it asked for a parseable answer
+    # would make the two formats two different commands.
     if chain.truncated:
         # C-07 of Audit C. A-09 named two halves and only the sentence was fixed: `--depth 0`
         # empties `steps` while `seeds` stays non-empty, and this returned 0 — the code that
@@ -1947,6 +1957,7 @@ def main(argv: list[str] | None = None) -> int:
     im.add_argument("target", help="a path, or a sha256 digest")
     im.add_argument("--depth", type=int, default=None, help="stop after this many hops")
     im.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
+    im.add_argument("--format", choices=("text", "json"), default="text")
     df = sub.add_parser("diff", help="what changed between two runs, and what cannot be compared")
     df.add_argument("a", help="a run: run_uid prefix, run_id, script name or artifact path")
     df.add_argument(

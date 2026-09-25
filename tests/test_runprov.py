@@ -12263,6 +12263,144 @@ def test_impact_depth_stops_the_walk(tmp_path, capsys):
     assert "align" in out and "summarise" not in out
 
 
+def test_impact_answers_in_json_and_the_exit_code_does_not_move(tmp_path, capsys):
+    """[ADR-0017 R-4] [ADR-0017 R-5] [ADR-0017 R-6]. Over all THREE states, not just the happy one.
+
+    `impact` has three answers and each has its own exit code — 1 something derives from it, 0 no
+    recorded run read it, 2 the walk was cut off before it could say. A format that changed any of
+    them would make the two renderings two different commands, and the state most worth checking
+    is the third: 2 is the one a pre-overwrite guard depends on, and it is the one that was 0 until
+    C-07.
+    """
+    log = _pipeline(tmp_path)
+    ref, orphan = tmp_path / "ref.fa", tmp_path / "unread.fa"
+    orphan.write_text(">o\nTTTT\n", encoding="utf-8")
+    cases = [
+        ("derives", [str(ref)], 1),
+        ("nothing read it", [str(orphan)], 0),
+        ("truncated", [str(ref), "--depth", "0"], 2),
+    ]
+    for label, extra, want in cases:
+        argv = ["impact", *extra, "--log", str(log)]
+        assert runprov.__main__.main(argv) == want, f"text: {label}"
+        capsys.readouterr()
+        assert runprov.__main__.main([*argv, "--format", "json"]) == want, (
+            f"and json is the same code for {label}: a rendering choice, not a verdict"
+        )
+        out = capsys.readouterr()
+        body = json.loads(out.out)
+        assert body["schema"] == "runprov.impact.v1", f"R-5, {label}: {body.get('schema')}"
+        assert out.out.lstrip().startswith("{"), (
+            f"R-4, {label}: nothing but the payload on stdout: {out.out[:120]!r}"
+        )
+
+
+def test_the_impact_payload_states_a_blind_spot_of_zero_that_the_page_leaves_out(tmp_path, capsys):
+    """[ADR-0017 R-14] [ADR-0017 R-8]. `0` IS AN ANSWER; AN ABSENT KEY WOULD NOT BE.
+
+    The page prints the `unregistered` and `watch_drops` lines only when they are non-zero, which
+    is right for a person — nobody needs to be told that nothing was missed. A consumer does, and
+    for exactly the reason every one of these fields exists: *looked, and found none* and *this
+    version did not look* are different facts, and a missing key cannot tell them apart. Every
+    blind spot on `Chain` is therefore a value in every payload, including when it is zero, and
+    `runs_examined` travels with them because a count of nothing missed over nothing examined is
+    not a clean bill.
+    """
+    log = _pipeline(tmp_path)
+    runprov.__main__.main(["impact", str(tmp_path / "ref.fa"), "--log", str(log)])
+    page = capsys.readouterr().out
+    assert "bypassed registration" not in page and "dropped by the watch" not in page, (
+        f"the page omits a blind spot it has nothing to report for: {page}"
+    )
+
+    runprov.__main__.main(
+        ["impact", str(tmp_path / "ref.fa"), "--log", str(log), "--format", "json"]
+    )
+    body = json.loads(capsys.readouterr().out)
+    for field in ("unregistered", "watch_drops", "runs_examined"):
+        assert field in body, (
+            f"{field} is a key in every payload, so a consumer never has to read its absence: "
+            f"{sorted(body)}"
+        )
+        assert isinstance(body[field], int), f"{field} is an integer here, always: {body[field]!r}"
+    assert body["unregistered"] == 0 and body["watch_drops"] == 0, (
+        "the two blind spots are zero on this history, which is the case the page stays silent "
+        f"about and the payload must not: {body}"
+    )
+    assert body["runs_examined"] > 0, (
+        "and the scope they are zero OVER is stated, because nothing missed over nothing "
+        f"examined is not a clean bill: {body}"
+    )
+
+
+def test_the_impact_payload_carries_paths_as_recorded_and_the_page_shortens_them(tmp_path, capsys):
+    """[ADR-0017 R-9]. `shorten` IS A RENDERING CHOICE, AND A RELATIVE PATH IS NOT A RECORD.
+
+    Measured on a real 3 536-line history, one reference had 294 readers and 697 derived
+    artifacts, every line an absolute path 90 characters long before the part that identifies it —
+    so the page trims the project root off, because an answer nobody can read is an answer nobody
+    uses. That argument is about a page. A consumer does not know the root the trimming was done
+    against, so a relative path there is a fact it cannot resolve, and the record holds the full
+    one: the payload states what was recorded and the page states what is legible.
+    """
+    log = _pipeline(tmp_path)
+    recorded = (tmp_path / "aligned.tsv").resolve().as_posix()
+
+    runprov.__main__.main(["impact", str(tmp_path / "ref.fa"), "--log", str(log)])
+    page = capsys.readouterr().out
+    assert "→ aligned.tsv" in page, f"the page names it relative to the root: {page}"
+    assert recorded not in page, f"and does not print the full path it shortened: {page}"
+
+    runprov.__main__.main(
+        ["impact", str(tmp_path / "ref.fa"), "--log", str(log), "--format", "json"]
+    )
+    outputs = [
+        name for step in json.loads(capsys.readouterr().out)["steps"] for name in step["outputs"]
+    ]
+    assert recorded in outputs, f"the payload carries the path as recorded: {outputs}"
+    assert "aligned.tsv" not in outputs, (
+        f"and never the shortened form, which a consumer could not resolve: {outputs}"
+    )
+
+
+def test_a_truncated_impact_walk_is_a_value_in_the_payload_not_an_empty_steps_list(
+    tmp_path, capsys
+):
+    """[ADR-0017 R-7] [ADR-0017 R-14]. C-07 FOR A CONSUMER, WHICH IS WHERE IT WOULD LAND NEXT.
+
+    C-07 was `runprov impact ref.fa --depth 0 || abort` going green over a reference three
+    recorded artifacts depend on, because a truncated walk returned the code for *checked, and
+    nothing is wrong*. The same reading is available to anything that derives its own verdict from
+    the payload: `steps` is `[]` for a truncated walk and `[]` for a file nothing ever read, and
+    those are opposite answers. `truncated` is what separates them, so it travels rather than
+    being inferred — and the two states are asserted against each other here, because either one
+    alone looks correct.
+    """
+    log = _pipeline(tmp_path)
+    (tmp_path / "unread.fa").write_text(">o\nTTTT\n", encoding="utf-8")
+
+    def _payload(*extra):
+        argv = ["impact", *extra, "--log", str(log), "--format", "json"]
+        code = runprov.__main__.main(argv)
+        return code, json.loads(capsys.readouterr().out)
+
+    cut, body_cut = _payload(str(tmp_path / "ref.fa"), "--depth", "0")
+    none, body_none = _payload(str(tmp_path / "unread.fa"))
+
+    assert body_cut["steps"] == body_none["steps"] == [], (
+        "the two states are indistinguishable by `steps` alone, which is the whole point"
+    )
+    assert body_cut["truncated"] is True and body_cut["seeds"], (
+        f"runs read these bytes and the walk stopped before them: {body_cut}"
+    )
+    assert body_none["truncated"] is False and not body_none["seeds"], (
+        f"and nothing recorded read these ones, which is a different answer: {body_none}"
+    )
+    assert (cut, none) == (2, 0), (
+        f"and the codes say so too — could not check, versus checked and nothing: {cut}, {none}"
+    )
+
+
 def test_impact_index_skips_an_output_with_no_path_and_a_repeated_read(tmp_path):
     """Two branches in the shared traversal, both ordinary and neither reachable from the
     happy path.

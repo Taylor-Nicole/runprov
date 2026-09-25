@@ -95,6 +95,59 @@ class Chain(typing.NamedTuple):
         return bool(self.seeds) and not self.steps
 
 
+#: R-5. The payload's own version, named HERE rather than in `__main__`, because it names THIS
+#: module's answer and `--format json` is only one rendering of it. `diff.SCHEMA`, `chain.SCHEMA`
+#: and `report.SCHEMA` state the same argument.
+SCHEMA = "runprov.impact.v1"
+
+
+def _plain(value: typing.Any) -> typing.Any:  # noqa: ANN401 - whatever the chain holds
+    """A `Step` becomes an object with the field names it already has. R-9."""
+    if isinstance(value, Step):
+        return dict(zip(Step._fields, value, strict=True))
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    return value
+
+
+def payload(chain: Chain) -> dict[str, typing.Any]:
+    """The chain as one object, for a reader that is not a person. R-1, R-5, R-7, R-9, R-14.
+
+    DERIVED FROM `_asdict()`, never listed. A field added to `Chain` reaches this without anyone
+    remembering to add it, which is the only reason the two renderings cannot drift apart. The
+    thing to guard is not a new field — that is free — it is somebody reinstating a hand-written
+    list, which is the defect this package has now found a dozen times.
+
+    THE BLIND SPOTS ARE ALWAYS HERE, AND THIS IS WHERE THE TWO RENDERINGS DIFFER. The page prints
+    the `unregistered` and `watch_drops` lines only when they are non-zero, because a reader does
+    not need to be told that nothing was missed. A consumer does: `unregistered: 0` is *looked,
+    and found none*, and a key that simply was not there would be indistinguishable from *this
+    version did not look*. So the page is the one that says less, in the safe direction, and the
+    asymmetry is asserted as a set rather than left to be found.
+
+    NOTHING IS ABSENT, and that is a fact about `impact` rather than a shortcut. Every run in the
+    history is examined on every call, so all three of `runs_examined`, `unregistered` and
+    `watch_drops` are always integers. R-8's other reading — a key missing because this version
+    did not look — has nowhere to arise here.
+
+    `truncated` TRAVELS RATHER THAN BEING INFERRED. A consumer deriving a verdict from `steps`
+    alone reads an empty list as *nothing derives from these bytes*, which over a truncated walk
+    is C-07's exit 0 reproduced in a second place — the green light to overwrite a reference that
+    three recorded artifacts depend on.
+
+    PATHS ARE AS RECORDED, NOT AS DISPLAYED. `shorten` makes a list of several hundred readable
+    by trimming the project root off, which is right for a page and wrong for a payload: the
+    record holds the full path, R-9 says a consumer sees the record's own names, and a relative
+    path is meaningless to a reader that does not know the root it was taken from.
+    """
+    return {
+        "schema": SCHEMA,
+        **{name: _plain(value) for name, value in chain._asdict().items()},
+        "artifacts": chain.artifacts,
+        "truncated": chain.truncated,
+    }
+
+
 def walk(
     digest: str,
     consumers: typing.Mapping[str, list[str]],
