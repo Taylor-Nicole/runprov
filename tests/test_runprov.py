@@ -12826,6 +12826,55 @@ def test_impact_says_truncated_rather_than_no_recorded_run(tmp_path, capsys):
     assert "no recorded run read these bytes" not in out
 
 
+def test_the_truncated_verdict_is_read_from_the_structure_by_both_its_readers(
+    tmp_path, capsys, monkeypatch
+):
+    """[ADR-0017 R-1]. ONE PREDICATE, AND AN INJECTED VALUE IS WHAT PROVES BOTH READERS USE IT.
+
+    A-09 and C-07 were the same defect found twice — a truncated walk reading as an absence,
+    first in the sentence and then in the exit code — and each was fixed where it was found. The
+    result was the predicate written TWICE, as `not chain.steps and chain.seeds` in `render` and
+    as `chain.seeds and not chain.steps` in `_impact`: the same question, operands reversed, in
+    two files. They agreed. Nothing held them together, and a payload would have been a third
+    copy.
+
+    THE EXISTING TESTS CANNOT CATCH A THIRD DIVERGENCE. A-09's asserts the sentence and C-07's
+    asserts the code, each over a genuinely truncated walk — so a reinstated local predicate that
+    merely happened to agree on that one case would keep both of them green. What fails here is
+    a reader that stops consulting `Chain.truncated`: the property is forced to each value in
+    turn and BOTH the sentence and the exit code have to follow it, against a history where the
+    real answer is the opposite.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    (tmp_path / "ref.fa").write_text(">r\nACGT\n", encoding="utf-8")
+    with runprov.Run("align", provenance=tmp_path / "a.prov.json") as run:
+        run.input(tmp_path / "ref.fa")
+        with run.open_output(tmp_path / "aligned.tsv") as fh:
+            fh.write("x\n")
+    capsys.readouterr()
+    argv = ["impact", str(tmp_path / "ref.fa"), "--log", str(tmp_path / "h.jsonl")]
+
+    monkeypatch.setattr(runprov.impact.Chain, "truncated", property(lambda self: True))
+    assert runprov.__main__.main(argv) == 2, (
+        "the exit code follows the structure: a walk the structure calls truncated CANNOT CHECK, "
+        "even though this history has a consumer and the walk reached it"
+    )
+    out = capsys.readouterr().out
+    assert "TRUNCATED" in out and "artifact(s) derive" not in out, (
+        f"and so does the sentence, from the same property rather than its own copy: {out}"
+    )
+
+    monkeypatch.setattr(runprov.impact.Chain, "truncated", property(lambda self: False))
+    assert runprov.__main__.main([*argv, "--depth", "0"]) == 0, (
+        "and in the other direction: a genuinely truncated walk the structure calls untruncated "
+        "exits on `steps` alone, which is exactly the 0 that C-07 filed"
+    )
+    out = capsys.readouterr().out
+    assert "no recorded run read these bytes" in out and "TRUNCATED" not in out, (
+        f"the sentence follows it there too, and neither reader keeps its own predicate: {out}"
+    )
+
+
 def test_diff_refuses_an_empty_run_address(tmp_path, capsys):
     """Audit B, A-21. `select`'s run_uid bucket tests `startswith(target)`, and every string
     starts with `""` — so an empty address matched every record and `runprov diff ""` compared

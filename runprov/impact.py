@@ -73,6 +73,27 @@ class Chain(typing.NamedTuple):
     def artifacts(self) -> int:
         return sum(len(s.outputs) for s in self.steps)
 
+    @property
+    def truncated(self) -> bool:
+        """Runs read these bytes and the walk stopped before reaching any of them.
+
+        [ADR-0017 R-1]. DERIVED ONCE, HERE, because it was derived twice before: `render`
+        asked `not chain.steps and chain.seeds` to choose its sentence and `_impact` asked
+        `chain.seeds and not chain.steps` to choose its exit code — the same predicate, written
+        with the operands in the opposite order, in two files. They agreed, and nothing held
+        them together; a payload re-deriving it would have been the third copy.
+
+        THE DISTINCTION IT CARRIES IS A-09 AND C-07, WHICH WERE THE SAME DEFECT TWICE. An empty
+        `steps` means *no recorded run read these bytes* when `seeds` is empty too, and means
+        *the answer was cut off before it could be given* when it is not. A-09 fixed only the
+        sentence and left the exit code returning 0 for both, so
+        `runprov impact ref.fa --depth 0 || abort` went green over a file with three derived
+        artifacts in the history. A consumer re-deriving a verdict from `steps` alone gets that
+        same wrong answer, which is why this travels in the payload rather than being inferred
+        from it.
+        """
+        return bool(self.seeds) and not self.steps
+
 
 def walk(
     digest: str,
@@ -138,7 +159,7 @@ def shorten(name: str, root: pathlib.Path | None) -> str:
 def render(chain: Chain, root: pathlib.Path | None = None) -> list[str]:
     """The chain, and — every time, not only when empty — what this could not see."""
     out = [f"{chain.digest[:16]}", ""]
-    if not chain.steps and chain.seeds:
+    if chain.truncated:
         # A-09. `--depth 0` truncated the walk to nothing while `seeds` was non-empty, and the
         # page then printed the ONE sentence this module's docstring says must never be false.
         # A truncation that reads as an absence is the defect this command exists to avoid,

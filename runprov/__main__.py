@@ -1370,7 +1370,7 @@ def _impact(args: argparse.Namespace) -> int:
     )
     for line in impact_mod.render(chain, pathlib.Path(project.root)):
         print(line)
-    if chain.seeds and not chain.steps:
+    if chain.truncated:
         # C-07 of Audit C. A-09 named two halves and only the sentence was fixed: `--depth 0`
         # empties `steps` while `seeds` stays non-empty, and this returned 0 — the code that
         # means "checked, and nothing is wrong", identical to the code for a file nothing ever
