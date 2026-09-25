@@ -11490,6 +11490,46 @@ def test_the_comparison_carries_the_absence_and_the_table_supplies_the_question_
     ], f"and the table still says `?`, which is its word, in both cases: {header}"
 
 
+def test_the_header_reads_the_start_time_and_never_the_finish_time():
+    """[ADR-0017 R-9]. THE FOUR HEADER FACTS ARE READ BY NAME, AND THE NAME IS THE WHOLE CONTRACT.
+
+    Found by mutation M04 of this row, which swapped `record.get("started_utc")` for
+    `record.get("finished_utc")` in `_side` and SURVIVED the entire suite. Not an equivalent
+    mutant: **every `diff` fixture in this file carries `started_utc` and not one carries
+    `finished_utc`**, so the mutated read returned `None` for every record the tests build and
+    the header printed `?` either way. The only assertion on `Side` was the all-`None` case,
+    where the two keys cannot differ by construction.
+
+    A record `runprov` actually writes carries BOTH — `report`, `show` and `export` all read
+    `finished_utc`. Against one of those the header would have printed the FINISH time under the
+    `started` column: every dimension compared correctly, every verdict right, and a false line
+    above them. That is the Audit H class — a true verdict wearing a false sentence — and no
+    assertion about a verdict can see it.
+
+    So this asserts the fixture shape as much as the code: a record here carries both stamps,
+    they are different, and the one that reaches the header and the payload is the START.
+    """
+    record = {
+        "script": "s.py",
+        "run_id": "r1",
+        "started_utc": "2026-01-01T00:00:00Z",
+        "finished_utc": "2026-01-01T23:59:59Z",
+        "status": "ok",
+    }
+    comparison = runprov.diff.build(record, dict(record, run_id="r2"))
+    assert comparison.a.started_utc == "2026-01-01T00:00:00Z", (
+        "the header's third fact is the run's START time, read by that name: "
+        f"{comparison.a.started_utc}"
+    )
+    rendered = "\n".join(runprov.diff.render(comparison))
+    payload = json.dumps(runprov.diff.payload(comparison))
+    for where, text in (("the table", rendered), ("the payload", payload)):
+        assert "2026-01-01T00:00:00Z" in text, f"the start time is stated by {where}: {text}"
+        assert "2026-01-01T23:59:59Z" not in text, (
+            f"and the finish time is not a fact {where} claims to carry, under any label: {text}"
+        )
+
+
 def test_compare_takes_its_reading_order_from_the_constant_that_had_no_reader():
     """[ADR-0017 R-12]. ADR-0014 promised this constant a reader and never gave it one.
 

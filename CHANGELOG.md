@@ -33,6 +33,52 @@ one asserted exception — a record carrying an explicit JSON `null` for a scala
 the word `None` and now prints `?`. A test walks the payload's own leaves and asserts each one
 moves the page when it changes, so a field can no longer reach one rendering and not the other.
 
+### Added — `runprov diff --format json`, the option ADR-0014 specified and never got
+
+ADR-0017, the second row of T-33. ADR-0014's own sketch promised `[--format text|json]` for this
+command; neither that nor `--only` was built, and a reviewer later found the `DIMENSIONS`
+constant sitting in `diff.py` with no reader — and **wrong**, because `status` had been added to
+the comparison and never added to it.
+
+`compare()` already returned the whole answer, so this row is a wrapper rather than the refactor
+`report` needed: `Comparison(a, b, dimensions)` adds the four facts the table's header states, in
+the record's own names, and the exit code is now read off it instead of folded beside the
+renderer. `DIMENSIONS` holds the reading order, which it had only claimed to; a dimension it does
+not name raises rather than being silently dropped.
+
+The payload carries what the comparison could not support, not only what moved: `blocked` is why
+a dimension cannot support the word *unchanged*, `examined` is the scope it was looked at over,
+and `verdict` and `settled` are on every dimension. **A payload with only `differences` would
+hand a consumer an empty list for a dimension that could not be compared at all**, which reads as
+*nothing changed* — the defect ADR-0014 exists to prevent, delivered to the readers least able to
+notice it. Nothing in this payload is ever absent: unlike `report`, `diff` answers every dimension
+for every pair of records, so `blocked: null` has exactly one meaning. The `?` a reader sees for a
+fact the record does not carry is supplied by the renderer, so a consumer cannot mistake it for a
+script named `?`. The exit code is unchanged by the format, over a settled comparison, a changed
+one and a blocked one.
+
+Measured: the table is byte-identical across the refactor over 20 record pairs covering every
+branch of the renderer, 520 of 521 lines, with one asserted exception — a record carrying an
+explicit JSON `null` for `script`, `run_id` or `started_utc` printed the word `None` in the header
+and now prints `?`. A guard walks the structure's own leaves in both directions and asserts each
+one moves the table when it changes; the one place a rendering says less than the structure holds
+is `examined` on a row that does not claim `unchanged`, and that asymmetry is asserted as a set
+rather than left to be found.
+
+**Sixteen mutations derived from this row's production diff, one per hunk, and one survived.**
+M04 swapped `record.get("started_utc")` for `record.get("finished_utc")` in `_side` and the whole
+suite stayed green. It is not an equivalent mutant: the mutated header prints
+`A  s.py  r1  2026-01-01T23:59:59Z` where the true one prints `00:00:00Z`, and the payload emits
+that finish time **under the key `started_utc`**. It survived because **not one `diff` fixture in
+the suite carried `finished_utc`** — the mutated read returned `None` for every record the tests
+build, so the header printed `?` either way, and the only assertion on `Side` was the all-`None`
+case where the two keys cannot differ by construction. Against a record this package actually
+writes — `report`, `show` and `export` all read `finished_utc` — every dimension would compare
+correctly, every verdict would be right, and the line above them would be false. **That is the
+defect class Audit H exists to catch, and no assertion about a verdict can see it.** Closed by a
+test that fixes the fixture shape as much as the read: a record carrying both stamps, different,
+with the start reaching the header and the payload and the finish reaching neither.
+
 ### Fixed — `runprov chain` describes a claimless line by who wrote it, not by where it sits
 
 Audit H, H1-1/H1-2/H1-3. R-25's rule 4 decides `UNCHAINED` by POSITION, so every claimless

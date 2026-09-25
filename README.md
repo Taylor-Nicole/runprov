@@ -589,6 +589,18 @@ impossible is the same vacuous pass this package exists to catch.
 Full reasoning in
 [ADR-0014](docs/adr/0014-a-difference-and-an-incomparability-are-not-the-same-answer.md).
 
+`runprov diff <A> <B> --format json` is the **same answer for a reader that is not a person** —
+the table and the payload are two renderings of one structure, so neither can state something
+the other does not. It carries what the comparison could not support as well as what moved: each
+dimension has `differences`, `examined`, `blocked`, `verdict` and `settled`, so **a consumer can
+never read `NOT COMPARABLE` as `unchanged`** by finding an empty `differences` list. `settled` is
+what the exit code is built from — an incomparable dimension finds nothing and is still non-zero
+— so a gate that re-derives a verdict from the differences alone gets a different answer from the
+command it is reading. Every dimension is present in every payload: an incomparability here is a
+**value**, never a missing key. The exit code is the same in both formats; the payload is
+versioned by `"schema": "runprov.diff.v1"`, and its shape follows the record-format promise
+above: a field's meaning does not change without a new schema value.
+
 ## `runprov resources`: how much this run actually needed
 
 To put a pipeline on a cluster you must declare `--mem` and `--time` **before** you have ever
