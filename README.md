@@ -2766,12 +2766,12 @@ is the one that went green afterwards.
 
 ## Tests
 
-`tests/test_runprov.py`, **about 1,050 tests**, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, **about 1,100 tests**, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite — in
 `test_size_is_stat_ed_after_the_hash_not_before` — to
 assert a call ORDER that no returned value can show. Everything else is substituted by a real
-thing — **about 3,450** uses of `tmp_path` (`grep -oE '\btmp_path\b' tests/test_runprov.py | wc -l`), actual
+thing — **about 3,850** uses of `tmp_path` (`grep -oE '\btmp_path\b' tests/test_runprov.py | wc -l`), actual
 files, actual JSONL, actual `Run` objects — or by a
 narrow simulation of an environment this machine is not (`sys.platform` for Windows,
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing
@@ -2797,7 +2797,7 @@ The Windows leg skips ten times what any other does, and it is the only leg that
 assert the coverage floor — skipped tests leave their lines unmeasured, so 100% is
 unreachable there by construction rather than by regression. No other leg may lower it.
 
-Coverage is **100%** of **about 4,950 statements and 1,760 branches**, and the gate is set
+Coverage is **100%** of **about 5,200 statements and 1,830 branches**, and the gate is set
 there with `--cov-branch`.
 
 *Every figure in this section is approximate on purpose.* They exist to convey scale, and an

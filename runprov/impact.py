@@ -68,6 +68,27 @@ class Chain(typing.NamedTuple):
     #: tests, and a required sixth field would have made adding the blind spot a breaking
     #: change nobody made.
     watch_drops: int = 0
+    #: I-01 of Audit I. Lines of the history this query could not read at all.
+    #:
+    #: `impact`'s answer is a SET OF RUNS THAT READ A DIGEST, and an unreadable line is a hole
+    #: in that very set — which is what distinguishes it from `chain`, whose verdict is about
+    #: edges and stays correct beside one. A torn line is not a corrupted file: `sinks.py`
+    #: records that a process SIGKILLed mid-append leaves one in 5 of 12 measured trials, and
+    #: the package's own repair deliberately closes the fragment so it becomes its own
+    #: unreadable line. `log`, `lineage` and `show` all disclose it; this said nothing, in both
+    #: renderings, and answered "no recorded run read these bytes" — the one sentence this
+    #: module's docstring says must never be false — over a history that contained such a run.
+    #:
+    #: IT DOES NOT MOVE THE EXIT CODE, and that is a decision rather than an omission. An
+    #: unreadable line is PERMANENT: ADR-0021 forbids rewriting a history, and deleting the
+    #: line by hand turns `chain` into a standing BROKEN accusation — so a gate keyed on it
+    #: could only be made green again by the act the chain feature exists to detect. That is
+    #: the gate that cannot pass, already measured and refused for `chain` by G-17/G-08.
+    #: `truncated` is user-caused, transient and removable; this is crash-caused, permanent
+    #: and unremovable, and the two must not be folded together.
+    #:
+    #: DEFAULTED, for the reason `watch_drops` above states: `Chain` is built positionally.
+    unreadable: int = 0
 
     @property
     def artifacts(self) -> int:
@@ -221,6 +242,16 @@ def render(chain: Chain, root: pathlib.Path | None = None) -> list[str]:
             f"  {len(chain.seeds)} recorded run(s) read these bytes, and the walk was "
             "TRUNCATED before any of them — raise --depth to see what derives from it."
         )
+    elif not chain.steps and chain.unreadable:
+        # I-01. THE FOOTNOTE IS NOT ENOUGH; THE HEADLINE HAS TO CHANGE. "No recorded run read
+        # these bytes" is a fact about the history, and with a line this query could not read
+        # it stops being one — the history may well contain such a run, in the line that could
+        # not be parsed. Disclosing the count below a sentence that already overstated the
+        # answer would leave the false clause on the page, which is H1-1's shape exactly.
+        out.append(
+            f"  no READABLE record of a run reading these bytes — and {chain.unreadable} "
+            "line(s) of the history could not be read."
+        )
     elif not chain.steps:
         # NOT "nothing depends on this". The distinction is the whole point: one is a fact
         # about the history, the other is a claim about the world, and only the first is true.
@@ -239,6 +270,14 @@ def render(chain: Chain, root: pathlib.Path | None = None) -> list[str]:
         out += ["", "  Rebuild in that order; `runprov verify <artifact>` confirms each one."]
 
     out += ["", "  NOT SEEN BY THIS QUERY:"]
+    if chain.unreadable:
+        # FIRST IN THE BLOCK, because it is the only entry that limits the ANSWER rather than
+        # qualifying it: the others say what the runs did not report, this says which runs were
+        # not read at all.
+        out.append(
+            f"    {chain.unreadable} line(s) of the history could not be read, so any run "
+            "they recorded is missing from this answer entirely"
+        )
     if chain.unregistered:
         out.append(
             f"    {chain.unregistered} read(s) bypassed registration in the "

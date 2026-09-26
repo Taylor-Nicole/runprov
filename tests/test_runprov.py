@@ -12705,6 +12705,220 @@ def test_the_page_abbreviates_the_digest_and_the_payload_carries_all_of_it():
     )
 
 
+def _tear_completion(log, marker, last=False):
+    """Truncate the completion record naming `marker` — what a SIGKILL mid-append leaves.
+
+    NOT A HAND-WRITTEN BAD LINE. `sinks.py` records this shape as measured, 5 of 12 trials, and
+    the package's own repair closes the fragment with a newline so it becomes its own unreadable
+    line. The run graph is what these two rows are about, so the history is built by real runs
+    and then damaged, rather than assembled to look damaged.
+    """
+    lines = log.read_text(encoding="utf-8").splitlines(True)
+    order = range(len(lines) - 1, -1, -1) if last else range(len(lines))
+    for i in order:
+        if marker in lines[i] and '"outputs"' in lines[i]:
+            lines[i] = lines[i][: len(lines[i]) // 2]
+            log.write_text("".join(lines), encoding="utf-8")
+            return i + 1
+    raise AssertionError(f"no completion record naming {marker!r} to tear")
+
+
+def test_impact_says_it_could_not_read_a_line_rather_than_that_nothing_read_the_bytes(
+    tmp_path, capsys
+):
+    """[ADR-0015] [ADR-0017 R-14] I-01. THE ONE SENTENCE THIS MODULE MAY NEVER GET WRONG.
+
+    `impact.py`'s docstring says an empty result is reported as *"no recorded run read this"*
+    precisely because it is a fact about the HISTORY rather than a claim about the world. With a
+    torn line it stops being a fact about the history either — the history does contain such a
+    run, in the line that would not parse.
+
+    Measured before the fix, on one file at one moment: `chain` exited 2, `log` and `lineage`
+    both printed *"1 unreadable line(s) skipped"*, and `impact` printed *"no recorded run read
+    these bytes"* at exit 0 with an empty stderr. `_lineage` had computed the count and `_impact`
+    passed `None` for the out-parameter and threw it away.
+
+    THE DISCLOSURE ALONE WOULD NOT HAVE BEEN ENOUGH. A footnote under a headline that already
+    overstates leaves the false clause on the page, which is H1-1's shape; the headline changes
+    too.
+    """
+    log = _pipeline(tmp_path)
+    runprov.__main__.main(["impact", str(tmp_path / "ref.fa"), "--log", str(log)])
+    before = capsys.readouterr().out
+    assert "artifact(s) derive from them" in before, f"the intact history has a chain: {before}"
+
+    _tear_completion(log, '"align"')
+    code = runprov.__main__.main(["impact", str(tmp_path / "ref.fa"), "--log", str(log)])
+    out = capsys.readouterr()
+    assert "no recorded run read these bytes" not in out.out, (
+        f"the history DOES contain a run that read them; it is the line that would not parse: "
+        f"{out.out}"
+    )
+    assert "could not be read" in out.out, f"and the page says so: {out.out}"
+    assert code == 0, (
+        "AND THE EXIT CODE DOES NOT MOVE. An unreadable line is permanent — ADR-0021 forbids "
+        "rewriting a history, and deleting the line turns `chain` into a standing BROKEN "
+        "accusation — so a gate keyed on it could only be made green by the act the chain "
+        "feature exists to detect. That is the gate that cannot pass, refused for `chain` by "
+        f"G-17/G-08 and refused here: {code}"
+    )
+
+
+def test_the_impact_payload_carries_the_unreadable_count_and_the_intact_case_carries_zero(
+    tmp_path, capsys
+):
+    """[ADR-0017 R-14] I-01. *Not a second call, NOT A STDERR LINE*, not an absence to infer.
+
+    R-14 names `unreadable` explicitly, in `chain`, as the exemplar of what a payload must carry.
+    The cheap fix — one stderr line, exactly as `log`, `lineage` and `show` emit — is ruled out
+    by that sentence, so the field is mandatory rather than a nicety.
+
+    The zero case is asserted beside it: a count present and zero is *looked, and found none*,
+    which is the distinction every blind-spot field on this structure exists for.
+    """
+    log = _pipeline(tmp_path)
+    runprov.__main__.main(
+        ["impact", str(tmp_path / "ref.fa"), "--log", str(log), "--format", "json"]
+    )
+    intact = json.loads(capsys.readouterr().out)
+    assert intact["unreadable"] == 0, f"an intact history looked and found none: {intact}"
+
+    _tear_completion(log, '"align"')
+    runprov.__main__.main(
+        ["impact", str(tmp_path / "ref.fa"), "--log", str(log), "--format", "json"]
+    )
+    torn = json.loads(capsys.readouterr().out)
+    assert torn["unreadable"] == 1, f"and a torn one says so, in the payload: {torn}"
+    assert torn["truncated"] is False, (
+        "`truncated` is NOT where this belongs: it is user-caused, transient and removable — "
+        f"drop `--depth` and the gate is green. This is none of those three: {torn}"
+    )
+
+
+def test_diff_says_the_pair_may_not_be_the_one_you_asked_for_when_a_record_is_unreadable(
+    tmp_path, capsys
+):
+    """[ADR-0014] [ADR-0017 R-14] I-05. "THE LAST TWO RUNS" SILENTLY MEANT THE LAST TWO READABLE.
+
+    `_completed` skips an unreadable line with the same `continue` it uses for an in-flight
+    marker, and only the second is what its docstring is about. `show.select` fills its buckets
+    in file order, so a torn record inside the window shifts the pair back by one — and the
+    command answers about two runs the caller never named, with an empty stderr.
+
+    Measured before the fix: three runs of one script, the third changing both its parameters and
+    its output; tearing the third record turned `1 change(s)` in two dimensions into eight rows
+    of `unchanged` and exit 1 into **exit 0**.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    for k, body in ((2, "same\n"), (2, "same\n"), (7, "DIFFERENT\n")):
+        with runprov.Run("s", {"k": k}, provenance=tmp_path / "p.json") as run:
+            run.input(tmp_path / "in.tsv")
+            with run.open_output(tmp_path / "out.tsv") as fh:
+                fh.write(body)
+    log = tmp_path / "h.jsonl"
+    capsys.readouterr()
+
+    assert runprov.__main__.main(["diff", "s", "--log", str(log)]) == 1, (
+        "intact: the last two runs of `s` differ"
+    )
+    capsys.readouterr()
+    uids = [
+        json.loads(line)["run_uid"]
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if line.startswith("{") and '"outputs"' in line
+    ]
+    assert len(uids) == 3, uids
+    runprov.__main__.main(["diff", "s", "--log", str(log), "--format", "json"])
+    intact = json.loads(capsys.readouterr().out)
+    before = next(d for d in intact["dimensions"] if d["name"] == "parameters")
+    assert before["differences"], (
+        f"the intact history reports the parameter change, which is what will vanish: {before}"
+    )
+
+    # THE LAST RECORD, because that is the one inside the window. Tearing an earlier run
+    # leaves the correct pair selected, the disclosure would appear for a weaker reason, and
+    # the SHIFT is the defect — so the test has to cause it.
+    _tear_completion(log, '"s"', last=True)
+    runprov.__main__.main(["diff", "s", "--log", str(log), "--format", "json"])
+    body = json.loads(capsys.readouterr().out)
+
+    # ASSERTED ON WHICH RUNS WERE COMPARED, NOT ON THE EXIT CODE. The exit code here depends on
+    # whether two runs' wall times land within `RESOURCE_NOISE`, which is a property of the host
+    # — the first version of this test asserted `== 0` and failed on a loaded machine while the
+    # defect it names was reproducing perfectly. The defect IS the shift: the run that changed
+    # both its parameters and its output is gone from the answer and the two OLDER runs were
+    # compared in its place.
+    def _params(payload):
+        return next(d for d in payload["dimensions"] if d["name"] == "parameters")
+
+    assert _params(body)["differences"] == [], (
+        "THE SHIFT, MADE VISIBLE: `k` moved 2 -> 7 in the run that was torn, and with that "
+        "record unreadable the two REMAINING runs both carry k=2 — so the change the intact "
+        f"history reported has vanished from the answer: {_params(body)}"
+    )
+    assert body["unreadable"] == 1, (
+        f"and the payload says a line could not be read, so a consumer can tell: {body}"
+    )
+
+    out = capsys.readouterr().out
+    runprov.__main__.main(["diff", "s", "--log", str(log)])
+    out = capsys.readouterr().out
+    assert "could not be read" in out and "may not be the two runs you meant" in out, (
+        f"so the page says the pair may not be the one that was asked for: {out}"
+    )
+
+
+def test_the_diff_payload_carries_the_unreadable_count_and_two_addresses_carry_zero(
+    tmp_path, capsys
+):
+    """[ADR-0017 R-14] I-05. THE FIELD IS A PROPERTY OF THE SELECTION, AND ITS SCOPE IS STATED.
+
+    The one-address form lets the history choose the pair, so a line it could not read shifts
+    that pair. Naming two runs resolves each by address — an unreadable line shadows neither, and
+    a named run that is unreadable matches nothing and exits 2 with a message. So `0` there is
+    correct rather than a gap, and asserting it is what stops a later reader "fixing" it into a
+    figure counted once per target: a history with two torn lines once reported *"4 unreadable
+    line(s) skipped"*.
+    """
+    # ITS OWN HISTORY, because `_pipeline` runs each script ONCE — so the one-address form
+    # matches a single run there and exits 2 before any payload is written. Measured: the first
+    # version of this test parsed an empty stdout.
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    for body in ("one\n", "two\n", "three\n"):
+        with runprov.Run("s", {}, provenance=tmp_path / "p.json") as run:
+            run.input(tmp_path / "in.tsv")
+            with run.open_output(tmp_path / "out.tsv") as fh:
+                fh.write(body)
+    log = tmp_path / "h.jsonl"
+    torn_at = _tear_completion(log, '"s"', last=True)
+    assert torn_at, "a record was actually torn"
+    capsys.readouterr()
+
+    runprov.__main__.main(["diff", "s", "--log", str(log), "--format", "json"])
+    body = json.loads(capsys.readouterr().out)
+    assert body["unreadable"] == 1, f"the one-address form counts it: {body['unreadable']}"
+
+    # TWO DISTINCT ADDRESSES, by run_uid. `diff s s` resolves both to the same run and exits 2
+    # with an empty stdout — measured, twice, while writing this test.
+    uids = [
+        json.loads(line)["run_uid"]
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if line.startswith("{") and '"outputs"' in line
+    ]
+    assert len(uids) >= 2, f"two readable runs are needed to name two: {uids}"
+    capsys.readouterr()
+    runprov.__main__.main(
+        ["diff", uids[0][:12], uids[1][:12], "--log", str(log), "--format", "json"]
+    )
+    named = json.loads(capsys.readouterr().out)
+    assert named["unreadable"] == 0, (
+        "and naming both runs resolves each by address, so 0 is correct rather than a gap — "
+        f"asserted so it is not later 'fixed' into a figure counted once per target: {named}"
+    )
+
+
 def test_impact_walk_survives_a_cycle():
     """A build graph should be acyclic; a history spans years and paths get rewritten.
 

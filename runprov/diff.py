@@ -160,6 +160,25 @@ class Comparison(typing.NamedTuple):
     a: Side
     b: Side
     dimensions: list[Dimension]
+    #: I-05 of Audit I. Lines of the history the SELECTION could not read.
+    #:
+    #: `diff <script>` is documented as "the last two runs of it", and it silently meant the
+    #: last two READABLE records. `_completed` skips an unreadable line with the same `continue`
+    #: it uses for an in-flight marker, and only the second is what its docstring is about — so
+    #: a torn record inside the window shifts the pair back by one and the command answers,
+    #: confidently and with an empty stderr, about two runs the caller did not ask for.
+    #: Measured: three runs of one script, the third changing both parameters and outputs; tear
+    #: the third record and the table reports eight dimensions `unchanged` and exits 0.
+    #:
+    #: IT DOES NOT MOVE `settled` OR THE EXIT CODE, for the reason `impact.Chain.unreadable`
+    #: states: an unreadable line is permanent, so folding it into the verdict makes a gate that
+    #: can only be made green by rewriting the history — the act `chain` exists to detect.
+    #:
+    #: THIS IS A PROPERTY OF THE SELECTION, NOT OF EITHER RECORD, which is why it sits on the
+    #: comparison rather than on `Side`. It is filled by the one-address form, where the history
+    #: chooses the pair; naming two runs explicitly resolves each by address, so an unreadable
+    #: line cannot shadow either and a named run that is unreadable matches nothing and exits 2.
+    unreadable: int = 0
 
     @property
     def settled(self) -> bool:
@@ -721,7 +740,11 @@ def _side(record: typing.Mapping[str, typing.Any]) -> Side:
     )
 
 
-def build(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]) -> Comparison:
+def build(
+    a: typing.Mapping[str, typing.Any],
+    b: typing.Mapping[str, typing.Any],
+    unreadable: int = 0,
+) -> Comparison:
     """The comparison, as facts. The table is a rendering of THIS, and so is the payload.
 
     ONE BUILDER, TWO RENDERERS (ADR-0017 R-1), and the split is here rather than in the CLI
@@ -730,7 +753,7 @@ def build(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]
     `compare()` is kept as it is — pure, public and the thing ADR-0017's own table names —
     and this is the wrapper the header needed.
     """
-    return Comparison(_side(a), _side(b), compare(a, b))
+    return Comparison(_side(a), _side(b), compare(a, b), unreadable)
 
 
 def _or(value: typing.Any) -> typing.Any:  # noqa: ANN401 - anything printable
@@ -827,4 +850,13 @@ def render(comparison: Comparison) -> list[str]:
         out += [f"              {line}" for line in d.differences]
         if d.blocked:
             out.append(f"              (and not fully comparable — {d.blocked})")
+    if comparison.unreadable:
+        # I-05. BELOW THE TABLE, NOT INSIDE IT, because it qualifies WHICH TWO RUNS were
+        # compared rather than any one dimension — every row above it may be perfectly true of
+        # the pair, and still not be the pair the caller asked for.
+        out += [
+            "",
+            f"  {comparison.unreadable} line(s) of the history could not be read, so these "
+            "may not be the two runs you meant — `runprov log --unreadable` shows them.",
+        ]
     return out

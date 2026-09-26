@@ -1349,7 +1349,12 @@ def _impact(args: argparse.Namespace) -> int:
     consumers: dict[str, list[str]] = {}
     names: dict[str, str] = {}
     outputs_by: dict[str, list[str]] = {}
-    graph = _lineage(log, None, names, consumers, outputs_by)
+    # I-01. THE OUT-PARAMETER WAS PASSED `None` AND THE COUNT THROWN AWAY. `_lineage` computes
+    # it either way — `records()` does `_counted(source, bad if bad is not None else [0])` — so
+    # this was a fact already in hand and discarded, while `lineage`, `log` and `show` all took
+    # it and disclosed it.
+    counted: list[int] = [0]
+    graph = _lineage(log, counted, names, consumers, outputs_by)
 
     unregistered = 0
     runs = 0
@@ -1366,7 +1371,7 @@ def _impact(args: argparse.Namespace) -> int:
 
     steps = impact_mod.walk(digest, consumers, graph["edges"], names, outputs_by, args.depth)
     chain = impact_mod.Chain(
-        digest, consumers.get(digest, []), steps, unregistered, runs, watch_drops
+        digest, consumers.get(digest, []), steps, unregistered, runs, watch_drops, counted[0]
     )
     if args.format == "json":
         # NOTHING ELSE ON STDOUT (R-4). Both of this command's diagnostics — the missing history
@@ -1416,7 +1421,12 @@ def _diff(args: argparse.Namespace) -> int:
     # `runprov diff align align` resolved both to the same run and reported everything
     # unchanged — a comparison of a record with itself, presented as a finding.
     if args.b is None:
-        matches = show_mod.select(_completed(log), args.a, limit=2)
+        # I-05. COUNTED, not silently skipped. `_counted` is `_completed` plus the tally —
+        # the same filter, the same start-marker exclusion — so this is a swap rather than a
+        # second way of reading the history.
+        seen: list[int] = [0]
+        matches = show_mod.select(_counted(log, seen), args.a, limit=2)
+        unreadable = seen[0]
         if len(matches) < 2:
             print(
                 f"diff: {args.a!r} matches {len(matches)} run(s) in {log}; "
@@ -1426,6 +1436,14 @@ def _diff(args: argparse.Namespace) -> int:
             return 2
         picked = matches[-2:]
     else:
+        # NOT COUNTED HERE, and that is the honest answer rather than a gap. I-05 is a defect
+        # of the SELECTION: the one-address form lets the history choose the pair, so a line it
+        # could not read shifts that pair silently. Naming two runs resolves each by address —
+        # an unreadable line shadows neither, and a named run that is unreadable matches
+        # nothing and already exits 2 with a message. Counting it here would also mean tallying
+        # the same file once per target, and a doubled figure is its own defect: a history with
+        # two torn lines once reported "4 unreadable line(s) skipped".
+        unreadable = 0
         picked = []
         for target in (args.a, args.b):
             # `show.select` RESOLVES THE ADDRESS, and reusing it is the point: a second
@@ -1444,7 +1462,7 @@ def _diff(args: argparse.Namespace) -> int:
             )
             return 2
 
-    comparison = diff_mod.build(picked[0], picked[1])
+    comparison = diff_mod.build(picked[0], picked[1], unreadable)
     if args.format == "json":
         # NOTHING ELSE ON STDOUT (R-4). Every diagnostic this command emits already goes to
         # stderr — the empty address, the missing history, the address that matches nothing and
