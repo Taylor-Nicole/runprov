@@ -10247,12 +10247,164 @@ def test_a_disagreement_is_a_block_and_its_absence_is_not_an_empty_one(tmp_path)
         "`pin_digest` at the pin's own width; a reader handed sixteen characters on one side "
         "and sixty-four on the other would find a mismatch in every report ever written"
     )
-    assert body.bytes_differ.elsewhere_script == "elsewhere-writer"
+    assert body.bytes_differ.how == "sha256", (
+        "AND IT NAMES THE KEY IT COMPARED ON. I-02: `recorded` came from `pin_digest`, which "
+        "prefers `content_sha256`, while `now` was `hashing.sha256(file)` — two algorithms, so "
+        "the two numbers printed side by side were digests of the SAME bytes. This record "
+        f"carries only `sha256`, so that is what both sides are: {body.bytes_differ}"
+    )
+    assert body.written_elsewhere is not None
+    assert body.written_elsewhere.script == "elsewhere-writer", (
+        "THE SECOND FACT IS ITS OWN FINDING NOW. It used to live inside `bytes_differ`, so "
+        "neither could be reported without the other — which is how an untouched file "
+        f"published by copying came to be accused of changing: {body.written_elsewhere}"
+    )
     assert "BYTES DIFFER" in "\n".join(page.lines)
+    assert "ALSO WRITTEN" in "\n".join(page.lines)
 
     clean = runprov.report.page(artifact, tmp_path, [_history_record(cwd=tmp_path)])
     assert clean.report.body is not None and clean.report.body.bytes_differ is None
     assert "BYTES DIFFER" not in "\n".join(clean.lines)
+
+
+def test_a_file_published_by_copying_is_not_accused_of_having_changed(tmp_path):
+    """[ADR-0017 R-10] I-02. THE FALSE POSITIVE, AND IT FIRES ON THE ORDINARY CASE.
+
+    `Match.disagrees` was `bool(self.recorded and self.elsewhere is not None)` — a predicate
+    whose own docstring said *"the named run recorded a digest for this path, and it is not what
+    is there now"*, and which never compares those two. `find_match` puts only a DIFFERENT-path
+    output into `by_digest`, so a second run that recorded byte-identical bytes elsewhere made
+    `elsewhere` non-None over a file nobody had touched. That is publish-by-copy — `publishDir`,
+    a `cp` in a Makefile — which `find_match`'s own docstring names as the motivating case.
+
+    Reproduced through the real package before the fix: the page accused an untouched artifact of
+    having changed, and printed two digests OF THE SAME BYTES as the evidence.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    disk = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    producer = _history_record(
+        cwd=tmp_path, script="producer", outputs=[{"path": "out.tsv", "sha256": disk}]
+    )
+    copier = _history_record(
+        cwd=tmp_path,
+        script="publisher",
+        run_id="r2",
+        outputs=[{"path": "published/out.tsv", "sha256": disk}],
+    )
+    page = runprov.report.page(artifact, tmp_path, [producer, copier])
+    body = page.report.body
+    assert body is not None
+    assert body.bytes_differ is None, (
+        "the producer's recorded digest for this path IS what is on disk — nothing changed, and "
+        f"the copy elsewhere is not evidence that anything did: {body.bytes_differ}"
+    )
+    assert "BYTES DIFFER" not in "\n".join(page.lines)
+    assert body.written_elsewhere is not None, (
+        "while the other fact is still true and still reported, on its own"
+    )
+    assert body.written_elsewhere.script == "publisher"
+
+
+def test_a_digest_that_cannot_be_asked_of_the_file_is_not_a_disagreement(tmp_path):
+    """[ADR-0017 R-10] I-02. NOT LOOKED IS NOT A FINDING, and the arm exists because of that.
+
+    `hashing.content_digest` returns None for anything that is not a regular file. If the
+    record's own key is `content_sha256` and that cannot be computed, there is no comparison to
+    make — and the two wrong answers are both available: falling through to `sha256` would
+    compare a content digest against a raw one, which is the defect this function was written to
+    remove, and inventing a disagreement would accuse a file nobody could hash.
+
+    Asserted by making the record's own key unanswerable, rather than by reading the branch.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    record = _history_record(
+        cwd=tmp_path,
+        script="producer",
+        outputs=[{"path": "out.tsv", "content_sha256": "c" * 64}],
+    )
+
+    # the record's key IS answerable here, so the disagreement is real — the positive companion,
+    # without which the assertion below passes for the wrong reason
+    body = runprov.report.page(artifact, tmp_path, [record]).report.body
+    assert body is not None and body.bytes_differ is not None, "the control: normally it fires"
+
+    entry = {"path": "out.tsv", "content_sha256": "c" * 64}
+    assert runprov.report._differs(entry, tmp_path) is None, (
+        "a directory cannot be content-digested, so the record's own key cannot be asked of it "
+        "and there is nothing to report"
+    )
+    assert runprov.report._differs(entry, tmp_path / "gone.tsv") is None, (
+        "and neither can a file that is no longer there"
+    )
+
+
+def test_an_artifact_edited_in_place_is_reported_even_with_no_twin(tmp_path):
+    """[ADR-0017 R-10] I-02. THE FALSE NEGATIVE, WHICH IS THE HALF THAT COSTS SOMETHING.
+
+    The same predicate required `elsewhere is not None`, so an artifact edited in place — where
+    the producer's digest genuinely disagrees with the file and NO other run holds the new bytes
+    — reported `bytes_differ: null`. That value is documented in the README as *looked, and the
+    run's recorded digest matches the file*, so the payload stated the opposite of the truth.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    producer = _history_record(
+        cwd=tmp_path, script="producer", outputs=[{"path": "out.tsv", "sha256": "a" * 64}]
+    )
+    body = runprov.report.page(artifact, tmp_path, [producer]).report.body
+    assert body is not None and body.bytes_differ is not None, (
+        "no other run holds these bytes, and the disagreement is real regardless — that is the "
+        "whole of the split"
+    )
+    assert body.bytes_differ.recorded == "a" * runprov.hashing.PIN_DIGEST_CHARS
+    assert body.written_elsewhere is None, "and there is no twin to report"
+
+
+def test_the_two_sides_of_the_comparison_are_hashed_the_same_way(tmp_path):
+    """[ADR-0017 R-10] I-02. TWO ALGORITHMS CANNOT BE COMPARED, AND THE RECORD DECIDES WHICH.
+
+    `hashing.describe` writes BOTH `sha256` and `content_sha256` for every regular file, and they
+    differ for any text ending in a newline — every `.tsv` this package writes. Measured across
+    the cross-version corpus, all six released wheels: 18 of 18 outputs carry the two differing.
+    `recorded` came from `pin_digest`, which prefers `content_sha256`; `now` was
+    `hashing.sha256(file)`. So the comparison could not be equal for an ordinary text artifact,
+    and `BYTES DIFFER` printed a content digest against a raw one.
+
+    THE RECORD'S OWN KEY DECIDES, not a precedence applied to it. A v1-shaped record carrying
+    only `sha256` is compared raw; a v2 record carrying `content_sha256` is content-digested.
+    Reusing `show._digest_now` — which applies TODAY's precedence to the file — would have
+    flagged every untouched v1 artifact, which is the same defect one command along.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    described = runprov.hashing.describe(artifact)
+    assert described["sha256"] != described["content_sha256"], (
+        "the premise: this artifact's two digests differ, as they do for every text file this "
+        f"package writes: {described['sha256'][:16]} vs {described['content_sha256'][:16]}"
+    )
+
+    for key in ("sha256", "content_sha256"):
+        record = _history_record(
+            cwd=tmp_path,
+            script="producer",
+            outputs=[{"path": "out.tsv", key: described[key]}],
+        )
+        body = runprov.report.page(artifact, tmp_path, [record]).report.body
+        assert body is not None and body.bytes_differ is None, (
+            f"a record carrying only {key} is compared on {key}, and agrees with the untouched "
+            f"file: {body.bytes_differ}"
+        )
+
+    record = _history_record(
+        cwd=tmp_path,
+        script="producer",
+        outputs=[{"path": "out.tsv", "content_sha256": described["sha256"]}],
+    )
+    body = runprov.report.page(artifact, tmp_path, [record]).report.body
+    assert body is not None and body.bytes_differ is not None, (
+        "and the control: the RAW digest stored under the CONTENT key is a real disagreement, "
+        "because the file's content digest is not that value — the comparison is keyed off the "
+        "record rather than off which number happens to be there"
+    )
+    assert body.bytes_differ.how == "content_sha256"
 
 
 def test_an_explicit_null_in_a_record_reads_as_not_recorded_rather_than_as_None(tmp_path):
@@ -10415,7 +10567,7 @@ def test_the_json_report_carries_what_the_page_could_not_check(tmp_path):
         )
     )
     assert differ["run"]["script"] == "producer"
-    assert differ["bytes_differ"]["elsewhere_script"] == "elsewhere-writer", (
+    assert differ["written_elsewhere"]["script"] == "elsewhere-writer", (
         "D-03. The page's loudest line is a field here, because a qualification that exists "
         "only as prose is one the other rendering can drop"
     )
@@ -26075,7 +26227,7 @@ def test_the_page_says_when_the_bytes_are_not_the_bytes_that_run_recorded(tmp_pa
     match = runprov.report.find_match(history, "/proj/results/summary.csv", "bb" * 32)
 
     assert match.record["script"] == "v1_pipeline", "the path match stays the named run"
-    assert match.disagrees
+    assert match.also_elsewhere
     assert match.recorded == ("aa" * 32)[: runprov.hashing.PIN_DIGEST_CHARS]
     assert match.elsewhere["script"] == "v2_pipeline"
     # DERIVED, NOT SPELLED. The ninth host-dependent test of this session: `_resolve` returns
@@ -26084,13 +26236,14 @@ def test_the_page_says_when_the_bytes_are_not_the_bytes_that_run_recorded(tmp_pa
     # leg while the code was correct on both. Ask the same function the code asks.
     assert match.elsewhere_path == runprov.report._resolve("staging/summary.csv", "/proj")
 
-    # EDITED IN PLACE IS NOT THIS, and the distinction is the whole design. There the record IS
-    # the producer, the page correctly reports ALTERED, and no other run's output matches — so
-    # `disagrees` is False and nothing extra is printed. Preferring the digest, or returning no
-    # run, would have stripped the producer from every altered page.
+    # EDITED IN PLACE IS A DIFFERENT FACT, and I-02 is that the two used to be one. There the
+    # record IS the producer, the page correctly reports ALTERED, and no other run's output
+    # matches — so there is no twin to name. The DIGEST disagreement is still real, and is now
+    # reported by `_differs` rather than being suppressed for want of a twin: that suppression
+    # was the false negative half of I-02.
     edited = runprov.report.find_match([history[0]], "/proj/results/summary.csv", "ff" * 32)
-    assert edited.record["script"] == "v1_pipeline"
-    assert not edited.disagrees, "an edited artifact still names who wrote it"
+    assert edited.record["script"] == "v1_pipeline", "an edited artifact still names who wrote it"
+    assert not edited.also_elsewhere, "and no other run holds those bytes"
 
     # TWO OTHER RUNS HOLDING THOSE BYTES IDENTIFY NONE OF THEM, so the page must not offer one.
     # The same uniqueness rule the digest FALLBACK uses, applied to the hand-off — offering the
@@ -26101,7 +26254,7 @@ def test_the_page_says_when_the_bytes_are_not_the_bytes_that_run_recorded(tmp_pa
         "bb" * 32,
     )
     assert ambiguous.record["script"] == "v1_pipeline"
-    assert not ambiguous.disagrees, "two candidates identify no single run"
+    assert not ambiguous.also_elsewhere, "two candidates identify no single run"
     assert ambiguous.elsewhere is None
 
     # AND THE RECORDED DIGEST COMES FROM `pin_digest`, not a fourth re-derivation of its
@@ -26150,7 +26303,7 @@ def test_find_run_keeps_its_name_and_returns_the_record(tmp_path):
     assert runprov.report.find_match(history, "/proj/out/x.csv").record == history[0]
     assert runprov.report.find_run([], "/proj/out/x.csv") is None
     assert runprov.report.find_match([], "/proj/out/x.csv").record is None
-    assert not runprov.report.Match(None).disagrees
+    assert not runprov.report.Match(None).also_elsewhere
 
 
 def test_an_archived_lockfile_that_does_not_hash_to_its_own_name_is_rewritten(

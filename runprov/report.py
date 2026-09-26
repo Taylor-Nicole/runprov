@@ -72,11 +72,22 @@ class Match(typing.NamedTuple):
     recorded: str = ""
     elsewhere: dict[str, typing.Any] | None = None
     elsewhere_path: str | None = None
+    #: The output ENTRY this record holds for this path, kept whole. `recorded` is that entry
+    #: through `pin_digest`, which is the right thing to PRINT and the wrong thing to compare —
+    #: it applies a precedence the record may not have used. A comparison has to know which key
+    #: the record actually carries, so the entry travels rather than a digest chosen for it.
+    entry: dict[str, typing.Any] | None = None
 
     @property
-    def disagrees(self) -> bool:
-        """The named run recorded a digest for this path, and it is not what is there now."""
-        return bool(self.recorded and self.elsewhere is not None)
+    def also_elsewhere(self) -> bool:
+        """Exactly one OTHER run recorded the bytes now on disk, at a different path.
+
+        NAMED FOR WHAT IT TESTS. It was `disagrees`, whose docstring said "the named run
+        recorded a digest for this path, and it is not what is there now" — a sentence about a
+        comparison this expression never performs. The name asserted the fix; the code asserted
+        the other fact. I-02.
+        """
+        return self.elsewhere is not None
 
 
 def find_run(
@@ -131,6 +142,7 @@ def find_match(
     # returns None: this page renders "no run found" honestly, and naming the wrong run does not.
     by_path = None
     recorded_for_path = ""
+    entry_for_path: dict[str, typing.Any] | None = None
     # KEYED BY RUN, NOT BY PATH. D-06 of Audit D: keying on the path got the uniqueness rule
     # wrong in BOTH directions. Two runs that wrote byte-identical bytes to the SAME recorded
     # path — a deterministic pipeline re-run, which is every re-run of a correct pipeline —
@@ -158,6 +170,9 @@ def find_match(
                 # fourth re-derivation of it — a checker that recomputes that precedence
                 # independently is a checker that can disagree with the pin it is checking.
                 recorded_for_path = (hashing.pin_digest(out) if isinstance(out, dict) else "") or ""
+                # AND THE ENTRY ITSELF, for I-02: `pin_digest` applies a precedence, and a
+                # comparison has to know which key the record actually carries.
+                entry_for_path = out if isinstance(out, dict) else None
             elif (
                 isinstance(out, dict)
                 and digest
@@ -191,7 +206,13 @@ def find_match(
         # is the package's own rule, report what you cannot tell rather than guess.
         other = [(p, r) for p, r in by_digest.values() if r is not by_path]
         one = other[0] if len(other) == 1 else (None, None)
-        return Match(by_path, recorded=recorded_for_path, elsewhere=one[1], elsewhere_path=one[0])
+        return Match(
+            by_path,
+            recorded=recorded_for_path,
+            elsewhere=one[1],
+            elsewhere_path=one[0],
+            entry=entry_for_path,
+        )
     if len(by_digest) == 1:
         return Match(next(iter(by_digest.values()))[1])
     # Nothing matched, or the bytes sit at two paths and identify no single run.
@@ -229,24 +250,42 @@ class Run(typing.NamedTuple):
 
 
 class BytesDiffer(typing.NamedTuple):
-    """D-03 as a structure: the named run's own digest for this path is not what is on disk,
-    and the bytes that ARE there were recorded as an output by exactly one other run.
+    """The named run's own digest for this path is not what is on disk. ONE FACT, ONLY.
 
-    `None` rather than an empty one in the ordinary case, and the distinction is the honest
-    one: *looked, and the run's recorded digest matches the file*. The page prints nothing
-    there, and this says the same thing without prose.
+    I-02 of Audit I. This used to carry a second, independent fact as well — that the bytes now
+    on disk were recorded as an output by exactly one other run — and the two were reported
+    together or not at all. Fusing them meant the finding fired when the SECOND was true and the
+    first was never tested: `Match.disagrees` was `recorded and elsewhere is not None`, which
+    never compares `recorded` with `now`. Measured on a publish-by-copy history — a `cp` in a
+    Makefile, the case `find_match`'s own docstring cites — the page accused an untouched file
+    of having changed. The other half is `WrittenElsewhere` below.
 
-    `now` IS TRUNCATED TO THE PIN'S OWN WIDTH, and that is not the mistake `_q` exists to
-    prevent. `recorded` comes from `hashing.pin_digest`, which is `PIN_DIGEST_CHARS` wide by
-    this package's convention; a reader handed sixteen characters on one side of a
-    comparison and sixty-four on the other would find a mismatch in every report ever
-    written. Two sides of one comparison are spelled the same way, or it is not one.
+    `how` NAMES THE KEY THE COMPARISON WAS MADE ON, because the two sides must be the same
+    quantity or it is not a comparison. `hashing.describe` writes BOTH `sha256` and
+    `content_sha256` for every regular file and they differ for any text ending in a newline —
+    every `.tsv` this package writes. `recorded` used to come from `pin_digest`, which prefers
+    `content_sha256`, while `now` was `hashing.sha256(file)`: two algorithms, so the two numbers
+    printed side by side were digests of the SAME unchanged bytes. Measured across the
+    cross-version corpus, all six released wheels: 18 of 18 outputs carry the two digests
+    differing. The comparison now reads the record's own key and hashes the file that way.
     """
 
     recorded: str
     now: str
-    elsewhere_path: str | None
-    elsewhere_script: str | None
+    how: str
+
+
+class WrittenElsewhere(typing.NamedTuple):
+    """The bytes now on disk were recorded as an output by exactly one OTHER run.
+
+    D-03's other half, and independent of `BytesDiffer`: it is true of a file that was published
+    by copying — where nothing has changed and the digests agree — and it is false of a file
+    edited in place, where they disagree and no other run holds the new bytes. Reporting either
+    one only when the other also held is what I-02 was filed about.
+    """
+
+    path: str
+    script: str | None
 
 
 class Tool(typing.NamedTuple):
@@ -326,6 +365,7 @@ class Body(typing.NamedTuple):
 
     run: Run
     bytes_differ: BytesDiffer | None
+    written_elsewhere: WrittenElsewhere | None
     method: Method
     inputs: tuple[Input, ...]
     observation: Observation | None
@@ -446,7 +486,8 @@ def build(
                 command=run.get("command"),
                 cwd=run.get("cwd"),
             ),
-            bytes_differ=_differ(match, digest),
+            bytes_differ=_differs(match.entry, artifact),
+            written_elsewhere=_elsewhere(match),
             method=_method(run),
             # THE ARTIFACT'S OWN PIN, not the run's outputs — `verify_artifact` read them and
             # already re-derived every digest. Nothing here is computed a second time.
@@ -462,23 +503,71 @@ def build(
     )
 
 
-def _differ(match: Match, digest: str | None) -> BytesDiffer | None:
-    """The BYTES DIFFER finding, or None when the run's recorded digest matches the file."""
-    if not match.disagrees:
+#: The record keys a comparison can be made on, each with the function that computes the same
+#: quantity from the file. ORDERED AS `pin_digest` ORDERS THEM, so the digest a reader sees
+#: quoted elsewhere is the one compared here — but the choice is made on what the record
+#: CARRIES, never on a precedence applied to it.
+#:
+#: `sha256_tree` is deliberately absent. `build` hashes the artifact with `hashing.sha256`,
+#: which raises on a directory, so `digest` is None and this block is unreachable for one. An
+#: arm that cannot fire reads as a case that can happen.
+_COMPARABLE_AS = (("content_sha256", hashing.content_digest), ("sha256", hashing.sha256))
+
+
+def _differs(entry: dict[str, typing.Any] | None, artifact: pathlib.Path) -> BytesDiffer | None:
+    """Does the record's own digest for this path disagree with the file? I-02.
+
+    LIKE FOR LIKE, OR IT IS NOT A COMPARISON. The record decides how the file is hashed: if it
+    carries `content_sha256` the file is content-digested, if it carries `sha256` the file is
+    hashed raw. The previous version took `recorded` from `pin_digest` — which prefers
+    `content_sha256` — and `now` from `hashing.sha256`, so the two sides were different
+    quantities and could not be equal for any ordinary text file.
+
+    NOT `show._digest_now`, WHICH LOOKS LIKE THE FUNCTION FOR THIS AND IS NOT. That applies
+    TODAY's precedence to the file while the record carries whatever it carries, so over a
+    v1-shaped record (raw `sha256` only) it compares a content digest against a raw one and
+    flags an untouched file. Reusing it would have moved this defect rather than fixed it.
+
+    AND NOTHING IS RE-PINNED. This reads the record and hashes the file; `pin_digest`'s
+    precedence is untouched. Changing THAT would move a digest already recorded, which is one
+    of the two irreversible classes this project names.
+
+    `None` means *looked, and they agree* — or that the record's own key could not be asked of
+    this file, which `content_digest` reports by returning None for anything it will not
+    canonicalise. Neither is a finding.
+    """
+    for key, how in _COMPARABLE_AS:
+        was = (entry or {}).get(key)
+        if not was:
+            continue
+        now = how(artifact)
+        if now is None:
+            # THE RECORD'S OWN KEY CANNOT BE ASKED OF THIS FILE. `content_digest` returns None
+            # for anything that is not a regular file — a directory, or a path that has since
+            # been removed. Falling through to the next key would compare two different
+            # quantities, which is the defect this function exists to remove; and inventing a
+            # disagreement from a digest that could not be computed would accuse a file nobody
+            # could hash. Not looked, so not a finding.
+            return None
+        # COMPARED WHOLE, DISPLAYED SHORT. Truncating before the comparison would let two
+        # different digests agree on their first sixteen characters and pass.
+        if str(was) != str(now):
+            width = hashing.PIN_DIGEST_CHARS
+            return BytesDiffer(str(was)[:width], str(now)[:width], key)
         return None
-    # BOUND, not re-read through the property: `disagrees` proves it is not None and mypy
-    # cannot see that through a NamedTuple property. A local says it once.
-    wrote_them = match.elsewhere or {}
-    # `digest` IS A STRING HERE, STRUCTURALLY RATHER THAN LUCKILY. `elsewhere` is only ever
-    # filled from `find_match`'s `by_digest`, and that mapping is populated inside a branch
-    # guarded by `digest` being truthy — so a disagreement cannot exist over an artifact this
-    # process could not hash. The `or "?"` that used to sit here could not fire, and an arm
-    # that cannot fire reads as a case that can happen.
-    return BytesDiffer(
-        recorded=match.recorded,
-        now=str(digest)[: hashing.PIN_DIGEST_CHARS],
-        elsewhere_path=match.elsewhere_path,
-        elsewhere_script=wrote_them.get("script"),
+    return None
+
+
+def _elsewhere(match: Match) -> WrittenElsewhere | None:
+    """The other run holding these bytes, or None. D-03's second half, on its own."""
+    if not match.also_elsewhere:
+        return None
+    return WrittenElsewhere(
+        # `_posix`, NEVER `str()`. A recorded path spelled the platform's way is read on the
+        # other one — the guard `test_no_recorded_path_is_spelled_with_a_bare_str` caught this
+        # the moment it was written, which is the guard doing exactly its job.
+        path=hashing._posix(match.elsewhere_path) if match.elsewhere_path else "",
+        script=(match.elsewhere or {}).get("script"),
     )
 
 
@@ -600,10 +689,19 @@ def render_page(report: Report) -> list[str]:
         # file. Making `report` fail where `verify` passes would leave two commands disagreeing
         # about one artifact. The precedent is the UNREGISTERED block below, which is the
         # loudest thing on this page and never moves the exit code either.
-        out.append(_kv("BYTES DIFFER", f"this run recorded {differ.recorded} for this path;"))
-        out.append(_kv("", f"the file now hashes {differ.now}"))
-        out.append(_kv("", f"those bytes are the output {differ.elsewhere_path}"))
-        out.append(_kv("", f"recorded by the run {_q(differ.elsewhere_script)}"))
+        out.append(
+            _kv(
+                "BYTES DIFFER", f"this run recorded {differ.recorded} for this path ({differ.how});"
+            )
+        )
+        out.append(_kv("", f"the file now hashes {differ.now} the same way"))
+    if body.written_elsewhere is not None:
+        # A SECOND BLOCK, because it is a second fact. It is true of a file published by
+        # copying, where nothing changed and the block above is silent; and false of a file
+        # edited in place, where that block fires and no other run holds the new bytes.
+        also = body.written_elsewhere
+        out.append(_kv("ALSO WRITTEN", f"these bytes are the output {also.path}"))
+        out.append(_kv("", f"recorded by the run {_q(also.script)}"))
 
     method = body.method
     out += ["", _rule("the method, and whether it can be got back"), ""]
