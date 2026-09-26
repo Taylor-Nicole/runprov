@@ -13260,6 +13260,161 @@ def test_the_truncated_verdict_is_read_from_the_structure_by_both_its_readers(
     )
 
 
+def _snap(digest, n=53, **over):
+    """An `environment_snapshot` block of the shape every released wheel writes."""
+    return {
+        "path": f"prov/env/env-{digest[:16]}.txt",
+        "sha256": digest,
+        "n_packages": n,
+        "n_unreadable": 0,
+        "python": "3.12.13",
+        "reused": False,
+        "lockfiles": [],
+        **over,
+    }
+
+
+def _snapshot_run(**over):
+    """A record whose packages were recorded as a SNAPSHOT — `packages` legitimately `{}`."""
+    obs = {"packages_recorded": "snapshot", "auto_available": True, "steps": "declared"}
+    return _hrec(packages={}, observation=obs, **over)
+
+
+def test_two_snapshot_runs_with_the_same_environment_still_settle(tmp_path):
+    """[ADR-0014] THE CASE THE FIX MUST NOT BREAK, ASSERTED FIRST.
+
+    Comparing snapshot digests and calling any difference a change would make every
+    laptop-against-cluster pair report a package change for ever — the gate that cannot pass,
+    which ADR-0014's rejected alternatives refuse by name because laptop-vs-cluster *"is exactly
+    the pair… Refusing would decline the case it is for."* Two runs in one environment reuse the
+    same content-addressed snapshot, so the digests agree and the dimension settles.
+
+    The sentence is ADR-0014's own worked example, line 150: `unchanged (snapshot env-8a91… on
+    both)`. It was specified and never built.
+    """
+    same = _snap("a" * 64)
+    d = runprov.diff.compare(
+        _snapshot_run(environment_snapshot=same),
+        _snapshot_run(run_uid="uid-b", environment_snapshot=same),
+    )
+    packages = next(x for x in d if x.name == "packages")
+    assert packages.verdict == runprov.diff.UNCHANGED, (
+        f"one environment, two runs: the gate must still be able to pass: {packages}"
+    )
+    assert packages.settled and packages.blocked is None
+    assert packages.examined == f"snapshot {'a' * 12} on both", (
+        f"and it names the snapshot it settled on, not `0 vs 0`: {packages.examined}"
+    )
+
+
+def test_two_snapshot_runs_with_different_environments_never_say_unchanged(tmp_path):
+    """[ADR-0014] THE DEFECT: `unchanged (0 vs 0)`, `settled: true`, over a real difference.
+
+    `DEFAULT_TRACKED` is empty, so a snapshot run carries `packages: {}` LEGITIMATELY on both
+    sides. Comparing those two empty maps answered `unchanged` and counted toward the exit code,
+    while the environments the runs actually recorded differed. Measured through the real package
+    before this fix: two runs of one script, 53 packages against 54, every other dimension
+    identical, and the whole comparison settled.
+
+    A DIFFERING DIGEST IS NOT `changed` ON ITS OWN. The snapshot body carries the interpreter and
+    the platform as well as the package set, so it cannot say which of the three moved — that is
+    a limit, and limits are `blocked`. The COUNT is package-specific, so a count that moved is
+    reported as the difference it is.
+    """
+    d = runprov.diff.compare(
+        _snapshot_run(environment_snapshot=_snap("a" * 64, n=53)),
+        _snapshot_run(run_uid="uid-b", environment_snapshot=_snap("b" * 64, n=54)),
+    )
+    packages = next(x for x in d if x.name == "packages")
+    assert not packages.settled, (
+        "this is the whole row: two different environments must never settle the exit code"
+    )
+    assert packages.verdict != runprov.diff.UNCHANGED
+    assert packages.blocked and "interpreter and the platform" in packages.blocked, (
+        f"and it says WHY it cannot attribute the difference to packages: {packages.blocked}"
+    )
+    assert packages.differences == ["package count  53 -> 54"], (
+        f"the count is package-specific evidence, so it is stated: {packages.differences}"
+    )
+    assert packages.examined == f"snapshot {'a' * 12} vs {'b' * 12}"
+
+
+def test_a_snapshot_digest_that_moves_without_the_count_states_only_the_limit(tmp_path):
+    """[ADR-0014] A DIGEST IS NOT A PACKAGE LIST, and this is where that bites.
+
+    Same number of packages, different digest — one version bumped, or the same packages on a
+    different interpreter. The count gives no evidence, so inventing a difference line would
+    claim to know which of the three the digest covers actually moved. The dimension still
+    refuses `unchanged`, because something demonstrably differs.
+    """
+    d = runprov.diff.compare(
+        _snapshot_run(environment_snapshot=_snap("a" * 64, n=53)),
+        _snapshot_run(run_uid="uid-b", environment_snapshot=_snap("b" * 64, n=53)),
+    )
+    packages = next(x for x in d if x.name == "packages")
+    assert packages.differences == [], (
+        f"an equal count is no evidence about which package moved: {packages.differences}"
+    )
+    assert packages.verdict == runprov.diff.INCOMPARABLE and not packages.settled
+    assert packages.blocked
+
+
+def test_the_snapshot_is_read_from_both_record_shapes_which_spell_it_differently(tmp_path):
+    """[ADR-0014] A-04 ONE FIELD ALONG, AND THE SHAPES DO NOT MERELY NEST DIFFERENTLY.
+
+    The history projection writes a top-level `environment_snapshot`; the sidecar keeps it as
+    `environment.snapshot` — a different NAME, not a different depth. `_packages_of` exists
+    because reading only the sidecar shape made this same dimension answer over nothing for
+    months. A snapshot reader that knew one spelling would have reproduced that exactly, and
+    `diff` is fed history records.
+
+    Both spellings are asserted to reach the same verdict, so neither can be dropped silently.
+    """
+    flat = _snapshot_run(environment_snapshot=_snap("a" * 64))
+    nested = _snapshot_run(run_uid="uid-b", environment={"snapshot": _snap("a" * 64)})
+    assert runprov.diff._snapshot_of(flat) == runprov.diff._snapshot_of(nested), (
+        "the two record shapes carry the same fact under different names"
+    )
+    packages = next(x for x in runprov.diff.compare(flat, nested) if x.name == "packages")
+    assert packages.examined == f"snapshot {'a' * 12} on both", (
+        "ASSERTED ON THE SNAPSHOT, NOT ON `settled`. Both records carry `packages: {}`, so two "
+        "empty tracked maps compare equal and the dimension settles whether or not the snapshot "
+        "was ever read — this test passed with the whole feature disabled until that was "
+        f"measured. `examined` can only say this if both spellings reached it: {packages}"
+    )
+
+
+def test_comparing_snapshots_never_opens_the_snapshot_files(tmp_path, monkeypatch):
+    """[ADR-0014] `compare()` IS PURE AND IS FED HAND-BUILT MAPPINGS.
+
+    Its own contract is that it answers from the records it is given. Reading the snapshot
+    bodies off disk to compare package lists would make the answer depend on what is still on
+    the filesystem rather than on what was recorded — and the paths in a history are the
+    WRITER's paths, which on another machine name nothing at all.
+
+    Asserted by making any open of that path raise, rather than by reading the code.
+    """
+    opened = []
+    real_open = pathlib.Path.open
+
+    def _watched(self, *a, **k):
+        opened.append(str(self))
+        return real_open(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "open", _watched)
+    dims = runprov.diff.compare(
+        _snapshot_run(environment_snapshot=_snap("a" * 64, n=53)),
+        _snapshot_run(run_uid="uid-b", environment_snapshot=_snap("b" * 64, n=54)),
+    )
+    packages = next(x for x in dims if x.name == "packages")
+    assert packages.examined.startswith("snapshot "), (
+        "THE POSITIVE COMPANION, without which this test passes vacuously: a comparison that "
+        "never looked at a snapshot also never opens one, so `opened` would be empty for the "
+        f"wrong reason. Measured — this passed with the feature disabled: {packages}"
+    )
+    assert not [p for p in opened if "env-" in p], f"compare() opened a snapshot file: {opened}"
+
+
 def test_diff_refuses_an_empty_run_address(tmp_path, capsys):
     """Audit B, A-21. `select`'s run_uid bucket tests `startswith(target)`, and every string
     starts with `""` — so an empty address matched every record and `runprov diff ""` compared

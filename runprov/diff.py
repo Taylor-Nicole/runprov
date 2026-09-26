@@ -405,9 +405,51 @@ def _packages_of(record: typing.Mapping[str, typing.Any]) -> dict[str, str]:
     return {str(k): str(v) for k, v in nested.items()} if isinstance(nested, dict) else {}
 
 
+def _snapshot_of(record: typing.Mapping[str, typing.Any]) -> dict[str, typing.Any]:
+    """The environment snapshot, from EITHER record shape — and they SPELL IT DIFFERENTLY.
+
+    The history projection writes a top-level `environment_snapshot`; the sidecar keeps it as
+    `environment.snapshot`. Not merely nested differently, RENAMED — so a reader written against
+    one shape returns `{}` for the other and the dimension quietly answers over nothing. That is
+    A-04 exactly, which `_packages_of` above exists because of, and this is the same field one
+    step along: `diff` is fed history records, and a snapshot reader that only knew the sidecar
+    name would have reproduced the defect it was written to fix.
+    """
+    flat = record.get("environment_snapshot")
+    if isinstance(flat, dict):
+        return flat
+    nested = (record.get("environment") or {}).get("snapshot")
+    return nested if isinstance(nested, dict) else {}
+
+
 def _packages(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]) -> Dimension:
     """`packages_recorded` decides this. `{}` on one side and 47 on the other is a change of
-    CONFIGURATION, not of environment, and reporting it as the second is the defect."""
+    CONFIGURATION, not of environment, and reporting it as the second is the defect.
+
+    AND WHEN BOTH SIDES SAY `snapshot`, THE TRACKED MAP IS THE WRONG PLACE TO LOOK. ADR-0014's
+    own worked example prints `packages unchanged (snapshot env-8a91… on both)` — the snapshot
+    was specified as this dimension's evidence and was never built. `DEFAULT_TRACKED` is empty,
+    so a snapshot run legitimately carries `packages: {}` on both sides, and comparing those two
+    empty maps returned `unchanged (0 vs 0)` with `settled: true` over environments that really
+    differed. Measured: two runs of one script, 53 packages against 54, every other dimension
+    identical, the whole comparison settled. That is the vacuous pass ADR-0014 clause 4 exists
+    to refuse, exported to a consumer as `settled: true`.
+
+    A DIFFERING DIGEST IS `blocked`, NOT `changed`, AND THE DISTINCTION IS THE WHOLE CARE HERE.
+    The snapshot's body carries the interpreter and the platform as well as the package set, so
+    two identical package sets on two machines hash differently. Calling that `changed` in a
+    dimension named `packages` asserts something the digest cannot establish, and it would make
+    every laptop-against-cluster pair report a package change for ever — the gate that cannot
+    pass, which ADR-0014's rejected alternatives already refused by name, since laptop-vs-cluster
+    *"is exactly the pair… Refusing would decline the case it is for."*
+
+    `n_packages` IS package-specific, so a count that moved is a real difference and is reported
+    as one. A digest that differs while the count agrees is reported only as the limit it is.
+
+    THE DIGESTS ARE READ FROM THE RECORD AND THE SNAPSHOT FILES ARE NEVER OPENED. `compare()` is
+    pure and is fed hand-built mappings; giving it a filesystem dependency would make the answer
+    depend on what is still on disk rather than on what was recorded.
+    """
     how_a, how_b = _obs(a, "packages_recorded"), _obs(b, "packages_recorded")
     blocked = None
     if how_a != how_b:
@@ -417,7 +459,24 @@ def _packages(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.
     for name in sorted(set(left) | set(right)):
         if left.get(name) != right.get(name):
             lines.append(f"{name}  {left.get(name, '<absent>')} -> {right.get(name, '<absent>')}")
-    return Dimension("packages", lines, f"{len(left)} vs {len(right)}", blocked)
+    examined = f"{len(left)} vs {len(right)}"
+
+    snap_a, snap_b = _snapshot_of(a), _snapshot_of(b)
+    digest_a, digest_b = snap_a.get("sha256"), snap_b.get("sha256")
+    if not left and not right and digest_a and digest_b:
+        count_a, count_b = snap_a.get("n_packages"), snap_b.get("n_packages")
+        if digest_a == digest_b:
+            examined = f"snapshot {str(digest_a)[:12]} on both"
+        else:
+            examined = f"snapshot {str(digest_a)[:12]} vs {str(digest_b)[:12]}"
+            if count_a != count_b:
+                lines.append(f"package count  {count_a} -> {count_b}")
+            blocked = blocked or (
+                "the two runs recorded different environment snapshots, and a snapshot digest "
+                "covers the interpreter and the platform as well as the packages, so it cannot "
+                "say which of them moved"
+            )
+    return Dimension("packages", lines, examined, blocked)
 
 
 def _steps_of(
