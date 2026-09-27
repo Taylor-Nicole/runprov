@@ -10267,6 +10267,115 @@ def test_a_disagreement_is_a_block_and_its_absence_is_not_an_empty_one(tmp_path)
     assert "BYTES DIFFER" not in "\n".join(clean.lines)
 
 
+def test_report_says_the_artifacts_own_bytes_were_not_checked(tmp_path, capsys):
+    """[ADR-0017 R-14] I-09. A NEVER-CHECKED ARTIFACT USED TO SERIALISE AS BARE `OK`.
+
+    `verify_artifact` sets `body_checked` only when there is a body digest to check, so its
+    ABSENCE carried the finding — and an absence is what a reader infers rather than reads.
+    `report` took `status`, `reason` and `inputs` off that result and dropped the rest.
+
+    THE QUICKSTART SHAPE IS THE ONE THAT HURTS. `run.output()` plus `run.header()` — the pattern
+    this package's own front-page docstring shows — writes no body digest at all. Measured: an
+    artifact written that way, then edited, reports `OK` from `report` while `verify`'s own
+    summary says "0 of 1 could be asked". Same artifact, same second, two commands, and only one
+    of them said the strongest check had not been made.
+
+    `False` RATHER THAN AN ABSENT KEY, which is the rule I-06 settled one command along: a
+    present `false` is *looked, and it could not be asked*; a missing key is a fact a consumer
+    has to infer.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    with runprov.Run("s", {}, provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with open(run.output(tmp_path / "out.tsv"), "w", encoding="utf-8") as fh:
+            fh.write(run.header(comment="# ") + "payload\n")
+    (tmp_path / "out.tsv").write_text(
+        (tmp_path / "out.tsv").read_text(encoding="utf-8") + "MUTATED\n", encoding="utf-8"
+    )
+    capsys.readouterr()
+
+    report = runprov.report.build(tmp_path / "out.tsv", tmp_path, [])
+    assert report.checked.body is False, (
+        f"this pin carries no body digest, so the artifact's own bytes were never checked: "
+        f"{report.checked}"
+    )
+    page = "\n".join(runprov.report.render_page(report))
+    assert "own bytes were NOT checked" in page, f"and the page says so beside the verdict: {page}"
+    assert runprov.report.payload(report)["checked"]["body"] is False
+
+
+def test_report_carries_the_two_things_a_pin_declares_about_itself(tmp_path):
+    """[ADR-0017 R-14] I-09. `pin_partial` AND `pin_truncated`, BOTH DROPPED.
+
+    A pin under `allow_late_inputs=True` declares its own scope — it covers what was registered
+    BEFORE it was written — and a pin whose declared input count exceeds the entries it carries
+    has been truncated or edited. `verify` prints both. `report` printed neither, and its input
+    list is exactly the pin's, so the page listed one input for a run that read two and said
+    nothing about the list being short.
+
+    THE SKEPTIC NARROWED THE LEDGER'S WORDING AND IT IS WORTH KEEPING: a truncated pin does NOT
+    serialise as bare `OK`. `verify_artifact` sets the status to STALE when `truncated` is
+    non-empty, so the alarm survives; what was lost is the REASON, which is the actionable half.
+    """
+    late = tmp_path / "late"
+    late.mkdir()
+    runprov.configure(root=late, run_log=late / "h.jsonl", auto_steps="off", allow_late_inputs=True)
+    (late / "a.tsv").write_text("a\n", encoding="utf-8")
+    (late / "b.tsv").write_text("b\n", encoding="utf-8")
+    with runprov.Run("late", {}, provenance=late / "p.json") as run:
+        run.input(late / "a.tsv")
+        with open(run.output(late / "out.tsv"), "w", encoding="utf-8") as fh:
+            fh.write(run.header(comment="# ") + "x\n")
+        run.input(late / "b.tsv")
+
+    report = runprov.report.build(late / "out.tsv", late, [])
+    assert report.checked.partial == ("late",), (
+        f"the pin declares it may understate the run, and names the script: {report.checked}"
+    )
+    page = "\n".join(runprov.report.render_page(report))
+    assert "covers only what it registered BEFORE writing" in page, page
+    assert runprov.report.payload(report)["checked"]["partial"] == ["late"]
+
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    artifact, _ = _reported_run(tmp_path)
+    cut = tmp_path / "cut.tsv"
+    cut.write_text(
+        artifact.read_text(encoding="utf-8").replace("inputs (1)", "inputs (2)"), encoding="utf-8"
+    )
+    short = runprov.report.build(cut, tmp_path, [])
+    assert (
+        short.checked.truncated and "declares 2 input(s), carries 1" in short.checked.truncated[0]
+    )
+    assert short.verdict == "STALE", (
+        "THE ALARM ALREADY SURVIVED — `verify_artifact` sets STALE when a pin is truncated, so "
+        "the ledger's 'serialises as bare OK' was wrong for this one. What was missing is the "
+        f"reason: {short.verdict}, {short.checked.truncated}"
+    )
+    assert "declares more inputs than it carries" in "\n".join(runprov.report.render_page(short))
+
+
+def test_a_clean_artifact_carries_the_qualifications_as_empty_rather_than_absent(tmp_path):
+    """[ADR-0017 R-8] I-09. THE POSITIVE COMPANION, without which the three above are half a test.
+
+    Every field here exists to be read when it is EMPTY as much as when it is full: `body: true`
+    is *the artifact's own bytes were checked and match*, and two empty lists are *looked, and
+    there is nothing to declare*. A payload that carried these only when they had something to
+    say would leave a consumer inferring silence, which is the defect the whole structure is
+    against.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    report = runprov.report.build(artifact, tmp_path, [])
+    assert report.checked == runprov.report.Checked(body=True, truncated=(), partial=())
+    body = runprov.report.payload(report)["checked"]
+    assert body == {"body": True, "truncated": [], "partial": []}, (
+        f"present and empty, never absent: {body}"
+    )
+    page = "\n".join(runprov.report.render_page(report))
+    for phrase in ("own bytes were NOT checked", "covers only what", "declares more inputs"):
+        assert phrase not in page, f"and a clean page says none of it: {phrase!r}"
+
+
 def test_a_file_published_by_copying_is_not_accused_of_having_changed(tmp_path):
     """[ADR-0017 R-10] I-02. THE FALSE POSITIVE, AND IT FIRES ON THE ORDINARY CASE.
 
@@ -10778,7 +10887,44 @@ def _report_fixtures(tmp_path):
             ),
         ),
     ]
+    # I-09. TWO FIXTURES THAT FILL `checked`, AND THEY ARE NOT DECORATION. An EMPTY TUPLE
+    # YIELDS NO LEAF, so a guard walking this structure never reaches `truncated` or `partial`
+    # while every fixture leaves them empty — I-12's blind spot, met while adding the very
+    # field it would have hidden. Both artifacts are real: one pin declares more inputs than it
+    # carries, the other declares that it may understate the run.
+    partial_dir = tmp_path / "late"
+    partial_dir.mkdir()
+    runprov.configure(
+        root=partial_dir,
+        run_log=partial_dir / "h.jsonl",
+        auto_steps="off",
+        allow_late_inputs=True,
+    )
+    (partial_dir / "a.tsv").write_text("a\n", encoding="utf-8")
+    (partial_dir / "b.tsv").write_text("b\n", encoding="utf-8")
+    with runprov.Run("late", {}, provenance=partial_dir / "p.json") as run:
+        run.input(partial_dir / "a.tsv")
+        with open(run.output(partial_dir / "late_out.tsv"), "w", encoding="utf-8") as fh:
+            fh.write(run.header(comment="# ") + "x\n")
+        run.input(partial_dir / "b.tsv")
+    fixtures.append(
+        (
+            "a pin that may understate the run",
+            runprov.report.build(partial_dir / "late_out.tsv", partial_dir, []),
+        )
+    )
+
+    cut = tmp_path / "cut.tsv"
+    cut.write_text(
+        artifact.read_text(encoding="utf-8").replace("inputs (1)", "inputs (2)"),
+        encoding="utf-8",
+    )
+    fixtures.append(
+        ("a pin declaring more inputs than it carries", runprov.report.build(cut, tmp_path, []))
+    )
+
     # LAST, BOTH OF THEM, because each changes what is on disk for everything after it.
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
     (tmp_path / "in.tsv").write_text("moved\n", encoding="utf-8")
     fixtures.append(("an input that moved", runprov.report.render(artifact, tmp_path, log).report))
     side = tmp_path / "out.tsv.prov.txt"

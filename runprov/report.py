@@ -387,6 +387,36 @@ class Limits(typing.NamedTuple):
     run_not_found: bool
 
 
+class Checked(typing.NamedTuple):
+    """What the verification could and could not establish, BESIDE its verdict. I-09.
+
+    `verify_artifact` computes all three of these and `report` read none of them, so the page
+    and the payload both stated a bare verdict where `verify` — over the same artifact, in the
+    same second — printed a qualification. R-14 in one sentence: *a payload names what it could
+    not establish, in the same object as what it found*.
+
+    IT SITS ON `Report`, NOT ON `Body`, and that is the whole reason it is a separate structure.
+    `Body` is None when no run record was found; `verify` runs regardless and computes these
+    regardless. Hanging them off the run would drop exactly the qualifications that matter most
+    on the page with the least else on it.
+
+    `body` IS A BOOLEAN AND FALSE IS AN ANSWER. `verify_artifact` sets `body_checked` only when
+    there is a body digest to check, so its ABSENCE carried the finding — and an absence is what
+    a reader infers rather than reads. The quickstart shape this package documents,
+    `run.output()` plus `run.header()`, writes no body digest at all: measured, an artifact
+    written that way and then edited reports `OK` from both commands, while `verify`'s summary
+    says "0 of 1 could be asked". False here means the strongest check could not be asked.
+
+    `truncated` and `partial` ARE THE PINS' OWN WORDS ABOUT THEMSELVES, kept as the scripts they
+    name rather than as counts: "which pin" is the actionable half, and `verify` already refuses
+    to echo the producer-controlled note beside them.
+    """
+
+    body: bool
+    truncated: tuple[str, ...]
+    partial: tuple[str, ...]
+
+
 class Report(typing.NamedTuple):
     """One artifact's page, as facts. The text is a rendering of THIS, and so is the JSON.
 
@@ -402,6 +432,7 @@ class Report(typing.NamedTuple):
     verdict: str
     reason: str | None
     body: Body | None
+    checked: Checked
 
     @property
     def limits(self) -> Limits:
@@ -498,6 +529,13 @@ def build(
     return Report(
         artifact=artifact,
         verdict=result.get("status", "?"),
+        checked=Checked(
+            # READ OFF THE RESULT `build` ALREADY HOLDS. No second `verify_artifact` call and
+            # nothing re-hashed: these three were computed by the call above and discarded.
+            body=bool(result.get("body_checked")),
+            truncated=tuple(result.get("pin_truncated") or ()),
+            partial=tuple(result.get("pin_partial") or ()),
+        ),
         reason=result.get("reason"),
         body=body,
     )
@@ -650,6 +688,21 @@ def render_page(report: Report) -> list[str]:
     out.append(_kv("verdict", report.verdict))
     if report.reason:
         out.append(_kv("", f"({report.reason})"))
+    # I-09. WITH THE VERDICT, because they qualify it and nothing else on this page does.
+    # `verify` prints all three over the same artifact; this page printed a bare verdict, so a
+    # reader who ran one command and not the other was told less by the page whose whole subject
+    # is what can and cannot be established.
+    checked = report.checked
+    if not checked.body:
+        out.append(
+            _kv("", "the artifact's own bytes were NOT checked — this pin carries no body digest")
+        )
+    for script in checked.truncated:
+        out.append(_kv("", f"the pin written by {script!r} declares more inputs than it carries"))
+    for script in checked.partial:
+        out.append(
+            _kv("", f"the pin written by {script!r} covers only what it registered BEFORE writing")
+        )
 
     body = report.body
     if body is None:
