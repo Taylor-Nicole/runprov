@@ -13468,6 +13468,122 @@ def test_the_depth_fields_travel_in_the_payload_and_truncated_is_left_alone(tmp_
     )
 
 
+def test_the_impact_page_states_the_seed_count_and_it_is_the_only_place_seeds_appear(tmp_path):
+    """[ADR-0015] I-12. THE COUNT A READER CANNOT FALSIFY FROM THE PAGE.
+
+    `seeds` is in this command's guard's own `never` set — the addresses reach no page in any
+    state — so this COUNT is the field's only appearance anywhere a person looks. `report`'s
+    `inputs it was made from (N)` and `diff`'s `N change(s)` each sit directly above the list
+    they count, so a reader can see a discrepancy; this one has nothing to check against.
+
+    AND NO DERIVED GUARD REACHES IT. `_structure_leaves` descends a list to its ELEMENTS, so a
+    list is never a leaf; `_replaced` rebuilds it at the same length. A structure's SHAPE is not
+    among its leaves, exactly as a computed property is not among its fields — the class M09
+    found. Striking this number out passed all three page guards and the whole suite.
+
+    DO NOT FIX THAT BY PERTURBING LIST LENGTH. Anything that changes a list's length also
+    changes the elements the page prints FROM that list, so the page moves for the element and
+    the count contributes no signal. There is no derived perturbation that reaches a count; a
+    plain assertion is the only instrument, and four of them are cheaper than a guard that would
+    not work.
+
+    THE NUMBERS ARE DELIBERATELY DISTINCT — two seeds, three steps, four artifacts — so that a
+    count reading the wrong collection is caught rather than agreeing by coincidence.
+    """
+    step = runprov.impact.Step
+    chain = runprov.impact.Chain(
+        "d" * 64,
+        ["u1", "u2"],
+        [
+            step(1, "u1", "a.py", ["/proj/one.tsv", "/proj/two.tsv"]),
+            step(2, "u2", "b.py", ["/proj/three.tsv"]),
+            step(3, "u3", "c.py", ["/proj/four.tsv"]),
+        ],
+        0,
+        5,
+        0,
+    )
+    page = "\n".join(runprov.impact.render(chain, pathlib.Path("/proj")))
+    assert "2 recorded run(s) read these bytes" in page, (
+        f"the SEED count, which is the only appearance of `seeds` on any page: {page}"
+    )
+    assert "4 artifact(s) derive from them" in page, (
+        f"and the artifact count beside it, a different number from a different collection: {page}"
+    )
+
+
+def test_the_report_page_states_its_input_count_and_its_dropped_path_count(tmp_path):
+    """[ADR-0015] I-12. TWO MORE COUNTS NOTHING ASSERTED.
+
+    `inputs it was made from (N)` was checked by no test at all. `WATCH TRUNCATED` was checked
+    for its MARKER — `any("WATCH TRUNCATED" in line ...)` — and never for its number, so C-06's
+    figure could be struck out or made wrong with the suite green. The marker test is the
+    positive companion; this is the number it never covered.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    for name in ("one.tsv", "two.tsv", "three.tsv"):
+        (tmp_path / name).write_text(f"{name}\n", encoding="utf-8")
+    with runprov.Run("demo", {}, provenance=tmp_path / "p.json") as run:
+        for name in ("one.tsv", "two.tsv", "three.tsv"):
+            run.input(tmp_path / name)
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("x\n")
+
+    # THE REAL HISTORY, because the input list is rendered inside the run section and `body` is
+    # None without a matching record — the first version of this test passed `[]` and asserted
+    # against a page that had no list to count.
+    history = [
+        json.loads(line)
+        for line in (tmp_path / "h.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.startswith("{")
+    ]
+    report = runprov.report.build(tmp_path / "out.tsv", tmp_path, history)
+    page = "\n".join(runprov.report.render_page(report))
+    assert report.body is not None and len(report.body.inputs) == 3
+    assert "inputs it was made from (3)" in page, (
+        f"the heading counts the list beneath it, and nothing asserted that number: {page}"
+    )
+
+    truncated = runprov.report.build(
+        tmp_path / "out.tsv",
+        tmp_path,
+        [
+            _history_record(
+                cwd=tmp_path,
+                outputs=[{"path": "out.tsv", "sha256": "a" * 64}],
+                observation={"unregistered_watch_truncated": 7},
+                unregistered_reads=["conf/a.json"],
+            )
+        ],
+    )
+    watch = "\n".join(runprov.report.render_page(truncated))
+    assert "at least 7 further path(s)" in watch, (
+        f"C-06's figure, asserted as a NUMBER rather than as a marker: {watch}"
+    )
+
+
+def test_the_diff_table_states_how_many_changes_each_dimension_found():
+    """[ADR-0014] I-12. THE FOURTH COUNT, and the one with a companion beneath it.
+
+    `N change(s)` heads the list of differences it counts, so a reader holding the page can see
+    a disagreement — which is why this is the least dangerous of the four and still worth one
+    line. Two differences in one dimension and one in another, so a count reading the wrong
+    dimension's list is caught.
+    """
+    dims = [
+        runprov.diff.Dimension("inputs", ["a -> b", "c -> d"], "2 vs 2", None),
+        runprov.diff.Dimension("outputs", ["e -> f"], "1 vs 1", None),
+    ]
+    comparison = runprov.diff.Comparison(
+        runprov.diff.Side("s", "r1", "t1", "ok"),
+        runprov.diff.Side("s", "r2", "t2", "ok"),
+        dims,
+    )
+    table = "\n".join(runprov.diff.render(comparison))
+    assert "inputs      2 change(s)" in table, f"two differences, counted: {table}"
+    assert "outputs     1 change(s)" in table, f"and one, in the dimension beside it: {table}"
+
+
 def test_impact_walk_survives_a_cycle():
     """A build graph should be acyclic; a history spans years and paths get rewritten.
 
