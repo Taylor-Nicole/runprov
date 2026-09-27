@@ -10376,6 +10376,90 @@ def test_a_clean_artifact_carries_the_qualifications_as_empty_rather_than_absent
         assert phrase not in page, f"and a clean page says none of it: {phrase!r}"
 
 
+def test_every_builder_field_reads_the_record_key_of_its_own_name(tmp_path):
+    """[ADR-0017 R-9] I-03, REWRITTEN. THE MIXUP NO R-1 GUARD CAN SEE.
+
+    THE ROW AS FILED NAMED A MECHANISM THAT IS IMPOSSIBLE, and that correction is worth keeping.
+    It said a payload "mis-pairs two same-typed sibling fields on the way out". There is no such
+    site: every emitter derives its pairing from `_fields` — `report._plain` and `diff._plain`
+    through `value._asdict()`, `impact._plain` and `chain.payload._rendered` through
+    `dict(zip(X._fields, value, strict=True))`, and those two constructions are THE SAME, checked
+    below. An applier sent to the emitters would have been sent to provably safe code.
+
+    WHAT IS REAL IS ONE LEVEL EARLIER. `build` fills these structures with seven near-identical
+    `x=run.get("x")` lines, and two of them reading each other's key corrupts the page and the
+    payload IDENTICALLY — so the two renderings agree, every derived guard passes, and the
+    verdict stays right. Measured: swapping `Run.started_utc` with `finished_utc`, and
+    `Input.pinned` with `found`, each passed all four payload guards AND the whole suite. This
+    file has paid for it once already: `Input`'s own docstring records that the first version of
+    that line "invented `path` and `want` and printed `OK ? ?`".
+
+    DERIVED FROM `_fields`, NEVER A HAND LIST: each structure's own field names are written into
+    the record under those same names, and each must come back under the name it went in as. A
+    field added to any of these structures is covered the moment it exists.
+
+    NOT THE PAYLOAD-VALUE GUARD THE ROW ASKED FOR. The literal version has to know
+    `Step -> dict` and `tuple -> list`, so it reimplements `_plain` — a guard duplicating what it
+    guards. The version that avoids that was built and measured: clean on HEAD, and it catches
+    nothing the suite does not already catch, including neither of the two swaps above.
+    """
+    step = runprov.impact.Step(1, "a", "b", [])
+    link = runprov.chain.Link(1, "INTACT", "aa", "aa", "0.6.0")
+    for built in (step, link):
+        # `strict=True`, EXACTLY AS THE EMITTERS WRITE IT. Demonstrating this with a plain
+        # `zip()` would be demonstrating a different expression from the one in production,
+        # which is the shape of mistake this whole row is about.
+        assert dict(zip(type(built)._fields, built, strict=True)) == built._asdict(), (
+            f"the filed mechanism, shown impossible rather than argued: {type(built).__name__}"
+        )
+
+    def sentinels(structure, skip=()):
+        return {f: f"sentinel-{f}" for f in structure._fields if f not in skip}
+
+    # `cwd` IS EXCLUDED, and not for convenience: it is the key that decides where a recorded
+    # output path resolves, so a sentinel there stops the record matching the artifact at all
+    # and the test would assert nothing. It is the one field whose value this page USES rather
+    # than merely reports.
+    run_keys = sentinels(runprov.report.Run, skip=("cwd",))
+    tool_keys = sentinels(runprov.report.Tool)
+    obs_keys = sentinels(runprov.report.Observation)
+    # `tool` and `environment` are nested structures rather than record keys of their own name;
+    # `Tool` is checked in its own right below.
+    method_keys = sentinels(runprov.report.Method, skip=("tool", "environment"))
+
+    artifact, _ = _reported_run(tmp_path)
+    record = _history_record(
+        cwd=tmp_path,
+        outputs=[{"path": "out.tsv", "sha256": "a" * 64}],
+        **run_keys,
+        **method_keys,
+        tool=tool_keys,
+        observation=obs_keys,
+    )
+    body = runprov.report.build(artifact, tmp_path, [record]).body
+    assert body is not None, "the record must still match the artifact"
+
+    for name, value in run_keys.items():
+        assert getattr(body.run, name) == value, (
+            f"`Run.{name}` must read the record's own {name!r} key, and reads "
+            f"{getattr(body.run, name)!r} — a mixup here corrupts BOTH renderings identically, "
+            "so no guard comparing them can see it"
+        )
+    for name, value in method_keys.items():
+        assert getattr(body.method, name) == value, f"`Method.{name}` reads {name!r}"
+    for name, value in tool_keys.items():
+        assert getattr(body.method.tool, name) == value, f"`Tool.{name}` reads {name!r}"
+    for name, value in obs_keys.items():
+        assert getattr(body.observation, name) == value, f"`Observation.{name}` reads {name!r}"
+
+    # `Input` is filled from `verify`'s result rather than from the history record, so it is
+    # asserted against its own builder with the same rule.
+    entry = sentinels(runprov.report.Input)
+    built = runprov.report._input(entry)
+    for name, value in entry.items():
+        assert getattr(built, name) == value, f"`Input.{name}` reads {name!r}"
+
+
 def test_a_file_published_by_copying_is_not_accused_of_having_changed(tmp_path):
     """[ADR-0017 R-10] I-02. THE FALSE POSITIVE, AND IT FIRES ON THE ORDINARY CASE.
 
