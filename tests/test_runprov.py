@@ -12769,6 +12769,13 @@ def _impact_state(chain):
     places and explain it in none.
     """
     shape = "truncated" if chain.truncated else ("derives" if chain.steps else "no reader")
+    if chain.beyond_depth:
+        # I-04. A THIRD THING DECIDES VISIBILITY. `depth_limit` and `beyond_depth` are stated
+        # only inside the STOPPED sentence, which renders only for a walk the limit actually
+        # cut. Without this the depth-limited fixture and the unlimited ones share one state
+        # label, so the silent set lumps together a field that IS stated with one that is not
+        # and the assertion stops meaning anything.
+        shape += ", depth-limited"
     return shape if (chain.unregistered or chain.watch_drops) else f"{shape}, no blind spot"
 
 
@@ -12816,6 +12823,23 @@ def _impact_fixtures():
         (
             "a run that wrote nothing recorded",
             runprov.impact.Chain("b" * 64, ["u5"], [step(1, "u5", "probe.py", [])], 0, 2, 0),
+        ),
+        (
+            # I-04. A WALK THE DEPTH LIMIT CUT. Without it `depth_limit` reaches the page in no
+            # state and the guard says so — which is the guard working, not an obstacle: the
+            # STOPPED sentence is the only place either field is stated, so a fixture set that
+            # never sets a limit leaves both of them unexercised.
+            "a walk stopped by --depth",
+            runprov.impact.Chain(
+                "e" * 64,
+                ["u1"],
+                [step(1, "u1", "align.py", ["/proj/aligned.tsv"])],
+                0,
+                3,
+                0,
+                depth_limit=1,
+                beyond_depth=2,
+            ),
         ),
         (
             "an output outside the project root",
@@ -12899,10 +12923,38 @@ def test_every_field_the_impact_payload_carries_is_stated_by_the_page():
 
     assert silent == {
         (("seeds", "[]"), state)
-        for state in ("derives", "derives, no blind spot", "truncated, no blind spot")
-    } | {(("steps", "[]", "address"), state) for state in ("derives", "derives, no blind spot")} | {
+        for state in (
+            "derives",
+            "derives, no blind spot",
+            "derives, depth-limited, no blind spot",
+            "truncated, no blind spot",
+        )
+    } | {
+        (("steps", "[]", "address"), state)
+        for state in ("derives", "derives, no blind spot", "derives, depth-limited, no blind spot")
+    } | {
         (("runs_examined",), f"{shape}, no blind spot")
-        for shape in ("derives", "truncated", "no reader")
+        for shape in ("derives", "derives, depth-limited", "truncated", "no reader")
+    } | {
+        # I-04. BOTH DEPTH FIELDS ARE STATED IN EXACTLY ONE SENTENCE — the STOPPED block — and
+        # it renders only for a walk that HAS steps and whose limit actually cut something. So
+        # they are silent wherever no sentence could mention them, which is the safe direction:
+        # the payload carries the limit and its cost, the page states them only where they
+        # changed the answer.
+        (("depth_limit",), state)
+        for state in (
+            "derives",
+            "derives, no blind spot",
+            "no reader, no blind spot",
+            "truncated, no blind spot",
+        )
+    } | {
+        # `beyond_depth` differs from `depth_limit` in the two STEPLESS states: there `render`
+        # takes the "nothing derives" or "TRUNCATED" branch and never reaches the block, so
+        # perturbing it moves nothing. With steps present it does move the page, which is why
+        # those two states are absent here and `depth_limit`'s four are not.
+        (("beyond_depth",), state)
+        for state in ("no reader, no blind spot", "truncated, no blind spot")
     }, (
         "the page abbreviates in exactly three places, all of them the safe direction — the "
         "machine reader is told more than the person, never less. `seeds` reaches the page as a "
@@ -13214,6 +13266,121 @@ def test_the_diff_payload_carries_the_unreadable_count_and_two_addresses_carry_z
     assert named["unreadable"] == 0, (
         "and naming both runs resolves each by address, so 0 is correct rather than a gap — "
         f"asserted so it is not later 'fixed' into a figure counted once per target: {named}"
+    )
+
+
+def _three_deep(tmp_path):
+    """ref.fa -> align -> genotype -> summarise, three real runs, one behind the other."""
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    (tmp_path / "ref.fa").write_text(">r\nACGT\n", encoding="utf-8")
+    for name, reads, writes in (
+        ("align", "ref.fa", "aligned.tsv"),
+        ("genotype", "aligned.tsv", "geno.tsv"),
+        ("summarise", "geno.tsv", "summary.tsv"),
+    ):
+        with runprov.Run(name, {}, provenance=tmp_path / f"{name}.json") as run:
+            with open(run.input(tmp_path / reads), encoding="utf-8") as fh:
+                fh.read()
+            with run.open_output(tmp_path / writes) as out:
+                out.write(f"{name}\n")
+    return tmp_path / "h.jsonl"
+
+
+def test_impact_stops_claiming_a_complete_order_when_depth_cut_the_walk(tmp_path, capsys):
+    """[ADR-0015] I-04. "REBUILD IN THAT ORDER", OVER AN ORDER MISSING TWO THIRDS OF ITSELF.
+
+    ADR-0015's *what it must never claim* opens with **"That the list is complete."** At
+    `--depth 1` over a three-deep chain the page printed `1 artifact(s) derive from them` and
+    `Rebuild in that order`, and a rebuild script following it leaves `geno.tsv` and
+    `summary.tsv` stale.
+
+    THE ROW'S OWN FRAMING WAS WRONG ABOUT `truncated`, AND THAT IS WORTH KEEPING. Truncation to
+    NOTHING is that field's documented meaning, worded identically in three places, so
+    `truncated: false` here is consistent with its definition rather than a bug in it. The defect
+    is the page's claim, not the field.
+
+    THE DISCLOSURE DISPLACES THE CLAIM RATHER THAN SITTING UNDER IT — H1-1's shape: a footnote
+    beneath "Rebuild in that order" would leave that instruction standing.
+    """
+    log = _three_deep(tmp_path)
+    ref = str(tmp_path / "ref.fa")
+    capsys.readouterr()
+
+    assert runprov.__main__.main(["impact", ref, "--log", str(log)]) == 1
+    whole = capsys.readouterr().out
+    assert "3 artifact(s) derive" in whole and "Rebuild in that order" in whole
+
+    code = runprov.__main__.main(["impact", ref, "--log", str(log), "--depth", "1"])
+    cut = capsys.readouterr().out
+    assert "Rebuild in that order" not in cut, (
+        f"the page must stop instructing a rebuild in an order it has not got: {cut}"
+    )
+    assert "STOPPED AT DEPTH 1" in cut and "NOT the whole order" in cut, cut
+    assert code == 1, (
+        "AND THE EXIT CODE DOES NOT MOVE. Folding this into `truncated` would make "
+        "`runprov impact ref.fa --depth 1 || abort` exit 2 for ever on any chain deeper than "
+        f"one — a gate that cannot pass, built out of a disclosure: {code}"
+    )
+
+
+def test_a_depth_limit_that_cut_nothing_says_nothing(tmp_path, capsys):
+    """[ADR-0015] I-04. THE HALF THAT STOPS THE DISCLOSURE BEING NOISE.
+
+    `--depth 3` over a three-deep chain reaches nothing at depth four, so the limit cost
+    nothing and the page must read exactly as it does with no limit at all. Echoing the flag
+    would have printed a truncation warning on a complete answer — which is the same class of
+    false sentence as the one this row removes, pointing the other way.
+
+    MEASURED, NOT ECHOED: `beyond_depth` counts runs the walk REACHED and did not follow.
+    """
+    log = _three_deep(tmp_path)
+    ref = str(tmp_path / "ref.fa")
+    capsys.readouterr()
+
+    for depth in ("3", "4"):
+        assert runprov.__main__.main(["impact", ref, "--log", str(log), "--depth", depth]) == 1
+        out = capsys.readouterr().out
+        assert "STOPPED AT DEPTH" not in out, f"--depth {depth} cut nothing: {out}"
+        assert "3 artifact(s) derive" in out and "Rebuild in that order" in out
+
+    runprov.__main__.main(["impact", ref, "--log", str(log), "--depth", "3", "--format", "json"])
+    body = json.loads(capsys.readouterr().out)
+    assert body["depth_limit"] == 3 and body["beyond_depth"] == 0, (
+        f"the limit is carried, and its cost is zero: {body['depth_limit']}, {body['beyond_depth']}"
+    )
+
+
+def test_the_depth_fields_travel_in_the_payload_and_truncated_is_left_alone(tmp_path, capsys):
+    """[ADR-0017 R-14] I-04. A CONSUMER HAD NO FIELD FROM WHICH TO DETECT THIS.
+
+    The payload carried neither the requested depth nor what it cost, so a rebuild script
+    reading `steps` and seeing `truncated: false` had nothing to go on. Both travel now.
+
+    `truncated` IS UNTOUCHED, and the three exit codes with it. It keeps its documented meaning
+    — the walk was cut before it reached ANY consumer — which is why `--depth 0` still exits 2
+    and `--depth 1` still exits 1.
+    """
+    log = _three_deep(tmp_path)
+    ref = str(tmp_path / "ref.fa")
+    capsys.readouterr()
+
+    runprov.__main__.main(["impact", ref, "--log", str(log), "--depth", "1", "--format", "json"])
+    cut = json.loads(capsys.readouterr().out)
+    assert cut["depth_limit"] == 1
+    assert cut["beyond_depth"] >= 1, f"a run was reached and not followed: {cut['beyond_depth']}"
+    assert cut["truncated"] is False, (
+        "`truncated` keeps its own meaning — the walk reached a consumer, so it was not cut "
+        f"before reaching any: {cut}"
+    )
+
+    code = runprov.__main__.main(["impact", ref, "--log", str(log), "--depth", "0"])
+    capsys.readouterr()
+    assert code == 2, "and --depth 0 is still CANNOT CHECK, unchanged by this row"
+
+    runprov.__main__.main(["impact", ref, "--log", str(log), "--format", "json"])
+    whole = json.loads(capsys.readouterr().out)
+    assert whole["depth_limit"] is None and whole["beyond_depth"] == 0, (
+        f"with no limit asked for, there is none to report: {whole['depth_limit']}"
     )
 
 

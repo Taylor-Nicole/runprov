@@ -1369,9 +1369,27 @@ def _impact(args: argparse.Namespace) -> int:
         # the line that prints it says so now instead of claiming a floor it cannot support.
         watch_drops += (record.get("observation") or {}).get("unregistered_watch_truncated") or 0
 
-    steps = impact_mod.walk(digest, consumers, graph["edges"], names, outputs_by, args.depth)
+    beyond: list[int] = [0]
+    steps = impact_mod.walk(
+        digest, consumers, graph["edges"], names, outputs_by, args.depth, beyond
+    )
+    # BY KEYWORD, NOT BY POSITION. `Chain` has grown three defaulted fields in this audit and
+    # each was appended in the middle of the list — I-04's two landed between `watch_drops` and
+    # I-01's `unreadable`, which silently re-assigned THREE arguments in this call: the depth
+    # limit received the unreadable count, `beyond_depth` received the flag, and `unreadable`
+    # received the beyond count. The page then reported a truncation on a walk that cut nothing.
+    # Keywords make the order of the structure irrelevant to this call, which is the only fix
+    # that does not have to be re-made every time a field is added.
     chain = impact_mod.Chain(
-        digest, consumers.get(digest, []), steps, unregistered, runs, watch_drops, counted[0]
+        digest=digest,
+        seeds=consumers.get(digest, []),
+        steps=steps,
+        unregistered=unregistered,
+        runs_examined=runs,
+        watch_drops=watch_drops,
+        unreadable=counted[0],
+        depth_limit=args.depth,
+        beyond_depth=beyond[0],
     )
     if args.format == "json":
         # NOTHING ELSE ON STDOUT (R-4). Both of this command's diagnostics — the missing history

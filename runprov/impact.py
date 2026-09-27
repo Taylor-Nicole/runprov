@@ -68,6 +68,25 @@ class Chain(typing.NamedTuple):
     #: tests, and a required sixth field would have made adding the blind spot a breaking
     #: change nobody made.
     watch_drops: int = 0
+    #: I-04 of Audit I. The `--depth` ceiling this walk was given, and what it cost.
+    #:
+    #: `truncated` above is NOT this, and the row that filed this said otherwise. Truncation to
+    #: NOTHING is `truncated`'s documented meaning, worded identically in three places, so
+    #: `truncated: false` at `--depth 1` is consistent with that field's own definition. What is
+    #: wrong is the page: it prints "N artifact(s) derive from them" and "Rebuild in that order"
+    #: over an order missing two thirds of itself, and ADR-0015's own *what it must never claim*
+    #: opens with **"That the list is complete."**
+    #:
+    #: `beyond_depth` IS MEASURED, NOT ECHOED. `--depth 3` over a three-deep chain cuts nothing
+    #: and must say nothing; only a run the walk reached and did not follow counts. So the pair
+    #: distinguishes a generous limit from one that cost something, which echoing the flag alone
+    #: cannot.
+    #:
+    #: NEITHER MOVES THE EXIT CODE. Folding this into `truncated` would make
+    #: `runprov impact ref.fa --depth 1 || abort` exit 2 for ever on any chain deeper than one —
+    #: a gate that cannot pass, built out of a disclosure. The three exit codes are unchanged.
+    depth_limit: int | None = None
+    beyond_depth: int = 0
     #: I-01 of Audit I. Lines of the history this query could not read at all.
     #:
     #: `impact`'s answer is a SET OF RUNS THAT READ A DIGEST, and an unreadable line is a hole
@@ -176,6 +195,7 @@ def walk(
     scripts: typing.Mapping[str, str],
     outputs_by: typing.Mapping[str, list[str]],
     max_depth: int | None = None,
+    beyond: list[int] | None = None,
 ) -> list[Step]:
     """Every run reachable forward from the runs that read `digest`, breadth first.
 
@@ -187,6 +207,12 @@ def walk(
     history spans years; `seen` is what makes the traversal total rather than an assumption
     about somebody else's pipeline being well-formed.
     """
+    # NORMALISED ONCE, not tested per item. `_lineage` does the same with its own `bad`
+    # out-parameter (`bad if bad is not None else [0]`), and for the same reason: a
+    # `if beyond is not None` inside the loop is a branch whose False arm exists only to be
+    # skipped, which this file already has an opinion about — an arm that cannot fire reads as
+    # a case that can happen, and it cannot be covered without a test written to reach nothing.
+    counted = beyond if beyond is not None else [0]
     forward: dict[str, list[str]] = {}
     for producer, consumer in edges:
         forward.setdefault(producer, []).append(consumer)
@@ -197,6 +223,16 @@ def walk(
     while frontier:
         depth, address = frontier.pop(0)
         if max_depth is not None and depth > max_depth:
+            # I-04. COUNTED, NOT JUST SKIPPED. This entry is a run the walk HAD ALREADY REACHED
+            # and chose not to follow, which is the difference between a limit that cost
+            # something and one that did not: `--depth 3` over a three-deep chain reaches
+            # nothing at depth four, so this never fires and the page says nothing.
+            #
+            # IT IS A COUNT OF RUNS REACHED AND NOT FOLLOWED, and the sentence says exactly
+            # that. Anything past them was never enqueued at all, so this is not a count of
+            # what the answer is missing and must not be worded as one — D-07 is in this file
+            # already, where "at least N path(s)" was a claim a sum could not support.
+            counted[0] += 1
             continue
         steps.append(
             Step(depth, address, str(scripts.get(address, "?")), list(outputs_by.get(address, ())))
@@ -267,7 +303,19 @@ def render(chain: Chain, root: pathlib.Path | None = None) -> list[str]:
             if not step.outputs:
                 out.append(f"{head}  (wrote nothing recorded)")
             out += [f"{head} → {shorten(name, root)}" for name in step.outputs]
-        out += ["", "  Rebuild in that order; `runprov verify <artifact>` confirms each one."]
+        if chain.beyond_depth:
+            # I-04. THE SENTENCE THAT CLAIMED COMPLETENESS IS THE ONE THAT CHANGES. A footnote
+            # under "Rebuild in that order" would leave that instruction standing over an order
+            # missing most of itself, which is H1-1's shape: the disclosure has to displace the
+            # false clause, not sit beneath it.
+            out += [
+                "",
+                f"  STOPPED AT DEPTH {chain.depth_limit}: {chain.beyond_depth} run(s) this walk "
+                "reached were not followed, and anything past them was never looked at.",
+                "  Rebuild what is listed, then raise --depth — this is NOT the whole order.",
+            ]
+        else:
+            out += ["", "  Rebuild in that order; `runprov verify <artifact>` confirms each one."]
 
     out += ["", "  NOT SEEN BY THIS QUERY:"]
     if chain.unreadable:
