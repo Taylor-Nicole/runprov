@@ -85,7 +85,7 @@ from .show import (
     staleness,
 )
 from .show import render_yaml as _yaml_doc
-from .verify import GONE, STALE, render_report, verify
+from .verify import FAILING, GONE, OK, STALE, render_report, verify
 from .watch import unregistered
 
 #: WHAT AN EXIT CODE MEANS, in every subcommand (ledger L-81, decided 2026-09-01).
@@ -1590,7 +1590,25 @@ def _report(args: argparse.Namespace) -> int:
     # THE EXIT CODE DOES NOT MOVE WITH THE FORMAT. `--format json` is a rendering choice, not a
     # different question, and a gate that answers differently depending on how it was asked to
     # print is a gate nobody can reason about.
-    return 0 if result.ok else 1
+    #
+    # I-10. THREE CODES, DERIVED FROM `verify`'s OWN VOCABULARY. `0 if result.ok else 1` folded
+    # five verdicts into two, so `NO PIN` and `UNVERIFIABLE` — which `verify` reports as 2 for
+    # the same artifact in the same second — came back as 1, "checked and wrong". ADR-0007 was
+    # written to refuse exactly that: *"Collapsing them turns 'your provenance is not running at
+    # all' into 'your results are stale', and sends somebody to re-run a pipeline over a problem
+    # that re-running cannot touch."* `check` was fixed for this in A-08 — "three outcomes,
+    # three codes" — and this command was not, though its own docstring already promises 2 for
+    # an absent artifact.
+    #
+    # DERIVED, NOT ENUMERATED. `FAILING` is the package's own name for "checked and wrong", so a
+    # verdict that is neither `OK` nor in it falls to CANNOT_CHECK — which means a SIXTH verdict
+    # added to `verify` defaults to the safe answer here rather than being silently folded into
+    # "wrong". Hand-listing the two would have put the scope pattern in the exit code.
+    if result.report.verdict == OK:
+        return 0
+    if result.report.verdict in FAILING:
+        return 1
+    return CANNOT_CHECK
 
 
 def _check(args: argparse.Namespace) -> int:

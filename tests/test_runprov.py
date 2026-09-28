@@ -10460,6 +10460,71 @@ def test_every_builder_field_reads_the_record_key_of_its_own_name(tmp_path):
         assert getattr(built, name) == value, f"`Input.{name}` reads {name!r}"
 
 
+def test_report_and_verify_return_the_same_code_for_the_same_artifact(tmp_path, capsys):
+    """[ADR-0007] I-10. TWO COMMANDS, ONE ARTIFACT, ONE ANSWER.
+
+    `report` folded five verdicts into two codes — `0 if result.ok else 1` — so `NO PIN` and
+    `UNVERIFIABLE` came back as 1, "checked and wrong", while `verify` reported 2 for the same
+    artifact in the same second. ADR-0007 exists to refuse that: *"Collapsing them turns 'your
+    provenance is not running at all' into 'your results are stale', and sends somebody to re-run
+    a pipeline over a problem that re-running cannot touch."*
+
+    IT WAS ALREADY THIS COMMAND'S CONTRACT. `_report`'s own docstring promises *"2 when the
+    artifact is not there"*, and it returns 2 there — so the third code was already in use and
+    applied to one state out of two that deserve it. `check` was fixed for the same thing in A-08
+    ("three outcomes, three codes"); this command was missed.
+
+    DERIVED FROM `verify`'s OWN VOCABULARY, NOT A HAND-WRITTEN MAP. The expected code below is
+    computed from `OK` and `FAILING` — the package's own name for "checked and wrong" — so a
+    SIXTH verdict added to `verify` is asserted here automatically, and falls to CANNOT_CHECK
+    rather than being folded into "wrong". Hand-listing the two verdicts would have put the scope
+    pattern into an exit code.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    for tag in ("a", "b"):
+        (tmp_path / f"in_{tag}.tsv").write_text(f"{tag}\n", encoding="utf-8")
+        with runprov.Run(f"r{tag}", {}, provenance=tmp_path / f"p{tag}.json") as run:
+            run.input(tmp_path / f"in_{tag}.tsv")
+            with run.open_output(tmp_path / f"out_{tag}.tsv") as fh:
+                fh.write(f"{tag}\n")
+    (tmp_path / "in_b.tsv").write_text("CHANGED\n", encoding="utf-8")  # out_b -> STALE
+    (tmp_path / "nopin.tsv").write_text("nothing produced this\n", encoding="utf-8")
+    # A pin naming a script and making NO statement about inputs: the run cannot be re-checked
+    # from it, which is what UNVERIFIABLE means. No `chmod`, so it holds on every leg.
+    (tmp_path / "silent.tsv").write_text(
+        f"# {runprov.hashing.PIN_ANCHOR}\n#   script     : s\n", encoding="utf-8"
+    )
+    log = str(tmp_path / "h.jsonl")
+    capsys.readouterr()
+
+    seen = {}
+    for name in ("out_a.tsv", "out_b.tsv", "nopin.tsv", "silent.tsv"):
+        artifact = tmp_path / name
+        verdict = runprov.verify.verify_artifact(artifact, tmp_path)["status"]
+        expected = (
+            0 if verdict == runprov.verify.OK else (1 if verdict in runprov.verify.FAILING else 2)
+        )
+        got = runprov.__main__.main(["report", str(artifact), "--log", log])
+        capsys.readouterr()
+        other = runprov.__main__.main(["verify", str(artifact), "--root", str(tmp_path)])
+        capsys.readouterr()
+        seen[verdict] = got
+        assert got == expected, (
+            f"{name} is {verdict!r}: 0 for OK, 1 for a verdict in `verify.FAILING`, 2 for "
+            f"anything else — `report` returned {got}"
+        )
+        assert got == other, (
+            f"and `verify` returned {other} for the same artifact. Two commands disagreeing "
+            "about one file is the shape this package keeps finding"
+        )
+
+    assert seen["NO PIN"] == 2 and seen["UNVERIFIABLE"] == 2, (
+        "THE TWO THAT MOVED, named so the change is not silent: both used to be 1, which is "
+        f"'checked and wrong' — and neither was checked at all: {seen}"
+    )
+    assert seen["OK"] == 0 and seen["STALE"] == 1, f"and the other two are unchanged: {seen}"
+
+
 def test_a_file_published_by_copying_is_not_accused_of_having_changed(tmp_path):
     """[ADR-0017 R-10] I-02. THE FALSE POSITIVE, AND IT FIRES ON THE ORDINARY CASE.
 

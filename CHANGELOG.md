@@ -120,6 +120,34 @@ front of a string cannot detect a rendering that shows only the front.** That is
 one level in: not the guard's logic, but the range its substitutions cover, failing to reach what
 it reports on.
 
+### Changed — `runprov report` exits 2 for `NO PIN` and `UNVERIFIABLE`, matching `verify`
+
+**A behaviour change on a documented path, and deliberately so** — Audit I, I-10, decided by
+Taylor. `report` folded five verdicts into two codes (`0 if result.ok else 1`), so `NO PIN` and
+`UNVERIFIABLE` came back as **1** — *checked and wrong* — while `verify` reported **2** for the
+same artifact in the same second. Measured, back to back on one file: `verify nopin.tsv` exited 2
+with *"NOTHING CHECKED … this is 'we could not look', not 'nothing is wrong'"*, and
+`report nopin.tsv` exited 1.
+
+ADR-0007 was written to refuse exactly this: *"Collapsing them turns 'your provenance is not
+running at all' into 'your results are stale', and sends somebody to re-run a pipeline over a
+problem that re-running cannot touch."* `check` was brought into line in A-08 — "three outcomes,
+three codes" — and this command was missed, **though its own docstring already promised 2 for an
+absent artifact**. So the third code was already this command's contract, applied to one state out
+of the three that deserve it.
+
+**What moves:** `NO PIN` and `UNVERIFIABLE`, from 1 to 2. `OK` stays 0 and `STALE`/`GONE` stay 1.
+A gate written `runprov report x || abort` is unaffected — both codes are non-zero. A gate written
+`if rc == 1` will stop treating *could not check* as *checked and wrong*, which is the correction.
+
+**Derived, not enumerated.** The mapping reads `verify.OK` and `verify.FAILING` — the package's own
+name for *checked and wrong* — so a verdict that is neither falls to 2. A sixth verdict added to
+`verify` therefore defaults to the safe answer rather than being folded silently into "wrong", and
+the test asserts the same expression rather than a second copy of the list.
+
+Measured over all four verdicts an artifact can have, `report` and `verify` now return the same
+code for the same file: OK 0/0, STALE 1/1, UNVERIFIABLE 2/2, NO PIN 2/2.
+
 ### Fixed — `runprov chain` describes a claimless line by who wrote it, not by where it sits
 
 Audit H, H1-1/H1-2/H1-3. R-25's rule 4 decides `UNCHAINED` by POSITION, so every claimless
