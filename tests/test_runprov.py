@@ -10525,6 +10525,153 @@ def test_report_and_verify_return_the_same_code_for_the_same_artifact(tmp_path, 
     assert seen["OK"] == 0 and seen["STALE"] == 1, f"and the other two are unchanged: {seen}"
 
 
+def _claimless_history(tmp_path, version, name):
+    """Three lines, no chain claims, all written by `version` — R-22's lock-less mount shape."""
+    path = tmp_path / name
+    path.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "schema": "runprov.history.v2",
+                    "run_uid": f"u{i}",
+                    "script": "s",
+                    "started_utc": f"2026-01-0{i}T00:00:00Z",
+                    "status": "ok",
+                    "tool": {"version": version},
+                }
+            )
+            for i in (1, 2, 3)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_the_pre_chain_diagnosis_reaches_a_consumer_and_not_only_the_page(tmp_path):
+    """[ADR-0017 R-1] [ADR-0017 R-14] I-08. THE INPUT TRAVELLED AND THE CONCLUSION DID NOT.
+
+    Two histories differing ONLY in the version that wrote their lines print opposite pages —
+    "This history was written before the chain existed" against "they do NOT predate the chain" —
+    and produced payloads identical but for `edges[].wrote`. To reach the same answer a consumer
+    had to reimplement `_could_have_chained` against `CHAINS_FROM`, which is private
+    (`chain.__all__` is empty), named in no document, and `null` on every 0.1.0 record.
+
+    That is R-1's own argument pointed at the consumer instead of at the codebase: two copies of
+    one predicate are two things that can disagree. `impact.Chain.truncated` exists for exactly
+    this reason and is the precedent.
+
+    COMPARED BY VALUE AGAINST THE PAGE, not merely asserted present. M09 of row 3 was a computed
+    field pinned to a constant that passed every guard because the guards check a payload's KEYS;
+    `chain` has no page-versus-payload guard at all, so this test is the only thing joining the
+    two renderings of this field.
+    """
+    pre = _claimless_history(tmp_path, "0.5.0", "pre.jsonl")
+    cap = _claimless_history(tmp_path, "0.6.0", "cap.jsonl")
+
+    answers = {}
+    for path in (pre, cap):
+        report = runprov.chain.verify(path)
+        page = "\n".join(runprov.chain.render(report, path))
+        body = runprov.chain.payload(report, path)
+        flags = {edge["could_chain"] for edge in body["edges"]}
+        assert len(flags) == 1, f"every line was written by one release: {flags}"
+        answers[path.name] = (flags.pop(), page, body)
+
+    (pre_flag, pre_page, pre_body) = answers["pre.jsonl"]
+    (cap_flag, cap_page, cap_body) = answers["cap.jsonl"]
+
+    assert pre_flag is False and cap_flag is True, (
+        f"the payload's own answer differs where the page's does: {pre_flag}, {cap_flag}"
+    )
+    assert "before the chain existed" in pre_page and "do NOT predate the chain" not in pre_page
+    assert "do NOT predate the chain" in cap_page and "before the chain existed" not in cap_page
+    assert pre_body["status"] == cap_body["status"] == "CANNOT_CHECK", (
+        "the VERDICT is the same for both, which is why the payload used to be unable to tell "
+        f"them apart: {pre_body['status']}, {cap_body['status']}"
+    )
+
+    # THE FIELD AGREES WITH THE PAGE, in both directions, which is what M09 says to assert.
+    for flag, page in ((pre_flag, pre_page), (cap_flag, cap_page)):
+        assert flag is ("do NOT predate the chain" in page), (
+            f"`could_chain` is the page's own predicate, not a second one: {flag}"
+        )
+
+    # AND NO PRIVATE CONSTANT IS NEEDED TO READ IT.
+    assert "CHAINS_FROM" not in json.dumps(cap_body)
+    assert runprov.chain.__all__ == [], (
+        "`CHAINS_FROM` is not exported, which is why carrying the CONCLUSION rather than the "
+        "threshold is the fix"
+    )
+
+
+def test_could_chain_is_one_expression_read_by_every_reader(tmp_path):
+    """[ADR-0017 R-1] I-08. THE POINT OF A PROPERTY RATHER THAN A SECOND FUNCTION.
+
+    The page's sentence, the writer it names, the CANNOT_CHECK fold and the payload all ask this
+    one question. Asserted by INJECTION rather than by reading: the property is forced to each
+    value and every reader has to follow it, against a history where the real answer is the
+    opposite. A reader holding its own copy of the predicate stops following and fails here.
+    """
+    path = _claimless_history(tmp_path, "0.6.0", "h.jsonl")
+    report = runprov.chain.verify(path)
+    assert all(edge.could_chain for edge in report.edges), "0.6.0 can chain"
+
+    # A MIXED HISTORY TOO, and it is the case that matters. An all-unchained file takes
+    # `render`'s early return, so it never reaches the reader in `_findings` that produces the
+    # "N line(s) predate the chain" / "carry no chain claim" sentences — the ones H1-1 was filed
+    # about. Measured: with only the all-unchained fixture, a reader keeping its own copy of the
+    # predicate at that site went undetected. A claimless first line followed by two real
+    # appends is R-22's own shape, and its page is INTACT — a clean bill, which is the worst
+    # place for a false sentence.
+    mixed = tmp_path / "mixed.jsonl"
+    mixed.write_text(
+        json.dumps(
+            {
+                "schema": "runprov.history.v2",
+                "run_id": "r0",
+                "status": "ok",
+                "tool": {"version": "0.6.0"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    sink = runprov.JsonlSink(mixed)
+    for i in (1, 2):
+        sink.append(
+            {
+                "schema": "runprov.history.v2",
+                "run_id": f"r{i}",
+                "status": "ok",
+                "tool": {"version": "0.6.0"},
+            }
+        )
+    assert runprov.chain.verify(mixed).status == runprov.chain.INTACT, "a clean bill"
+    assert "carry no chain claim" in "\n".join(
+        runprov.chain.render(runprov.chain.verify(mixed), mixed)
+    )
+
+    original = runprov.chain.Link.could_chain
+    try:
+        runprov.chain.Link.could_chain = property(lambda self: False)
+        page = "\n".join(runprov.chain.render(runprov.chain.verify(path), path))
+        body = runprov.chain.payload(runprov.chain.verify(path), path)
+        assert "before the chain existed" in page, (
+            f"the page follows the property, not a copy of its expression: {page}"
+        )
+        assert all(edge["could_chain"] is False for edge in body["edges"]), body["edges"]
+
+        mixed_page = "\n".join(runprov.chain.render(runprov.chain.verify(mixed), mixed))
+        assert "predate the chain" in mixed_page, (
+            "and `_findings` follows it too: forced to False, the claimless line is reported as "
+            f"predating the chain rather than as written by a release that can chain: {mixed_page}"
+        )
+        assert "carry no chain claim" not in mixed_page, mixed_page
+    finally:
+        runprov.chain.Link.could_chain = original
+
+
 def test_a_file_published_by_copying_is_not_accused_of_having_changed(tmp_path):
     """[ADR-0017 R-10] I-02. THE FALSE POSITIVE, AND IT FIRES ON THE ORDINARY CASE.
 
@@ -29363,11 +29510,24 @@ def test_every_field_of_the_chain_report_reaches_its_payload(tmp_path):
     assert "status" in body and "attested" in body, "the computed properties are part of the answer"
 
     assert body["edges"], "a clean history has edges; this asserts nothing over an empty list"
+    # I-08. `could_chain` IS NAMED, not tolerated. It is a computed property rather than a field,
+    # so `_fields` does not reach it and the payload adds it — exactly as `status` and `attested`
+    # are added above. Naming it here is what makes a FIFTH addition fail this assertion instead
+    # of being absorbed: an edge key that is neither a `Link` field nor one of these is a fact
+    # invented on the way out.
     link = set(runprov.chain.Link._fields)
+    computed = {"could_chain"}
     for edge in body["edges"]:
-        assert set(edge) == link, (
-            f"an edge and `Link` disagree: carried {sorted(set(edge) - link)}, "
-            f"missing {sorted(link - set(edge))}"
+        assert set(edge) == link | computed, (
+            f"an edge and `Link` disagree: carried {sorted(set(edge) - link - computed)}, "
+            f"missing {sorted((link | computed) - set(edge))}"
+        )
+        assert (
+            edge["could_chain"]
+            is runprov.chain.Link(**{f: edge[f] for f in runprov.chain.Link._fields}).could_chain
+        ), (
+            "AND IT IS THE STRUCTURE'S OWN ANSWER, not a second computation. M09 was a computed "
+            f"field pinned to a constant that passed every KEY check there is: {edge}"
         )
 
     # R-9: no field is renamed on the way out, so a question asked of the structure is

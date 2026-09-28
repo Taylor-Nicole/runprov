@@ -305,6 +305,40 @@ class Link(typing.NamedTuple):
     wrote: str | None = None
 
     @property
+    def could_chain(self) -> bool:
+        """Whether the release that wrote this edge's line was one that writes a claim.
+
+        AUDIT H, H1-1. R-25 rule 4 assigns `UNCHAINED` BY POSITION — `claim = NONE, started = NO` —
+        and never asks who wrote the line. That is right for the VERDICT: a line with no claim at
+        the front of a file is unverifiable and not fixable whoever wrote it, which is why the
+        status is never decisive. It is wrong for the SENTENCE, which said those lines "predate the
+        chain".
+
+        They need not. R-22 makes an append that could not take the lock write NO claim at all —
+        NFS, CIFS, a container without `flock` — so a project whose first runs happened on such a
+        mount has a front block of claimless lines written by the current release. Measured: one
+        unlocked run followed by one locked one gives `INTACT`, exit 0, and `2 line(s) predate the
+        chain` over two lines that state `0.6.0`. That is the one place in this feature where a
+        false sentence sits on a CLEAN BILL, which is the worst place for one.
+
+        The writer is carried onto `UNCHAINED` edges in the walk for this, so the question is asked
+        of the same value `_writer_of` judged by — never of a second reading of the line.
+
+            I-08 OF AUDIT I: IT IS A PROPERTY SO THAT THE PAYLOAD CAN CARRY IT. This was a
+            module-level predicate, so the diagnosis it decides reached the page and nothing else.
+            Two histories differing only in a version string printed OPPOSITE pages — "written
+            before the chain existed" against "they do NOT predate the chain" — and produced
+            payloads identical but for `edges[].wrote`. A consumer wanting the same answer had to
+            reimplement this against `CHAINS_FROM`, which is private, absent from the payload, in no
+            document, and `null` on every 0.1.0 record. That is R-1's own argument — two copies of
+            one predicate are two things that can disagree — pointed at the consumer rather than at
+            the codebase. `impact.Chain.truncated` exists for exactly this reason and is the
+            precedent; `chain.payload` already adds `status` and `attested` the same way.
+        """
+        numbers = _numbers_in(self.wrote)
+        return numbers is not None and numbers >= CHAINS_FROM
+
+    @property
     def detail(self) -> str:
         """R-10, and every clause of it must be TRUE of the break being reported.
 
@@ -480,29 +514,6 @@ class Report(typing.NamedTuple):
     def of(self, status: str) -> list[Link]:
         """Every edge with this status, for the renderer and for callers."""
         return [link for link in self.edges if link.status == status]
-
-
-def _could_have_chained(link: Link) -> bool:
-    """Whether the release that wrote this edge's line was one that writes a claim.
-
-    AUDIT H, H1-1. R-25 rule 4 assigns `UNCHAINED` BY POSITION — `claim = NONE, started = NO` —
-    and never asks who wrote the line. That is right for the VERDICT: a line with no claim at
-    the front of a file is unverifiable and not fixable whoever wrote it, which is why the
-    status is never decisive. It is wrong for the SENTENCE, which said those lines "predate the
-    chain".
-
-    They need not. R-22 makes an append that could not take the lock write NO claim at all —
-    NFS, CIFS, a container without `flock` — so a project whose first runs happened on such a
-    mount has a front block of claimless lines written by the current release. Measured: one
-    unlocked run followed by one locked one gives `INTACT`, exit 0, and `2 line(s) predate the
-    chain` over two lines that state `0.6.0`. That is the one place in this feature where a
-    false sentence sits on a CLEAN BILL, which is the worst place for one.
-
-    The writer is carried onto `UNCHAINED` edges in the walk for this, so the question is asked
-    of the same value `_writer_of` judged by — never of a second reading of the line.
-    """
-    numbers = _numbers_in(link.wrote)
-    return numbers is not None and numbers >= CHAINS_FROM
 
 
 def _writers(records: dict[int, dict[str, typing.Any]]) -> dict[str, str]:
@@ -790,7 +801,7 @@ def _findings(report: Report, path: pathlib.Path) -> list[str]:
     predating = 0
     capable: dict[str, int] = {}
     for link in report.of(UNCHAINED):
-        wrote = link.wrote if _could_have_chained(link) else None
+        wrote = link.wrote if link.could_chain else None
         if wrote is None:
             predating += 1
         else:
@@ -831,7 +842,7 @@ def _findings(report: Report, path: pathlib.Path) -> list[str]:
         # same defect as an accusation, one register quieter.
         flight = (
             ""
-            if _could_have_chained(link)
+            if link.could_chain
             else " and a run still in flight has not written its completion record yet"
         )
         out.append(
@@ -936,9 +947,17 @@ def payload(report: Report, path: pathlib.Path) -> dict[str, typing.Any]:
     pattern aimed at a released output, where a dropped field is a consumer silently missing a
     finding rather than a test going red.
 
-    `status` and `attested` are ADDED rather than walked: they are computed properties, not
-    fields, and R-10 allows them because they compute nothing the record does not already hold
-    — `status` is the fold over the edges and `attested` counts the ones that HOLD.
+    `status`, `attested` and each edge's `could_chain` are ADDED rather than walked: they are
+    computed properties, not fields, and R-10 allows them because they compute nothing the record
+    does not already hold — `status` is the fold over the edges, `attested` counts the ones that
+    HOLD, and `could_chain` asks of `wrote` the same question the page asks of it.
+
+    I-08: WITHOUT `could_chain` THE PAGE'S DIAGNOSIS REACHED NO CONSUMER. Two histories differing
+    only in a version string print opposite pages — "written before the chain existed" against
+    "they do NOT predate the chain" — and produced payloads identical but for `edges[].wrote`.
+    The threshold that separates them is `CHAINS_FROM`, which is private, in no document, and
+    `null` on every 0.1.0 record, so the input to the diagnosis travelled and the conclusion did
+    not.
 
     Key ORDER differs from the hand-written version and nothing depends on it: a JSON object is
     unordered, and the accompanying test compares parsed payloads rather than bytes.
@@ -946,7 +965,14 @@ def payload(report: Report, path: pathlib.Path) -> dict[str, typing.Any]:
 
     def _rendered(name: str, value: typing.Any) -> typing.Any:  # noqa: ANN401 - any field
         if name == "edges":
-            return [dict(zip(Link._fields, edge, strict=True)) for edge in value]
+            # `could_chain` IS ADDED, for the same reason `status` and `attested` are: it is a
+            # computed property rather than a field, so `_fields` does not reach it. I-08 — the
+            # diagnosis it decides reached the page and no consumer, and reproducing it needed
+            # `CHAINS_FROM`, which is private and in no document.
+            return [
+                {**dict(zip(Link._fields, edge, strict=True)), "could_chain": edge.could_chain}
+                for edge in value
+            ]
         return list(value) if isinstance(value, tuple) else value
 
     return {
@@ -993,7 +1019,7 @@ def render(report: Report, path: pathlib.Path) -> list[str]:
         head = f"  CANNOT CHECK: {report.lines} line(s), none of them chained."
         if (
             all(link.status == UNCHAINED for link in report.edges)
-            and not any(_could_have_chained(link) for link in report.edges)
+            and not any(link.could_chain for link in report.edges)
             and not report.unreadable
             and not report.merged
             # `merged` IS A SUBSET OF `unreadable` BY CONSTRUCTION — it is appended only inside
