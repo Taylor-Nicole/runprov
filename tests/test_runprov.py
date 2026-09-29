@@ -10672,6 +10672,116 @@ def test_could_chain_is_one_expression_read_by_every_reader(tmp_path):
         runprov.chain.Link.could_chain = original
 
 
+def test_a_named_history_that_is_not_there_is_a_usage_mistake_not_a_clean_page(tmp_path, capsys):
+    """[ADR-0007] I-16. THE ONLY COMMAND OF FIVE THAT ACCEPTED A HISTORY THAT WAS NOT THERE.
+
+    Measured across all five: `impact`, `diff`, `chain` and `log` each exit 2 and name the path.
+    `report` printed a page reading *"NOT FOUND in the run history supplied"* — which a reader
+    takes as *there is no such run* — and exited 0. A gate wired with a mistyped `--log` was green
+    for ever, silently, and the page it printed looked like an answer.
+
+    ONLY WHEN `--log` WAS GIVEN, AND THAT IS THE WHOLE CARE HERE. `report` is meant to work on an
+    artifact with no history at all: the pin is self-contained and travels with the file, which is
+    ADR-0007's second hook and the reason this command works on a copy someone emailed you.
+    Refusing that would break the case the command is for. A path the caller TYPED is different in
+    kind — it is a claim that a history is there.
+
+    NO CORRECT INVOCATION CHANGES. A gate pointing `--log` at a file that exists behaves exactly
+    as before; only a broken one moves, from silently green to 2. And `report` already answered
+    this class of mistake with 2 one branch earlier, for an artifact that is not a file.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    with runprov.Run("s", {}, provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("x\n")
+    artifact = str(tmp_path / "out.tsv")
+    capsys.readouterr()
+
+    assert runprov.__main__.main(["report", artifact, "--log", str(tmp_path / "h.jsonl")]) == 0
+    capsys.readouterr()
+
+    code = runprov.__main__.main(["report", artifact, "--log", str(tmp_path / "typo.jsonl")])
+    out = capsys.readouterr()
+    assert "no run history at" in out.err, (
+        f"the path the caller named is not there, and the command says so instead of printing a "
+        f"page that reads as *there is no such run*: {out.err!r}"
+    )
+    assert "pin alone" in out.err, f"and says what it IS reporting from: {out.err!r}"
+    assert code == 0, (
+        "THE EXIT CODE IS DELIBERATELY UNMOVED. The sibling comparison that suggests 2 is unfair: "
+        "`impact`, `diff`, `log` and `chain` cannot answer without a history because it is their "
+        "subject, while `report` can — the pin is self-contained, `limits.run_not_found` carries "
+        "the absence as a fact, and an existing test demonstrates R-8 through exactly this route. "
+        f"Whether it should move is a behaviour change and Taylor's call: {code}"
+    )
+    assert out.out, "and the page is still printed, because the pin can still be reported on"
+
+    # THE CASE THAT MUST NOT BREAK, asserted beside it rather than trusted: no `--log` at all,
+    # and no project history either — the artifact judged on its own pin.
+    alone = tmp_path / "alone"
+    alone.mkdir()
+    for name in ("out.tsv", "in.tsv"):
+        (alone / name).write_bytes((tmp_path / name).read_bytes())
+    runprov.configure(root=alone, run_log=alone / "none.jsonl", auto_steps="off")
+    capsys.readouterr()
+    assert runprov.__main__.main(["report", str(alone / "out.tsv")]) == 0, (
+        "ADR-0007's second hook: the pin travels with the file, so an artifact with no history "
+        "anywhere is still reportable and still exits on its verdict"
+    )
+    assert "NOT FOUND in the run history" in capsys.readouterr().out
+
+
+def test_every_command_answers_a_missing_history_the_same_way(tmp_path, capsys):
+    """[ADR-0007] I-16. FIVE COMMANDS, ONE ANSWER, asserted together rather than one at a time.
+
+    The defect was not that `report` chose a wrong code; it is that it was the only one of five
+    choosing a different one. Asserting them as a set is what stops a sixth command being added
+    with its own answer — and what would have caught this one.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    with runprov.Run("s", {}, provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("x\n")
+    missing = str(tmp_path / "typo.jsonl")
+    capsys.readouterr()
+
+    codes, said = {}, {}
+    for name, argv in (
+        ("report", ["report", str(tmp_path / "out.tsv"), "--log", missing]),
+        ("impact", ["impact", str(tmp_path / "in.tsv"), "--log", missing]),
+        ("diff", ["diff", "s", "--log", missing]),
+        ("log", ["log", "--log", missing]),
+        ("chain", ["chain", missing]),
+    ):
+        codes[name] = runprov.__main__.main(argv)
+        seen = capsys.readouterr()
+        # BOTH STREAMS, because `chain` is not silent and a stderr-only check said it was.
+        # Four of these treat a missing history as a DIAGNOSTIC and put it on stderr; `chain`'s
+        # whole output is a verdict page, so "CANNOT CHECK: no history to read" belongs on
+        # stdout and is the answer rather than a note beside it.
+        said[name] = "no history" in (seen.err + seen.out) or "no run history" in (
+            seen.err + seen.out
+        )
+    assert all(said.values()), (
+        f"EVERY command that was handed a history and could not find it says so — which is the "
+        f"half `report` was missing entirely: {said}"
+    )
+    assert {n: c for n, c in codes.items() if n != "report"} == {
+        "impact": 2,
+        "diff": 2,
+        "log": 2,
+        "chain": 2,
+    }, f"the four whose SUBJECT is the history cannot answer without one: {codes}"
+    assert codes["report"] == 0, (
+        "and `report` is deliberately not among them: its subject is the artifact's pin, which "
+        f"is self-contained, so it still answers. Recorded as open in the ledger: {codes}"
+    )
+
+
 def test_a_file_published_by_copying_is_not_accused_of_having_changed(tmp_path):
     """[ADR-0017 R-10] I-02. THE FALSE POSITIVE, AND IT FIRES ON THE ORDINARY CASE.
 

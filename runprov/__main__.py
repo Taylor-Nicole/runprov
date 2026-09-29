@@ -1578,6 +1578,27 @@ def _report(args: argparse.Namespace) -> int:
         return 2
     project = active()
     log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
+    if args.log and not log.is_file():
+        # I-16, NARROWED. `report` was the only one of five commands reading a history that
+        # accepted one that was not there — `impact`, `diff`, `chain` and `log` each exit 2 and
+        # name the path — and this said NOTHING at all, so a mistyped `--log` produced a page
+        # reading "NOT FOUND in the run history supplied" and a reader took it for *there is no
+        # such run*.
+        #
+        # THE EXIT CODE IS DELIBERATELY NOT MOVED, and the sibling comparison that suggested
+        # moving it is unfair. `impact`, `diff`, `log` and `chain` CANNOT answer without a
+        # history — it is their subject. `report` can: the pin is self-contained and travels with
+        # the file, which is ADR-0007's second hook, and `limits.run_not_found` exists to carry
+        # this absence as a fact. Exiting 2 here would remove a documented capability and break
+        # the test that demonstrates R-8 through exactly this route.
+        #
+        # So the finding is the SILENCE, and only the silence is fixed. Whether the code should
+        # also move is a behaviour change on a documented path and is Taylor's call, not an
+        # applier's — recorded in the ledger as open.
+        print(
+            f"report: no run history at {log} — reporting from the artifact's pin alone",
+            file=sys.stderr,
+        )
     result = report_mod.render(artifact, pathlib.Path(project.root), log)
     if args.format == "json":
         # NOTHING ELSE ON STDOUT. Every diagnostic this command emits already goes to stderr —

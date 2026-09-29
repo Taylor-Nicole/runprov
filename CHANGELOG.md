@@ -148,6 +148,26 @@ the test asserts the same expression rather than a second copy of the list.
 Measured over all four verdicts an artifact can have, `report` and `verify` now return the same
 code for the same file: OK 0/0, STALE 1/1, UNVERIFIABLE 2/2, NO PIN 2/2.
 
+### Fixed — `runprov report --log <a path that is not there>` said nothing at all
+
+Audit I, I-16. Measured across the five commands that read a history: `impact`, `diff` and `log`
+exit 2 and name the path on stderr, `chain` prints *"CANNOT CHECK: no history to read"* as its
+verdict — and `report` said **nothing on either stream**. It printed a page reading *"NOT FOUND in
+the run history supplied"*, which a reader takes as *there is no such run* rather than *the file
+you named is not there*.
+
+It now says so, naming the path and what it is reporting from instead: the artifact's pin.
+
+**The exit code is deliberately NOT moved, and the sibling comparison that suggests moving it is
+unfair.** `impact`, `diff`, `log` and `chain` cannot answer without a history — it is their
+subject. `report` can: the pin is self-contained and travels with the file, which is ADR-0007's
+second hook and the reason the command works on a copy someone emailed you. `limits.run_not_found`
+already carries the absence as a fact, and a test demonstrates R-8's null-versus-absent rule
+through exactly this route. Exiting 2 would remove a documented capability to fix a silence.
+
+Whether the code should move as well is a behaviour change on a documented path, and is recorded
+as open rather than taken.
+
 ### Fixed — `runprov chain` describes a claimless line by who wrote it, not by where it sits
 
 Audit H, H1-1/H1-2/H1-3. R-25's rule 4 decides `UNCHAINED` by POSITION, so every claimless
