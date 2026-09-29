@@ -66,6 +66,7 @@ from . import prune as prune_mod
 from . import report as report_mod
 from . import resources as resources_mod
 from . import show as show_mod
+from . import verify as verify_mod
 from ._atomic import TEMP_SUFFIX, atomic_write_text
 from .export import FORMATS as EXPORT_FORMATS
 from .export import default_filename, render
@@ -303,6 +304,12 @@ def _yaml(rows: list[dict[str, typing.Any]]) -> str:
     """
 
     return _yaml_header() + "".join(_yaml_entry(r) for r in rows)
+
+
+#: [ADR-0017 R-5] I-18. `lineage --format json` shipped in 0.6.0 without a schema key.
+#: It has no module of its own, so the constant sits beside the function that builds the
+#: object, and the emitter reads it rather than writing the string a second time.
+LINEAGE_SCHEMA = "runprov.lineage.v1"
 
 
 def _lineage(
@@ -1863,7 +1870,7 @@ def _verify(args: argparse.Namespace) -> int:
     report = verify([pathlib.Path(p) for p in args.paths] or [root], root)
 
     if args.format == "json":
-        sys.stdout.write(json.dumps(report, indent=2) + "\n")
+        sys.stdout.write(json.dumps(verify_mod.payload(report), indent=2) + "\n")
     else:
         sys.stdout.write(render_report(report))
 
@@ -2298,7 +2305,10 @@ def main(argv: list[str] | None = None) -> int:
     g = _lineage(path, counted, names)
     total, bad = g["runs"], counted[0]
     if args.format == "json":
-        sys.stdout.write(json.dumps(g, indent=2) + "\n")
+        # [ADR-0017 R-5] I-18. `lineage` has no module of its own — it is built here — so its
+        # schema constant lives with the code that produces it rather than being invented at
+        # the emission site, which is where a second, differing copy would eventually appear.
+        sys.stdout.write(json.dumps({"schema": LINEAGE_SCHEMA, **g}, indent=2) + "\n")
     else:
         sys.stdout.write(_render_lineage(g, names) + "\n")
     print(

@@ -178,6 +178,11 @@ def _bounded(value: str) -> str:
     return value if len(value) <= FIELD_SHOWN else value[: FIELD_SHOWN - 1] + "…"
 
 
+#: [ADR-0017 R-5] I-18. `verify --format json` shipped in 0.6.0 without this, so a consumer
+#: had to infer which shape it held from which keys were present — the one thing R-5 exists to
+#: make unnecessary. The four other JSON commands have carried it since they were written.
+SCHEMA = "runprov.verify.v1"
+
 OK = "OK"
 STALE = "STALE"
 GONE = "GONE"
@@ -722,6 +727,21 @@ def collect(
                 else:
                     found.add(f)
     return sorted(found), skipped, debris, unreadable
+
+
+def payload(report: dict[str, typing.Any]) -> dict[str, typing.Any]:
+    """`verify`'s report as an ANSWER, which is what R-5 versions. I-18.
+
+    A WRAPPER RATHER THAN A KEY INSIDE `verify()`, because the two are different things. The
+    dict `verify()` returns is an in-process result other code reads by key; the payload is the
+    published shape, and only the published shape needs to say which shape it is. Putting
+    `schema` in the return value would have handed it to every caller that never emits JSON,
+    including `report`, which reads this result and has a schema of its own.
+
+    `schema` FIRST, as the other four write it — a consumer that streams the object sees what
+    it is holding before it has to hold any of it.
+    """
+    return {"schema": SCHEMA, **report}
 
 
 def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str, typing.Any]:

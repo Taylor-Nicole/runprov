@@ -222,6 +222,29 @@ which a `GAP` edge can never print because rule 5 fires only once a version has 
 docstring no longer claims its sentences come out in ADR-0016 R-25's order; they come out
 weakest-claim-first, and it now says so.
 
+### Fixed — `verify` and `lineage` say which shape their JSON is, as the other four already did
+
+Audit I, I-18. ADR-0017 R-5 requires every JSON payload to carry
+`"schema": "runprov.<command>.v1"`, so a consumer can tell which shape it has without inferring
+it from which keys happen to be present. `verify --format json` and `lineage --format json`
+shipped in 0.6.0 emitting a raw dict with no such key, while `report`, `diff`, `impact` and
+`chain` have carried one since they were written.
+
+**R-3's own amendment lists both commands as done, which is how it went unnoticed.** The rule
+was applied from a list of the commands that answered in JSON when it was written, and two more
+grew the format afterwards — the scope pattern in a rule rather than in a check. Both sides are
+now derived instead: a test reads the commands that offer `--format json` out of the parser by
+AST, reads the commands whose schema is actually asserted out of the test file's own
+`runprov.<name>.v1` literals, and fails naming any command in the first set and not the second.
+A seventh JSON command fails it on the day it is added. `export` is outside R-5 and not by
+omission — its formats are `ro-crate` and `prov`, which carry their own schemas.
+
+**Additive on a payload that has shipped.** Nothing is renamed, reordered or removed; one key is
+added at the front of each object, so a consumer parsing 0.6.0's output keeps working. `verify`'s
+key is added by a `payload()` wrapper rather than inside `verify()` itself, because the dict that
+function returns is an in-process result other code reads — including `report`, which has a
+schema of its own — and only the published shape needs to say which shape it is.
+
 ## [0.6.0] — 2026-09-23
 
 ### Added

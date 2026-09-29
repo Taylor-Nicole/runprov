@@ -17250,6 +17250,55 @@ def test_every_statement_of_the_repair_script_count_agrees():
     assert len(cited) > 3, f"the citation is in {len(cited)} file(s), so agreement is cheap"
 
 
+def _cli_json_commands() -> set[str]:
+    """Every subcommand whose `--format` offers `json`, read from `__main__.py` by AST.
+
+    THE SCOPE OF R-5, DERIVED. Which commands answer in JSON is a fact about the parser, and a
+    hand-typed copy of it is right the day it is written — I-18 exists because two commands
+    grew this format and the rule that governs it was applied from a list that did not know.
+
+    `export` is absent on purpose and not by omission: its formats are `ro-crate` and `prov`,
+    which carry their own schemas and are not this project's answer shape.
+    """
+    tree = ast.parse((_repo_root() / "runprov" / "__main__.py").read_text(encoding="utf-8"))
+    named = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and node.value.func.attr == "add_parser"
+            and node.value.args
+            and isinstance(node.value.args[0], ast.Constant)
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            named[node.targets[0].id] = node.value.args[0].value
+    found = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "--format"
+            and isinstance(node.func.value, ast.Name)
+        ):
+            for keyword in node.keywords:
+                if keyword.arg != "choices":
+                    continue
+                try:
+                    choices = ast.literal_eval(keyword.value)
+                except ValueError:
+                    continue  # a name, resolved where it is defined — `export`'s FORMATS
+                if "json" in choices:
+                    found.add(named[node.func.value.id])
+    # NOT VACUOUS, the same guard `_cli_subcommands` carries: an AST walk that matches nothing
+    # turns every test built on it into a pass.
+    assert {"report", "diff", "impact", "chain"} <= found, found
+    return found
+
+
 def _cli_subcommands() -> list[str]:
     """Every name passed to `sub.add_parser(...)` in `__main__.py`, read from the source.
 
@@ -17273,6 +17322,87 @@ def _cli_subcommands() -> list[str]:
     # name and a bare `except` skipped all of them, and three mutations survived.
     assert set(found) >= {"log", "lineage", "show", "exec", "verify"}, found
     return found
+
+
+def test_verify_answers_in_json_and_says_which_shape_it_is(tmp_path, capsys):
+    """[ADR-0017 R-3] [ADR-0017 R-4] [ADR-0017 R-5] [ADR-0017 R-6] I-18.
+
+    `verify --format json` shipped in 0.6.0 emitting a raw dict with no `schema` key, so a
+    consumer had to work out which shape it held from which keys happened to be present —
+    precisely what R-5 exists to make unnecessary. R-3's own amendment lists this command as
+    done, which is how it went unnoticed: the rule was applied from a list, and the list was
+    written before the format was.
+
+    ADDITIVE ON A SHIPPED PAYLOAD. Nothing is renamed, reordered or removed; a consumer parsing
+    0.6.0's output keeps working. That is the only reason this is a fix and not a break, and it
+    is why the CHANGELOG entry says so in those words.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    where = ["verify", str(artifact), "--root", str(tmp_path)]
+
+    assert runprov.__main__.main(where) == 0
+    text = capsys.readouterr().out
+    assert "OK" in text
+
+    assert runprov.__main__.main([*where, "--format", "json"]) == 0, (
+        "[ADR-0017 R-6] the format is a rendering choice, not a different question"
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == runprov.verify.SCHEMA == "runprov.verify.v1", (
+        "both, the way every sibling schema is asserted: the constant, because respelling the "
+        "literal pins one sentence against its own copy; and the value, because a constant "
+        "compared only against itself pins nothing at all"
+    )
+    assert next(iter(payload)) == "schema", "first, so a streaming consumer knows what it holds"
+    assert payload["artifacts_seen"] == 1, "and the answer itself is untouched beside it"
+
+
+def test_lineage_answers_in_json_and_says_which_shape_it_is(tmp_path, capsys):
+    """[ADR-0017 R-3] [ADR-0017 R-4] [ADR-0017 R-5] [ADR-0017 R-6] I-18. The second of the two.
+
+    `lineage` has no module of its own, so its schema constant lives in `__main__.py` beside
+    the function that builds the object and the emitter reads it — rather than the string being
+    written a second time at the point of use, which is where a divergent copy would appear.
+    """
+    _, log = _reported_run(tmp_path)
+    where = ["lineage", "--log", str(log)]
+
+    assert runprov.__main__.main(where) == 0
+    assert capsys.readouterr().out.strip(), "the text rendering still answers"
+
+    assert runprov.__main__.main([*where, "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == runprov.__main__.LINEAGE_SCHEMA == "runprov.lineage.v1"
+    assert next(iter(payload)) == "schema"
+    assert payload["runs"] >= 1, "and the answer itself is untouched beside it"
+
+
+def test_every_command_that_answers_in_json_has_its_schema_asserted_somewhere():
+    """[ADR-0017 R-5] I-18. THE SCOPE IS DERIVED FROM THE PARSER, NOT MAINTAINED BESIDE IT.
+
+    I-18 is the scope pattern again, in the rule rather than in a check: R-5 governs every
+    command that answers in JSON, `verify` and `lineage` grew that format, and the rule went on
+    being applied to the four it was written with. R-3's amendment even marks these two done.
+
+    So neither side of this is typed out. The commands that offer `--format json` are read from
+    `__main__.py` by AST; the commands whose schema some test actually asserts are read from
+    THIS FILE by the `runprov.<name>.v1` literals in it. A seventh JSON command fails here on
+    the day it is added, and it fails naming itself.
+
+    Read as a SUBSET, not an equality: a `runprov.<x>.v1` literal that is not a subcommand is
+    not a defect — `export`'s formats carry their own schemas — but a JSON command with no
+    assertion anywhere is exactly what this row found twice.
+    """
+    answering = _cli_json_commands()
+    asserted = set(
+        re.findall(r"runprov\.(\w+)\.v1", pathlib.Path(__file__).read_text(encoding="utf-8"))
+    )
+    missing = answering - asserted
+    assert not missing, (
+        "every command that answers in JSON must say which shape it is, and some test in this "
+        f"file must assert that it does. These answer in JSON and nothing asserts them: "
+        f"{sorted(missing)}"
+    )
 
 
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():
