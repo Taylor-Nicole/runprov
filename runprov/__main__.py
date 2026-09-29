@@ -1647,11 +1647,20 @@ def _check(args: argparse.Namespace) -> int:
     """
     root = pathlib.Path(args.root) if args.root else pathlib.Path(active().root)
     if not root.is_dir():
+        # [ADR-0017 R-15]. THE DIRECTORY NAMED IS NOT THERE, so this package has not answered
+        # — it could not start. Silence on stdout is the signal that says so, and it is the
+        # only thing separating this from the exit 2 below, which IS an answer.
         print(f"check: {root} is not a directory", file=sys.stderr)
         return 2
     report = check_mod.scan(root)
-    for line in check_mod.render(report, root):
-        print(line)
+    if args.format == "json":
+        # [ADR-0017 R-4]. The payload and nothing else: the render lines below are suppressed
+        # rather than printed alongside, and the diagnostic under `examined_nothing` is on
+        # stderr already, where a caller that parses stdout never meets it.
+        print(json.dumps(check_mod.payload(report, root), indent=2))
+    else:
+        for line in check_mod.render(report, root):
+            print(line)
     if report.examined_nothing:
         # A-08. 2 is COULD NOT CHECK, which is what this is: a wrong path or a directory with
         # no entry point in it. A CI job must be able to tell that from a finding, and from a
@@ -2075,6 +2084,7 @@ def main(argv: list[str] | None = None) -> int:
     ck.add_argument(
         "root", nargs="?", default=None, help="directory to sweep (default: the project root)"
     )
+    ck.add_argument("--format", choices=("text", "json"), default="text")
     ln = sub.add_parser("lineage", help="reconstruct the run DAG by joining on digests")
     ln.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     ln.add_argument("--format", choices=("text", "json"), default="text")

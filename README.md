@@ -683,6 +683,19 @@ because that file was not checked and a gate that greens on "not checked" is the
 package exists to catch. It reads source only: it never imports or runs your code, so it
 works on a pipeline that has never heard of `runprov`.
 
+`runprov check --format json` is the **same answer for a reader that is not a person** — the
+page and the payload are two renderings of one structure, so neither can state something the
+other does not. It carries `examined` and `entry_points` beside `flagged` and `unparseable`,
+because **"nothing flagged" and "nothing scanned" must not serialise the same**: a sweep that
+parsed no Python is a CI typo and a sweep that parsed 647 files is a clean bill, and the empty
+`flagged` list is identical in both. `examined_nothing` says which, in words, and is `null`
+when the sweep really did check something. The exit code is the same in both formats — 1 a
+finding, 0 clean, **2 nothing was checked** — and exit 2 carries the payload too, because it is
+an answer; a directory that is not there prints nothing at all, which is how a consumer tells a
+sweep that could not conclude from a command that could not start. The payload is versioned by
+`"schema": "runprov.check.v1"`, and its shape follows the record-format promise above: a
+field's meaning does not change without a new schema value.
+
 ### The three rules, each from a measurement
 
 | rule | why | measured |

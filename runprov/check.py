@@ -149,6 +149,10 @@ def reaches_runprov(
     return found
 
 
+#: [ADR-0017 R-5]. T-33's fourth row.
+SCHEMA = "runprov.check.v1"
+
+
 class Report(typing.NamedTuple):
     """What the sweep found, and what it examined to find it.
 
@@ -197,6 +201,36 @@ class Report(typing.NamedTuple):
                 '(`if __name__ == "__main__"`), so nothing was checked'
             )
         return None
+
+
+def payload(report: Report, root: pathlib.Path) -> dict[str, typing.Any]:
+    """The sweep as one object, for `--format json`. ADR-0017 R-1, R-5, R-9, R-10, R-12.
+
+    DERIVED FROM `Report`'s OWN FIELDS, so a field added to the structure reaches the payload
+    without anyone remembering to add it — R-12 names this structure as the one to serialise
+    and the guard beside this walks it rather than a list.
+
+    `ok` and `examined_nothing` are COMPUTED PROPERTIES rather than fields, so `_fields` does
+    not reach them and they are added explicitly, as `chain`'s `status` and `attested` are.
+    They are not a second source of truth (R-10): both are computed here by the structure and
+    read, never recomputed by a different expression — H1-6 is the row where a second
+    computation of one fact disagreed with the first.
+
+    `examined_nothing` IS THE R-7 FIELD, and it carries a reason rather than a flag: a sweep
+    that found no Python and a sweep that found Python with no entry point are both "nothing
+    was checked" and a caller fixing its CI needs to know which. `null` means the sweep DID
+    check something — R-8's *looked and found none*, not *this did not look*.
+    """
+    return {
+        "schema": SCHEMA,
+        "root": root.as_posix(),
+        **{
+            name: [path.as_posix() for path in value] if isinstance(value, list) else value
+            for name, value in report._asdict().items()
+        },
+        "ok": report.ok,
+        "examined_nothing": report.examined_nothing,
+    }
 
 
 def sources(root: pathlib.Path, own: pathlib.Path | None = None) -> list[pathlib.Path]:

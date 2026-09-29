@@ -222,6 +222,32 @@ which a `GAP` edge can never print because rule 5 fires only once a version has 
 docstring no longer claims its sentences come out in ADR-0016 R-25's order; they come out
 weakest-claim-first, and it now says so.
 
+### Added — `runprov check --format json`, and a sweep that scanned nothing says so
+
+ADR-0017, the fourth row of T-33. R-12 already named this command's builder and it was
+accurate: `check.Report(examined, entry_points, flagged, unparseable)` existed and only the
+rendering was missing. `check` is the command a CI job runs, so it is the one whose answer is
+most often read by something that is not a person — and until now that something had to parse
+the prose of a page whose wording this file has changed more than once.
+
+**`examined` is the field that matters and it is why R-12 named it.** A sweep that parsed no
+Python and a sweep that parsed 647 files and found nothing produce the *same empty* `flagged`
+list, and A-08 is the row where that produced a green gate over a CI typo. The payload carries
+`examined`, `entry_points`, `ok` and `examined_nothing` — the last a REASON in words rather
+than a flag, because "no Python file was found here" and "files parsed, none is an entry point"
+are different mistakes with different fixes. `null` there means the sweep did check something,
+which is R-8's *looked and found none* rather than *this did not look*.
+
+**Exit 2 carries the payload, and a missing directory does not.** This is the first command
+built under R-15, decided the same day: a sweep that could not conclude is an ANSWER and
+serialises; a directory that is not there means the command could not start, so stdout stays
+empty. Both exit 2, and that difference is the only thing separating them for a consumer —
+which is the whole of why R-15 exists, `argparse` having taken exit 2 for usage errors first.
+
+The exit code is unchanged by the format. A guard walks the payload's own leaves and asserts
+each one moves the page when it changes, so a field cannot reach one rendering and not the
+other, and the two ratchets that count the remaining `--format json` work both shrink by one.
+
 ### Fixed — `verify` and `lineage` say which shape their JSON is, as the other four already did
 
 Audit I, I-18. ADR-0017 R-5 requires every JSON payload to carry

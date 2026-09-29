@@ -17618,7 +17618,7 @@ def test_every_subcommand_is_accounted_for_by_r3_and_the_outstanding_list_only_s
     excluded = {"export"}
     # R-3 SAYS ADD AND T-33 HAS NOT REACHED THEM. These are the remaining rows, not a defect
     # and not a disagreement with the rule. Each is in R-3's own table under "add".
-    outstanding = {"check", "log", "resources", "show"}
+    outstanding = {"log", "resources", "show"}
 
     for name, bucket in (("acts", acts), ("excluded", excluded), ("outstanding", outstanding)):
         stale = bucket - subcommands
@@ -17702,11 +17702,16 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
     unpinned = tmp_path / "unpinned.tsv"
     unpinned.write_text("no pin here\n", encoding="utf-8")
     absent, no_log = tmp_path / "ghost.tsv", tmp_path / "missing.jsonl"
+    empty_dir = tmp_path / "no_python_here"
+    empty_dir.mkdir()
 
     complies = {
         "chain, no history to read": ["chain", str(no_log)],
         "report, artifact carries no pin": ["report", str(unpinned), "--log", str(log)],
         "verify, artifact carries no pin": ["verify", str(unpinned), "--root", str(tmp_path)],
+        # T-33's fourth row, built AFTER R-15 and so compliant from its first commit — which is
+        # the whole reason the rule was decided before the remaining commands rather than after.
+        "check, a directory with no Python in it": ["check", str(empty_dir)],
     }
     outstanding = {
         "report, artifact is not there": ["report", str(absent), "--log", str(log)],
@@ -17740,6 +17745,140 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
     assert not arrived, (
         "R-15 now holds for these and they must MOVE to `complies` — that is this test "
         f"ratcheting, and it is the point: {arrived}"
+    )
+
+
+def _check_fixtures(tmp_path):
+    """Sweeps covering every state `check`'s page has, built by scanning real directories.
+
+    REAL FILES, NOT HAND-BUILT `Report`s. `flagged` and `unparseable` are decided by an AST
+    walk, so a fixture assembled by hand would be asserting against what the test author
+    believed that walk does — which is the shape A-08 was: a property that said "clean" about
+    a question it had never asked.
+    """
+    entry = "if __name__ == '__main__':\n    with open('in.tsv') as fh:\n        fh.read()\n"
+    recorded = (
+        "import runprov\n"
+        "if __name__ == '__main__':\n"
+        "    with runprov.Run('r', {}) as run:\n"
+        "        run.input('in.tsv')\n"
+    )
+    out = []
+    for name, files in (
+        ("a clean sweep", {"good.py": recorded}),
+        ("an entry point that records nothing", {"bad.py": entry}),
+        ("a file that could not be parsed", {"good.py": recorded, "oops.py": "def broken(:\n"}),
+        ("both at once", {"bad.py": entry, "oops.py": "def broken(:\n"}),
+        ("no Python at all", {"notes.txt": "nothing here\n"}),
+        ("Python, but no entry point", {"lib.py": "def helper():\n    return 1\n"}),
+    ):
+        root = tmp_path / name.replace(" ", "_").replace(",", "")
+        root.mkdir()
+        for filename, body in files.items():
+            (root / filename).write_text(body, encoding="utf-8")
+        out.append((name, runprov.check.scan(root), root))
+    return out
+
+
+def test_check_answers_in_json_and_the_exit_code_does_not_move(tmp_path, capsys):
+    """[ADR-0017 R-3] [ADR-0017 R-4] [ADR-0017 R-5] [ADR-0017 R-6] [ADR-0017 R-15] [R-12].
+
+    T-33's fourth row. `check` is the command a CI job runs, so it is the one whose answer is
+    most often read by something that is not a person — and until now that something had to
+    parse the prose of a page whose wording this file has changed more than once.
+
+    THREE OUTCOMES, THREE CODES, AND THE PAYLOAD IS ASSERTED AT ALL OF THEM. A-08 is the row
+    that made `check` distinguish a finding (1) from a sweep that examined nothing (2) from a
+    clean sweep (0), and a JSON form that only appeared on the happy path would hand a consumer
+    exactly the collapse A-08 removed.
+    """
+    (tmp_path / "bad.py").write_text(
+        "if __name__ == '__main__':\n    with open('in.tsv') as fh:\n        fh.read()\n",
+        encoding="utf-8",
+    )
+
+    assert runprov.__main__.main(["check", str(tmp_path)]) == 1
+    assert "record" in capsys.readouterr().out
+
+    assert runprov.__main__.main(["check", str(tmp_path), "--format", "json"]) == 1, (
+        "[ADR-0017 R-6] the format is a rendering choice, not a different question"
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == runprov.check.SCHEMA == "runprov.check.v1"
+    assert next(iter(payload)) == "schema"
+    assert [pathlib.Path(p).name for p in payload["flagged"]] == ["bad.py"]
+    assert payload["ok"] is False and payload["examined_nothing"] is None, (
+        "[ADR-0017 R-8] null here is *the sweep DID check something*, not *this did not look* "
+        "— the two are the whole of A-08 and a consumer must be able to tell them apart"
+    )
+
+    # EXIT 2 CARRIES A PAYLOAD, which is R-15 and the reason this command was built after it.
+    empty = tmp_path / "nothing"
+    empty.mkdir()
+    assert runprov.__main__.main(["check", str(empty), "--format", "json"]) == 2
+    nothing = json.loads(capsys.readouterr().out)
+    assert nothing["examined_nothing"] == "no Python file was found here, so nothing was checked"
+    assert nothing["ok"] is False
+
+    # AND A DIRECTORY THAT IS NOT THERE IS NOT AN ANSWER, so stdout stays empty. R-15's other
+    # half: the exit code is the same 2, and only this distinguishes it from the case above.
+    assert runprov.__main__.main(["check", str(tmp_path / "ghost"), "--format", "json"]) == 2
+    written = capsys.readouterr()
+    assert written.out == "", written.out
+    assert "is not a directory" in written.err
+
+
+def test_every_field_the_check_payload_carries_is_stated_by_the_page(tmp_path):
+    """[ADR-0017 R-1] [ADR-0017 R-2] [ADR-0017 R-12]. The two renderings cannot disagree.
+
+    The same derived guard the other four commands carry, and derived for the same reason: a
+    hand-typed list of fields is right on the day it is written and is then the thing that goes
+    stale. It walks whatever `check.Report` actually holds.
+    """
+    fixtures = _check_fixtures(tmp_path)
+
+    structural, carried, pool = set(), set(), {}
+    for _name, report, root in fixtures:
+        structural.update(path for path, _value in _structure_leaves(report))
+        for path, value in _structure_nodes(report):
+            pool.setdefault(_grouped(path), []).append(value)
+        for path, _value in _payload_leaves(runprov.check.payload(report, root)):
+            carried.add(_grouped(path))
+    grouped = {_grouped(path) for path in structural}
+
+    assert carried - grouped == {("schema",), ("root",), ("ok",), ("examined_nothing",)}, (
+        "the payload adds exactly four things to the structure and each is named by a "
+        "requirement: the schema (R-5); the root, which is what the counts are ABOUT and lives "
+        "in the caller rather than the report; and `ok` and `examined_nothing`, computed "
+        "properties allowed by R-10 because they compute nothing the structure does not "
+        f"already hold: {sorted(carried - grouped)}"
+    )
+    assert grouped - carried == set(), (
+        f"and nothing the structure holds fails to reach the payload: {sorted(grouped - carried)}"
+    )
+
+    shown, unstated = set(), []
+    for path in sorted(structural, key=repr):
+        for _name, report, root in fixtures:
+            here = dict(_structure_leaves(report))
+            if path not in here:
+                continue
+            fresh = _perturbed(here[path], pool.get(_grouped(path), []))
+            if fresh is _UNPERTURBABLE:
+                continue
+            moved = runprov.check.render(_replaced(report, path, fresh), root)
+            if moved != runprov.check.render(report, root):
+                shown.add(path)
+        if path not in shown:
+            unstated.append(path)
+    assert not unstated, (
+        "every field this payload carries has to appear in, or be accounted for by, the page — "
+        f"change it and the page changes: {[' -> '.join(map(str, p)) for p in unstated]}"
+    )
+    assert {path[0] for path in structural} == set(runprov.check.Report._fields), (
+        "and every top-level field of `Report` is reached by some fixture, or this guard is "
+        f"checking a sweep that was never run: "
+        f"{sorted(set(runprov.check.Report._fields) ^ {path[0] for path in structural})}"
     )
 
 
@@ -24136,7 +24275,18 @@ def test_only_init_states_how_many_names_the_package_promises():
     where the list it counts also lives, and this asserts both halves: nobody else states it,
     and the one that does is right."""
     root = _repo_root() / "runprov"
-    pat = re.compile(r"(\d+)\s+names\b")
+    # THE DIGITS MUST NOT BE PART OF AN IDENTIFIER. `(\d+)\s+names` matched "R-12 names this
+    # structure" — taking "12" out of an ADR reference — so ordinary prose citing a numbered
+    # requirement tripped a guard about the size of the package surface. Measured: the tight
+    # form rejects "R-12 names" and "ADR-0017 R-9 names" and still matches "17 names",
+    # "#: 17 names." and "cut it to 22 names".
+    #
+    # THIS IS A FALSE POSITIVE REMOVED, NOT A SIGNAL SUPPRESSED, and the distinction is I-17's:
+    # there, a truncation was noticed and the guard was adjusted so it would pass, which hid a
+    # real asymmetry. Here the guard was answering a question nobody asked it — "R-12" is not a
+    # statement of how many names this package promises — and the alternative was to forbid
+    # citing a requirement by number in a module docstring.
+    pat = re.compile(r"(?<![\w-])(\d+)\s+names\b")
     modules = sorted(root.glob("*.py"))
     assert len(modules) > 5, f"the module sweep found {len(modules)} files; the scope broke"
 
