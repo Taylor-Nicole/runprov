@@ -551,7 +551,8 @@ is the green light to overwrite a reference. Paths here are **as recorded**; the
 them against the project root for legibility, which a consumer does not know and could not
 resolve. The exit code is the same in both formats — 1 something derives, 0 nothing recorded read
 it, 2 the walk could not answer — and the payload is versioned by `"schema":
-"runprov.impact.v1"`.
+"runprov.impact.v1"`, and its shape follows the record-format promise above: a field's meaning
+does not change without a new schema value.
 
 ## `runprov diff`: why is today different from last month
 
@@ -1042,12 +1043,87 @@ Measured on the source project's history, the same 2,121 records rendered by bot
 both reach the history line only from this version onward — an old run cannot be back-filled
 and is not pretended into one. The file it replaces does not parse at all.
 
+## `runprov chain`: has the history itself been edited?
+
+`verify` asks *does this artifact still follow from the inputs it names*, from the artifact's own
+pin. This asks the question one level up, and nothing answered it before: **has the run history
+been edited since it was written?** Change line 40 of `runs.jsonl` — a parameter, a digest, a
+status — and `log`, `show`, `diff`, `impact` and `report` all repeat the new value with no sign
+that anything moved. Each line carries the sha256 of the line before it, so an edit breaks the
+claim the *next* line makes.
+
+```bash
+python -m runprov chain                        # the project's history
+python -m runprov chain path/to/runs.jsonl
+python -m runprov chain --format json          # for a gate
+```
+
+Three recorded runs, then one parameter edited in place afterwards, as somebody fixing what
+looked like a typo would:
+
+```
+# chain — runs.jsonl
+  BROKEN: 4 line(s) attested of 6, chained from line 1
+    BROKEN  line 3 claims its predecessor hashed to 847bb889… but line 2 hashes to 55493f82…
+            — LOOK BETWEEN LINES 2 AND 3, NOT AT LINE 3: either line 2 was edited in place, or
+            the line this claim was written against is no longer between them — deleted,
+            reordered, or pushed aside by an insertion. Nothing in the file separates those.
+    line 6 is the newest and nothing attests it yet; a later run will. Truncation of the tail
+    cannot be seen from this file alone.
+  A break means the history was edited after it was written, OR that a line was deleted or
+  reordered. It does not say which, and it cannot say who.
+```
+
+**Tamper-evident, not tamper-proof, and the distinction is the whole honesty of it.** Every
+line's digest is public, so whoever can edit the file can also append a well-formed forged line,
+or rewrite from a chosen point and re-chain everything after it. What this detects is
+**retroactive editing by someone who did not re-chain** — which is the realistic case. Claiming
+more would need a key, a timestamp authority or an append-only store; each is rejected in
+[ADR-0016](docs/adr/0016-a-history-shows-whether-it-has-been-edited.md) with its reason. Two
+things it says plainly rather than hiding: the newest line is **unattested** until a later run
+writes after it, so truncating the tail is invisible from this file alone; and a break names the
+GAP between two lines, never a culprit line, because an edit, a deletion and a reorder leave the
+same evidence.
+
+**The chain is checkable with `sha256sum` and nothing else**, which is the point — a chain that
+needed this package to check it would contradict what this README leads with, and would be worth
+less than no chain, because it would be believed:
+
+```bash
+n=0; prev="GENESIS"
+while IFS= read -r line; do
+  n=$((n+1))
+  claimed=$(printf '%s' "$line" | sed -n 's/.*"prev": *"\([^"]*\)".*/\1/p')
+  [ "$claimed" = "$prev" ] || echo "line $n breaks the chain (line $((n-1)) changed)"
+  prev=$(printf '%s' "$line" | sha256sum | cut -d' ' -f1)
+done < runs.jsonl
+```
+
+That loop is why `prev` is a plain top-level string and why the digest is over the line's bytes
+**as written** rather than over any canonical form. It was measured before the design was
+settled, and it reports an edit to line 3 as line 4 breaking — the same off-by-one the command
+explains in words above.
+
+`runprov chain --format json` is the **same answer for a reader that is not a person** — the page
+and the payload are two renderings of one structure, so neither can state something the other
+does not. It carries `lines` and every `edge` with its `status`, `claimed` and `computed`
+digests, so a consumer sees what was checked and not only what broke; `could_chain` travels with
+each edge because the diagnosis *this line predates the chain* depends on a version threshold a
+consumer cannot see. Exit codes are the same in both formats — 0 intact, 1 broken, 2 no history
+to read — and the payload is versioned by `"schema": "runprov.chain.v1"`, and its shape follows
+the record-format promise above: a field's meaning does not change without a new schema value.
+
 ## Lineage: which run produced what this one read
 
 ```bash
 python -m runprov lineage                        # the default history, as above
 python -m runprov lineage --format json          # for a consumer
 ```
+
+The payload is versioned by `"schema": "runprov.lineage.v1"`, and its shape follows the
+record-format promise above: a field's meaning does not change without a new schema value. The
+key was added after 0.6.0 shipped this command's JSON; nothing was renamed or removed to make
+room for it.
 
 The history already records, per run, the exact set of files read and written **with the
 hashes taken at the moment of use**. That is the raw material of a complete DAG, and it was
@@ -1437,6 +1513,11 @@ python -m runprov verify                       # the project root
 python -m runprov verify results/ --root .     # a subtree
 python -m runprov verify --format json         # for a gate
 ```
+
+The payload is versioned by `"schema": "runprov.verify.v1"`, and its shape follows the
+record-format promise above: a field's meaning does not change without a new schema value. As
+with `lineage`, the key was added after 0.6.0 shipped this command's JSON, alongside the rest of
+the answer rather than in place of any of it.
 
 Everything needed for this was here from the start — the pin is deterministic, the digests
 are in the artifact, the names are root-relative — and until now nothing read it back. That

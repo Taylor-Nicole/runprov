@@ -245,6 +245,38 @@ key is added by a `payload()` wrapper rather than inside `verify()` itself, beca
 function returns is an in-process result other code reads — including `report`, which has a
 schema of its own — and only the published shape needs to say which shape it is.
 
+### Changed — `runprov chain --format json`: two changes to a payload that had already shipped
+
+Audit I, I-24, and the row is about the CHANGELOG rather than about the code. `chain --format
+json` shipped in 0.6.0 on 2026-09-23. Two commits changed its output afterwards and neither
+said so here — the only released output this project has modified without an entry, which is
+exactly what a changelog exists to stop.
+
+**Key order moved** (`abeff47`, 2026-09-24). The payload was hand-written in `__main__.py` and
+is now derived from the `Report` structure, so the keys come out in the structure's order:
+
+```
+0.6.0    schema, path, status, lines, attested, chained_from, translated, merged, unreadable, edges
+now      schema, path, lines, edges, chained_from, translated, merged, unreadable, status, attested
+```
+
+**The key SET is identical** — measured, nothing added and nothing removed by that commit — and
+a JSON object is unordered, so no conforming consumer can notice. It is recorded anyway: a
+reader comparing two files byte for byte sees a difference, and "you should not have depended on
+that" is a thing to be able to look up rather than to be told.
+
+**`edges[].could_chain` added** (`a0a48ab`). A boolean on every edge, saying whether that line
+could have carried a `prev` claim at all. Without it the page's diagnosis reached no consumer:
+two histories differing only in a version string print opposite pages — *"written before the
+chain existed"* against *"they do NOT predate the chain"* — and produced payloads identical but
+for `edges[].wrote`, because the threshold that separates them is private, in no document, and
+`null` on every 0.1.0 record. **Additive**: nothing renamed, reordered or removed, so a consumer
+parsing 0.6.0's output keeps working.
+
+Both are `runprov.chain.v1` still, and correctly: R-11 versions the MEANING of a field, and no
+field changed meaning. The README now documents this command, which it did not before — see
+I-23.
+
 ## [0.6.0] — 2026-09-23
 
 ### Added

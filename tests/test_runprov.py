@@ -17546,6 +17546,41 @@ def test_every_subcommand_is_accounted_for_by_r3_and_the_outstanding_list_only_s
     )
 
 
+def test_every_command_that_answers_in_json_documents_its_schema_and_the_promise():
+    """[ADR-0017 R-11] I-23. The README clause, for all of them rather than some of them.
+
+    R-11 says the README states that the JSON shape follows the record-format promise: a
+    field's meaning does not change without a new schema value. It was written for the four
+    commands that answered in JSON and reached two of them — `diff` and `report` carried the
+    sentence, `impact` stopped at its schema name, and **`runprov chain` was not in the README
+    AT ALL**, though its payload shipped in 0.6.0. A consumer told to rely on a promise it
+    cannot find has been told nothing.
+
+    THE SCOPE IS THE PARSER'S, NOT A LIST HERE, and it is the same derivation I-18 and I-22 use:
+    every command offering `--format json` must document its own schema string, and the promise
+    must sit in the SAME PARAGRAPH as that string rather than somewhere in the file. A promise
+    four sections away from the shape it governs is how this reached two of four in the first
+    place — every command had *a* nearby sentence, and only two had this one.
+    """
+    readme = (_repo_root() / "README.md").read_text(encoding="utf-8")
+    paragraphs = readme.split("\n\n")
+    undocumented, unpromised = [], []
+    for command in sorted(_cli_json_commands()):
+        owning = [para for para in paragraphs if f'"runprov.{command}.v1"' in para]
+        if not owning:
+            undocumented.append(command)
+        elif not any("record-format promise" in para for para in owning):
+            unpromised.append(command)
+    assert not undocumented, (
+        "a command that answers in JSON must name its own schema in the README, or a consumer "
+        f"cannot tell which shape it is being promised anything about: {undocumented}"
+    )
+    assert not unpromised, (
+        "and the record-format promise must sit in the same paragraph as the schema it governs "
+        f"— a promise elsewhere in the file is the state R-11 was already in: {unpromised}"
+    )
+
+
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():
     """L-70. `runprov exec` is a top-level subcommand and sat as an H3 CHILD of "The
     notebook: `show`" — a section about a read-only viewer. A reader scanning the rendered
