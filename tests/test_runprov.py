@@ -11449,6 +11449,29 @@ def _report_fixtures(tmp_path):
             ),
         ),
         (
+            # I-15. THE ORDINARY DIRTY CHECKOUT, and the state no fixture reached. A `local`
+            # install names no commit at all, so the fixture above leaves `commit` None and
+            # never exercises the pairing that actually occurs: a dirty checkout RECORDS its
+            # commit and sets `identifies_code: false`, because the files that ran match no
+            # commit that exists. That is the one state where the page holds a commit back
+            # while the payload carries it, and it was reachable only from the HOST — this
+            # repository's own tool block, which supplies it on a dirty tree and not on a
+            # clean one. A guard whose covered states depend on the working tree is measuring
+            # the machine.
+            "a dirty checkout of runprov itself",
+            built(
+                _history_record(
+                    cwd=tmp_path,
+                    tool={
+                        "version": "0.6.0",
+                        "source": "checkout",
+                        "identifies_code": False,
+                        "commit": "89abcdef0123456789abcdef0123456789abcdef",
+                    },
+                )
+            ),
+        ),
+        (
             # A SECOND REAL COMMIT, so the substitute for `tool.commit` is drawn from these
             # fixtures on every host. Without it the pool held one fabricated commit plus
             # whatever the runprov UNDER TEST recorded about itself — which is a commit in a
@@ -11630,6 +11653,78 @@ def test_every_field_the_report_payload_carries_is_stated_by_the_page(tmp_path):
         f"are findings: {[' -> '.join(map(str, p)) for p in unstated]}"
     )
     assert shown == structural
+
+
+def test_a_dirty_checkout_holds_its_commit_back_from_the_page_and_keeps_it_in_the_payload(tmp_path):
+    """[ADR-0017 R-1] [ADR-0017 R-2] I-15. The asymmetry no fixture reached and nothing named.
+
+    `report`'s guard asks that every field move the page in SOME state a fixture reaches, and
+    `tool.commit` did — in the two fixtures where `identifies_code` is true. The state where it
+    does NOT move the page had no fixture: a dirty checkout, which records its commit AND sets
+    `identifies_code: false`, because the files that ran match no commit that exists. There the
+    page prints `DOES NOT IDENTIFY THE CODE` in the commit's place while the payload carries
+    all forty characters of it.
+
+    IT WAS REACHABLE ONLY FROM THE HOST. The `end to end` fixture is built by the runprov under
+    test recording itself, so on a dirty working tree it supplies this state and on a clean one
+    it does not — the set of states the guard exercises moved with the working tree, which is
+    the thing a fixture exists to stop. Measured on 2026-09-29 against a clean checkout:
+    `identifies_code: True`, commit `e1caa9f…`. The same run on a dirty tree would have covered
+    a different set of states and said nothing about it.
+
+    THE ASYMMETRY IS CORRECT AND IS THEREFORE STATED, not kept out of the fixtures — the same
+    choice `test_the_page_samples_the_unregistered_reads_and_the_payload_carries_all_of_them`
+    makes below. A commit that identifies no code is a commit a reader would follow to the
+    wrong files, so the page says what it cannot promise instead of printing it; a consumer
+    that wants the value still has it. What must not happen is that this goes unrecorded, which
+    is how a page and a payload drift apart while every guard stays green.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    commit = "89abcdef0123456789abcdef0123456789abcdef"
+    block = {"version": "0.6.0", "source": "checkout", "commit": commit}
+
+    def rendered(identifies_code):
+        report = runprov.report.build(
+            artifact,
+            tmp_path,
+            [_history_record(cwd=tmp_path, tool={**block, "identifies_code": identifies_code})],
+        )
+        return runprov.report.render_page(report), runprov.report.payload(report)
+
+    dirty_page, dirty_payload = rendered(False)
+    clean_page, clean_payload = rendered(True)
+
+    # THE PAYLOAD IS THE SAME BUT FOR THE FLAG — the commit is not dropped, only withheld.
+    assert dirty_payload["method"]["tool"]["commit"] == commit
+    assert clean_payload["method"]["tool"]["commit"] == commit
+
+    # NO PREFIX OF IT REACHES THE PAGE, checked over every length the renderer could choose
+    # rather than against the twelve it happens to use today — an abbreviation that changed
+    # would otherwise slip past a check written for one width. I-17 is the row for the width
+    # itself; this one is only about whether ANY of it appears.
+    whole = "\n".join(dirty_page)
+    assert not any(commit[:n] in whole for n in range(4, len(commit) + 1)), whole
+    assert "DOES NOT IDENTIFY THE CODE" in whole
+
+    # AND IT DOES REACH THE PAGE IN THE OTHER STATE, so the suppression is the flag's doing and
+    # not a field the page never prints at all.
+    assert commit[:12] in "\n".join(clean_page)
+
+    # THE FIXTURES REACH BOTH PAIRINGS WITHOUT ASKING THE MACHINE. `end to end` and `no run
+    # found` are built by this runprov recording itself, so what they cover depends on the
+    # working tree; they are excluded here deliberately, and the assertion is that the injected
+    # fixtures alone still cover both states.
+    host_built = {"end to end", "no run found"}
+    covered = set()
+    for name, report in _report_fixtures(tmp_path):
+        tool = report.body.method.tool if report.body is not None else None
+        if name in host_built or tool is None or tool.commit is None:
+            continue
+        covered.add(bool(tool.identifies_code))
+    assert covered == {True, False}, (
+        "a commit that identifies the code and one that does not must both be INJECTED, or "
+        f"this guard's coverage moves with the host's working tree: {covered}"
+    )
 
 
 def test_the_page_samples_the_unregistered_reads_and_the_payload_carries_all_of_them(tmp_path):
