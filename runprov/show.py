@@ -49,7 +49,7 @@ import platform
 import sys
 import typing
 
-from .hashing import PIN_DIGEST_CHARS, _posix, describe, moved_since, pin_digest
+from .hashing import PIN_DIGEST_CHARS, _posix, describe, moved_since
 from .verify import GONE, OK, STALE, UNVERIFIABLE
 
 #: How many distinct input versions to name before summarising. A script that has read forty
@@ -72,10 +72,35 @@ def _recorded(entry: dict[str, typing.Any]) -> str | None:
     exactly this condition ("the run recorded no digest for it") and this is the same
     condition one module over.
     """
-    for key in ("content_sha256", "sha256", "sha256_tree"):
+    pair = _recorded_pair(entry)
+    return pair[0] if pair else None
+
+
+#: The digest keys a record can carry, in the order `pin_digest` prefers them. The KEY travels
+#: with the value, because which one the record used decides how today's file must be hashed.
+_DIGEST_KEYS = ("content_sha256", "sha256", "sha256_tree")
+
+
+def _recorded_pair(entry: dict[str, typing.Any]) -> tuple[str, str] | None:
+    """`(digest, the key it came from)`, or None when the run derived none. I-27.
+
+    THE KEY IS THE HALF THAT WAS MISSING. `_digest_now` hashed the file with
+    `pin_digest(describe(path))`, which applies TODAY's precedence and prefers `content_sha256`;
+    this picked the first key the ENTRY actually carries. For an entry holding only `sha256` those
+    are different quantities, so an untouched file compared unequal to itself. Measured: one real
+    run, `content_sha256` stripped from its input entry, nothing on disk touched — `OK` became
+    `STALE`.
+
+    That is I-02's defect one command along, and it is why `report` now keys its comparison off
+    the record's own present key too. No released wheel writes a `sha256`-only input — 0.1.0
+    through 0.6.0 all write both, measured across the corpus — so it is reachable from a foreign
+    writer, a hand-edited record or a projection, and Taylor ruled on 2026-09-29 that such a
+    record is still one this command accepts and must not be lied to about.
+    """
+    for key in _DIGEST_KEYS:
         value = entry.get(key)
         if value:
-            return str(value)[:PIN_DIGEST_CHARS]
+            return str(value)[:PIN_DIGEST_CHARS], key
     return None
 
 
@@ -670,7 +695,7 @@ def staleness(
     # ONE DIGEST MEMO FOR THE WHOLE PAGE, beside the sidecar memo above and for the same
     # reason: the artifacts on a page share their inputs, so the redundancy is across
     # artifacts rather than inside one. See `_by_digest`.
-    digests: dict[pathlib.Path, str | None] = {}
+    digests: dict[pathlib.Path, dict[str, typing.Any] | None] = {}
     out: dict[str, str] = {}
     for path, made in producer.items():
         entry = made["entry"]
@@ -735,7 +760,7 @@ def _by_digest(
     entry: dict[str, typing.Any],
     target: pathlib.Path,
     base: pathlib.Path | None,
-    digests: dict[pathlib.Path, str | None],
+    digests: dict[pathlib.Path, dict[str, typing.Any] | None],
 ) -> str:
     """The thorough check: re-derive every digest. No stat resolution limit, and no cheap.
 
@@ -754,39 +779,79 @@ def _by_digest(
     # REQUIRED, not an optional convenience. A `digests=None` default would be a branch no
     # caller takes -- `staleness` always has a memo to pass -- and an unreachable guard is
     # the thing this audit keeps finding. The coverage gate caught it as line 331.
-    def now(p: pathlib.Path) -> str | None:
+    # MEMOISED ON (PATH, KEY), NOT ON PATH. I-27: two entries can name one file under different
+    # keys — a v1-shaped record and a v2 one in the same history — and a path-keyed memo would
+    # hand the second entry the first's digest, which is the defect this fix removes arriving
+    # through the cache instead of through the comparison.
+    def now(p: pathlib.Path, key: str) -> str | None:
         if p not in digests:
-            digests[p] = _digest_now(p)
-        return digests[p]
+            digests[p] = _describe_now(p)
+        return _digest_now(digests[p], key)
 
     for i in rec.get("inputs") or []:
-        want = _recorded(i)
-        if want is None:
+        pair = _recorded_pair(i)
+        if pair is None:
             # THE RUN NEVER DIGESTED THIS INPUT, so there is nothing to compare today's
             # digest with. Comparing against `_short`'s display dash made every such input
             # differ from itself and reported STALE. `?`, for the same reason `verify`
             # reports UNVERIFIABLE here.
             return UNVERIFIABLE
-        fresh = now(_resolve(_name(i), str(base) if base else None))
+        want, key = pair
+        fresh = now(_resolve(_name(i), str(base) if base else None), key)
         if fresh is None:
             return UNVERIFIABLE
         if fresh != want:
             return STALE
-    want = _recorded(entry)
-    if want is None:
+    own = _recorded_pair(entry)
+    if own is None:
         return UNVERIFIABLE  # same, for the ARTIFACT: `kind: UNHASHABLE` is not MODIFIED
-    fresh = now(target)
+    want, key = own
+    fresh = now(target, key)
     if fresh is None:
         return UNVERIFIABLE
     # Not stale: the ARTIFACT is not what was recorded. A different repair entirely.
     return OK if fresh == want else MODIFIED
 
 
-def _digest_now(path: pathlib.Path) -> str | None:
+def _describe_now(path: pathlib.Path) -> dict[str, typing.Any] | None:
+    """Everything `describe` can say about `path` today, or None when it cannot be read.
+
+    MEMOISED PER PATH, NOT PER (PATH, KEY), and that is why it returns the whole description
+    rather than one digest. `describe` computes every digest a file supports in ONE pass, so
+    asking it once and picking keys out of the result keeps the read-once guarantee this page
+    depends on — measured at 600 GB of reads saved for a 2 GB input shared by 300 artifacts —
+    while still answering each entry under its own key.
+    """
     try:
-        return pin_digest(describe(path))
+        return describe(path)
     except (OSError, ValueError):  # guards-ok: unreadable now is "cannot tell", not "same"
         return None
+
+
+def _digest_now(fresh: dict[str, typing.Any] | None, key: str) -> str | None:
+    """Today's digest UNDER THE KEY THE RECORD USED. I-27.
+
+    `pin_digest(describe(path))` applied TODAY's precedence and preferred `content_sha256`, while
+    the record's own entry might carry only `sha256` — two different quantities, so an untouched
+    file compared unequal to itself.
+
+    AND THE TWO VOCABULARIES ARE NOT THE SAME, which is the half that a straight key match gets
+    wrong. `run.py` writes `"sha256": i.get("sha256") or i.get("sha256_tree")` into the history
+    projection, so a DIRECTORY's tree digest lives under `sha256` in a record while `describe`
+    calls it `sha256_tree`. Asking `describe(a_directory)` for `sha256` gets None, and a rewritten
+    directory input reported UNVERIFIABLE instead of STALE — measured, and caught by the gate.
+    That is A-04's shape a third time: the projection renames a field, and a reader written
+    against one spelling answers over nothing. `_packages_of` and `_snapshot_of` are the other two.
+
+    So the record's key names the INTENT and this resolves it against what the path can actually
+    answer, undoing that one flattening and nothing else.
+    """
+    if fresh is None:
+        return None
+    value = fresh.get(key)
+    if value is None and key == "sha256":
+        value = fresh.get("sha256_tree")
+    return str(value)[:PIN_DIGEST_CHARS] if value else None
 
 
 # ------------------------------------------------------------------ rendering

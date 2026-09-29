@@ -1411,10 +1411,14 @@ def test_rehash_reads_each_distinct_file_once_across_the_whole_page(tmp_path, mo
     monkeypatch.chdir(tmp_path)
     rows = _shared_input_history(tmp_path, artifacts=6, inputs=3)
 
+    # PATCHED AT `_describe_now`, WHICH IS WHERE THE READ HAPPENS. I-27 split the old
+    # `_digest_now(path)` in two: `_describe_now` reads the file once and `_digest_now` picks a
+    # key out of what it returned. Counting the key-picks would count ENTRIES, not reads, and
+    # this test is about reads — a 2 GB input asked for under two keys must still be read once.
     calls = []
-    real = runprov.show._digest_now
+    real = runprov.show._describe_now
     monkeypatch.setattr(
-        runprov.show, "_digest_now", lambda p: (calls.append(pathlib.Path(p)), real(p))[1]
+        runprov.show, "_describe_now", lambda p: (calls.append(pathlib.Path(p)), real(p))[1]
     )
     states = runprov.show.staleness(rows, rehash=True)
 
@@ -10779,6 +10783,89 @@ def test_every_command_answers_a_missing_history_the_same_way(tmp_path, capsys):
     assert codes["report"] == 0, (
         "and `report` is deliberately not among them: its subject is the artifact's pin, which "
         f"is self-contained, so it still answers. Recorded as open in the ledger: {codes}"
+    )
+
+
+def test_show_hashes_the_file_the_way_the_record_did(tmp_path):
+    """[ADR-0007] I-27. AN UNTOUCHED FILE COMPARED UNEQUAL TO ITSELF.
+
+    `_digest_now` was `pin_digest(describe(path))`, which applies TODAY's precedence and prefers
+    `content_sha256`; `_recorded` took the first key the ENTRY actually carries. For an entry
+    holding only `sha256` those are two different quantities, so `show --rehash` reported STALE
+    over a file nothing had touched — a false alarm that sends somebody to re-run a pipeline.
+
+    That is I-02's defect one command along, and `report` now keys its comparison off the record's
+    own present key for the same reason.
+
+    NO RELEASED WHEEL WRITES THAT SHAPE — 0.1.0 through 0.6.0 all write both digests on every
+    input, measured across the corpus — so it arrives from a foreign writer, a hand-edited record
+    or a projection. **Taylor ruled on 2026-09-29 that such a record is still one this command
+    accepts and must not be lied to about.**
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    (tmp_path / "in.tsv").write_text("a\tb\n1\t2\n", encoding="utf-8")
+    with runprov.Run("s", {}, provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("x\ty\n")
+    done = [
+        json.loads(line)
+        for line in (tmp_path / "h.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.startswith("{") and json.loads(line).get("outputs")
+    ]
+    described = runprov.hashing.describe(tmp_path / "in.tsv")
+    assert described["sha256"] != described["content_sha256"], (
+        "the premise: this file's two digests differ, as they do for every text file ending in a "
+        f"newline: {described['sha256'][:12]} vs {described['content_sha256'][:12]}"
+    )
+
+    assert set(runprov.show.staleness(done, rehash=True).values()) == {"OK"}, (
+        "as runprov writes it, nothing is stale"
+    )
+
+    v1 = json.loads(json.dumps(done))
+    for record in v1:
+        for entry in record.get("inputs") or []:
+            entry.pop("content_sha256", None)
+    assert set(runprov.show.staleness(v1, rehash=True).values()) == {"OK"}, (
+        "and with the input carrying only `sha256` — NOTHING on disk touched — it is still OK. "
+        "This reported STALE before: today's content digest against the record's raw one"
+    )
+
+
+def test_the_digest_memo_is_keyed_by_the_record_key_and_not_by_path_alone(tmp_path):
+    """[ADR-0007] I-27. THE SAME DEFECT ARRIVING THROUGH THE CACHE INSTEAD OF THE COMPARISON.
+
+    One history can name one file under different keys — a v1-shaped record and a v2 one side by
+    side, which is exactly what an upgrade leaves. The memo that stops a shared input being hashed
+    once per artifact was keyed on the PATH, so the second entry would have been handed the first
+    entry's digest, taken under the first entry's key.
+
+    Asserted on a history holding both shapes for one file, rather than by reading the cache.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    shared = tmp_path / "shared.tsv"
+    shared.write_text("a\tb\n1\t2\n", encoding="utf-8")
+    for tag in ("one", "two"):
+        with runprov.Run(tag, {}, provenance=tmp_path / f"{tag}.json") as run:
+            run.input(shared)
+            with run.open_output(tmp_path / f"out_{tag}.tsv") as fh:
+                fh.write(f"{tag}\n")
+
+    done = [
+        json.loads(line)
+        for line in (tmp_path / "h.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.startswith("{") and json.loads(line).get("outputs")
+    ]
+    assert len(done) == 2, done
+    # ONE file, TWO entries, DIFFERENT keys — the shape an upgrade leaves behind.
+    for entry in done[0].get("inputs") or []:
+        entry.pop("content_sha256", None)
+
+    states = runprov.show.staleness(done, rehash=True)
+    assert set(states.values()) == {"OK"}, (
+        "both artifacts are untouched; a path-keyed memo would answer the second entry's question "
+        f"with the first entry's digest and report one of them stale: {states}"
     )
 
 
