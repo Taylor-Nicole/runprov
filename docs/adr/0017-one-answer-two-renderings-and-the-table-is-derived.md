@@ -148,6 +148,36 @@ those exists because a reader was once given a clean answer over an incomplete l
 JSON form that dropped them would re-open every one of those findings at once for exactly the
 consumers least able to notice.
 
+**R-15. A payload is emitted whenever THIS PACKAGE answers, including when its answer is that
+it could not check. Silence on stdout means the INVOCATION was wrong, never that the answer was
+empty.** Added 2026-09-29 by Audit I, I-21; Taylor's decision.
+
+Measured across every exit-2 state before the rule was written, and the split was real: `chain`
+printed a full `"status": "CANNOT_CHECK"` object for a history it could not read, while `impact`
+and `lineage` printed nothing for the same condition, and `diff` printed nothing for a selector
+that matched the wrong number of runs. **One condition, one exit code, two classes**, depending
+only on which command met it.
+
+**The reason this needs a rule rather than a convention is that exit 2 is already taken.**
+`argparse` exits 2 for a usage error, so a consumer seeing 2 cannot tell *this package could not
+check* from *you typed the command wrong* — and today the only thing separating them is whether
+stdout carries a payload, which is exactly the signal that was inconsistent. Under R-15 that
+signal becomes total and a consumer needs one rule:
+
+> **stdout parses ⇒ this package answered, and the verdict says what it found or could not
+> establish. stdout empty ⇒ the command was not usable as invoked.**
+
+This is additive. `chain`, `report` and `verify` already comply; `report` for an absent artifact,
+`impact` for an unrecorded file or a missing history, `diff` for a selector matching other than
+two runs, and `lineage` for a missing history do not, and gain payloads without any existing key
+changing. Where a command has no structure to serialise in that state — `diff` and `impact` have
+computed nothing — the payload is the schema plus what it could not do, under R-14: the thing it
+could not establish belongs in the object, not in a stderr line the consumer never sees.
+
+**It is decided here rather than per command deliberately.** Four commands — `check`, `log`,
+`resources` and `show` — are still to gain `--format json` under R-3, and each would otherwise
+answer this question for itself. The split above is what that looks like after two rounds.
+
 **R-11.** Not a stable API on the first release. It is versioned by R-5 and the README says the
 JSON shape follows the record-format promise: a field's meaning does not change without a new
 schema value.
