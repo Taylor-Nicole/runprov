@@ -14553,6 +14553,86 @@ def test_two_runs_that_both_predate_the_resources_block_are_comparable():
     assert "A predates the resources block" in one_side.blocked
 
 
+def test_a_figure_one_run_could_not_measure_is_not_reported_as_agreement():
+    """[ADR-0017 R-7] [ADR-0017 R-12] I-20. `unavailable` had no reader.
+
+    R-12's table names `unavailable` as a field this command's structure already carries, and
+    R-7 is why it carries it — `NOT COMPARABLE` is a verdict, not an absence. Nothing in `diff`
+    ever read it. The comparison loop skipped on `one is None or two is None`, so a figure ONE
+    run measured and the other could not obtain was treated exactly like two figures that
+    agree: `unchanged`, `blocked: null`, and `settled: true` saying so to a machine.
+
+    Measured before the fix, same mechanism on both sides, A with 300 MiB and B with none:
+    `{"verdict": "unchanged", "blocked": null, "settled": true}`.
+
+    THE REASON COMES FROM `unavailable`, THE FACT DOES NOT. Its entries are prose a measurer
+    wrote about itself — "resource module: not on this platform" — not figure names, so what is
+    missing is derived from the figures themselves and `unavailable` is quoted beside it. A
+    record that lost a figure without saying why still blocks; it blocks with no reason to
+    give, which is the honest report of that record rather than a silence.
+    """
+    same = {"source": "getrusage", "wall_seconds": 10.0}
+    measured = {**same, "max_rss_bytes": 314572800}
+    could_not = {**same, "unavailable": ["resource module: not on this platform"]}
+
+    one_sided = _dim(
+        runprov.diff.compare({"resources": measured}, {"resources": could_not}), "resources"
+    )
+    assert one_sided.verdict == "not comparable" and not one_sided.settled
+    assert "B measured no max_rss_bytes" in one_sided.blocked, one_sided.blocked
+    assert "resource module: not on this platform" in one_sided.blocked, (
+        "and the reason the record gave, rather than a bare statement that something is absent"
+    )
+
+    # THE OTHER SIDE, so the message is not hard-wired to one of the two runs.
+    flipped = _dim(
+        runprov.diff.compare({"resources": could_not}, {"resources": measured}), "resources"
+    )
+    assert "A measured no max_rss_bytes" in flipped.blocked, flipped.blocked
+
+    # NO REASON RECORDED is still a block, and says so rather than inventing one.
+    silent = _dim(
+        runprov.diff.compare({"resources": measured}, {"resources": dict(same)}), "resources"
+    )
+    assert "no reason recorded" in silent.blocked, silent.blocked
+
+
+def test_two_runs_that_both_lack_a_figure_still_compare(tmp_path):
+    """[ADR-0017 R-7] I-20, and the half that keeps it from being a gate that cannot pass.
+
+    D-01 and A-07 are the same mistake twice: incomparability applied to a state most records
+    are in, so a whole class of histories could never exit 0. The fix above must fire on a
+    DISAGREEMENT about what was measured, never on a shared limitation — two runs on the same
+    platform both lacking `cpu_seconds` agree about cost in the only sense available, which is
+    C-02's reasoning one dimension over and the reason this test sits beside D-01's.
+
+    THE SCOPE IS THE FIGURES THE DIMENSION COMPARES, derived from `FIGURES` rather than written
+    twice. `max_vms_bytes` and the io counters are in the record and have never been compared
+    here; a change that made them block would be widening what this dimension does under cover
+    of fixing what it says, so the asymmetric case is asserted NOT to block.
+    """
+    same = {"source": "getrusage", "wall_seconds": 10.0}
+    both_lack = _dim(
+        runprov.diff.compare({"resources": dict(same)}, {"resources": dict(same)}), "resources"
+    )
+    assert both_lack.verdict == "unchanged" and both_lack.settled
+    assert both_lack.blocked is None, both_lack.blocked
+
+    assert "max_vms_bytes" not in runprov.diff.FIGURES, (
+        "if this dimension ever starts comparing it, the assertion below is the one to revisit"
+    )
+    uncompared = _dim(
+        runprov.diff.compare(
+            {"resources": {**same, "max_vms_bytes": 999}}, {"resources": dict(same)}
+        ),
+        "resources",
+    )
+    assert uncompared.blocked is None and uncompared.settled, (
+        "a figure this dimension does not compare cannot make it incomparable: "
+        f"{uncompared.blocked}"
+    )
+
+
 def test_diff_reads_step_digests_when_the_record_carries_them():
     """A-03's other side: the SIDECAR holds the list, and there the digests ARE comparable.
 

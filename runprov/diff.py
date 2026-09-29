@@ -651,6 +651,14 @@ def _materially(key: str, one: typing.Any, two: typing.Any) -> bool:  # noqa: AN
     return relative and gap > RESOURCE_FLOOR.get(key, 0.0)
 
 
+#: The figures this dimension compares. ONE list, read by the comparison and by the check for
+#: a figure only one run has — a second copy is how a check stops covering what it names, and
+#: this file has paid for that once already. `max_vms_bytes` and the io counters are in the
+#: record and deliberately not here: the dimension has never compared them, and widening what
+#: it compares is a different change from fixing what it says about what it does compare.
+FIGURES = ("max_rss_bytes", "cpu_seconds", "wall_seconds")
+
+
 def _resources(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]) -> Dimension:
     """ADR-0013: a cgroup peak and a `getrusage` peak are different quantities.
 
@@ -677,8 +685,34 @@ def _resources(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing
             f"A measured by {left.get('source')!r}, B by {right.get('source')!r} — "
             "different quantities"
         )
+    if blocked is None:
+        # I-20. A FIGURE ONE RUN HAS AND THE OTHER COULD NOT GET, which the loop below skips
+        # silently: `one is None or two is None` treats an absent measurement exactly like two
+        # that agree, so a run whose `max_rss_bytes` could not be obtained compared as
+        # `unchanged` against one that measured 300 MiB — and `settled: true` said so to a
+        # machine. R-12's own table names `unavailable` as a field this command's structure
+        # carries and R-7 is the rule it carries it for: NOT COMPARABLE is a verdict, not an
+        # absence. Nothing read it.
+        #
+        # `unavailable` supplies the REASON and cannot supply the fact: its entries are prose
+        # a measurer wrote about itself ("resource module: not on this platform"), not figure
+        # names, so what is missing is derived from the figures and `unavailable` is quoted
+        # beside it. A record that lost a figure without saying why still blocks here — it just
+        # blocks without a reason to give, which is the honest report of that record.
+        missing = []
+        for side, mine, theirs in (("A", left, right), ("B", right, left)):
+            absent = [
+                key for key in FIGURES if mine.get(key) is None and theirs.get(key) is not None
+            ]
+            if not absent:
+                continue
+            why = ", ".join(mine.get("unavailable") or ()) or "no reason recorded"
+            missing.append(f"{side} measured no {', '.join(absent)} ({why})")
+        if missing:
+            blocked = "; ".join(missing) + " — those figures have nothing to compare against"
+
     lines = []
-    for key in ("max_rss_bytes", "cpu_seconds", "wall_seconds"):
+    for key in FIGURES:
         one, two = left.get(key), right.get(key)
         if one is None or two is None or not _materially(key, one, two):
             continue
