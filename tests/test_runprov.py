@@ -11381,7 +11381,15 @@ def _perturbed(value, pool):
     carry one value across every fixture, like the recorded `cwd`.
     """
     for candidate in pool:
-        if candidate is not None and candidate != value:
+        # I-26. `candidate is not None` USED TO SIT HERE AND IT WAS THE ONLY THING STOPPING A
+        # SUBSTITUTE OF None, so `_perturbed` could turn None into a value and never a value
+        # into None — while `_structure_nodes`' docstring says *"both are needed to change one
+        # into the other"*. It was also redundant for the case it looks like it protects: when
+        # `value` is None a None candidate equals it and `candidate != value` already skips it.
+        # Removing it exercises 13 substitutions in `report`'s guard that were never made, and
+        # all three guards stay green — measured BEFORE it was removed, because a perturbation
+        # that starts firing is as likely to expose a defect as to pass.
+        if candidate != value:
             return candidate
     if value is None:
         return _UNPERTURBABLE
@@ -11612,7 +11620,12 @@ def test_every_field_the_report_payload_carries_is_stated_by_the_page(tmp_path):
     for _name, report in fixtures:
         structural.update(path for path, _value in _structure_leaves(report))
         for path, value in _structure_nodes(report):
-            pool.setdefault(path, []).append(value)
+            # I-26. GROUPED, as `diff`'s and `impact`'s pools are. This one was keyed by the
+            # RAW path, so `inputs[0].name` and `inputs[3].name` held separate pools and drew
+            # on fewer candidates than its siblings — an undocumented difference between three
+            # guards written to be the same check over three commands, and a difference nobody
+            # wrote down is one nobody can tell from a mistake.
+            pool.setdefault(_grouped(path), []).append(value)
         for path, _value in _payload_leaves(runprov.report.payload(report)):
             under = ("body", *path) if path[0] in runprov.report.Body._fields else path
             carried.add(_grouped(under))
@@ -11637,7 +11650,7 @@ def test_every_field_the_report_payload_carries_is_stated_by_the_page(tmp_path):
             here = dict(_structure_leaves(report))
             if path not in here:
                 continue
-            fresh = _perturbed(here[path], pool.get(path, []))
+            fresh = _perturbed(here[path], pool.get(_grouped(path), []))
             if fresh is _UNPERTURBABLE:
                 continue
             moved = runprov.report.render_page(_replaced(report, path, fresh))
@@ -11652,7 +11665,26 @@ def test_every_field_the_report_payload_carries_is_stated_by_the_page(tmp_path):
         "which is either a field the page drops or a field no fixture exercises, and both "
         f"are findings: {[' -> '.join(map(str, p)) for p in unstated]}"
     )
-    assert shown == structural
+    # I-25. `assert shown == structural` STOOD HERE AND COULD NOT FAIL. Every path lands in
+    # `shown` or in `unstated`, the two are disjoint, and `not unstated` is asserted above — so
+    # the equality followed from the line before it and tested nothing. `impact`'s analogue is
+    # NOT dead, and the difference is the reason: that guard carries a `never` set, so its third
+    # assertion rules out one field of a never-group being shown while another is not.
+    #
+    # WHAT REPLACES IT IS TIED TO THE STRUCTURE, NOT TO THE FIXTURES — and the distinction is
+    # the whole of why it is not dead too. An empty fixture list is ALREADY caught above, by the
+    # `carried` / `grouped` assertions. What is not caught is a field that leaves BOTH walks
+    # TOGETHER: the two sides shrink in step, their differences are unchanged, and `unstated`
+    # stays empty. **`_fields` is the one fact in this guard that no fixture can move.**
+    #
+    # That is not hypothetical here — it is I-12's blind spot, which I-09 met while adding the
+    # very field it hides: AN EMPTY TUPLE YIELDS NO LEAF. Measured by forcing `Checked((), (),
+    # ())`: the three assertions above all pass and this one fails naming `checked`.
+    assert {path[0] for path in structural} == set(runprov.report.Report._fields), (
+        "every top-level field of `Report` must be reached by some fixture, or this "
+        "guard is checking an answer that was never built: "
+        f"{sorted(set(runprov.report.Report._fields) ^ {path[0] for path in structural})}"
+    )
 
 
 def test_a_dirty_checkout_holds_its_commit_back_from_the_page_and_keeps_it_in_the_payload(tmp_path):
@@ -13019,7 +13051,26 @@ def test_every_field_the_diff_payload_carries_is_stated_by_the_table():
         "reach, which is either a field the table drops or a field no fixture exercises, and "
         f"both are findings: {[' -> '.join(map(str, p)) for p in unstated]}"
     )
-    assert shown == structural
+    # I-25. `assert shown == structural` STOOD HERE AND COULD NOT FAIL. Every path lands in
+    # `shown` or in `unstated`, the two are disjoint, and `not unstated` is asserted above — so
+    # the equality followed from the line before it and tested nothing. `impact`'s analogue is
+    # NOT dead, and the difference is the reason: that guard carries a `never` set, so its third
+    # assertion rules out one field of a never-group being shown while another is not.
+    #
+    # WHAT REPLACES IT IS TIED TO THE STRUCTURE, NOT TO THE FIXTURES — and the distinction is
+    # the whole of why it is not dead too. An empty fixture list is ALREADY caught above, by the
+    # `carried` / `grouped` assertions. What is not caught is a field that leaves BOTH walks
+    # TOGETHER: the two sides shrink in step, their differences are unchanged, and `unstated`
+    # stays empty. **`_fields` is the one fact in this guard that no fixture can move.**
+    #
+    # That is not hypothetical here — it is I-12's blind spot, which I-09 met while adding the
+    # very field it hides: AN EMPTY TUPLE YIELDS NO LEAF. Measured by forcing `Checked((), (),
+    # ())`: the three assertions above all pass and this one fails naming `checked`.
+    assert {path[0] for path in structural} == set(runprov.diff.Comparison._fields), (
+        "every top-level field of `Comparison` must be reached by some fixture, or this "
+        "guard is checking an answer that was never built: "
+        f"{sorted(set(runprov.diff.Comparison._fields) ^ {path[0] for path in structural})}"
+    )
 
     # AND EVERY STATE IN WHICH A FIELD IS SILENT IS NAMED, which is the half a stop-at-the-
     # first-success loop cannot see. Measured: with the reason struck off the NOT COMPARABLE
