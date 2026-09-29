@@ -11727,6 +11727,90 @@ def test_a_dirty_checkout_holds_its_commit_back_from_the_page_and_keeps_it_in_th
     )
 
 
+def test_the_page_abbreviates_the_tool_commit_and_the_payload_carries_all_of_it(tmp_path):
+    """[ADR-0017 R-9] I-17. THE ASYMMETRY THE GUARD REPORTS AS COVERED.
+
+    The page prints `str(tool.commit)[:12]`; the payload carries all forty characters. The
+    guard beside this marks a leaf as stated when SOME change to it moves the page, and
+    `_perturbed` PREPENDS its substitute — so the change always lands inside the first twelve
+    and `tool.commit` is reported as stated while 28 of its 40 characters reach no page at all.
+
+    `_perturbed`'s own comment shows the truncation was already known: prepending was chosen
+    BECAUSE appending left the page unmoved. That was the right call for that guard, whose
+    question is whether a field reaches the page at all — but it settled the question in the
+    direction that makes the guard pass, and nothing then asserted what the abbreviation costs.
+    **A perturbation that changes the front of a string cannot detect a rendering that shows
+    only the front**, and `impact` filed and fixed this same class after M09; this is `report`'s
+    equivalent, which the row observed it had never had.
+
+    THE WIDTH IS DERIVED, NOT WRITTEN DOWN. Asserting `commit[:12] in page` would still pass if
+    the renderer moved to sixteen, so the longest prefix that reaches the page is measured and
+    compared — a changed width fails here and says what it changed to.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    commit = "9f8e7d6c5b4a39281706f5e4d3c2b1a099887766"
+
+    def rendered(value):
+        report = runprov.report.build(
+            artifact,
+            tmp_path,
+            [
+                _history_record(
+                    cwd=tmp_path,
+                    tool={
+                        "version": "0.6.0",
+                        "source": "vcs",
+                        "identifies_code": True,
+                        "commit": value,
+                    },
+                )
+            ],
+        )
+        return runprov.report.render_page(report), runprov.report.payload(report)
+
+    page, payload = rendered(commit)
+    text = "\n".join(page)
+    longest = max(n for n in range(1, len(commit) + 1) if commit[:n] in text)
+    assert longest == 12, (
+        f"the page names the writing runprov by a 12-character prefix, not {longest}"
+    )
+    assert payload["method"]["tool"]["commit"] == commit, (
+        "and the payload carries it whole, so a consumer can resolve the commit"
+    )
+
+    # WHAT THE PREFIX COSTS, asserted rather than assumed — the same demonstration `impact`'s
+    # digest test makes. Two different runprovs whose commits agree for twelve characters
+    # produce an IDENTICAL page, and this is the state `_perturbed` cannot reach by prepending.
+    tail_page, tail_payload = rendered(commit[:12] + "f" * 28)
+    assert tail_page == page, (
+        "two commits agreeing for twelve characters print the same page, which is the cost of "
+        f"the abbreviation and the reason it is asserted here: {tail_page}"
+    )
+    assert tail_payload["method"]["tool"]["commit"] != payload["method"]["tool"]["commit"], (
+        "while the payloads differ — the machine reader can still tell the two apart"
+    )
+
+
+def test_the_report_page_abbreviates_in_exactly_two_places_and_both_are_asserted():
+    """[ADR-0017 R-9] I-17. NAMED AS A SET, so a third abbreviation cannot arrive unasserted.
+
+    `impact` states its abbreviations as a set for this reason and `report` never did. The set
+    is DERIVED FROM THE MODULE'S OWN SOURCE rather than typed out: a hand list is right on the
+    day it is written and is then the thing that goes stale, which is the pattern this audit
+    opened with. A new truncation anywhere in `report.py` fails this test until someone says
+    where it is asserted.
+
+    Both are the safe direction — the machine reader is told more than the person, never less.
+    """
+    found = set(re.findall(r"([A-Za-z_][\w.]*)\s*\)?\[:(\d+)\]", inspect.getsource(runprov.report)))
+    assert found == {("tool.commit", "12"), ("unregistered", "10")}, (
+        "every abbreviation this page makes must have a test that states what it costs. "
+        "`tool.commit` is asserted by the test above; `unregistered` by "
+        "`test_the_page_samples_the_unregistered_reads_and_the_payload_carries_all_of_them`. "
+        f"Anything else here is a fact the payload carries and the page quietly shortens: {found}"
+    )
+
+
 def test_the_page_samples_the_unregistered_reads_and_the_payload_carries_all_of_them(tmp_path):
     """[ADR-0017 R-7]. The one place a rendering says less than the report holds.
 
