@@ -10869,6 +10869,51 @@ def test_the_digest_memo_is_keyed_by_the_record_key_and_not_by_path_alone(tmp_pa
     )
 
 
+def test_the_page_says_clean_only_when_something_actually_looked(tmp_path):
+    """[ADR-0007] I-19. `clean` WAS A CLAIM ABOUT A WORKING TREE NOBODY LOOKED AT.
+
+    `render_page` asked `if git_status_captured is False`, then `elif git_code_dirty`, so a record
+    carrying NONE of the three git fields fell through to `state = "clean"` — an explicit False
+    and a missing key reaching the same word, on the one page whose whole subject is whether the
+    method can be got back.
+
+    FOUR STATES, FOUR SENTENCES, asserted together rather than one at a time: that is what stops a
+    fifth arriving and quietly joining one of them. Taylor chose the wording on 2026-09-29, and
+    `UNKNOWN` is deliberately reused — both are unknown, and the clause says which kind.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    git = ("git_commit", "git_status_captured", "git_code_dirty")
+
+    def code_line(**over):
+        record = _history_record(cwd=tmp_path, **over)
+        for key in git:
+            if key not in over:
+                record.pop(key, None)
+        page = runprov.report.render_page(runprov.report.build(artifact, tmp_path, [record]))
+        return next(line for line in page if line.strip().startswith("code "))
+
+    sentences = {
+        "nothing recorded": code_line(),
+        "status not captured": code_line(git_status_captured=False),
+        "dirty": code_line(git_status_captured=True, git_code_dirty=True, git_commit="a1b2c3d"),
+        "looked, and clean": code_line(
+            git_status_captured=True, git_code_dirty=False, git_commit="a1b2c3d"
+        ),
+    }
+    assert "no git fields in this record" in sentences["nothing recorded"], (
+        f"a record that says nothing about git must not be called clean: "
+        f"{sentences['nothing recorded']}"
+    )
+    assert "clean" not in sentences["nothing recorded"]
+    assert "git status did not run" in sentences["status not captured"]
+    assert "DIRTY" in sentences["dirty"]
+    assert "(clean)" in sentences["looked, and clean"], (
+        "and `clean` survives where it is TRUE — something looked and the tree was clean: "
+        f"{sentences['looked, and clean']}"
+    )
+    assert len(set(sentences.values())) == 4, f"four states, four sentences: {sentences}"
+
+
 def test_a_file_published_by_copying_is_not_accused_of_having_changed(tmp_path):
     """[ADR-0017 R-10] I-02. THE FALSE POSITIVE, AND IT FIRES ON THE ORDINARY CASE.
 

@@ -759,7 +759,23 @@ def render_page(report: Report) -> list[str]:
     method = body.method
     out += ["", _rule("the method, and whether it can be got back"), ""]
     commit = method.git_commit or "none recorded"
-    if method.git_status_captured is False:
+    if (
+        method.git_commit is None
+        and method.git_status_captured is None
+        and method.git_code_dirty is None
+    ):
+        # I-19. `clean` IS A CLAIM ABOUT A WORKING TREE NOBODY LOOKED AT. `git_code_dirty` is
+        # None when the record says nothing about git at all, and `elif method.git_code_dirty`
+        # treated that exactly like an explicit False — so a record carrying none of the three
+        # got a page reading "none recorded  (clean)", on the one page whose whole subject is
+        # whether the method can be got back.
+        #
+        # Every wheel this package has released writes `git_status_captured`, so this arrives
+        # from a foreign writer, a hand-edited record or a projection. Taylor ruled on
+        # 2026-09-29 that such a record is still one this command accepts and must not be lied
+        # to about.
+        state = "UNKNOWN — no git fields in this record"
+    elif method.git_status_captured is False:
         state = "UNKNOWN — git status did not run"
     elif method.git_code_dirty:
         state = "DIRTY — the code that ran matches no commit"
