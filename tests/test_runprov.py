@@ -17681,6 +17681,68 @@ def test_every_command_that_answers_in_json_documents_its_schema_and_the_promise
     )
 
 
+def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, capsys):
+    """[ADR-0017 R-15] I-21. Taylor's decision, 2026-09-29, and the countdown to it.
+
+    R-15: a payload is emitted whenever this package ANSWERS, including when the answer is that
+    it could not check; empty stdout means the INVOCATION was wrong. The rule exists because
+    exit 2 is already taken — `argparse` uses it for a usage error, so a consumer seeing 2
+    cannot tell *could not check* from *typed it wrong* except by whether stdout parses.
+
+    THIS DOES NOT ASSERT R-15 OUTRIGHT, BECAUSE FIVE STATES DO NOT YET COMPLY. Asserting it
+    would be a gate red for work that is scheduled rather than missed — the trap I-22 was
+    written to avoid one rule over. So the states are PARTITIONED and the partition ratchets:
+    `outstanding` can only shrink, and the day one of them gains a payload this test goes red
+    and stays red until the name is struck.
+
+    Every case is asserted to exit 2 either way. That half of R-15 already holds everywhere and
+    is the part a consumer keys on first.
+    """
+    artifact, log = _reported_run(tmp_path)
+    unpinned = tmp_path / "unpinned.tsv"
+    unpinned.write_text("no pin here\n", encoding="utf-8")
+    absent, no_log = tmp_path / "ghost.tsv", tmp_path / "missing.jsonl"
+
+    complies = {
+        "chain, no history to read": ["chain", str(no_log)],
+        "report, artifact carries no pin": ["report", str(unpinned), "--log", str(log)],
+        "verify, artifact carries no pin": ["verify", str(unpinned), "--root", str(tmp_path)],
+    }
+    outstanding = {
+        "report, artifact is not there": ["report", str(absent), "--log", str(log)],
+        "impact, file nothing recorded": ["impact", str(absent), "--log", str(log)],
+        "impact, no history to read": ["impact", str(artifact), "--log", str(no_log)],
+        "diff, selector matches one run": ["diff", "demo", "--log", str(log)],
+        "lineage, no history to read": ["lineage", "--log", str(no_log)],
+    }
+
+    def answered(argv):
+        capsys.readouterr()
+        code = runprov.__main__.main([*argv, "--format", "json"])
+        out = capsys.readouterr().out
+        assert code == 2, (
+            f"R-15 is about what exit 2 CARRIES; this case must first reach it: {argv}"
+        )
+        if not out.strip():
+            return False
+        json.loads(
+            out
+        )  # R-4: stdout is the payload and nothing else, so the parse is the assertion
+        return True
+
+    speaking = {name: answered(argv) for name, argv in complies.items()}
+    assert all(speaking.values()), (
+        "these already put a payload on stdout at exit 2 and must not stop: "
+        f"{sorted(name for name, ok in speaking.items() if not ok)}"
+    )
+    silent = {name: answered(argv) for name, argv in outstanding.items()}
+    arrived = sorted(name for name, ok in silent.items() if ok)
+    assert not arrived, (
+        "R-15 now holds for these and they must MOVE to `complies` — that is this test "
+        f"ratcheting, and it is the point: {arrived}"
+    )
+
+
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():
     """L-70. `runprov exec` is a top-level subcommand and sat as an H3 CHILD of "The
     notebook: `show`" — a section about a read-only viewer. A reader scanning the rendered
