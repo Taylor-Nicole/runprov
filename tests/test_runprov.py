@@ -11687,6 +11687,55 @@ def test_every_field_the_report_payload_carries_is_stated_by_the_page(tmp_path):
     )
 
 
+def test_perturbed_substitutes_in_both_directions_and_the_guards_key_their_pools_alike():
+    """[I-26] follow-up. THE FIX LANDED UNOBSERVED, WHICH IS THE THING THIS ROW WAS ABOUT.
+
+    I-26 removed `candidate is not None` from `_perturbed` so a value could be turned into None
+    and not only the other way — `_structure_nodes`' docstring asks for both — and made
+    `report`'s pool key grouped, as its two siblings already were. Both changes were CONTROLLED
+    AFTER THEY WERE COMMITTED and **both controls passed**: restoring the filter and restoring
+    the raw key each left the whole suite green. A change no test can see is a change the next
+    person can revert by accident, which is the same complaint I-25 makes one function over
+    about an assertion that could not fail.
+
+    So the two properties are asserted directly rather than through the guards that use them.
+    Neither is reachable by perturbing a page: the first is about the substitute `_perturbed`
+    CHOOSES, and a guard only ever sees whether the page moved afterwards.
+    """
+    tool = runprov.report.Tool(version="9.9.9", source="vcs", identifies_code=True, commit="a")
+
+    # NONE -> VALUE, which always worked.
+    assert _perturbed(None, [None, tool]) is tool
+
+    # VALUE -> NONE, which is what the filter blocked. This is the direction that makes an
+    # optional block DISAPPEAR, and a page that reads a block it no longer has is the defect.
+    assert _perturbed(tool, [None]) is None
+
+    # AND A POOL OFFERING ONLY THE VALUE ITSELF STILL YIELDS NOTHING, so dropping the filter
+    # did not turn "no substitute available" into a silent no-op substitution.
+    assert _perturbed(None, [None]) is _UNPERTURBABLE
+
+    # THE THREE POOLS ARE KEYED ALIKE, read from THE GUARDS' OWN SOURCE. Reading the whole
+    # file instead counts this test's own string literals and reports four pools where there
+    # are three — a check that matches itself is measuring the wrong thing, which is the
+    # smaller cousin of every scope finding in this audit.
+    guards = (
+        test_every_field_the_report_payload_carries_is_stated_by_the_page,
+        test_every_field_the_diff_payload_carries_is_stated_by_the_table,
+        test_every_field_the_impact_payload_carries_is_stated_by_the_page,
+    )
+    keyed = {
+        name.__name__: "pool.setdefault(_grouped(path), []).append(value)"
+        in inspect.getsource(name)
+        for name in guards
+    }
+    assert all(keyed.values()), (
+        "a pool keyed by the raw path holds `inputs[0].name` and `inputs[3].name` separately, "
+        "so that guard draws on fewer substitutes than its siblings over the same structure — "
+        f"and nothing else in this file can see the difference: {keyed}"
+    )
+
+
 def test_a_dirty_checkout_holds_its_commit_back_from_the_page_and_keeps_it_in_the_payload(tmp_path):
     """[ADR-0017 R-1] [ADR-0017 R-2] I-15. The asymmetry no fixture reached and nothing named.
 
