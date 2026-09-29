@@ -115,6 +115,10 @@ def _read_int(path: pathlib.Path) -> int | None:
         return None
 
 
+#: [ADR-0017 R-5]. T-33's sixth row.
+SCHEMA = "runprov.resources.v1"
+
+
 class Measurement(typing.NamedTuple):
     """One run's consumption, in canonical units. R-2: bytes and seconds, never `8G`."""
 
@@ -164,6 +168,51 @@ FLOOR_NOTE = (
     "the maximum of any one child, not the concurrent total; "
     "a scheduler enforces the cgroup total, which is larger"
 )
+
+
+def payload(
+    path: pathlib.Path,
+    measured: Measurement | None,
+    record: typing.Mapping[str, typing.Any] | None,
+    cannot_check: str | None = None,
+) -> dict[str, typing.Any]:
+    """What a run consumed, as one object. ADR-0017 R-1, R-5, R-7, R-9, R-10, R-12, R-15.
+
+    R-12 NAMED THIS STRUCTURE AND WAS RIGHT: `Measurement` already carries `source` and
+    `unavailable`, so the two things R-7 requires to travel with a number were here before the
+    rendering was. `source` says WHICH mechanism answered — a cgroup peak and a `getrusage`
+    peak are different quantities (ADR-0013 R-5), so a figure without its source is a figure a
+    consumer can compare wrongly.
+
+    DERIVED FROM `_fields`, never a list, so a figure added to `Measurement` reaches the
+    payload without anyone remembering. `mean_cores` is added explicitly because it is a
+    FUNCTION of the measurement rather than a field — cpu over wall — and R-10 allows it
+    because it computes nothing the structure does not already hold. It is computed ONCE here
+    and read; H1-6 is the row where one fact computed a second way disagreed with the first.
+
+    `measured` AND `record` ARE None IN THE TWO ANSWERS THAT HAVE NO MEASUREMENT: a history
+    that is not there, and a history with no run carrying the block. Both are answers under
+    R-15 and both serialise, with every figure `null` and `cannot_check` saying which. `null`
+    against a figure here means *nothing measured it*, which is the same thing the page says in
+    words as `not measured` — R-9, no field renamed and no meaning shifted on the way out.
+    """
+    figures: dict[str, typing.Any] = {
+        name: None for name in Measurement._fields if name != "unavailable"
+    }
+    if measured is not None:
+        figures = {
+            name: value for name, value in measured._asdict().items() if name != "unavailable"
+        }
+    return {
+        "schema": SCHEMA,
+        "path": path.as_posix(),
+        "script": None if record is None else record.get("script"),
+        "run_id": None if record is None else record.get("run_id"),
+        **figures,
+        "unavailable": [] if measured is None else list(measured.unavailable),
+        "mean_cores": None if measured is None else mean_cores(measured),
+        "cannot_check": cannot_check,
+    }
 
 
 def from_record(block: typing.Mapping[str, typing.Any]) -> Measurement:

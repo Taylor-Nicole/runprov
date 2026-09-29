@@ -222,6 +222,34 @@ which a `GAP` edge can never print because rule 5 fires only once a version has 
 docstring no longer claims its sentences come out in ADR-0016 R-25's order; they come out
 weakest-claim-first, and it now says so.
 
+### Added — `runprov resources --format json`, the measurement rather than a request
+
+ADR-0017, the sixth row of T-33. R-12 named this command's builder and was right twice over:
+`Measurement` existed, and it already carried `source` and `unavailable` — the two things R-7
+requires to travel with a number were here before the rendering was.
+
+**`source` is the field that matters.** ADR-0013 R-5 is the row establishing that a cgroup peak
+and a `getrusage` peak are different quantities; a figure without its source is one a consumer
+can compare wrongly and never know it. `unavailable` lists what could not be obtained and why,
+in the same object as what could.
+
+**`--margin` is deliberately absent.** It scales a REQUEST for a scheduler, and this payload is
+the measurement; a consumer applying its own headroom needs the number that was measured, not
+one already multiplied by somebody's default. `--format slurm` and `--format k8s` remain the
+renderings that produce requests.
+
+**Both exit-2 states serialise, and they are different answers.** A history that is not there,
+and a history that was read and holds no run carrying the block. Each gives every figure `null`
+with `cannot_check` saying which — never a shape that could be read as a measurement of zero,
+because this handler's own docstring says a renderer printing a request from no measurement
+"would be the worst possible output, because it looks exactly like a measured one".
+
+**Four page/payload asymmetries, named as a set** — more than any sibling has. `max_vms_bytes`,
+`io_read_bytes`, `io_write_bytes` and `io_self_only` reach the payload and no state of the text
+view: a person sizing a job reads peak RSS, since virtual size counts address space a process
+reserved and never touched. All four are the safe direction, and naming them as a set is what
+makes a fifth fail a test rather than be discovered by a consumer.
+
 ### Added — `runprov log --format json`, the ANSWER rather than the records
 
 ADR-0017, the fifth row of T-33. R-3's amendment already drew the line this implements:

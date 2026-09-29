@@ -17618,7 +17618,7 @@ def test_every_subcommand_is_accounted_for_by_r3_and_the_outstanding_list_only_s
     excluded = {"export"}
     # R-3 SAYS ADD AND T-33 HAS NOT REACHED THEM. These are the remaining rows, not a defect
     # and not a disagreement with the rule. Each is in R-3's own table under "add".
-    outstanding = {"resources", "show"}
+    outstanding = {"show"}
 
     for name, bucket in (("acts", acts), ("excluded", excluded), ("outstanding", outstanding)):
         stale = bucket - subcommands
@@ -17704,6 +17704,11 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
     absent, no_log = tmp_path / "ghost.tsv", tmp_path / "missing.jsonl"
     empty_dir = tmp_path / "no_python_here"
     empty_dir.mkdir()
+    bare_log = tmp_path / "bare.jsonl"
+    bare_log.write_text(
+        json.dumps({"schema": "runprov.run.v2", "script": "s", "run_id": "x"}) + "\n",
+        encoding="utf-8",
+    )
 
     complies = {
         "chain, no history to read": ["chain", str(no_log)],
@@ -17716,6 +17721,10 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
         # one missing-history guard and it is the guard that was silent, not the commands.
         "log, no history to read": ["log", "--log", str(no_log)],
         "lineage, no history to read": ["lineage", "--log", str(no_log)],
+        # T-33's sixth row. TWO states, and the second is the one worth having: the history was
+        # read and understood and still cannot answer, which is not the same as not being there.
+        "resources, no history to read": ["resources", "--log", str(no_log)],
+        "resources, no run measured anything": ["resources", "--log", str(bare_log)],
     }
     outstanding = {
         "report, artifact is not there": ["report", str(absent), "--log", str(log)],
@@ -17958,6 +17967,216 @@ def test_log_answers_in_json_and_says_what_was_asked_as_well_as_what_came_back(t
     assert runprov.__main__.main(["lineage", "--log", str(log), "--format", "json"]) == 0
     assert json.loads(capsys.readouterr().out)["cannot_check"] is None
     assert artifact.exists()
+
+
+def _resources_fixtures():
+    """Measurements covering every state this page renders, with each figure VARYING.
+
+    EVERY NUMERIC FIELD HOLDS AT LEAST TWO DISTINCT VALUES ACROSS THESE, and that is a
+    requirement of the perturbation rather than tidiness: `_perturbed` draws from the pool
+    first and falls back to `f"mutated-{value}"` for a float, which the page then formats with
+    `:.2f` and raises on. A field that is constant across the fixtures reaches that fallback.
+    """
+    made = runprov.resources.Measurement
+    return [
+        (
+            "cgroup, everything measured",
+            made(
+                wall_seconds=120.5,
+                cpu_seconds=480.25,
+                max_rss_bytes=2 * 1024**3,
+                max_vms_bytes=4 * 1024**3,
+                io_read_bytes=1024,
+                io_write_bytes=2048,
+                source="cgroup",
+                unavailable=(),
+                io_self_only=False,
+            ),
+            {"script": "align", "run_id": "r1"},
+        ),
+        (
+            "getrusage, which floors the memory figure",
+            made(
+                wall_seconds=8.25,
+                cpu_seconds=7.5,
+                max_rss_bytes=300 * 1024**2,
+                max_vms_bytes=900 * 1024**2,
+                io_read_bytes=4096,
+                io_write_bytes=8192,
+                source="getrusage",
+                unavailable=("cgroup: not this run's own (no scheduler or container)",),
+                io_self_only=True,
+            ),
+            {"script": "call", "run_id": "r2"},
+        ),
+        (
+            "no cpu figure at all, so no mean cores line",
+            made(
+                wall_seconds=3.75,
+                cpu_seconds=None,
+                max_rss_bytes=64 * 1024**2,
+                max_vms_bytes=None,
+                io_read_bytes=None,
+                io_write_bytes=None,
+                source="none",
+                unavailable=("resource module: not on this platform",),
+                io_self_only=False,
+            ),
+            {"script": "fetch", "run_id": "r3"},
+        ),
+        (
+            "nothing measured, and two reasons given",
+            made(
+                wall_seconds=1.5,
+                cpu_seconds=0.25,
+                max_rss_bytes=None,
+                max_vms_bytes=32 * 1024**2,
+                io_read_bytes=512,
+                io_write_bytes=256,
+                source="none",
+                unavailable=("cgroup: unreadable", "resource module: not on this platform"),
+                io_self_only=True,
+            ),
+            {"script": "sweep", "run_id": "r4"},
+        ),
+    ]
+
+
+def test_resources_answers_in_json_and_refuses_to_size_a_run_it_did_not_measure(tmp_path, capsys):
+    """[ADR-0017 R-3] [R-4] [R-5] [R-6] [R-9] [R-12] [R-15]. T-33's sixth row.
+
+    R-12 named this command's builder and was right: `Measurement` already carried `source` and
+    `unavailable`, so the two things R-7 requires to travel with a number were here before the
+    rendering was. `source` is the one that matters — ADR-0013 R-5 is the row establishing that
+    a cgroup peak and a `getrusage` peak are DIFFERENT QUANTITIES, so a figure without its
+    source is a figure a consumer can compare wrongly and never know.
+
+    `--margin` IS ABSENT FROM THE PAYLOAD ON PURPOSE. It scales a REQUEST for a scheduler, and
+    this is the measurement; a consumer applying its own headroom needs the number that was
+    measured rather than one already multiplied by somebody's default.
+
+    BOTH EXIT-2 STATES SERIALISE. This handler's own docstring says a renderer printing a
+    request from no measurement "would be the worst possible output, because it looks exactly
+    like a measured one" — so the payload for *nothing to report* is every figure `null` with
+    `cannot_check` saying which of the two happened, never a shape a consumer could mistake for
+    a measurement of zero.
+    """
+    _, log = _reported_run(tmp_path)
+
+    assert runprov.__main__.main(["resources", "--log", str(log), "--format", "json"]) == 0
+    got = json.loads(capsys.readouterr().out)
+    assert got["schema"] == runprov.resources.SCHEMA == "runprov.resources.v1"
+    assert next(iter(got)) == "schema"
+    assert got["source"] in runprov.resources.Measurement._fields or isinstance(got["source"], str)
+    assert got["wall_seconds"] is not None and got["cannot_check"] is None
+    assert got["script"] == "demo"
+    # R-9: THE RECORD'S OWN NAMES. The page says "measured by" and "peak memory"; the payload
+    # says `source` and `max_rss_bytes`, which is what the record says.
+    for field in runprov.resources.Measurement._fields:
+        assert field in got, f"`Measurement.{field}` must reach the payload: {sorted(got)}"
+
+    # NO HISTORY: an answer, and it says so rather than sizing anything.
+    gone = tmp_path / "missing.jsonl"
+    assert runprov.__main__.main(["resources", "--log", str(gone), "--format", "json"]) == 2
+    empty = json.loads(capsys.readouterr().out)
+    assert empty["cannot_check"] == f"no run history at {gone}"
+    assert empty["wall_seconds"] is None and empty["source"] is None, (
+        "every figure null, so nothing here can be read as a measurement of zero"
+    )
+    assert empty["mean_cores"] is None and empty["unavailable"] == []
+
+    # A HISTORY WITH NO RESOURCES BLOCK IN IT — the more interesting of the two, because the
+    # file was read and understood and still cannot answer.
+    bare = tmp_path / "bare.jsonl"
+    bare.write_text(
+        json.dumps({"schema": "runprov.run.v2", "script": "s", "run_id": "x"}) + "\n",
+        encoding="utf-8",
+    )
+    assert runprov.__main__.main(["resources", "--log", str(bare), "--format", "json"]) == 2
+    none = json.loads(capsys.readouterr().out)
+    assert "recorded a resources block" in none["cannot_check"], none["cannot_check"]
+    assert none["wall_seconds"] is None
+
+    # [ADR-0017 R-6] the exit code is the same question asked four ways.
+    for fmt in ("text", "tsv", "slurm", "k8s", "json"):
+        assert runprov.__main__.main(["resources", "--log", str(gone), "--format", fmt]) == 2
+        capsys.readouterr()
+
+
+def test_every_field_the_resources_payload_carries_is_stated_by_the_page_or_named_as_silent():
+    """[ADR-0017 R-1] [ADR-0017 R-2] [ADR-0017 R-12]. FOUR asymmetries, more than any sibling.
+
+    The text view prints `source`, wall, cpu, mean cores, peak memory and each `unavailable`
+    note. It does NOT print `max_vms_bytes`, `io_read_bytes`, `io_write_bytes` or
+    `io_self_only` — four figures the payload carries and the page never states, against
+    `impact`'s three and `diff`'s one.
+
+    NAMED AS A SET, which is what makes a FIFTH one fail this test rather than be discovered by
+    a consumer. All four are the safe direction — the machine reader is told more than the
+    person, never less — and each is deliberate: a person sizing a job reads peak RSS, because
+    virtual size counts address space a process reserved and never touched, and the io counters
+    are `io_self_only` on the platforms that answer at all, which is a caveat about the number
+    rather than a number. An unasserted asymmetry is indistinguishable from a field the page
+    forgot, which is the state `report` was in until I-15.
+    """
+    fixtures = _resources_fixtures()
+    structural, carried, pool = set(), set(), {}
+    for _name, measured, record in fixtures:
+        structural.update(path for path, _value in _structure_leaves(measured))
+        for path, value in _structure_nodes(measured):
+            pool.setdefault(_grouped(path), []).append(value)
+        for path, _value in _payload_leaves(
+            runprov.resources.payload(pathlib.Path("h.jsonl"), measured, record)
+        ):
+            carried.add(_grouped(path))
+    grouped = {_grouped(path) for path in structural}
+
+    assert carried - grouped == {
+        ("schema",),
+        ("path",),
+        ("script",),
+        ("run_id",),
+        ("mean_cores",),
+        ("cannot_check",),
+    }, (
+        "the payload adds exactly six things to the measurement, each named by a requirement: "
+        "the schema (R-5); the history it came from and the run it describes, which the page "
+        "puts in its header and the structure does not hold; `mean_cores`, a function of two "
+        "fields allowed by R-10; and `cannot_check`, R-15's field. A seventh would be a fact "
+        f"invented on the way out: {sorted(carried - grouped)}"
+    )
+    assert grouped - carried == set(), (
+        f"and nothing the measurement holds fails to reach the payload: {sorted(grouped - carried)}"
+    )
+
+    shown, silent = set(), set()
+    for path in sorted(structural, key=repr):
+        for _name, measured, record in fixtures:
+            here = dict(_structure_leaves(measured))
+            if path not in here:
+                continue
+            fresh = _perturbed(here[path], pool.get(_grouped(path), []))
+            if fresh is _UNPERTURBABLE:
+                continue
+            moved = runprov.__main__._resources_text(record, _replaced(measured, path, fresh))
+            if moved != runprov.__main__._resources_text(record, measured):
+                shown.add(_grouped(path))
+            else:
+                silent.add(_grouped(path))
+    assert silent - shown == {
+        ("max_vms_bytes",),
+        ("io_read_bytes",),
+        ("io_write_bytes",),
+        ("io_self_only",),
+    }, (
+        "these four reach the payload and no state of the page, and they are the whole list. "
+        "Any other field silent in every state is a fact the payload carries and the page "
+        f"drops: {sorted(silent - shown)}"
+    )
+    assert {path[0] for path in structural} == set(runprov.resources.Measurement._fields), (
+        "and every field of `Measurement` is reached by some fixture: "
+        f"{sorted(set(runprov.resources.Measurement._fields) ^ {p[0] for p in structural})}"
+    )
 
 
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():

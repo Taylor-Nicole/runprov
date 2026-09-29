@@ -1652,6 +1652,16 @@ def _resources(args: argparse.Namespace) -> int:
     project = active()
     log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
     if not log.is_file():
+        # [ADR-0017 R-15]. AN ANSWER, not a bad invocation: it looked where it was told and
+        # there is nothing to read. `resources` has its own guard rather than the shared one,
+        # so this is its own line to fix.
+        if args.format == "json":
+            print(
+                json.dumps(
+                    resources_mod.payload(log, None, None, cannot_check=f"no run history at {log}"),
+                    indent=2,
+                )
+            )
         print(f"resources: no run history at {log}", file=sys.stderr)
         return 2
 
@@ -1671,6 +1681,23 @@ def _resources(args: argparse.Namespace) -> int:
 
     if found is None:
         which = f" for {args.script!r}" if args.script else ""
+        # [ADR-0017 R-15] AND THE MORE INTERESTING OF THE TWO. The history is there and was
+        # read; no run in it carries the block. This function's own docstring says a renderer
+        # printing a request from no measurement "would be the worst possible output, because it
+        # looks exactly like a measured one" — a payload of nulls with `cannot_check` set is the
+        # machine-readable form of refusing to.
+        if args.format == "json":
+            print(
+                json.dumps(
+                    resources_mod.payload(
+                        log,
+                        None,
+                        None,
+                        cannot_check=f"no run{which} in {log} recorded a resources block",
+                    ),
+                    indent=2,
+                )
+            )
         print(f"resources: no run{which} in {log} recorded a resources block", file=sys.stderr)
         return 2
 
@@ -1683,6 +1710,11 @@ def _resources(args: argparse.Namespace) -> int:
         print("\n".join(resources_mod.render_slurm(m, args.margin)))
     elif args.format == "k8s":
         print("\n".join(resources_mod.render_k8s(m, args.margin)))
+    elif args.format == "json":
+        # [ADR-0017 R-4]. `--margin` is deliberately absent from the payload: it scales a
+        # REQUEST for a scheduler, and this is the MEASUREMENT. A consumer applying its own
+        # headroom needs the number that was measured, not one already multiplied by a default.
+        print(json.dumps(resources_mod.payload(log, m, found), indent=2))
     else:
         print("\n".join(_resources_text(found, m)))
     return 0
@@ -2204,9 +2236,10 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("script", nargs="?", default=None, help="a script name; omit for the last run")
     rs.add_argument(
         "--format",
-        choices=("text", "tsv", "slurm", "k8s"),
+        choices=("text", "tsv", "slurm", "k8s", "json"),
         default="text",
-        help="tsv uses Snakemake's benchmark columns; slurm and k8s render a request",
+        help="tsv uses Snakemake's benchmark columns; slurm and k8s render a request; "
+        "json is the measurement itself",
     )
     rs.add_argument(
         "--margin",

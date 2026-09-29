@@ -639,6 +639,23 @@ $ runprov resources --format slurm --margin 2
 #SBATCH --time=00:01:00
 ```
 
+`runprov resources --format json` is the **measurement**, not a request — `--margin` scales a
+request for a scheduler, and a consumer applying its own headroom needs the number that was
+measured rather than one already multiplied by somebody's default. It carries `source` beside
+every figure, and that is the field that matters: a cgroup peak and a `getrusage` peak are
+**different quantities**, so a number without its source is one you can compare wrongly and
+never know. `unavailable` lists what could not be obtained and why, in the same object as what
+could. The payload names fields as the record does — `max_rss_bytes`, not "peak memory" — and
+carries four figures the text view does not print at all: `max_vms_bytes`, `io_read_bytes`,
+`io_write_bytes` and `io_self_only`, because a person sizing a job reads peak RSS while a
+consumer may want the rest. The exit code is the same in every format — 0, or **2 when there is
+nothing to report** — and exit 2 carries the payload too, with every figure `null` and
+`cannot_check` saying whether the history was missing or simply held no run that measured
+anything. That distinction is the point: a renderer that printed a request from no measurement
+would be the worst possible output, because it looks exactly like a measured one. The payload is
+versioned by `"schema": "runprov.resources.v1"`, and its shape follows the record-format promise
+above: a field's meaning does not change without a new schema value.
+
 `--format tsv` emits **Snakemake's benchmark columns**, so existing tooling reads it without
 being told anything; `--format k8s` renders `requests`/`limits`.
 
