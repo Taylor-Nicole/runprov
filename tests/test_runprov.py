@@ -17405,6 +17405,67 @@ def test_every_command_that_answers_in_json_has_its_schema_asserted_somewhere():
     )
 
 
+def test_every_subcommand_is_accounted_for_by_r3_and_the_outstanding_list_only_shrinks():
+    """[ADR-0017 R-3] I-22. *"the list is derived from the parsers by a test"* — implemented.
+
+    R-3 asks for `--format json` on every command that ANSWERS a question, and excludes those
+    that ACT. Its amendment stopped restating the list of commands and said the list would be
+    derived here instead, after the version written into the ADR *"was already wrong when it
+    was written"* — a `lineage` exclusion justified by a claim about `export`, made without
+    checking `lineage`, which had emitted `--format json` all along.
+
+    THIS TEST DOES NOT ASSERT THAT R-3 IS SATISFIED, AND MUST NOT. Four commands R-3 says to add
+    it to still lack it; they are the four remaining rows of T-33, in the order Taylor set on
+    2026-09-25 (audit T-33's build first, then the remaining rows). A test asserting the rule
+    outright would be red for work that is scheduled rather than missed — a gate whose green
+    state requires an act nobody has agreed to yet, which is the shape this project keeps
+    nearly building.
+
+    SO IT ASSERTS THE PARTITION AND RATCHETS. Every subcommand the parser defines falls in
+    exactly one bucket, and a new subcommand belongs to none of them until someone says which —
+    so it fails, naming itself. `outstanding` can only SHRINK: the day `show` gains `--format
+    json` this test goes red and stays red until the name is struck, which is the opposite of a
+    list that quietly goes stale. The exclusions are checked to still NAME LIVE SUBCOMMANDS, so
+    a renamed command cannot leave a dead exclusion standing as though it were reasoned.
+    """
+    subcommands = set(_cli_subcommands())
+    answers_in_json = _cli_json_commands()
+
+    # [ADR-0017 R-3] verbatim: "excluded because they ACT rather than answer".
+    acts = {"exec", "capture", "prune"}
+    # R-3's amendment, its own words: "two standard vocabularies already, and this would be a
+    # third". Not an oversight, and recorded where the exclusion is made.
+    excluded = {"export"}
+    # R-3 SAYS ADD AND T-33 HAS NOT REACHED THEM. These are the remaining rows, not a defect
+    # and not a disagreement with the rule. Each is in R-3's own table under "add".
+    outstanding = {"check", "log", "resources", "show"}
+
+    for name, bucket in (("acts", acts), ("excluded", excluded), ("outstanding", outstanding)):
+        stale = bucket - subcommands
+        assert not stale, (
+            f"`{name}` names commands the parser no longer defines, so the reasoning attached "
+            f"to them is no longer about anything: {sorted(stale)}"
+        )
+
+    arrived = sorted(answers_in_json & outstanding)
+    assert not arrived, (
+        "a command cannot both offer `--format json` and be waiting to gain it. STRIKE IT FROM "
+        f"`outstanding` — that is this test ratcheting, and it is the point: {arrived}"
+    )
+    unclassified = subcommands - answers_in_json - acts - excluded - outstanding
+    assert not unclassified, (
+        "every subcommand is either an answer that can be asked for as JSON, an action, an "
+        "exclusion R-3 argues for, or work R-3 asks for that is not built yet. A new "
+        "subcommand is none of these until someone decides which, and R-3 exists because that "
+        f"decision was once made from memory and was wrong: {sorted(unclassified)}"
+    )
+    contradicted = sorted((acts | excluded) & answers_in_json)
+    assert not contradicted, (
+        "a command excluded from R-3 that emits JSON anyway is the `lineage` mistake again — "
+        f"an exclusion that was never checked against the command: {contradicted}"
+    )
+
+
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():
     """L-70. `runprov exec` is a top-level subcommand and sat as an H3 CHILD of "The
     notebook: `show`" — a section about a read-only viewer. A reader scanning the rendered
