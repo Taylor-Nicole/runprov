@@ -312,12 +312,21 @@ class Method(typing.NamedTuple):
     artifact, which is the right trade for a file appended to forever. Both nulls are doing
     real work: "this run recorded no tool block" and "the history does not carry this" are
     findings, and the page says both of them in words rather than going quiet.
+
+    `tool_block_present` IS WHY `tool` MAY STAY None FOR TWO DIFFERENT RECORDS. A block that is
+    there and names nothing is not the same fact as no block at all, but the difference is
+    ABOUT THE BLOCK, not about any field inside it, and a `Tool` of nulls would state it in the
+    wrong place — it would say this report looked inside and found four fields missing, when an
+    empty block has no fields to find. That is the overclaim R-8 exists to stop, so the flag
+    carries the distinction on its own and `tool` keeps meaning exactly one thing: nothing here
+    identifies the writer. I-28.
     """
 
     git_commit: str | None
     git_status_captured: bool | None
     git_code_dirty: bool | None
     tool: Tool | None
+    tool_block_present: bool
     environment: Environment | None
 
 
@@ -616,6 +625,7 @@ def _method(run: dict[str, typing.Any]) -> Method:
         git_status_captured=run.get("git_status_captured"),
         git_code_dirty=run.get("git_code_dirty"),
         tool=_tool(run),
+        tool_block_present=isinstance(run.get("tool"), dict),
         environment=_environment(run),
     )
 
@@ -623,9 +633,16 @@ def _method(run: dict[str, typing.Any]) -> Method:
 def _tool(run: dict[str, typing.Any]) -> Tool | None:
     """The runprov that wrote this record, or None for a record from before 0.3.0.
 
-    None rather than a `Tool` of nulls, because the page says two different sentences here
-    and they must not read alike: a tool block with nothing in it is a runprov that recorded
-    itself badly, and no tool block at all is a run from before it recorded itself. U-01.
+    None rather than a `Tool` of nulls, and `if not tool` deliberately: an empty block names
+    the writer no better than an absent one does, so both answer None here. The page does say
+    two different sentences — a tool block with nothing in it is a runprov that recorded itself
+    badly, and no tool block at all is a run from before it recorded itself, U-01 — but it
+    reads `Method.tool_block_present` to tell them apart, NOT the shape of this return value.
+
+    That sentence used to end here, and for eight days it described code that did the opposite:
+    this docstring was added by a refactor on 2026-09-24 while `if not tool` collapsed the two
+    states, and a test from 2026-09-16 pinned the collapse on purpose. A docstring is evidence
+    of intent only once something checks it. I-28.
     """
     tool = run.get("tool")
     if not tool:
@@ -791,6 +808,17 @@ def render_page(report: Report) -> list[str]:
         elif tool.commit:
             how += f" {str(tool.commit)[:12]}"
         out.append(_kv("recorded by", f"runprov {_q(tool.version)}  ({how})"))
+    elif method.tool_block_present:
+        # I-28. A `tool` BLOCK THAT IS THERE AND NAMES NOTHING. The sentence below used to run
+        # here too, and it is a claim about WHEN THE RECORD WAS WRITTEN that this record
+        # refutes: the block it is said to predate is in the record. Two lines because Taylor
+        # asked for both halves (2026-09-29) — what the record holds, and what that means about
+        # the runprov that wrote it — split the way BYTES DIFFER splits rather than run past the
+        # page's width.
+        out.append(
+            _kv("recorded by", "a `tool` block is present and names nothing — not even a version")
+        )
+        out.append(_kv("", "a runprov that recorded itself badly, not one predating the block"))
     else:
         # A RECORD FROM BEFORE 0.3.0. Saying so is the point of U-01: the alternative is a
         # page that is silent about its own provenance and looks complete.

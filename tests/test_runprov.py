@@ -10428,8 +10428,13 @@ def test_every_builder_field_reads_the_record_key_of_its_own_name(tmp_path):
     tool_keys = sentinels(runprov.report.Tool)
     obs_keys = sentinels(runprov.report.Observation)
     # `tool` and `environment` are nested structures rather than record keys of their own name;
-    # `Tool` is checked in its own right below.
-    method_keys = sentinels(runprov.report.Method, skip=("tool", "environment"))
+    # `Tool` is checked in its own right below. `tool_block_present` is DERIVED — it reports
+    # whether the `tool` key holds an object at all (I-28) — so there is no key of its name to
+    # read, and skipping it here would leave it unchecked. It is checked instead by the two
+    # assertions below, which are the reason the skip is safe rather than merely convenient:
+    # a record key of that name must not reach it, and its value must track `tool`.
+    derived = ("tool_block_present",)
+    method_keys = sentinels(runprov.report.Method, skip=("tool", "environment", *derived))
 
     artifact, _ = _reported_run(tmp_path)
     record = _history_record(
@@ -10455,6 +10460,24 @@ def test_every_builder_field_reads_the_record_key_of_its_own_name(tmp_path):
         assert getattr(body.method.tool, name) == value, f"`Tool.{name}` reads {name!r}"
     for name, value in obs_keys.items():
         assert getattr(body.observation, name) == value, f"`Observation.{name}` reads {name!r}"
+
+    # THE SKIPPED FIELDS, CHECKED FOR THE PROPERTY THAT EARNED THEM THE SKIP. A derived field
+    # reads NO record key, so a record carrying one of its name must not move it — otherwise
+    # "derived" is just a word in a comment and the skip list is a hole. Asserted as a set so a
+    # field cannot be added to `derived` without arriving here too.
+    assert set(derived) == {"tool_block_present"}
+    planted = runprov.report.build(
+        artifact,
+        tmp_path,
+        [_history_record(cwd=tmp_path, tool={}, **{name: "sentinel-" + name for name in derived})],
+    ).body
+    assert planted is not None
+    assert planted.method.tool_block_present is True, (
+        "derived from the `tool` key holding an object, not from a key of its own name"
+    )
+    unplanted = runprov.report.build(artifact, tmp_path, [_history_record(cwd=tmp_path)]).body
+    assert unplanted is not None
+    assert unplanted.method.tool_block_present is False
 
     # `Input` is filled from `verify`'s result rather than from the history record, so it is
     # asserted against its own builder with the same rule.
@@ -10912,6 +10935,65 @@ def test_the_page_says_clean_only_when_something_actually_looked(tmp_path):
         f"{sentences['looked, and clean']}"
     )
     assert len(set(sentences.values())) == 4, f"four states, four sentences: {sentences}"
+
+
+def test_the_three_tool_states_get_three_sentences_and_none_claims_the_others(tmp_path):
+    """[I-28] [ADR-0017 R-8]. A record can say three things about which runprov wrote it.
+
+    No block at all is a run from before 0.3.0. A block that is there and names nothing is a
+    runprov that recorded itself badly. A populated block names the writer. The page ran the
+    first two together and said "predates the `tool` block" over records that CONTAIN one — a
+    claim about when the record was written, refuted by the record.
+
+    ASSERTED AS A SET, not one sentence at a time, for the reason I-19 was: three separate
+    `in` checks all pass if a fourth state ever joins one of these three, and so does a change
+    that makes two of them identical. Distinctness is the property; state it.
+
+    None of these shapes comes from a released wheel — every wheel 0.1.0 through 0.6.0 writes
+    a populated block — so all three arrive from a foreign writer, a hand-edited record or a
+    projection, which Taylor ruled on 2026-09-29 are records this command still accepts.
+    """
+    artifact, _ = _reported_run(tmp_path)
+    named = {"name": "runprov", "version": "9.9.9", "source": "index", "identifies_code": True}
+    pages = {}
+    for state, run in (
+        ("absent", _history_record(cwd=tmp_path)),
+        ("empty", _history_record(cwd=tmp_path, tool={})),
+        ("named", _history_record(cwd=tmp_path, tool=named)),
+    ):
+        lines = runprov.report.page(artifact, tmp_path, [run]).lines
+        # DERIVE THE BLOCK, never list the strings it is expected to contain: a filter written
+        # as `"recorded by" in line or "names nothing" in line` silently drops a continuation
+        # line, which is how this test first passed the half it was written to check. `_kv`
+        # pads the key to 13, so a line whose key area is blank belongs to the key above it.
+        starts = [i for i, line in enumerate(lines) if line.startswith("  recorded by ")]
+        assert len(starts) == 1, f"one `recorded by` block per page, got {len(starts)}"
+        block = [lines[starts[0]]]
+        for line in lines[starts[0] + 1 :]:
+            if line[:16].strip():
+                break
+            block.append(line)
+        pages[state] = block
+
+    assert len({tuple(value) for value in pages.values()}) == 3, (
+        f"three states, three sentences, no two alike: {pages}"
+    )
+    assert "predates the `tool` block" in "\n".join(pages["absent"])
+    assert "predates the `tool` block" not in "\n".join(pages["empty"])
+    assert "9.9.9" in "\n".join(pages["named"])
+
+    # AND THE SECOND LINE, which Taylor asked for on 2026-09-29: the fact, then what it means.
+    assert any("present and names nothing" in line for line in pages["empty"]), pages["empty"]
+    assert any("recorded itself badly" in line for line in pages["empty"]), pages["empty"]
+
+    # THE FLAG IS ABOUT THE BLOCK, so a populated block sets it too — it is not "empty".
+    for state, expected in (("absent", False), ("empty", True), ("named", True)):
+        run = _history_record(
+            cwd=tmp_path,
+            **({} if state == "absent" else {"tool": {} if state == "empty" else named}),
+        )
+        method = runprov.report.payload(runprov.report.build(artifact, tmp_path, [run]))["method"]
+        assert method["tool_block_present"] is expected, state
 
 
 def test_a_file_published_by_copying_is_not_accused_of_having_changed(tmp_path):
@@ -11577,7 +11659,7 @@ def test_the_page_samples_the_unregistered_reads_and_the_payload_carries_all_of_
     assert runprov.report.payload(page.report)["unregistered_reads"] == reads
 
 
-def test_a_block_that_is_there_but_empty_reads_as_no_block_at_all(tmp_path):
+def test_an_empty_block_answers_as_an_absent_one_wherever_they_are_one_fact(tmp_path):
     """[ADR-0017 R-8] [ADR-0017 R-10]. Found by mutation: two survivors, one shape.
 
     `_tool` and `_observation` both ask `if not X`, so a record carrying `"tool": {}` or
@@ -11592,6 +11674,18 @@ def test_a_block_that_is_there_but_empty_reads_as_no_block_at_all(tmp_path):
     no packages observed nothing. Serialising them as objects full of nulls would say this
     report LOOKED INSIDE and found each field missing, which is a finer claim than the record
     supports — the direction R-8 exists to stop.
+
+    AMENDED 2026-09-29 BY I-28, AND THE ARGUMENT ABOVE SURVIVES INTACT. `tool` is still null
+    for both shapes, which is the whole of what this test was defending — no object of nulls,
+    no field-level claim about a block that has no fields. What changed is a claim this test
+    never argued for and only carried: the PAGE said the run "predates the `tool` block" over a
+    record that CONTAINS one, which is a statement about when the record was written that the
+    record refutes. The distinction now rides on `Method.tool_block_present`, a fact about the
+    BLOCK rather than a shape imposed on its contents, so the two payloads differ in exactly
+    one explicit key and `tool` keeps meaning one thing.
+
+    `observation` is untouched and still collapses completely — see the paragraph below, which
+    is why the two halves of this test no longer assert the same thing.
 
     `run.get("observation") or {}` also means an explicit `null` arrives here as `{}`, so the
     `is None` arm the mutation introduced could never fire: for every record without a usable
@@ -11611,16 +11705,33 @@ def test_a_block_that_is_there_but_empty_reads_as_no_block_at_all(tmp_path):
         )
         got = with_empty["method"]["tool"] if key == "tool" else with_empty[key]
         assert got is None, f"an empty {key} block serialises as null, not as an object: {got}"
-        assert with_empty == with_none, (
-            f"a {key} block that is there but empty and one that is not there at all are the "
-            "same fact about the run, and this page has only ever had one answer for it"
-        )
+        if key == "observation":
+            assert with_empty == with_none, (
+                "an observation block that is there but empty and one that is not there at all "
+                "are the same fact about the run, and this page has only ever had one answer "
+                'for it — `run.get("observation") or {}` cannot even tell them apart'
+            )
+        else:
+            # I-28. THE PAYLOADS DIFFER IN EXACTLY ONE KEY, and it is not inside `tool`.
+            assert with_empty != with_none, "an empty tool block is no longer silently absent"
+            differing = {
+                field
+                for field in with_empty["method"] | with_none["method"]
+                if with_empty["method"].get(field) != with_none["method"].get(field)
+            }
+            assert differing == {"tool_block_present"}, (
+                f"the distinction belongs on the block, not on fields inside it: {differing}"
+            )
+            assert with_empty["method"]["tool_block_present"] is True
+            assert with_none["method"]["tool_block_present"] is False
 
     # AND THE PAGE SAYS SO IN ITS OWN WORDS, which is the half a payload assertion cannot see.
     lines = runprov.report.page(
         artifact, tmp_path, [_history_record(cwd=tmp_path, tool={}, observation={})]
     ).lines
-    assert "predates the `tool` block" in "\n".join(lines)
+    assert "predates the `tool` block" not in "\n".join(lines), (
+        "I-28: false of a record that carries the block"
+    )
     assert "  steps         not recorded" in lines and "  packages      not recorded" in lines
 
 
