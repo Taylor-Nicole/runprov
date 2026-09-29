@@ -17819,6 +17819,9 @@ def test_check_answers_in_json_and_the_exit_code_does_not_move(tmp_path, capsys)
     assert payload["schema"] == runprov.check.SCHEMA == "runprov.check.v1"
     assert next(iter(payload)) == "schema"
     assert [pathlib.Path(p).name for p in payload["flagged"]] == ["bad.py"]
+    assert set(payload) == set(
+        runprov.check.payload(runprov.check.Report(0, 0, [], []), pathlib.Path("x"))
+    ), "the CLI prints the builder's object and nothing else — see the note in `resources`'"
     assert payload["ok"] is False and payload["examined_nothing"] is None, (
         "[ADR-0017 R-8] null here is *the sweep DID check something*, not *this did not look* "
         "— the two are the whole of A-08 and a consumer must be able to tell them apart"
@@ -17921,6 +17924,17 @@ def test_log_answers_in_json_and_says_what_was_asked_as_well_as_what_came_back(t
     assert whole["shown"] == whole["total"] == len(whole["records"]) == 1
     assert whole["matched"] is None, "nothing was named, which is not the same as named and hit"
     assert whole["cannot_check"] is None
+    assert set(whole) == set(
+        runprov.__main__._log_answer(
+            pathlib.Path("x"),
+            records=[],
+            total=0,
+            failed=0,
+            unreadable=0,
+            selectors={},
+            matched=None,
+        )
+    ), "the CLI prints the builder's object and nothing else — see the note in `resources`'"
     assert whole["selectors"] == {"script": None, "run_id": None, "failed": False, "limit": None}, (
         "[ADR-0017 R-8] argparse defaults `--script` to '' and `--limit` to 0, which are VALUES "
         f"— a payload saying `script: ''` claims a script named empty string: {whole['selectors']}"
@@ -18074,6 +18088,17 @@ def test_resources_answers_in_json_and_refuses_to_size_a_run_it_did_not_measure(
     # says `source` and `max_rss_bytes`, which is what the record says.
     for field in runprov.resources.Measurement._fields:
         assert field in got, f"`Measurement.{field}` must reach the payload: {sorted(got)}"
+
+    # THE CLI ADDS NOTHING TO THE BUILDER'S OBJECT, compared as a KEY SET against the builder
+    # itself. Found by a control that PASSED: folding `--margin` into the emission site broke no
+    # test, because the guard beside this calls `resources.payload` DIRECTLY and never sees what
+    # the CLI does with it, and every assertion above names one key rather than the set. R-10 —
+    # the payload is a derived view, and a key the builder does not produce is a second source
+    # of truth appearing at the point of printing, which is the hardest place to notice one.
+    assert set(got) == set(runprov.resources.payload(pathlib.Path("x"), None, None)), (
+        "the CLI prints the builder's object and nothing else: "
+        f"{sorted(set(got) ^ set(runprov.resources.payload(pathlib.Path('x'), None, None)))}"
+    )
 
     # NO HISTORY: an answer, and it says so rather than sizing anything.
     gone = tmp_path / "missing.jsonl"
