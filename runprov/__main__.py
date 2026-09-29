@@ -311,6 +311,115 @@ def _yaml(rows: list[dict[str, typing.Any]]) -> str:
 #: object, and the emitter reads it rather than writing the string a second time.
 LINEAGE_SCHEMA = "runprov.lineage.v1"
 
+#: [ADR-0017 R-5]. T-33's fifth row. `log` has no module either — it is the CLI reading the
+#: history — so its constant sits here too, and both emitters read these rather than spelling
+#: the string a second time where it is used.
+LOG_SCHEMA = "runprov.log.v1"
+
+
+def _log_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[str, typing.Any]:
+    """`log`'s answer when the history it was told to read is not there. [ADR-0017 R-15]."""
+    return _log_answer(
+        path,
+        records=[],
+        total=0,
+        failed=0,
+        unreadable=0,
+        selectors=_log_selectors(args),
+        matched=None,
+        cannot_check=f"no run history at {path}",
+    )
+
+
+def _lineage_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[str, typing.Any]:
+    """`lineage`'s, for the same guard. `args` is unused and is in the signature because the
+    table below calls every builder the same way — a lookup whose entries differ in arity is a
+    lookup with a branch in it, which is what this table exists to avoid."""
+    del args
+    return {
+        "schema": LINEAGE_SCHEMA,
+        "path": path.as_posix(),
+        "runs": 0,
+        "records_without_uid": 0,
+        "resolvable": 0,
+        "ambiguous": 0,
+        "orphan": 0,
+        "edges": [],
+        "cannot_check": f"no run history at {path}",
+    }
+
+
+#: [ADR-0017 R-15]. Which commands sharing the missing-history guard can answer in JSON. `show`
+#: joins this the day it gains `--format json`, and until then its absence is what makes the
+#: R-15 ratchet name it rather than let it pass quietly.
+_NO_HISTORY_ANSWER: dict[
+    str, typing.Callable[[pathlib.Path, argparse.Namespace], dict[str, typing.Any]]
+] = {"log": _log_no_history, "lineage": _lineage_no_history}
+
+
+def _log_selectors(args: argparse.Namespace) -> dict[str, typing.Any]:
+    """What was ASKED, normalised so a default reads as *not asked*. [ADR-0017 R-8].
+
+    `argparse` defaults `--script` and `--run-id` to `""` and `--limit` to `0`, which are
+    values rather than absences — a payload carrying `"script": ""` says the caller asked for
+    a script named empty string. `null` says nobody asked, which is the same distinction R-8
+    draws for a field and the reason `matched` is a tri-state beside this.
+
+    ONE BUILDER, READ BY BOTH EMITTERS: the ordinary answer and the no-history answer print
+    the same block, and a second copy is how they would drift.
+    """
+    return {
+        "script": args.script or None,
+        "run_id": args.run_id or None,
+        "failed": bool(args.failed),
+        "limit": args.limit or None,
+    }
+
+
+def _log_answer(
+    path: pathlib.Path,
+    *,
+    records: list[dict[str, typing.Any]],
+    total: int,
+    failed: int,
+    unreadable: int,
+    selectors: dict[str, typing.Any],
+    matched: bool | None,
+    cannot_check: str | None = None,
+) -> dict[str, typing.Any]:
+    """`log`'s ANSWER as one object. ADR-0017 R-3's amendment, R-5, R-7, R-9, R-12, R-15.
+
+    NOT THE SAME THING AS `--format jsonl`, and R-3's amendment is explicit about it: `jsonl`
+    is the RECORDS, one per line, as stored. This is the ANSWER — what was asked, what came
+    back, and what could not be established — and a consumer asking *what did this command
+    find* is asking a different question from one asking *give me the records*.
+
+    `shown` BESIDE `total` IS THE WHOLE POINT, the same discipline `check.examined` carries:
+    an empty `records` list means one thing after a selector that matched nothing and another
+    over a history with nothing in it, and a payload that served both the same way would hand
+    a consumer the collapse A-08 spent a row removing.
+
+    `matched` IS None WHEN NOTHING WAS NAMED. `--script` and `--run-id` name a record, so
+    missing them is a finding and the exit code says so; `--failed` selects a CLASS and no
+    failures is the good answer. A tri-state says *not asked* without a consumer inferring it
+    from the selector block — R-8's distinction, one level up from a field.
+
+    `records` ARE AS STORED (R-9). No field is renamed on the way out, so a line here and the
+    same line under `--format jsonl` are the same object.
+    """
+    return {
+        "schema": LOG_SCHEMA,
+        "path": path.as_posix(),
+        "shown": len(records),
+        "total": total,
+        "failed": failed,
+        "unreadable": unreadable,
+        "selectors": selectors,
+        "matched": matched,
+        "cannot_check": cannot_check,
+        "records": records,
+    }
+
 
 def _lineage(
     source: pathlib.Path | typing.Sequence[dict[str, typing.Any]],
@@ -1002,10 +1111,20 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
             or (args.failed and r.get("status") != "failed")
         )
 
+    collected: list[dict[str, typing.Any]] = []
+
     def emit(r: dict[str, typing.Any]) -> None:
         nonlocal shown, n_failed
         shown += 1
         n_failed += r.get("status") == "failed"
+        if args.format == "json":
+            # [ADR-0017 R-3, amended]. THIS FORMAT MATERIALISES AND THE OTHERS DO NOT, by
+            # construction rather than by oversight: an ANSWER is one object, so it cannot be
+            # written until the last record has gone past. `--format jsonl` remains the
+            # streaming form and is what a 100,000-run history should be read with — the
+            # docstring above is about those paths and still holds for them.
+            collected.append(r)
+            return
         if args.format == "yaml":
             sys.stdout.write(_yaml_entry(r))
         elif args.format == "jsonl":
@@ -1017,7 +1136,8 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
 
     if args.format == "yaml":
         # ONCE, by the command rather than the renderer: streaming writes each record as
-        # it passes, and a banner emitted per record is not a banner.
+        # it passes, and a banner emitted per record is not a banner. [ADR-0017 R-4] is why
+        # `json` is not in this branch: the payload is the whole of stdout.
         sys.stdout.write(_yaml_header())
 
     for rec in _stream(path):
@@ -1049,6 +1169,25 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
         for rec in keep:
             emit(rec)
 
+    if args.format == "json":
+        print(
+            json.dumps(
+                _log_answer(
+                    path,
+                    records=collected,
+                    total=total,
+                    failed=n_failed,
+                    unreadable=bad,
+                    selectors=_log_selectors(args),
+                    # None WHEN NOTHING WAS NAMED, rather than True — see `_log_answer`.
+                    matched=bool(named_hits) if named else None,
+                ),
+                indent=2,
+            )
+        )
+    # THE TALLY STAYS ON STDERR IN EVERY FORMAT, [ADR-0017 R-4]: a caller parsing stdout never
+    # meets it, and a person reading the JSON in a terminal still gets the same summary line
+    # they get from every other rendering.
     print(
         f"# {shown} of {total} run(s) from {path}"
         + (f"; {n_failed} FAILED" if n_failed else "")
@@ -2029,9 +2168,9 @@ def main(argv: list[str] | None = None) -> int:
     # not `yaml` or `jsonl` as the human format, which is why this is the whole change.
     lg.add_argument(
         "--format",
-        choices=("text", "timeline", "yaml", "jsonl"),
+        choices=("text", "timeline", "yaml", "jsonl", "json"),
         default="text",
-        metavar="{text,yaml,jsonl}",
+        metavar="{text,yaml,jsonl,json}",
     )
     lg.add_argument("--limit", type=int, default=0, help="show only the last N runs")
     lg.add_argument("--script", default="", help="filter by script name")
@@ -2278,6 +2417,25 @@ def main(argv: list[str] | None = None) -> int:
         # the silent no-op this package refuses everywhere else. After the message, for the
         # same reason it runs after the page: what a reader was told is what was true when
         # they were told it.
+        # [ADR-0017 R-15]. A NAMED HISTORY THAT IS NOT THERE IS AN ANSWER, not a bad
+        # invocation: the command ran, looked where it was told, and its finding is that there
+        # is nothing to read. `chain` has said so in JSON since 0.6.0 while the commands
+        # sharing THIS guard said it only in prose — one condition, one exit code, two classes,
+        # which is the split R-15 was decided to end.
+        #
+        # ONE SITE FOR THREE COMMANDS: `log`, `show` and `lineage` all arrive here. The builder
+        # is LOOKED UP rather than branched to, and that is a coverage fact as much as a style
+        # one — an `elif args.cmd == "lineage"` has a false arm that nothing can reach, because
+        # `show` is the only other command here and it has no `json` to be asked for yet. A
+        # branch that cannot be taken is not a branch that is untested, and writing `show`'s
+        # arm before `show` has a payload would be writing code no test can reach.
+        #
+        # A MISSING KEY RAISES RATHER THAN GUESSING. If `show` gains `--format json` without
+        # gaining an entry here, this raises `KeyError` where the alternative — a default arm —
+        # would hand a `show` caller a `lineage` payload. R-15's ratchet names `show` as
+        # outstanding, so the two fail together.
+        if getattr(args, "format", None) == "json":
+            print(json.dumps(_NO_HISTORY_ANSWER[args.cmd](path, args), indent=2))
         if args.cmd == "show" and args.forget_markers:
             _forget(path.parent / ".incomplete")
         return CANNOT_CHECK
@@ -2318,7 +2476,13 @@ def main(argv: list[str] | None = None) -> int:
         # [ADR-0017 R-5] I-18. `lineage` has no module of its own — it is built here — so its
         # schema constant lives with the code that produces it rather than being invented at
         # the emission site, which is where a second, differing copy would eventually appear.
-        sys.stdout.write(json.dumps({"schema": LINEAGE_SCHEMA, **g}, indent=2) + "\n")
+        # `cannot_check` IS PRESENT AND null HERE, [ADR-0017 R-8]. The no-history answer
+        # carries it with a reason; if this one left the key out, a consumer would have to
+        # tell *it looked and could* from *this rendering does not report that* by the key's
+        # absence — which is exactly the inference R-8 exists to make unnecessary.
+        sys.stdout.write(
+            json.dumps({"schema": LINEAGE_SCHEMA, **g, "cannot_check": None}, indent=2) + "\n"
+        )
     else:
         sys.stdout.write(_render_lineage(g, names) + "\n")
     print(

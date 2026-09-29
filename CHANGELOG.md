@@ -222,6 +222,33 @@ which a `GAP` edge can never print because rule 5 fires only once a version has 
 docstring no longer claims its sentences come out in ADR-0016 R-25's order; they come out
 weakest-claim-first, and it now says so.
 
+### Added — `runprov log --format json`, the ANSWER rather than the records
+
+ADR-0017, the fifth row of T-33. R-3's amendment already drew the line this implements:
+`--format jsonl` is the RECORDS, one per line, as stored, and `json` is a single object
+carrying the schema, the question's result, and what could not be established. A consumer
+asking *what did this command find* and one asking *give me the records* are asking different
+things, and only the first has anywhere to put a qualification.
+
+It carries `shown` beside `total`, because an empty `records` list means one thing after a
+`--script` that matched nothing and another over a history with nothing in it — the same
+distinction `check.examined` exists for. `matched` is a **tri-state**: `true`, `false`, or
+`null` when nothing was NAMED, since `--script` and `--run-id` name a record while `--failed`
+selects a class and no failed runs is the good answer. `selectors` normalises argparse's own
+defaults, which are values rather than absences — `--script` defaults to `""` and `--limit` to
+`0`, and a payload saying `"script": ""` claims a script named empty string.
+
+**This is the one format that materialises, by construction.** An answer is a single object, so
+it cannot be written until the last record has gone past; `jsonl`, `yaml` and `text` still write
+each record as it streams and remain what a 100,000-run history should be read with. The
+docstring and the README both say so rather than leaving it to be found on a large file.
+
+**`lineage` gained R-15 compliance from the same line.** `log`, `show` and `lineage` share one
+missing-history guard, and it was the guard that was silent rather than the commands: a named
+history that is not there is an ANSWER, and both now say so in JSON with `cannot_check` carrying
+the reason. `lineage`'s ordinary payload gained `cannot_check: null` in the same pass, because a
+key present at exit 2 and absent at exit 0 forces exactly the inference R-8 exists to remove.
+
 ### Added — `runprov check --format json`, and a sweep that scanned nothing says so
 
 ADR-0017, the fourth row of T-33. R-12 already named this command's builder and it was

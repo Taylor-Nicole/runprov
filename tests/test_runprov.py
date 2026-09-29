@@ -17618,7 +17618,7 @@ def test_every_subcommand_is_accounted_for_by_r3_and_the_outstanding_list_only_s
     excluded = {"export"}
     # R-3 SAYS ADD AND T-33 HAS NOT REACHED THEM. These are the remaining rows, not a defect
     # and not a disagreement with the rule. Each is in R-3's own table under "add".
-    outstanding = {"log", "resources", "show"}
+    outstanding = {"resources", "show"}
 
     for name, bucket in (("acts", acts), ("excluded", excluded), ("outstanding", outstanding)):
         stale = bucket - subcommands
@@ -17712,13 +17712,16 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
         # T-33's fourth row, built AFTER R-15 and so compliant from its first commit — which is
         # the whole reason the rule was decided before the remaining commands rather than after.
         "check, a directory with no Python in it": ["check", str(empty_dir)],
+        # T-33's fifth row moved these two together, because `log`, `show` and `lineage` share
+        # one missing-history guard and it is the guard that was silent, not the commands.
+        "log, no history to read": ["log", "--log", str(no_log)],
+        "lineage, no history to read": ["lineage", "--log", str(no_log)],
     }
     outstanding = {
         "report, artifact is not there": ["report", str(absent), "--log", str(log)],
         "impact, file nothing recorded": ["impact", str(absent), "--log", str(log)],
         "impact, no history to read": ["impact", str(artifact), "--log", str(no_log)],
         "diff, selector matches one run": ["diff", "demo", "--log", str(log)],
-        "lineage, no history to read": ["lineage", "--log", str(no_log)],
     }
 
     def answered(argv):
@@ -17880,6 +17883,81 @@ def test_every_field_the_check_payload_carries_is_stated_by_the_page(tmp_path):
         f"checking a sweep that was never run: "
         f"{sorted(set(runprov.check.Report._fields) ^ {path[0] for path in structural})}"
     )
+
+
+def test_log_answers_in_json_and_says_what_was_asked_as_well_as_what_came_back(tmp_path, capsys):
+    """[ADR-0017 R-3] [R-4] [R-5] [R-6] [R-8] [R-12] [R-15]. T-33's fifth row.
+
+    R-3's amendment is explicit that this is not `--format jsonl` rewritten: `jsonl` is the
+    RECORDS, one per line, as stored; `json` is the ANSWER — what was asked, what came back,
+    and what could not be established. A consumer asking *what did this command find* and one
+    asking *give me the records* are asking different questions.
+
+    `shown` BESIDE `total` IS THE SAME DISCIPLINE `check.examined` CARRIES. An empty `records`
+    list means one thing after a selector that matched nothing and another over a history with
+    nothing in it, and a payload serving both alike hands a consumer the collapse A-08 spent a
+    row removing.
+
+    `matched` IS A TRI-STATE, and that is this command's own rule rather than a general one:
+    `--script` and `--run-id` NAME a record, so missing them is a finding and the exit code
+    says 1; `--failed` selects a CLASS, and no failed runs is the good answer at 0. `null`
+    means nothing was named — R-8's distinction, one level up from a field.
+    """
+    artifact, log = _reported_run(tmp_path)
+
+    assert runprov.__main__.main(["log", "--log", str(log), "--format", "json"]) == 0
+    whole = json.loads(capsys.readouterr().out)
+    assert whole["schema"] == runprov.__main__.LOG_SCHEMA == "runprov.log.v1"
+    assert next(iter(whole)) == "schema"
+    assert whole["shown"] == whole["total"] == len(whole["records"]) == 1
+    assert whole["matched"] is None, "nothing was named, which is not the same as named and hit"
+    assert whole["cannot_check"] is None
+    assert whole["selectors"] == {"script": None, "run_id": None, "failed": False, "limit": None}, (
+        "[ADR-0017 R-8] argparse defaults `--script` to '' and `--limit` to 0, which are VALUES "
+        f"— a payload saying `script: ''` claims a script named empty string: {whole['selectors']}"
+    )
+
+    # R-9: A RECORD HERE IS THE RECORD AS STORED, so this rendering and `--format jsonl` carry
+    # the same object rather than two views that can drift.
+    assert runprov.__main__.main(["log", "--log", str(log), "--format", "jsonl"]) == 0
+    streamed = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert whole["records"] == streamed, (
+        "one object, two renderings, no field renamed on the way out"
+    )
+
+    # A NAME THAT MATCHED NOTHING: a finding, exit 1, and `matched` says so.
+    assert (
+        runprov.__main__.main(["log", "--script", "nosuch", "--log", str(log), "--format", "json"])
+        == 1
+    )
+    missed = json.loads(capsys.readouterr().out)
+    assert missed["matched"] is False and missed["shown"] == 0 and missed["total"] == 1, (
+        "`total` is what makes `shown: 0` legible — the history is not empty, the name is wrong"
+    )
+
+    # A CLASS THAT MATCHED NOTHING IS THE GOOD ANSWER: exit 0, and `matched` stays null.
+    assert runprov.__main__.main(["log", "--failed", "--log", str(log), "--format", "json"]) == 0
+    clean = json.loads(capsys.readouterr().out)
+    assert clean["matched"] is None and clean["shown"] == 0
+
+    # R-15: A HISTORY THAT IS NOT THERE IS AN ANSWER, and it carries the reason.
+    gone = tmp_path / "missing.jsonl"
+    assert runprov.__main__.main(["log", "--log", str(gone), "--format", "json"]) == 2
+    nothing = json.loads(capsys.readouterr().out)
+    assert nothing["cannot_check"] == f"no run history at {gone}"
+    assert nothing["records"] == [] and nothing["total"] == 0
+
+    # AND `lineage` SHARES THAT GUARD, so it gained the same compliance from the same line.
+    assert runprov.__main__.main(["lineage", "--log", str(gone), "--format", "json"]) == 2
+    theirs = json.loads(capsys.readouterr().out)
+    assert theirs["schema"] == "runprov.lineage.v1"
+    assert theirs["cannot_check"] == f"no run history at {gone}"
+
+    # [ADR-0017 R-8] the key is PRESENT AND null when the command could look, so a consumer
+    # never has to read its absence as either answer.
+    assert runprov.__main__.main(["lineage", "--log", str(log), "--format", "json"]) == 0
+    assert json.loads(capsys.readouterr().out)["cannot_check"] is None
+    assert artifact.exists()
 
 
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():

@@ -1018,7 +1018,25 @@ python -m runprov log                          # timeline, oldest first
 python -m runprov log --format yaml            # the transformation-log shape
 python -m runprov log --failed                 # only the runs that died
 python -m runprov log --script build_labels --limit 5
+python -m runprov log --format json            # the ANSWER, for a consumer
 ```
+
+`runprov log --format json` is **not `--format jsonl` rewritten**, and the difference is the
+point. `jsonl` is the RECORDS, one per line, exactly as stored — that is what you pipe into
+something else. `json` is the **answer**: one object saying what was asked, what came back, and
+what could not be established. It carries `shown` beside `total`, because an empty `records`
+list means one thing after a `--script` that matched nothing and another over a history with
+nothing in it; `matched` is `true`, `false`, or `null` when nothing was NAMED, since `--script`
+and `--run-id` name a record while `--failed` selects a class and no failures is the good
+answer; and `unreadable` counts the lines it could not parse rather than dropping them. A
+record inside `records` is byte-for-byte the record `--format jsonl` prints, so nothing is
+renamed on the way out. **This is the one format that materialises**: an answer is a single
+object, so it cannot be written until the last record has gone past — `jsonl` stays the
+streaming form, and is what a 100,000-run history should be read with. The exit code is the
+same in both formats — 1 a name that matched nothing, 0 otherwise, 2 no history to read — and
+exit 2 carries the payload too, with `cannot_check` saying why. The payload is versioned by
+`"schema": "runprov.log.v1"`, and its shape follows the record-format promise above: a field's
+meaning does not change without a new schema value.
 
 **The CLI does not know what your scripts passed to `configure()`.** With no `--log` it
 reads `<detected root>/provenance/runs.jsonl` — which is where the quickstart above puts the
