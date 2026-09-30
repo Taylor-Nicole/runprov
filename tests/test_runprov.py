@@ -18432,6 +18432,83 @@ def test_a_cannot_check_payload_has_the_same_keys_as_a_real_one():
     )
 
 
+#: [ADR-0017 R-16]. Where each command says it could not check. The KEY is the subcommand and the
+#: VALUE is the field a consumer reads — `verify` is a pair, because its answer is a count
+#: relationship rather than a field, which R-16 names as the weakest of the five shapes.
+_R16_INABILITY = {
+    "impact": ("cannot_check",),
+    "diff": ("cannot_check",),
+    "log": ("cannot_check",),
+    "lineage": ("cannot_check",),
+    "resources": ("cannot_check",),
+    "show": ("cannot_check",),
+    # R-9 KEEPS THIS NAME. `examined_nothing` is `check.Report`'s own property and the payload
+    # uses the structure's names; renaming it to `cannot_check` for tidiness is the one thing
+    # R-9 forbids.
+    "check": ("examined_nothing",),
+    # A VALUE IN A CLOSED ENUM, not a separate field: for these three, *could not check* IS the
+    # answer rather than a failure to produce one.
+    "report": ("verdict",),
+    "chain": ("status",),
+    "verify": ("artifacts_seen", "artifacts_pinned"),
+}
+
+
+def test_every_json_command_says_it_could_not_check_where_r16_says_it_does(tmp_path, capsys):
+    """[ADR-0017 R-16]. The table in the ADR, asserted against the payloads.
+
+    R-15 requires the payload to be emitted; it does not say how a consumer finds the inability
+    inside it, and the answer is not one field. TWO ATTEMPTS AT A SINGLE CROSS-COMMAND ASSERTION
+    FAILED — the first against `chain`, the second against `report` — each discovering another
+    vocabulary. That is what produced R-16 rather than a disjunction nobody could maintain.
+
+    THE SCOPE IS DERIVED FROM THE PARSER, so the table cannot quietly stop covering the
+    commands it claims to. R-3's list and R-5's both went stale in prose that nothing read; this
+    one goes red on the day an eleventh command answers in JSON.
+
+    THE FIELDS ARE ASSERTED PRESENT IN AN ORDINARY PAYLOAD, not only in a failing one: a field
+    that appears only when something went wrong is a field a consumer cannot test for, which is
+    R-8's whole point one level out.
+    """
+    assert set(_R16_INABILITY) == _cli_json_commands(), (
+        "[ADR-0017 R-16] names a field for every command that answers in JSON, and only those: "
+        f"{sorted(set(_R16_INABILITY) ^ _cli_json_commands())}"
+    )
+
+    artifact, log = _reported_run(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "m.py").write_text("import runprov\n", encoding="utf-8")
+    invocations = {
+        "impact": ["impact", str(artifact), "--log", str(log)],
+        "diff": ["diff", "demo", "demo", "--log", str(log)],
+        "log": ["log", "--log", str(log)],
+        "lineage": ["lineage", "--log", str(log)],
+        "resources": ["resources", "--log", str(log)],
+        "show": ["show", "--log", str(log)],
+        "check": ["check", str(src)],
+        "report": ["report", str(artifact), "--log", str(log)],
+        "chain": ["chain", str(log)],
+        "verify": ["verify", str(artifact), "--root", str(tmp_path)],
+    }
+    assert set(invocations) == set(_R16_INABILITY), "one invocation per named command"
+
+    missing = {}
+    for command, fields in _R16_INABILITY.items():
+        capsys.readouterr()
+        runprov.__main__.main([*invocations[command], "--format", "json"])
+        out = capsys.readouterr().out
+        assert out.strip(), f"{command} produced no payload to check R-16 against"
+        body = json.loads(out)
+        absent = [field for field in fields if field not in body]
+        if absent:
+            missing[command] = absent
+    assert not missing, (
+        "[ADR-0017 R-16] each of these must carry the field the table names, in every state "
+        f"including the ordinary one: {missing}"
+    )
+
+
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():
     """L-70. `runprov exec` is a top-level subcommand and sat as an H3 CHILD of "The
     notebook: `show`" — a section about a read-only viewer. A reader scanning the rendered

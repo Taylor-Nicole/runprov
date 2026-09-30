@@ -178,6 +178,47 @@ could not establish belongs in the object, not in a stderr line the consumer nev
 `resources` and `show` — are still to gain `--format json` under R-3, and each would otherwise
 answer this question for itself. The split above is what that looks like after two rounds.
 
+**R-16. A payload says it could not check IN ITS OWN ANSWER VOCABULARY, and this table names
+which field carries it per command.** Added 2026-09-30 after R-15 was applied and two successive
+attempts at a single cross-command assertion failed.
+
+R-15 requires the payload to be emitted. It does not say how a consumer finds the inability
+inside it, and the answer turned out not to be one field. Measured across all ten:
+
+| command | where it says *could not check* | shape |
+|---|---|---|
+| `impact`, `diff`, `log`, `lineage`, `resources`, `show` | `cannot_check` | a REASON, or `null` |
+| `check` | `examined_nothing` | a REASON, or `null` |
+| `report` | `verdict` ∈ `NO PIN`, `UNVERIFIABLE` | a VALUE in a closed enum |
+| `chain` | `status` = `CANNOT_CHECK` | a VALUE in a closed enum |
+| `verify` | `artifacts_seen` > 0 with `artifacts_pinned` = 0 | a COUNT RELATIONSHIP |
+
+**These are not an inconsistency to unify, and that is the ruling.** For `report`, `chain` and
+`verify`, *could not check* IS the answer — a legitimate member of the verdict's own vocabulary,
+not a failure to produce one. For the other seven there is no verdict enum, so the inability is a
+separate fact and needs its own key. A command that has a verdict states it there; a command that
+has none carries a reason.
+
+**`check` keeps `examined_nothing` because of R-9.** Renaming it to `cannot_check` for uniformity
+would be the one thing R-9 forbids: it is the structure's own property, and the payload uses the
+structure's names. The six that carry `cannot_check` have no such conflict — there the key is
+added by the payload function and shadows nothing.
+
+**`verify`'s is the weakest of the five and is named as such.** A consumer must compare two
+counters rather than read a field. The counts are deliberate — `verify`'s own docstring argues
+that listing every unpinned file buries the finding — so this is a consequence of that choice
+rather than an oversight, and changing it would mean changing released output.
+
+**A test asserts this table against the payloads**, and asserts the table covers exactly the
+commands that answer in JSON. R-3's and R-5's lists both went stale in prose that nothing read;
+this one goes red.
+
+> **`chain` CARRIES NO REASON, and that is open rather than settled here.** It reaches
+> `CANNOT_CHECK` by three routes — an unreadable file, a file that is not there, and a history
+> where nothing is chained — and the payload distinguishes none of them, though the text page
+> says which in words. That is R-14's concern rather than R-16's, and its payload shipped in
+> 0.6.0, so any fix is additive and needs a CHANGELOG entry. Filed as its own row.
+
 **R-11.** Not a stable API on the first release. It is versioned by R-5 and the README says the
 JSON shape follows the record-format promise: a field's meaning does not change without a new
 schema value.
