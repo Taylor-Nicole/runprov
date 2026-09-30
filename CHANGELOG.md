@@ -222,6 +222,35 @@ which a `GAP` edge can never print because rule 5 fires only once a version has 
 docstring no longer claims its sentences come out in ADR-0016 R-25's order; they come out
 weakest-claim-first, and it now says so.
 
+### Changed — every exit-2 state that is an ANSWER now carries its payload
+
+ADR-0017 R-15, decided 2026-09-29, applied to the commands that predated it. Five states where a
+command formed its question, read what it was given, and could not answer now serialise instead
+of printing to stderr alone: `impact` with no history, and `diff` with no history, with one
+address naming fewer than two runs, with a named address matching nothing, and with two addresses
+resolving to the same run. Each carries `cannot_check` with the reason, and `diff` carries
+`settled: false` beside it — the same fact its exit code carries, so a consumer keying on
+`settled` needs no special case.
+
+**Three states deliberately stay silent, and the test now says so rather than leaving it to
+look like an omission.** `report` with an artifact that is not there, `impact` with a target that
+is neither a file nor a digest, and `diff` with an empty run address are all cases where the
+command could not FORM its question. R-15 reserves an empty stdout for exactly that, and it is
+the only signal separating *I could not answer* from *you mistyped this*. `check` with a
+directory that does not exist established the precedent when it shipped.
+
+**The ratchet that tracked this work was wrong in both directions, and that is worth recording.**
+It named four states; two of those were already correct, and three of `diff`'s five were missing
+from it entirely. A hand-written list of states goes stale exactly as a hand-written list of
+fields does, and the enumeration it was standing in for lives in the code.
+
+**`impact` and `diff` both promise in their own docstrings that nothing is absent from their
+payloads.** A `cannot_check` object that dropped a field would break that where a consumer can
+least cope — the run where something already went wrong — so a test compares the two shapes' key
+sets. It caught `Chain.unreadable` missing from the new branch on the first attempt: I-01's
+field, added to the structure long after, invisible to every other test because nothing built
+that branch.
+
 ### Added — `runprov show --format json`, and T-33 is complete
 
 ADR-0017, the seventh and last row of T-33. **All ten commands that answer a question now offer

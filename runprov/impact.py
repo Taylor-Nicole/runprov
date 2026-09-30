@@ -150,7 +150,7 @@ def _plain(value: typing.Any) -> typing.Any:  # noqa: ANN401 - whatever the chai
     return value
 
 
-def payload(chain: Chain) -> dict[str, typing.Any]:
+def payload(chain: Chain | None, cannot_check: str | None = None) -> dict[str, typing.Any]:
     """The chain as one object, for a reader that is not a person. R-1, R-5, R-7, R-9, R-14.
 
     DERIVED FROM `_asdict()`, never listed. A field added to `Chain` reaches this without anyone
@@ -180,11 +180,45 @@ def payload(chain: Chain) -> dict[str, typing.Any]:
     record holds the full path, R-9 says a consumer sees the record's own names, and a relative
     path is meaningless to a reader that does not know the root it was taken from.
     """
+    if chain is None:
+        # [ADR-0017 R-15]. THE QUESTION WAS FORMED AND COULD NOT BE CARRIED OUT: there is no
+        # history to walk. Every field is present, which the docstring above requires of this
+        # command specifically — "nothing is absent" — so a consumer keying on `runs_examined`
+        # or `truncated` needs no second shape.
+        #
+        # `digest` IS null AND NOT THE TARGET'S. At this point the target has not been resolved:
+        # the history is checked first, and hashing a file to report that its history is missing
+        # would be work done to fill a field nobody can use. `truncated` is FALSE, not null — no
+        # walk was cut short because no walk happened, and `null` would invite a consumer to
+        # treat the distinction as unknown when it is known.
+        return {
+            "schema": SCHEMA,
+            "digest": None,
+            "seeds": [],
+            "steps": [],
+            "unregistered": 0,
+            "runs_examined": 0,
+            "watch_drops": 0,
+            "depth_limit": None,
+            "beyond_depth": 0,
+            # I-01's FIELD, and it was missing from this dict on the first attempt. The keys
+            # here are hand-written because no honest zero value exists for `digest` — `""` is
+            # a claim that the digest IS the empty string — so the two shapes cannot be built
+            # from one expression, and the test therefore asserts their key sets are IDENTICAL
+            # against a real `Chain`. That assertion is what caught this omission.
+            "unreadable": 0,
+            "artifacts": 0,
+            "truncated": False,
+            "cannot_check": cannot_check,
+        }
     return {
         "schema": SCHEMA,
         **{name: _plain(value) for name, value in chain._asdict().items()},
         "artifacts": chain.artifacts,
         "truncated": chain.truncated,
+        # [ADR-0017 R-15] PRESENT AND null WHEREVER THE WALK HAPPENED, so the key's absence is
+        # never something a consumer has to interpret. R-8, one level out from a field.
+        "cannot_check": None,
     }
 
 

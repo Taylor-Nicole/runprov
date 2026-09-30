@@ -13061,7 +13061,11 @@ def test_every_field_the_diff_payload_carries_is_stated_by_the_table():
             carried.add(_grouped(path))
     grouped = {_grouped(path) for path in structural}
 
-    computed = {("schema",), ("settled",)} | {
+    # `cannot_check` JOINED THIS SET ON 2026-09-30 and these guards are how I learned it had:
+    # four of them failed on the first gate, naming the key. That is the mechanism working —
+    # and the contrast with `--margin`, which slipped in at the CLI where no guard was looking,
+    # is the whole reason the CLI emitters now assert their key sets too.
+    computed = {("schema",), ("settled",), ("cannot_check",)} | {
         ("dimensions", "[]", name) for name in ("verdict", "settled")
     }
     assert carried - grouped == computed, (
@@ -13319,7 +13323,9 @@ def test_the_json_diff_states_an_incomparability_rather_than_going_quiet():
     never a silence — so `blocked: null` has exactly one meaning, and a consumer never has to
     infer a finding from a key that is not there. That is ADR-0014 held as a shape.
     """
-    expected = set(runprov.diff.Comparison._fields) | {"schema", "settled"}
+    # `cannot_check` IS [ADR-0017 R-15]: null on every comparison that happened, and a reason
+    # on the five states where this command formed its question and could not answer.
+    expected = set(runprov.diff.Comparison._fields) | {"schema", "settled", "cannot_check"}
     fields = set(runprov.diff.Dimension._fields) | {"verdict", "settled"}
     for a, b in (
         (_hrec(), _hrec(run_uid="uid-b")),
@@ -13802,7 +13808,8 @@ def test_every_field_the_impact_payload_carries_is_stated_by_the_page():
             carried.add(_grouped(path))
     grouped = {_grouped(path) for path in structural}
 
-    computed = {("schema",), ("artifacts",), ("truncated",)}
+    # `cannot_check` JOINED THIS SET ON 2026-09-30 — see the note in `diff`'s guard.
+    computed = {("schema",), ("artifacts",), ("truncated",), ("cannot_check",)}
     assert carried - grouped == computed, (
         "the payload adds exactly three things to the structure, and each is named by a "
         "requirement: the schema, which says which SHAPE this is rather than anything about the "
@@ -13926,7 +13933,15 @@ def test_the_payloads_computed_fields_agree_with_the_page_that_states_them():
     checks = {"artifacts": _artifacts, "truncated": _truncated}
 
     fixtures = _impact_fixtures()
-    computed = set(payload(fixtures[0][1])) - set(runprov.impact.Chain._fields) - {"schema"}
+    # `cannot_check` IS EXCLUDED FOR THE SAME REASON `schema` IS, and not because checking it
+    # was inconvenient: R-14 puts what could not be established in the payload, and on every
+    # state where a page exists to compare against it is null. There is no page sentence for it
+    # to agree with — the states that populate it are the ones that print no page at all.
+    computed = (
+        set(payload(fixtures[0][1]))
+        - set(runprov.impact.Chain._fields)
+        - {"schema", "cannot_check"}
+    )
     assert set(checks) == computed, (
         "every field the payload computes rather than carries is checked against the page here — "
         "`schema` is excluded because it describes the shape rather than the history, and R-5 "
@@ -17734,13 +17749,31 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
         # missing-history guard — unreachable while `show` had no `json`, reachable the moment
         # it did.
         "show, no history to read": ["show", "--log", str(no_log)],
-    }
-    outstanding = {
-        "report, artifact is not there": ["report", str(absent), "--log", str(log)],
-        "impact, file nothing recorded": ["impact", str(absent), "--log", str(log)],
+        # 2026-09-30, R-15's own follow-through: the five states where a command FORMED its
+        # question, read what it was given, and could not answer. Three of `diff`'s were not in
+        # this test at all before — the ratchet named one of the four and missed the rest, which
+        # is what a hand-written list of states does while the enumeration lives in the code.
         "impact, no history to read": ["impact", str(artifact), "--log", str(no_log)],
-        "diff, selector matches one run": ["diff", "demo", "--log", str(log)],
+        "diff, no history to read": ["diff", "demo", "--log", str(no_log)],
+        "diff, one address naming fewer than two runs": ["diff", "demo", "--log", str(log)],
+        "diff, a named address matching nothing": ["diff", "nosuch", "other", "--log", str(log)],
+        "diff, two addresses resolving to one run": ["diff", "demo", "demo", "--log", str(log)],
     }
+    # SILENT BY DESIGN, AND ASSERTED TO BE. These are not outstanding work: the command could
+    # not FORM the question, so under R-15 silence on stdout is the correct signal and a payload
+    # would be the defect. The precedent is `check` with a directory that is not there, shipped
+    # and documented in the README as exactly this distinction.
+    #
+    # THE RATCHET NAMED TWO OF THESE AS OUTSTANDING AND THAT WAS MY MISCLASSIFICATION. When R-15
+    # was written I put every non-complying state in `outstanding` without asking which side of
+    # the rule each fell on. Naming them here, asserted, is the difference between a decision and
+    # an omission that happens to look the same.
+    silent_by_design = {
+        "report, the artifact is not there": ["report", str(absent), "--log", str(log)],
+        "impact, target is neither a file nor a digest": ["impact", str(absent), "--log", str(log)],
+        "diff, the first run address is empty": ["diff", "", "x", "--log", str(log)],
+    }
+    outstanding: dict[str, list[str]] = {}
 
     def answered(argv):
         capsys.readouterr()
@@ -17751,9 +17784,11 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
         )
         if not out.strip():
             return False
-        json.loads(
-            out
-        )  # R-4: stdout is the payload and nothing else, so the parse is the assertion
+        # R-4: stdout is the payload and nothing else, so the parse IS the assertion. Whether
+        # it SAYS it could not check is asserted below, for the states this row owns — the ten
+        # commands use three different vocabularies for that and a universal check here would
+        # have to hand-list them.
+        json.loads(out)
         return True
 
     speaking = {name: answered(argv) for name, argv in complies.items()}
@@ -17761,11 +17796,38 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
         "these already put a payload on stdout at exit 2 and must not stop: "
         f"{sorted(name for name, ok in speaking.items() if not ok)}"
     )
-    silent = {name: answered(argv) for name, argv in outstanding.items()}
-    arrived = sorted(name for name, ok in silent.items() if ok)
-    assert not arrived, (
-        "R-15 now holds for these and they must MOVE to `complies` — that is this test "
-        f"ratcheting, and it is the point: {arrived}"
+    assert not outstanding, (
+        "[ADR-0017 R-15] is SATISFIED as of 2026-09-30. Every state in which this package "
+        "ANSWERS puts a payload on stdout. Anything appearing here again is a state that "
+        "answers and stays silent"
+    )
+    # AND THE OTHER HALF OF R-15, which is the half a ratchet cannot express: silence means the
+    # invocation was wrong, so a command that could not form its question must print NOTHING.
+    # Without this, "emit everywhere" would satisfy the rule as written and destroy the only
+    # signal separating `runprov report <typo>` from `runprov report <unpinned file>`.
+    # THE REASON IS ASSERTED WHERE THIS ROW OWNS THE FIELD, and not one level up. A control
+    # caught the hole: dropping `cannot_check=` from an emission still produced a payload, with
+    # `cannot_check: null`, so the check above passed. A payload at exit 2 saying nothing went
+    # wrong is worse than no payload — it contradicts its own exit code.
+    #
+    # IT IS NOT ASSERTED FOR ALL TEN COMMANDS, and that is a finding rather than a gap in this
+    # test. They say *could not check* in THREE different vocabularies: `cannot_check` with a
+    # reason; `chain`'s `status: "CANNOT_CHECK"`, a verdict in a closed enum; and `report`'s and
+    # `verify`'s `verdict: "NO PIN"`. A universal assertion would have to hand-list all three,
+    # which is the stale-list pattern this repository keeps finding — so the divergence is
+    # recorded in the ledger as its own question instead of papered over with a disjunction.
+    mine = {name: argv for name, argv in complies.items() if name.startswith(("impact,", "diff,"))}
+    assert len(mine) == 5, f"the five states this row built, and no fewer: {sorted(mine)}"
+    for name, argv in mine.items():
+        capsys.readouterr()
+        runprov.__main__.main([*argv, "--format", "json"])
+        body = json.loads(capsys.readouterr().out)
+        assert body["cannot_check"], f"exit 2 with no reason in it: {name} -> {body}"
+
+    noisy = sorted(name for name, argv in silent_by_design.items() if answered(argv))
+    assert not noisy, (
+        "these could not form a question, so stdout must stay empty — a payload here removes "
+        f"the only thing that tells a consumer it mistyped the command: {noisy}"
     )
 
 
@@ -18322,6 +18384,52 @@ def test_show_puts_on_stdout_the_two_facts_it_used_to_say_only_on_stderr(tmp_pat
     assert "unreadable line(s) skipped" in written.err
     # R-4 PROPER: stdout parsed, which it could not have done had the banner shared it.
     assert written.out.lstrip().startswith("{")
+
+
+def test_a_cannot_check_payload_has_the_same_keys_as_a_real_one():
+    """[ADR-0017 R-15] [ADR-0017 R-8]. ONE SHAPE PER COMMAND, whether it answered or could not.
+
+    `impact` and `diff` both state in their own docstrings that NOTHING IS ABSENT from their
+    payloads — every dimension, every blind-spot counter, present on every call. A `cannot_check`
+    object that dropped a field would break that promise exactly where a consumer is least able
+    to cope: the run where something already went wrong.
+
+    THE KEYS ARE HAND-WRITTEN IN THOSE BRANCHES AND THAT IS WHY THIS EXISTS. No honest zero value
+    exists for `impact`'s `digest` — `""` is a claim that the digest IS the empty string — so the
+    two shapes cannot be produced by one expression, and the only protection is comparing them.
+    **This assertion caught `Chain.unreadable` missing from the branch on the first attempt**,
+    which is I-01's field: added to the structure long after, and invisible to every other test
+    because no test built that branch.
+    """
+    chain = runprov.impact.Chain(
+        "a" * 64, ["u1"], [runprov.impact.Step(1, "u1", "s.py", ["/o.tsv"])], 0, 1, 0
+    )
+    answered = runprov.impact.payload(chain)
+    refused = runprov.impact.payload(None, cannot_check="no run history at h.jsonl")
+    assert set(answered) == set(refused), (
+        f"`impact`'s two shapes must carry the same keys: {sorted(set(answered) ^ set(refused))}"
+    )
+    lost = sorted(set(runprov.impact.Chain._fields) - set(refused))
+    assert not lost, (
+        "and every field of `Chain` must be among them, so a field added to the structure "
+        f"cannot reach one shape and not the other: {lost}"
+    )
+    assert refused["cannot_check"] and answered["cannot_check"] is None
+    assert refused["digest"] is None, "not the target's, and not an empty string pretending to be"
+    assert refused["truncated"] is False, (
+        "no walk was cut short because no walk happened — known, not unknown, so not null"
+    )
+
+    base = {"script": "s", "run_id": "r"}
+    compared = runprov.diff.payload(runprov.diff.build(base, {**base, "run_id": "r2"}))
+    blocked = runprov.diff.payload(None, cannot_check="nothing matches 'x'")
+    assert set(compared) == set(blocked), (
+        f"`diff`'s two shapes likewise: {sorted(set(compared) ^ set(blocked))}"
+    )
+    assert blocked["settled"] is False and blocked["dimensions"] == [], (
+        "`settled` false rather than null — this run settled nothing, which is what the exit "
+        "code says too, and a consumer keying on it must not need a special case"
+    )
 
 
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():

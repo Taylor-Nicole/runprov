@@ -1493,6 +1493,13 @@ def _impact(args: argparse.Namespace) -> int:
     project = active()
     log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
     if not log.is_file():
+        # [ADR-0017 R-15]. The question was formed and could not be carried out.
+        if args.format == "json":
+            print(
+                json.dumps(
+                    impact_mod.payload(None, cannot_check=f"no run history at {log}"), indent=2
+                )
+            )
         print(f"impact: no run history at {log}", file=sys.stderr)
         return 2
 
@@ -1594,6 +1601,13 @@ def _diff(args: argparse.Namespace) -> int:
             return 2
     log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
     if not log.is_file():
+        # [ADR-0017 R-15]. The question was formed and could not be carried out.
+        if args.format == "json":
+            print(
+                json.dumps(
+                    diff_mod.payload(None, cannot_check=f"no run history at {log}"), indent=2
+                )
+            )
         print(f"diff: no run history at {log}", file=sys.stderr)
         return 2
 
@@ -1609,6 +1623,22 @@ def _diff(args: argparse.Namespace) -> int:
         matches = show_mod.select(_counted(log, seen), args.a, limit=2)
         unreadable = seen[0]
         if len(matches) < 2:
+            # [ADR-0017 R-15]. THE HISTORY WAS READ and the address does not name two runs.
+            # An answer, not a usage mistake: the invocation was well formed and the data does
+            # not support it.
+            if args.format == "json":
+                print(
+                    json.dumps(
+                        diff_mod.payload(
+                            None,
+                            cannot_check=(
+                                f"{args.a!r} matches {len(matches)} run(s) in {log}; name two runs "
+                                "explicitly to compare across scripts"
+                            ),
+                        ),
+                        indent=2,
+                    )
+                )
             print(
                 f"diff: {args.a!r} matches {len(matches)} run(s) in {log}; "
                 "name two runs explicitly to compare across scripts",
@@ -1632,10 +1662,35 @@ def _diff(args: argparse.Namespace) -> int:
             # run the user meant.
             matches = show_mod.select(_completed(log), target, limit=1)
             if not matches:
+                # [ADR-0017 R-15]. A named address matched no run. The history was read.
+                if args.format == "json":
+                    print(
+                        json.dumps(
+                            diff_mod.payload(
+                                None, cannot_check=f"nothing matches {target!r} in {log}"
+                            ),
+                            indent=2,
+                        )
+                    )
                 print(f"diff: nothing matches {target!r} in {log}", file=sys.stderr)
                 return 2
             picked.append(matches[-1])
         if picked[0].get("run_uid") == picked[1].get("run_uid"):
+            # [ADR-0017 R-15]. Both addresses resolved, to one run. Nothing to compare is an ANSWER.
+            if args.format == "json":
+                print(
+                    json.dumps(
+                        diff_mod.payload(
+                            None,
+                            cannot_check=(
+                                f"{args.a!r} and {args.b!r} both resolve to the same "
+                                f"run ({str(picked[0].get('run_uid'))[:12]}); there is "
+                                "nothing to compare"
+                            ),
+                        ),
+                        indent=2,
+                    )
+                )
             print(
                 f"diff: {args.a!r} and {args.b!r} both resolve to the same run "
                 f"({str(picked[0].get('run_uid'))[:12]}); there is nothing to compare",

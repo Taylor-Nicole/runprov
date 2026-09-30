@@ -828,7 +828,9 @@ def _plain(value: typing.Any) -> typing.Any:  # noqa: ANN401 - the structure, wh
     return value
 
 
-def payload(comparison: Comparison) -> dict[str, typing.Any]:
+def payload(
+    comparison: Comparison | None, cannot_check: str | None = None
+) -> dict[str, typing.Any]:
     """The comparison as one object, for a reader that is not a person. R-1, R-5, R-7, R-9.
 
     EVERYTHING THE TABLE STATES, INCLUDING WHAT IT COULD NOT COMPARE. `blocked` is why a
@@ -848,10 +850,32 @@ def payload(comparison: Comparison) -> dict[str, typing.Any]:
     an `unchanged` row, so a changed or incomparable dimension carries its scope here and not
     on the page. That asymmetry is asserted in its own test rather than left to be discovered.
     """
+    if comparison is None:
+        # [ADR-0017 R-15]. AN ANSWER WITH NO COMPARISON IN IT. The command formed the question
+        # and could not carry it out: no history to read, or an address that resolves to fewer
+        # than two distinct runs. `settled` is FALSE rather than null — the run of this command
+        # settled nothing, which is the same fact the exit code carries, and a consumer keying
+        # on `settled` must not have to special-case a shape.
+        #
+        # `dimensions` IS AN EMPTY LIST, not absent. The docstring above says an incomparability
+        # is a value in this command and never a silence; that holds here too — there were no
+        # dimensions to report, which is different from a dimension this version did not look at.
+        return {
+            "schema": SCHEMA,
+            "a": None,
+            "b": None,
+            "dimensions": [],
+            "unreadable": 0,
+            "settled": False,
+            "cannot_check": cannot_check,
+        }
     return {
         "schema": SCHEMA,
         **{name: _plain(value) for name, value in comparison._asdict().items()},
         "settled": comparison.settled,
+        # [ADR-0017 R-15] PRESENT AND null WHENEVER THE COMPARISON HAPPENED, so a consumer never
+        # has to read the key's absence as either answer. R-8, one level out from a dimension.
+        "cannot_check": None,
     }
 
 

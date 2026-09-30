@@ -552,7 +552,10 @@ them against the project root for legibility, which a consumer does not know and
 resolve. The exit code is the same in both formats — 1 something derives, 0 nothing recorded read
 it, 2 the walk could not answer — and the payload is versioned by `"schema":
 "runprov.impact.v1"`, and its shape follows the record-format promise above: a field's meaning
-does not change without a new schema value.
+does not change without a new schema value. **Exit 2 carries the payload too**, with
+`cannot_check` naming what stopped it — but a target that is neither a file nor a digest prints
+nothing at all, because the command could not form the question. That is the difference between
+*I could not answer* and *you mistyped this*, and it is the only thing distinguishing them.
 
 ## `runprov diff`: why is today different from last month
 
@@ -614,7 +617,11 @@ what the exit code is built from — an incomparable dimension finds nothing and
 command it is reading. Every dimension is present in every payload: an incomparability here is a
 **value**, never a missing key. The exit code is the same in both formats; the payload is
 versioned by `"schema": "runprov.diff.v1"`, and its shape follows the record-format promise
-above: a field's meaning does not change without a new schema value.
+above: a field's meaning does not change without a new schema value. **Every exit-2 state carries the
+payload**: no history, an address naming fewer than two runs, a named address matching nothing,
+and two addresses resolving to one run are all answers, with `cannot_check` saying which and
+`settled: false` beside it. An **empty** run address prints nothing, because that is a usage
+mistake rather than an answer.
 
 ## `runprov resources`: how much this run actually needed
 
