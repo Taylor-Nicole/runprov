@@ -222,6 +222,33 @@ which a `GAP` edge can never print because rule 5 fires only once a version has 
 docstring no longer claims its sentences come out in ADR-0016 R-25's order; they come out
 weakest-claim-first, and it now says so.
 
+### Added — `chain`'s payload names which route reached `CANNOT_CHECK`
+
+Audit J, J-01. `chain --format json` said `status: "CANNOT_CHECK"` and nothing more, though it
+reaches that verdict by four routes with different fixes: an edge that is `UNCHECKABLE`, `GAP` or
+`UNCLAIMED`; a line that lost its terminator and merged with the next (G-03); a history with
+nothing chained in it; and no history to read. The text page names each in words. `cannot_check`
+now carries it, and is `null` for every other verdict.
+
+**ADDITIVE ON A PAYLOAD THAT SHIPPED in 0.6.0.** One key, appended last: every key 0.6.0 emitted
+keeps its place, nothing is renamed, reordered or removed, and a test asserts that ordering
+rather than trusting it. I-24 is the row about changing released output without saying so here.
+
+**The row as filed was wrong, and the correction is the part worth keeping.** It said the payload
+"distinguishes none of" the four routes. Measured, it distinguishes **all** of them — `lines`,
+`chained_from`, `merged` and the edge statuses all travel, and each route is a different
+combination. Unlike I-08, no input is private. What was missing is the **conclusion**: naming the
+route means reimplementing the verdict's fold including its precedence, and the precedence is the
+part that cannot be derived, because when two routes apply at once only the fold's order decides
+which is reported. That is I-08's shape one level up — the inputs travelled and the conclusion
+did not.
+
+**One fold, two readers.** `status` and `cannot_check` are both read off a single `_verdict`
+property rather than computed separately. The precedence is the fact here, so two folds in the
+same order would be two chances to get it wrong with no way to notice — H1-6 is the row where one
+fact resolved a second way disagreed with the first. A test asserts the order directly, including
+that `BROKEN` still beats everything so a reason never appears beside an accusation.
+
 ### Changed — every exit-2 state that is an ANSWER now carries its payload
 
 ADR-0017 R-15, decided 2026-09-29, applied to the commands that predated it. Five states where a

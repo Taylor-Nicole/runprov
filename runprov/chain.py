@@ -470,6 +470,59 @@ class Report(typing.NamedTuple):
     unreadable: tuple[int, ...] = ()
 
     @property
+    def _verdict(self) -> tuple[str, str | None]:
+        """The verdict AND, when it cannot be checked, which route reached that. ONE fold.
+
+        J-01. `status` and `cannot_check` are both read off this rather than computed twice.
+        H1-6 is the row where one fact resolved a second way disagreed with the first — here the
+        precedence IS the fact, so two folds in the same order would be two chances to get it
+        wrong and no way to notice.
+
+        WHAT J-01 GOT WRONG, recorded because the correction is the useful part: the row was
+        filed saying the payload "distinguishes none of" the four routes. Measured, it
+        distinguishes ALL of them — `lines`, `chained_from`, `merged` and the edge statuses all
+        travel, and every route has a different combination. Unlike I-08, none of the inputs is
+        private.
+
+        WHAT IS ACTUALLY MISSING IS THE CONCLUSION, which is I-08's shape one level up. Naming
+        the route from those fields means reimplementing this fold INCLUDING ITS PRECEDENCE, and
+        R-10 says a payload is a derived view precisely so a consumer does not have to. When
+        several routes apply at once the order below decides which is reported, and that order
+        is not discoverable from the fields.
+        """
+        kinds = {link.status for link in self.edges}
+        if BROKEN in kinds:
+            return BROKEN, None
+        # THE WORST EDGE NAMES ITSELF, in this order, so a file with both a GAP and an
+        # UNCLAIMED edge reports the one this fold reaches first rather than a set the caller
+        # has to rank again.
+        #
+        # A COMPREHENSION RATHER THAN A LOOP WITH AN EARLY RETURN, and coverage is the reason: a
+        # `for` whose body always returns has an exhausted-exit branch nothing can take, because
+        # the guard above it guarantees a match. That is the same dead branch `log` grew for
+        # `show` before `show` had a payload — a branch for a case that cannot arise is code no
+        # test can reach. A comprehension iterates fully and has no such exit.
+        worst = [kind for kind in (UNCHECKABLE, GAP, UNCLAIMED) if kind in kinds]
+        if worst:
+            return CANNOT_CHECK, f"an edge is {worst[0]}"
+        if self.merged:
+            return CANNOT_CHECK, "a line lost its terminator and merged with the next"
+        if self.chained_from is None:
+            if not self.lines:
+                return CANNOT_CHECK, "there is no history to read"
+            return CANNOT_CHECK, f"{self.lines} line(s), none of them chained"
+        return INTACT, None
+
+    @property
+    def cannot_check(self) -> str | None:
+        """Which route reached `CANNOT_CHECK`, or None for any other verdict. J-01.
+
+        [ADR-0017 R-16] named `status` as where this command says it could not check, and named
+        the absence of a reason as open. This is that reason, and R-16's table gains it.
+        """
+        return self._verdict[1]
+
+    @property
     def status(self) -> str:
         """R-26. The file's verdict is its worst edge, and nothing else.
 
@@ -484,21 +537,16 @@ class Report(typing.NamedTuple):
 
         `unreadable` IS DELIBERATELY ABSENT FROM THIS FOLD (G-17/G-08). It is disclosure and
         nothing else, and the field's own comment records why making it decisive was refused.
+
+        `merged` IS FOLDED IN AT `_verdict` rather than expressed as an edge status, because a
+        destroyed terminator is a fact about one line's bytes and not about the link between
+        two — the edges on either side are untouched and both still HOLD, which is exactly how
+        INTACT/exit 0 was once reached over it (G-03).
+
+        READ OFF `_verdict`, NOT COMPUTED AGAIN. J-01: the reason needs the same precedence, and
+        two folds in one order is two chances to get it wrong with no way to notice.
         """
-        kinds = {link.status for link in self.edges}
-        if BROKEN in kinds:
-            return BROKEN
-        if UNCHECKABLE in kinds or GAP in kinds or UNCLAIMED in kinds:
-            return CANNOT_CHECK
-        if self.merged:
-            # G-03, and it is folded in HERE rather than expressed as an edge status because a
-            # destroyed terminator is a fact about one line's bytes, not about the link between
-            # two — the edges on either side of a merged line are untouched and both still
-            # HOLD, which is exactly how INTACT/exit 0 was reached over it.
-            return CANNOT_CHECK
-        if self.chained_from is None:
-            return CANNOT_CHECK  # nothing in this file is chained; there is no claim to check
-        return INTACT
+        return self._verdict[0]
 
     @property
     def attested(self) -> int:
@@ -981,6 +1029,16 @@ def payload(report: Report, path: pathlib.Path) -> dict[str, typing.Any]:
         **{name: _rendered(name, value) for name, value in report._asdict().items()},
         "status": report.status,
         "attested": report.attested,
+        # J-01, and [ADR-0017 R-16]'s table gains it. ADDITIVE ON A PAYLOAD THAT SHIPPED in
+        # 0.6.0: one key at the end, nothing renamed, reordered or removed, so a consumer
+        # parsing 0.6.0's output keeps working. I-24 is the row about doing this without saying
+        # so in the CHANGELOG.
+        #
+        # null FOR EVERY VERDICT THAT IS NOT `CANNOT_CHECK`, because `status` already says which
+        # verdict it is; this says which ROUTE reached the one verdict that has several. It is
+        # read off the same fold as `status` rather than computed again — the precedence IS the
+        # fact here, and H1-6 is the row where one fact resolved twice disagreed with itself.
+        "cannot_check": report.cannot_check,
     }
 
 

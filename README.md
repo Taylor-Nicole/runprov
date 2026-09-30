@@ -1167,6 +1167,9 @@ each edge because the diagnosis *this line predates the chain* depends on a vers
 consumer cannot see. Exit codes are the same in both formats — 0 intact, 1 broken, 2 no history
 to read — and the payload is versioned by `"schema": "runprov.chain.v1"`, and its shape follows
 the record-format promise above: a field's meaning does not change without a new schema value.
+`cannot_check` names **which** of four routes reached `CANNOT_CHECK` — an edge that could not be
+checked, a line that lost its terminator, a history with nothing chained in it, or no history at
+all — because `CANNOT_CHECK` is one verdict covering four situations with different fixes.
 
 ## Lineage: which run produced what this one read
 

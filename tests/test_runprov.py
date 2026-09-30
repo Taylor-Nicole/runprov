@@ -18449,7 +18449,10 @@ _R16_INABILITY = {
     # A VALUE IN A CLOSED ENUM, not a separate field: for these three, *could not check* IS the
     # answer rather than a failure to produce one.
     "report": ("verdict",),
-    "chain": ("status",),
+    # J-01 GAVE `chain` A REASON TOO, so it is the one command with both: `status` says which
+    # verdict, `cannot_check` says which of the four routes reached the only verdict that has
+    # several. R-16 named the missing reason as open; this closed it.
+    "chain": ("status", "cannot_check"),
     "verify": ("artifacts_seen", "artifacts_pinned"),
 }
 
@@ -18507,6 +18510,139 @@ def test_every_json_command_says_it_could_not_check_where_r16_says_it_does(tmp_p
         "[ADR-0017 R-16] each of these must carry the field the table names, in every state "
         f"including the ordinary one: {missing}"
     )
+
+
+def test_chain_names_which_route_reached_cannot_check_and_reads_it_off_one_fold():
+    """[J-01] [ADR-0017 R-14] [ADR-0017 R-16]. The conclusion travels, not only its inputs.
+
+    J-01 WAS FILED WRONG AND THE CORRECTION IS THE USEFUL PART. The row said the payload
+    "distinguishes none of" the routes to `CANNOT_CHECK`. Measured, it distinguishes ALL of
+    them: `lines`, `chained_from`, `merged` and the edge statuses all travel, and each route has
+    a different combination. Unlike I-08, no input here is private.
+
+    WHAT WAS MISSING IS THE CONCLUSION, which is I-08's shape one level up. Naming the route from
+    those fields means reimplementing the fold INCLUDING ITS PRECEDENCE — and the precedence is
+    the part that is not discoverable, because when two routes apply at once only the fold's
+    order decides which is reported.
+
+    ONE FOLD, TWO READERS. `status` and `cannot_check` both come off `_verdict`, so they cannot
+    disagree; H1-6 is the row where one fact resolved a second way contradicted the first, and
+    here the precedence IS the fact.
+    """
+    holds = runprov.chain.Link(1, runprov.chain.HOLDS_TRIVIAL, runprov.chain.GENESIS, None, None)
+    second = runprov.chain.Link(2, runprov.chain.HOLDS, "aa", "aa", "0.6.0")
+
+    def report(**kwargs):
+        base = {
+            "lines": 2,
+            "edges": (holds, second),
+            "chained_from": 1,
+            "translated": 0,
+            "merged": (),
+            "unreadable": (),
+        }
+        return runprov.chain.Report(**{**base, **kwargs})
+
+    # EVERY VERDICT THAT IS NOT `CANNOT_CHECK` CARRIES NO REASON, because `status` already says
+    # which verdict it is. R-8: null here is *there is nothing to explain*, not *unknown*.
+    assert report().status == runprov.chain.INTACT
+    assert report().cannot_check is None
+    broken = report(edges=(holds, second._replace(status=runprov.chain.BROKEN)))
+    assert broken.status == runprov.chain.BROKEN and broken.cannot_check is None
+
+    # THE FOUR ROUTES, EACH NAMING ITSELF.
+    for kind in (runprov.chain.UNCHECKABLE, runprov.chain.GAP, runprov.chain.UNCLAIMED):
+        edge = report(edges=(holds, second._replace(status=kind)))
+        assert edge.status == runprov.chain.CANNOT_CHECK
+        assert edge.cannot_check == f"an edge is {kind}", edge.cannot_check
+
+    torn = report(merged=(2,))
+    assert torn.status == runprov.chain.CANNOT_CHECK
+    assert torn.cannot_check == "a line lost its terminator and merged with the next"
+
+    unchained = report(chained_from=None)
+    assert unchained.cannot_check == "2 line(s), none of them chained"
+    nothing = report(lines=0, edges=(), chained_from=None)
+    assert nothing.cannot_check == "there is no history to read"
+
+    # AND THE PRECEDENCE IS ASSERTED RATHER THAN ASSUMED, which is the whole reason a consumer
+    # cannot derive this from the fields. A torn line is ALSO unreadable in practice — a merged
+    # line is by construction one the parser refused — so the edge reason wins over the merge
+    # reason, and only the fold's order says so.
+    both = report(edges=(holds, second._replace(status=runprov.chain.UNCHECKABLE)), merged=(2,))
+    assert both.cannot_check == f"an edge is {runprov.chain.UNCHECKABLE}", (
+        "the edge routes are tested before the merge route, and a file in both states reports "
+        f"the first: {both.cannot_check}"
+    )
+    # AND BROKEN STILL BEATS EVERYTHING, so a reason never appears beside an accusation.
+    worst = report(edges=(holds, second._replace(status=runprov.chain.BROKEN)), merged=(2,))
+    assert worst.status == runprov.chain.BROKEN and worst.cannot_check is None
+
+
+def test_chains_cannot_check_reason_reaches_the_payload_over_real_histories(tmp_path):
+    """[J-01]. The reason is asserted over files, not only over constructed reports.
+
+    The unit test above pins the fold; this pins that the fold reaches a consumer, over
+    histories built by writing bytes and damaging them. **ADDITIVE ON A PAYLOAD THAT SHIPPED in
+    0.6.0** — the key is appended, so every key that 0.6.0 emitted keeps its place, which is
+    asserted here because I-24 is the row about changing released output quietly.
+    """
+    import hashlib
+
+    def chained(count, version="0.6.0"):
+        out, prev = [], runprov.chain.GENESIS
+        for i in range(count):
+            body = json.dumps(
+                {
+                    "schema": "runprov.run.v2",
+                    "script": "s",
+                    "run_id": f"r{i}",
+                    "run_uid": f"u{i}",
+                    "tool": {"name": "runprov", "version": version},
+                    "prev": prev,
+                }
+            )
+            out.append(body + "\n")
+            prev = hashlib.sha256(body.encode()).hexdigest()
+        return out
+
+    good = tmp_path / "good.jsonl"
+    good.write_text("".join(chained(3)), encoding="utf-8")
+    intact = runprov.chain.payload(runprov.chain.verify(good), good)
+    assert intact["status"] == "INTACT" and intact["cannot_check"] is None
+
+    absent = tmp_path / "gone.jsonl"
+    refused = runprov.chain.payload(runprov.chain.verify(absent), absent)
+    assert refused["cannot_check"] == "there is no history to read"
+
+    unchained = tmp_path / "old.jsonl"
+    unchained.write_text(
+        "".join(
+            json.dumps({"schema": "runprov.run.v2", "run_id": f"r{i}"}) + "\n" for i in range(2)
+        ),
+        encoding="utf-8",
+    )
+    stale = runprov.chain.payload(runprov.chain.verify(unchained), unchained)
+    assert stale["cannot_check"] == "2 line(s), none of them chained"
+
+    # 0.6.0's KEYS ALL KEEP THEIR PLACE. The one added key is at the END, so a consumer reading
+    # by key is unaffected and one comparing serialised bytes sees exactly one addition.
+    shipped = [
+        "schema",
+        "path",
+        "lines",
+        "edges",
+        "chained_from",
+        "translated",
+        "merged",
+        "unreadable",
+        "status",
+        "attested",
+    ]
+    assert list(intact)[: len(shipped)] == shipped, (
+        f"a key moved in output that shipped in 0.6.0: {list(intact)}"
+    )
+    assert list(intact)[len(shipped) :] == ["cannot_check"]
 
 
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():
@@ -31278,7 +31414,12 @@ def test_every_field_of_the_chain_report_reaches_its_payload(tmp_path):
     # `schema` and `path` identify the answer rather than being part of it (R-5); `status` and
     # `attested` are computed properties, allowed by R-10 because they compute nothing the
     # record does not already hold.
-    named = {"schema", "path", "status", "attested"}
+    # `cannot_check` JOINED THIS SET FOR J-01, and this guard is how I learned it had: it failed
+    # on the first gate naming the key, alongside the coverage leg. `status` says which verdict;
+    # this says which of four routes reached the only verdict that has several. Allowed by R-10
+    # for the same reason `status` is — both are read off one fold and compute nothing the
+    # record does not already hold.
+    named = {"schema", "path", "status", "attested", "cannot_check"}
     assert set(body) - named == set(report._fields), (
         f"the payload and `Report` disagree. Carried but not a field: "
         f"{sorted(set(body) - named - set(report._fields))}. "
