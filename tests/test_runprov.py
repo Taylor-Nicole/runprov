@@ -18700,6 +18700,111 @@ def test_chains_cannot_check_reason_reaches_the_payload_over_real_histories(tmp_
     assert list(intact)[len(shipped) :] == ["cannot_check"]
 
 
+def test_every_json_commands_two_shapes_carry_the_same_keys(tmp_path, capsys):
+    """[J-21] [ADR-0017 R-8]. ONE SHAPE PER COMMAND, for ALL of them — not two of ten.
+
+    `test_a_cannot_check_payload_has_the_same_keys_as_a_real_one` asserts this for `impact` and
+    `diff`, and its docstring says *"ONE SHAPE PER COMMAND, whether it answered or could not"*
+    while covering two of the ten. **`lineage` drifted in the gap**: its two shapes differed by
+    `path`, present only when the command could NOT answer, so key presence depended on success —
+    the inference R-8 exists to remove. It was the only one of the three commands sharing the
+    missing-history guard whose no-history answer was hand-written as a second dict rather than
+    calling the answered path's builder.
+
+    DERIVED FROM THE PARSER, so a command cannot be added to the family and skipped. The
+    invocations are supplied because a failing state cannot be derived; what is derived is which
+    commands must appear, and a command with no pair here fails by name.
+    """
+    artifact, log = _reported_run(tmp_path)
+    gone = tmp_path / "missing.jsonl"
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "m.py").write_text("import runprov\n", encoding="utf-8")
+    empty_dir = tmp_path / "nothing"
+    empty_dir.mkdir()
+
+    #: answered invocation, and one that reaches this command's own cannot-check state.
+    pairs = {
+        "chain": (["chain", str(log)], ["chain", str(gone)]),
+        "impact": (
+            ["impact", str(artifact), "--log", str(log)],
+            ["impact", str(artifact), "--log", str(gone)],
+        ),
+        "diff": (
+            ["diff", "demo", "demo", "--log", str(log)],
+            ["diff", "demo", "--log", str(gone)],
+        ),
+        "log": (["log", "--log", str(log)], ["log", "--log", str(gone)]),
+        "lineage": (["lineage", "--log", str(log)], ["lineage", "--log", str(gone)]),
+        "resources": (
+            ["resources", "--log", str(log)],
+            ["resources", "--log", str(gone)],
+        ),
+        "show": (["show", "--log", str(log)], ["show", "--log", str(gone)]),
+        "check": (["check", str(src)], ["check", str(empty_dir)]),
+        # `report` and `verify` are absent BY MEASUREMENT, not by omission: neither has a
+        # cannot-check state that produces a DIFFERENT shape. `report`'s NO PIN and `verify`'s
+        # unpinned sweep both emit their ordinary object with a different verdict in it, which is
+        # R-16's point about a verdict command — the inability IS the answer, so there is no
+        # second shape to compare.
+    }
+    assert set(pairs) <= _cli_json_commands(), f"a pair for a command that is not one: {pairs}"
+    missing = _cli_json_commands() - set(pairs) - {"report", "verify"}
+    assert not missing, (
+        "every command that answers in JSON and has a distinct cannot-check shape needs a pair "
+        f"here, or it can drift the way `lineage` did: {sorted(missing)}"
+    )
+
+    def keys(argv):
+        capsys.readouterr()
+        runprov.__main__.main([*argv, "--format", "json"])
+        out = capsys.readouterr().out
+        assert out.strip(), f"no payload to compare: {argv}"
+        return list(json.loads(out))
+
+    drifted = {}
+    for command, (answered, refused) in pairs.items():
+        a, b = keys(answered), keys(refused)
+        if set(a) != set(b):
+            drifted[command] = sorted(set(a) ^ set(b))
+    assert not drifted, (
+        "a key present in one shape and not the other makes key presence depend on whether the "
+        f"command succeeded, which is what R-8 exists to remove: {drifted}"
+    )
+
+
+def test_lineage_says_how_many_lines_it_could_not_read(tmp_path, capsys):
+    """[J-21] [ADR-0017 R-4] [ADR-0017 R-14]. A torn history must not look like an empty one.
+
+    Over a history where NOT ONE line parses, `lineage`'s payload was byte-identical to one over
+    an empty valid history: the count reached STDERR alone, and R-4 tells a caller stdout is the
+    payload and nothing else. **`show` was fixed for exactly this the day before and `lineage`
+    was not** — the cost of fixing a defect per command when the commands share it.
+    """
+    _, log = _reported_run(tmp_path)
+    torn = tmp_path / "torn.jsonl"
+    torn.write_text(
+        '{"schema": "runprov.run.v2", "script": "a\n{not json\ngarbage\n', encoding="utf-8"
+    )
+    blank = tmp_path / "blank.jsonl"
+    blank.write_text("", encoding="utf-8")
+
+    def payload(path):
+        capsys.readouterr()
+        runprov.__main__.main(["lineage", "--log", str(path), "--format", "json"])
+        return json.loads(capsys.readouterr().out)
+
+    damaged, empty = payload(torn), payload(blank)
+    assert damaged["unreadable"] == 3, f"three lines the reader could not use: {damaged}"
+    assert empty["unreadable"] == 0
+    assert damaged != empty, (
+        "a history where nothing parses and one with nothing in it are different answers, and "
+        "this payload served both the same way until J-21"
+    )
+    # AND THE ANSWERED STATE CARRIES IT TOO, so a consumer never reads its absence as either.
+    assert payload(log)["unreadable"] == 0
+
+
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():
     """L-70. `runprov exec` is a top-level subcommand and sat as an H3 CHILD of "The
     notebook: `show`" — a section about a read-only viewer. A reader scanning the rendered

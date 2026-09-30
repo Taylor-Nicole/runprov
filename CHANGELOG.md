@@ -222,6 +222,34 @@ which a `GAP` edge can never print because rule 5 fires only once a version has 
 docstring no longer claims its sentences come out in ADR-0016 R-25's order; they come out
 weakest-claim-first, and it now says so.
 
+### Fixed — `lineage --format json` said nothing about lines it could not read, and its two shapes differed
+
+Audit J, J-21. Two defects in a payload that **shipped in 0.6.0**, fixed together on Taylor's
+ruling of 2026-09-30. Both additive: `path` and `unreadable` are added, `schema` and `cannot_check`
+keep the places they took since the tag, and the join's own six counters keep their names and their
+order.
+
+**A history where NOT ONE line parses was byte-identical to an empty one.** The count of lines the
+reader could not use reached **stderr alone**, and R-4 tells a caller that stdout is the payload and
+nothing else — so a consumer obeying the rules read a wholly corrupt history as a history with
+nothing in it. Measured: three unreadable lines now give `unreadable: 3` where an empty file gives
+`0`. **`show` was fixed for exactly this the day before and `lineage` was not**, which is what
+fixing a defect per command costs when the commands share it.
+
+**And the two shapes differed by `path`**, present only when the command could NOT answer — so key
+presence depended on whether it succeeded, which is the inference R-8 exists to remove, and the
+answered payload could not say which history it described. `lineage` was the only one of the three
+commands sharing the missing-history guard whose no-history answer was **hand-written as a second
+dict** instead of calling the answered path's builder; `log` and `show` both share theirs, and
+`lineage` drifted within one commit. There is one builder now.
+
+**A guard covers all of them, not two.** `test_a_cannot_check_payload_has_the_same_keys_as_a_real_one`
+asserted this for `impact` and `diff` while its docstring claimed one shape per command; the new
+test derives the command list from the parser, so a command cannot join the family and be skipped.
+`report` and `verify` are excluded by measurement rather than omission — neither has a
+cannot-check state with a different shape, because for a verdict command the inability IS the
+answer (R-16).
+
 ### Added — `chain`'s payload names which route reached `CANNOT_CHECK`
 
 Audit J, J-01. `chain --format json` said `status: "CANNOT_CHECK"` and nothing more, though it

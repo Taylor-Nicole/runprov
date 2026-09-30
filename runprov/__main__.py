@@ -343,22 +343,53 @@ def _show_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[str, 
     return show_mod.payload_no_history(path, f"no run history at {path}")
 
 
-def _lineage_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[str, typing.Any]:
-    """`lineage`'s, for the same guard. `args` is unused and is in the signature because the
-    table below calls every builder the same way — a lookup whose entries differ in arity is a
-    lookup with a branch in it, which is what this table exists to avoid."""
-    del args
+#: The join's own counters, in the order `_lineage` returns them. ONE list, read by the one
+#: builder below — a second copy is what let `lineage`'s two shapes drift apart (J-21).
+_LINEAGE_COUNTERS = ("runs", "records_without_uid", "resolvable", "ambiguous", "orphan")
+
+
+def _lineage_answer(
+    path: pathlib.Path,
+    joined: dict[str, typing.Any] | None,
+    unreadable: int,
+    cannot_check: str | None = None,
+) -> dict[str, typing.Any]:
+    """`lineage`'s answer, whichever state it is in. ONE BUILDER. J-21.
+
+    IT WAS TWO, AND THEY DREW APART IMMEDIATELY. `lineage` was the only one of the three
+    commands sharing the missing-history guard whose no-history answer was hand-written as a
+    second dict instead of calling the answered path's builder — `log` and `show` both share
+    theirs — and within one commit the two shapes differed by `path`, present only when the
+    command could NOT answer. Key presence depending on success is exactly the inference R-8
+    exists to remove, and the answered payload could not say which history it described.
+
+    `unreadable` IS NEW AND IS THE HALF THAT MISLED A CONSUMER. Over a history where NOT ONE
+    line parses, this payload used to be byte-identical to one over an empty valid history: the
+    count reached stderr alone, which R-4 tells a caller not to read. `show` was fixed for this
+    the day before and `lineage` was not, which is what a per-command fix costs when the
+    commands share a defect. R-14 — what could not be established belongs in the same object as
+    what was.
+
+    ADDITIVE ON A PAYLOAD THAT SHIPPED in 0.6.0: `path` and `unreadable` are added, `schema` and
+    `cannot_check` keep the places they took since, and the join's own six counters keep both
+    their names and their order. Taylor ruled on 2026-09-30 that both halves be fixed together.
+    """
+    counters = dict.fromkeys(_LINEAGE_COUNTERS, 0) | {"edges": []} if joined is None else joined
     return {
         "schema": LINEAGE_SCHEMA,
         "path": path.as_posix(),
-        "runs": 0,
-        "records_without_uid": 0,
-        "resolvable": 0,
-        "ambiguous": 0,
-        "orphan": 0,
-        "edges": [],
-        "cannot_check": f"no run history at {path}",
+        **counters,
+        "unreadable": unreadable,
+        "cannot_check": cannot_check,
     }
+
+
+def _lineage_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[str, typing.Any]:
+    """`lineage`'s entry in the missing-history table. `args` is unused and is in the signature
+    because the table calls every builder the same way — a lookup whose entries differ in arity
+    is a lookup with a branch in it, which is what that table exists to avoid."""
+    del args
+    return _lineage_answer(path, None, 0, cannot_check=f"no run history at {path}")
 
 
 #: [ADR-0017 R-15]. Every command sharing the missing-history guard, and all three can answer
@@ -2610,13 +2641,12 @@ def main(argv: list[str] | None = None) -> int:
         # [ADR-0017 R-5] I-18. `lineage` has no module of its own — it is built here — so its
         # schema constant lives with the code that produces it rather than being invented at
         # the emission site, which is where a second, differing copy would eventually appear.
-        # `cannot_check` IS PRESENT AND null HERE, [ADR-0017 R-8]. The no-history answer
-        # carries it with a reason; if this one left the key out, a consumer would have to
-        # tell *it looked and could* from *this rendering does not report that* by the key's
-        # absence — which is exactly the inference R-8 exists to make unnecessary.
-        sys.stdout.write(
-            json.dumps({"schema": LINEAGE_SCHEMA, **g, "cannot_check": None}, indent=2) + "\n"
-        )
+        # ONE BUILDER FOR BOTH STATES (J-21). This used to assemble the dict here while the
+        # no-history answer assembled its own, and they differed by `path` within one commit.
+        # `cannot_check` is present and null, [ADR-0017 R-8]: leaving the key out would make a
+        # consumer tell *it looked and could* from *this rendering does not report that* by an
+        # absence, which is the inference R-8 exists to remove.
+        sys.stdout.write(json.dumps(_lineage_answer(path, g, bad), indent=2) + "\n")
     else:
         sys.stdout.write(_render_lineage(g, names) + "\n")
     print(

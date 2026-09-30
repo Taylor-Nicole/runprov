@@ -1182,8 +1182,12 @@ python -m runprov lineage --format json          # for a consumer
 The payload is versioned by `"schema": "runprov.lineage.v1"`, and its shape follows the
 record-format promise above: a field's meaning does not change without a new schema value. **Two**
 keys were added after 0.6.0 shipped this command's JSON — `schema`, and `cannot_check`, which
-carries the reason when there is no history to read and is `null` when the join ran. Nothing was
-renamed or removed to make room for either, and the six original keys keep their order.
+carries the reason when there is no history to read and is `null` when the join ran. Two more
+followed in Audit J: `path`, so the payload says which history it describes and both its shapes
+carry the same keys; and **`unreadable`, the count of lines the reader could not use** — without it
+a history where nothing parses was indistinguishable from an empty one, because the count went only
+to stderr. Nothing was renamed or removed to make room for any of them, and the six original keys
+keep their order.
 
 The history already records, per run, the exact set of files read and written **with the
 hashes taken at the moment of use**. That is the raw material of a complete DAG, and it was
