@@ -11386,9 +11386,15 @@ def _perturbed(value, pool):
         # into None — while `_structure_nodes`' docstring says *"both are needed to change one
         # into the other"*. It was also redundant for the case it looks like it protects: when
         # `value` is None a None candidate equals it and `candidate != value` already skips it.
-        # Removing it exercises 13 substitutions in `report`'s guard that were never made, and
+        # Removing it exercises 61 substitutions across the three guards that were never made —
+        # `diff` 59, `report` 1, `impact` 1, instrumented — and
         # all three guards stay green — measured BEFORE it was removed, because a perturbation
         # that starts firing is as likely to expose a defect as to pass.
+        #
+        # CORRECTED 2026-09-30 (J-35). This comment said "13 substitutions in `report`'s guard".
+        # Instrumented, `report`'s guard makes ONE that differs from the old filter. The direction
+        # was right — the change is not inert — but the figure offered as its evidence was not
+        # reproducible, and it is the kind of number the next person trusts.
         if candidate != value:
             return candidate
     if value is None:
@@ -17709,11 +17715,18 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
     exit 2 is already taken — `argparse` uses it for a usage error, so a consumer seeing 2
     cannot tell *could not check* from *typed it wrong* except by whether stdout parses.
 
-    THIS DOES NOT ASSERT R-15 OUTRIGHT, BECAUSE FIVE STATES DO NOT YET COMPLY. Asserting it
-    would be a gate red for work that is scheduled rather than missed — the trap I-22 was
-    written to avoid one rule over. So the states are PARTITIONED and the partition ratchets:
-    `outstanding` can only shrink, and the day one of them gains a payload this test goes red
-    and stays red until the name is struck.
+    IT ASSERTED R-15 AS A RATCHET UNTIL 2026-09-30 AND NOW ASSERTS IT OUTRIGHT. Five states did
+    not comply when this was written, so `outstanding` held them and could only shrink; applying
+    R-15 emptied it. **The description of the ratchet outlived the ratchet** — this docstring went
+    on saying "THIS DOES NOT ASSERT R-15 OUTRIGHT" while the body said R-15 was satisfied, which
+    Audit J filed as J-34. In a file where the docstrings are the ratifying record, that is Audit
+    H's true verdict wearing a false sentence.
+
+    WHAT IT ASSERTS, PRECISELY, because the gap matters and is still open: for `complies` it
+    asserts exit 2 and that stdout parses; for `silent_by_design` it asserts exit 2 and that
+    stdout is EMPTY. It asserts that a payload SAYS it could not check for the five states this
+    row owned, not for all fifteen — the ten others rest on a hand-written per-command assertion
+    each. Filed as J-32.
 
     Every case is asserted to exit 2 either way. That half of R-15 already holds everywhere and
     is the part a consumer keys on first.
@@ -18625,8 +18638,12 @@ def test_chains_cannot_check_reason_reaches_the_payload_over_real_histories(tmp_
     stale = runprov.chain.payload(runprov.chain.verify(unchained), unchained)
     assert stale["cannot_check"] == "2 line(s), none of them chained"
 
-    # 0.6.0's KEYS ALL KEEP THEIR PLACE. The one added key is at the END, so a consumer reading
-    # by key is unaffected and one comparing serialised bytes sees exactly one addition.
+    # A DRIFT RATCHET OVER TODAY'S ORDER — and NOT a statement about 0.6.0's, which is what
+    # this comment and the message below used to claim. J-03: `shipped` is a hand-written copy of
+    # the CURRENT order. Measured against the tag, 8 of 0.6.0's 10 keys have moved since, by
+    # `abeff47`; asserting 0.6.0's real order here would fail. The assertion is still worth having
+    # — it fires if any key moves from here on — but it verifies drift from TODAY, and a message
+    # naming 0.6.0 would have misled whoever it fired for.
     shipped = [
         "schema",
         "path",
@@ -18640,7 +18657,7 @@ def test_chains_cannot_check_reason_reaches_the_payload_over_real_histories(tmp_
         "attested",
     ]
     assert list(intact)[: len(shipped)] == shipped, (
-        f"a key moved in output that shipped in 0.6.0: {list(intact)}"
+        f"a key moved since 2026-09-30; this is a drift ratchet, not 0.6.0's order: {list(intact)}"
     )
     assert list(intact)[len(shipped) :] == ["cannot_check"]
 

@@ -1164,7 +1164,8 @@ and the payload are two renderings of one structure, so neither can state someth
 does not. It carries `lines` and every `edge` with its `status`, `claimed` and `computed`
 digests, so a consumer sees what was checked and not only what broke; `could_chain` travels with
 each edge because the diagnosis *this line predates the chain* depends on a version threshold a
-consumer cannot see. Exit codes are the same in both formats — 0 intact, 1 broken, 2 no history
+consumer cannot see. Exit codes are the same in both formats — 0 intact, 1 broken, 2 could not
+check (any of the four routes below, not only a missing history)
 to read — and the payload is versioned by `"schema": "runprov.chain.v1"`, and its shape follows
 the record-format promise above: a field's meaning does not change without a new schema value.
 `cannot_check` names **which** of four routes reached `CANNOT_CHECK` — an edge that could not be
@@ -1179,9 +1180,10 @@ python -m runprov lineage --format json          # for a consumer
 ```
 
 The payload is versioned by `"schema": "runprov.lineage.v1"`, and its shape follows the
-record-format promise above: a field's meaning does not change without a new schema value. The
-key was added after 0.6.0 shipped this command's JSON; nothing was renamed or removed to make
-room for it.
+record-format promise above: a field's meaning does not change without a new schema value. **Two**
+keys were added after 0.6.0 shipped this command's JSON — `schema`, and `cannot_check`, which
+carries the reason when there is no history to read and is `null` when the join ran. Nothing was
+renamed or removed to make room for either, and the six original keys keep their order.
 
 The history already records, per run, the exact set of files read and written **with the
 hashes taken at the moment of use**. That is the raw material of a complete DAG, and it was

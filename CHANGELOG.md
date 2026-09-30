@@ -230,9 +230,21 @@ reaches that verdict by four routes with different fixes: an edge that is `UNCHE
 nothing chained in it; and no history to read. The text page names each in words. `cannot_check`
 now carries it, and is `null` for every other verdict.
 
-**ADDITIVE ON A PAYLOAD THAT SHIPPED in 0.6.0.** One key, appended last: every key 0.6.0 emitted
-keeps its place, nothing is renamed, reordered or removed, and a test asserts that ordering
-rather than trusting it. I-24 is the row about changing released output without saying so here.
+**ADDITIVE ON A PAYLOAD THAT SHIPPED in 0.6.0** — the key SET, which is what a consumer reads
+by. `cannot_check` is appended last and nothing is renamed or removed.
+
+**CORRECTED 2026-09-30 by Audit J (J-02).** This entry first said *"every key 0.6.0 emitted keeps
+its place, nothing reordered"*. That is false: measured against the tag, **8 of `chain`'s 10 keys
+have moved** since 0.6.0 — `status` 2→8, `lines` 3→2, `attested` 4→9, `chained_from` 5→4,
+`translated` 6→5, `merged` 7→6, `unreadable` 8→7, `edges` 9→3. The reorder is `abeff47`'s, not this
+commit's, and **the I-24 entry below already records it with these exact two lists** — so this
+section contradicted itself 190 lines apart and the newer statement was the wrong one. The reorder
+is unreleased, so no consumer has met it; both statements would have shipped together.
+
+The test cited as proof asserts the CURRENT order, which is a useful drift ratchet going forward
+but is not what its comment claimed; its wording is corrected too. `chain.payload`'s own docstring
+was honest about this all along — *"Key ORDER differs from the hand-written version and nothing
+depends on it"* — so the code and this entry disagreed, and the code was right.
 
 **The row as filed was wrong, and the correction is the part worth keeping.** It said the payload
 "distinguishes none of" the four routes. Measured, it distinguishes **all** of them — `lines`,
@@ -417,9 +429,29 @@ schema of its own — and only the published shape needs to say which shape it i
 ### Changed — `runprov chain --format json`: two changes to a payload that had already shipped
 
 Audit I, I-24, and the row is about the CHANGELOG rather than about the code. `chain --format
-json` shipped in 0.6.0 on 2026-09-23. Two commits changed its output afterwards and neither
+json` shipped in 0.6.0 on 2026-09-23. **Three** commits changed its output afterwards and none
 said so here — the only released output this project has modified without an entry, which is
 exactly what a changelog exists to stop.
+
+**CORRECTED 2026-09-30 by Audit J (J-27): this entry said TWO, and its own enumeration was the
+stale list.** The one it missed is the earliest and the only one that changed a VALUE rather than a
+shape: **`7354671` (2026-09-24) moved `edges[].wrote` from `null` to a version string** on every
+`UNCHAINED` edge, and on `UNCLAIMED` edges. Measured with the tagged module loaded by path:
+`v0.6.0` gives `wrote = None` on all six edges of the 0.5.0 corpus history, HEAD gives `'0.5.0'` —
+**18 value changes across the cross-version corpus**, on the 0.3.0, 0.4.0 and 0.5.0 histories,
+type `NoneType -> str`.
+
+`7354671`'s commit message disclosed it; its CHANGELOG entry did not, and closed *"a genuine
+pre-chain history reads exactly as it did"* — the three genuine pre-chain corpus histories are
+precisely the ones whose JSON moved. **No schema bump is needed**: `Link.wrote` is declared
+`str | None` and documented as *"the runprov that wrote it, when the line says so"*, so 0.6.0 was
+under-populating against its own stated meaning and HEAD populates it correctly. The defect was the
+silence, and this row existed to end exactly that.
+
+**And the lesson is about this row's own shape.** I-24 enumerated the changes as a hand-written
+list and it went stale in six days — the failure mode this project's entries call out for
+hand-written FIELD lists, now met for a list of commits. Audit J found the same shape four times in
+two days: a list of fields, of states, of guards, and of commits.
 
 **Key order moved** (`abeff47`, 2026-09-24). The payload was hand-written in `__main__.py` and
 is now derived from the `Report` structure, so the keys come out in the structure's order:

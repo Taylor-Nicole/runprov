@@ -170,7 +170,16 @@ signal becomes total and a consumer needs one rule:
 This is additive. `chain`, `report` and `verify` already comply; `report` for an absent artifact,
 `impact` for an unrecorded file or a missing history, `diff` for a selector matching other than
 two runs, and `lineage` for a missing history do not, and gain payloads without any existing key
-changing. Where a command has no structure to serialise in that state — `diff` and `impact` have
+changing.
+
+> **AMENDED 2026-09-30 by Audit J (J-22).** Two of the states listed above were ruled the other
+> way when R-15 was applied in `0327c01`, and that commit changed no documentation, so this
+> paragraph and the shipped behaviour contradicted each other for a day. **`report` for an absent
+> artifact and `impact` for a target that is neither a file nor a digest STAY SILENT**, because in
+> each the command could not FORM its question — the same reading `check` already had for a
+> directory that is not there. `diff`'s five states and `impact`'s missing history do serialise.
+> The list above is left standing rather than rewritten so the amendment is visible, which is the
+> form R-3's own amendment takes. Where a command has no structure to serialise in that state — `diff` and `impact` have
 computed nothing — the payload is the schema plus what it could not do, under R-14: the thing it
 could not establish belongs in the object, not in a stderr line the consumer never sees.
 
@@ -190,7 +199,7 @@ inside it, and the answer turned out not to be one field. Measured across all te
 | `impact`, `diff`, `log`, `lineage`, `resources`, `show` | `cannot_check` | a REASON, or `null` |
 | `check` | `examined_nothing` | a REASON, or `null` |
 | `report` | `verdict` ∈ `NO PIN`, `UNVERIFIABLE` | a VALUE in a closed enum |
-| `chain` | `status` = `CANNOT_CHECK` | a VALUE in a closed enum |
+| `chain` | `status` = `CANNOT_CHECK`, **and `cannot_check` for which of four routes** | a VALUE in a closed enum, plus a REASON |
 | `verify` | `artifacts_seen` > 0 with `artifacts_pinned` = 0 | a COUNT RELATIONSHIP |
 
 **These are not an inconsistency to unify, and that is the ruling.** For `report`, `chain` and
@@ -209,15 +218,30 @@ counters rather than read a field. The counts are deliberate — `verify`'s own 
 that listing every unpinned file buries the finding — so this is a consequence of that choice
 rather than an oversight, and changing it would mean changing released output.
 
-**A test asserts this table against the payloads**, and asserts the table covers exactly the
-commands that answer in JSON. R-3's and R-5's lists both went stale in prose that nothing read;
-this one goes red.
+**A test asserts the table's SCOPE against the parser** — that it names exactly the commands
+answering in JSON — and asserts each named field is present in that command's payload. R-3's and
+R-5's lists both went stale in prose that nothing read; that much goes red.
 
-> **`chain` CARRIES NO REASON, and that is open rather than settled here.** It reaches
-> `CANNOT_CHECK` by three routes — an unreadable file, a file that is not there, and a history
-> where nothing is chained — and the payload distinguishes none of them, though the text page
-> says which in words. That is R-14's concern rather than R-16's, and its payload shipped in
-> 0.6.0, so any fix is additive and needs a CHANGELOG entry. Filed as its own row.
+**CORRECTED 2026-09-30 (J-23): this first claimed the test asserts the table itself, and it does
+not.** The test carries its own copy of the mapping, so the two can diverge — and did, when J-01
+gave `chain` a reason. It also checks only that a field is PRESENT, in an ORDINARY payload, so it
+would pass if every inability field in the package were permanently `null`. Both gaps are filed.
+
+> **CLOSED 2026-09-30 by J-01, and this note was wrong twice.** `chain` now carries
+> `cannot_check` naming which route reached the verdict, read off the same fold as `status` so the
+> two cannot disagree. Additive on released output, with a CHANGELOG entry.
+>
+> **The note said THREE routes; there are FOUR** — an edge that is `UNCHECKABLE`, `GAP` or
+> `UNCLAIMED`; a line that lost its terminator and merged with the next (G-03); a history with
+> nothing chained in it; and no history to read. **And it said the payload "distinguishes none of
+> them", which was false**: `lines`, `chained_from`, `merged` and the edge statuses all travelled
+> and each route was a different combination. What was missing was the CONCLUSION — naming the
+> route needed the fold's PRECEDENCE, which is the part a consumer cannot derive. Corrected here
+> rather than quietly dropped, because this note was the authoritative statement while it stood.
+>
+> **Still open (J-23):** nothing asserts that this table and the test's copy of it agree. The
+> precedent for doing it is `test_r31s_shape_list_is_the_one_the_gate_actually_runs`, which reads
+> ADR-0016's prose and a decorator's AST and compares them.
 
 **R-11.** Not a stable API on the first release. It is versioned by R-5 and the README says the
 JSON shape follows the record-format promise: a field's meaning does not change without a new
