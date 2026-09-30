@@ -13424,7 +13424,12 @@ def test_diff_cli_refuses_what_it_cannot_compare(tmp_path, capsys):
     assert runprov.__main__.main(["diff", "only", "only", "--log", log]) == 2
     assert "same run" in capsys.readouterr().err, "comparing a record with itself is not a finding"
 
-    assert runprov.__main__.main(["diff", "nosuch", "other", "--log", log]) == 2
+    # J-25: **1**, not 2. [ledger L-81] puts "a named target or filter that matched nothing" in
+    # the 1 family, and `show <target>` and `log --script` both implemented it while `diff`
+    # returned 2 — one of the ten commands contradicting a contract this package ratified.
+    # Taylor ruled 2026-09-30. The three cases above stay at 2: in each, no comparison could be
+    # FORMED, and matching ONE run is not matching nothing.
+    assert runprov.__main__.main(["diff", "nosuch", "other", "--log", log]) == 1
     assert "nothing matches" in capsys.readouterr().err
 
 
@@ -17824,7 +17829,12 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
         ],
         "diff, no history to read": ["diff", "demo", "--log", str(no_log)],
         "diff, one address naming fewer than two runs": ["diff", "demo", "--log", str(log)],
-        "diff, a named address matching nothing": ["diff", "nosuch", "other", "--log", str(log)],
+        # `diff, a named address matching nothing` LEFT THIS BUCKET IN J-25: it exits **1** now,
+        # per L-81, so it is not a state about what exit 2 carries. **Its payload is still
+        # asserted** — `test_diffs_four_refusals_each_say_which_one_it_was` names its reason
+        # among the four — because R-15's substance is that an ANSWER serialises, and an exit-1
+        # finding is an answer. Removing a row from this bucket must never mean removing its
+        # coverage, which is the mistake available here.
         "diff, two addresses resolving to one run": ["diff", "demo", "demo", "--log", str(log)],
     }
     # SILENT BY DESIGN, AND ASSERTED TO BE. These are not outstanding work: the command could
@@ -18888,6 +18898,94 @@ def test_a_truncated_walk_says_so_in_the_payload_and_not_only_in_the_page(tmp_pa
         "`payload` hardcoded None here and dropped the argument — the call site read as correct"
     )
     assert runprov.impact.payload(chain)["cannot_check"] is None
+
+
+def test_a_named_target_that_matched_nothing_exits_1_in_every_command_that_takes_one(
+    tmp_path, capsys
+):
+    """[J-25] [ledger L-81]. One contract, and `diff` used to contradict it.
+
+    L-81, ratified 2026-09-01 and quoted at the top of `__main__.py`, puts *"a named target or
+    filter that matched nothing"* in the **1** family — *checked, and something IS wrong* — and
+    reserves **2** for *could not check*. `show <target>` and `log --script` implemented it;
+    `diff` returned 2, so one of the ten commands contradicted a contract this package had
+    written down, and a consumer reading L-81 got the wrong answer for it.
+
+    THIS IS NOT A PREFERENCE BETWEEN CONVENTIONS, which is why it could be fixed rather than
+    debated. Taylor ruled on 2026-09-30 on that evidence.
+
+    THE THREE COMMANDS ARE CHECKED TOGETHER, so the agreement is the assertion rather than three
+    separate facts that happen to line up. `report` and `verify` take an ARTIFACT, not a target
+    selector, and are excluded by that difference and not by omission.
+    """
+    _, log = _reported_run(tmp_path)
+    for argv in (
+        ["diff", "no-such-run", "other-run", "--log", str(log)],
+        ["show", "no-such-run", "--log", str(log)],
+        ["log", "--script", "no-such-run", "--log", str(log)],
+    ):
+        capsys.readouterr()
+        assert runprov.__main__.main(argv) == 1, (
+            f"[L-81] a named target that matched nothing is a FINDING, not an inability: {argv}"
+        )
+        capsys.readouterr()
+
+    # AND `diff`'s OTHER THREE STATES STAY AT 2, because in each no comparison could be FORMED.
+    # Matching ONE run is not matching nothing — that distinction is the whole of L-81's line.
+    gone = tmp_path / "missing.jsonl"
+    for argv, why in (
+        (["diff", "demo", "--log", str(log)], "one address naming a single run"),
+        (["diff", "demo", "demo", "--log", str(log)], "two addresses resolving to one run"),
+        (["diff", "demo", "--log", str(gone)], "no history to read"),
+    ):
+        capsys.readouterr()
+        assert runprov.__main__.main(argv) == 2, f"[L-81] could not check: {why}"
+        capsys.readouterr()
+
+
+def test_diffs_four_refusals_each_say_which_one_it_was(tmp_path, capsys):
+    """[J-29] [ADR-0017 R-14]. Four routes, four reasons, and nothing asserted the values.
+
+    `diff` reaches *could not check* four ways and writes a different sentence to stderr for
+    each. **Nothing in this file asserted the VALUE of any of them in the payload** — an Audit J
+    reviewer replaced all four with the literal `"could not check"`, left stderr untouched so the
+    page still named the route, and the ENTIRE suite stayed green.
+
+    That is J-01's finding one command over: `chain` reached `CANNOT_CHECK` without saying which
+    of four routes got there, gained a reason, and gained a test naming each. `diff` had the same
+    four-route shape and nothing equivalent. The two renderings could disagree about which route
+    was taken and no check could see it — G-16 and H1-3's class.
+
+    ASSERTED AS A SET, so four reasons collapsing into one fails even if each remains truthy.
+    """
+    _, log = _reported_run(tmp_path)
+    gone = tmp_path / "missing.jsonl"
+
+    def reason(argv):
+        capsys.readouterr()
+        runprov.__main__.main([*argv, "--format", "json"])
+        out = capsys.readouterr().out
+        assert out.strip(), f"no payload: {argv}"
+        body = json.loads(out)
+        assert body["cannot_check"], f"a refusal with no reason in it: {argv}"
+        return body["cannot_check"]
+
+    routes = {
+        "no history": reason(["diff", "demo", "--log", str(gone)]),
+        "one address, one run": reason(["diff", "demo", "--log", str(log)]),
+        "nothing matches": reason(["diff", "no-such", "other", "--log", str(log)]),
+        "same run twice": reason(["diff", "demo", "demo", "--log", str(log)]),
+    }
+    assert len(set(routes.values())) == 4, (
+        "four routes, four distinct reasons, no two alike — a reviewer collapsed all four into "
+        f"one literal and the whole suite stayed green: {routes}"
+    )
+    # AND EACH NAMES ITS OWN ROUTE, not merely differs from the others: four unique strings that
+    # all said the wrong thing would satisfy the set check above.
+    assert "no run history" in routes["no history"]
+    assert "matches 1 run(s)" in routes["one address, one run"]
+    assert "nothing matches" in routes["nothing matches"]
+    assert "same run" in routes["same run twice"]
 
 
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():

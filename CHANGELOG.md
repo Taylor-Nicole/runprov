@@ -222,6 +222,32 @@ which a `GAP` edge can never print because rule 5 fires only once a version has 
 docstring no longer claims its sentences come out in ADR-0016 R-25's order; they come out
 weakest-claim-first, and it now says so.
 
+### Changed — `runprov diff` exits 1 for a named address that matched nothing, as L-81 says
+
+Audit J, J-25. **`diff` contradicted a contract this package had already ratified.** L-81, decided
+2026-09-01 and quoted at the top of `__main__.py`, puts *"a named target or filter that matched
+nothing"* in the **1** family — *checked, and something IS wrong* — and reserves **2** for *could
+not check*. `show <target>` and `log --script` both implemented it. `diff` returned 2, so a
+consumer reading L-81 got the wrong answer for one of the ten commands.
+
+This is a behaviour change on a documented path and Taylor ruled it on 2026-09-30, on the evidence
+that L-81 already answered it rather than on a preference between conventions.
+
+**`diff`'s other three refusals stay at 2**, and the line is L-81's own: an address naming a single
+run, two addresses resolving to one run, and no history at all are all cases where no comparison
+could be FORMED. **Matching one run is not matching nothing** — that distinction is the whole of
+L-81's sentence.
+
+**And nothing asserted what `diff`'s four refusals SAY.** An Audit J reviewer replaced all four
+reasons with the literal `"could not check"`, left stderr untouched so the page still named the
+route, and the entire suite stayed green — J-01's finding one command over, since `chain` gained a
+reason and a test naming each of its four routes while `diff` had the same shape and nothing
+equivalent. The four are now asserted as a distinct set, and each is asserted to name its own
+route, because four unique strings all saying the wrong thing would satisfy a set check.
+
+A test asserts the three target-taking commands agree on L-81's 1 family together, so the
+agreement is the assertion rather than three facts that happen to line up.
+
 ### Fixed — a truncated `impact` walk exits 2 and now says so in the payload
 
 Audit J, J-20. `impact --depth 0` empties `steps` while `seeds` stays non-empty, and C-07 is the

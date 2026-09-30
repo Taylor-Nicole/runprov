@@ -1726,7 +1726,22 @@ def _diff(args: argparse.Namespace) -> int:
                         )
                     )
                 print(f"diff: nothing matches {target!r} in {log}", file=sys.stderr)
-                return 2
+                # J-25, AND IT IS NOT A PREFERENCE BETWEEN CONVENTIONS. **L-81, ratified
+                # 2026-09-01 and quoted at the top of this file, puts "a named target or filter
+                # that matched nothing" in the 1 family** — and `show <target>` and
+                # `log --script` both implement it. `diff` returned 2, so one of the ten
+                # commands contradicted a contract this package had written down, and a consumer
+                # reading that contract got the wrong answer for it.
+                #
+                # THE OTHER THREE STATES STAY AT 2, and the line is L-81's own: 1 is *checked,
+                # and something IS wrong*; 2 is *could not check*. A named address matching
+                # nothing is a finding about the history. An address matching ONE run, two
+                # addresses resolving to one run, and no history at all are all cases where no
+                # comparison could be FORMED — which is what 2 means. Matching one run is not
+                # matching nothing.
+                #
+                # Taylor ruled on 2026-09-30, on the evidence that L-81 already answered it.
+                return 1
             picked.append(matches[-1])
         if picked[0].get("run_uid") == picked[1].get("run_uid"):
             # [ADR-0017 R-15]. Both addresses resolved, to one run. Nothing to compare is an ANSWER.
