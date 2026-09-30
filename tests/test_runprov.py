@@ -18396,9 +18396,12 @@ def test_show_answers_in_json_as_an_answer_and_not_as_the_yaml_view(tmp_path, ca
     assert next(iter(project)) == "schema"
     assert project["target"] is None, "null target is how a consumer knows which shape it holds"
     assert project["cannot_check"] is None and project["unreadable"] == 0
-    assert project["state"] is None, (
-        "[ADR-0017 R-8] nobody asked for staleness, and *this run did not ask* is a fact about "
-        "the invocation rather than an absence of stale artifacts"
+    # J-09 REVERSED THIS ASSERTION, and the reversal is the point. It read *"nobody asked for
+    # staleness, and `this run did not ask` is a fact about the invocation"* — true, but **R-8
+    # already spells that as an ABSENT key**, and `payload_runs` ten lines below was omitting it
+    # for that reason. One module, two readings of R-8, one key.
+    assert "state" not in project, (
+        f"[ADR-0017 R-8] nobody asked, so this page did not look: {project.get('state')!r}"
     )
     assert project["in_flight"] == []
     assert set(project) == set(runprov.show.payload_project(pathlib.Path("x"), {}, None, [], 0)), (
@@ -18416,7 +18419,7 @@ def test_show_answers_in_json_as_an_answer_and_not_as_the_yaml_view(tmp_path, ca
     assert runprov.__main__.main(["show", "demo", "--log", str(log), "--format", "json"]) == 0
     runs = json.loads(capsys.readouterr().out)
     assert runs["target"] == "demo" and runs["matched"] == 1 and len(runs["runs"]) == 1
-    assert not {"project", "state", "in_flight"} & set(runs), (
+    assert not {"project", "in_flight"} & set(runs), (
         "[ADR-0017 R-8] a target page did not look at any of these, and an absent key says so "
         f"where null would claim it looked: {sorted({'project', 'state', 'in_flight'} & set(runs))}"
     )
@@ -18986,6 +18989,159 @@ def test_diffs_four_refusals_each_say_which_one_it_was(tmp_path, capsys):
     assert "matches 1 run(s)" in routes["one address, one run"]
     assert "nothing matches" in routes["nothing matches"]
     assert "same run" in routes["same run twice"]
+
+
+def test_shows_payload_carries_the_record_and_its_renderings_abbreviate(tmp_path, capsys):
+    """[J-07] [J-08] [ADR-0017 R-8] [ADR-0017 R-9]. Facts in the view, display in the renderers.
+
+    THREE DISPLAY VALUES HAD LEAKED INTO THE PAYLOAD. `run_view` held a 12-character `run_uid`
+    where `log --format json` carries all 32 for the same record; a 16-character digest where the
+    record has 64, **with the key it came from computed and then discarded** — so a consumer
+    could not tell a `content_sha256` prefix from a `sha256` or `sha256_tree` one, which is the
+    distinction I-27 exists for; and the strings `"-"` and `"none"` where the record says `null`,
+    both truthy. `_recorded`'s own docstring records a filed defect from comparing against that
+    dash, and the payload shipped it to every consumer at once.
+
+    THE STALENESS COMPARISON IS UNTOUCHED. `_recorded_pair` still truncates, because that is what
+    the comparison and the eye both use, and both sides of it truncate. `_recorded_whole` is the
+    new reader; the old one keeps its job.
+    """
+    _, log = _reported_run(tmp_path)
+
+    def payload():
+        capsys.readouterr()
+        runprov.__main__.main(["show", "demo", "--log", str(log), "--format", "json"])
+        return json.loads(capsys.readouterr().out)["runs"][0]
+
+    run = payload()
+    assert len(run["run_uid"]) == 32, f"as recorded, not as displayed: {run['run_uid']}"
+    entry = run["inputs"][0]
+    assert len(entry["digest"]) == 64, f"all 64, as `log` carries them: {entry}"
+    assert entry["digest_key"] in ("content_sha256", "sha256", "sha256_tree"), entry
+    assert run["code"]["commit"] is None or len(run["code"]["commit"]) == 40, (
+        f"the record's value, not the page's placeholder: {run['code']}"
+    )
+
+    # AN ENTRY THE RUN NEVER HASHED, which is J-07's own case and the one the dash was invented
+    # for: a FIFO, a socket, a device — anything `kind: UNHASHABLE` — and an output never
+    # written. `_recorded`'s docstring records the defect from comparing against that dash, so
+    # the payload must carry `null` and the renderings must print `-`.
+    unhashable = runprov.show.run_view(
+        {
+            "script": "piper",
+            "status": "ok",
+            "outputs": [
+                {
+                    "path": "/p/pipe.out",
+                    "sha256": None,
+                    "content_sha256": None,
+                    "kind": "UNHASHABLE",
+                },
+                {"path": "/p/never.tsv", "kind": "MISSING"},
+            ],
+        }
+    )
+    # NAMED `unhashed`, NOT `entry`: this loop rebound the `entry` bound above, so the R-9
+    # assertion further down indexed the record with `None` and raised `KeyError`. It passed in
+    # isolation and failed in the suite — the block that reads correctly on its own and breaks
+    # what surrounds it.
+    for unhashed in unhashable["outputs"]:
+        assert unhashed["digest"] is None, f"the record hashed nothing: {unhashed}"
+        assert unhashed["digest_key"] is None, "and there is no key it came from"
+    shown = runprov.show.for_display(unhashable)
+    assert [e["digest"] for e in shown["outputs"]] == ["-", "-"], shown["outputs"]
+    assert "  -  /p/pipe.out  [UNHASHABLE]" in runprov.show.render_run(unhashable), (
+        "the dash is what a person reads, and it stays in the renderings"
+    )
+
+    # AND A VIEW WITH NO `run_uid` AT ALL — a v1 record predates the field — must not be
+    # truncated into one. `for_display` leaves it alone rather than producing `""[:12]`.
+    ancient = runprov.show.run_view({"script": "old", "status": "ok"})
+    assert ancient["run_uid"] == ""
+    assert runprov.show.for_display(ancient)["run_uid"] == ""
+
+    # R-9 PROPER: `log` and `show` answer the same question about one record the same way.
+    capsys.readouterr()
+    runprov.__main__.main(["log", "--log", str(log), "--format", "json"])
+    records = json.loads(capsys.readouterr().out)["records"]
+    stored = next(r for r in records if r.get("status") == "ok")
+    assert run["run_uid"] == stored["run_uid"], "two commands, one record, one answer"
+    assert entry["digest"] == stored["inputs"][0][entry["digest_key"]], (
+        "the digest and the key agree with the record the other command prints"
+    )
+
+    # AND THE PAGE STILL ABBREVIATES, which is the half that must not move.
+    capsys.readouterr()
+    runprov.__main__.main(["show", "demo", "--log", str(log)])
+    page = capsys.readouterr().out
+    assert run["run_uid"][:12] in page and run["run_uid"] not in page, (
+        "twelve characters on the page, thirty-two in the payload"
+    )
+    assert entry["digest"][:16] in page and entry["digest"] not in page
+
+
+def test_show_format_yaml_still_renders_exactly_what_it_rendered_at_0_6_0(tmp_path, capsys):
+    """[J-08]. THE CONTROL FOR A DRIFT THAT ALMOST SHIPPED, and nothing would have caught it.
+
+    `--format yaml` renders `run_view`, and it **shipped in 0.6.0**. Moving the truncations out of
+    that view for the payload's sake silently rewrote this format — a 12-character uid to 32,
+    `"none"` to `null`, a 16-character digest to 64, and a key added. Every one of `show`'s tests
+    passed. It was caught only by diffing against the tag by hand.
+
+    ADR-0017 R-3's amendment is what settles it: *"`show --format yaml` … is a rendering of a
+    page, not an answer."* A rendering abbreviates; an answer does not. So this asserts the YAML
+    carries DISPLAY values — which is the assertion that fails if anyone routes it at the raw view
+    again.
+
+    IT PINS THE VALUES, NOT THE BYTES. A byte comparison against a stored fixture would go stale
+    the first time an unrelated field was added, and then be deleted for being noisy. The three
+    values that moved are the three asserted.
+    """
+    _, log = _reported_run(tmp_path)
+    capsys.readouterr()
+    assert runprov.__main__.main(["show", "demo", "--log", str(log), "--format", "yaml"]) == 0
+    rendered = capsys.readouterr().out
+
+    capsys.readouterr()
+    runprov.__main__.main(["show", "demo", "--log", str(log), "--format", "json"])
+    run = json.loads(capsys.readouterr().out)["runs"][0]
+
+    assert f'"run_uid": "{run["run_uid"][:12]}"' in rendered, (
+        f"the yaml shows twelve characters, as 0.6.0 did: {rendered[:400]}"
+    )
+    assert run["run_uid"] not in rendered, "and not the whole uid, which is the payload's job"
+    assert f'"digest": "{run["inputs"][0]["digest"][:16]}"' in rendered
+    assert run["inputs"][0]["digest"] not in rendered
+    assert '"digest_key"' not in rendered, "a key 0.6.0 never emitted must not appear in the yaml"
+    assert '"commit": "none"' in rendered or '"commit": "' in rendered, (
+        "the yaml keeps the page's placeholder; `null` is the payload's answer"
+    )
+
+
+def test_show_says_nothing_about_staleness_unless_it_was_asked(tmp_path, capsys):
+    """[J-09] [ADR-0017 R-8]. One meaning, one spelling — and this reverses what I wrote.
+
+    `state` was `null` on the project page when nobody asked, and the key was ABSENT on a target
+    page, which also had not asked. **Two readings of R-8 for one key, ten lines apart in one
+    module, each cited in an assertion I wrote.** R-8 already assigns *this page did not look* to
+    an absent key, so the null was a second spelling of a meaning that had one.
+
+    `null` was not needed for a third meaning either: `--stale` over a project with no artifacts
+    yields `{}`, so *asked, and found none* has its own encoding already.
+    """
+    _, log = _reported_run(tmp_path)
+
+    def keys(*extra):
+        capsys.readouterr()
+        runprov.__main__.main(["show", *extra, "--log", str(log), "--format", "json"])
+        return json.loads(capsys.readouterr().out)
+
+    assert "state" not in keys(), "nobody asked, so this page did not look"
+    assert "state" not in keys("demo"), "a target page never computes staleness either"
+    asked = keys("--stale")
+    assert "state" in asked and isinstance(asked["state"], dict), (
+        f"asked, so the answer is present — even when it is empty: {asked.get('state')}"
+    )
 
 
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():
@@ -20289,10 +20445,14 @@ def test_a_run_page_carries_what_a_person_asks_about_a_run(tmp_path, monkeypatch
     for expected in ("started", "run_id", "parameters", "inputs (1)", "outputs", "notes"):
         assert expected in text, expected
     assert view["parameters"] == {"mode": "a"}
-    assert (
-        view["inputs"][0]["digest"]
-        and len(view["inputs"][0]["digest"]) == runprov.hashing.PIN_DIGEST_CHARS
-    )
+    # J-08 MOVED THE TRUNCATION TO THE RENDERER, and this assertion moved with it. The VIEW
+    # carries the digest as recorded — `log --format json` carries all 64 for the same record,
+    # and this held 16 (R-9). The PAGE still shows `PIN_DIGEST_CHARS`, which is what this test is
+    # about, so both halves are asserted rather than the view's length alone.
+    recorded = view["inputs"][0]["digest"]
+    assert recorded and len(recorded) == 64, f"as recorded, not as displayed: {recorded}"
+    assert recorded[: runprov.hashing.PIN_DIGEST_CHARS] in text, "and the page shows the prefix"
+    assert recorded not in text, "the whole digest belongs to the payload, not the page"
 
 
 def test_a_failed_run_page_leads_with_the_failure(tmp_path, monkeypatch):
@@ -20638,7 +20798,11 @@ def test_the_run_page_shows_a_usable_run_uid_handle():
     view = runprov.show.run_view({"script": "train", "status": "ok", "run_uid": uid})
     text = runprov.show.render_run(view)
 
-    assert view["run_uid"] == uid[:12], f"the view carries 12 characters, not {view['run_uid']!r}"
+    # J-08 MOVED THE TRUNCATION TO THE RENDERER, and this assertion moved with it. The VIEW
+    # carries the uid as recorded — `log --format json` carries all 32 for the same record, so a
+    # view holding 12 made two commands answer one question two ways (R-9). The PAGE still shows
+    # twelve, which is what this test is about: its docstring argues the WIDTH, on the page.
+    assert view["run_uid"] == uid, f"the view carries the uid as recorded, not {view['run_uid']!r}"
     assert "abcdef123456" in text, "the handle must be ON the page, not merely in the view"
     assert "abcdef1234567" not in text, "13 characters would be a different, wider handle"
 

@@ -2079,7 +2079,12 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
             return 1
         views = [run_view(r) for r in matched]
         if args.format == "yaml":
-            sys.stdout.write(_yaml_doc(views))
+            # J-08. RENDERED, NOT ANSWERED. R-3's amendment: *"`show --format yaml` … is a
+            # rendering of a page, not an answer."* Moving the truncations out of `run_view` for
+            # the payload's sake would otherwise have rewritten this format, which shipped in
+            # 0.6.0, without an entry — I-24's defect, arriving sideways through a fix for
+            # something else.
+            sys.stdout.write(_yaml_doc([show_mod.for_display(v) for v in views]))
         elif args.format == "json":
             # [ADR-0017 R-4]. The payload alone on stdout; the tally below is on stderr, where
             # it already was, and now the payload carries `unreadable` too so a consumer meets

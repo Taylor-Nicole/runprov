@@ -109,14 +109,91 @@ def _short(entry: dict[str, typing.Any]) -> str:
     return _recorded(entry) or "-"
 
 
+def _recorded_whole(entry: dict[str, typing.Any]) -> tuple[str | None, str | None]:
+    """`(the digest AS RECORDED, the key it came from)`, untruncated. J-08.
+
+    `_recorded_pair` cuts to `PIN_DIGEST_CHARS` because that is what a person compares by eye
+    and what the staleness check compares against — both sides truncated, so that comparison is
+    sound and is left alone. What it is NOT is a value for a payload: 48 of 64 characters are
+    dropped, and `log --format json` carries all of them for the same record, so two commands in
+    one package answered the same question two ways.
+
+    THE KEY TRAVELS TOO, and that is the half a truncation hides worst. `_recorded_pair` computes
+    which of `content_sha256`, `sha256` or `sha256_tree` the record used — I-27 is the row where
+    getting that wrong turned an untouched file STALE — and `run_view` discarded it, so a
+    consumer could not tell a `content_sha256` prefix from a `sha256` one. R-9: a question
+    answerable against the record must be answerable against the output.
+
+    `(None, None)` where the run derived no digest. The DASH IS A DISPLAY VALUE and stays in the
+    renderer: `_recorded`'s own docstring records a defect from comparing against it, and a
+    payload carrying `"-"` ships that hazard to every consumer at once.
+    """
+    for key in _DIGEST_KEYS:
+        value = entry.get(key)
+        if value:
+            return str(value), key
+    return None, None
+
+
 def _name(entry: dict[str, typing.Any]) -> str:
     return str(entry.get("path", "?"))
+
+
+def _io_view(entry: dict[str, typing.Any]) -> dict[str, typing.Any]:
+    """One input or output, as the record has it. J-08. `path` first — see `run_view`."""
+    digest, key = _recorded_whole(entry)
+    return {"path": _name(entry), "digest": digest, "digest_key": key}
+
+
+def for_display(view: dict[str, typing.Any]) -> dict[str, typing.Any]:
+    """A run view with the page's abbreviations applied. J-08, and it protects RELEASED output.
+
+    `--format yaml` RENDERS; `--format json` ANSWERS, and ADR-0017 R-3's amendment says so in
+    those words: *"`show --format yaml` … is a rendering of a page, not an answer."* A rendering
+    may abbreviate — `report`'s page shows twelve characters of a tool commit and `impact`'s
+    sixteen of a digest, both with the payload carrying all of it. An answer may not.
+
+    THIS FUNCTION EXISTS BECAUSE THE FIX FOR THE PAYLOAD CHANGED THE YAML. `run_view` used to
+    hold display values, so moving the truncations and the `"-"`/`"none"` placeholders out of it
+    silently rewrote `show --format yaml` — **output that shipped in 0.6.0** — from a 12-character
+    uid to 32, from `"none"` to `null`, from a 16-character digest to 64, and added a key.
+    Measured against the tag before it was noticed by anything else. R-11 versions the JSON
+    shape; the YAML had no such promise and did not need one broken for it.
+
+    So the abbreviations live here and in `render_run`, and the view holds facts. The yaml path
+    renders through this and is byte-identical to 0.6.0's.
+    """
+    shown = dict(view)
+    if shown.get("run_uid"):
+        shown["run_uid"] = str(shown["run_uid"])[:12]
+    shown["code"] = dict(shown["code"]) | {"commit": shown["code"]["commit"] or "none"}
+    for label in ("inputs", "outputs"):
+        shown[label] = [
+            {
+                key: value
+                for key, value in (
+                    entry
+                    | {
+                        "digest": str(entry["digest"])[:PIN_DIGEST_CHARS]
+                        if entry["digest"]
+                        else "-"
+                    }
+                ).items()
+                if key != "digest_key"
+            }
+            for entry in shown.get(label) or []
+        ]
+    return shown
 
 
 def run_view(record: dict[str, typing.Any]) -> dict[str, typing.Any]:
     """One run, flattened to what a person asks about it."""
     code = {
-        "commit": record.get("git_commit") or "none",
+        # J-07. `or "none"` LIVED HERE AND SHIPPED A DISPLAY PLACEHOLDER TO CONSUMERS. The
+        # record spells *looked and found none* as `null`; the string `"none"` is truthy, so a
+        # consumer testing `if view["code"]["commit"]` got a commit that does not exist. The
+        # renderer prints "none"; the view carries what the record says. R-8.
+        "commit": record.get("git_commit"),
         "dirty": bool(record.get("git_code_dirty")),
         # `is False`, never falsy: a run that PREDATES the field does not know the answer,
         # and rendering "clean" for it would be the reassuring lie the flag exists to stop.
@@ -128,17 +205,25 @@ def run_view(record: dict[str, typing.Any]) -> dict[str, typing.Any]:
         "started": record.get("started_utc", "?"),
         "finished": record.get("finished_utc", "?"),
         "run_id": record.get("run_id", "?"),
-        "run_uid": str(record.get("run_uid", ""))[:12],
+        # J-08. AS RECORDED, NOT AS DISPLAYED. `[:12]` dropped 20 of 32 characters while
+        # `log --format json` carried all of them for the same record. `render_run` abbreviates.
+        "run_uid": record.get("run_uid") or "",
         "generation": record.get("generation", "?"),
         "script_file": record.get("script_file"),
         "code": code,
         "command": record.get("command"),
         "cwd": record.get("cwd"),
         "parameters": record.get("parameters") or {},
-        "inputs": [{"path": _name(i), "digest": _short(i)} for i in record.get("inputs") or []],
+        # J-08. THE DIGEST WHOLE, AND THE KEY IT CAME FROM. `_short` returned a 16-character
+        # prefix and `"-"` for none, both display values; the key was computed and thrown away.
+        # KEY ORDER IS `path` FIRST, as 0.6.0 emitted it. `--format yaml` renders this view and
+        # shipped in 0.6.0, so the order is visible output: building the dict digest-first made
+        # the yaml differ from the tag by two reordered lines per entry, and nothing but a
+        # byte-level comparison against the tag would have shown it. `digest_key` is appended,
+        # and `for_display` drops it for the yaml.
+        "inputs": [_io_view(i) for i in record.get("inputs") or []],
         "outputs": [
-            {"path": _name(o), "digest": _short(o), "kind": o.get("kind", "file")}
-            for o in record.get("outputs") or []
+            _io_view(o) | {"kind": o.get("kind", "file")} for o in record.get("outputs") or []
         ],
         "notes": record.get("notes") or {},
         "seeds": record.get("seeds") or [],
@@ -895,7 +980,18 @@ def payload_project(
         # two shapes this command emits it is holding. See `payload_runs`.
         "target": None,
         "project": view,
-        "state": states,
+        # J-09. ABSENT WHEN NOBODY ASKED, not null — and this reverses what I wrote here a day
+        # ago. The docstring said *"`state` IS null WHEN NOBODY ASKED, not absent"*, arguing that
+        # *this run did not ask* is a fact a consumer can act on. It is, but **R-8 already
+        # assigns that meaning to an ABSENT KEY** (README: "an absent key is *this page did not
+        # look*"), and `payload_runs` was omitting it for exactly that reason — so one module
+        # held two readings of R-8 for one key, ten lines apart, and two assertions I wrote cited
+        # R-8 for each.
+        #
+        # `null` is not needed for a third meaning: `--stale` over a project with no artifacts
+        # already yields `{}`, so *asked, found none* has its own spelling. Nothing was left for
+        # `null` to say.
+        **({"state": states} if states is not None else {}),
         "in_flight": in_flight,
         "unreadable": unreadable,
         "cannot_check": None,
@@ -944,7 +1040,12 @@ def payload_no_history(path: pathlib.Path, reason: str) -> dict[str, typing.Any]
         "path": path.as_posix(),
         "target": None,
         "project": {"runs": 0, "scripts": {}, "artifacts": {}},
-        "state": None,
+        # `state` IS ABSENT HERE TOO, and the guard for J-21 is what said so. Making it absent
+        # in `payload_project` (J-09) left this shape carrying a key the other had dropped —
+        # **the exact defect just fixed in `lineage`, recreated in `show` by the fix for
+        # something else**, and caught within the hour by
+        # `test_every_json_commands_two_shapes_carry_the_same_keys`. Nobody asked for staleness
+        # here, and there is no history to compute it from either.
         "in_flight": [],
         "unreadable": 0,
         "cannot_check": reason,
@@ -959,7 +1060,9 @@ def render_run(view: dict[str, typing.Any]) -> str:
     out.append(_kv("finished", view["finished"]))
     out.append(_kv("run_id", f"{view['run_id']}   generation {view['generation']}"))
     if view["run_uid"]:
-        out.append(_kv("run_uid", view["run_uid"]))
+        # J-08. ABBREVIATED HERE, not in the view. Twelve characters is what a person scans by;
+        # the payload carries all 32, as `log`'s does for the same record.
+        out.append(_kv("run_uid", str(view["run_uid"])[:12]))
 
     code = view["code"]
     state = (
@@ -967,7 +1070,9 @@ def render_run(view: dict[str, typing.Any]) -> str:
         if code["dirty"]
         else ("UNKNOWN — git status did not run" if code["unknown"] else "clean")
     )
-    out.append(_kv("code", f"{code['commit']}  ({state})"))
+    # J-07. "none" IS PRINTED HERE and is not in the view. The record says `null`; a payload
+    # saying `"none"` hands every consumer a truthy commit that does not exist.
+    out.append(_kv("code", f"{code['commit'] or 'none'}  ({state})"))
     if view["tool"]:
         tool = view["tool"]
         # THE QUALIFIER IS THE POINT, not the version. A dirty checkout and a PyPI install
@@ -1001,7 +1106,12 @@ def render_run(view: dict[str, typing.Any]) -> str:
             out += ["", _rule(f"{label} ({len(view[label])})"), ""]
             for e in view[label]:
                 kind = "" if e.get("kind", "file") == "file" else f"  [{e['kind']}]"
-                out.append(f"  {e['digest']}  {e['path']}{kind}")
+                # J-08 and J-07 together. THE PREFIX AND THE DASH ARE BOTH DISPLAY VALUES. The
+                # view carries the digest whole, or `None` where the run derived none — and
+                # `_recorded`'s docstring records a real defect from comparing against the dash,
+                # which is exactly what shipping it to a consumer invites.
+                shown = str(e["digest"])[:PIN_DIGEST_CHARS] if e["digest"] else "-"
+                out.append(f"  {shown}  {e['path']}{kind}")
 
     if view["notes"]:
         out += ["", _rule("notes"), ""]

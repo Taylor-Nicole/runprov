@@ -222,6 +222,39 @@ which a `GAP` edge can never print because rule 5 fires only once a version has 
 docstring no longer claims its sentences come out in ADR-0016 R-25's order; they come out
 weakest-claim-first, and it now says so.
 
+### Fixed — `show --format json` shipped the page's display values, and said `state` two ways
+
+Audit J, J-07, J-08 and J-09. Three defects in one command's payload, all of them R-8 or R-9.
+
+**Display values had leaked into the payload.** `run_view` held a 12-character `run_uid` where
+`log --format json` carries all 32 for the same record; a 16-character digest where the record has
+64, **with the key it came from computed and then discarded** — so a consumer could not tell a
+`content_sha256` prefix from a `sha256` or `sha256_tree` one, which is the distinction I-27 exists
+for; and the strings `"-"` and `"none"` where the record says `null`, both truthy.
+`_recorded`'s own docstring records a filed defect caused by comparing against that dash, and the
+payload was shipping it to every consumer at once.
+
+The abbreviations now live in the renderers and the view holds facts, which is R-1's shape: one
+builder, two renderings, the renderings free to say less. **The staleness comparison is untouched**
+— `_recorded_pair` still truncates, because that is what the comparison and the eye both use, and
+both of its sides truncate.
+
+**`state` meant one thing in two spellings.** It was `null` on the project page when nobody asked
+and the key was ABSENT on a target page, which also had not asked — two readings of R-8 for one
+key, ten lines apart in one module, each cited in an assertion. R-8 already assigns *this page did
+not look* to an absent key, so the null said nothing new; and `--stale` over a project with no
+artifacts yields `{}`, so *asked, and found none* had its own encoding already. `state` is absent
+unless asked.
+
+**AND A DRIFT IN RELEASED OUTPUT WAS CAUGHT BEFORE IT SHIPPED, by diffing against the tag.**
+`--format yaml` renders the same view and shipped in 0.6.0. Moving the truncations out of that view
+rewrote it — uid 12 → 32, `"none"` → `null`, digest 16 → 64, a key added — and **every one of
+`show`'s tests passed.** A second pass then showed it still differed by KEY ORDER, two lines per
+entry, because the entry dict was built digest-first where 0.6.0 put `path` first. R-3's amendment
+is what settles the design — *"`show --format yaml` … is a rendering of a page, not an answer"* — so
+the yaml renders through a display view and is byte-identical to 0.6.0's. A test now pins that,
+because nothing did.
+
 ### Changed — `runprov diff` exits 1 for a named address that matched nothing, as L-81 says
 
 Audit J, J-25. **`diff` contradicted a contract this package had already ratified.** L-81, decided
