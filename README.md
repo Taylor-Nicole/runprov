@@ -1401,6 +1401,26 @@ Text by default and YAML with `--format yaml`, deliberately not HTML: this gets 
 terminal beside the work, many times a day. The YAML quotes **every scalar**, for the reason
 the section above gives — the predecessor's log dies on a `Note:` somebody typed.
 
+`runprov show --format json` is an **answer**, not the YAML view with a schema added. YAML is a
+rendering of a page; JSON carries the page's content *and what the page could not establish* —
+and on this command two of those facts previously reached **stderr only**: `unreadable`, the
+lines the reader could not use, and `in_flight`, the runs that started with no ending on record.
+A consumer obeying the rule that stdout is the payload and nothing else could reach neither, so
+it would read a page built from a torn history as a complete one. `in_flight` is a list rather
+than a count, because the useful question is *which* runs may still be writing.
+
+It emits **two shapes, and a consumer branches on `target`**. With no target, `target` is `null`
+and the object carries `project`, `state` and `in_flight`. With a target it carries `matched` and
+`runs`, and those three keys are **absent** — not `null` — because a target page never builds the
+artifact index, never computes staleness (`--stale` and `--rehash` are refused with a note), and
+never scans for markers: an absent key is *this page did not look*, where `null` would claim it
+looked and found nothing. `state` is `null` on the project page when nobody asked for staleness,
+which is a fact about the invocation rather than a clean bill. The exit code is the same in every
+format — 0, 1 when a target matched nothing, 2 when there is no history to read — and both of
+those non-zero states carry the payload, because each is an answer. The payload is versioned by
+`"schema": "runprov.show.v1"`, and its shape follows the record-format promise above: a field's
+meaning does not change without a new schema value.
+
 ## Which runprov wrote the record: the `tool` block
 
 Every record carries this, with nothing configured:

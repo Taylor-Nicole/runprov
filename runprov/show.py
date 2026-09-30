@@ -863,6 +863,94 @@ def _kv(key: str, value: object, pad: int = 12) -> str:
     return f"  {key:<{pad}} {value}"
 
 
+#: [ADR-0017 R-5]. T-33's seventh and last row.
+SCHEMA = "runprov.show.v1"
+
+
+def payload_project(
+    path: pathlib.Path,
+    view: dict[str, typing.Any],
+    states: dict[str, str] | None,
+    in_flight: list[dict[str, typing.Any]],
+    unreadable: int,
+) -> dict[str, typing.Any]:
+    """The project page as an ANSWER. ADR-0017 R-3 (amended), R-5, R-7, R-8, R-12, R-14.
+
+    NOT THE YAML VIEW WITH A SCHEMA BOLTED ON, and R-3's amendment is what decides that rather
+    than taste: *"`show --format yaml` … is a rendering of a page, not an answer."* The view is
+    what the page renders; an answer also carries what the page could not establish, and on
+    this command those facts have until now reached STDERR ONLY — the unreadable-line count and
+    the runs with no ending on record. A consumer parsing stdout never met either, so it could
+    read a page assembled from a damaged history as a complete one.
+
+    `state` IS null WHEN NOBODY ASKED, not absent: `--stale` and `--rehash` are what compute
+    it, and *this run did not ask* is a fact about the invocation that a consumer can act on.
+    `runs` under `project` is the count the view holds; `in_flight` is a LIST because a caller
+    deciding whether to trust this page needs to know WHICH runs are unfinished, not how many.
+    """
+    return {
+        "schema": SCHEMA,
+        "path": path.as_posix(),
+        # null HERE MEANS THE PROJECT PAGE, and a consumer branches on it to know which of the
+        # two shapes this command emits it is holding. See `payload_runs`.
+        "target": None,
+        "project": view,
+        "state": states,
+        "in_flight": in_flight,
+        "unreadable": unreadable,
+        "cannot_check": None,
+    }
+
+
+def payload_runs(
+    path: pathlib.Path,
+    target: str,
+    views: list[dict[str, typing.Any]],
+    unreadable: int,
+) -> dict[str, typing.Any]:
+    """One page per matching run, as an answer. [ADR-0017 R-8] on what is ABSENT here.
+
+    `project`, `state` and `in_flight` ARE NOT null HERE, THEY ARE ABSENT, and that is R-8
+    applied exactly as the README states it: an absent key is *this page did not look*. A
+    target renders runs; it never builds the artifact index, never computes staleness — the
+    flags are refused with a note saying so — and never scans for markers. Serialising those as
+    `null` would claim this page looked at three things and found nothing in them.
+
+    `matched` is the count, beside the runs themselves, for the reason every count in this
+    payload family exists: an empty list after a target that matched nothing and an empty list
+    over an empty history are different answers, and this command already exits 1 for the first.
+    """
+    return {
+        "schema": SCHEMA,
+        "path": path.as_posix(),
+        "target": target,
+        "matched": len(views),
+        "runs": views,
+        "unreadable": unreadable,
+        "cannot_check": None,
+    }
+
+
+def payload_no_history(path: pathlib.Path, reason: str) -> dict[str, typing.Any]:
+    """[ADR-0017 R-15]. The history named is not there, which is an answer and not a mistake.
+
+    THE PROJECT SHAPE WITH NOTHING IN IT, rather than a third shape: a consumer that branches
+    on `target` keeps working, and `cannot_check` is the only field that distinguishes this
+    from a project with no runs recorded yet. Those two are genuinely different — one has no
+    file, the other has an empty one — and this is the field that says which.
+    """
+    return {
+        "schema": SCHEMA,
+        "path": path.as_posix(),
+        "target": None,
+        "project": {"runs": 0, "scripts": {}, "artifacts": {}},
+        "state": None,
+        "in_flight": [],
+        "unreadable": 0,
+        "cannot_check": reason,
+    }
+
+
 def render_run(view: dict[str, typing.Any]) -> str:
     """One run, as a page. The order is the order the questions get asked in."""
     mark = "ok" if view["status"] == "ok" else view["status"].upper()

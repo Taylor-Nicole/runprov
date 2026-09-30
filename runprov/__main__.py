@@ -331,6 +331,18 @@ def _log_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[str, t
     )
 
 
+def _show_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[str, typing.Any]:
+    """`show`'s answer for a history that is not there. [ADR-0017 R-15]. T-33's last row.
+
+    THIS ENTRY IS WHAT THE `KeyError` IN THE GUARD WAS WAITING FOR. When `log` was built, the
+    table held two commands and `show` had no `json` to be asked for, so a lookup miss was
+    unreachable and deliberately left to raise rather than fall back to a sibling's shape. It is
+    reachable the moment this flag exists, and this is the entry that makes it right instead.
+    """
+    del args
+    return show_mod.payload_no_history(path, f"no run history at {path}")
+
+
 def _lineage_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[str, typing.Any]:
     """`lineage`'s, for the same guard. `args` is unused and is in the signature because the
     table below calls every builder the same way — a lookup whose entries differ in arity is a
@@ -349,12 +361,17 @@ def _lineage_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[st
     }
 
 
-#: [ADR-0017 R-15]. Which commands sharing the missing-history guard can answer in JSON. `show`
-#: joins this the day it gains `--format json`, and until then its absence is what makes the
-#: R-15 ratchet name it rather than let it pass quietly.
+#: [ADR-0017 R-15]. Every command sharing the missing-history guard, and all three can answer
+#: in JSON as of T-33's last row. `show` was absent while it had no payload, and its absence was
+#: what made the R-15 ratchet name it; a lookup MISS still raises rather than substituting a
+#: sibling's shape, which is what a fourth command arriving here would deserve.
 _NO_HISTORY_ANSWER: dict[
     str, typing.Callable[[pathlib.Path, argparse.Namespace], dict[str, typing.Any]]
-] = {"log": _log_no_history, "lineage": _lineage_no_history}
+] = {
+    "log": _log_no_history,
+    "lineage": _lineage_no_history,
+    "show": _show_no_history,
+}
 
 
 def _log_selectors(args: argparse.Namespace) -> dict[str, typing.Any]:
@@ -1916,6 +1933,19 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
         # so a bucket cannot grow past it on the way.
         matched = select(_counted(path, bad), args.target, limit=args.limit or None)
         if not matched:
+            # [ADR-0017 R-15]. A TARGET THAT MATCHED NOTHING IS AN ANSWER AND EXITS 1, so it
+            # serialises. Found by measuring rather than by reasoning: the two success paths and
+            # the missing-history path were wired and this one was not, so `show nosuch
+            # --format json` exited 1 with EMPTY stdout — which under R-15 is the signal for
+            # *the invocation was wrong*, and the invocation was fine. Every sibling emits a
+            # payload at exit 1: `report` for STALE, `check` for a finding, `log` with
+            # `matched: false`.
+            #
+            # THE SAME SHAPE AS A MATCH, with `matched: 0` and an empty `runs` list, because a
+            # consumer should not need a second shape to read a negative answer — and `matched`
+            # beside `runs` is what makes the empty list legible.
+            if args.format == "json":
+                print(json.dumps(show_mod.payload_runs(path, args.target, [], bad[0]), indent=2))
             print(
                 f"nothing in {path} matches {args.target!r}.\n"
                 f"  A target is a script name, a run_uid prefix, a run_id or an artifact "
@@ -1927,6 +1957,11 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
         views = [run_view(r) for r in matched]
         if args.format == "yaml":
             sys.stdout.write(_yaml_doc(views))
+        elif args.format == "json":
+            # [ADR-0017 R-4]. The payload alone on stdout; the tally below is on stderr, where
+            # it already was, and now the payload carries `unreadable` too so a consumer meets
+            # that fact without reading a banner it is told not to parse.
+            print(json.dumps(show_mod.payload_runs(path, args.target, views, bad[0]), indent=2))
         else:
             sys.stdout.write("\n".join(render_run(v) for v in views))
         print(
@@ -1953,6 +1988,17 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
     )
     if args.format == "yaml":
         sys.stdout.write(_yaml_doc({**view, "state": states} if states else view))
+    elif args.format == "json":
+        # THE MARKER SCAN IS READ HERE RATHER THAN PRINTED. `scan.report()` below writes the
+        # unfinished runs to stderr and nothing else ever saw them; `pending()` is idempotent
+        # by construction — its own docstring is about exactly that — so reading it here and
+        # letting `report()` print afterwards states one fact twice rather than computing it
+        # twice. H1-6 is the row where a second computation of one fact disagreed with the first.
+        print(
+            json.dumps(
+                show_mod.payload_project(path, view, states, scan.pending(), bad[0]), indent=2
+            )
+        )
     else:
         # WRITELINES, not write: `render_project_lines` yields the page one line at a
         # time precisely so the whole of it is never a single value. Joining here would
@@ -2267,7 +2313,7 @@ def main(argv: list[str] | None = None) -> int:
         help="a script name, run_uid prefix, run_id or artifact path; omit for the project",
     )
     sh.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
-    sh.add_argument("--format", choices=("text", "yaml"), default="text")
+    sh.add_argument("--format", choices=("text", "yaml", "json"), default="text")
     sh.add_argument("--limit", type=int, default=0, help="show only the last N matching runs")
     sh.add_argument(
         "--stale",

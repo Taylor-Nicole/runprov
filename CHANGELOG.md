@@ -222,6 +222,38 @@ which a `GAP` edge can never print because rule 5 fires only once a version has 
 docstring no longer claims its sentences come out in ADR-0016 R-25's order; they come out
 weakest-claim-first, and it now says so.
 
+### Added — `runprov show --format json`, and T-33 is complete
+
+ADR-0017, the seventh and last row of T-33. **All ten commands that answer a question now offer
+`--format json`**, which is R-3 satisfied rather than scheduled; the test that tracked the
+remaining work has counted down to zero and now asserts the rule outright.
+
+**The shape was decided by R-3's amendment, not chosen.** *"`json` under R-5 is an ANSWER … The
+same holds for `show --format yaml`, which is a rendering of a page, not an answer."* So this is
+not the YAML view with a schema bolted on, and the difference is worth two facts: `unreadable`
+and `in_flight` previously reached **stderr only**. A consumer obeying R-4 — stdout is the
+payload and nothing else — could reach neither, and would read a page assembled from a torn
+history as complete, or one describing a run that is still writing as finished. `in_flight` is a
+list rather than a count, because the question it answers is *which*.
+
+**Two shapes, and the absences are R-8.** With no target, `target` is `null` and the object
+carries `project`, `state` and `in_flight`. With a target it carries `matched` and `runs`, and
+those three keys are absent rather than null: a target page never builds the artifact index,
+never computes staleness — the flags are refused with a note — and never scans for markers. An
+absent key is *this page did not look*; `null` would claim it looked at three things and found
+nothing in them.
+
+**The payload embeds the view the renderer is given rather than re-deriving it**, which is a
+stronger guarantee than the perturbation guards its siblings carry: those assert that two
+renderings agree, and this leaves no second expression that could drift.
+
+**Both non-zero exits carry the payload.** A target that matched nothing exits 1, and a missing
+history exits 2; each is an answer, and R-15 requires both to serialise. The first was found by
+measuring rather than reasoning — it exited 1 with empty stdout, which under R-15 is the signal
+for *the invocation was wrong*, and the invocation was fine. This row also supplies the entry
+that removes a deliberate `KeyError` from the shared missing-history guard, left there when
+`log` was built because it was unreachable until `show` gained this flag.
+
 ### Added — `runprov resources --format json`, the measurement rather than a request
 
 ADR-0017, the sixth row of T-33. R-12 named this command's builder and was right twice over:

@@ -17588,25 +17588,24 @@ def test_every_command_that_answers_in_json_has_its_schema_asserted_somewhere():
 def test_every_subcommand_is_accounted_for_by_r3_and_the_outstanding_list_only_shrinks():
     """[ADR-0017 R-3] I-22. *"the list is derived from the parsers by a test"* — implemented.
 
-    R-3 asks for `--format json` on every command that ANSWERS a question, and excludes those
-    that ACT. Its amendment stopped restating the list of commands and said the list would be
-    derived here instead, after the version written into the ADR *"was already wrong when it
-    was written"* — a `lineage` exclusion justified by a claim about `export`, made without
-    checking `lineage`, which had emitted `--format json` all along.
+        R-3 asks for `--format json` on every command that ANSWERS a question, and excludes those
+        that ACT. Its amendment stopped restating the list of commands and said the list would be
+        derived here instead, after the version written into the ADR *"was already wrong when it
+        was written"* — a `lineage` exclusion justified by a claim about `export`, made without
+        checking `lineage`, which had emitted `--format json` all along.
 
-    THIS TEST DOES NOT ASSERT THAT R-3 IS SATISFIED, AND MUST NOT. Four commands R-3 says to add
-    it to still lack it; they are the four remaining rows of T-33, in the order Taylor set on
-    2026-09-25 (audit T-33's build first, then the remaining rows). A test asserting the rule
-    outright would be red for work that is scheduled rather than missed — a gate whose green
-    state requires an act nobody has agreed to yet, which is the shape this project keeps
-    nearly building.
+    THE RATCHET REACHED ZERO ON 2026-09-30 AND THIS NOW ASSERTS R-3 OUTRIGHT. It was written
+        when four commands R-3's table named still lacked the format — `check`, `log`, `resources`,
+        `show` — and asserting the rule then would have been a gate red for work that was SCHEDULED
+        rather than missed. `outstanding` was allowed only to shrink; T-33's last four rows emptied
+        it, so the weaker form has done its job and is gone. **All ten answering commands offer
+        `--format json`.**
 
-    SO IT ASSERTS THE PARTITION AND RATCHETS. Every subcommand the parser defines falls in
-    exactly one bucket, and a new subcommand belongs to none of them until someone says which —
-    so it fails, naming itself. `outstanding` can only SHRINK: the day `show` gains `--format
-    json` this test goes red and stays red until the name is struck, which is the opposite of a
-    list that quietly goes stale. The exclusions are checked to still NAME LIVE SUBCOMMANDS, so
-    a renamed command cannot leave a dead exclusion standing as though it were reasoned.
+        IT STILL ASSERTS THE PARTITION, which is the part that does not expire. Every subcommand the
+        parser defines falls in exactly one bucket, and a new one belongs to none of them until
+        someone says which — so it fails, naming itself. That is what R-3 was amended over: the list
+        in the ADR was written from memory and was wrong. The exclusions are checked to still NAME
+        LIVE SUBCOMMANDS, so a renamed command cannot leave dead reasoning standing as if argued.
     """
     subcommands = set(_cli_subcommands())
     answers_in_json = _cli_json_commands()
@@ -17616,9 +17615,15 @@ def test_every_subcommand_is_accounted_for_by_r3_and_the_outstanding_list_only_s
     # R-3's amendment, its own words: "two standard vocabularies already, and this would be a
     # third". Not an oversight, and recorded where the exclusion is made.
     excluded = {"export"}
-    # R-3 SAYS ADD AND T-33 HAS NOT REACHED THEM. These are the remaining rows, not a defect
-    # and not a disagreement with the rule. Each is in R-3's own table under "add".
-    outstanding = {"show"}
+    # EMPTY, AND THAT IS THE MILESTONE. Every command R-3's table said to add now answers in
+    # JSON. Kept as a named set rather than deleted, because the assertion below that nothing is
+    # unclassified reads from it — and because a new command that ANSWERS but has no format yet
+    # belongs here rather than in a comment.
+    outstanding: set[str] = set()
+    assert not outstanding, (
+        "[ADR-0017 R-3] is SATISFIED as of T-33's last row, 2026-09-30. Anything appearing here "
+        "again is a command that answers a question and cannot be asked for JSON"
+    )
 
     for name, bucket in (("acts", acts), ("excluded", excluded), ("outstanding", outstanding)):
         stale = bucket - subcommands
@@ -17725,6 +17730,10 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
         # read and understood and still cannot answer, which is not the same as not being there.
         "resources, no history to read": ["resources", "--log", str(no_log)],
         "resources, no run measured anything": ["resources", "--log", str(bare_log)],
+        # T-33's last row, and the entry that removed a deliberate `KeyError` from the shared
+        # missing-history guard — unreachable while `show` had no `json`, reachable the moment
+        # it did.
+        "show, no history to read": ["show", "--log", str(no_log)],
     }
     outstanding = {
         "report, artifact is not there": ["report", str(absent), "--log", str(log)],
@@ -18202,6 +18211,117 @@ def test_every_field_the_resources_payload_carries_is_stated_by_the_page_or_name
         "and every field of `Measurement` is reached by some fixture: "
         f"{sorted(set(runprov.resources.Measurement._fields) ^ {p[0] for p in structural})}"
     )
+
+
+def test_show_answers_in_json_as_an_answer_and_not_as_the_yaml_view(tmp_path, capsys):
+    """[ADR-0017 R-3 amended] [R-4] [R-5] [R-6] [R-8] [R-12] [R-15]. T-33's seventh and last row.
+
+    THE ADR DECIDED THE SHAPE, NOT TASTE. R-3's amendment: *"`json` under R-5 is an ANSWER: a
+    single object carrying `schema`, the question's result, and what could not be established …
+    The same holds for `show --format yaml`, which is a rendering of a page, not an answer."* So
+    this is not the YAML view with a schema bolted on.
+
+    WHAT THAT BUYS IS TWO FACTS THAT PREVIOUSLY REACHED STDERR ONLY: the unreadable-line count
+    and the runs with no ending on record. A consumer parsing stdout could read a page assembled
+    from a damaged history as a complete one, and could not tell that a run in it may still be
+    writing. `in_flight` is a LIST rather than a count because the question it answers is WHICH.
+
+    TWO SHAPES, AND THE ABSENCES ARE R-8 RATHER THAN CONVENIENCE. A target page has no
+    `project`, no `state` and no `in_flight` key at all: it never builds the artifact index,
+    never computes staleness — those flags are refused with a note — and never scans for
+    markers. An absent key is *this page did not look*, and `null` would claim it looked at
+    three things and found nothing in them.
+    """
+    _, log = _reported_run(tmp_path)
+
+    # THE PROJECT PAGE.
+    assert runprov.__main__.main(["show", "--log", str(log), "--format", "json"]) == 0
+    project = json.loads(capsys.readouterr().out)
+    assert project["schema"] == runprov.show.SCHEMA == "runprov.show.v1"
+    assert next(iter(project)) == "schema"
+    assert project["target"] is None, "null target is how a consumer knows which shape it holds"
+    assert project["cannot_check"] is None and project["unreadable"] == 0
+    assert project["state"] is None, (
+        "[ADR-0017 R-8] nobody asked for staleness, and *this run did not ask* is a fact about "
+        "the invocation rather than an absence of stale artifacts"
+    )
+    assert project["in_flight"] == []
+    assert set(project) == set(runprov.show.payload_project(pathlib.Path("x"), {}, None, [], 0)), (
+        "the CLI prints the builder's object and nothing else"
+    )
+
+    # R-10: THE PAYLOAD EMBEDS THE VIEW THE RENDERER IS GIVEN, it does not re-derive it. That is
+    # a stronger guarantee than the perturbation guards the other commands carry: those assert
+    # that two renderings agree, and this asserts they are built from THE SAME OBJECT, so there
+    # is no expression that could drift.
+    fresh = runprov.show.project_view(runprov.__main__._counted(log, [0]))
+    assert project["project"] == fresh, "the view, verbatim — not a second computation of it"
+
+    # A TARGET PAGE, and the three keys that are absent rather than null.
+    assert runprov.__main__.main(["show", "demo", "--log", str(log), "--format", "json"]) == 0
+    runs = json.loads(capsys.readouterr().out)
+    assert runs["target"] == "demo" and runs["matched"] == 1 and len(runs["runs"]) == 1
+    assert not {"project", "state", "in_flight"} & set(runs), (
+        "[ADR-0017 R-8] a target page did not look at any of these, and an absent key says so "
+        f"where null would claim it looked: {sorted({'project', 'state', 'in_flight'} & set(runs))}"
+    )
+    assert set(runs) == set(runprov.show.payload_runs(pathlib.Path("x"), "t", [], 0))
+    assert runs["runs"][0]["run"] == "demo", "[ADR-0017 R-9] the view's own field names"
+
+    # [ADR-0017 R-15] A TARGET THAT MATCHED NOTHING IS AN ANSWER AND EXITS 1. Measured before
+    # the fix: exit 1 with EMPTY stdout, which under R-15 is the signal for *the invocation was
+    # wrong* — and it was not; the target simply matched nothing.
+    assert runprov.__main__.main(["show", "nosuch", "--log", str(log), "--format", "json"]) == 1
+    missed = json.loads(capsys.readouterr().out)
+    assert missed["target"] == "nosuch" and missed["matched"] == 0 and missed["runs"] == []
+
+    # [ADR-0017 R-15] AND THE MISSING HISTORY, whose entry in the shared lookup is what this row
+    # finally supplies — `log`'s commit left a `KeyError` there on purpose, reachable only once
+    # `show` gained this flag.
+    gone = tmp_path / "missing.jsonl"
+    assert runprov.__main__.main(["show", "--log", str(gone), "--format", "json"]) == 2
+    nothing = json.loads(capsys.readouterr().out)
+    assert nothing["cannot_check"] == f"no run history at {gone}"
+    assert nothing["target"] is None and nothing["project"]["runs"] == 0, (
+        "the PROJECT shape with nothing in it, so a consumer branching on `target` keeps working"
+    )
+
+    # [ADR-0017 R-6] the format is a rendering choice, not a different question.
+    for fmt in ("text", "yaml", "json"):
+        assert runprov.__main__.main(["show", "nosuch", "--log", str(log), "--format", fmt]) == 1
+        capsys.readouterr()
+
+
+def test_show_puts_on_stdout_the_two_facts_it_used_to_say_only_on_stderr(tmp_path, capsys):
+    """[ADR-0017 R-7] [ADR-0017 R-14] [ADR-0017 R-4]. The reason this is an answer and not a view.
+
+    `unreadable` and `in_flight` are the qualifications R-14 requires in the same object as the
+    findings, and on this command both went to STDERR and nowhere else. R-4 tells a caller not
+    to parse stdout's neighbours, so a consumer that obeyed the rules could not reach either —
+    it would read a page built from a torn history as a complete one, and a page describing a
+    run that is still writing as a finished one.
+
+    BUILT BY DAMAGING A REAL HISTORY rather than by asserting against a hand-made view: the
+    unreadable line has to be one the reader actually fails on, and `_tear_completion` is how
+    this file has always produced that shape.
+    """
+    _, log = _reported_run(tmp_path)
+    lines = log.read_text(encoding="utf-8").splitlines(True)
+    log.write_text(
+        "".join(lines) + '{"schema": "runprov.run.v2", "script": trunca\n', encoding="utf-8"
+    )
+
+    assert runprov.__main__.main(["show", "--log", str(log), "--format", "json"]) == 0
+    written = capsys.readouterr()
+    payload = json.loads(written.out)
+    assert payload["unreadable"] == 1, (
+        f"a line the reader could not use is a fact about this page: {payload['unreadable']}"
+    )
+    # [ADR-0017 R-4] AND IT IS STILL ON STDERR TOO, for the person reading in a terminal. What
+    # changed is that stdout no longer omits it, not that stderr stopped saying it.
+    assert "unreadable line(s) skipped" in written.err
+    # R-4 PROPER: stdout parsed, which it could not have done had the banner shared it.
+    assert written.out.lstrip().startswith("{")
 
 
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():
