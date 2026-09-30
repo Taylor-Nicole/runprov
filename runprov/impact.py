@@ -216,9 +216,15 @@ def payload(chain: Chain | None, cannot_check: str | None = None) -> dict[str, t
         **{name: _plain(value) for name, value in chain._asdict().items()},
         "artifacts": chain.artifacts,
         "truncated": chain.truncated,
-        # [ADR-0017 R-15] PRESENT AND null WHEREVER THE WALK HAPPENED, so the key's absence is
-        # never something a consumer has to interpret. R-8, one level out from a field.
-        "cannot_check": None,
+        # [ADR-0017 R-15] PRESENT WHEREVER THE WALK HAPPENED, so the key's absence is never
+        # something a consumer has to interpret. R-8, one level out from a field.
+        #
+        # J-20. THIS BRANCH USED TO HARDCODE None AND DISCARD THE ARGUMENT. The parameter was
+        # added for the no-walk state and only honoured there, so a caller could pass a reason
+        # on this path and be silently ignored — which is how `--depth 0` printed
+        # `truncated: true` beside `cannot_check: null` while exiting 2. **A parameter accepted
+        # and dropped is worse than one not offered**: the call site reads as correct.
+        "cannot_check": cannot_check,
     }
 
 

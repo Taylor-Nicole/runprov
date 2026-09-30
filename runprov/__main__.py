@@ -1597,7 +1597,29 @@ def _impact(args: argparse.Namespace) -> int:
         # and the target that is neither a file nor a digest — already go to stderr and return
         # before this point, so a caller parses what it is handed instead of stripping a line
         # first, which is how a caller comes to strip the wrong one.
-        print(json.dumps(impact_mod.payload(chain), indent=2))
+        #
+        # J-20. A TRUNCATED WALK EXITS 2 AND MUST SAY SO IN THE PAYLOAD. It did not: the object
+        # was built here, above the fold that decides the code, so `--depth 0` printed
+        # `truncated: true` beside `cannot_check: null` and exited 2 — a payload asserting
+        # nothing went wrong, attached to an exit code saying something did. The ratchet's own
+        # comment calls that worse than no payload, and README promised the opposite.
+        #
+        # READ OFF `chain.truncated`, THE SAME PROPERTY THE EXIT CODE READS, twelve lines below.
+        # Two expressions for one fact is H1-6, and here the fact is the verdict itself.
+        print(
+            json.dumps(
+                impact_mod.payload(
+                    chain,
+                    cannot_check=(
+                        f"the walk stopped at depth {args.depth} and "
+                        f"{chain.beyond_depth} run(s) beyond it were not followed"
+                        if chain.truncated
+                        else None
+                    ),
+                ),
+                indent=2,
+            )
+        )
     else:
         for line in impact_mod.render(chain, pathlib.Path(project.root)):
             print(line)

@@ -17807,6 +17807,21 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
         # this test at all before — the ratchet named one of the four and missed the rest, which
         # is what a hand-written list of states does while the enumeration lives in the code.
         "impact, no history to read": ["impact", str(artifact), "--log", str(no_log)],
+        # J-20. THIS STATE WAS IN NEITHER BUCKET, which is why it hid: `impact` had two entries
+        # here and a THIRD exit-2 state nobody had enumerated. The complete exit-2 enumeration
+        # an Audit J reviewer produced is what found it — the artefact this test should have been
+        # built from rather than from a list I wrote out.
+        # THE INPUT, not the artifact: a walk is only truncated where something DERIVES from
+        # the bytes, and nothing derives from the run's own output. My first version of this
+        # entry used the artifact, exited 0, and failed the guard — which is the guard working.
+        "impact, a walk truncated by --depth": [
+            "impact",
+            str(tmp_path / "in.tsv"),
+            "--log",
+            str(log),
+            "--depth",
+            "0",
+        ],
         "diff, no history to read": ["diff", "demo", "--log", str(no_log)],
         "diff, one address naming fewer than two runs": ["diff", "demo", "--log", str(log)],
         "diff, a named address matching nothing": ["diff", "nosuch", "other", "--log", str(log)],
@@ -17867,8 +17882,25 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
     # `verify`'s `verdict: "NO PIN"`. A universal assertion would have to hand-list all three,
     # which is the stale-list pattern this repository keeps finding — so the divergence is
     # recorded in the ledger as its own question instead of papered over with a disjunction.
-    mine = {name: argv for name, argv in complies.items() if name.startswith(("impact,", "diff,"))}
-    assert len(mine) == 5, f"the five states this row built, and no fewer: {sorted(mine)}"
+    # DERIVED FROM R-16's TABLE, NOT FROM A PREFIX AND A COUNT. This was
+    # `name.startswith(("impact,", "diff,"))` with `assert len(mine) == 5` beside it — scoped to
+    # the five states one row happened to build, with the count hand-written.
+    #
+    # **It broke the moment J-20 added a sixth**, which is the stale-list pattern inside the
+    # check I scoped by hand to avoid it. Audit J found that shape seven times in two days.
+    #
+    # The scope is now every state whose COMMAND says *could not check* with a reason, read off
+    # `_R16_INABILITY` — itself scope-checked against the parser. That widens this from five
+    # states to every reason-carrying one, which is most of J-32: `chain`, `log`, `lineage`,
+    # `resources` and `show` were unchecked for content and are not now. `check` is excluded
+    # because its field is `examined_nothing` (R-9 keeps that name), and `report` and `verify`
+    # because their vocabulary is a VERDICT, not a reason — for them the inability IS the answer.
+    mine = {
+        name: argv
+        for name, argv in complies.items()
+        if "cannot_check" in _R16_INABILITY.get(argv[0], ())
+    }
+    assert mine, "no state carries a reason, so R-16's table has stopped being read here"
     for name, argv in mine.items():
         capsys.readouterr()
         runprov.__main__.main([*argv, "--format", "json"])
@@ -18803,6 +18835,59 @@ def test_lineage_says_how_many_lines_it_could_not_read(tmp_path, capsys):
     )
     # AND THE ANSWERED STATE CARRIES IT TOO, so a consumer never reads its absence as either.
     assert payload(log)["unreadable"] == 0
+
+
+def test_a_truncated_walk_says_so_in_the_payload_and_not_only_in_the_page(tmp_path, capsys):
+    """[J-20] [ADR-0017 R-15]. A payload at exit 2 must not say nothing went wrong.
+
+    `impact --depth 0` empties `steps` while `seeds` stays non-empty, and C-07 is the row that
+    made it exit 2 rather than 0 — *"a pre-overwrite guard written as `runprov impact ref.fa
+    --depth 0 || abort` goes green and the reference is overwritten"*. The payload did not follow:
+    it was built ABOVE the fold that decides the code, so it printed `truncated: true` beside
+    `cannot_check: null` and exited 2. **The R-15 ratchet's own comment calls that worse than no
+    payload** — it contradicts its own exit code — and README promised the opposite.
+
+    TWO DEFECTS, AND THE SECOND IS THE ONE WORTH RECORDING. `impact.payload` accepted a
+    `cannot_check` argument and **hardcoded `None` on the path where a chain exists**, so the
+    reason was honoured only in the no-walk state it was added for. A caller could pass one here
+    and be silently ignored; the call site read as correct. A parameter accepted and dropped is
+    worse than one not offered.
+
+    THE REASON IS READ OFF `chain.truncated`, the same property the exit code reads twelve lines
+    below the emission. Two expressions for one fact is H1-6, and here the fact is the verdict.
+    """
+    _, log = _reported_run(tmp_path)
+    target = tmp_path / "in.tsv"
+
+    def run(*extra):
+        capsys.readouterr()
+        code = runprov.__main__.main(
+            ["impact", str(target), "--log", str(log), *extra, "--format", "json"]
+        )
+        return code, json.loads(capsys.readouterr().out)
+
+    code, truncated = run("--depth", "0")
+    assert code == 2, "C-07: a truncated walk is COULD NOT CHECK, not a clean bill"
+    assert truncated["truncated"] is True and truncated["beyond_depth"] >= 1
+    assert truncated["cannot_check"], (
+        f"exit 2 with nothing in the payload's reason contradicts its own code: {truncated}"
+    )
+    assert "depth 0" in truncated["cannot_check"], truncated["cannot_check"]
+
+    # AND THE UNTRUNCATED WALK CARRIES null, so the key is never absent and never over-claims.
+    code, whole = run()
+    assert code in (0, 1) and whole["truncated"] is False
+    assert whole["cannot_check"] is None
+
+    # THE ARGUMENT IS HONOURED ON THE CHAIN PATH, asserted against the builder directly because
+    # the defect was that this path discarded it while the no-chain path did not.
+    chain = runprov.impact.Chain(
+        "a" * 64, ["u1"], [runprov.impact.Step(1, "u1", "s.py", ["/o.tsv"])], 0, 1, 0
+    )
+    assert runprov.impact.payload(chain, cannot_check="a reason")["cannot_check"] == "a reason", (
+        "`payload` hardcoded None here and dropped the argument — the call site read as correct"
+    )
+    assert runprov.impact.payload(chain)["cannot_check"] is None
 
 
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():

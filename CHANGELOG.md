@@ -222,6 +222,32 @@ which a `GAP` edge can never print because rule 5 fires only once a version has 
 docstring no longer claims its sentences come out in ADR-0016 R-25's order; they come out
 weakest-claim-first, and it now says so.
 
+### Fixed — a truncated `impact` walk exits 2 and now says so in the payload
+
+Audit J, J-20. `impact --depth 0` empties `steps` while `seeds` stays non-empty, and C-07 is the
+row that made that exit 2 rather than 0 — *"a pre-overwrite guard written as `runprov impact ref.fa
+--depth 0 || abort` goes green and the reference is overwritten"*. The payload did not follow: it
+was built ABOVE the fold that decides the exit code, so it printed `truncated: true` beside
+`cannot_check: null` and exited 2. A payload asserting nothing went wrong, attached to a code
+saying something did — which R-15's own guard calls worse than no payload at all.
+
+**Two defects, and the second is the one worth recording.** `impact.payload` accepted a
+`cannot_check` argument and **hardcoded `None` on the path where a chain exists**, so the reason was
+honoured only in the no-walk state it was added for. A caller could pass one on this path and be
+silently ignored, and the call site read as correct. A parameter accepted and dropped is worse than
+one not offered.
+
+The reason is read off `chain.truncated` — the same property the exit code reads twelve lines
+below — because two expressions for one fact is H1-6, and here the fact is the verdict.
+
+**And R-15's guard has stopped hand-listing what it checks.** This state was in neither of its
+buckets, which is why it hid: `impact` had two entries and a third exit-2 state nobody had
+enumerated. The guard's reason-check was also scoped by a name prefix with a hand-written count
+beside it, and **that count broke the moment this row added a sixth state** — the stale-list
+pattern inside the check written to avoid it. The scope is derived from R-16's table now, which
+widens the reason assertion from **two commands to seven**: `chain`, `log`, `lineage`, `resources`
+and `show` were unchecked for content and are not now.
+
 ### Fixed — `lineage --format json` said nothing about lines it could not read, and its two shapes differed
 
 Audit J, J-21. Two defects in a payload that **shipped in 0.6.0**, fixed together on Taylor's
