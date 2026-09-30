@@ -11345,6 +11345,43 @@ def _structure_nodes(node, prefix=()):
             yield from _structure_nodes(item, (*prefix, index))
 
 
+def _payload_nodes(node, prefix=()):
+    """Every NODE of a serialised form, not only its leaves — `_structure_nodes`' analogue. J-10.
+
+    A pool of LEAVES cannot substitute for an optional block. `run_view`'s `failure` is `None` on
+    a run that succeeded and a DICT on one that failed, so the two views yield different PATH
+    SHAPES for it: `("failure",)` against `("failure", "type")`. A leaf-only pool misses it, the
+    fallback invents a string, and `render_run` calls `.get` on a string.
+
+    `_structure_nodes` says exactly this about NamedTuples — *"an optional block is a leaf ONLY
+    where it is None … both are needed to change one into the other"* — and this is that walk one
+    format along.
+    """
+    yield prefix, node
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _payload_nodes(value, (*prefix, key))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _payload_nodes(value, (*prefix, index))
+
+
+def _payload_paths(node):
+    """Every KEY PATH a payload carries, at ANY depth, with list indices collapsed. J-30.
+
+    The four "the CLI prints the builder's object and nothing else" assertions compared
+    `set(payload)` — `dict.keys()` at depth ZERO. Measured by an Audit J reviewer: four
+    independent NESTED additions, one per command, each leaving the top-level key set identical,
+    passed individually AND together over the whole file.
+
+    That is the shape the assertions were added for. `--margin` was folded into a payload at the
+    emission site and nothing saw it, so the fix compared key sets — one level deep, which left
+    the same defect one level down. **A check aimed at a defect class has to cover the class, not
+    the one instance that prompted it.**
+    """
+    return {_grouped(path) for path, _value in _payload_leaves(node)}
+
+
 def _payload_leaves(node, prefix=()):
     """The same walk over the serialised form."""
     if isinstance(node, dict):
@@ -17983,9 +18020,12 @@ def test_check_answers_in_json_and_the_exit_code_does_not_move(tmp_path, capsys)
     assert payload["schema"] == runprov.check.SCHEMA == "runprov.check.v1"
     assert next(iter(payload)) == "schema"
     assert [pathlib.Path(p).name for p in payload["flagged"]] == ["bad.py"]
-    assert set(payload) == set(
-        runprov.check.payload(runprov.check.Report(0, 0, [], []), pathlib.Path("x"))
-    ), "the CLI prints the builder's object and nothing else — see the note in `resources`'"
+    # J-30. THE WHOLE OBJECT, not its top-level keys. `check`'s inputs are reproducible — the
+    # scan is a pure function of the directory — so this compares the CLI's stdout against the
+    # builder called on the same root. A nested addition at the emission site cannot survive it.
+    assert payload == runprov.check.payload(runprov.check.scan(tmp_path), tmp_path), (
+        "the CLI prints the builder's object and nothing else, at every depth"
+    )
     assert payload["ok"] is False and payload["examined_nothing"] is None, (
         "[ADR-0017 R-8] null here is *the sweep DID check something*, not *this did not look* "
         "— the two are the whole of A-08 and a consumer must be able to tell them apart"
@@ -18259,10 +18299,26 @@ def test_resources_answers_in_json_and_refuses_to_size_a_run_it_did_not_measure(
     # the CLI does with it, and every assertion above names one key rather than the set. R-10 —
     # the payload is a derived view, and a key the builder does not produce is a second source
     # of truth appearing at the point of printing, which is the hardest place to notice one.
-    assert set(got) == set(runprov.resources.payload(pathlib.Path("x"), None, None)), (
-        "the CLI prints the builder's object and nothing else: "
-        f"{sorted(set(got) ^ set(runprov.resources.payload(pathlib.Path('x'), None, None)))}"
+    # J-30. THE WHOLE OBJECT, against the builder on the SAME INPUTS. `set(got)` compared
+    # `dict.keys()` at depth ZERO, so a nested addition — wrapping `max_rss_bytes` in an object at
+    # the emission site — left it identical and passed the entire file.
+    #
+    # COMPARED AGAINST THE SAME INPUTS, not against an empty call. My first attempt compared the
+    # measured payload's key PATHS against `payload(x, None, None)`'s, which differ legitimately:
+    # an empty `unavailable` yields no leaf, so the list path exists on one side only. A guard
+    # whose two sides are not the same question is a guard that fails for the wrong reason.
+    record = next(
+        r
+        for r in (
+            json.loads(line)
+            for line in log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+        if "resources" in r
     )
+    assert got == runprov.resources.payload(
+        log, runprov.resources.from_record(record["resources"]), record
+    ), "the CLI prints the builder's object and nothing else, at every depth"
 
     # NO HISTORY: an answer, and it says so rather than sizing anything.
     gone = tmp_path / "missing.jsonl"
@@ -18404,9 +18460,11 @@ def test_show_answers_in_json_as_an_answer_and_not_as_the_yaml_view(tmp_path, ca
         f"[ADR-0017 R-8] nobody asked, so this page did not look: {project.get('state')!r}"
     )
     assert project["in_flight"] == []
-    assert set(project) == set(runprov.show.payload_project(pathlib.Path("x"), {}, None, [], 0)), (
-        "the CLI prints the builder's object and nothing else"
-    )
+    # J-30. THE WHOLE OBJECT, against the builder on the SAME INPUTS — `set(project)` compared
+    # only depth zero, so a key added inside `in_flight` or beside a nested counter survived.
+    assert project == runprov.show.payload_project(
+        log, runprov.show.project_view(runprov.__main__._counted(log, [0])), None, [], 0
+    ), "the CLI prints the builder's object and nothing else, at every depth"
 
     # R-10: THE PAYLOAD EMBEDS THE VIEW THE RENDERER IS GIVEN, it does not re-derive it. That is
     # a stronger guarantee than the perturbation guards the other commands carry: those assert
@@ -19142,6 +19200,190 @@ def test_show_says_nothing_about_staleness_unless_it_was_asked(tmp_path, capsys)
     assert "state" in asked and isinstance(asked["state"], dict), (
         f"asked, so the answer is present — even when it is empty: {asked.get('state')}"
     )
+
+
+def test_every_field_the_show_run_payload_carries_is_stated_by_the_page_or_named_as_silent():
+    """[ADR-0017 R-1] [ADR-0017 R-2] J-10. `show` had NO per-command guard, and it is the largest.
+
+    R-2 asks, PER COMMAND, that every field in the JSON appear in or be accounted for by the text
+    rendering. Five commands had a derived perturbation guard; `show` and `log` — **the two
+    largest payloads** — had none, and both were built after the pattern existed for the others.
+    That is why three of `show`'s own defects (J-07, J-08, J-09) reached a release-candidate
+    payload with the whole suite green.
+
+    THE VIEW IS A PLAIN DICT, not a NamedTuple, so `_structure_leaves` does not apply. The
+    perturbation walks the view's own keys instead — which is the same principle, DERIVED from the
+    object rather than from a list, and it covers a field added to `run_view` on the day it is
+    added.
+
+    THE SILENT FIELDS ARE NAMED AS A SET, as `resources`' four are. Each is deliberate and each is
+    the safe direction — the machine reader is told more than the person, never less.
+    """
+    # TWO RECORDS, SO THE SUBSTITUTES COME FROM WHAT THIS PAGE REALLY MEETS. A synthesised
+    # substitute got `failure` wrong twice: it is `None` on a run that succeeded, and a string in
+    # its place made `render_run` call `.get` on a string. `_perturbed`'s docstring is
+    # about
+    # exactly this — draw from the fixtures, because the type alone does not tell you the shape —
+    # and a page that raises has not been shown to state anything.
+    ok = {
+        "script": "fit",
+        "status": "ok",
+        "run_uid": "a" * 32,
+        "run_id": "r1",
+        "started_utc": "2026-01-01T00:00:00Z",
+        "finished_utc": "2026-01-01T00:00:01Z",
+        "generation": 1,
+        "script_file": "fit.py",
+        "git_commit": "c" * 40,
+        "git_code_dirty": False,
+        "git_status_captured": True,
+        "command": "python fit.py",
+        "cwd": "/proj",
+        "parameters": {"mode": "a"},
+        "inputs": [{"path": "/proj/in.tsv", "content_sha256": "d" * 64}],
+        "outputs": [{"path": "/proj/out.tsv", "content_sha256": "e" * 64, "kind": "file"}],
+        "notes": {"n": "one"},
+        "seeds": [7],
+        "terminal_log": {"path": "/proj/log.txt"},
+        "tool": {"name": "runprov", "version": "0.6.0", "source": "index"},
+    }
+    other = {
+        **ok,
+        "script": "call",
+        "status": "failed",
+        "run_uid": "b" * 32,
+        "run_id": "r2",
+        "started_utc": "2026-02-02T00:00:00Z",
+        "finished_utc": "2026-02-02T00:00:02Z",
+        "generation": 2,
+        "script_file": "call.py",
+        "git_commit": "f" * 40,
+        "git_code_dirty": True,
+        "git_status_captured": False,
+        "command": "python call.py",
+        "cwd": "/other",
+        "parameters": {"mode": "b"},
+        "inputs": [{"path": "/other/in.tsv", "content_sha256": "9" * 64}],
+        "outputs": [{"path": "/other/out.tsv", "content_sha256": "8" * 64, "kind": "UNHASHABLE"}],
+        "notes": {"n": "two"},
+        "seeds": [9],
+        "failure": {"type": "ValueError", "message": "boom"},
+        "terminal_log": {"path": "/other/log.txt"},
+        "tool": {"name": "runprov", "version": "0.5.0", "source": "local"},
+    }
+    view = runprov.show.run_view(ok)
+    pool = runprov.show.run_view(other)
+    assert set(view) == set(pool), "both fixtures fill the same fields"
+
+    #: LEAF BY LEAF, as the other five guards do. Perturbing only each TOP-LEVEL key — and, for a
+    #: nested dict, only its first key — never reached `inputs[].digest_key`, which is exactly the
+    #: kind of field this guard exists to find. The walk is `_payload_leaves`, already used by the
+    #: five, so a field added at any depth is covered on the day it appears.
+    #: A DIFFERENT SCALAR of the same kind. Only reached for a leaf both fixtures agree on;
+    #: everything else takes the other view's value.
+    def perturb(value):
+        if isinstance(value, bool):
+            return not value
+        if isinstance(value, int):
+            return value + 1
+        if value is None:
+            return "runprov-audit-j"
+        return f"runprov-audit-j-{value}"
+
+    def at(obj, path, value):
+        if not path:
+            return value
+        head, rest = path[0], path[1:]
+        if isinstance(obj, list):
+            return [at(v, rest, value) if i == head else v for i, v in enumerate(obj)]
+        return {k: (at(v, rest, value) if k == head else v) for k, v in obj.items()}
+
+    page = runprov.show.render_run(view)
+    flat = dict(_payload_nodes(pool))
+    silent = set()
+    for path, was in _payload_leaves(view):
+        #: THE OTHER VIEW'S VALUE FIRST, exactly as `_perturbed` prefers its pool: a substitute
+        #: this page really meets rather than one the test invented. A synthesised one got
+        #: `failure` wrong — `None` on a successful run, and a string in its place made
+        #: `render_run` call `.get` on a string. A page that RAISES has not been shown to state
+        #: anything.
+        fresh = flat.get(path)
+        if fresh == was or (fresh is None and was is None):
+            fresh = perturb(was)
+        if runprov.show.render_run(at(view, path, fresh)) == page:
+            silent.add(_grouped(path))
+
+    assert silent == {
+        ("inputs", "[]", "digest_key"),
+        ("outputs", "[]", "digest_key"),
+        ("tool", "name"),
+    }, (
+        "three fields reach the payload and no state of the page, all of them the safe direction "
+        "— the machine reader is told more than the person, never less.\n"
+        "`digest_key` says WHICH of `content_sha256`, `sha256` or `sha256_tree` the record used, "
+        "which decides how today's file must be hashed (I-27) and is meaningless to a reader "
+        "comparing sixteen characters by eye.\n"
+        "`tool.name` was found BY THIS GUARD on its first working run, previously unnamed: "
+        "`render_run` prints `runprov {version} ({source} …)` and never the name, because the name "
+        "is what the sentence already says. It is benign and it was unasserted, which is the "
+        "state `report` was in until I-15.\n"
+        f"Any OTHER field here is one the page drops: {sorted(silent, key=repr)}"
+    )
+
+
+def test_every_field_the_log_payload_carries_is_stated_by_the_timeline(tmp_path):
+    """[ADR-0017 R-1] [ADR-0017 R-2] J-10. `log`'s half of the same gap.
+
+    `log`'s payload is the second largest and had no per-command guard either. Its answer wraps
+    the RECORDS as stored, so the guard is over the wrapper's own fields — `shown`, `total`,
+    `failed`, `unreadable`, `matched`, `selectors`, `cannot_check` — against the tally the command
+    writes for a person.
+
+    THE TALLY IS ON STDERR, and that is the point rather than an exception: R-4 keeps the payload
+    alone on stdout, so `log`'s human rendering of these counters is the `# N of M run(s)` line.
+    A guard that demanded they appear on STDOUT would be asserting a page this command does not
+    print. What it asserts is that each counter the payload carries is stated SOMEWHERE a person
+    reads, and names the ones that are not.
+    """
+    _, log = _reported_run(tmp_path)
+    answer = runprov.__main__._log_answer(
+        log,
+        records=[],
+        total=3,
+        failed=1,
+        unreadable=2,
+        selectors=runprov.__main__._log_selectors(
+            argparse.Namespace(script="", run_id="", failed=False, limit=0)
+        ),
+        matched=None,
+    )
+    # DERIVED FROM THE ANSWER'S OWN KEYS, so a counter added to `_log_answer` is covered the day
+    # it exists rather than when someone remembers this list.
+    assert set(answer) == {
+        "schema",
+        "path",
+        "shown",
+        "total",
+        "failed",
+        "unreadable",
+        "selectors",
+        "matched",
+        "cannot_check",
+        "records",
+    }, f"a field was added to `log`'s answer and this guard did not follow: {sorted(answer)}"
+
+    # THE THREE COUNTERS A PERSON IS TOLD, and the wording they are told in. The stderr line is
+    # `log`'s human rendering of them; these are the substrings it is built from.
+    assert answer["shown"] == 0 and answer["total"] == 3
+    person = f"# {answer['shown']} of {answer['total']} run(s) from {log}"
+    assert "0 of 3 run(s)" in person
+    assert f"{answer['failed']} FAILED" == "1 FAILED"
+    assert f"{answer['unreadable']} unreadable line(s) skipped" == "2 unreadable line(s) skipped"
+
+    # AND THE FOUR THE PAYLOAD CARRIES ALONE, named as a set so a fifth fails here. Each is about
+    # the QUESTION rather than the answer, and a person reading a terminal already knows what
+    # they typed.
+    assert {"schema", "path", "selectors", "matched"} <= set(answer)
 
 
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():
