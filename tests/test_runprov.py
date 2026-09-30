@@ -11721,24 +11721,42 @@ def test_perturbed_substitutes_in_both_directions_and_the_guards_key_their_pools
     # did not turn "no substitute available" into a silent no-op substitution.
     assert _perturbed(None, [None]) is _UNPERTURBABLE
 
-    # THE THREE POOLS ARE KEYED ALIKE, read from THE GUARDS' OWN SOURCE. Reading the whole
-    # file instead counts this test's own string literals and reports four pools where there
-    # are three — a check that matches itself is measuring the wrong thing, which is the
-    # smaller cousin of every scope finding in this audit.
-    guards = (
-        test_every_field_the_report_payload_carries_is_stated_by_the_page,
-        test_every_field_the_diff_payload_carries_is_stated_by_the_table,
-        test_every_field_the_impact_payload_carries_is_stated_by_the_page,
-    )
-    keyed = {
-        name.__name__: "pool.setdefault(_grouped(path), []).append(value)"
-        in inspect.getsource(name)
-        for name in guards
+    # EVERY POOL IS KEYED ALIKE, AT BUILD AND AT LOOKUP, and BOTH halves of that sentence are
+    # corrections. This named THREE guards by hand and checked only the BUILD line.
+    #
+    # J-15: it went stale in 24 HOURS. `check`'s and `resources`' guards were added the same day
+    # and it never saw them — five guards, three named. **A test written to stop a hand-typed
+    # list drifting, scoped to a hand-typed list.** The list is derived from the file now: any
+    # function that builds a pool is a guard, so the sixth is covered on the day it exists.
+    #
+    # J-33: it inspected the BUILD line only, so a guard could build a grouped pool and read a
+    # key that can never match it. Measured on a mutation of `report`'s lookup alone: 20 of 58
+    # substitutions stopped drawing a shape the page really meets and fell through to the
+    # invented fallbacks `_perturbed`'s docstring says the pool exists to avoid — and the whole
+    # file stayed green. Both lines are checked now.
+    #
+    # SPLIT ON THE DEFINITION BOUNDARY, not walked with `ast`: `ast.get_source_segment` over a
+    # file this size takes minutes, and a check nobody will wait for is a check that gets
+    # deleted. This test's own block is excluded by name — a check that matches itself counts
+    # its own string literals and reports one pool too many, which is how the first version of
+    # this reported four where there were three.
+    build = "pool.setdefault(_grouped(path), []).append(value)"
+    lookup = "pool.get(_grouped(path), [])"
+    blocks = {
+        block.split("(")[0]: block
+        for block in pathlib.Path(__file__).read_text(encoding="utf-8").split("\ndef ")
     }
-    assert all(keyed.values()), (
-        "a pool keyed by the raw path holds `inputs[0].name` and `inputs[3].name` separately, "
-        "so that guard draws on fewer substitutes than its siblings over the same structure — "
-        f"and nothing else in this file can see the difference: {keyed}"
+    mine = "test_perturbed_substitutes_in_both_directions_and_the_guards_key_their_pools_alike"
+    pools = {name: body for name, body in blocks.items() if build in body and name != mine}
+    assert len(pools) >= 5, (
+        f"the five page/payload guards build a pool; this found {len(pools)}, so the derivation "
+        f"has broken rather than the guards: {sorted(pools)}"
+    )
+    unlooked = sorted(name for name, body in pools.items() if lookup not in body)
+    assert not unlooked, (
+        "a guard that BUILDS a grouped pool and READS a raw key draws on nothing it built, so "
+        "every substitution falls through to an invented fallback and the page moves for the "
+        f"wrong reason: {unlooked}"
     )
 
 
@@ -17491,7 +17509,23 @@ def _cli_json_commands() -> set[str]:
                 try:
                     choices = ast.literal_eval(keyword.value)
                 except ValueError:
-                    continue  # a name, resolved where it is defined — `export`'s FORMATS
+                    # J-31. A NAME IS RESOLVED, NOT SKIPPED. `export` declares
+                    # `choices=EXPORT_FORMATS`, so skipping a Name meant `export` could never
+                    # appear here — and the assertion in R-3's test written verbatim to catch
+                    # "an exclusion that was never checked against the command" was structurally
+                    # blind to the ONLY exclusion there is. Measured: adding `json` to
+                    # `export.FORMATS` genuinely offered it, and R-3, R-11 and R-16's derived
+                    # scope tests all stayed green.
+                    if not isinstance(keyword.value, ast.Name):
+                        continue
+                    resolved = getattr(runprov.export, "FORMATS", None)
+                    if keyword.value.id != "EXPORT_FORMATS" or resolved is None:
+                        raise AssertionError(
+                            f"a `--format` whose choices are the name {keyword.value.id!r}, which "
+                            "this cannot resolve. Resolve it or this command leaves R-3's scope "
+                            "silently, which is what J-31 was"
+                        ) from None
+                    choices = resolved
                 if "json" in choices:
                     found.add(named[node.func.value.id])
     # NOT VACUOUS, the same guard `_cli_subcommands` carries: an AST walk that matches nothing
@@ -17606,7 +17640,7 @@ def test_every_command_that_answers_in_json_has_its_schema_asserted_somewhere():
     )
 
 
-def test_every_subcommand_is_accounted_for_by_r3_and_the_outstanding_list_only_shrinks():
+def test_every_subcommand_is_accounted_for_by_r3_and_the_partition_is_an_equality():
     """[ADR-0017 R-3] I-22. *"the list is derived from the parsers by a test"* — implemented.
 
         R-3 asks for `--format json` on every command that ANSWERS a question, and excludes those
@@ -17636,29 +17670,35 @@ def test_every_subcommand_is_accounted_for_by_r3_and_the_outstanding_list_only_s
     # R-3's amendment, its own words: "two standard vocabularies already, and this would be a
     # third". Not an oversight, and recorded where the exclusion is made.
     excluded = {"export"}
-    # EMPTY, AND THAT IS THE MILESTONE. Every command R-3's table said to add now answers in
-    # JSON. Kept as a named set rather than deleted, because the assertion below that nothing is
-    # unclassified reads from it — and because a new command that ANSWERS but has no format yet
-    # belongs here rather than in a comment.
-    outstanding: set[str] = set()
-    assert not outstanding, (
-        "[ADR-0017 R-3] is SATISFIED as of T-33's last row, 2026-09-30. Anything appearing here "
-        "again is a command that answers a question and cannot be asked for JSON"
-    )
+    # THE `outstanding` BUCKET IS GONE, AND SO ARE TWO ASSERTIONS THAT COULD NOT FAIL. J-34.
+    # It held the commands R-3 said to add while T-33 was building; T-33's last row emptied it,
+    # and what was left was `outstanding: set[str] = set()` followed by `assert not outstanding`
+    # — a literal empty set asserted to be empty — plus an intersection with it, likewise.
+    #
+    # **I-25 removed exactly this defect two days earlier**, and its repair is the model: tie the
+    # assertion to something NO FIXTURE CAN MOVE. Here that is the partition below, over sets
+    # derived from the parser. R-3 being satisfied is now the CONSEQUENCE of the partition
+    # holding with an empty remainder, rather than a sentence asserted about a variable nobody
+    # reads.
 
-    for name, bucket in (("acts", acts), ("excluded", excluded), ("outstanding", outstanding)):
+    for name, bucket in (("acts", acts), ("excluded", excluded)):
         stale = bucket - subcommands
         assert not stale, (
             f"`{name}` names commands the parser no longer defines, so the reasoning attached "
             f"to them is no longer about anything: {sorted(stale)}"
         )
 
-    arrived = sorted(answers_in_json & outstanding)
-    assert not arrived, (
-        "a command cannot both offer `--format json` and be waiting to gain it. STRIKE IT FROM "
-        f"`outstanding` — that is this test ratcheting, and it is the point: {arrived}"
+    # THE PARTITION, ASSERTED AS AN EQUALITY so it fails in both directions: a subcommand in no
+    # bucket, and a bucket naming something that is not a subcommand. Both sides are derived —
+    # the left from the parser, the right from three named sets whose members are checked to be
+    # live subcommands above.
+    assert subcommands == answers_in_json | acts | excluded, (
+        "[ADR-0017 R-3] every subcommand is an answer that can be asked for as JSON, an action, "
+        "or an exclusion R-3 argues for. A command in none of them answers a question and cannot "
+        "be asked for JSON; a bucket member that is not a subcommand is reasoning about nothing: "
+        f"{sorted(subcommands ^ (answers_in_json | acts | excluded))}"
     )
-    unclassified = subcommands - answers_in_json - acts - excluded - outstanding
+    unclassified = subcommands - answers_in_json - acts - excluded
     assert not unclassified, (
         "every subcommand is either an answer that can be asked for as JSON, an action, an "
         "exclusion R-3 argues for, or work R-3 asks for that is not built yet. A new "
@@ -17786,7 +17826,6 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
         "impact, target is neither a file nor a digest": ["impact", str(absent), "--log", str(log)],
         "diff, the first run address is empty": ["diff", "", "x", "--log", str(log)],
     }
-    outstanding: dict[str, list[str]] = {}
 
     def answered(argv):
         capsys.readouterr()
@@ -17809,11 +17848,10 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
         "these already put a payload on stdout at exit 2 and must not stop: "
         f"{sorted(name for name, ok in speaking.items() if not ok)}"
     )
-    assert not outstanding, (
-        "[ADR-0017 R-15] is SATISFIED as of 2026-09-30. Every state in which this package "
-        "ANSWERS puts a payload on stdout. Anything appearing here again is a state that "
-        "answers and stays silent"
-    )
+    # J-34: `outstanding: dict = {}` and `assert not outstanding` stood here and were DEAD —
+    # nothing else in this body read the name. R-15 being satisfied is carried by the two buckets
+    # below holding every state and each behaving as its bucket requires, not by a sentence
+    # asserted about an empty dict. I-25 removed this same defect two days earlier.
     # AND THE OTHER HALF OF R-15, which is the half a ratchet cannot express: silence means the
     # invocation was wrong, so a command that could not form its question must print NOTHING.
     # Without this, "emit everywhere" would satisfy the rule as written and destroy the only
