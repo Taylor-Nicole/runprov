@@ -1852,7 +1852,7 @@ The same three codes in every subcommand:
 | | |
 |---|---|
 | `0` | checked, and nothing is wrong |
-| `1` | checked, and something **is** wrong — a stale or gone artifact, a named target or filter that matched nothing |
+| `1` | checked, and something **is** wrong — a stale, gone or **altered** artifact, a named target or filter that matched nothing |
 | `2` | **could not check**, or the invocation did not describe a check — no history file, no pins found, a usage mistake |
 
 grep and diff use the same split, and the one that matters is `1` against `2`: a CI job has

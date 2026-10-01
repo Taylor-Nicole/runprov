@@ -204,7 +204,26 @@ STATES = frozenset({OK, STALE, GONE, ALTERED, UNVERIFIABLE, NO_PIN})
 #: Statuses that mean the artifact cannot be trusted as current. `GONE` is included
 #: deliberately: an input that no longer exists cannot be compared, but it is not a neutral
 #: absence either -- the artifact can no longer be re-derived, which is a finding.
-FAILING = (STALE, GONE)
+#:
+#: `ALTERED` JOINED THIS ON 2026-10-01, J-19, AND ITS ABSENCE WAS A WRONG EXIT CODE. This is
+#: the package's own name for *checked and something IS wrong* and `report` derives its exit
+#: code from it — deliberately, so that a new verdict defaults to the safe answer instead of
+#: being folded into "wrong". `ALTERED` is not a new verdict: it is the strongest finding this
+#: checker makes, decided before any input is consulted, and it was missing here. So `report`
+#: returned **2, could not check** about an artifact whose body digest had been compared and
+#: did not match, while `verify` returned 1 for the same file in the same second. A finding
+#: reported as an inability, which is J-18's defect in the other command.
+#:
+#: WIDENING THIS CANNOT MOVE `verify_artifact`, and that is why one line fixes it: the
+#: `statuses & set(FAILING)` branch below reads INPUT statuses, and an input entry carries
+#: only `OK`, `STALE`, `GONE` or `UNVERIFIABLE` — never this. `ALTERED` is assigned to the
+#: ARTIFACT, one branch earlier, from `_body_verdict`. A test asserts that rather than
+#: trusting this sentence.
+#:
+#: ALTERED HAS BEEN MISSED BY A LIST BEFORE: Audit B found it absent from `STATES` after it
+#: was added. A state introduced later is a state the enumerations written earlier do not
+#: have, which is the whole argument for deriving from this tuple instead of retyping it.
+FAILING = (STALE, GONE, ALTERED)
 
 
 #: A top-level JSON key whose value could be a `output_json` pin: `"name": {`, at the start

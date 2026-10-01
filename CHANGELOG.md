@@ -148,6 +148,45 @@ the test asserts the same expression rather than a second copy of the list.
 Measured over all four verdicts an artifact can have, `report` and `verify` now return the same
 code for the same file: OK 0/0, STALE 1/1, UNVERIFIABLE 2/2, NO PIN 2/2.
 
+### Fixed — `report` and `verify` gave an edited artifact two different exit codes
+
+Audit J, J-19. Measured across every state `verify` has a word for, before the fix:
+
+| state | `report` | `verify` |
+|---|---|---|
+| `OK` | 0 | 0 |
+| `STALE` | 1 | 1 |
+| `GONE` | 1 | 1 |
+| **`ALTERED`** | **2** | **1** |
+| `NO PIN` | 2 | 2 |
+| `UNVERIFIABLE` | 2 | 2 |
+
+`report` said **2, could not check** about a file whose body digest had been compared and did
+not match — the strongest finding this checker makes, reported as an inability. Two commands
+answering about one artifact in the same second with different codes is what ADR-0007 exists to
+refuse, and it is J-18's defect in the other direction.
+
+**The cause was one incomplete tuple.** `FAILING = (STALE, GONE)` is the package's own name for
+*checked and something IS wrong*, and `report` derives its exit code from it deliberately, so
+that a verdict nobody anticipated falls to the safe answer instead of being folded into "wrong".
+`ALTERED` is not an unanticipated verdict; it is decided before any input is consulted, and it
+was missing. Widening the tuple fixes it in one line and cannot disturb `verify_artifact`, whose
+`FAILING` branch reads INPUT statuses — and an input entry carries only `OK`, `STALE`, `GONE` or
+`UNVERIFIABLE`, which a test now asserts rather than assumes.
+
+**The same list was written three times and only the copy with no claim to be the contract was
+right.** `verify.FAILING` said two states; the README's exit-code table said *"a stale or gone
+artifact"*; `_verify`'s own exit-1 branch said `stale or gone or altered`. The README row now
+names all three, and a guard reads the branch's condition out of the source and compares it with
+the tuple, so the two cannot drift apart again. `ALTERED` had been missed by an enumeration
+before: Audit B found it absent from `verify.STATES` after it was added.
+
+**And the test that should have caught it was green, for a reason its own docstring described.**
+It claimed to be *"DERIVED FROM `verify`'s OWN VOCABULARY, NOT A HAND-WRITTEN MAP"* — and the
+map was derived while the state space was four fixture names in a loop, with no `ALTERED` among
+them. A derived expectation over a hand-listed set of states is the scope pattern wearing the
+words of its remedy. The state space is now `verify.STATES`, so a seventh verdict fails by name.
+
 ### Fixed — `runprov show --format json` said no run was unfinished while its own text named one
 
 Audit J, J-06. Over a history that is not there, with a marker beside it, one invocation

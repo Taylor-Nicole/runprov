@@ -10488,7 +10488,7 @@ def test_every_builder_field_reads_the_record_key_of_its_own_name(tmp_path):
 
 
 def test_report_and_verify_return_the_same_code_for_the_same_artifact(tmp_path, capsys):
-    """[ADR-0007] I-10. TWO COMMANDS, ONE ARTIFACT, ONE ANSWER.
+    """[ADR-0007] I-10, J-19. TWO COMMANDS, ONE ARTIFACT, ONE ANSWER — in EVERY state.
 
     `report` folded five verdicts into two codes — `0 if result.ok else 1` — so `NO PIN` and
     `UNVERIFIABLE` came back as 1, "checked and wrong", while `verify` reported 2 for the same
@@ -10496,60 +10496,190 @@ def test_report_and_verify_return_the_same_code_for_the_same_artifact(tmp_path, 
     provenance is not running at all' into 'your results are stale', and sends somebody to re-run
     a pipeline over a problem that re-running cannot touch."*
 
-    IT WAS ALREADY THIS COMMAND'S CONTRACT. `_report`'s own docstring promises *"2 when the
-    artifact is not there"*, and it returns 2 there — so the third code was already in use and
-    applied to one state out of two that deserve it. `check` was fixed for the same thing in A-08
-    ("three outcomes, three codes"); this command was missed.
+    **J-19: THIS TEST WAS GREEN WHILE ONE STATE DISAGREED, AND ITS OWN DOCSTRING EXPLAINED WHY
+    IT COULD NOT BE.** It said *"DERIVED FROM `verify`'s OWN VOCABULARY, NOT A HAND-WRITTEN MAP
+    … so a SIXTH verdict added to `verify` is asserted here automatically"*. The MAP was derived.
+    The **state space was four names in a `for` loop** — `out_a`, `out_b`, `nopin`, `silent` —
+    and `ALTERED` was not among them, so the one verdict that disagreed was the one nothing
+    built. A derived expectation over a hand-listed set of states is the scope pattern wearing
+    the words of its remedy, and this audit has now found that shape eight times.
 
-    DERIVED FROM `verify`'s OWN VOCABULARY, NOT A HAND-WRITTEN MAP. The expected code below is
-    computed from `OK` and `FAILING` — the package's own name for "checked and wrong" — so a
-    SIXTH verdict added to `verify` is asserted here automatically, and falls to CANNOT_CHECK
-    rather than being folded into "wrong". Hand-listing the two verdicts would have put the scope
-    pattern into an exit code.
+    Measured over all six, before the fix:
+
+        OK 0/0    STALE 1/1    GONE 1/1    ALTERED 2/1    NO PIN 2/2    UNVERIFIABLE 2/2
+
+    `report` said **2, could not check** about a file whose body digest had been compared and
+    did not match. The cause was `FAILING = (STALE, GONE)`, from which `report` derives: the
+    name means *checked and something IS wrong*, and the strongest finding this checker makes
+    was missing from it. One line fixed all of it.
+
+    **MY OWN FIRST REPRODUCTION OF THIS ROW WAS WRONG AND THE REVIEWER'S WAS RIGHT.** I measured
+    `report GONE/1` against `verify OK/0` and quarantined the row as unconfirmed. The fixture
+    was the fault: it made its ALTERED file with `write_text`, which replaces the artifact and
+    takes the pin block — living in the artifact's own bytes — with it. The state measured was
+    `NO PIN` on a different file. A fixture whose name asserts a state it does not contain,
+    for the third time in two days.
+
+    THE STATE SPACE IS NOW `verify.STATES`, so a seventh verdict fails here by name instead of
+    being skipped in silence.
     """
     runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
-    for tag in ("a", "b"):
+
+    def produced(tag):
         (tmp_path / f"in_{tag}.tsv").write_text(f"{tag}\n", encoding="utf-8")
         with runprov.Run(f"r{tag}", {}, provenance=tmp_path / f"p{tag}.json") as run:
             run.input(tmp_path / f"in_{tag}.tsv")
             with run.open_output(tmp_path / f"out_{tag}.tsv") as fh:
                 fh.write(f"{tag}\n")
-    (tmp_path / "in_b.tsv").write_text("CHANGED\n", encoding="utf-8")  # out_b -> STALE
-    (tmp_path / "nopin.tsv").write_text("nothing produced this\n", encoding="utf-8")
+        return tmp_path / f"out_{tag}.tsv"
+
+    clean = produced("clean")
+    stale = produced("stale")
+    (tmp_path / "in_stale.tsv").write_text("CHANGED\n", encoding="utf-8")
+    gone = produced("gone")
+    (tmp_path / "in_gone.tsv").unlink()
+
+    # ALTERED EDITS THE BODY AND KEEPS THE PIN, which is the whole difficulty: the pin block
+    # lives in the artifact's own bytes, so `write_text` of new content produces `NO PIN` and
+    # not `ALTERED`. `newline=""` because the round trip must preserve every byte but the edit
+    # — `read_text` takes no `newline` before 3.13, so the guarantee is made on the write.
+    altered = produced("altered")
+    body = altered.read_text(encoding="utf-8")
+    assert "altered\n" in body, body
+    altered.write_text(body.replace("altered\n", "EDITED\n"), encoding="utf-8", newline="")
+
+    nopin = tmp_path / "nopin.tsv"
+    nopin.write_text("nothing produced this\n", encoding="utf-8")
     # A pin naming a script and making NO statement about inputs: the run cannot be re-checked
     # from it, which is what UNVERIFIABLE means. No `chmod`, so it holds on every leg.
-    (tmp_path / "silent.tsv").write_text(
-        f"# {runprov.hashing.PIN_ANCHOR}\n#   script     : s\n", encoding="utf-8"
+    silent = tmp_path / "silent.tsv"
+    silent.write_text(f"# {runprov.hashing.PIN_ANCHOR}\n#   script     : s\n", encoding="utf-8")
+
+    fixtures = {
+        runprov.verify.OK: clean,
+        runprov.verify.STALE: stale,
+        runprov.verify.GONE: gone,
+        runprov.verify.ALTERED: altered,
+        runprov.verify.NO_PIN: nopin,
+        runprov.verify.UNVERIFIABLE: silent,
+    }
+    # THE SCOPE, DERIVED. This is the assertion the old version of this test did not have, and
+    # its absence is the whole of J-19: a state `verify` can report and nothing here builds is
+    # a state in which these two commands are free to disagree.
+    assert set(fixtures) == runprov.verify.STATES, (
+        "every state `verify` has a word for needs a fixture here, or the two commands are "
+        f"unchecked in it: {sorted(runprov.verify.STATES ^ set(fixtures))}"
     )
+
     log = str(tmp_path / "h.jsonl")
     capsys.readouterr()
-
     seen = {}
-    for name in ("out_a.tsv", "out_b.tsv", "nopin.tsv", "silent.tsv"):
-        artifact = tmp_path / name
-        verdict = runprov.verify.verify_artifact(artifact, tmp_path)["status"]
+    for state, artifact in fixtures.items():
+        result = runprov.verify.verify_artifact(artifact, tmp_path)
+        assert result["status"] == state, (
+            f"the premise of the {state!r} fixture moved: it measures {result['status']!r}"
+        )
+        # NO INPUT ENTRY IS EVER `ALTERED`, which is what makes widening `FAILING` a one-line
+        # change: `verify_artifact`'s `statuses & set(FAILING)` branch reads these, and if one
+        # of them could carry `ALTERED` that branch would have moved too.
+        assert runprov.verify.ALTERED not in {i["status"] for i in result["inputs"]}, result
+
         expected = (
-            0 if verdict == runprov.verify.OK else (1 if verdict in runprov.verify.FAILING else 2)
+            0 if state == runprov.verify.OK else (1 if state in runprov.verify.FAILING else 2)
         )
         got = runprov.__main__.main(["report", str(artifact), "--log", log])
         capsys.readouterr()
         other = runprov.__main__.main(["verify", str(artifact), "--root", str(tmp_path)])
         capsys.readouterr()
-        seen[verdict] = got
+        seen[state] = got
         assert got == expected, (
-            f"{name} is {verdict!r}: 0 for OK, 1 for a verdict in `verify.FAILING`, 2 for "
-            f"anything else — `report` returned {got}"
+            f"{artifact.name} is {state!r}: 0 for OK, 1 for a verdict in `verify.FAILING`, 2 "
+            f"for anything else — `report` returned {got}"
         )
         assert got == other, (
-            f"and `verify` returned {other} for the same artifact. Two commands disagreeing "
-            "about one file is the shape this package keeps finding"
+            f"and `verify` returned {other} for the same artifact in the same second. Two "
+            "commands disagreeing about one file is the shape this package keeps finding"
         )
 
     assert seen["NO PIN"] == 2 and seen["UNVERIFIABLE"] == 2, (
-        "THE TWO THAT MOVED, named so the change is not silent: both used to be 1, which is "
-        f"'checked and wrong' — and neither was checked at all: {seen}"
+        "THE TWO THAT MOVED IN I-10, named so the change is not silent: both used to be 1, "
+        f"which is 'checked and wrong' — and neither was checked at all: {seen}"
     )
-    assert seen["OK"] == 0 and seen["STALE"] == 1, f"and the other two are unchanged: {seen}"
+    assert seen["OK"] == 0 and seen["STALE"] == 1 and seen["GONE"] == 1, f"unchanged: {seen}"
+    # AND THE ONE THAT MOVED IN J-19, named for the same reason.
+    assert seen["ALTERED"] == 1, (
+        "[J-19] an edited artifact was CHECKED and it IS wrong, so it is exit 1 — it returned "
+        f"2, 'could not check', about the strongest finding this checker makes: {seen}"
+    )
+
+
+def test_the_exit_one_family_is_named_in_one_place(tmp_path):
+    """[J-19] [ledger L-81]. The same list, retyped three times, wrong in two of them.
+
+    *Checked and something IS wrong* was enumerated in three places and only the one with no
+    claim to be the contract was right:
+
+    | where | said | right? |
+    |---|---|---|
+    | `verify.FAILING` | `STALE, GONE` | no — `report` derives from it and returned 2 |
+    | README's exit-code table | *"a stale or gone artifact"* | no |
+    | `__main__._verify`'s exit-1 branch | `stale or gone or altered` | yes, and hand-written |
+
+    So this guard reads the hand-written one and compares it with the tuple. The branch is left
+    as it is rather than rewritten to derive: the report dict's counters are keyed by lowercased
+    status, and a seventh status with no matching counter would make a derived version raise
+    inside the CLI. A guard that fails in the suite is better than a `KeyError` in front of a
+    user, and the drift this closes is between two lists that already exist.
+    """
+    del tmp_path
+    source = pathlib.Path(runprov.__main__.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    verify_cli = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_verify"
+    ]
+    assert len(verify_cli) == 1, "`__main__._verify` was renamed; this guard reads it"
+
+    #: The `if` whose body is exactly `return 1` — found by what it DOES, so a reworded
+    #: condition still gets read and a moved branch does not silently drop out of scope.
+    branches = [
+        node
+        for node in ast.walk(verify_cli[0])
+        if isinstance(node, ast.If)
+        and len(node.body) == 1
+        and isinstance(node.body[0], ast.Return)
+        and isinstance(node.body[0].value, ast.Constant)
+        and node.body[0].value.value == 1
+    ]
+    assert len(branches) == 1, (
+        f"`_verify` has {len(branches)} branches returning 1; this guard assumes the one that "
+        "names the failing states"
+    )
+    named = {
+        node.value
+        for node in ast.walk(branches[0].test)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert named == {state.lower() for state in runprov.verify.FAILING}, (
+        "[J-19] `_verify`'s exit-1 branch and `verify.FAILING` are the same contract written "
+        f"twice: the branch names {sorted(named)}, the tuple names "
+        f"{sorted(s.lower() for s in runprov.verify.FAILING)}"
+    )
+
+    # AND THE README'S TABLE, which was the third copy and the one a user reads. Asserted on the
+    # row rather than on the file, so a reworded sentence elsewhere cannot satisfy it.
+    row = [
+        line
+        for line in pathlib.Path("README.md").read_text(encoding="utf-8").splitlines()
+        if line.startswith("| `1` |")
+    ]
+    assert len(row) == 1, f"the exit-code table's `1` row is not unique: {row}"
+    for state in runprov.verify.FAILING:
+        assert state.lower() in row[0].lower(), (
+            f"[J-19] README's exit-1 row does not name {state}, so the documented contract and "
+            f"the code disagree: {row[0]}"
+        )
 
 
 def _claimless_history(tmp_path, version, name):
