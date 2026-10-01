@@ -19432,6 +19432,214 @@ _SHARED_NAMES = {
 }
 
 
+def _positional_arity() -> dict[str, dict[str, str]]:
+    """Each subcommand's positional arguments and their `nargs`, read from the parser by AST.
+
+    The ROLE of an argument is a judgement and is declared in `_PATH_SUBJECT`; its ARITY is a
+    fact about the parser and is read here, so the behaviour the rule predicts is derived from
+    the code rather than from a second copy of it.
+    """
+    tree = ast.parse((_repo_root() / "runprov" / "__main__.py").read_text(encoding="utf-8"))
+    out: dict[str, dict[str, str]] = {}
+    parsers: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        #: `xx = sub.add_parser("name", ...)` ties a local name to a subcommand.
+        if isinstance(func, ast.Attribute) and func.attr == "add_parser" and node.args:
+            first = node.args[0]
+            if isinstance(first, ast.Constant):
+                parent = getattr(node, "_assigned_to", None)
+                if parent:
+                    parsers[parent] = first.value
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            call = node.value
+            if (
+                isinstance(call.func, ast.Attribute)
+                and call.func.attr == "add_parser"
+                and call.args
+                and isinstance(call.args[0], ast.Constant)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+            ):
+                parsers[node.targets[0].id] = call.args[0].value
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "add_argument"):
+            continue
+        if not (isinstance(func.value, ast.Name) and node.args):
+            continue
+        first = node.args[0]
+        if not isinstance(first, ast.Constant) or first.value.startswith("-"):
+            continue
+        command = parsers.get(func.value.id)
+        if command is None:
+            continue
+        nargs = next(
+            (
+                k.value.value
+                for k in node.keywords
+                if k.arg == "nargs" and isinstance(k.value, ast.Constant)
+            ),
+            "1",
+        )
+        out.setdefault(command, {})[first.value] = str(nargs)
+    return out
+
+
+#: [ADR-0017 R-15, the absent-path ruling]. Which positional each command takes as a PATH it
+#: must read, or `None` for a command whose positionals are not paths. **A judgement, declared:**
+#: `show <target>` and `diff <a> <b>` are SELECTORS resolved against a history, not filenames, so
+#: a target that is not there is "matched nothing" (exit 1, L-81) and not a missing path.
+_PATH_SUBJECT = {
+    "report": "artifact",
+    "impact": "target",
+    "check": "root",
+    "export": "sidecar",
+    "verify": "paths",
+    #: `chain`'s positional IS the history, so the first clause of the rule governs it and the
+    #: arity clause does not — which is why this table records the role and not just the name.
+    "chain": "log",
+    "show": None,
+    "log": None,
+    "lineage": None,
+    "diff": None,
+    "resources": None,
+    #: NOT READERS. `capture` and `exec` RUN a script and `prune` deletes markers; the rule is
+    #: about a command told to READ a path, and a script that is not there is argparse's or the
+    #: interpreter's complaint rather than this package's answer. Named rather than omitted, so
+    #: the scope check above stays total — and it caught this table listing a `run` subcommand
+    #: that does not exist while missing `capture`, on its first run.
+    "capture": None,
+    "exec": None,
+    "prune": None,
+}
+
+
+def test_an_absent_path_is_silent_or_answered_by_the_rule_the_adr_states(tmp_path, capsys):
+    """[ADR-0017 R-15] [J-24] [I-21] [I-16]. Taylor's ruling of 2026-10-01, as a check.
+
+    R-15 says silence on stdout means the invocation was wrong, and could not settle one case on
+    its own: a command told to read a path that does not exist — has it answered, or was it
+    mis-invoked? Measured across every command that takes a path, the package was doing three
+    things, and **two were already ruled**:
+
+    | the absent path is | behaviour | ruled by |
+    |---|---|---|
+    | the history | answer — all nine that read one | R-15 / I-21 |
+    | the single subject (`nargs=1` or `?`) | silence | the `silent_by_design` bucket |
+    | a member of a list (`nargs="*"`) | answer, naming the absent | J-24 |
+
+    **ONLY `check` vs `verify` WAS OPEN** — both are "the tree I was told to scan is not there",
+    and they behaved oppositely. Taylor ruled on the arity: `verify <paths>` takes a list, so
+    `verify good.tsv typo.tsv` is partly answerable and J-24 requires a gate to see the absent
+    member; a command that must answer in the mixed case cannot sensibly fall silent when the
+    list holds one absent path. `check <root>` has no mixed case — with nothing to walk it never
+    started, which is the distinction the README already draws for it.
+
+    THE EXPECTATION IS DERIVED FROM THE PARSER, not written here: the role is declared in
+    `_PATH_SUBJECT` because it is a judgement, and the ARITY is read off `add_argument`. So a
+    command whose `nargs` changes is held to the other clause of the rule on the day it changes,
+    which is the only way a rule about arity can stay true.
+    """
+    arity = _positional_arity()
+    #: `_cli_subcommands()` returns a LIST, so the comparison is made over sets explicitly
+    #: rather than by `^` — which raised a TypeError the first time and would have read as a
+    #: failure of the rule rather than of the comparison.
+    declared, actual = set(_PATH_SUBJECT), set(_cli_subcommands())
+    assert declared == actual, (
+        "[ADR-0017 R-15] every subcommand needs a role here — a path subject or `None` — or "
+        f"the rule has stopped covering the CLI: {sorted(declared ^ actual)}"
+    )
+
+    artifact, log = _reported_run(tmp_path)
+    gone = tmp_path / "not-there-at-all.tsv"
+    assert not gone.exists(), "the premise"
+
+    #: One invocation per command whose subject is a path, with that subject absent. The
+    #: invocation cannot be derived; which commands need one is, and is asserted below.
+    absent = {
+        "report": ["report", str(gone), "--log", str(log)],
+        "impact": ["impact", str(gone), "--log", str(log)],
+        "check": ["check", str(gone)],
+        "export": ["export", str(gone)],
+        "verify": ["verify", str(gone), "--root", str(tmp_path)],
+        "chain": ["chain", str(gone)],
+    }
+    assert set(absent) == {c for c, p in _PATH_SUBJECT.items() if p}, (
+        "a command with a declared path subject and no invocation here is unchecked: "
+        f"{sorted(set(absent) ^ {c for c, p in _PATH_SUBJECT.items() if p})}"
+    )
+
+    for command, argv in absent.items():
+        subject = _PATH_SUBJECT[command]
+        nargs = arity[command][subject]
+        #: THE RULE, APPLIED. The history clause first, because `chain`'s single-subject arity
+        #: would otherwise predict silence for the command R-15 was written to emulate.
+        if subject == "log":
+            expected = "answer"
+            why = "an absent history is an answer [R-15 / I-21]"
+        elif nargs == "*":
+            expected = "answer"
+            why = (
+                f"`{subject}` is a list (`nargs={nargs}`), so an invocation can be "
+                "partly answerable [J-24]"
+            )
+        else:
+            expected = "silence"
+            why = (
+                f"`{subject}` is the single subject (`nargs={nargs}`), so nothing could "
+                "be read at all"
+            )
+
+        capsys.readouterr()
+        #: `export` renders RO-Crate and PROV, so `--format json` is not one of its choices —
+        #: J-26's exclusion, reaching this guard as a one-line difference rather than a branch.
+        extra = [] if command == "export" else ["--format", "json"]
+        code = runprov.__main__.main([*argv, *extra])
+        seen = capsys.readouterr()
+        got = "answer" if seen.out.strip() else "silence"
+        assert got == expected, (
+            f"[ADR-0017 R-15] `{command}` with an absent {subject}: the rule predicts "
+            f"{expected} because {why} — it produced {got}.\n"
+            f"stdout: {seen.out[:200]!r}"
+        )
+        assert code == 2, f"{command} must still exit 2 here, not {code}"
+        #: AND IT NAMES THE PATH ON ONE CHANNEL OR THE OTHER, in every case. Silence on stdout
+        #: is a signal to a consumer; it is never a reason to tell the person nothing. I-16 is
+        #: the row where a command said nothing at all on either stream.
+        assert gone.name in seen.out or gone.name in seen.err, (
+            f"`{command}` was given a path that is not there and never named it: {seen.err!r}"
+        )
+
+    # AND THE FIRST CLAUSE OVER EVERY COMMAND THAT READS A HISTORY, which is the one that is
+    # already ruled and the one most easily broken by a new command copying the wrong sibling.
+    no_history = tmp_path / "no-history.jsonl"
+    for command, argv in {
+        "chain": ["chain", str(no_history)],
+        "log": ["log", "--log", str(no_history)],
+        "show": ["show", "--log", str(no_history)],
+        "lineage": ["lineage", "--log", str(no_history)],
+        "resources": ["resources", "--log", str(no_history)],
+        "impact": ["impact", str(artifact), "--log", str(no_history)],
+        "diff": ["diff", "demo", "other", "--log", str(no_history)],
+        "report": ["report", str(artifact), "--log", str(no_history)],
+    }.items():
+        capsys.readouterr()
+        runprov.__main__.main([*argv, "--format", "json"])
+        out = capsys.readouterr().out
+        assert out.strip(), (
+            f"[R-15 / I-21] `{command}` given a history that is not there must answer — that is "
+            "the clause `chain` was the model for, and the one every other command was changed "
+            "to match"
+        )
+        json.loads(out)
+
+
 def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsys):
     """[J-36] [ADR-0017 R-9] [ADR-0017 R-12]. One name, one meaning — or a written reason.
 

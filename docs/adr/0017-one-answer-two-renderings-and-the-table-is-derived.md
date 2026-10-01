@@ -167,6 +167,36 @@ signal becomes total and a consumer needs one rule:
 > **stdout parses ⇒ this package answered, and the verdict says what it found or could not
 > establish. stdout empty ⇒ the command was not usable as invoked.**
 
+**WHAT SILENCE MEANS FOR A PATH THAT IS NOT THERE — ruled 2026-10-01 by Taylor, on the
+measurement below rather than on a reading of this rule.** R-15 says silence means the
+invocation was wrong, and that left one question the rule could not answer on its own: a command
+told to read a path that does not exist — has it answered, or was it mis-invoked? Measured
+across every command that takes a path, the package was already doing three different things,
+and **two of the three were already ruled**; only the third was open.
+
+The rule is the ROLE of the absent path, and the role is readable from the parser:
+
+| the absent path is | behaviour | commands | ruled by |
+|---|---|---|---|
+| **the history** (`--log`, or `chain`'s positional) | **answer** | all nine that read one | R-15 / I-21, 2026-09-29 |
+| **the single subject** (`nargs=1` or `?`) | **silence** | `report`, `impact`, `check`, `export` | the `silent_by_design` bucket |
+| **a member of a list of subjects** (`nargs="*"`) | **answer, naming the absent ones** | `verify` | J-24, 2026-10-01 |
+
+**The third clause is why `verify` and `check` differ, and the difference is their ARITY rather
+than anyone's taste.** `verify <paths>` takes a list, so `verify good.tsv typo.tsv` is partly
+answerable — it genuinely checked one artifact — and J-24 requires a gate to see the absent one;
+a command that must answer in the mixed case cannot sensibly fall silent when the list happens
+to hold one absent path. `check <root>` takes a single root and has no mixed case: with nothing
+to walk it never started, which is the distinction the README already draws for it — *"how a
+consumer tells a sweep that could not conclude from a command that could not start."*
+
+**The cost of this ruling, stated rather than hidden: a consumer must know a command's arity to
+predict whether stdout will parse.** That was weighed against changing released output — giving
+`check` a payload, or reversing J-24 — and the arity is at least discoverable from `--help` and
+stable, where the alternatives move behaviour somebody may already depend on. A test derives
+each command's arity from the parser and asserts the behaviour, so the three clauses are checked
+rather than described.
+
 **`export` IS OUTSIDE THIS RULE AND R-16, and J-26 is the row that says so.** R-3's table
 excludes it with a stated reason — *"two standard vocabularies already, and this would be a
 third"* — and these two later rules did not mention it at all, though R-15's scope is written as

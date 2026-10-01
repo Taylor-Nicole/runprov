@@ -120,6 +120,48 @@ front of a string cannot detect a rendering that shows only the front.** That is
 one level in: not the guard's logic, but the range its substitutions cover, failing to reach what
 it reports on.
 
+### Changed — ADR-0017 states what silence means for a path that is not there
+
+The open question Audit J closed with, ruled by Taylor on 2026-10-01 against the measurement
+rather than a reading of the rule. R-15 says silence on stdout means the invocation was wrong,
+and could not settle one case on its own: a command told to read a path that does not exist —
+has it answered, or was it mis-invoked?
+
+Measured across every command that takes a path, the package was doing three things, and **two
+were already ruled**:
+
+| the absent path is | behaviour | commands | ruled by |
+|---|---|---|---|
+| the **history** | answer | all nine that read one | R-15 / I-21, 2026-09-29 |
+| the **single subject** (`nargs=1` or `?`) | silence | `report`, `impact`, `check`, `export` | the `silent_by_design` bucket |
+| a member of a **list** (`nargs="*"`) | answer, naming the absent | `verify` | J-24, 2026-10-01 |
+
+**Only `check` versus `verify` was open** — both are *the tree I was told to scan is not there*,
+and they behaved oppositely. The ruling is the arity, not taste: `verify <paths>` takes a list,
+so `verify good.tsv typo.tsv` is partly answerable and J-24 requires a gate to see the absent
+member; a command that must answer in the mixed case cannot sensibly fall silent when the list
+happens to hold one absent path. `check <root>` takes one root and has no mixed case — with
+nothing to walk it never started, which is the distinction the README already drew for it:
+*"how a consumer tells a sweep that could not conclude from a command that could not start."*
+
+**The cost is stated rather than hidden: a consumer must know a command's arity to predict
+whether stdout will parse.** That was weighed against changing released output — giving `check` a
+payload, or reversing J-24 — and an arity is at least discoverable from `--help` and stable,
+where the alternatives move behaviour somebody may already depend on.
+
+Nothing in the package changed. What changed is that the rule is written down and checked: a
+test declares each command's path subject (a judgement), reads its arity from the parser (a
+fact), and asserts the behaviour the two predict — so a command whose `nargs` changes is held to
+the other clause of the rule on the day it changes. It also asserts the half that is not about
+stdout at all: **every one of these names the path on one channel or the other.** Silence is a
+signal to a consumer and never a reason to tell the person nothing, which is I-16's row.
+
+Two of the five controls measured nothing on their first run and were rewritten. One mutated an
+exit-code branch to try to silence `verify`, but `_verify` writes its payload at the top of the
+function, unconditionally — so that clause is structural for `verify` and no branch change can
+break it. The other hardcoded today's arities in place of reading the parser, which is a no-op;
+changing the parser's `nargs` is what proves the expectation follows it.
+
 ### Fixed — one name meant two things across the commands, and now a check says so
 
 Audit J, J-36 — the cross-command guard the audit closed by naming as the next thing to write.
