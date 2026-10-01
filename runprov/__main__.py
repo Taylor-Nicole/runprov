@@ -2146,7 +2146,10 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
         # in a single streaming pass, so what is held is what matches -- a handful of runs,
         # not a hundred thousand. `--limit` is passed IN rather than sliced off the result,
         # so a bucket cannot grow past it on the way.
-        matched = select(_counted(path, bad), args.target, limit=args.limit or None)
+        # J-12. `hits[0]` IS HOW MANY MATCHED; `matched` below is how many survived `--limit`.
+        # The deque inside `select` forgets the rest, so the count has to come out with it.
+        hits = [0]
+        matched = select(_counted(path, bad), args.target, limit=args.limit or None, matched=hits)
         if not matched:
             # [ADR-0017 R-15]. A TARGET THAT MATCHED NOTHING IS AN ANSWER AND EXITS 1, so it
             # serialises. Found by measuring rather than by reasoning: the two success paths and
@@ -2181,12 +2184,32 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
             # [ADR-0017 R-4]. The payload alone on stdout; the tally below is on stderr, where
             # it already was, and now the payload carries `unreadable` too so a consumer meets
             # that fact without reading a banner it is told not to parse.
-            print(json.dumps(show_mod.payload_runs(path, args.target, views, bad[0]), indent=2))
+            print(
+                json.dumps(
+                    show_mod.payload_runs(
+                        path, args.target, views, bad[0], hits[0], args.limit or None
+                    ),
+                    indent=2,
+                )
+            )
         else:
             sys.stdout.write("\n".join(render_run(v) for v in views))
+        # J-12. `N of M` ONLY WHEN THEY DIFFER, so an untruncated page prints the sentence it
+        # has printed since 0.6.0 and a truncated one stops claiming the narrowed count is the
+        # whole answer. Measured against the tag: five matching runs and `--limit 2` said
+        # *"2 run(s) matching 'build'"*, which a reader takes for a script that ran twice.
+        #
+        # A STATEMENT RATHER THAN A CONDITIONAL EXPRESSION, and the first version of this was
+        # the bug: with `head if cond else other + clause`, the `+ clause` binds to the `else`
+        # arm ALONE, so the unreadable-lines count disappeared from exactly the truncated page
+        # this row exists to fix. One defect traded for another, in the same line.
+        head = (
+            f"# {len(matched)} of {hits[0]} run(s) matching {args.target!r} from {path}"
+            if len(matched) != hits[0]
+            else f"# {len(matched)} run(s) matching {args.target!r} from {path}"
+        )
         print(
-            f"# {len(matched)} run(s) matching {args.target!r} from {path}"
-            + (f"; {bad[0]} unreadable line(s) skipped" if bad[0] else ""),
+            head + (f"; {bad[0]} unreadable line(s) skipped" if bad[0] else ""),
             file=sys.stderr,
         )
         return 0

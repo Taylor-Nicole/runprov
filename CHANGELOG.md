@@ -120,6 +120,43 @@ front of a string cannot detect a rendering that shows only the front.** That is
 one level in: not the guard's logic, but the range its substitutions cover, failing to reach what
 it reports on.
 
+### Fixed — `runprov show <target> --limit N` reported the narrowed count as the whole answer
+
+Audit J, J-12. `payload_runs` set `matched` to `len(views)` — the list **after** `--limit`
+truncated it — and nothing named the truncation: no `limit`, no `shown`, no `selectors`. `log`'s
+sibling payload, built the same week behind the same flag, gets this right with `shown` +
+`total` + `selectors.limit`.
+
+**The text was wrong too, which the row did not claim.** Measured against the v0.6.0 tag itself,
+five runs of one script:
+
+    $ runprov show build --limit 2
+    # 2 run(s) matching 'build'
+
+A person reads that as a script that ran twice. So this is a false statement about somebody's
+project in **released** output, and the tag is the oracle for it rather than the suite. The page
+now says `# 2 of 5 run(s) matching 'build'` when the two differ, and prints the 0.6.0 sentence
+byte for byte when they do not.
+
+**The count had to come out of `select`, because `--limit` destroys it:** each bucket is a
+`deque(maxlen=limit)`, so a run that matched and fell off the front is gone before the caller
+sees the list. It travels in an out-counter — this module's own idiom, the way
+`_counted(path, bad)` accumulates — and deliberately **not** as a named-tuple return:
+`len(select(...))` appears in five existing assertions and a two-field tuple has `len() == 2`, so
+the assertion expecting two matches would have gone on passing for an entirely different reason.
+A silent false pass is worse than a break.
+
+The counter is **per bucket**, not a sum over the four. The resolution is an `elif` chain, so a
+target that is both a script name on one run and a `run_id` on another fills two buckets while
+only the higher-priority one is the answer; summing would report both.
+
+**And the guard that should have caught this did not read the wrapper.** `show`'s R-2 guard
+perturbs the view of one run and reads `render_run`, so every field of `payload_runs` outside
+`runs[]` was unguarded and `matched` could carry the wrong number with the whole suite green.
+`log`'s guard covers its wrapper. One command was fixed and its sibling left, because the fix was
+written per command rather than per class — which is the asymmetry this audit keeps finding. The
+wrapper's fields are now asserted as a set, so a new one refuses until someone classifies it.
+
 ### Fixed — `runprov log` could not tell an empty history from one holding only a start
 
 Audit J, J-13. `_log_answer`'s docstring argues for `shown` beside `total` because *"an empty

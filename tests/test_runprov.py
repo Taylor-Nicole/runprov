@@ -20193,6 +20193,173 @@ def test_show_format_yaml_still_renders_exactly_what_it_rendered_at_0_6_0(tmp_pa
     )
 
 
+def test_show_with_a_limit_reports_how_many_matched_not_how_many_it_printed(
+    tmp_path, monkeypatch, capsys
+):
+    """[J-12] [ADR-0017 R-7] [ADR-0017 R-14]. A narrowed view reported as the whole answer.
+
+    `payload_runs` set `matched` to `len(views)`, which is the list AFTER `--limit` truncated
+    it, and nothing anywhere named the truncation — no `limit`, no `shown`, no `selectors`.
+    `log`'s sibling payload, built the same week behind the same flag, gets this right with
+    `shown` + `total` + `selectors.limit`.
+
+    **THE TEXT WAS WRONG TOO, WHICH THE ROW DID NOT CLAIM.** Measured against the v0.6.0 tag
+    itself — five runs of one script, `show build --limit 2`:
+
+        v0.6.0 says: # 2 run(s) matching 'build'
+
+    A person reads that as a script that ran twice. So this is a false statement about somebody's
+    project in RELEASED output, not only an unreleased payload field, and the tag is the oracle
+    for that rather than this suite.
+
+    THE COUNT HAD TO COME OUT OF `select`, because `--limit` destroys it: each bucket is a
+    `deque(maxlen=limit)` and a run that matched and fell off the front is gone before the
+    caller sees the list. It travels in an out-counter, which is this module's own idiom —
+    `_counted(path, bad)` accumulates the same way — and NOT as a named-tuple return, because
+    `len(select(...))` appears in five existing assertions and a two-field tuple has `len() == 2`:
+    the assertion expecting two matches would have passed for a different reason entirely.
+    """
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "h.jsonl"
+    runprov.configure(root=tmp_path, run_log=log, auto_steps="off")
+    for i in range(5):
+        with runprov.Run("build", {}, provenance=tmp_path / f"p{i}.json"):
+            pass
+    # ONE TORN LINE, and it is not decoration: the first version of the page fix put the
+    # truncation clause in a conditional EXPRESSION with `+ unreadable_clause` after it, so the
+    # `+` bound to the `else` arm alone and this count vanished from exactly the truncated page
+    # the row exists to fix. One defect traded for another, in one line.
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write('{"schema": "runprov.hist\n')
+
+    def shown(*extra):
+        capsys.readouterr()
+        code = runprov.__main__.main(["show", "build", "--log", str(log), *extra])
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err
+
+    # 1. THE PAYLOAD: the count that matched, the count returned, and what was asked.
+    code, out, err = shown("--limit", "2", "--format", "json")
+    body = json.loads(out)
+    assert code == 0
+    assert body["matched"] == 5, (
+        "[J-12] five runs match 'build'; `matched` was `len(views)` and reported the truncated "
+        f"2 as the number matching: {body['matched']}"
+    )
+    assert body["shown"] == 2 and len(body["runs"]) == 2, body
+    assert body["selectors"] == {"limit": 2}, body
+
+    # 2. AND THE PAGE SAYS BOTH NUMBERS, with the unreadable clause still beside it.
+    assert "# 2 of 5 run(s) matching 'build'" in err, err
+    assert "1 unreadable line(s) skipped" in err, (
+        "the truncation clause must not displace the unreadable count — see the fixture note"
+    )
+
+    # 3. THE UNTRUNCATED PAGE IS UNCHANGED, which is the constraint: this sentence shipped in
+    #    0.6.0 and only the truncated form was false.
+    code, out, err = shown()
+    assert "# 5 run(s) matching 'build'" in err, err
+    assert " of " not in err.split("matching")[0], (
+        f"an untruncated page must print the 0.6.0 sentence, not `N of N`: {err}"
+    )
+    code, out, _ = shown("--format", "json")
+    whole = json.loads(out)
+    assert (whole["matched"], whole["shown"]) == (5, 5), whole
+    assert whole["selectors"] == {"limit": None}, (
+        "[ADR-0017 R-8] `--limit 0` is argparse's default and not a request for zero runs, so "
+        "it travels as null — the same normalisation `_log_selectors` makes"
+    )
+
+    # 4. A LIMIT LARGER THAN THE MATCH COUNT IS NOT A TRUNCATION.
+    code, out, err = shown("--limit", "99", "--format", "json")
+    big = json.loads(out)
+    assert (big["matched"], big["shown"]) == (5, 5), big
+    assert " of " not in err.split("matching")[0], err
+
+    # 5. AND `select` ITSELF. The counter is PER BUCKET, and the fixture that shows why took a
+    #    correction: with five identical records every target fills exactly ONE bucket — the
+    #    resolution is an `elif` chain — so a counter that SUMMED the four would have reported
+    #    the same number and the distinction would have gone unmeasured. Two records resolving
+    #    the same target two different ways is what separates them.
+    split = [
+        {"script": "x", "run_uid": "a1", "run_id": "r1", "outputs": [], "inputs": []},
+        {"script": "other", "run_uid": "a2", "run_id": "x", "outputs": [], "inputs": []},
+    ]
+    hits = [0]
+    kept = runprov.show.select(iter(split), "x", matched=hits)
+    assert [r["script"] for r in kept] == ["x"], (
+        "`script` outranks `run_id`, so only the first record is the answer"
+    )
+    assert hits[0] == 1, (
+        "the answer is ONE bucket's total: the `run_id` match is in a bucket this target never "
+        f"returned, and summing the four would report 2 runs matching 'x': {hits[0]}"
+    )
+
+    #    AND EACH KIND OF TARGET COUNTS WHAT IT MATCHED, over five runs that share all three.
+    rows = [
+        {
+            "script": "build",
+            "run_uid": f"u{i}",
+            "run_id": "chain",
+            # `show._name` READS `path`, NOT `name`. My first fixture used `name`, so the
+            # path bucket never filled and `out.tsv` measured `kept=0 matched=0` — a fixture
+            # asserting a state it did not contain, for the fourth time in this audit. The
+            # assertion below is what caught it.
+            "outputs": [{"path": "out.tsv"}],
+            "inputs": [],
+        }
+        for i in range(5)
+    ]
+    for target in ("build", "chain", "out.tsv"):
+        hits = [0]
+        kept = runprov.show.select(iter(rows), target, limit=2, matched=hits)
+        assert (len(kept), hits[0]) == (2, 5), (
+            f"{target!r} resolves to all five runs and two survive `--limit 2`: "
+            f"{len(kept)} kept, {hits[0]} counted"
+        )
+
+    # AND THE COUNTER IS OPTIONAL, so the two call sites that do not want it still work.
+    assert len(runprov.show.select(iter(rows), "build", limit=2)) == 2
+
+    # 6. THE WRAPPER'S OWN FIELDS, GUARDED — and their being unguarded is why J-12 was
+    #    invisible. `show`'s R-2 guard perturbs the VIEW of one run and reads `render_run`; it
+    #    never touches `payload_runs`' wrapper, so `matched` could carry the wrong number with
+    #    the whole suite green. `log`'s guard covers its wrapper. `show` had the hole and `log`
+    #    did not, which is the asymmetry this audit keeps finding — one command fixed, its
+    #    sibling left, because the fix was written per command rather than per class.
+    #
+    #    A LITERAL SET, for the reason `log`'s is: whether a new field is stated to a person is
+    #    a judgement no assertion can make, so this refuses until someone makes it.
+    assert set(body) == {
+        "schema",
+        "path",
+        "target",
+        "matched",
+        "shown",
+        "selectors",
+        "runs",
+        "unreadable",
+        "cannot_check",
+    }, f"a field was added to `show`'s target payload and this guard did not follow: {sorted(body)}"
+
+    #    STATED TO A PERSON, in the tally and the page itself — asserted against the real
+    #    stderr of the truncated invocation rather than against a sentence composed here.
+    _, printed, said = shown("--limit", "2")
+    for field, spelling in (
+        ("shown", "2 of"),
+        ("matched", "of 5 run(s)"),
+        ("target", "matching 'build'"),
+        ("unreadable", "1 unreadable line(s) skipped"),
+    ):
+        assert spelling in said, f"{field} is not stated on the page: {spelling!r} missing"
+    assert str(log) in said, "and `path` names the history it read"
+    assert printed.count("run_uid") >= 2 or "build" in printed, "`runs` IS the page"
+
+    #    CARRIED ALONE, named as a set so a fourth fails here. Each is about the QUESTION or the
+    #    machine rather than the answer, which is the same classification `log`'s guard makes.
+    assert {"schema", "selectors", "cannot_check"} <= set(body)
+
+
 def test_show_says_nothing_about_staleness_unless_it_was_asked(tmp_path, capsys):
     """[J-09] [ADR-0017 R-8]. One meaning, one spelling — and this reverses what I wrote.
 

@@ -1003,6 +1003,8 @@ def payload_runs(
     target: str,
     views: list[dict[str, typing.Any]],
     unreadable: int,
+    matched: int | None = None,
+    limit: int | None = None,
 ) -> dict[str, typing.Any]:
     """One page per matching run, as an answer. [ADR-0017 R-8] on what is ABSENT here.
 
@@ -1015,12 +1017,34 @@ def payload_runs(
     `matched` is the count, beside the runs themselves, for the reason every count in this
     payload family exists: an empty list after a target that matched nothing and an empty list
     over an empty history are different answers, and this command already exits 1 for the first.
+
+    AND IT IS THE COUNT THAT MATCHED, NOT THE COUNT RETURNED — J-12. It was `len(views)`, so
+    `--limit 2` over five matching runs said `matched: 2`, with no `limit`, no `shown` and
+    nothing anywhere naming the truncation. `log`'s sibling payload, built the same week behind
+    the same flag, gets this right with `shown` + `total` + `selectors.limit`; this one reported
+    a narrowed view as the whole answer.
+
+    `shown` BESIDE IT, and `selectors` saying what was asked, which is `log`'s shape rather
+    than a third vocabulary. R-8's rule about a default reading as *not asked* applies to
+    `limit` here exactly as it does there: `--limit 0` is argparse's default, not a request for
+    zero runs, so it travels as `null`.
+
+    THE TEXT WAS WRONG TOO, which the row did not claim and the v0.6.0 tag confirms: the page
+    said *"# 2 run(s) matching 'build'"* over a project where five matched. That is a false
+    statement about somebody's project in released output, and the clause naming the truncation
+    is why it is now true.
     """
     return {
         "schema": SCHEMA,
         "path": path.as_posix(),
         "target": target,
-        "matched": len(views),
+        # `matched is None` MEANS THE CALLER DID NOT COUNT, which only the no-match emitter
+        # does — there `views` is empty and the two are the same number. Defaulting to
+        # `len(views)` keeps that call site unchanged rather than making it pass a zero it
+        # would have to know to pass.
+        "matched": len(views) if matched is None else matched,
+        "shown": len(views),
+        "selectors": {"limit": limit or None},
         "runs": views,
         "unreadable": unreadable,
         "cannot_check": None,
@@ -1330,6 +1354,7 @@ def select(
     records: typing.Iterable[dict[str, typing.Any]],
     target: str,
     limit: int | None = None,
+    matched: list[int] | None = None,
 ) -> list[dict[str, typing.Any]]:
     """Runs matching `target`: a script name, a run_uid prefix, a run_id, or an artifact path.
 
@@ -1348,11 +1373,28 @@ def select(
     when every higher one is empty, so filling all four in one pass returns exactly what four
     ordered passes returned. `limit` bounds each bucket to the last N, which is the same
     slice the caller used to take afterwards -- taken here so a bucket cannot grow past it.
+
+    `matched` IS AN OUT-COUNTER AND IT EXISTS BECAUSE `limit` DESTROYS THE ANSWER. J-12: the
+    bucket is a `deque(maxlen=limit)`, so a run that matched and fell off the front is gone by
+    the time this returns — and the caller, having only the list, reported the TRUNCATED count
+    as the number of matching runs. Measured against the v0.6.0 tag: five runs of one script,
+    `show build --limit 2`, and the released page says *"# 2 run(s) matching 'build'"*. A person
+    reads that as a script that ran twice.
+
+    A LIST PASSED IN, which is this module's own idiom — `_counted(path, bad)` accumulates its
+    unreadable count the same way — and NOT a named tuple return. `select` is called with
+    `len(select(...))` in five existing assertions, and a two-field tuple has `len() == 2`: the
+    assertion that expects two matches would have gone on passing for an entirely different
+    reason. A silent false pass is worse than a break, so the signature stays compatible and
+    the new fact is written where the caller asks for it.
     """
     kinds: tuple[collections.deque[dict[str, typing.Any]], ...] = tuple(
         collections.deque(maxlen=limit) for _ in range(4)
     )
     by_script, by_uid, by_run_id, by_path = kinds
+    # J-12. COUNTED AS THEY ARE APPENDED, because the deques forget. One per bucket, since the
+    # answer is one bucket's total and not the sum.
+    totals = [0, 0, 0, 0]
     # THE PATH BUCKET'S TARGET ONLY, and the narrowness is the whole design of this line.
     # Records have been POSIX since T-08, so on Windows the user who types the spelling
     # their own shell completed for them -- `results\final.tsv` -- is compared against
@@ -1365,16 +1407,25 @@ def select(
     for r in records:
         if r.get("script") == target:
             by_script.append(r)
+            totals[0] += 1
         elif str(r.get("run_uid", "")).startswith(target):
             by_uid.append(r)
+            totals[1] += 1
         elif r.get("run_id") == target:
             by_run_id.append(r)
+            totals[2] += 1
         elif any(
             _name(e) == wanted or pathlib.Path(_name(e)).name == target
             for e in (r.get("outputs") or []) + (r.get("inputs") or [])
         ):
             by_path.append(r)
-    for bucket in kinds:
+            totals[3] += 1
+    for bucket, seen in zip(kinds, totals, strict=True):
         if bucket:
+            if matched is not None:
+                # THE BUCKET'S OWN TOTAL, not the sum over four: the buckets are disjoint and
+                # only the first non-empty one is the answer, so the others never matched
+                # anything this target resolved to.
+                matched[0] = seen
             return list(bucket)
     return []
