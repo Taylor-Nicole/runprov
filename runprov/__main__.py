@@ -2229,6 +2229,12 @@ def _verify(args: argparse.Namespace) -> int:
         sys.stdout.write(render_report(report))
 
     seen, pinned = report["artifacts_seen"], report["artifacts_pinned"]
+    # J-18. BOTH "NOTHING CHECKED" SENTENCES COME FROM THE FOLD, and so does the second
+    # branch's condition. They were composed here and the payload carried only the counters,
+    # so the sentence a reader sees and the conclusion a consumer must derive were two
+    # different things with the precedence visible in only one of them. J-04 is this defect in
+    # `chain`'s renderer, found in the same audit.
+    inability = verify_mod.cannot_check(report)
     # A-17, AND BEFORE EVERY EARLY RETURN. A directory this checker could not read is the
     # one thing that changes what a clean result means: `os.walk` swallows those failures,
     # so a pinned artifact inside it did not exist as far as this report was concerned.
@@ -2246,7 +2252,7 @@ def _verify(args: argparse.Namespace) -> int:
         # NOT zero. A gate that goes green having checked nothing is worse than no gate,
         # because someone will trust it -- the same rule as `git_status_captured: false`.
         print(
-            f"# NOTHING CHECKED: {seen} file(s) examined under {root}, none carries a pin.\n"
+            f"# NOTHING CHECKED: {inability}.\n"
             f"#   This is 'we could not look', not 'nothing is wrong'. A pin is written by "
             f"`run.header()`\n"
             f"#   or `run.open_output()`; an artifact produced without one cannot be "
@@ -2312,7 +2318,7 @@ def _verify(args: argparse.Namespace) -> int:
         )
     if report["stale"] or report["gone"] or report.get("altered"):
         return 1
-    if not report["ok"]:
+    if inability is not None:
         # THE OTHER WAY TO CHECK NOTHING. The guard above catches "no artifact carries a
         # pin"; this catches "every pin was unreadable" -- an input outside the root, an
         # escaped name, a digest the run never recorded. Zero comparisons were made either
@@ -2325,8 +2331,7 @@ def _verify(args: argparse.Namespace) -> int:
         # `ok` includes the NONE REGISTERED pin -- a run stating it read nothing is a
         # checkable claim that checks out, which is why this tests `ok` and not the entries.
         print(
-            f"# NOTHING CHECKED: {pinned} pinned artifact(s) under {root}, and not one "
-            f"could be compared.\n"
+            f"# NOTHING CHECKED: {inability}.\n"
             f"#   Every pin was UNVERIFIABLE -- see the reasons above. This is 'we could "
             f"not look', not\n"
             f"#   'nothing is wrong', and a gate that goes green on it is worse than no "

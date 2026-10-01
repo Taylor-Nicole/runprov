@@ -17829,6 +17829,12 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
         "chain, no history to read": ["chain", str(no_log)],
         "report, artifact carries no pin": ["report", str(unpinned), "--log", str(log)],
         "verify, artifact carries no pin": ["verify", str(unpinned), "--root", str(tmp_path)],
+        # J-18 ADDED THE OTHER THREE. R-16 described `verify`'s inability as one relationship and
+        # one of its four states was in this bucket, so the three where the relationship is
+        # FALSE were the three nothing measured. The ledger's own note says the states with no
+        # per-command test are exactly where the defects were.
+        "verify, an empty directory": ["verify", str(empty_dir), "--root", str(tmp_path)],
+        "verify, a path that is not there": ["verify", str(absent), "--root", str(tmp_path)],
         # T-33's fourth row, built AFTER R-15 and so compliant from its first commit — which is
         # the whole reason the rule was decided before the remaining commands rather than after.
         "check, a directory with no Python in it": ["check", str(empty_dir)],
@@ -17924,9 +17930,12 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
     # wrong is worse than no payload — it contradicts its own exit code.
     #
     # IT IS NOT ASSERTED FOR ALL TEN COMMANDS, and that is a finding rather than a gap in this
-    # test. They say *could not check* in THREE different vocabularies: `cannot_check` with a
-    # reason; `chain`'s `status: "CANNOT_CHECK"`, a verdict in a closed enum; and `report`'s and
-    # `verify`'s `verdict: "NO PIN"`. A universal assertion would have to hand-list all three,
+    # test. They say *could not check* in three different vocabularies: `cannot_check` with a
+    # reason; `chain`'s `status: "CANNOT_CHECK"`, a verdict in a closed enum; and `report`'s
+    # `verdict: "NO PIN"`. **This sentence said "`report`'s and `verify`'s `verdict`" and
+    # `verify`'s payload has never had a `verdict` key at all** — it disagreed with
+    # `_R16_INABILITY` six hundred lines below, which had the count pair. Corrected with J-18,
+    # which moved `verify` to a reason. A universal assertion would have to hand-list all three,
     # which is the stale-list pattern this repository keeps finding — so the divergence is
     # recorded in the ledger as its own question instead of papered over with a disjunction.
     # DERIVED FROM R-16's TABLE, NOT FROM A PREFIX AND A COUNT. This was
@@ -17940,8 +17949,9 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
     # `_R16_INABILITY` — itself scope-checked against the parser. That widens this from five
     # states to every reason-carrying one, which is most of J-32: `chain`, `log`, `lineage`,
     # `resources` and `show` were unchecked for content and are not now. `check` is excluded
-    # because its field is `examined_nothing` (R-9 keeps that name), and `report` and `verify`
-    # because their vocabulary is a VERDICT, not a reason — for them the inability IS the answer.
+    # because its field is `examined_nothing` (R-9 keeps that name), and `report` because its
+    # vocabulary is a VERDICT — for it the inability IS the answer. **`verify` joined this set in
+    # J-18**, which is the widening this derived scope exists to deliver without an edit here.
     mine = {
         name: argv
         for name, argv in complies.items()
@@ -18587,8 +18597,11 @@ def test_a_cannot_check_payload_has_the_same_keys_as_a_real_one():
 
 
 #: [ADR-0017 R-16]. Where each command says it could not check. The KEY is the subcommand and the
-#: VALUE is the field a consumer reads — `verify` is a pair, because its answer is a count
-#: relationship rather than a field, which R-16 names as the weakest of the five shapes.
+#: VALUE is the field a consumer reads.
+#:
+#: J-18 CHANGED `verify` FROM A COUNT PAIR TO A REASON. R-16 gave it `artifacts_seen > 0` with
+#: `artifacts_pinned = 0` and called it the weakest of the five shapes; measured, it was not weak
+#: but FALSE in three of the four states `verify` exits 2 in. It carries `cannot_check` now.
 _R16_INABILITY = {
     "impact": ("cannot_check",),
     "diff": ("cannot_check",),
@@ -18607,7 +18620,11 @@ _R16_INABILITY = {
     # verdict, `cannot_check` says which of the four routes reached the only verdict that has
     # several. R-16 named the missing reason as open; this closed it.
     "chain": ("status", "cannot_check"),
-    "verify": ("artifacts_seen", "artifacts_pinned"),
+    # J-18. WAS `("artifacts_seen", "artifacts_pinned")` — a relationship, and false in three of
+    # the four states it describes. The counters are all still there and unrenamed; what is new
+    # is the conclusion drawn from them, which is the part a consumer cannot derive because its
+    # second clause is ordered against the exit-1 check.
+    "verify": ("cannot_check",),
 }
 
 
@@ -18664,6 +18681,152 @@ def test_every_json_command_says_it_could_not_check_where_r16_says_it_does(tmp_p
         "[ADR-0017 R-16] each of these must carry the field the table names, in every state "
         f"including the ordinary one: {missing}"
     )
+
+
+def test_verify_says_it_could_not_check_in_all_four_states_and_never_over_a_finding(
+    tmp_path, monkeypatch, capsys
+):
+    """[J-18] [ADR-0017 R-14] [ADR-0017 R-16]. The conclusion travels, not five counters.
+
+    R-16's table gave `verify` a COUNT RELATIONSHIP — `artifacts_seen > 0` with
+    `artifacts_pinned = 0` — and called it the weakest of the five shapes. **It is not weak, it
+    is false in three of the four states this command exits 2 in**, and in two of them from the
+    opposite side of the inequality:
+
+    | state | `artifacts_seen` | `artifacts_pinned` | R-16 as written |
+    |---|---|---|---|
+    | a file carrying no pin | > 0 | 0 | holds |
+    | an empty directory | 0 | 0 | **fails `> 0`** |
+    | a path that is not there | 0 | 0 | **fails `> 0`** |
+    | every pin UNVERIFIABLE | > 0 | > 0 | **fails both** |
+
+    The counts are written as RELATIONS because the exact numbers are a property of the fixture,
+    not of the state — the reviewer measured `1, 1` for the fourth and this test's project holds
+    five files, so a table of literals would have pinned one fixture and called it the state.
+
+    A consumer applying it literally read *verify could check* in three states out of four.
+
+    AND THE TRUE RELATIONSHIP IS WORSE THAN THE WRONG ONE, which is why this row added a field
+    rather than corrected a sentence. It is two clauses over five counters whose ORDER matters:
+    a report with one STALE artifact has `ok == 0` as well, so a consumer testing `ok == 0`
+    calls a FINDING an inability — the exact inversion R-16 exists to prevent — and the
+    precedence that stops it lives in `_verify`'s branch order where no consumer can see it.
+    That trap is asserted below rather than described.
+
+    ADDITIVE: every counter keeps its name and its place, and both pages are byte-identical.
+    """
+    #: The four states, each built rather than constructed — and the premise of each asserted,
+    #: because a fixture that stops reaching its state otherwise passes this test in silence.
+    unpinned = tmp_path / "loose.txt"
+    unpinned.write_text("no pin here\n", encoding="utf-8")
+    hollow = tmp_path / "hollow"
+    hollow.mkdir()
+    absent = tmp_path / "not-there.txt"
+    proj = _unverifiable_artifact(tmp_path, monkeypatch)
+
+    #: Each state's premise is a RELATION over the counters, asserted before anything is read
+    #: off the report — a fixture that stops reaching its state must fail rather than pass.
+    states = {
+        "a file carrying no pin": (
+            [str(unpinned)],
+            tmp_path,
+            lambda r: r["artifacts_seen"] > 0 and r["artifacts_pinned"] == 0,
+        ),
+        "an empty directory": (
+            [str(hollow)],
+            tmp_path,
+            lambda r: r["artifacts_seen"] == 0 and r["artifacts_pinned"] == 0,
+        ),
+        "a path that is not there": (
+            [str(absent)],
+            tmp_path,
+            lambda r: r["artifacts_seen"] == 0 and r["artifacts_pinned"] == 0,
+        ),
+        "every pin UNVERIFIABLE": (
+            [str(proj)],
+            proj,
+            lambda r: (
+                r["artifacts_pinned"] > 0
+                and r["ok"] == 0
+                and not (r["stale"] or r["gone"] or r["altered"])
+            ),
+        ),
+    }
+    for name, (paths, root, premise) in states.items():
+        report = runprov.verify.verify([pathlib.Path(x) for x in paths], root)
+        assert premise(report), (
+            f"the premise of {name!r} moved: {report['artifacts_seen']} seen, "
+            f"{report['artifacts_pinned']} pinned, {report['ok']} ok, {report['stale']} stale"
+        )
+
+        # R-16 AS IT WAS WRITTEN, evaluated — so the table's claim is measured here and not
+        # merely recounted in the docstring above.
+        as_written = report["artifacts_seen"] > 0 and report["artifacts_pinned"] == 0
+        inability = runprov.verify.cannot_check(report)
+        assert inability, f"{name}: exit 2 and the payload says nothing went wrong"
+        if name != "a file carrying no pin":
+            assert not as_written, (
+                f"{name} is one of the three states R-16's relationship got wrong; if it now "
+                "holds, this row's evidence has changed and the table should be re-read"
+            )
+
+        # THE EXIT CODE AND THE REASON ARE THE SAME DECISION, so a consumer keying on either
+        # gets the same answer. This is the equivalence the count relationship could not give.
+        capsys.readouterr()
+        code = runprov.__main__.main(["verify", *paths, "--root", str(root), "--format", "json"])
+        captured = capsys.readouterr()
+        assert code == cli.CANNOT_CHECK, f"{name} must reach exit 2 for this row to be about it"
+        body = json.loads(captured.out)
+        assert body["cannot_check"] == inability, f"{name}: {body['cannot_check']!r}"
+
+        # AND THE PAGE SAYS THE SAME SENTENCE, read off the same fold rather than composed
+        # beside it — J-04 is this defect in `chain`'s renderer, found in the same audit.
+        assert f"# NOTHING CHECKED: {inability}." in captured.err, (
+            f"{name}: the page and the payload must not word one conclusion twice:\n{captured.err}"
+        )
+        assert set(body) == set(runprov.verify.payload(report)), name
+
+    # THE TRAP, ASSERTED. A STALE report has `ok == 0` exactly as the all-UNVERIFIABLE one does,
+    # and it is a FINDING: exit 1, nothing to explain. A consumer deriving the inability from
+    # the counters without the exit-1 clause reports it as an inability, and the fold's second
+    # clause is the only thing between the two. Built by changing an input after the run, which
+    # is the ordinary way an artifact goes stale.
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    (tmp_path / "in.tsv").write_text("id\n1\n", encoding="utf-8")
+    with runprov.Run("s", {}, provenance=tmp_path / "out.prov.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("id\n1\n")
+    (tmp_path / "in.tsv").write_text("id\n2\n", encoding="utf-8")
+
+    stale = runprov.verify.verify([tmp_path / "out.tsv"], tmp_path)
+    assert stale["stale"] == 1 and stale["artifacts_pinned"] == 1, (
+        f"the premise: one pinned artifact and it is stale: {stale}"
+    )
+    assert stale["ok"] == 0, (
+        "and `ok` is 0 here TOO, which is the whole trap — the counter that means *nothing "
+        "could be compared* in the fourth state means *nothing passed* in this one"
+    )
+    assert runprov.verify.cannot_check(stale) is None, (
+        "[ADR-0017 R-8] a finding is not an inability: null here is *there is nothing to "
+        "explain*, and a reason would contradict the exit code"
+    )
+    capsys.readouterr()
+    assert (
+        runprov.__main__.main(["verify", str(tmp_path / "out.tsv"), "--root", str(tmp_path)]) == 1
+    )
+    capsys.readouterr()
+
+    # AND THE CLEAN CASE, so the field is not simply always set. Restore the input.
+    (tmp_path / "in.tsv").write_text("id\n1\n", encoding="utf-8")
+    good = runprov.verify.verify([tmp_path / "out.tsv"], tmp_path)
+    assert good["ok"] == 1 and runprov.verify.cannot_check(good) is None
+    capsys.readouterr()
+    assert (
+        runprov.__main__.main(["verify", str(tmp_path / "out.tsv"), "--root", str(tmp_path)]) == 0
+    )
+    capsys.readouterr()
 
 
 def test_chain_names_which_route_reached_cannot_check_and_reads_it_off_one_fold():

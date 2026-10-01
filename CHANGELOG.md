@@ -148,6 +148,40 @@ the test asserts the same expression rather than a second copy of the list.
 Measured over all four verdicts an artifact can have, `report` and `verify` now return the same
 code for the same file: OK 0/0, STALE 1/1, UNVERIFIABLE 2/2, NO PIN 2/2.
 
+### Fixed — `runprov verify --format json` carried the counters and not the conclusion
+
+Audit J, J-18. ADR-0017's R-16 table told a consumer to read *could not check* off a count
+relationship — `artifacts_seen > 0` with `artifacts_pinned = 0`. Measured, that is **false in
+three of the four states this command exits 2 in**, twice from the other side of the inequality:
+
+| state | `artifacts_seen` | `artifacts_pinned` | R-16 as written |
+|---|---|---|---|
+| a file carrying no pin | > 0 | 0 | holds |
+| an empty directory | 0 | 0 | fails `> 0` |
+| a path that is not there | 0 | 0 | fails `> 0` |
+| every pin UNVERIFIABLE | > 0 | > 0 | fails both |
+
+A consumer applying it literally read *verify could check* in three states out of four. The ADR
+called this entry *"the weakest of the five"*; it was not weak, it was wrong in the majority of
+its states, and the fourth route — every pin unreadable — it did not describe at all.
+
+**The true relationship was not something to document instead**, which is why this is a field.
+It is two clauses over five counters whose order matters: a report with one STALE artifact has
+`ok == 0` as well, so a consumer testing `ok == 0` reports a FINDING as an inability — the
+inversion the rule exists to prevent — and the precedence that stops it lived in the CLI's
+branch order where nothing published it. `verify.cannot_check()` is now that fold, the payload
+carries its result, and both of the command's *NOTHING CHECKED* sentences are printed from it
+instead of composed beside it.
+
+Additive: every counter keeps its name, its value and its place, `cannot_check` is appended, and
+both pages are byte-identical. Four controls; dropping the exit-1 clause, silencing the second
+route, dropping the key and letting the page recompose its sentence are each caught, and two of
+them by the derived R-15 and R-16 checks without an edit to those tests.
+
+Two statements about this command were also corrected rather than quietly dropped: the test
+suite's copy of R-16 said `verify`'s vocabulary was `verdict: "NO PIN"` — a key its payload has
+never had — while the table six hundred lines below carried the count pair.
+
 ### Fixed — `runprov chain`'s page and its JSON named different routes to one verdict
 
 Audit J, J-04. The page and the payload agreed on the verdict and disagreed on its reason.

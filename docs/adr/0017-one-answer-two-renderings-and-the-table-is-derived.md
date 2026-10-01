@@ -200,11 +200,11 @@ inside it, and the answer turned out not to be one field. Measured across all te
 | `check` | `examined_nothing` | a REASON, or `null` |
 | `report` | `verdict` ∈ `NO PIN`, `UNVERIFIABLE` | a VALUE in a closed enum |
 | `chain` | `status` = `CANNOT_CHECK`, **and `cannot_check` for which of four routes** | a VALUE in a closed enum, plus a REASON |
-| `verify` | `artifacts_seen` > 0 with `artifacts_pinned` = 0 | a COUNT RELATIONSHIP |
+| `verify` | `cannot_check` | a REASON, or `null` |
 
-**These are not an inconsistency to unify, and that is the ruling.** For `report`, `chain` and
-`verify`, *could not check* IS the answer — a legitimate member of the verdict's own vocabulary,
-not a failure to produce one. For the other seven there is no verdict enum, so the inability is a
+**These are not an inconsistency to unify, and that is the ruling.** For `report` and `chain`,
+*could not check* IS the answer — a legitimate member of the verdict's own vocabulary, not a
+failure to produce one. For the other eight there is no verdict enum, so the inability is a
 separate fact and needs its own key. A command that has a verdict states it there; a command that
 has none carries a reason.
 
@@ -213,10 +213,33 @@ would be the one thing R-9 forbids: it is the structure's own property, and the 
 structure's names. The six that carry `cannot_check` have no such conflict — there the key is
 added by the payload function and shadows nothing.
 
-**`verify`'s is the weakest of the five and is named as such.** A consumer must compare two
-counters rather than read a field. The counts are deliberate — `verify`'s own docstring argues
-that listing every unpinned file buries the finding — so this is a consequence of that choice
-rather than an oversight, and changing it would mean changing released output.
+> **CORRECTED 2026-10-01 by J-18. `verify`'s entry was `artifacts_seen` > 0 with
+> `artifacts_pinned` = 0, and the paragraph here called it "the weakest of the five" — a
+> consumer must compare two counters rather than read a field, which was presented as a
+> consequence of `verify` counting unpinned files rather than listing them.**
+>
+> **It was not weak, it was FALSE in three of the four states `verify` exits 2 in**, and in two
+> of them from the other side of the inequality: an empty directory and a path that is not there
+> both give `artifacts_seen = 0`, and a report whose every pin is UNVERIFIABLE — the second
+> route, which the entry did not describe at all — gives both counters non-zero. A consumer
+> applying the rule literally read *verify could check* in three states out of four.
+>
+> **And the true relationship was not something to document instead**, which is why this became
+> a field rather than a corrected sentence. It is two clauses over five counters whose ORDER
+> matters: a report with one STALE artifact has `ok == 0` as well, so a consumer testing
+> `ok == 0` calls a FINDING an inability — the inversion this rule exists to prevent — and the
+> precedence that stops it lived in `__main__._verify`'s branch order, where no consumer can see
+> it. `verify.cannot_check()` is now that fold, and both of the command's *NOTHING CHECKED*
+> sentences are printed from it rather than composed beside it.
+>
+> **The objection in the paragraph above does not apply to the fix**: every counter keeps its
+> name, its value and its place, and `cannot_check` is appended. Nothing released changed, and
+> both pages are byte-identical.
+>
+> `report` is now the only command whose inability is a verdict and nothing else. **The
+> test's copy of this table said `verify`'s vocabulary was `verdict: "NO PIN"`** — a key
+> `verify`'s payload has never had — while `_R16_INABILITY` six hundred lines below carried the
+> count pair. Both are corrected.
 
 **A test asserts the table's SCOPE against the parser** — that it names exactly the commands
 answering in JSON — and asserts each named field is present in that command's payload. R-3's and

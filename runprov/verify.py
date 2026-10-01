@@ -729,6 +729,52 @@ def collect(
     return sorted(found), skipped, debris, unreadable
 
 
+def cannot_check(report: dict[str, typing.Any]) -> str | None:
+    """Whether this report is an answer, and when it is not, WHY. ONE fold. J-18.
+
+    [ADR-0017 R-14] [ADR-0017 R-16]. The payload carried the five counters this decision is
+    made from and not the decision, so R-16's table had to state the relationship instead —
+    `artifacts_seen > 0` with `artifacts_pinned = 0`. **Measured, that is false in three of the
+    four states `verify` exits 2 in:** an empty directory and a path that is not there both give
+    `artifacts_seen = 0`, failing `> 0` from the other side, and a report whose every pin is
+    UNVERIFIABLE gives `seen = 1, pinned = 1` — the second route, which the table does not
+    describe at all. A consumer applying the rule literally read *verify could check* in three
+    states out of four.
+
+    AND THE TRUE RELATIONSHIP IS NOT SOMETHING TO DOCUMENT INSTEAD, which is the reason this
+    function exists rather than a corrected sentence in the ADR. It is two clauses over five
+    counters **whose order matters**: a report with one STALE artifact also has `ok == 0`, so a
+    consumer testing `ok == 0` reads *could not check* over a file this command exits 1 about —
+    a finding reported as an inability, which is the exact inversion R-16 exists to prevent. The
+    precedence lives in `_verify`'s branch order and nowhere a consumer can see it.
+
+    So the conclusion travels. J-01 is the same shape one command over, and I-08 is the shape
+    one level down: the inputs to a judgement are not the judgement.
+
+    ADDITIVE on output 0.6.0 shipped — every counter keeps its name and place, and this is a new
+    key. R-9: nothing is renamed on the way out.
+    """
+    pinned = report["artifacts_pinned"]
+    if not pinned:
+        # ROUTE 1, and it is NOT `seen == 0`: a directory full of files none of which carries a
+        # pin is the state this command was written to refuse, and `seen` is 1 there.
+        return (
+            f"{report['artifacts_seen']} file(s) examined under {report['root']}, "
+            f"none carries a pin"
+        )
+    if report["stale"] or report["gone"] or report.get("altered"):
+        # CHECKED, AND SOMETHING IS WRONG. A finding is not an inability, and this clause is
+        # the one a consumer deriving the answer from the counters would omit — `ok` is 0 here
+        # too. R-8: null is *there is nothing to explain*, not *unknown*.
+        return None
+    if not report["ok"]:
+        # ROUTE 2, THE OTHER WAY TO CHECK NOTHING: every pin was unreadable. Zero comparisons
+        # were made, exactly as in route 1, and the counters say so in a completely different
+        # combination.
+        return f"{pinned} pinned artifact(s) under {report['root']}, and not one could be compared"
+    return None
+
+
 def payload(report: dict[str, typing.Any]) -> dict[str, typing.Any]:
     """`verify`'s report as an ANSWER, which is what R-5 versions. I-18.
 
@@ -741,7 +787,10 @@ def payload(report: dict[str, typing.Any]) -> dict[str, typing.Any]:
     `schema` FIRST, as the other four write it — a consumer that streams the object sees what
     it is holding before it has to hold any of it.
     """
-    return {"schema": SCHEMA, **report}
+    # `cannot_check` LAST, appended, so every key 0.6.0 emitted keeps its place — I-24 is the
+    # row about changing released output quietly, and J-03 measured that 8 of `chain`'s 10 keys
+    # had already moved under exactly this kind of edit.
+    return {"schema": SCHEMA, **report, "cannot_check": cannot_check(report)}
 
 
 def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str, typing.Any]:
