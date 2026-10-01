@@ -12780,6 +12780,79 @@ def test_resources_cli_selects_by_script_and_takes_the_most_recent(tmp_path, cap
     assert "nosuch" in capsys.readouterr().err
 
 
+def test_resources_says_when_margin_does_not_apply_instead_of_ignoring_it(tmp_path, capsys):
+    """[J-16]. A flag accepted and silently ignored, in three of five formats.
+
+    `--margin` scales a REQUEST for a scheduler. `--format slurm` and `--format k8s` apply it
+    and print the multiplier on the line it was applied to; `tsv`, `json` and the default page
+    report the MEASUREMENT, and passing it there changed nothing and said nothing — output
+    byte-identical with and without the flag. **The row named two formats; the default text view
+    ignores it too, which makes three.**
+
+    THE TREATMENT IS `verify --log`'s, not `log --unreadable`'s, and the difference is whether
+    an honest "ignored" semantics exists. It does here: the margin applies to a request and
+    these formats are not one, so the flag is accepted for uniformity and SAID to be ignored.
+    `log --unreadable` is refused instead, because every other flag on `log` names a record and
+    an unreadable line has none — there is nothing to announce.
+
+    `--margin` NOW DEFAULTS TO `None`, which is the whole mechanism. With `default=1.5` there is
+    no way to tell *not asked* from *asked for 1.5*, so the note would have to print on every
+    `--format json` invocation or on none of them. `_log_selectors` states the same rule for
+    `log`'s flags: a default is a value, and absence is what says nobody asked.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    with runprov.Run("r", {}, provenance=tmp_path / "p.json"):
+        pass
+    log = str(tmp_path / "h.jsonl")
+
+    def run(*extra):
+        capsys.readouterr()
+        code = runprov.__main__.main(["resources", "--log", log, *extra])
+        seen = capsys.readouterr()
+        return code, seen.out, seen.err
+
+    applies = ("slurm", "k8s")
+    reports = ("text", "tsv", "json")
+    for fmt in applies + reports:
+        base = [] if fmt == "text" else ["--format", fmt]
+
+        # WITHOUT THE FLAG, NO NOTE — in every format, or the note is noise on every run.
+        code, plain, quiet = run(*base)
+        assert code == 0, (fmt, quiet)
+        assert "--margin" not in quiet, (
+            f"{fmt}: a note about a flag nobody passed is printed on every invocation: {quiet}"
+        )
+
+        code, scaled, said = run(*base, "--margin", "3")
+        assert code == 0, (fmt, said)
+        if fmt in applies:
+            assert scaled != plain, f"{fmt} renders a request, so the margin must move it"
+            assert "--margin" not in said, (
+                f"{fmt} APPLIES the margin, so there is nothing to announce: {said}"
+            )
+        else:
+            assert scaled == plain, (
+                f"the premise of the row: {fmt} output is byte-identical with the flag and "
+                "without it"
+            )
+            assert "NOTE: --margin 3 is accepted for uniformity and ignored" in said, (
+                f"{fmt} ignores the flag and must say so rather than appear to have used it: {said}"
+            )
+            assert "slurm" in said and "k8s" in said, (
+                "and it names where the flag DOES apply, because a note that only says `no` "
+                f"leaves the reader to find that out: {said}"
+            )
+
+    # AND THE DEFAULT IS UNCHANGED WHERE IT IS USED, which the `None` default had to preserve:
+    # 1.5 is still the multiplier a bare `--format slurm` renders.
+    _, bare, _ = run("--format", "slurm")
+    _, explicit, _ = run("--format", "slurm", "--margin", "1.5")
+    assert bare == explicit, (
+        "`--margin` moved to `default=None` so that *not asked* is distinguishable; the value "
+        f"applied when nobody asks must still be 1.5:\n{bare}\n{explicit}"
+    )
+
+
 def test_resources_cli_margin_is_applied_and_visible(tmp_path, capsys):
     """[ADR-0013 R-15]. The margin is the user's to set, and the rendered note states
     which was used."""
@@ -16748,6 +16821,68 @@ def _unverifiable_artifact(tmp_path, monkeypatch, name="out.tsv"):
     return proj
 
 
+def test_verifys_in_process_dicts_carry_no_schema_and_only_the_payload_adds_one(tmp_path):
+    """[J-28] [ADR-0017 R-5]. A correct design whose load-bearing property nothing defended.
+
+    `verify.payload` is a WRAPPER rather than a key inside `verify()`. The reviewer added
+    `"schema": SCHEMA` inside `verify()` and **the mutation survived the full suite at rc 0**,
+    with the published payload BYTE-IDENTICAL — `payload` spreads the report after its own
+    `schema` key, so the duplicate collapses onto the same value. A property argued in a
+    docstring and defended by nothing is a docstring, not a contract.
+
+    **AND THE DOCSTRING'S REASON WAS WRONG TWICE, which this row found while building the
+    guard.** It said the harm was "every caller that never emits JSON, including `report`, which
+    reads this result". Measured: `verify()` has exactly ONE caller — `__main__._verify` — and
+    that caller is the JSON emitter, so the stated harm had no instance; and `report` reads
+    `verify_artifact`, not `verify`. So the guard covers BOTH dicts, and the one with the real
+    cross-command consumer is the per-artifact one.
+    """
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    with runprov.Run("r", {}, provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("a\n")
+    artifact = tmp_path / "out.tsv"
+
+    report = runprov.verify.verify([tmp_path], tmp_path)
+    assert "schema" not in report, (
+        "[J-28] `verify()`'s result is an in-process dict; only `payload()` may publish a "
+        f"shape name: {sorted(report)}"
+    )
+    #: THE DICT WITH THE REAL CROSS-COMMAND CONSUMER. `report.build` calls this one and folds it
+    #: into an answer versioned `runprov.report.v1`.
+    per_artifact = runprov.verify.verify_artifact(artifact, tmp_path)
+    assert "schema" not in per_artifact, (
+        "[J-28] `report` consumes this dict and versions its own answer separately, so a "
+        f"`{runprov.verify.SCHEMA}` key here would claim a shape `report` does not promise: "
+        f"{sorted(per_artifact)}"
+    )
+    assert runprov.report.SCHEMA != runprov.verify.SCHEMA, (
+        "the two commands version their answers separately, which is what the wrapper protects"
+    )
+
+    published = runprov.verify.payload(report)
+    assert published["schema"] == runprov.verify.SCHEMA
+    assert next(iter(published)) == "schema", (
+        "and it is FIRST, so a consumer streaming the object learns what it is holding before "
+        "it has to hold any of it"
+    )
+    # DERIVED, so a third addition is named here rather than discovered by a consumer.
+    assert set(published) - set(report) == {"schema", "cannot_check"}, (
+        f"the wrapper adds `schema` and J-18's `cannot_check`: {set(published) - set(report)}"
+    )
+    assert not set(report) - set(published), "and it drops nothing the report carried"
+
+    # AND `report`'s OWN PAYLOAD CARRIES ITS OWN SCHEMA AND NOT THIS ONE, which is the harm the
+    # property prevents, asserted at the consumer rather than argued at the producer.
+    page = runprov.report.payload(runprov.report.build(artifact, tmp_path))
+    assert page["schema"] == runprov.report.SCHEMA, page["schema"]
+    assert runprov.verify.SCHEMA not in json.dumps(page), (
+        f"`{runprov.verify.SCHEMA}` must not appear anywhere in `report`'s answer"
+    )
+
+
 def test_verify_says_which_named_paths_were_not_there_and_does_not_pass(
     tmp_path, monkeypatch, capsys
 ):
@@ -19228,6 +19363,42 @@ _R16_INABILITY = {
     # second clause is ordered against the exit-1 check.
     "verify": ("cannot_check",),
 }
+
+
+def test_export_is_outside_r15_and_r16_by_construction_and_not_by_omission():
+    """[J-26] [ADR-0017 R-3] [ADR-0017 R-15] [ADR-0017 R-16]. A scope gap, closed as a ratchet.
+
+    R-3's table excludes `export` with a reason — *"two standard vocabularies already, and this
+    would be a third"* — and R-15 and R-16, written later, did not mention it, though R-15's
+    scope reads *whenever THIS PACKAGE answers*. Taken literally that required a
+    `runprov.export.v1` object on the stdout of the one command whose purpose is to speak
+    RO-Crate and PROV.
+
+    THE EXCLUSION IS NOW STATED IN ALL THREE PLACES, and this is the ratchet rather than the
+    statement: `export` is absent from the JSON family BY CONSTRUCTION, because
+    `_cli_json_commands()` reads the parsers. **So this assertion is not a tautology** — it is
+    green today and it fails on the day somebody gives `export` a `json` format, which is
+    exactly when the exclusion has to be re-read instead of lapsing in silence.
+    """
+    family = _cli_json_commands()
+    assert "export" not in family, (
+        "[J-26] `export` has gained a `--format json`. ADR-0017 excludes it from R-3, R-15 and "
+        "R-16 because its stdout is RO-Crate and PROV — vocabularies that carry their own "
+        "schemas — so either that reasoning no longer holds and the ADR must be amended, or the "
+        f"new format is a mistake. It is not a list to extend quietly: {sorted(family)}"
+    )
+    # AND THE COMMAND EXISTS, so this cannot pass by `export` having been deleted or renamed —
+    # which is the way a ratchet over an absence goes quietly green.
+    assert "export" in _cli_subcommands(), "`export` is still a subcommand; this guards it"
+
+    # ITS OWN FORMATS, so the reason the ADR gives is CHECKED and not merely quoted: two
+    # standard vocabularies, and neither is this project's answer shape. Read off the constant
+    # the parser is given — `choices=EXPORT_FORMATS` is a Name, so an AST walk for a list
+    # literal finds nothing, which is the first version of this assertion and why it failed.
+    assert set(runprov.__main__.EXPORT_FORMATS) == {"ro-crate", "prov"}, (
+        "ADR-0017 excludes `export` because its formats carry their own schemas; that reason is "
+        f"only true of these two: {sorted(runprov.__main__.EXPORT_FORMATS)}"
+    )
 
 
 def test_every_json_command_says_it_could_not_check_where_r16_says_it_does(tmp_path, capsys):

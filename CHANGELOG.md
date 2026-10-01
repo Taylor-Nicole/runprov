@@ -120,6 +120,60 @@ front of a string cannot detect a rendering that shows only the front.** That is
 one level in: not the guard's logic, but the range its substitutions cover, failing to reach what
 it reports on.
 
+### Fixed — `runprov resources --margin` is accepted and ignored in silence no longer
+
+Audit J, J-16. `--margin` scales a REQUEST for a scheduler. `--format slurm` and `--format k8s`
+apply it and print the multiplier on the line it was applied to; `tsv`, `json` and the default
+page report the MEASUREMENT, and passing it there changed nothing and said nothing — output
+byte-identical with and without the flag. **The row named two formats; the default text view
+ignores it too, which makes three.**
+
+The treatment is the one `verify` gives `--log`: accepted for uniformity and *said* to be
+ignored, naming the two formats where it does apply. `log --unreadable` is refused instead, and
+the difference is whether an honest "ignored" semantics exists — here it does, because the margin
+applies to a request and these formats are not one.
+
+`--margin` now defaults to `None`, which is the mechanism rather than a detail: with
+`default=1.5` there is no way to tell *not asked* from *asked for 1.5*, so the note would have to
+print on every `--format json` invocation or on none of them. `_log_selectors` states the same
+rule for `log`'s flags — a default is a value, and absence is what says nobody asked. The
+multiplier applied when nobody asks is still 1.5, asserted.
+
+### Fixed — `verify`'s in-process dicts are guarded against carrying a published schema
+
+Audit J, J-28, and the reviewer's own measurement is the finding: they added `"schema": SCHEMA`
+inside `verify()` and **the mutation survived the full suite at rc 0**, with the published payload
+byte-identical — `payload` spreads the report after its own `schema` key, so the duplicate
+collapses onto the same value. Sound reasoning, defended by nothing.
+
+**And the reasoning as written was wrong twice, which this row found while building the guard.**
+The docstring said putting `schema` in the return value "would have handed it to every caller
+that never emits JSON, including `report`, which reads this result". Measured: `verify()` has
+exactly **one** caller, `__main__._verify`, and that caller is the JSON emitter — so the stated
+harm had no instance. And `report` does not read that result at all; it reads `verify_artifact`,
+whose dict is `artifact`, `inputs`, `status`.
+
+The property is right and now names its real subject: the cross-command consumer is
+`verify_artifact`'s dict, which `report` folds into an answer versioned `runprov.report.v1`, so a
+`runprov.verify.v1` key inside would claim a shape `report` does not promise. Both dicts are
+guarded, and the harm is asserted at the consumer — `runprov.verify.v1` appears nowhere in
+`report`'s answer.
+
+### Fixed — ADR-0017's R-15 and R-16 now state `export`'s exclusion
+
+Audit J, J-26. R-3's table excludes `export` with a reason — *"two standard vocabularies
+already, and this would be a third"* — and R-15 and R-16, written later, did not mention it,
+though R-15's scope reads *whenever THIS PACKAGE answers*. Read literally that required a
+`runprov.export.v1` object on the stdout of the one command whose purpose is to speak RO-Crate
+and PROV: a scope gap rather than a violation, and the kind that is resolved by whoever reads it
+next rather than by the rule.
+
+The exclusion is stated in all three places now, and the test side needed no change — which is
+the point. `_cli_json_commands()` reads the parsers, so `export` is absent by construction rather
+than by anyone remembering. A ratchet asserts that, and it is not a tautology: it fails the day
+`export` is given a `json` format, which is exactly when the exclusion has to be re-read. The
+reason the ADR gives is checked too, against `EXPORT_FORMATS` itself.
+
 ### Fixed — `runprov log --limit N` reported "nothing failed" over a history with a failure
 
 Audit J, J-14. `failed` sat beside `total` and was counted inside `emit`, which runs once per

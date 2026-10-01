@@ -1967,14 +1967,31 @@ def _resources(args: argparse.Namespace) -> int:
         return 2
 
     m = resources_mod.from_record(found["resources"])
+    # J-16. ACCEPTED FOR UNIFORMITY AND SAID TO BE IGNORED, which is the treatment `verify`
+    # gives `--log` four hundred lines below. `--margin` scales a REQUEST for a scheduler, and
+    # `tsv`, `json` and the default page are the MEASUREMENT — so there is an honest "ignored"
+    # semantics to announce here, unlike `log --unreadable`, which is refused precisely because
+    # it has none. Measured before this: output byte-identical with and without the flag, and
+    # nothing said, so a reader could believe their headroom had been applied.
+    scaling = args.format in ("slurm", "k8s")
+    if args.margin is not None and not scaling:
+        print(
+            f"# NOTE: --margin {args.margin:g} is accepted for uniformity and ignored by "
+            f"`--format {args.format}`,\n"
+            f"#   which reports what was MEASURED. The margin scales a request — it applies to "
+            f"`--format slurm`\n#   and `--format k8s`, where the multiplier is printed on the "
+            f"line it was applied to.",
+            file=sys.stderr,
+        )
+    margin = 1.5 if args.margin is None else args.margin
     if args.format == "tsv":
         header, row = resources_mod.snakemake_row(m)
         print("\t".join(header))
         print("\t".join(row))
     elif args.format == "slurm":
-        print("\n".join(resources_mod.render_slurm(m, args.margin)))
+        print("\n".join(resources_mod.render_slurm(m, margin)))
     elif args.format == "k8s":
-        print("\n".join(resources_mod.render_k8s(m, args.margin)))
+        print("\n".join(resources_mod.render_k8s(m, margin)))
     elif args.format == "json":
         # [ADR-0017 R-4]. `--margin` is deliberately absent from the payload: it scales a
         # REQUEST for a scheduler, and this is the MEASUREMENT. A consumer applying its own
@@ -2593,7 +2610,11 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument(
         "--margin",
         type=float,
-        default=1.5,
+        # J-16. `None`, NOT 1.5, SO THAT *NOT ASKED* IS DISTINGUISHABLE FROM *ASKED FOR 1.5*.
+        # With a concrete default there is no way to tell them apart, and the note below would
+        # have to print on every `--format json` invocation or none. `_log_selectors` states
+        # the same rule for `log`'s flags: a default is a value, and `null` is nobody asked.
+        default=None,
         help="multiply the measured floor by this before rendering a request (default 1.5)",
     )
     rs.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")

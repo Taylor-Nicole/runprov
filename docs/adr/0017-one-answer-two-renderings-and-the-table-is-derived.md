@@ -167,6 +167,24 @@ signal becomes total and a consumer needs one rule:
 > **stdout parses ⇒ this package answered, and the verdict says what it found or could not
 > establish. stdout empty ⇒ the command was not usable as invoked.**
 
+**`export` IS OUTSIDE THIS RULE AND R-16, and J-26 is the row that says so.** R-3's table
+excludes it with a stated reason — *"two standard vocabularies already, and this would be a
+third"* — and these two later rules did not mention it at all, though R-15's scope is written as
+*whenever THIS PACKAGE answers*. The gap was a scope question, not a violation: read literally,
+R-15 would require a `runprov.export.v1` object on the stdout of a command whose entire purpose
+is to speak RO-Crate and PROV, which is the third vocabulary R-3 refused.
+
+So the exclusion is the same one, stated once more here: **`export`'s stdout is somebody else's
+vocabulary, and those formats carry their own schemas.** Its exit-2 states — a sidecar it cannot
+read, a file that is not a runprov sidecar, a scope it was not given — name the path on stderr
+and leave stdout empty, which is R-15's *the command was not usable as invoked* and is correct
+for them.
+
+**This needs no change to the derived test and that is the point.** `_cli_json_commands()` reads
+the parsers for subcommands whose `--format` offers `json`, so `export` is absent by
+construction rather than by anyone remembering — and a ratchet asserts that, so the day `export`
+is given `--format json` the exclusion above has to be re-read instead of silently lapsing.
+
 This is additive. `chain`, `report` and `verify` already comply; `report` for an absent artifact,
 `impact` for an unrecorded file or a missing history, `diff` for a selector matching other than
 two runs, and `lineage` for a missing history do not, and gain payloads without any existing key

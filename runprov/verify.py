@@ -859,9 +859,22 @@ def payload(report: dict[str, typing.Any]) -> dict[str, typing.Any]:
 
     A WRAPPER RATHER THAN A KEY INSIDE `verify()`, because the two are different things. The
     dict `verify()` returns is an in-process result other code reads by key; the payload is the
-    published shape, and only the published shape needs to say which shape it is. Putting
-    `schema` in the return value would have handed it to every caller that never emits JSON,
-    including `report`, which reads this result and has a schema of its own.
+    published shape, and only the published shape needs to say which shape it is.
+
+    **J-28 CORRECTED THE REASON GIVEN HERE, WHICH WAS WRONG TWICE.** It said putting `schema` in
+    the return value "would have handed it to every caller that never emits JSON, including
+    `report`, which reads this result". Measured: `verify()` has exactly ONE caller,
+    `__main__._verify`, and that caller is the one that *does* emit JSON — so the stated harm
+    had no instance. And `report` does not read this result at all; it reads `verify_artifact`,
+    whose per-artifact dict is `artifact`, `inputs`, `status`.
+
+    THE PROPERTY IS STILL RIGHT AND NOW NAMES ITS REAL SUBJECT. The cross-command consumer is
+    `verify_artifact`'s dict, which `report` folds into an answer versioned `runprov.report.v1`
+    — so a `runprov.verify.v1` key inside it would claim a shape `report` does not promise.
+    Neither dict carries a schema; only this wrapper adds one. A test asserts both, because the
+    reviewer's mutation — `"schema": SCHEMA` inside `verify()` — left the published payload
+    BYTE-IDENTICAL (this function spreads the report after its own key, so the duplicate
+    collapses onto the same value) and survived the whole suite at rc 0.
 
     `schema` FIRST, as the other four write it — a consumer that streams the object sees what
     it is holding before it has to hold any of it.
