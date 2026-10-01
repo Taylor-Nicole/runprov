@@ -120,6 +120,33 @@ front of a string cannot detect a rendering that shows only the front.** That is
 one level in: not the guard's logic, but the range its substitutions cover, failing to reach what
 it reports on.
 
+### Fixed — `runprov log --limit N` reported "nothing failed" over a history with a failure
+
+Audit J, J-14. `failed` sat beside `total` and was counted inside `emit`, which runs once per
+record that survives `--limit`. Over four runs whose oldest failed:
+
+    $ runprov log --limit 2
+    # 2 of 4 run(s) from runs.jsonl          <- no FAILED clause at all
+    payload: shown 2, total 4, failed 0
+
+A truncation answered *nothing failed* about a history with a failure in it — and because the
+clause is conditional, the reader was not even shown a zero to doubt.
+
+**`total` is not the right denominator either, and that is why `matching` exists.** `total` is
+the history's size, and it has to be: it is the only thing separating *your selector matched
+nothing* from *the history is empty*, which `_log_answer`'s own docstring argues for. Scoping
+`failed` to it would report another script's failure to someone who asked about this one —
+measured, `log --script other` over a history whose `build` failed would say `1 FAILED`.
+
+So `failed` is scoped to the SELECTION: past the selectors, before the limit. Nothing in the
+payload stated that number, so a consumer could not tell what `failed` was out of; `matching`
+states it, and the page names it in the FAILED clause — `1 FAILED of 3 matching` — only when it
+differs from `shown`, so an ordinary page prints the clause it has printed since 0.6.0.
+
+This is the gap J-12 closed in `show` an hour earlier with `matched` beside `shown`: the same
+command family, the same flag, three scopes and two names. `log` now states all three — `total`
+for the history, `matching` for the selection, `shown` for the window.
+
 ### Fixed — `runprov show <target> --limit N` reported the narrowed count as the whole answer
 
 Audit J, J-12. `payload_runs` set `matched` to `len(views)` — the list **after** `--limit`

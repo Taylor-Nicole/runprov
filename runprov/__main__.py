@@ -485,6 +485,7 @@ def _log_answer(
     unreadable: int,
     selectors: dict[str, typing.Any],
     matched: bool | None,
+    matching: int = 0,
     unfinished: int = 0,
     cannot_check: str | None = None,
 ) -> dict[str, typing.Any]:
@@ -499,6 +500,19 @@ def _log_answer(
     an empty `records` list means one thing after a selector that matched nothing and another
     over a history with nothing in it, and a payload that served both the same way would hand
     a consumer the collapse A-08 spent a row removing.
+
+    `failed` IS SCOPED TO `matching`, NOT TO `shown` — J-14. It was counted inside `emit`, which
+    runs only for records that survive `--limit`, so over four runs whose oldest failed
+    `--limit 2` reported `shown 2, total 4, failed 0` and the page printed no FAILED clause at
+    all. A truncation silently answered *nothing failed* about a history with a failure in it.
+
+    AND `total` IS NOT ITS DENOMINATOR EITHER, which is why `matching` had to exist rather than
+    the count simply moving. `total` is the HISTORY's size — it has to be, because it is the only
+    thing separating *your selector matched nothing* from *the history is empty*, which is the
+    argument above — so scoping `failed` to it would report another script's failure to someone
+    who asked about this one. Measured: `log --script other` over a history whose `build` failed
+    would say `1 FAILED`. The honest scope is the SELECTION, and nothing in the payload stated
+    it, so a consumer could not tell what `failed` was out of.
 
     `unfinished` IS THE THIRD STATE THAT ARGUMENT MISSED — J-13. A history holding one start
     line and no record produced a payload equal in every content field to one over an EMPTY
@@ -528,6 +542,9 @@ def _log_answer(
         "shown": len(records),
         "total": total,
         "failed": failed,
+        # J-14. How many runs the SELECTORS matched, which is `failed`'s denominator and was
+        # computable from nothing else in this object.
+        "matching": matching,
         "unreadable": unreadable,
         # J-13. Runs whose start is in this history and whose record is not.
         "unfinished": unfinished,
@@ -1208,7 +1225,7 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
     keep: collections.deque[dict[str, typing.Any]] | None = (
         collections.deque(maxlen=args.limit) if args.limit else None
     )
-    bad = total = shown = n_failed = 0
+    bad = total = shown = n_failed = matching = 0
     # J-13. START LINES PAIRED AGAINST THEIR RECORDS, which is the only honest way to count
     # them: EVERY run leaves a start line and then a record, measured — two completed runs give
     # a four-line history — so a raw count of starts is the number of runs that BEGAN and would
@@ -1241,9 +1258,11 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
     collected: list[dict[str, typing.Any]] = []
 
     def emit(r: dict[str, typing.Any]) -> None:
-        nonlocal shown, n_failed
+        # J-14. `n_failed` IS NO LONGER COUNTED HERE. This runs once per record that survives
+        # `--limit`, so a failure older than the window was never counted — which is the whole
+        # row. It is counted where the selectors are applied instead.
+        nonlocal shown
         shown += 1
-        n_failed += r.get("status") == "failed"
         if args.format == "json":
             # [ADR-0017 R-3, amended]. THIS FORMAT MATERIALISES AND THE OTHERS DO NOT, by
             # construction rather than by oversight: an ANSWER is one object, so it cannot be
@@ -1294,6 +1313,10 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
             named_hits += 1
         if not matches(rec):
             continue
+        # J-14. PAST THE SELECTORS AND BEFORE THE LIMIT, which is the one place that scopes
+        # these two to what the caller asked about rather than to what fitted in the window.
+        matching += 1
+        n_failed += rec.get("status") == "failed"
         if keep is not None:
             keep.append(rec)
         else:
@@ -1315,6 +1338,7 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
                     selectors=_log_selectors(args),
                     # None WHEN NOTHING WAS NAMED, rather than True — see `_log_answer`.
                     matched=bool(named_hits) if named else None,
+                    matching=matching,
                     unfinished=len(pending),
                 ),
                 indent=2,
@@ -1325,7 +1349,16 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
     # they get from every other rendering.
     print(
         f"# {shown} of {total} run(s) from {path}"
-        + (f"; {n_failed} FAILED" if n_failed else "")
+        # J-14. THE DENOMINATOR IS NAMED ONLY WHEN IT DIFFERS FROM WHAT WAS SHOWN, so an
+        # ordinary page prints the clause it has printed since 0.6.0 and a truncated one stops
+        # leaving a reader to assume the failures were among the records in front of them.
+        + (
+            ""
+            if not n_failed
+            else f"; {n_failed} FAILED"
+            if matching == shown
+            else f"; {n_failed} FAILED of {matching} matching"
+        )
         + (f"; {bad} unreadable line(s) skipped" if bad else "")
         # J-13. NAMED ON THE PAGE AS WELL, conditional like the two clauses above it — so a
         # history with nothing unfinished prints the line it has always printed, and J-06's

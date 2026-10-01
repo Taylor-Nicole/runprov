@@ -18577,6 +18577,101 @@ def _resources_fixtures():
     ]
 
 
+def test_logs_failed_count_is_not_hidden_by_a_limit_nor_widened_by_the_history(
+    tmp_path, monkeypatch, capsys
+):
+    """[J-14] [ADR-0017 R-7] [ADR-0017 R-14]. A counter beside `total`, scoped to `shown`.
+
+    `n_failed` was incremented inside `emit`, which runs once per record that survives
+    `--limit`. So over four runs whose oldest failed:
+
+        log --limit 2   ->  shown 2, total 4, failed 0,  and the page printed NO FAILED clause
+
+    A truncation answered *nothing failed* about a history with a failure in it, and the clause
+    being conditional meant the reader was not even shown a zero to doubt.
+
+    **`total` IS NOT THE RIGHT DENOMINATOR EITHER, AND THAT IS WHY `matching` EXISTS.** `total`
+    is the HISTORY's size — it has to be, because it is the only thing separating *your selector
+    matched nothing* from *the history is empty*, which `_log_answer`'s own docstring argues — so
+    scoping `failed` to it reports another script's failure to someone who asked about this one.
+    Asserted below: `log --script other` over a history whose `build` failed must say 0.
+
+    So the scope is the SELECTION: past the selectors, before the limit. Nothing in the payload
+    stated that number, so a consumer could not tell what `failed` was out of; `matching` is it,
+    and it is the same gap J-12 closed in `show` an hour earlier with `matched` beside `shown`.
+    """
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "h.jsonl"
+    runprov.configure(root=tmp_path, run_log=log, auto_steps="off")
+    #: THE OLDEST RUN FAILS, so any window of the newest records excludes it — which is the
+    #: shape that made the count wrong and the only shape that proves it is right.
+    try:
+        with runprov.Run("build", {}, provenance=tmp_path / "p0.json"):
+            raise ValueError("boom")
+    except ValueError:
+        pass
+    for i in (1, 2):
+        with runprov.Run("build", {}, provenance=tmp_path / f"p{i}.json"):
+            pass
+    with runprov.Run("other", {}, provenance=tmp_path / "p9.json"):
+        pass
+
+    def answer(*extra):
+        capsys.readouterr()
+        runprov.__main__.main(["log", "--log", str(log), *extra, "--format", "json"])
+        body = json.loads(capsys.readouterr().out)
+        runprov.__main__.main(["log", "--log", str(log), *extra])
+        return body, capsys.readouterr().err
+
+    # 1. THE ROW: a limit must not hide a failure.
+    cut, err = answer("--limit", "2")
+    assert (cut["shown"], cut["matching"], cut["total"]) == (2, 4, 4), cut
+    assert cut["failed"] == 1, (
+        "[J-14] the oldest of four runs failed and `--limit 2` excludes it; `failed` was counted "
+        f"per emitted record and reported 0: {cut}"
+    )
+    assert "1 FAILED of 4 matching" in err, err
+
+    # 2. AND THE HISTORY MUST NOT WIDEN IT. `other` never failed, and `total` is 4 because the
+    #    history holds four runs — so a count scoped to `total` would accuse this selection.
+    theirs, err = answer("--script", "other")
+    assert (theirs["shown"], theirs["matching"], theirs["total"]) == (1, 1, 4), theirs
+    assert theirs["failed"] == 0, (
+        f"`other` has never failed; `build`'s failure must not reach this answer: {theirs}"
+    )
+    assert "FAILED" not in err, err
+
+    # 3. BOTH AT ONCE, which the row's wording did not reach: a selector narrows AND a limit
+    #    truncates, and the failure is outside the window but inside the selection.
+    both, err = answer("--script", "build", "--limit", "2")
+    assert (both["shown"], both["matching"], both["total"]) == (2, 3, 4), both
+    assert both["failed"] == 1 and "1 FAILED of 3 matching" in err, (both, err)
+
+    # 4. THE ORDINARY PAGE IS UNCHANGED, which is the constraint: this clause shipped in 0.6.0
+    #    and only the truncated form was wrong.
+    whole, err = answer()
+    assert (whole["shown"], whole["matching"], whole["failed"]) == (4, 4, 1), whole
+    assert "; 1 FAILED" in err and "of 4 matching" not in err, (
+        f"an untruncated page prints the 0.6.0 clause with no denominator appended: {err}"
+    )
+    named, err = answer("--script", "build")
+    assert (named["shown"], named["matching"], named["failed"]) == (3, 3, 1), named
+    assert "; 1 FAILED" in err and "matching" not in err, err
+
+    # 5. `--failed` STILL AGREES WITH ITSELF: it selects the class, so every matching record is a
+    #    failure and the two numbers are the same.
+    only, _ = answer("--failed")
+    assert (only["shown"], only["matching"], only["failed"]) == (1, 1, 1), only
+
+    # 6. ONE SHAPE PER COMMAND [J-21]: the no-history answer comes off the same builder.
+    present, _ = answer()
+    capsys.readouterr()
+    runprov.__main__.main(["log", "--log", str(tmp_path / "nope.jsonl"), "--format", "json"])
+    absent = json.loads(capsys.readouterr().out)
+    assert set(absent) == set(present), sorted(set(absent) ^ set(present))
+    assert absent["matching"] == 0 and absent["failed"] == 0, absent
+
+
 def test_log_tells_an_empty_history_from_one_holding_only_an_unsealed_start(
     tmp_path, monkeypatch, capsys
 ):
@@ -20540,6 +20635,7 @@ def test_every_field_the_log_payload_carries_is_stated_by_the_timeline(tmp_path)
             argparse.Namespace(script="", run_id="", failed=False, limit=0)
         ),
         matched=None,
+        matching=3,
         unfinished=4,
     )
     # A CLASSIFICATION THIS TEST CANNOT DERIVE, and the comment here used to claim it could:
@@ -20555,6 +20651,7 @@ def test_every_field_the_log_payload_carries_is_stated_by_the_timeline(tmp_path)
         "shown",
         "total",
         "failed",
+        "matching",
         "unreadable",
         "unfinished",
         "selectors",
@@ -20570,6 +20667,13 @@ def test_every_field_the_log_payload_carries_is_stated_by_the_timeline(tmp_path)
     assert "0 of 3 run(s)" in person
     assert f"{answer['failed']} FAILED" == "1 FAILED"
     assert f"{answer['unreadable']} unreadable line(s) skipped" == "2 unreadable line(s) skipped"
+    # J-14's DENOMINATOR IS STATED, in the clause the FAILED count grows when it differs from
+    # `shown`. It is `failed`'s scope, so a person told "1 FAILED" over a truncated page needs it
+    # to know the failure may not be among the records in front of them.
+    assert f"{answer['failed']} FAILED of {answer['matching']} matching" == "1 FAILED of 3 matching"
+    assert "FAILED of {matching} matching" in (
+        pathlib.Path(runprov.__main__.__file__).read_text(encoding="utf-8")
+    ), "and the clause the assertion above spells must be the one the command writes"
     # J-13's COUNTER IS STATED TOO, in the clause the tally appends for it. Conditional like the
     # two above — a history with none of them prints none of these clauses — and the condition
     # is why the wording is asserted here rather than the presence of a substring in some
@@ -26160,7 +26264,18 @@ def test_log_filters_compose_with_limit_while_streaming(tmp_path, capsys):
     rows = [json.loads(x) for x in seen.out.strip().splitlines()]
     assert len(rows) == 2
     assert all(r["script"] == "wanted" and r["status"] == "failed" for r in rows)
-    assert "2 of 30 run(s)" in seen.err and "2 FAILED" in seen.err
+    # J-14 CHANGED THE SECOND NUMBER HERE, from `"2 FAILED"`, and the old one was this row's
+    # defect sitting in an assertion: ten records are `wanted`, five of those failed, and
+    # `--limit 2` shows two — so `2 FAILED` was the count among the records that fitted in the
+    # window. It read as correct only because every shown record happened to be a failure.
+    # This test's subject is `--limit` taking the last N of what SURVIVED the filters, which is
+    # untouched; the count beside it was incidental, and it is the second existing assertion in
+    # this audit found pinning a defect it was not written about.
+    assert "2 of 30 run(s)" in seen.err, seen.err
+    assert "5 FAILED of 5 matching" in seen.err, (
+        "five of the ten `wanted` runs failed and two are shown, so the clause must name the "
+        f"denominator rather than report the window's own tally: {seen.err}"
+    )
 
 
 def test_log_counts_a_torn_line_it_streamed_past(tmp_path, capsys):
