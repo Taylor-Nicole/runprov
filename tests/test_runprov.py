@@ -18577,6 +18577,202 @@ def _resources_fixtures():
     ]
 
 
+def test_log_tells_an_empty_history_from_one_holding_only_an_unsealed_start(
+    tmp_path, monkeypatch, capsys
+):
+    """[J-13] [ADR-0017 R-7] [ADR-0017 R-14]. The third state `_log_answer`'s own argument missed.
+
+    That docstring argues for `shown` beside `total` because *"an empty `records` list means one
+    thing after a selector that matched nothing and another over a history with nothing in it"*.
+    There is a third, and it was the one state this payload could not express. Measured before
+    the fix, a history holding one start line and no record against an EMPTY history:
+
+        total 0, shown 0, failed 0, unreadable 0, records [], matched null, cannot_check null
+
+    Equal in every content field; only `path` differed, and `path` echoes the argument. So *this
+    project has never run anything here* and *a run began and never came back* — as far apart as
+    two answers about a history get — were one answer. `show` tells the same two files apart,
+    which made it a per-command gap rather than a missing capability.
+
+    PAIRED, NOT COUNTED, and that is the whole of why this took a set rather than a `+= 1`:
+    **every run leaves a start line AND a record**, measured — two completed runs give a
+    four-line history — so a raw count of starts is the number of runs that BEGAN. Over a
+    healthy three-run project it would have read `3`, which a consumer would take for three
+    interrupted runs. The assertion over two completed runs below is that case.
+
+    A COUNT AND NOT A LIST. `show`'s `in_flight` carries each run with its liveness, because it
+    reads the `.incomplete` markers too; `log` reads the history and nothing else, so what it
+    can honestly report is how many runs have no ending ON RECORD — permanent evidence, silent
+    about whether anything is still running.
+    """
+    monkeypatch.chdir(tmp_path)
+
+    def start_line(uid):
+        return (
+            json.dumps(
+                {
+                    "schema": "runprov.start.v1",
+                    "run_uid": uid,
+                    "run_id": f"r_{uid}",
+                    "script": "killed",
+                    "started_utc": "2026-09-01T00:00:00Z",
+                }
+            )
+            + "\n"
+        )
+
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    start_only = tmp_path / "start.jsonl"
+    start_only.write_text(start_line("u9"), encoding="utf-8")
+
+    real = tmp_path / "real.jsonl"
+    runprov.configure(root=tmp_path, run_log=real, auto_steps="off")
+    for i in range(2):
+        with runprov.Run(f"done{i}", {}, provenance=tmp_path / f"p{i}.json"):
+            pass
+    # THE PREMISE OF THE PAIRING, asserted: a completed run leaves both lines. If this ever
+    # stops being true the counter below means something else and this test must be re-read.
+    lines = [json.loads(x) for x in real.read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert sum(1 for x in lines if x["schema"] == "runprov.start.v1") == 2, lines
+    assert len(lines) == 4, f"two completed runs, four lines: {lines}"
+    mixed = tmp_path / "mixed.jsonl"
+    mixed.write_text(real.read_text(encoding="utf-8") + start_line("uX"), encoding="utf-8")
+
+    def answer(path):
+        capsys.readouterr()
+        code = runprov.__main__.main(["log", "--log", str(path), "--format", "json"])
+        captured = capsys.readouterr()
+        return code, json.loads(captured.out), captured.err
+
+    _, blank, blank_err = answer(empty)
+    _, began, began_err = answer(start_only)
+    assert blank["unfinished"] == 0, blank
+    assert began["unfinished"] == 1, began
+    assert blank != began, "the two answers must not be equal"
+    differ = {k for k in set(blank) | set(began) if blank.get(k) != began.get(k)}
+    assert differ == {"path", "unfinished"}, (
+        f"`path` only echoes the argument, so `unfinished` must be the content field that "
+        f"separates them: {sorted(differ)}"
+    )
+
+    # AND THE PAGE SAYS IT TOO, conditionally — so the payload does not carry a fact the text
+    # withholds, which is J-06 in reverse and was available to create here.
+    assert "started with no ending on record" in began_err, began_err
+    assert "no ending" not in blank_err, blank_err
+
+    # THE PAIRING, over a history where every run finished: a raw count of start lines would
+    # say 2 here and this must say 0.
+    _, healthy, healthy_err = answer(real)
+    assert (healthy["total"], healthy["unfinished"]) == (2, 0), (
+        "two completed runs leave two start lines, and NONE of them is unfinished — a count "
+        f"that did not pair would report 2: {healthy}"
+    )
+    assert "no ending" not in healthy_err, healthy_err
+
+    # AND BOTH AT ONCE, which is the state a real project reaches.
+    _, both, _ = answer(mixed)
+    assert (both["total"], both["unfinished"]) == (2, 1), both
+
+    # ONE SHAPE PER COMMAND [J-21]: the no-history answer comes off the same builder, so the
+    # new key cannot be present only when the command could answer.
+    _, gone, _ = answer(tmp_path / "nope.jsonl")
+    assert set(gone) == set(blank) and gone["unfinished"] == 0, sorted(set(gone) ^ set(blank))
+
+
+def test_resources_says_nothing_measured_the_same_way_in_every_field(tmp_path, capsys):
+    """[J-11] [ADR-0017 R-7] [ADR-0017 R-8]. One encoding of one state, across the payload.
+
+    `payload`'s own docstring states the rule: *"`null` against a figure here means nothing
+    measured it"*. Measured over the no-measurement answer, **every field obeyed it except
+    `unavailable`, which was `[]`** — so it was the one field a consumer needed a special case
+    for, and the one field whose value was a true statement about a DIFFERENT state: a run that
+    was measured and had nothing unavailable.
+
+    **THE ROW'S PREMISE WAS WRONG AND IS RECORDED AS WRONG.** It said the no-measurement payload
+    was *"byte-identical to a cluster run where every mechanism answered"*. Measured by building
+    that cluster record, the two differ in **twelve** fields — every figure, `script`, `run_id`,
+    `mean_cores`, `source` and `cannot_check`. The defect was never a collision between two
+    payloads; it was one field inside one payload disagreeing with the rule the other eleven
+    follow. Both are asserted below, so neither claim rests on this docstring.
+
+    **AND THE ROW'S SECOND HALF IS REFUTED.** It said `source: null` duplicates what
+    `Measurement`'s closed vocabulary already spells `"none"`, leaving a consumer two encodings
+    of one fact. They are two facts: `"none"` is a run that WAS measured and whose mechanisms
+    all declined — `wall_seconds` present, `cannot_check` null — and `null` is a run nothing
+    measured at all. Asserted here as distinct states rather than argued, because a refutation
+    with no measurement behind it is just a second opinion.
+    """
+    log = tmp_path / "h.jsonl"
+
+    def payload_for(block):
+        record = {
+            "schema": "runprov.run.v2",
+            "run_uid": "u1",
+            "run_id": "r1",
+            "script": "s",
+            "status": "ok",
+            "started_utc": "2026-09-01T00:00:00Z",
+            "ended_utc": "2026-09-01T00:01:00Z",
+        }
+        if block is not None:
+            record["resources"] = block
+        log.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        capsys.readouterr()
+        code = runprov.__main__.main(["resources", "--log", str(log), "--format", "json"])
+        return code, json.loads(capsys.readouterr().out)
+
+    cluster_code, cluster = payload_for(
+        {
+            "wall_seconds": 12.5,
+            "cpu_seconds": 40.0,
+            "max_rss_bytes": 1 << 30,
+            "max_vms_bytes": 1 << 31,
+            "io_read_bytes": 999,
+            "io_write_bytes": 111,
+            "source": "cgroup",
+        }
+    )
+    declined_code, declined = payload_for({"wall_seconds": 3.0, "source": "none"})
+    none_code, nothing = payload_for(None)
+
+    # 1. EVERY FIELD SAYS IT THE SAME WAY. Derived from the payload itself, so a figure added
+    #    to `Measurement` is covered without an edit here — which is the shape that let this
+    #    one field drift out of step in the first place.
+    spoken = {"schema", "path", "cannot_check"}
+    wrong = {k: v for k, v in nothing.items() if k not in spoken and v is not None}
+    assert not wrong, (
+        "[ADR-0017 R-8] this payload's rule is that `null` means *nothing measured it*, and "
+        f"these fields say it some other way: {wrong}"
+    )
+    assert nothing["cannot_check"], "and the reason is the field that carries the inability"
+
+    # 2. THE ROW'S PREMISE, MEASURED AND FALSE: not byte-identical, and not close.
+    assert cluster_code == 0 and none_code == 2
+    apart = {k for k in set(cluster) | set(nothing) if cluster.get(k) != nothing.get(k)}
+    assert len(apart) >= 10, (
+        "the row called these byte-identical; they differ in most of the payload, which is why "
+        f"the defect was one field and not a collision: {sorted(apart)}"
+    )
+    assert cluster["unavailable"] == [], (
+        "`[]` keeps its meaning — a run that WAS measured with nothing unavailable — and that "
+        "is exactly why it could not also mean *nothing was measured*"
+    )
+
+    # 3. THE REFUTED HALF: `null` and `"none"` are different states, both reachable.
+    assert declined_code == 0
+    assert declined["source"] == "none" and declined["wall_seconds"] == 3.0, declined
+    assert declined["cannot_check"] is None, (
+        "a run measured by no mechanism still has an answer: the Meter ran and reported what "
+        f"it could, which is not an inability: {declined}"
+    )
+    assert nothing["source"] is None, nothing
+    assert declined["source"] != nothing["source"], (
+        '[J-11, refuted] `"none"` is *measured, no mechanism answered* and `null` is '
+        "*nothing measured it* — two facts, two encodings, and the vocabulary is not duplicated"
+    )
+
+
 def test_resources_answers_in_json_and_refuses_to_size_a_run_it_did_not_measure(tmp_path, capsys):
     """[ADR-0017 R-3] [R-4] [R-5] [R-6] [R-9] [R-12] [R-15]. T-33's sixth row.
 
@@ -18645,7 +18841,11 @@ def test_resources_answers_in_json_and_refuses_to_size_a_run_it_did_not_measure(
     assert empty["wall_seconds"] is None and empty["source"] is None, (
         "every figure null, so nothing here can be read as a measurement of zero"
     )
-    assert empty["mean_cores"] is None and empty["unavailable"] == []
+    # J-11 CHANGED `unavailable` HERE, from `[]`, and the assertion above it is the argument:
+    # *"every figure null, so nothing here can be read as a measurement of zero"*. This line
+    # pinned the one field that said it differently, with no reasoning of its own — the same
+    # exemption the payload made, repeated in the test that should have caught it.
+    assert empty["mean_cores"] is None and empty["unavailable"] is None
 
     # A HISTORY WITH NO RESOURCES BLOCK IN IT — the more interesting of the two, because the
     # file was read and understood and still cannot answer.
@@ -20173,9 +20373,15 @@ def test_every_field_the_log_payload_carries_is_stated_by_the_timeline(tmp_path)
             argparse.Namespace(script="", run_id="", failed=False, limit=0)
         ),
         matched=None,
+        unfinished=4,
     )
-    # DERIVED FROM THE ANSWER'S OWN KEYS, so a counter added to `_log_answer` is covered the day
-    # it exists rather than when someone remembers this list.
+    # A CLASSIFICATION THIS TEST CANNOT DERIVE, and the comment here used to claim it could:
+    # *"DERIVED FROM THE ANSWER'S OWN KEYS, so a counter added to `_log_answer` is covered the
+    # day it exists"*. It is a literal set, and what it buys is not coverage but a REFUSAL —
+    # whether a new field is stated to a person is a judgement no assertion can make, so the
+    # guard fails until someone makes it. **J-13 added `unfinished` and this is what stopped
+    # the gate**, which is the guard behaving exactly as intended; the list below and the
+    # wording assertion beneath it are the classification it demanded.
     assert set(answer) == {
         "schema",
         "path",
@@ -20183,6 +20389,7 @@ def test_every_field_the_log_payload_carries_is_stated_by_the_timeline(tmp_path)
         "total",
         "failed",
         "unreadable",
+        "unfinished",
         "selectors",
         "matched",
         "cannot_check",
@@ -20196,6 +20403,18 @@ def test_every_field_the_log_payload_carries_is_stated_by_the_timeline(tmp_path)
     assert "0 of 3 run(s)" in person
     assert f"{answer['failed']} FAILED" == "1 FAILED"
     assert f"{answer['unreadable']} unreadable line(s) skipped" == "2 unreadable line(s) skipped"
+    # J-13's COUNTER IS STATED TOO, in the clause the tally appends for it. Conditional like the
+    # two above — a history with none of them prints none of these clauses — and the condition
+    # is why the wording is asserted here rather than the presence of a substring in some
+    # fixture's output: a clause that only appears sometimes is a clause a guard over one run
+    # can miss entirely.
+    assert (
+        f"{answer['unfinished']} started with no ending on record"
+        == "4 started with no ending on record"
+    )
+    assert "started with no ending on record" in (
+        pathlib.Path(runprov.__main__.__file__).read_text(encoding="utf-8")
+    ), "and the clause the assertion above spells must be the one the command actually writes"
 
     # AND THE FOUR THE PAYLOAD CARRIES ALONE, named as a set so a fifth fails here. Each is about
     # the QUESTION rather than the answer, and a person reading a terminal already knows what

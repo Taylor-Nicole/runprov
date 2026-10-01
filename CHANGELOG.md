@@ -120,6 +120,61 @@ front of a string cannot detect a rendering that shows only the front.** That is
 one level in: not the guard's logic, but the range its substitutions cover, failing to reach what
 it reports on.
 
+### Fixed — `runprov log` could not tell an empty history from one holding only a start
+
+Audit J, J-13. `_log_answer`'s docstring argues for `shown` beside `total` because *"an empty
+`records` list means one thing after a selector that matched nothing and another over a history
+with nothing in it"*. There is a third state, and it was the one the payload could not express.
+Over a history holding one start line and no record, against an **empty** history:
+
+    total 0, shown 0, failed 0, unreadable 0, records [], matched null, cannot_check null
+
+Equal in every content field — only `path` differed, and `path` echoes the argument. So *nothing
+has ever run here* and *a run began and never came back* were one answer. `show` tells the same
+two files apart, so this was a per-command gap rather than a missing capability.
+
+The payload carries `unfinished` now, and the stderr tally names it too — conditionally, beside
+the existing `FAILED` and `unreadable line(s) skipped` clauses, so a history with nothing
+unfinished prints exactly the line it always has.
+
+**It is paired, not counted, and that is the substance of the fix.** Every run leaves a start
+line **and** a record — measured: two completed runs give a four-line history — so a raw count
+of start lines is the number of runs that *began*, and over a healthy three-run project it would
+have read `3`. The counter retires a start when its `run_uid`'s record goes past. That costs
+almost nothing in the one reader whose design forbids materialising, because a run's start and
+its record are appended adjacently: the pending set holds one uid at a time in the ordinary case,
+and only grows for runs that are genuinely unfinished. It holds uids, never records.
+
+**A count and not a list**, deliberately. `show`'s `in_flight` carries each run with its liveness
+because it reads the `.incomplete` markers as well; `log` reads the history and nothing else, so
+what it can honestly report is how many runs have no ending **on record** — permanent,
+append-only evidence that says nothing about whether a process is still alive. Naming it
+`in_flight` would have promised the half it cannot see.
+
+### Fixed — `runprov resources --format json` said "nothing was unavailable" where nothing was asked
+
+Audit J, J-11. `payload`'s own docstring states the rule: *"`null` against a figure here means
+nothing measured it"*. Every field obeyed it except `unavailable`, which was `[]` — so it was
+the one field needing a special case in a consumer, and the one whose value was a true statement
+about a **different** state: a run that *was* measured and had nothing unavailable.
+
+**The row's premise was wrong and is recorded as wrong.** It said the no-measurement payload was
+*"byte-identical to a cluster run where every mechanism answered"*. Built and measured, those two
+differ in **twelve** fields — every figure, `script`, `run_id`, `mean_cores`, `source` and
+`cannot_check`. The defect was never a collision between two payloads; it was one field inside
+one payload disagreeing with the rule the other eleven follow.
+
+**The row's second half is refuted.** It said `source: null` duplicates what `Measurement`'s
+closed vocabulary already spells `"none"`. They are two facts: `"none"` is a run that *was*
+measured and whose mechanisms all declined — `wall_seconds` present, `cannot_check` null — and
+`null` is a run nothing measured at all. Both states are built and asserted, so the refutation
+rests on a measurement rather than on a reading.
+
+One existing assertion moved with it, and the line above it was already the argument: it pinned
+`unavailable == []` directly beneath *"every figure null, so nothing here can be read as a
+measurement of zero"* — the same exemption the payload made, repeated in the test that should
+have caught it.
+
 ### Changed — `runprov verify` names a path that is not there, and no longer passes over it
 
 Audit J, J-24. **The exit code moves, 0 to 2, and that is the point of the entry.** `verify`

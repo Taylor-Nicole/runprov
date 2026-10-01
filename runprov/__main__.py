@@ -485,6 +485,7 @@ def _log_answer(
     unreadable: int,
     selectors: dict[str, typing.Any],
     matched: bool | None,
+    unfinished: int = 0,
     cannot_check: str | None = None,
 ) -> dict[str, typing.Any]:
     """`log`'s ANSWER as one object. ADR-0017 R-3's amendment, R-5, R-7, R-9, R-12, R-15.
@@ -498,6 +499,20 @@ def _log_answer(
     an empty `records` list means one thing after a selector that matched nothing and another
     over a history with nothing in it, and a payload that served both the same way would hand
     a consumer the collapse A-08 spent a row removing.
+
+    `unfinished` IS THE THIRD STATE THAT ARGUMENT MISSED — J-13. A history holding one start
+    line and no record produced a payload equal in every content field to one over an EMPTY
+    history: `total 0, shown 0, failed 0, unreadable 0, records [], cannot_check null`, with
+    only `path` differing because `path` echoes the argument. So the two most different things a
+    history can say — *nothing has run here* and *a run began and never came back* — were one
+    answer. `show` tells them apart over the same file; this was a per-command gap.
+
+    A COUNT AND NOT A LIST, and that is `log`'s honest limit rather than a shortcut. `show`'s
+    `in_flight` carries each run WITH its liveness, which it can only do because it reads the
+    `.incomplete` markers as well. `log` reads the history and nothing else, so what it knows
+    is how many runs started with no ending ON RECORD — permanent, append-only evidence, and
+    silent about whether anything is still running. Naming it `in_flight` would have promised
+    the half it cannot see.
 
     `matched` IS None WHEN NOTHING WAS NAMED. `--script` and `--run-id` name a record, so
     missing them is a finding and the exit code says so; `--failed` selects a CLASS and no
@@ -514,6 +529,8 @@ def _log_answer(
         "total": total,
         "failed": failed,
         "unreadable": unreadable,
+        # J-13. Runs whose start is in this history and whose record is not.
+        "unfinished": unfinished,
         "selectors": selectors,
         "matched": matched,
         "cannot_check": cannot_check,
@@ -1192,6 +1209,16 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
         collections.deque(maxlen=args.limit) if args.limit else None
     )
     bad = total = shown = n_failed = 0
+    # J-13. START LINES PAIRED AGAINST THEIR RECORDS, which is the only honest way to count
+    # them: EVERY run leaves a start line and then a record, measured — two completed runs give
+    # a four-line history — so a raw count of starts is the number of runs that BEGAN and would
+    # read as alarming over a perfectly healthy project.
+    #
+    # AND IT COSTS ALMOST NOTHING, which is what makes it acceptable in the one reader whose
+    # design forbids materialising: a run's start and its record are APPENDED ADJACENTLY, so
+    # this set holds one uid at a time in the ordinary case and only grows for runs that are
+    # genuinely unfinished. It holds uids, never records.
+    pending: set[str] = set()
 
     # THE FLAGS THAT NAME A RECORD, as opposed to the one that selects a class. Only these
     # make "matched nothing" a finding — see `CANNOT_CHECK` for the whole contract.
@@ -1245,6 +1272,9 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
             bad += 1
             continue
         if _is_start(rec):
+            # J-13. COUNTED AS IT IS SKIPPED. Filtering it out of the records is right; saying
+            # nothing about it anywhere is what made an interrupted run invisible.
+            pending.add(str(rec.get("run_uid")))
             # NOT A RUN THAT HAPPENED. `log` streams raw rather than through `_load` or
             # `_counted` — it is the one reader that must not materialise — so the filter
             # those two apply has to be repeated here. Without it every completed run
@@ -1252,6 +1282,10 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
             # three runs.
             continue
         total += 1
+        # J-13. ITS ENDING IS ON RECORD, so it is not unfinished. `discard` rather than
+        # `remove` because a record whose start line is missing — a history rotated between the
+        # two appends — is not an error to raise at a reader.
+        pending.discard(str(rec.get("run_uid")))
         # THE NAME IS TESTED ON ITS OWN, before `--failed` narrows anything. Combined,
         # `--script build --failed` over a project whose `build` never failed reported
         # "nothing matched 'build'" and exited 1 — which is false twice over: the name was
@@ -1281,6 +1315,7 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
                     selectors=_log_selectors(args),
                     # None WHEN NOTHING WAS NAMED, rather than True — see `_log_answer`.
                     matched=bool(named_hits) if named else None,
+                    unfinished=len(pending),
                 ),
                 indent=2,
             )
@@ -1291,7 +1326,12 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
     print(
         f"# {shown} of {total} run(s) from {path}"
         + (f"; {n_failed} FAILED" if n_failed else "")
-        + (f"; {bad} unreadable line(s) skipped" if bad else ""),
+        + (f"; {bad} unreadable line(s) skipped" if bad else "")
+        # J-13. NAMED ON THE PAGE AS WELL, conditional like the two clauses above it — so a
+        # history with nothing unfinished prints the line it has always printed, and J-06's
+        # defect in reverse (a payload carrying what the text does not say) is not created
+        # here while fixing the forward one.
+        + (f"; {len(pending)} started with no ending on record" if pending else ""),
         file=sys.stderr,
     )
     # A NAME THAT MATCHED NOTHING IS A FINDING, and this printed an empty timeline and exited

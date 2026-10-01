@@ -209,7 +209,16 @@ def payload(
         "script": None if record is None else record.get("script"),
         "run_id": None if record is None else record.get("run_id"),
         **figures,
-        "unavailable": [] if measured is None else list(measured.unavailable),
+        # J-11. `null`, NOT `[]`, WHEN NOTHING MEASURED THIS RUN — and the argument is this
+        # payload's own stated rule, four lines up: *"`null` against a figure here means
+        # nothing measured it"*. Every other field obeys it; `unavailable` was the one that did
+        # not, so it was the one field a consumer needed a special case for.
+        #
+        # `[]` IS A TRUE STATEMENT ABOUT A DIFFERENT STATE: a run that WAS measured and had
+        # nothing unavailable — a cluster where the cgroup answered. Measured, that payload and
+        # this one differ in twelve fields, so the row's *"byte-identical"* was not the defect;
+        # one field reading *every mechanism answered* where nothing was asked was.
+        "unavailable": None if measured is None else list(measured.unavailable),
         "mean_cores": None if measured is None else mean_cores(measured),
         "cannot_check": cannot_check,
     }
