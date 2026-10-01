@@ -148,6 +148,37 @@ the test asserts the same expression rather than a second copy of the list.
 Measured over all four verdicts an artifact can have, `report` and `verify` now return the same
 code for the same file: OK 0/0, STALE 1/1, UNVERIFIABLE 2/2, NO PIN 2/2.
 
+### Fixed — `runprov chain`'s page and its JSON named different routes to one verdict
+
+Audit J, J-04. The page and the payload agreed on the verdict and disagreed on its reason.
+`render` decided its headline from `lines == 0`, then from nothing being chained, then from the
+status; the fold behind `status` and `cannot_check` tested the edge statuses and a lost
+terminator FIRST. Over a history with nothing chained **and** a damaged line both applied, and
+one report was described two ways — the page saying *"2 line(s), none of them chained."* while
+`--format json` said *"a line lost its terminator and merged with the next"*. Reachable from a
+single truncated byte, and from a torn first line in front of a pre-chain history.
+
+J-01 unified `status` with `cannot_check` and left the renderer as an unreconciled third fold.
+The order is now the renderer's — if nothing is chained there are no claims to check, so the
+edge statuses are consequences — and the page PRINTS the fold's reason rather than composing
+its own copy of the sentence.
+
+Measured: `status` moved in **0 of 18,432** constructed states (every subset of the seven edge
+statuses x four line counts x four `chained_from` values x three `merged` x three `unreadable`),
+because every route under `BROKEN` returns `CANNOT_CHECK` — so only which reason is named
+changed, and `cannot_check` has not been released. The page is byte-identical over all eight
+real histories in the test's corpus, including the two that disagreed.
+
+`BROKEN` keeps its precedence, and a `BROKEN` verdict cannot appear under a *CANNOT CHECK*
+headline for a reason the table proves rather than the fixture: all 88 of R-25's `BROKEN`
+outcomes require a claim, and the first line carrying one sets `chained_from`.
+
+**One reason's wording moved, in the payload only.** `cannot_check` for an absent or empty
+history read *"there is no history to read"* and now reads *"no history to read"* — the page's
+own wording, taken up by the fold because the page is output 0.6.0 shipped and this field is
+not. Single-sourcing means a reword here now rewords the page, so both released sentences are
+pinned by a test; before this fix nothing anywhere pinned *"CANNOT CHECK: no history to read."*
+
 ### Fixed — `runprov report --log <a path that is not there>` said nothing at all
 
 Audit I, I-16. Measured across the five commands that read a history: `impact`, `diff` and `log`

@@ -18717,7 +18717,10 @@ def test_chain_names_which_route_reached_cannot_check_and_reads_it_off_one_fold(
     unchained = report(chained_from=None)
     assert unchained.cannot_check == "2 line(s), none of them chained"
     nothing = report(lines=0, edges=(), chained_from=None)
-    assert nothing.cannot_check == "there is no history to read"
+    # J-04 REWORDED THIS, from "there is no history to read": the page had its own copy of the
+    # sentence and now reads this one, so the fold took the page's wording — the page is output
+    # 0.6.0 shipped and this field is not.
+    assert nothing.cannot_check == "no history to read"
 
     # AND THE PRECEDENCE IS ASSERTED RATHER THAN ASSUMED, which is the whole reason a consumer
     # cannot derive this from the fields. A torn line is ALSO unreadable in practice — a merged
@@ -18767,7 +18770,7 @@ def test_chains_cannot_check_reason_reaches_the_payload_over_real_histories(tmp_
 
     absent = tmp_path / "gone.jsonl"
     refused = runprov.chain.payload(runprov.chain.verify(absent), absent)
-    assert refused["cannot_check"] == "there is no history to read"
+    assert refused["cannot_check"] == "no history to read"  # J-04 reworded; see the fold's test
 
     unchained = tmp_path / "old.jsonl"
     unchained.write_text(
@@ -18801,6 +18804,178 @@ def test_chains_cannot_check_reason_reaches_the_payload_over_real_histories(tmp_
         f"a key moved since 2026-09-30; this is a drift ratchet, not 0.6.0's order: {list(intact)}"
     )
     assert list(intact)[len(shipped) :] == ["cannot_check"]
+
+
+def test_chains_page_and_payload_cannot_name_different_routes_to_cannot_check(tmp_path):
+    """[J-04] [ADR-0017 R-10] [ADR-0016 R-25]. One fold, one sentence, two renderings.
+
+    J-01 unified `status` with `cannot_check` and **left the renderer as a third fold.** `render`
+    decided its headline from `lines == 0`, then `chained_from is None`, then the status;
+    `_verdict` tested the edge routes and `merged` BEFORE `chained_from`. Over a history with
+    nothing chained AND a damaged line both applied, and the two renderings of ONE report named
+    different routes — measured before the fix, from files this test rebuilds:
+
+        page   : CANNOT CHECK: 2 line(s), none of them chained.
+        payload: "a line lost its terminator and merged with the next"
+
+    G-16 IS THE ROW WHERE ONE REPORT WAS DESCRIBED TWO CONTRADICTORY WAYS, and it was closed by
+    making the page look at more of the report. This is the same defect with the renderings
+    swapped, and closing it the same way — teaching the payload the renderer's order — would
+    have left two folds to keep in step. So the ORDER was reconciled and then the SENTENCE was
+    single-sourced: the page prints `report.cannot_check` and composes nothing.
+
+    THE REORDER IS VERDICT-PRESERVING AND THAT WAS MEASURED, NOT ARGUED: over 18,432 constructed
+    states (every subset of the 7 edge statuses x 4 line counts x 4 `chained_from` x 3 `merged`
+    x 3 `unreadable`), `status` moved in **0** of them, because every route below `BROKEN`
+    returns `CANNOT_CHECK`. Only which reason is named changes, and `cannot_check` is unreleased.
+    The page is unchanged over all eight real shapes in this test's corpus.
+    """
+
+    def pre_chain(i):
+        return json.dumps(
+            {
+                "schema": "runprov.run.v2",
+                "run_id": f"r{i}",
+                "tool": {"name": "t"},
+                "runprov": {"version": "0.5.0"},
+            },
+            sort_keys=True,
+        )
+
+    #: Both shapes need NOTHING CHAINED plus a second route applying at the same time, and each
+    #: reaches its route a different way — which is why both are here rather than one standing
+    #: in for the other.
+    #:
+    #: THE FIRST FIXTURE I WROTE FOR THE EDGE SHAPE CONTAINED NO SUCH EDGE. Tearing a line in the
+    #: MIDDLE of an unchained history leaves every edge `UNCHAINED`, because R-25 rule 4 tests
+    #: `claim == NONE` before it looks at the predecessor. Only a torn FIRST line reaches rule
+    #: 3b, which is the one route to `UNCHECKABLE` that does not need a claim anywhere. A fixture
+    #: whose name asserts a state it does not contain is a control that did not run.
+    torn_first = '{"schema": "runprov.ru\n' + pre_chain(2) + "\n" + pre_chain(3) + "\n"
+    lost_terminator = pre_chain(1) + "\n" + pre_chain(2) + pre_chain(3) + "\n"
+
+    for name, text, route in (
+        ("uncheckable_edge", torn_first, runprov.chain.UNCHECKABLE),
+        ("merged_line", lost_terminator, None),
+    ):
+        path = tmp_path / f"{name}.jsonl"
+        path.write_text(text, encoding="utf-8")
+        report = runprov.chain.verify(path)
+
+        # THE PRECONDITION IS ASSERTED, not assumed: this file must really be in BOTH states, or
+        # the test passes while measuring a history with only one route open to it.
+        assert report.chained_from is None, name
+        if route is None:
+            assert report.merged, f"{name} was meant to have lost a terminator: {report}"
+        else:
+            assert route in {link.status for link in report.edges}, (
+                f"{name} was meant to carry an {route} edge: {[e.status for e in report.edges]}"
+            )
+
+        headline = [line for line in runprov.chain.render(report, path) if "CANNOT CHECK:" in line]
+        assert len(headline) == 1, headline
+        #: The pre-chain branch appends a second sentence about what the next run will do; the
+        #: route is the first one.
+        said = headline[0].split("CANNOT CHECK:")[1].strip().split(". ")[0].rstrip(".")
+        assert said == report.cannot_check, (
+            f"{name}: the page says {said!r} and the payload says {report.cannot_check!r} about "
+            "the same report"
+        )
+        assert runprov.chain.payload(report, path)["cannot_check"] == said
+
+        # AND WHICH ROUTE IS NAMED, which the agreement above CANNOT establish. The page reads
+        # `cannot_check`, so the two agree by construction now and reverting the fold's
+        # precedence moves them together — measured as a control, and it survived. An
+        # assertion that cannot fail and a change that cannot be observed are one defect from
+        # two sides (I-25/I-26), and single-sourcing the sentence is what put this one here.
+        # So the ORDER is asserted directly, on the two files where two routes are open.
+        assert said == f"{report.lines} line(s), none of them chained", (
+            f"{name}: nothing in this file is chained, so there are no claims to check and the "
+            f"edge statuses are consequences; the fold named {said!r} instead"
+        )
+
+    # AND THE PAGE COMPOSES NO SUCH SENTENCE OF ITS OWN — read off `render`'s source, so a
+    # future headline that recomputes the reason fails here even if no fixture reaches it. This
+    # is the guard; the two files above are the evidence it is guarding something real.
+    render_src = ast.parse(pathlib.Path(runprov.chain.__file__).read_text(encoding="utf-8"))
+    rendered = [
+        node
+        for node in ast.walk(render_src)
+        if isinstance(node, ast.FunctionDef) and node.name == "render"
+    ]
+    assert len(rendered) == 1, "chain.render was renamed or duplicated; this guard reads it"
+    #: EVERY headline the source contains, in whatever form — so the guard's scope is the
+    #: module's own text and not a number written here. A count of 2 was the first spelling of
+    #: this and it was the stale-list pattern: a third headline added later would fail a test
+    #: that is not about how MANY there are.
+    literals = [
+        node
+        for node in ast.walk(rendered[0])
+        if isinstance(node, ast.Constant) and "CANNOT CHECK:" in str(node.value)
+    ]
+    assert literals, "no CANNOT CHECK headline found in chain.render; this guard reads them"
+    compliant = []
+    for node in ast.walk(rendered[0]):
+        if not isinstance(node, ast.JoinedStr):
+            continue
+        for index, part in enumerate(node.values):
+            if not (isinstance(part, ast.Constant) and "CANNOT CHECK:" in str(part.value)):
+                continue
+            following = node.values[index + 1 :]
+            assert following and isinstance(following[0], ast.FormattedValue), (
+                "a CANNOT CHECK headline with nothing interpolated after it is a sentence the "
+                f"page composed itself: {ast.unparse(node)}"
+            )
+            assert ast.unparse(following[0].value) == "report.cannot_check", (
+                "the page must PRINT the fold's reason, not recompose it: "
+                f"{ast.unparse(following[0])}"
+            )
+            compliant.append(part)
+    #: A headline in a PLAIN string interpolates nothing, so the loop above never sees it and
+    #: every assertion in it passes. This is the comparison that notices.
+    assert len(compliant) == len(literals), (
+        f"{len(literals) - len(compliant)} CANNOT CHECK headline(s) in chain.render are plain "
+        "literals the page composed itself rather than the fold's reason: "
+        f"{[n.value for n in literals if n not in compliant]}"
+    )
+
+    # THE TWO SENTENCES 0.6.0 SHIPPED, pinned as the released output they are. Single-sourcing
+    # moved the wording INTO `cannot_check`, an unreleased field — so from here a reword there
+    # rewords the page, and before this assertion existed nothing anywhere pinned
+    # "CANNOT CHECK: no history to read." I-24 is the row about changing released output
+    # quietly, and this fix is how it would have happened next.
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    assert runprov.chain.render(runprov.chain.verify(empty), empty)[1:] == [
+        "  CANNOT CHECK: no history to read."
+    ]
+    two = tmp_path / "two.jsonl"
+    two.write_text(pre_chain(1) + "\n" + pre_chain(2) + "\n", encoding="utf-8")
+    assert "  CANNOT CHECK: 2 line(s), none of them chained." in " ".join(
+        runprov.chain.render(runprov.chain.verify(two), two)
+    )
+
+    # A `BROKEN` VERDICT CAN NEVER SIT UNDER A CANNOT CHECK HEADLINE, and that is a property of
+    # R-25's table rather than of this fixture: `render` prints the headline whenever nothing is
+    # chained, and `_verdict` returns `BROKEN` with no reason at all. The two can only meet if
+    # some route to `BROKEN` needs no claim — and `chained_from` is assigned at the first line
+    # that carries one, so every claim-free route leaves it `None`. Run the whole table rather
+    # than read it, which is how R-30's own test found two rules wrong.
+    claimless = [
+        (claim, predecessor, agreement, writer, started)
+        for claim in ("NONE", "GENESIS", "DIGEST")
+        for predecessor in ("NONE_FIRST", "READABLE", "UNREADABLE")
+        for agreement in ("NA", "MATCHES", "DIFFERS")
+        for writer in ("PRE_CHAIN", "UNREADABLE", "CURRENT", "UNKNOWN")
+        for started in (True, False)
+        if claim == "NONE"
+        and runprov.chain.classify(claim, predecessor, agreement, writer, started)
+        == runprov.chain.BROKEN
+    ]
+    assert not claimless, (
+        "R-25 now reaches BROKEN without a claim, so a history with nothing chained can be "
+        f"BROKEN while the page prints CANNOT CHECK: {claimless}"
+    )
 
 
 def test_every_json_commands_two_shapes_carry_the_same_keys(tmp_path, capsys):

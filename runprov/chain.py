@@ -493,6 +493,28 @@ class Report(typing.NamedTuple):
         kinds = {link.status for link in self.edges}
         if BROKEN in kinds:
             return BROKEN, None
+        # J-04. NOTHING CHAINED COMES FIRST, matching the renderer — and this reorder is the
+        # whole fix. `render` decides its headline from `lines == 0`, then `chained_from is
+        # None`, then the status; `_verdict` tested the edge routes and `merged` BEFORE
+        # `chained_from`. Where both applied, the page said *"N line(s), none of them chained"*
+        # and the payload said *"an edge is UNCHECKABLE"* — two renderings naming different
+        # routes to one verdict, reachable from a single truncated byte. README:1163 forbids
+        # exactly that, G-16 is the row where one report was described two contradictory ways,
+        # and J-01 unified `status` with `cannot_check` while leaving the renderer as an
+        # unreconciled THIRD fold.
+        #
+        # THE ORDER IS THE RENDERER'S AND IT IS THE RIGHT ONE: if nothing in the file is
+        # chained there are no claims to check, so an UNCHECKABLE or GAP edge is a CONSEQUENCE
+        # of that rather than an independent finding. `BROKEN` still precedes it, and cannot be
+        # reached without a claim to break.
+        #
+        # `status` CANNOT MOVE, measured over 18,432 states before the reorder was made: every
+        # route below returns `CANNOT_CHECK`, so only which REASON is named changes — and that
+        # field is unreleased.
+        if self.chained_from is None:
+            if not self.lines:
+                return CANNOT_CHECK, "no history to read"
+            return CANNOT_CHECK, f"{self.lines} line(s), none of them chained"
         # THE WORST EDGE NAMES ITSELF, in this order, so a file with both a GAP and an
         # UNCLAIMED edge reports the one this fold reaches first rather than a set the caller
         # has to rank again.
@@ -507,10 +529,6 @@ class Report(typing.NamedTuple):
             return CANNOT_CHECK, f"an edge is {worst[0]}"
         if self.merged:
             return CANNOT_CHECK, "a line lost its terminator and merged with the next"
-        if self.chained_from is None:
-            if not self.lines:
-                return CANNOT_CHECK, "there is no history to read"
-            return CANNOT_CHECK, f"{self.lines} line(s), none of them chained"
         return INTACT, None
 
     @property
@@ -1046,7 +1064,13 @@ def render(report: Report, path: pathlib.Path) -> list[str]:
     """The report. R-9: states what it checked, not only what it found."""
     out = [f"# chain — {path}"]
     if report.lines == 0:
-        return [*out, "  CANNOT CHECK: no history to read."]
+        # J-04. THE SENTENCE COMES FROM THE FOLD, here and at `head` below. It read
+        # `"no history to read."` as a literal and `head` recomposed `lines` and the word
+        # "chained" — so `_verdict` and `render` each spelled the same two routes, and J-01
+        # unifying `status` with `cannot_check` left this as an unreconciled THIRD fold. The
+        # wording moved to the fold rather than the fold's wording to the page, because this
+        # line is output 0.6.0 shipped and `cannot_check` is unreleased.
+        return [*out, f"  CANNOT CHECK: {report.cannot_check}."]
     if report.chained_from is None:
         # G-16. THE EARLY RETURN PRINTED THE SENTENCE RULE 3 EXISTS TO PREVENT. It decided
         # from `chained_from` alone and never looked at the edges, so over a torn first line
@@ -1074,7 +1098,7 @@ def render(report: Report, path: pathlib.Path) -> list[str]:
         #
         # So the guard now asks the whole precondition. The genuine pre-chain history — records
         # from 0.5.0 and earlier, nothing unreadable — is untouched and still gets this sentence.
-        head = f"  CANNOT CHECK: {report.lines} line(s), none of them chained."
+        head = f"  CANNOT CHECK: {report.cannot_check}."
         if (
             all(link.status == UNCHAINED for link in report.edges)
             and not any(link.could_chain for link in report.edges)
