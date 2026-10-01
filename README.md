@@ -907,7 +907,7 @@ file beside a reported result:
 
 It is a **derived view and nothing more** — every fact on it is read from the artifact's own
 pin and the run history, and no field exists that `show` and `verify` cannot also produce. It
-exits on the verdict, so a quality gate can call it — **0** when every pinned input still hashes the same, **1** when one is `STALE` or `GONE`, and **2** when the artifact could not be checked at all: `NO PIN`, `UNVERIFIABLE`, or no such file. The third code is the point, and it is ADR-0007's: *we could not look* is not *nothing is wrong*, and a gate told the second over the first re-runs a pipeline against a problem re-running cannot touch. `verify` answers the same three codes about the same artifact. **The limits are printed on the page**,
+exits on the verdict, so a quality gate can call it — **0** when every pinned input still hashes the same, **1** when one is `STALE`, `GONE` or `ALTERED`, and **2** when the artifact could not be checked at all: `NO PIN`, `UNVERIFIABLE`, or no such file — including one named beside others that were checked. The third code is the point, and it is ADR-0007's: *we could not look* is not *nothing is wrong*, and a gate told the second over the first re-runs a pipeline against a problem re-running cannot touch. `verify` answers the same three codes about the same artifact. **The limits are printed on the page**,
 not left in a manual beside it: a quality document that overstates is worse than none,
 because it is the version that gets cited.
 

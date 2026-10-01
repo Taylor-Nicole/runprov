@@ -671,9 +671,32 @@ def verify_artifact(
     return out
 
 
-def collect(
-    paths: typing.Iterable[pathlib.Path],
-) -> tuple[list[pathlib.Path], int, int, list[str]]:
+class Collected(typing.NamedTuple):
+    """What a walk found, and the three ways it can come up short. J-24.
+
+    A NAMED TUPLE BECAUSE THE FOURTH CATEGORY ARRIVED AND THE FIFTH WILL. This returned a bare
+    4-tuple and every caller unpacked it positionally, so adding `absent` broke five tests that
+    had no interest in it — none of them on the meaning of the change, all of them on its arity.
+    The next category added costs nothing now, and `collect(...).absent` says at the call site
+    what `collect(...)[4]` would not.
+    """
+
+    #: Files to examine, sorted and de-duplicated.
+    files: list[pathlib.Path]
+    #: How many DIRECTORIES were pruned without descending — see `SKIP_DIRS`.
+    directories_skipped: int
+    #: Files `_atomic` was part-way through writing when a run died. ADR-0005.
+    write_debris: int
+    #: A-17. Places this checker could not list: a mode-0700 directory, a mount that went away.
+    directories_unreadable: list[str]
+    #: J-24. Paths the caller NAMED that could not be examined at all. A dangling symlink is
+    #: here too and deliberately not given its own category: the link exists and the thing you
+    #: asked about does not, which is the fact that matters and the same repair either way —
+    #: produce the file. One vocabulary rather than two, until someone needs the difference.
+    absent: list[str]
+
+
+def collect(paths: typing.Iterable[pathlib.Path]) -> Collected:
     """Files to examine, how many DIRECTORIES were skipped, and how much write debris.
 
     DEBRIS IS A FILE `_atomic` WAS PART-WAY THROUGH WRITING when the process died — see
@@ -689,6 +712,15 @@ def collect(
     A path named EXPLICITLY is always examined, even inside a skipped directory: the skip
     list is about what a bare `verify` should walk, not a claim that those files cannot be
     checked. Asking about one by name is an answerable question and it gets answered.
+
+    AND WHEN THE ANSWER IS "IT IS NOT THERE", THAT IS ALSO AN ANSWER — J-24, and the sentence
+    above was the contradiction. A named path that does not exist used to be dropped by a bare
+    `continue`: absent from `files`, absent from every count, named on neither channel. So
+    `verify out.tsv typo.tsv` reported *1 OK* and **exited 0**, and a CI gate — which the
+    README endorses as a CI step — went green while one of the two artifacts it was told to
+    check did not exist. A-17 is this defect one category over, for directories, and its own
+    comment is the description: *"A pinned artifact inside it simply did not exist as far as
+    the report was concerned, and the run exited 0."*
 
     DIRECTORIES, NOT FILES, and that fixes three defects in one line. The count used to be
     `rglob("*")` over each pruned tree, which:
@@ -721,6 +753,7 @@ def collect(
     # quietly narrows what it looked at reads as 'everything is fine' when it means 'I did not
     # look there'."
     unreadable: list[str] = []
+    absent: list[str] = []
 
     def _unreadable(error: OSError) -> None:
         unreadable.append(str(getattr(error, "filename", "") or error))
@@ -729,6 +762,10 @@ def collect(
         if not p.is_dir():
             if p.exists():
                 found.add(p)
+            else:
+                # J-24. RECORDED, NOT DROPPED. `exists()` follows symlinks, so a dangling one
+                # lands here as well — see `Collected.absent` for why that is one category.
+                absent.append(str(p))
             continue
         for dirpath, dirnames, filenames in os.walk(p, onerror=_unreadable):
             here = pathlib.Path(dirpath)
@@ -745,7 +782,7 @@ def collect(
                     debris += 1
                 else:
                     found.add(f)
-    return sorted(found), skipped, debris, unreadable
+    return Collected(sorted(found), skipped, debris, unreadable, sorted(absent))
 
 
 def cannot_check(report: dict[str, typing.Any]) -> str | None:
@@ -774,18 +811,41 @@ def cannot_check(report: dict[str, typing.Any]) -> str | None:
     key. R-9: nothing is renamed on the way out.
     """
     pinned = report["artifacts_pinned"]
-    if not pinned:
-        # ROUTE 1, and it is NOT `seen == 0`: a directory full of files none of which carries a
-        # pin is the state this command was written to refuse, and `seen` is 1 there.
-        return (
-            f"{report['artifacts_seen']} file(s) examined under {report['root']}, "
-            f"none carries a pin"
-        )
     if report["stale"] or report["gone"] or report.get("altered"):
         # CHECKED, AND SOMETHING IS WRONG. A finding is not an inability, and this clause is
         # the one a consumer deriving the answer from the counters would omit — `ok` is 0 here
         # too. R-8: null is *there is nothing to explain*, not *unknown*.
+        #
+        # J-24 MOVED THIS TO THE FRONT so that the precedence is readable rather than implied:
+        # a finding outranks every inability below, which is Taylor's ruling of 2026-10-01.
+        # Behaviour-preserving, and measured rather than argued — these three counters are
+        # counted over PINNED artifacts, so `pinned == 0` forces all three to zero and the
+        # route-1 clause it now follows could never have been reached with any of them set.
+        # 163 reachable states compared, 0 reasons moved.
         return None
+    if report.get("paths_absent"):
+        # J-24, AND IT PRECEDES ROUTE 1 BECAUSE THAT IS THE WHOLE ROW: with every named path
+        # absent, `pinned` is 0 too, and route 1's sentence — *"0 file(s) examined under
+        # <root>, none carries a pin"* — is what a mistyped path used to produce. Byte-identical
+        # to an empty directory, on both channels. Two classes under one condition and one exit
+        # code is R-15's founding defect, and this is it inside a single command.
+        named = ", ".join(report["paths_absent"])
+        n = len(report["paths_absent"])
+        return f"{n} named path(s) could not be examined: {named}"
+    if not pinned:
+        # ROUTE 1, and it is NOT `seen == 0`: a directory full of files none of which carries a
+        # pin is the state this command was written to refuse, and `seen` is 1 there.
+        #
+        # **I DELETED THIS CLAUSE WHILE MOVING THE OTHER TWO AND THE SUITE WAS NOT WHAT CAUGHT
+        # IT** — a direct measurement of the four states was. Without it an empty directory fell
+        # through to route 2 and was described as *"0 pinned artifact(s) … and not one could be
+        # compared"*: route 2's sentence, false about route 1's state, and a change to output
+        # 0.6.0 shipped. J-18 exists because those two routes are different; losing one of them
+        # inside J-24 would have undone it a day later.
+        return (
+            f"{report['artifacts_seen']} file(s) examined under {report['root']}, "
+            f"none carries a pin"
+        )
     if not report["ok"]:
         # ROUTE 2, THE OTHER WAY TO CHECK NOTHING: every pin was unreadable. Zero comparisons
         # were made, exactly as in route 1, and the counters say so in a completely different
@@ -820,7 +880,7 @@ def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str
     finding. The COUNT still has to be visible: it is the difference between "everything
     checks out" and "nothing was checked".
     """
-    examined, skipped, debris, unreadable = collect(paths)
+    examined, skipped, debris, unreadable, absent = collect(paths)
     # ONE CACHE FOR THE WHOLE REPORT. Shared inputs are the normal case -- a fan-out of
     # N artifacts from one reference file meant N full reads of it -- so the memo has to
     # live across artifacts, not inside one.
@@ -836,6 +896,9 @@ def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str
         # in what remained, because the point is that the count above is a count of what was
         # REACHABLE, and a reader cannot infer that from a clean result.
         "directories_unreadable": unreadable,
+        # J-24. Paths the caller named that are not there. `[]` is *looked and found none*,
+        # which is R-8 and is true: this list is built from the caller's own arguments.
+        "paths_absent": absent,
         # NOT FOLDED INTO `directories_skipped`. One is a place this checker chose not to
         # look; the other is a file a run left behind when it died. A reader repairs those
         # two facts differently, so a single number for both would be the wrong number

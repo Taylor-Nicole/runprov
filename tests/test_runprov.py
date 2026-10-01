@@ -10667,19 +10667,28 @@ def test_the_exit_one_family_is_named_in_one_place(tmp_path):
         f"{sorted(s.lower() for s in runprov.verify.FAILING)}"
     )
 
-    # AND THE README'S TABLE, which was the third copy and the one a user reads. Asserted on the
-    # row rather than on the file, so a reworded sentence elsewhere cannot satisfy it.
-    row = [
+    # AND THE README, which had the third copy AND A FOURTH. J-19 asserted only the exit-code
+    # table's `1` row — a scope I wrote by hand, in the fix for a defect caused by a
+    # hand-written scope — and missed the prose at README:910 that states the same contract for
+    # `report` and says *"`verify` answers the same three codes"*. J-24 found it one day later,
+    # still saying "STALE or GONE". So BOTH places are read here, located by what they claim
+    # rather than by line number.
+    readme = pathlib.Path("README.md").read_text(encoding="utf-8")
+    claims = [
         line
-        for line in pathlib.Path("README.md").read_text(encoding="utf-8").splitlines()
-        if line.startswith("| `1` |")
+        for line in readme.splitlines()
+        if line.startswith("| `1` |") or ("**1** when one is" in line and "**2** when" in line)
     ]
-    assert len(row) == 1, f"the exit-code table's `1` row is not unique: {row}"
-    for state in runprov.verify.FAILING:
-        assert state.lower() in row[0].lower(), (
-            f"[J-19] README's exit-1 row does not name {state}, so the documented contract and "
-            f"the code disagree: {row[0]}"
-        )
+    assert len(claims) == 2, (
+        "README states the exit-1 family in two places — the code table and the `report` "
+        f"paragraph — and this guard found {len(claims)}: {claims}"
+    )
+    for claim in claims:
+        for state in runprov.verify.FAILING:
+            assert state.lower() in claim.lower(), (
+                f"[J-19] a README statement of the exit-1 family does not name {state}, so the "
+                f"documented contract and the code disagree: {claim.strip()[:120]}"
+            )
 
 
 def _claimless_history(tmp_path, version, name):
@@ -15155,7 +15164,8 @@ def test_verify_reports_a_directory_it_could_not_read(tmp_path):
     try:
         if os.access(blocked, os.R_OK):  # pragma: no cover - root, or a filesystem without modes
             pytest.skip("this user can read a 0o000 directory, so the case cannot be built")
-        found, _, _, unreadable = runprov.verify.collect([tmp_path])
+        walk = runprov.verify.collect([tmp_path])
+        found, unreadable = walk.files, walk.directories_unreadable
         assert [p.name for p in found] == ["open.tsv"], "the reachable half is still checked"
         assert any("restricted" in u for u in unreadable), (
             "and the half it could NOT read is named, not silently dropped"
@@ -16405,7 +16415,7 @@ def test_verify_collects_files_directories_and_neither(tmp_path):
     (tmp_path / "d").mkdir()
     (tmp_path / "d" / "b.tsv").write_text("b\n", encoding="utf-8")
     (tmp_path / "a.tsv").write_text("a\n", encoding="utf-8")
-    got, skipped, _, _ = runprov.verify.collect(
+    got, skipped = _walked(
         [tmp_path / "d", tmp_path / "d" / "b.tsv", tmp_path / "a.tsv", tmp_path / "nope.tsv"]
     )
     assert [p.name for p in got] == ["a.tsv", "b.tsv"]
@@ -16462,11 +16472,11 @@ def test_verify_does_not_walk_build_and_vcs_directories_but_counts_what_it_skipp
         d.mkdir()
         (d / "noise.tsv").write_text("noise\n", encoding="utf-8")
 
-    found, skipped, _, _ = runprov.verify.collect([tmp_path])
+    found, skipped = _walked([tmp_path])
     assert [p.name for p in found] == ["out.tsv"]
     assert skipped == 5, "five DIRECTORIES pruned, counted rather than dropped"
 
-    named, _, _, _ = runprov.verify.collect([tmp_path / ".venv" / "noise.tsv"])
+    named = runprov.verify.collect([tmp_path / ".venv" / "noise.tsv"]).files
     assert [p.name for p in named] == ["noise.tsv"], "an explicit path is always examined"
 
 
@@ -16482,7 +16492,13 @@ def test_a_dangling_symlink_is_listed_by_the_walk_and_examined_by_nothing(tmp_pa
     (tmp_path / "out.tsv").write_text("x\n", encoding="utf-8")
     (tmp_path / "gone.tsv").symlink_to(tmp_path / "never-existed.tsv")
 
-    found, skipped, debris, unreadable = runprov.verify.collect([tmp_path])
+    walk = runprov.verify.collect([tmp_path])
+    found, skipped, debris, unreadable = (
+        walk.files,
+        walk.directories_skipped,
+        walk.write_debris,
+        walk.directories_unreadable,
+    )
     assert [p.name for p in found] == ["out.tsv"], found
     assert unreadable == [], "a tree this checker can read reports nothing unreadable [A-17]"
     assert (skipped, debris) == (0, 0), "a broken link is neither a pruned tree nor debris"
@@ -16511,7 +16527,7 @@ def test_the_skip_count_does_not_descend_into_what_it_skipped(tmp_path, monkeypa
         "walk",
         lambda p, *a, **k: (walked.append(str(p)), real_walk(p, *a, **k))[1],
     )
-    found, skipped, _, _ = runprov.verify.collect([tmp_path])
+    found, skipped = _walked([tmp_path])
 
     assert [p.name for p in found] == ["out.tsv"]
     assert skipped == 1, "ONE directory pruned, not the 54 entries inside it"
@@ -16705,6 +16721,18 @@ def test_a_json_pin_past_the_scan_bound_is_not_found_and_does_not_raise(tmp_path
     assert runprov.verify.read_pins(p) == [], "past the bound, so not found — and no raise"
 
 
+def _walked(paths):
+    """`collect`'s files and skip count, for the tests that only ask about those two.
+
+    J-24 TURNED `collect`'s RETURN INTO A NAMED TUPLE, and five tests broke on its ARITY while
+    none of them broke on its meaning — they unpacked four positions and there were now five.
+    That is the cost of positional unpacking at a call site that does not care, so the two
+    fields most of them want are read here instead.
+    """
+    walk = runprov.verify.collect(paths)
+    return walk.files, walk.directories_skipped
+
+
 def _unverifiable_artifact(tmp_path, monkeypatch, name="out.tsv"):
     """An artifact whose only pinned input sits OUTSIDE the project root, so the pin reads
     `<external>/…` — deliberately not a path, and so not comparable."""
@@ -16718,6 +16746,155 @@ def _unverifiable_artifact(tmp_path, monkeypatch, name="out.tsv"):
         with run.open_output(proj / name) as fh:
             fh.write("id\n1\n")
     return proj
+
+
+def test_verify_says_which_named_paths_were_not_there_and_does_not_pass(
+    tmp_path, monkeypatch, capsys
+):
+    """[J-24] [ADR-0017 R-8] [ADR-0017 R-14] [ADR-0007]. A gate must not go green over a file
+    that is not there.
+
+    THE ROW WAS *"a mistyped path emits a payload byte-identical to an empty directory"*, and
+    the worse half was not in it: `verify` takes `nargs="*"`, and with one good path beside a
+    mistyped one it reported **1 OK and exited 0**, naming the missing file on neither channel.
+    The README endorses `verify results/` as a CI step, so a pipeline that silently stopped
+    producing an artifact passed its own gate. Measured before the fix:
+
+        verify <absent>           rc=2  names it: no
+        verify <empty dir>        rc=2            <- byte-identical to the line above, both channels
+        verify <good> <absent>    rc=0  names it: no
+        verify <good>             rc=0
+
+    `collect` dropped it with a bare `continue`, against its own docstring: *"Asking about one
+    by name is an answerable question and it gets answered."* A-17 is the same defect one
+    category over — a directory that could not be listed — and its comment is the description:
+    *"A pinned artifact inside it simply did not exist as far as the report was concerned, and
+    the run exited 0."*
+
+    TAYLOR RULED ON 2026-10-01, on the measured evidence rather than on taste: the absence is
+    named on both channels and the run exits **2**, because README's own statement of these
+    codes already covers *"no such file"* with 2 and says `verify` answers the same three. A
+    FINDING STILL OUTRANKS IT — `STALE`, `GONE` or `ALTERED` keeps exit 1 — because something
+    checked and wrong is a stronger statement than something not looked at, which is the
+    precedence J-18 and J-19 established in both directions.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    with runprov.Run("r", {}, provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "in.tsv")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("a\n")
+    good = tmp_path / "out.tsv"
+    hollow = tmp_path / "hollow"
+    hollow.mkdir()
+    absent = tmp_path / "not-there.tsv"
+    assert not absent.exists(), "the premise"
+
+    def measured(*paths):
+        capsys.readouterr()
+        code = runprov.__main__.main(
+            ["verify", *[str(x) for x in paths], "--root", str(tmp_path), "--format", "json"]
+        )
+        captured = capsys.readouterr()
+        return code, json.loads(captured.out), captured.err
+
+    # 1. THE NAMED PATH IS NAMED, in the payload and on the page.
+    code, body, err = measured(absent)
+    assert code == cli.CANNOT_CHECK
+    assert body["paths_absent"] == [str(absent)], body
+    assert str(absent) in body["cannot_check"], body["cannot_check"]
+    assert str(absent) in err, err
+
+    # 2. AND IT IS NO LONGER THE SAME ANSWER AS AN EMPTY DIRECTORY — the row itself. Both still
+    #    exit 2; what they no longer do is say the same thing, which is what made the two
+    #    classes indistinguishable to anyone reading either channel.
+    empty_code, empty_body, empty_err = measured(hollow)
+    assert empty_code == cli.CANNOT_CHECK
+    assert empty_body["paths_absent"] == [], (
+        "[ADR-0017 R-8] `[]` is *looked and found none*, and this list is built from the "
+        "caller's own arguments, so it is always looked at"
+    )
+    assert empty_body["cannot_check"] != body["cannot_check"], (
+        "a mistyped path and an empty directory are different findings and must not read the "
+        f"same: {empty_body['cannot_check']!r}"
+    )
+    assert empty_err != err, "nor on the page"
+    #    ROUTE 1'S OWN SENTENCE SURVIVES, which is not a formality: the first version of this
+    #    fix deleted that clause while reordering the fold, and an empty directory fell through
+    #    to route 2 — *"0 pinned artifact(s) … and not one could be compared"*, route 2's
+    #    sentence about route 1's state, and a change to output 0.6.0 shipped. A direct
+    #    measurement caught it and the suite did not.
+    assert "none carries a pin" in empty_body["cannot_check"], empty_body["cannot_check"]
+
+    # 3. THE MIXED CASE, WHICH IS THE ONE THAT MATTERED. One artifact verified, one path not
+    #    there: the verified one is still reported, and the run does NOT pass.
+    code, body, err = measured(good, absent)
+    assert body["ok"] == 1 and body["artifacts_pinned"] == 1, (
+        f"the good artifact is still checked and still reported: {body}"
+    )
+    assert code == cli.CANNOT_CHECK, (
+        "[J-24] a gate must not pass while an artifact it was told to check is missing — this "
+        f"returned {code}, and before the fix it returned 0 with nothing said"
+    )
+    assert body["paths_absent"] == [str(absent)]
+    assert "NOT CHECKED" in err and str(absent) in err, err
+    assert "NOTHING CHECKED" not in err, (
+        "and the headline must not overstate: something WAS checked here, which is why this "
+        f"branch has its own sentence:\n{err}"
+    )
+
+    # 4. A FINDING OUTRANKS THE ABSENCE. Taylor's ruling, asserted rather than described: make
+    #    the good artifact stale and the exit code must become 1, not stay 2.
+    (tmp_path / "in.tsv").write_text("CHANGED\n", encoding="utf-8")
+    assert runprov.verify.verify_artifact(good, tmp_path)["status"] == runprov.verify.STALE
+    code, body, _ = measured(good, absent)
+    assert code == 1, (
+        "[ledger L-81] checked and something IS wrong outranks could not check, so a stale "
+        f"artifact beside a missing path is 1: {code}"
+    )
+    assert body["cannot_check"] is None, (
+        "[ADR-0017 R-8] and the reason is null, because the exit code is reporting a finding — "
+        f"the absence is still in `paths_absent`: {body}"
+    )
+    assert body["paths_absent"] == [str(absent)], (
+        "which is why the absence keeps its own field rather than living only in the reason: "
+        "it is still true, and a consumer must be able to see it at exit 1"
+    )
+
+    # 5. AND A CLEAN RUN IS UNTOUCHED, so the fix cannot be passing by failing everything.
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    code, body, _ = measured(good)
+    assert (code, body["paths_absent"], body["cannot_check"]) == (0, [], None), body
+
+
+@requires_symlinks
+def test_a_named_dangling_symlink_is_a_path_that_is_not_there(tmp_path, monkeypatch):
+    """[J-24]. `exists()` follows the link, so this lands in `absent` — and that is deliberate.
+
+    The link is there and the artifact is not. `Collected.absent` records why this is one
+    category and not two: the fact that matters is that nothing could be verified, and the
+    repair is the same either way — produce the file. A second category can be split out the
+    day somebody needs to tell a broken link from a missing file, and the named tuple makes
+    that cheap; inventing it now would be inventing a distinction from the armchair.
+
+    NOT THE SAME CODE PATH as `test_a_dangling_symlink_is_listed_by_the_walk_and_examined_by_
+    nothing`, which is the one that matters here: inside a walked directory a broken link is
+    skipped by `is_file()` and stays uncounted, because the walk is enumerating what is there
+    rather than answering about something named. This is the named case.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "broken.tsv").symlink_to(tmp_path / "never-existed.tsv")
+    walk = runprov.verify.collect([tmp_path / "broken.tsv"])
+    assert walk.files == [], walk
+    assert walk.absent == [str(tmp_path / "broken.tsv")], walk
+
+    # AND THE WALK'S ANSWER IS UNCHANGED, which is the half a shared list would have broken:
+    # the same broken link found by enumerating a directory is not something the caller named.
+    inside = runprov.verify.collect([tmp_path])
+    assert inside.absent == [], (
+        "a broken link the walk merely came across is not a path the caller asked about"
+    )
 
 
 def test_verify_exits_non_zero_when_every_pin_was_unverifiable(tmp_path, monkeypatch, capsys):

@@ -2370,6 +2370,28 @@ def _verify(args: argparse.Namespace) -> int:
         )
     if report["stale"] or report["gone"] or report.get("altered"):
         return 1
+    if report.get("paths_absent"):
+        # J-24. ITS OWN HEADLINE, because "NOTHING CHECKED" would be FALSE here: this branch is
+        # reached with artifacts verified and one of the caller's paths missing, and a sentence
+        # that overstates what went wrong is the defect I-16 and G-16 are both about.
+        #
+        # THE EXIT CODE MOVES, 0 -> 2, and that is the row. Taylor ruled on 2026-10-01 on the
+        # measured evidence: README's own contract for these codes says 2 covers *"no such
+        # file"* and that `verify` answers the same three codes, and a gate that passes while a
+        # named artifact is missing is this module's own "AND IT WILL NOT PASS HAVING CHECKED
+        # NOTHING" broken for the subset of the request it could not look at.
+        print(
+            f"# NOT CHECKED: {inability}.\n"
+            f"#   You named {'it' if len(report['paths_absent']) == 1 else 'them'} and "
+            f"{'it is' if len(report['paths_absent']) == 1 else 'they are'} not there, so "
+            f"nothing was verified about\n"
+            f"#   {'it' if len(report['paths_absent']) == 1 else 'them'}. A run that was "
+            f"supposed to produce this file and did not is the case\n"
+            f"#   this exists to stop passing silently.",
+            file=sys.stderr,
+        )
+        return CANNOT_CHECK
+
     if inability is not None:
         # THE OTHER WAY TO CHECK NOTHING. The guard above catches "no artifact carries a
         # pin"; this catches "every pin was unreadable" -- an input outside the root, an

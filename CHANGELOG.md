@@ -120,6 +120,51 @@ front of a string cannot detect a rendering that shows only the front.** That is
 one level in: not the guard's logic, but the range its substitutions cover, failing to reach what
 it reports on.
 
+### Changed — `runprov verify` names a path that is not there, and no longer passes over it
+
+Audit J, J-24. **The exit code moves, 0 to 2, and that is the point of the entry.** `verify`
+takes any number of paths, and with one good path beside a mistyped one it reported `1 OK` and
+exited **0**, naming the missing file on neither channel:
+
+    $ runprov verify out.tsv typo.tsv --root .
+    # 1 pinned artifact(s) of 1 file(s) under .: 1 OK, 0 STALE, 0 GONE, 0 UNVERIFIABLE
+    OK           out.tsv  ['r']
+    rc=0
+
+The README endorses `verify results/` as a CI step, so a pipeline that silently stopped
+producing an artifact passed its own gate. `collect` dropped the path with a bare `continue` —
+absent from the file list, from every count, and from both channels — against its own
+docstring: *"Asking about one by name is an answerable question and it gets answered."*
+
+A-17 is the same defect one category over, for a directory that could not be listed, and its
+comment is the description: *"A pinned artifact inside it simply did not exist as far as the
+report was concerned, and the run exited 0."*
+
+It now exits 2 and says which paths it could not examine, in `paths_absent` and on the page,
+with its own headline — *NOT CHECKED*, because *NOTHING CHECKED* would overstate it when an
+artifact was verified. **A finding still outranks it:** `STALE`, `GONE` or `ALTERED` keeps exit
+1, since something checked and wrong is a stronger statement than something not looked at.
+
+The filed row was the narrower half — that a mistyped path and an empty directory produced
+**byte-identical output on both channels**. They no longer do, and route 1's own sentence is
+asserted rather than assumed, because the first version of this fix deleted that clause while
+reordering the verdict and an empty directory fell through to route 2's sentence instead. A
+direct measurement of the four states caught that; the suite did not.
+
+`collect` returns a `Collected` named tuple now. Five tests broke on the old 4-tuple's arity
+and none on the meaning of the change, which is what positional unpacking costs a call site
+that does not care; the next category added costs nothing.
+
+A dangling symlink named on the command line is one of these, deliberately and in one category:
+the link is there and the artifact is not, the repair is the same either way, and a broken link
+the walk merely came across is still not something the caller asked about.
+
+**Two statements of the exit-1 family were wrong and are corrected.** README's `report`
+paragraph still said *"1 when one is `STALE` or `GONE`"* — the fourth copy of that list, missed
+yesterday because J-19's guard was scoped by hand to the exit-code table's row alone, inside the
+fix for a defect caused by a hand-written scope. The guard now reads both statements, located
+by what they claim rather than by position.
+
 ### Changed — `runprov report` exits 2 for `NO PIN` and `UNVERIFIABLE`, matching `verify`
 
 **A behaviour change on a documented path, and deliberately so** — Audit I, I-10, decided by
@@ -148,7 +193,7 @@ the test asserts the same expression rather than a second copy of the list.
 Measured over all four verdicts an artifact can have, `report` and `verify` now return the same
 code for the same file: OK 0/0, STALE 1/1, UNVERIFIABLE 2/2, NO PIN 2/2.
 
-### Fixed — `report` and `verify` gave an edited artifact two different exit codes
+### Changed — `report` exits 1 for an `ALTERED` artifact, matching `verify`
 
 Audit J, J-19. Measured across every state `verify` has a word for, before the fix:
 
