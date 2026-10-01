@@ -317,8 +317,49 @@ LINEAGE_SCHEMA = "runprov.lineage.v1"
 LOG_SCHEMA = "runprov.log.v1"
 
 
-def _log_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[str, typing.Any]:
-    """`log`'s answer when the history it was told to read is not there. [ADR-0017 R-15]."""
+def _same_destination(recorded: str, path: pathlib.Path) -> bool:
+    """Whether a marker's recorded history IS the one this command was asked about.
+
+    J-35, found while reproducing J-06. This was `str(m["history"]) != str(path)` — a
+    comparison of SPELLINGS — so one file named two ways read as two destinations. Measured
+    over a single marker beside a single missing history:
+
+        --log /abs/path/runs.jsonl  ->  "Nothing has been recorded here yet"
+        --log runs.jsonl            ->  "A MARKER BESIDE THIS PATH SAYS OTHERWISE: the run
+                                         that left it recorded to /abs/path/runs.jsonl"
+        --log ./runs.jsonl          ->  the same, a third spelling of the same file
+
+    The second and third tell the operator the records went somewhere else and then name the
+    path they just passed, with the advice *"If that names a file, pass it to --log"*. The
+    marker always stores an absolute path and a relative `--log` is the ordinary way to type
+    one, so the misleading branch is the one a person is most likely to reach.
+
+    RESOLVED, NOT NORMALISED: a symlinked results directory is the same file by either name,
+    and `resolve()` is what says so. `strict=False` is the default, which matters because the
+    history does not exist in this branch — that is why we are here.
+
+    A SINK IS NOT A PATH, and that case is the reason this returns a bool rather than
+    normalising both sides for the caller to compare. `DbSink(...)` resolves to some nonsense
+    relative to the cwd, compares unequal, and stays in `elsewhere` — which is correct, because
+    it IS elsewhere. The `OSError` arm is Windows, where an invalid name raises here instead of
+    coming back unequal; the string comparison is then the honest fallback and it is the
+    behaviour this function replaced.
+    """
+    try:
+        return pathlib.Path(recorded).resolve() == path.resolve()
+    except OSError:
+        return recorded == str(path)
+
+
+def _log_no_history(
+    path: pathlib.Path, args: argparse.Namespace, in_flight: list[dict[str, typing.Any]]
+) -> dict[str, typing.Any]:
+    """`log`'s answer when the history it was told to read is not there. [ADR-0017 R-15].
+
+    `in_flight` IS DISCARDED HERE UNDER R-12, as in `lineage`: this payload's subject is the
+    RECORDS, and a run with no record is not one of them. The parameter exists because the
+    table calls all three builders identically — see `_NO_HISTORY_ANSWER`."""
+    del in_flight
     return _log_answer(
         path,
         records=[],
@@ -331,7 +372,9 @@ def _log_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[str, t
     )
 
 
-def _show_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[str, typing.Any]:
+def _show_no_history(
+    path: pathlib.Path, args: argparse.Namespace, in_flight: list[dict[str, typing.Any]]
+) -> dict[str, typing.Any]:
     """`show`'s answer for a history that is not there. [ADR-0017 R-15]. T-33's last row.
 
     THIS ENTRY IS WHAT THE `KeyError` IN THE GUARD WAS WAITING FOR. When `log` was built, the
@@ -340,7 +383,7 @@ def _show_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[str, 
     reachable the moment this flag exists, and this is the entry that makes it right instead.
     """
     del args
-    return show_mod.payload_no_history(path, f"no run history at {path}")
+    return show_mod.payload_no_history(path, f"no run history at {path}", in_flight)
 
 
 #: The join's own counters, in the order `_lineage` returns them. ONE list, read by the one
@@ -384,11 +427,17 @@ def _lineage_answer(
     }
 
 
-def _lineage_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[str, typing.Any]:
-    """`lineage`'s entry in the missing-history table. `args` is unused and is in the signature
-    because the table calls every builder the same way — a lookup whose entries differ in arity
-    is a lookup with a branch in it, which is what that table exists to avoid."""
-    del args
+def _lineage_no_history(
+    path: pathlib.Path, args: argparse.Namespace, in_flight: list[dict[str, typing.Any]]
+) -> dict[str, typing.Any]:
+    """`lineage`'s entry in the missing-history table. `args` and `in_flight` are unused and are
+    in the signature because the table calls every builder the same way — a lookup whose entries
+    differ in arity is a lookup with a branch in it, which is what that table exists to avoid.
+
+    R-12 IS WHY THIS DISCARDS THE SCAN RATHER THAN CARRYING IT. `in_flight` is the project
+    page's own fact; a join over `run_uid` has no such field in any state, and adding one here
+    so that three payloads look alike would be inventing a second source of truth for it."""
+    del args, in_flight
     return _lineage_answer(path, None, 0, cannot_check=f"no run history at {path}")
 
 
@@ -397,7 +446,10 @@ def _lineage_no_history(path: pathlib.Path, args: argparse.Namespace) -> dict[st
 #: what made the R-15 ratchet name it; a lookup MISS still raises rather than substituting a
 #: sibling's shape, which is what a fourth command arriving here would deserve.
 _NO_HISTORY_ANSWER: dict[
-    str, typing.Callable[[pathlib.Path, argparse.Namespace], dict[str, typing.Any]]
+    str,
+    typing.Callable[
+        [pathlib.Path, argparse.Namespace, list[dict[str, typing.Any]]], dict[str, typing.Any]
+    ],
 ] = {
     "log": _log_no_history,
     "lineage": _lineage_no_history,
@@ -2594,7 +2646,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 str(m["history"])
                 for m in scan.markers.values()
-                if m.get("history") and str(m["history"]) != str(path)
+                if m.get("history") and not _same_destination(str(m["history"]), path)
             }
         )
         # NAMED, NOT INTERPRETED. Whether the destination is a file to pass to `--log` or a
@@ -2647,7 +2699,10 @@ def main(argv: list[str] | None = None) -> int:
         # would hand a `show` caller a `lineage` payload. R-15's ratchet names `show` as
         # outstanding, so the two fail together.
         if getattr(args, "format", None) == "json":
-            print(json.dumps(_NO_HISTORY_ANSWER[args.cmd](path, args), indent=2))
+            # J-06. `scan.pending()`, NOT `[]`. The scan is six lines above and was built
+            # precisely because a marker beside a missing history is the finding here; the
+            # payload was the one reader of this branch that could not see it.
+            print(json.dumps(_NO_HISTORY_ANSWER[args.cmd](path, args, scan.pending()), indent=2))
         if args.cmd == "show" and args.forget_markers:
             _forget(path.parent / ".incomplete")
         return CANNOT_CHECK

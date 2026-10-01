@@ -19387,6 +19387,178 @@ def test_diffs_four_refusals_each_say_which_one_it_was(tmp_path, capsys):
     assert "same run" in routes["same run twice"]
 
 
+def _marker_beside_a_missing_history(tmp_path, monkeypatch, script="long-job"):
+    """A run frozen between `__enter__` and `__exit__`, with no history beside its marker.
+
+    THE ONE DIFFERENCE A SIGKILL MAKES is that `__exit__` never runs, which is why entering the
+    block by hand reproduces it exactly — the same reasoning
+    `test_a_run_that_records_nothing_leaves_no_marker` states, and it needs no signal, so this
+    holds on every leg of the matrix.
+
+    AND NOT THE SAME STATE AS `test_the_first_run_being_killed_is_reported_even_though_there_is_
+    no_history`, which is where I looked first. A real `SIGKILL` leaves the `started` line, so
+    the history EXISTS and that test asserts exit 0 down the ordinary path. The missing-history
+    branch — which is J-06's subject — is reached by a history that is not there at all: a lost
+    scratch filesystem, a `sink=` destination, or a mistyped `--log`. So the history is removed
+    here, and that removal is the fixture's point rather than a convenience.
+    """
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "runs.jsonl"
+    runprov.configure(root=tmp_path, run_log=log)
+    run = runprov.Run(script, provenance=tmp_path / "p.json")
+    run.__enter__()
+    markers = sorted((tmp_path / ".incomplete").glob("*.json"))
+    assert len(markers) == 1, f"the premise: one marker is in flight: {markers}"
+    log.unlink(missing_ok=True)
+    assert not log.is_file(), "the premise: and no history beside it"
+    return run, log, markers[0]
+
+
+def test_show_over_a_missing_history_reports_the_unfinished_run_in_both_renderings(
+    tmp_path, monkeypatch, capsys
+):
+    """[J-06] [ADR-0017 R-8] [ADR-0017 R-14]. `[]` means looked and found none. It had looked.
+
+    MEASURED BEFORE THE FIX, one invocation, one second, over a `SIGKILL`ed run whose history
+    was then lost:
+
+        stderr: # 1 run(s) STARTED with no ending recorded:
+                #   INTERRUPTED  long-job   2026-10-01T12:14:46Z  pid 2314806
+        stdout: "in_flight": []
+
+    The scan holding the answer is built six lines above the payload — the branch calls
+    `_report_in_flight` precisely because *a marker beside a missing history is not "nothing
+    recorded", it is a run that started and never got to write one* — and it was discarded,
+    because `payload_no_history` could not take it.
+
+    THIS IS THE MOST ALARMING STATE THE COMMAND HAS and the payload reported the reassuring
+    one. R-8 is exact: `null` is *looked and found none*, an absent key is *this did not look*,
+    and `[]` is the list-shaped form of the first. It had looked.
+
+    BOTH LIVENESS STATES, because the defect was never about which one. A marker whose process
+    is still alive reads RUNNING and one whose process is gone reads INTERRUPTED; the payload
+    said `[]` for both, and a test covering only the alarming one would leave the ordinary
+    `show` over a job still running equally silent in JSON.
+
+    G-16'S SHAPE AGAIN — two renderings of one answer disagreeing — which J-04 closed in
+    `chain` yesterday. This audit has now found it in three commands.
+    """
+    run, log, marker = _marker_beside_a_missing_history(tmp_path, monkeypatch)
+    try:
+        written = json.loads(marker.read_text(encoding="utf-8"))
+        for state, pid in (
+            (runprov.show.RUNNING, os.getpid()),
+            (runprov.show.INTERRUPTED, _never_a_pid()),
+        ):
+            marker.write_text(json.dumps({**written, "pid": pid}), encoding="utf-8")
+            capsys.readouterr()
+            code = runprov.__main__.main(["show", "--log", str(log), "--format", "json"])
+            captured = capsys.readouterr()
+            assert code == 2, "a named history that is not there is an answer at exit 2"
+
+            # THE TEXT RENDERING FIRST, so this states what the payload is compared AGAINST
+            # rather than comparing the payload with itself.
+            assert "1 run(s) STARTED with no ending recorded" in captured.err, captured.err
+            assert state in captured.err and "long-job" in captured.err, captured.err
+
+            body = json.loads(captured.out)
+            assert len(body["in_flight"]) == 1, (
+                f"[ADR-0017 R-8] the text names a {state} run and `[]` says this page looked "
+                f"and found none: {body['in_flight']}"
+            )
+            entry = body["in_flight"][0]
+            assert entry["state"] == state, entry
+            assert entry["script"] == "long-job"
+
+            # THE TWO SHAPES STILL MATCH, which is the constraint this fix had to respect: a
+            # new key here would reopen the defect J-09 closed and J-21's guard caught.
+            view = {"runs": 0, "scripts": {}, "artifacts": {}}
+            twin = runprov.show.payload_project(log, view, None, [], 0)
+            assert set(body) == set(twin), sorted(set(body) ^ set(twin))
+    finally:
+        # EXITED, so the run records its ending rather than warning at interpreter shutdown
+        # about a `provenance=` that was never written.
+        run.__exit__(None, None, None)
+
+
+def test_a_history_named_two_ways_is_one_destination(tmp_path, monkeypatch, capsys):
+    """[J-35]. Found while reproducing J-06, in the six lines above it.
+
+    The branch compared a marker's recorded history with the path it was asked about AS
+    STRINGS, so one file named two ways read as two destinations. Measured over a single
+    marker beside a single missing history, before the fix:
+
+        --log /abs/dir/runs.jsonl   ->  "Nothing has been recorded here yet"
+        --log runs.jsonl            ->  "A MARKER BESIDE THIS PATH SAYS OTHERWISE: the run that
+                                         left it recorded to /abs/dir/runs.jsonl"
+        --log ./runs.jsonl          ->  the same, a third spelling of the same file
+
+    The last two tell the operator the records went elsewhere, name the path they just passed,
+    and advise *"If that names a file, pass it to --log"*. **The marker always stores an
+    absolute path and a relative `--log` is the ordinary way to type one**, so the misleading
+    branch is the one a person is most likely to reach.
+
+    AND THE FEATURE IT BELONGS TO IS ASSERTED INTACT BELOW, because a fix that silenced the
+    message would be worse than the defect: it exists for the `sink=` project where the records
+    really are not on this filesystem, a state no other output of this command can reveal.
+    """
+    run, log, marker = _marker_beside_a_missing_history(tmp_path, monkeypatch, script="elsewhere")
+    try:
+
+        def diagnosis(spelling):
+            capsys.readouterr()
+            assert runprov.__main__.main(["show", "--log", str(spelling)]) == 2
+            return capsys.readouterr().err
+
+        #: THREE SPELLINGS OF ONE FILE, plus one through a symlinked directory — `resolve()`
+        #: rather than `absolute()` is what makes the last one work, and a symlinked results
+        #: directory is the ordinary case on a cluster.
+        link = tmp_path / "by-another-name"
+        link.symlink_to(tmp_path, target_is_directory=True)
+        for spelling in (
+            log,
+            pathlib.Path("runs.jsonl"),
+            pathlib.Path("./runs.jsonl"),
+            link / "runs.jsonl",
+        ):
+            err = diagnosis(spelling)
+            assert "SAYS OTHERWISE" not in err, (
+                f"one file, and {spelling} read as a destination other than {log}:\n{err}"
+            )
+            assert "Nothing has been recorded here yet" in err, err
+
+        # THE GENUINE CASES, BOTH OF THEM, so this is a false positive removed and not a signal
+        # suppressed. A different file, and a sink — which is not a path at all and must stay
+        # in `elsewhere` rather than being resolved into one.
+        written = json.loads(marker.read_text(encoding="utf-8"))
+        for destination in ("/srv/shared/other/runs.jsonl", "DbSink(postgresql://lab/prov)"):
+            marker.write_text(json.dumps({**written, "history": destination}), encoding="utf-8")
+            err = diagnosis(log)
+            assert "SAYS OTHERWISE" in err and destination in err, (
+                f"a run that really did record to {destination!r} must still say so:\n{err}"
+            )
+
+        # THE `OSError` ARM, PROBED RATHER THAN ASSUMED. It exists for Windows, where an
+        # invalid name raises here instead of coming back unequal, and this leg of the matrix
+        # cannot reach it — so `resolve` is made to raise and the fallback is asserted to be
+        # the string comparison this function replaced. Probe, never `hasattr`: the rule from
+        # the `os.kill(pid, 0)` row, and the reason is the same — a platform difference guessed
+        # at is a platform difference untested.
+        real = pathlib.Path.resolve
+
+        def refuses(self, *args, **kwargs):
+            raise OSError(22, "Invalid argument")
+
+        monkeypatch.setattr(pathlib.Path, "resolve", refuses)
+        assert runprov.__main__._same_destination(str(log), log), (
+            "with no way to resolve either side, identical spellings are still one file"
+        )
+        assert not runprov.__main__._same_destination("/elsewhere/runs.jsonl", log)
+        monkeypatch.setattr(pathlib.Path, "resolve", real)
+    finally:
+        run.__exit__(None, None, None)
+
+
 def test_shows_payload_carries_the_record_and_its_renderings_abbreviate(tmp_path, capsys):
     """[J-07] [J-08] [ADR-0017 R-8] [ADR-0017 R-9]. Facts in the view, display in the renderers.
 

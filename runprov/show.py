@@ -1027,13 +1027,26 @@ def payload_runs(
     }
 
 
-def payload_no_history(path: pathlib.Path, reason: str) -> dict[str, typing.Any]:
+def payload_no_history(
+    path: pathlib.Path, reason: str, in_flight: list[dict[str, typing.Any]]
+) -> dict[str, typing.Any]:
     """[ADR-0017 R-15]. The history named is not there, which is an answer and not a mistake.
 
     THE PROJECT SHAPE WITH NOTHING IN IT, rather than a third shape: a consumer that branches
     on `target` keeps working, and `cannot_check` is the only field that distinguishes this
     from a project with no runs recorded yet. Those two are genuinely different — one has no
     file, the other has an empty one — and this is the field that says which.
+
+    `in_flight` IS A PARAMETER AND NOT `[]`. J-06: this was hardcoded empty while the SAME
+    invocation's text rendering printed *"1 run(s) STARTED with no ending recorded: INTERRUPTED
+    long-job"* — reproduced from a `SIGKILL`ed run whose history was then lost. R-8 is exact
+    about what `[]` means: *looked and found none*. It had looked, through
+    `_report_in_flight`, and found one; the scan was computed six lines before the payload was
+    built and thrown away because this signature could not take it.
+
+    AND A MARKER BESIDE A MISSING HISTORY IS THE MOST ALARMING STATE THIS COMMAND HAS, which is
+    what the branch's own comment says: not *nothing was recorded* but *a run started and never
+    got to write anything*. The text has said so since A-15. The payload said the opposite.
     """
     return {
         "schema": SCHEMA,
@@ -1046,7 +1059,7 @@ def payload_no_history(path: pathlib.Path, reason: str) -> dict[str, typing.Any]
         # something else**, and caught within the hour by
         # `test_every_json_commands_two_shapes_carry_the_same_keys`. Nobody asked for staleness
         # here, and there is no history to compute it from either.
-        "in_flight": [],
+        "in_flight": in_flight,
         "unreadable": 0,
         "cannot_check": reason,
     }

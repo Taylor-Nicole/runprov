@@ -148,6 +148,55 @@ the test asserts the same expression rather than a second copy of the list.
 Measured over all four verdicts an artifact can have, `report` and `verify` now return the same
 code for the same file: OK 0/0, STALE 1/1, UNVERIFIABLE 2/2, NO PIN 2/2.
 
+### Fixed — `runprov show --format json` said no run was unfinished while its own text named one
+
+Audit J, J-06. Over a history that is not there, with a marker beside it, one invocation
+reported two contradictory things in the same second:
+
+    stderr   # 1 run(s) STARTED with no ending recorded:
+             #   INTERRUPTED  long-job  2026-10-01T12:14:46Z  pid 2314806
+    stdout   "in_flight": []
+
+The branch calls `_report_in_flight` six lines before building the payload, precisely because a
+marker beside a missing history is not *nothing recorded* — it is a run that started and never
+got to write one, which is the more alarming of the two findings and the reason the scan is
+there at all. The scan was then discarded, because `payload_no_history` had `in_flight` wired
+to `[]` and no parameter to take it.
+
+`[]` is not a neutral default here. Per the README's rule, `null` is *looked and found none* and
+an absent key is *this page did not look*; `[]` is the list-shaped form of the first. This page
+had looked and found one. **So the most alarming state the command has was the one its JSON
+reported as clean**, while the text — correct since A-15 — said otherwise directly above it.
+
+Both liveness states are covered, not only the alarming one: a marker whose process is still
+alive reads RUNNING and one whose process is gone reads INTERRUPTED, and the payload said `[]`
+for both. `log` and `lineage` share that lookup and take the scan without using it, because
+`in_flight` is the project page's own fact and a join over `run_uid` has no such field in any
+state.
+
+### Fixed — one history named two ways read as two destinations
+
+Audit J, J-35, found while reproducing J-06 in the six lines above it. The same branch compared
+a marker's recorded history with the path it was asked about **as strings**, so one file
+answered differently depending on how it was typed:
+
+    --log /abs/dir/runs.jsonl   "Nothing has been recorded here yet"
+    --log runs.jsonl            "A MARKER BESIDE THIS PATH SAYS OTHERWISE: the run that left it
+                                 recorded to /abs/dir/runs.jsonl"
+    --log ./runs.jsonl          the same, a third spelling of the same file
+
+The last two tell the operator the records went somewhere else, name the path they just passed,
+and advise *"If that names a file, pass it to --log"*. The marker always stores an absolute path
+and a relative `--log` is the ordinary way to type one, so the misleading answer was the one a
+person was most likely to get.
+
+The comparison resolves both sides now, which also makes a symlinked results directory — the
+ordinary case on a cluster — read as the one file it is. The message itself is untouched and
+asserted intact for the two states it exists for: a run that really did record to a different
+file, and one that recorded to a `sink` that is not a path at all. A fix that silenced it would
+have been worse than the defect, because for a `sink=` project no other output of this command
+reveals where the records went.
+
 ### Fixed — `runprov verify --format json` carried the counters and not the conclusion
 
 Audit J, J-18. ADR-0017's R-16 table told a consumer to read *could not check* off a count
