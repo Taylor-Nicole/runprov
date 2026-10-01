@@ -120,6 +120,50 @@ front of a string cannot detect a rendering that shows only the front.** That is
 one level in: not the guard's logic, but the range its substitutions cover, failing to reach what
 it reports on.
 
+### Fixed — one name meant two things across the commands, and now a check says so
+
+Audit J, J-36 — the cross-command guard the audit closed by naming as the next thing to write.
+Nine of its thirty-five rows were one command's vocabulary drifting from its sibling's, and
+every one was fixed per command. This is the check that notices the class.
+
+**It found five collisions on its first run, four with incompatible types** — a consumer
+deserialising generically breaks on each:
+
+| key | commands | types |
+|---|---|---|
+| `matched` | `log` / `show <target>` | **bool** vs **int** |
+| `artifacts` | `impact` / `verify` | int vs list |
+| `ok` | `check` / `verify` | bool vs int |
+| `runs` | `lineage` / `show <target>` | int vs list |
+| `unreadable` | six commands / `chain` | int vs list |
+
+**`matched` was the one defect and it is gone.** It was the only collision *invented by both
+payload builders* rather than owned by a structure, so R-9 bound neither side: `log`'s tri-state
+*did a named target hit anything* is `matched_any`, and `show`'s count is `matching` — `log`'s
+own word for the same number. Both were unreleased.
+
+The other four are **declared, with reasons, and not defects.** R-12 makes each payload its
+command's own structure and R-9 forbids renaming a field on the way out, so where two structures
+legitimately own the same word the collision is a consequence of two rules this project chose:
+`impact.Chain.artifacts` and `check.Report.ok` are `@property`, `lineage`'s `runs` is one of the
+join's own counters, and `chain` *names* the unreadable lines because it walks them while every
+other command can only count them. What the guard refuses is an **undeclared** one — a new field
+quietly making a third meaning for a name a consumer has already learned.
+
+It also carries the checkable half of the scope vocabulary, which is J-12 and J-14 as an
+invariant rather than two fixes: **`shown` and `matching` are one pair.** A payload that reports
+a window must report what it narrowed from, so a third command growing `--limit` is held to it on
+the day it does.
+
+Stated limits: two fields with the same type and different meanings pass — type disagreement is
+the mechanically checkable half, and the table carries the other half as prose.
+
+One line was deleted from the guard because a control refuted the comment beside it. The comment
+called `isinstance(value, bool)` *"the single most consequential line"*, reasoning that `bool` is
+a subclass of `int`; true of `isinstance`, irrelevant here, because `type(True).__name__` is
+already `"bool"`. Removing it failed nothing. The judgement that *is* load-bearing — a `null` is
+an answer and not a type — now has the control.
+
 ### Fixed — `runprov resources --margin` is accepted and ignored in silence no longer
 
 Audit J, J-16. `--margin` scales a REQUEST for a scheduler. `--format slurm` and `--format k8s`

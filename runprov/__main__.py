@@ -367,7 +367,7 @@ def _log_no_history(
         failed=0,
         unreadable=0,
         selectors=_log_selectors(args),
-        matched=None,
+        matched_any=None,
         cannot_check=f"no run history at {path}",
     )
 
@@ -484,7 +484,7 @@ def _log_answer(
     failed: int,
     unreadable: int,
     selectors: dict[str, typing.Any],
-    matched: bool | None,
+    matched_any: bool | None,
     matching: int = 0,
     unfinished: int = 0,
     cannot_check: str | None = None,
@@ -549,7 +549,12 @@ def _log_answer(
         # J-13. Runs whose start is in this history and whose record is not.
         "unfinished": unfinished,
         "selectors": selectors,
-        "matched": matched,
+        # J-36. RENAMED FROM `matched`, which `show` also carried — as an INT COUNT. One name
+        # for two ideas and two types across one package: here a tri-state *did a named target
+        # hit anything*, there *how many matched*. Both were invented by their payload builders
+        # rather than owned by a structure, so R-9 bound neither and both could move; `show`'s
+        # became `matching`, which is this command's word for the same count.
+        "matched_any": matched_any,
         "cannot_check": cannot_check,
         "records": records,
     }
@@ -1337,7 +1342,7 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
                     unreadable=bad,
                     selectors=_log_selectors(args),
                     # None WHEN NOTHING WAS NAMED, rather than True — see `_log_answer`.
-                    matched=bool(named_hits) if named else None,
+                    matched_any=bool(named_hits) if named else None,
                     matching=matching,
                     unfinished=len(pending),
                 ),
@@ -2199,7 +2204,7 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
         # J-12. `hits[0]` IS HOW MANY MATCHED; `matched` below is how many survived `--limit`.
         # The deque inside `select` forgets the rest, so the count has to come out with it.
         hits = [0]
-        matched = select(_counted(path, bad), args.target, limit=args.limit or None, matched=hits)
+        matched = select(_counted(path, bad), args.target, limit=args.limit or None, matching=hits)
         if not matched:
             # [ADR-0017 R-15]. A TARGET THAT MATCHED NOTHING IS AN ANSWER AND EXITS 1, so it
             # serialises. Found by measuring rather than by reasoning: the two success paths and

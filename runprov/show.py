@@ -1003,7 +1003,7 @@ def payload_runs(
     target: str,
     views: list[dict[str, typing.Any]],
     unreadable: int,
-    matched: int | None = None,
+    matching: int | None = None,
     limit: int | None = None,
 ) -> dict[str, typing.Any]:
     """One page per matching run, as an answer. [ADR-0017 R-8] on what is ABSENT here.
@@ -1014,12 +1014,12 @@ def payload_runs(
     flags are refused with a note saying so — and never scans for markers. Serialising those as
     `null` would claim this page looked at three things and found nothing in them.
 
-    `matched` is the count, beside the runs themselves, for the reason every count in this
+    `matching` is the count, beside the runs themselves, for the reason every count in this
     payload family exists: an empty list after a target that matched nothing and an empty list
     over an empty history are different answers, and this command already exits 1 for the first.
 
     AND IT IS THE COUNT THAT MATCHED, NOT THE COUNT RETURNED — J-12. It was `len(views)`, so
-    `--limit 2` over five matching runs said `matched: 2`, with no `limit`, no `shown` and
+    `--limit 2` over five matching runs said `matching: 2`, with no `limit`, no `shown` and
     nothing anywhere naming the truncation. `log`'s sibling payload, built the same week behind
     the same flag, gets this right with `shown` + `total` + `selectors.limit`; this one reported
     a narrowed view as the whole answer.
@@ -1038,11 +1038,15 @@ def payload_runs(
         "schema": SCHEMA,
         "path": path.as_posix(),
         "target": target,
-        # `matched is None` MEANS THE CALLER DID NOT COUNT, which only the no-match emitter
+        # J-36. RENAMED FROM `matched`, which `log` also carried — as a tri-state BOOL. One
+        # name, two ideas, two types, across one package. `matching` is `log`'s word for this
+        # exact count, so the two commands now say the same thing the same way.
+        #
+        # `matching is None` MEANS THE CALLER DID NOT COUNT, which only the no-match emitter
         # does — there `views` is empty and the two are the same number. Defaulting to
         # `len(views)` keeps that call site unchanged rather than making it pass a zero it
         # would have to know to pass.
-        "matched": len(views) if matched is None else matched,
+        "matching": len(views) if matching is None else matching,
         "shown": len(views),
         "selectors": {"limit": limit or None},
         "runs": views,
@@ -1354,7 +1358,7 @@ def select(
     records: typing.Iterable[dict[str, typing.Any]],
     target: str,
     limit: int | None = None,
-    matched: list[int] | None = None,
+    matching: list[int] | None = None,
 ) -> list[dict[str, typing.Any]]:
     """Runs matching `target`: a script name, a run_uid prefix, a run_id, or an artifact path.
 
@@ -1374,7 +1378,7 @@ def select(
     ordered passes returned. `limit` bounds each bucket to the last N, which is the same
     slice the caller used to take afterwards -- taken here so a bucket cannot grow past it.
 
-    `matched` IS AN OUT-COUNTER AND IT EXISTS BECAUSE `limit` DESTROYS THE ANSWER. J-12: the
+    `matching` IS AN OUT-COUNTER AND IT EXISTS BECAUSE `limit` DESTROYS THE ANSWER. J-12: the
     bucket is a `deque(maxlen=limit)`, so a run that matched and fell off the front is gone by
     the time this returns — and the caller, having only the list, reported the TRUNCATED count
     as the number of matching runs. Measured against the v0.6.0 tag: five runs of one script,
@@ -1422,10 +1426,10 @@ def select(
             totals[3] += 1
     for bucket, seen in zip(kinds, totals, strict=True):
         if bucket:
-            if matched is not None:
+            if matching is not None:
                 # THE BUCKET'S OWN TOTAL, not the sum over four: the buckets are disjoint and
                 # only the first non-empty one is the answer, so the others never matched
                 # anything this target resolved to.
-                matched[0] = seen
+                matching[0] = seen
             return list(bucket)
     return []

@@ -18578,7 +18578,7 @@ def test_log_answers_in_json_and_says_what_was_asked_as_well_as_what_came_back(t
     assert whole["schema"] == runprov.__main__.LOG_SCHEMA == "runprov.log.v1"
     assert next(iter(whole)) == "schema"
     assert whole["shown"] == whole["total"] == len(whole["records"]) == 1
-    assert whole["matched"] is None, "nothing was named, which is not the same as named and hit"
+    assert whole["matched_any"] is None, "nothing was named, which is not the same as named and hit"
     assert whole["cannot_check"] is None
     assert set(whole) == set(
         runprov.__main__._log_answer(
@@ -18588,7 +18588,7 @@ def test_log_answers_in_json_and_says_what_was_asked_as_well_as_what_came_back(t
             failed=0,
             unreadable=0,
             selectors={},
-            matched=None,
+            matched_any=None,
         )
     ), "the CLI prints the builder's object and nothing else — see the note in `resources`'"
     assert whole["selectors"] == {"script": None, "run_id": None, "failed": False, "limit": None}, (
@@ -18610,14 +18610,14 @@ def test_log_answers_in_json_and_says_what_was_asked_as_well_as_what_came_back(t
         == 1
     )
     missed = json.loads(capsys.readouterr().out)
-    assert missed["matched"] is False and missed["shown"] == 0 and missed["total"] == 1, (
+    assert missed["matched_any"] is False and missed["shown"] == 0 and missed["total"] == 1, (
         "`total` is what makes `shown: 0` legible — the history is not empty, the name is wrong"
     )
 
     # A CLASS THAT MATCHED NOTHING IS THE GOOD ANSWER: exit 0, and `matched` stays null.
     assert runprov.__main__.main(["log", "--failed", "--log", str(log), "--format", "json"]) == 0
     clean = json.loads(capsys.readouterr().out)
-    assert clean["matched"] is None and clean["shown"] == 0
+    assert clean["matched_any"] is None and clean["shown"] == 0
 
     # R-15: A HISTORY THAT IS NOT THERE IS AN ANSWER, and it carries the reason.
     gone = tmp_path / "missing.jsonl"
@@ -19223,7 +19223,7 @@ def test_show_answers_in_json_as_an_answer_and_not_as_the_yaml_view(tmp_path, ca
     # A TARGET PAGE, and the three keys that are absent rather than null.
     assert runprov.__main__.main(["show", "demo", "--log", str(log), "--format", "json"]) == 0
     runs = json.loads(capsys.readouterr().out)
-    assert runs["target"] == "demo" and runs["matched"] == 1 and len(runs["runs"]) == 1
+    assert runs["target"] == "demo" and runs["matching"] == 1 and len(runs["runs"]) == 1
     assert not {"project", "in_flight"} & set(runs), (
         "[ADR-0017 R-8] a target page did not look at any of these, and an absent key says so "
         f"where null would claim it looked: {sorted({'project', 'state', 'in_flight'} & set(runs))}"
@@ -19236,7 +19236,7 @@ def test_show_answers_in_json_as_an_answer_and_not_as_the_yaml_view(tmp_path, ca
     # wrong* — and it was not; the target simply matched nothing.
     assert runprov.__main__.main(["show", "nosuch", "--log", str(log), "--format", "json"]) == 1
     missed = json.loads(capsys.readouterr().out)
-    assert missed["target"] == "nosuch" and missed["matched"] == 0 and missed["runs"] == []
+    assert missed["target"] == "nosuch" and missed["matching"] == 0 and missed["runs"] == []
 
     # [ADR-0017 R-15] AND THE MISSING HISTORY, whose entry in the shared lookup is what this row
     # finally supplies — `log`'s commit left a `KeyError` there on purpose, reachable only once
@@ -19398,6 +19398,176 @@ def test_export_is_outside_r15_and_r16_by_construction_and_not_by_omission():
     assert set(runprov.__main__.EXPORT_FORMATS) == {"ro-crate", "prov"}, (
         "ADR-0017 excludes `export` because its formats carry their own schemas; that reason is "
         f"only true of these two: {sorted(runprov.__main__.EXPORT_FORMATS)}"
+    )
+
+
+#: [J-36]. Keys that more than one answering shape carries with DIFFERENT types, each declared
+#: with why it is allowed to stand. **This is not a list of things to fix.** R-12 makes each
+#: payload its command's own structure and R-9 forbids renaming a field on the way out, so where
+#: two structures legitimately own the same word the collision is a consequence of two rules this
+#: project chose — and every entry below is a `@property` or a NamedTuple field on one side at
+#: least. What the guard refuses is an UNDECLARED one: a new field that quietly makes a third
+#: meaning for a name a consumer has already learned.
+_SHARED_NAMES = {
+    "artifacts": (
+        "`impact.Chain.artifacts` is a @property counting what a rebuild would touch; "
+        "`verify`'s is the list of pinned artifact reports. Both structure-owned, and "
+        "`verify`'s shipped in 0.6.0."
+    ),
+    "ok": (
+        "`check.Report.ok` is a @property — the verdict. `verify`'s `ok` is one of the "
+        "per-status counts beside `stale` and `gone`, and shipped in 0.6.0. A verdict and a "
+        "tally, both named for the same word in English."
+    ),
+    "runs": (
+        "`lineage`'s is one of the join's own counters (`_LINEAGE_COUNTERS`, shipped in "
+        "0.6.0); `show <target>`'s is the list of run pages, which is what the command IS. "
+        "`show`'s project shape also carries `project.runs` as a count, one level down."
+    ),
+    "unreadable": (
+        "`chain` NAMES the lines — it walks the file line by line, so it can — and that list "
+        "shipped in 0.6.0. Every other command counts them, because none of them has a line "
+        "number to give. Same fact, different fidelity, and the fidelity is the command's."
+    ),
+}
+
+
+def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsys):
+    """[J-36] [ADR-0017 R-9] [ADR-0017 R-12]. One name, one meaning — or a written reason.
+
+    AUDIT J CLOSED WITH THIS AS THE NEXT THING WORTH WRITING, and the reason is that nine of its
+    thirty-five rows were one command's vocabulary drifting from its sibling's. Every one was
+    fixed per command. This is the check that notices the class.
+
+    **It found five collisions on its first run, four of them with incompatible types** — a
+    consumer deserialising generically breaks on each:
+
+        matched     log bool   vs  show<target> int     <- FIXED, see below
+        artifacts   impact int vs  verify list
+        ok          check bool vs  verify int
+        runs        lineage int vs show<target> list
+        unreadable  six ints   vs  chain list
+
+    **`matched` WAS THE ONE DEFECT AND IT IS GONE.** It was the only collision invented by both
+    payload builders rather than owned by a structure, so R-9 bound neither side: `log`'s
+    tri-state *did a named target hit anything* is `matched_any` now, and `show`'s count is
+    `matching`, which is `log`'s own word for the same number. The other four are declared
+    above, because R-12 gives each command its structure's names and R-9 forbids renaming them
+    — so those collisions are a consequence of rules this project chose, not an oversight.
+
+    WHAT THIS CANNOT SEE, stated so nobody mistakes its silence for proof: two fields with the
+    SAME type and different meanings pass. Type disagreement is the mechanically checkable half;
+    the table above carries the other half as prose, and the invariant below carries the part of
+    the vocabulary that IS checkable.
+    """
+    artifact, log = _reported_run(tmp_path)
+    #: A SECOND RUN, so `diff` has two to compare. With one, `diff demo demo` is the
+    #: two-addresses-resolving-to-one-run state and exits 2 — a cannot-check shape, whose field
+    #: types are not the ones this guard is about.
+    with runprov.Run("demo", {"t": 2}, provenance=tmp_path / "p2.json") as run:
+        with open(run.input(tmp_path / "in.tsv"), encoding="utf-8") as fh:
+            fh.read()
+        with run.open_output(tmp_path / "out2.tsv") as out:
+            out.write("c\n")
+    pair = [
+        json.loads(line)["run_uid"]
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if line.strip() and json.loads(line).get("schema") != "runprov.start.v1"
+    ]
+    assert len(pair) == 2 and pair[0] != pair[1], f"the premise: two comparable runs: {pair}"
+    #: AND A SCRIPT `check` CAN ANSWER ABOUT. A bare `import runprov` exits 2 with
+    #: `examined_nothing` — *"1 file(s) parsed and none is an entry point"* — which is a
+    #: cannot-check shape and not what this guard reads. An entry point that records its input
+    #: is the answering one.
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "m.py").write_text(
+        "import runprov\n"
+        "if __name__ == '__main__':\n"
+        "    with runprov.Run('r', {}) as run:\n"
+        "        run.input('in.tsv')\n",
+        encoding="utf-8",
+    )
+
+    #: ONE ANSWERING INVOCATION PER SHAPE. The invocations cannot be derived — reaching a state
+    #: is not a fact about the parser — but WHICH COMMANDS must appear is, and that is asserted
+    #: below. `show` is here twice because it has two answering shapes and two of the collisions
+    #: live in the second one; a guard over commands rather than shapes would have missed them.
+    shapes = {
+        "impact": ["impact", str(artifact), "--log", str(log)],
+        "diff": ["diff", pair[0], pair[1], "--log", str(log)],
+        "log": ["log", "--log", str(log)],
+        "lineage": ["lineage", "--log", str(log)],
+        "resources": ["resources", "--log", str(log)],
+        "show": ["show", "--log", str(log)],
+        "show <target>": ["show", "demo", "--log", str(log)],
+        "check": ["check", str(src)],
+        "report": ["report", str(artifact), "--log", str(log)],
+        "chain": ["chain", str(log)],
+        "verify": ["verify", str(artifact), "--root", str(tmp_path)],
+    }
+    assert {name.split(" ")[0] for name in shapes} == _cli_json_commands(), (
+        "[ADR-0017 R-5] every command that answers in JSON needs a shape here, and only those: "
+        f"{sorted({n.split(' ')[0] for n in shapes} ^ _cli_json_commands())}"
+    )
+
+    def kind(value):
+        #: A `null` IS ITS OWN ANSWER AND NOT A TYPE, which is the one judgement in this
+        #: function: `cannot_check` is null in nine shapes and a string in one, and `target` is
+        #: null on the project page. Counting null as a type would report both as collisions and
+        #: fill the table below with noise — an absence of evidence read as a disagreement.
+        #:
+        #: THERE WAS AN `isinstance(value, bool)` BRANCH HERE AND A CONTROL DELETED IT WITHOUT
+        #: FAILING ANYTHING. The comment beside it called it *"the single most consequential
+        #: line in this guard"*, on the reasoning that `bool` is a subclass of `int` — true of
+        #: `isinstance`, and irrelevant here, because `type(True).__name__` is already `"bool"`.
+        #: A line that cannot matter, under a comment claiming it mattered most.
+        return "null" if value is None else type(value).__name__
+
+    carried: dict[str, dict[str, str]] = {}
+    for name, argv in shapes.items():
+        capsys.readouterr()
+        code = runprov.__main__.main([*argv, "--format", "json"])
+        out = capsys.readouterr().out
+        assert out.strip(), f"{name} produced no payload: this guard reads them"
+        assert code in (0, 1), f"{name} must reach an ANSWERING state here, not exit {code}"
+        for key, value in json.loads(out).items():
+            carried.setdefault(key, {})[name] = kind(value)
+
+    #: A `null` AGREES WITH EVERYTHING. `cannot_check` is null in nine shapes and a string in
+    #: one, and `target` is null on the project page — neither is a collision, and treating an
+    #: absence of evidence as a disagreement would fill the table above with noise.
+    collisions = {
+        key: where
+        for key, where in carried.items()
+        if len({t for t in where.values() if t != "null"}) > 1
+    }
+    assert set(collisions) == set(_SHARED_NAMES), (
+        "[J-36] a name now means two things across two commands, with no reason written down. "
+        "R-12 and R-9 make some of these legitimate — a structure owns its own field names — so "
+        "the fix is either to rename the field that INVENTED the clash (if a payload builder "
+        "invented it, as `matched` did) or to declare it in `_SHARED_NAMES` with why it stands:\n"
+        f"  undeclared: { {k: collisions[k] for k in set(collisions) - set(_SHARED_NAMES)} }\n"
+        f"  declared and gone: {sorted(set(_SHARED_NAMES) - set(collisions))}"
+    )
+    for key, reason in _SHARED_NAMES.items():
+        assert len(reason) > 40, f"{key}'s entry must be a reason, not a shrug: {reason!r}"
+
+    # THE HALF OF THE VOCABULARY THAT IS CHECKABLE, and it is J-12 and J-14 as an invariant
+    # instead of two fixes: a payload that reports a WINDOW must report what it narrowed FROM.
+    # `show <target>` reported `matched` as the truncated count with no `shown` beside it, and
+    # `log` reported `failed` over its window with no `matching`; both were a window named
+    # without its denominator. Derived from the payloads, so a third command that grows
+    # `--limit` is held to it on the day it does.
+    windows = set(carried.get("shown", {}))
+    denominators = set(carried.get("matching", {}))
+    assert windows and windows == denominators, (
+        "[J-12] [J-14] `shown` and `matching` are ONE PAIR, and this is those two rows as an "
+        "invariant rather than two fixes: `show <target>` reported the truncated count with no "
+        "`shown` beside it, and `log` scoped `failed` to its window with no `matching` at all. "
+        "A window reported without what it narrowed FROM is the defect both times, so a command "
+        "carries both or neither and a third one growing `--limit` is held to it on the day it "
+        f"does: {sorted(windows ^ denominators)}"
     )
 
 
@@ -20508,7 +20678,7 @@ def test_show_with_a_limit_reports_how_many_matched_not_how_many_it_printed(
     code, out, err = shown("--limit", "2", "--format", "json")
     body = json.loads(out)
     assert code == 0
-    assert body["matched"] == 5, (
+    assert body["matching"] == 5, (
         "[J-12] five runs match 'build'; `matched` was `len(views)` and reported the truncated "
         f"2 as the number matching: {body['matched']}"
     )
@@ -20530,7 +20700,7 @@ def test_show_with_a_limit_reports_how_many_matched_not_how_many_it_printed(
     )
     code, out, _ = shown("--format", "json")
     whole = json.loads(out)
-    assert (whole["matched"], whole["shown"]) == (5, 5), whole
+    assert (whole["matching"], whole["shown"]) == (5, 5), whole
     assert whole["selectors"] == {"limit": None}, (
         "[ADR-0017 R-8] `--limit 0` is argparse's default and not a request for zero runs, so "
         "it travels as null — the same normalisation `_log_selectors` makes"
@@ -20539,7 +20709,7 @@ def test_show_with_a_limit_reports_how_many_matched_not_how_many_it_printed(
     # 4. A LIMIT LARGER THAN THE MATCH COUNT IS NOT A TRUNCATION.
     code, out, err = shown("--limit", "99", "--format", "json")
     big = json.loads(out)
-    assert (big["matched"], big["shown"]) == (5, 5), big
+    assert (big["matching"], big["shown"]) == (5, 5), big
     assert " of " not in err.split("matching")[0], err
 
     # 5. AND `select` ITSELF. The counter is PER BUCKET, and the fixture that shows why took a
@@ -20552,7 +20722,7 @@ def test_show_with_a_limit_reports_how_many_matched_not_how_many_it_printed(
         {"script": "other", "run_uid": "a2", "run_id": "x", "outputs": [], "inputs": []},
     ]
     hits = [0]
-    kept = runprov.show.select(iter(split), "x", matched=hits)
+    kept = runprov.show.select(iter(split), "x", matching=hits)
     assert [r["script"] for r in kept] == ["x"], (
         "`script` outranks `run_id`, so only the first record is the answer"
     )
@@ -20578,7 +20748,7 @@ def test_show_with_a_limit_reports_how_many_matched_not_how_many_it_printed(
     ]
     for target in ("build", "chain", "out.tsv"):
         hits = [0]
-        kept = runprov.show.select(iter(rows), target, limit=2, matched=hits)
+        kept = runprov.show.select(iter(rows), target, limit=2, matching=hits)
         assert (len(kept), hits[0]) == (2, 5), (
             f"{target!r} resolves to all five runs and two survive `--limit 2`: "
             f"{len(kept)} kept, {hits[0]} counted"
@@ -20600,7 +20770,7 @@ def test_show_with_a_limit_reports_how_many_matched_not_how_many_it_printed(
         "schema",
         "path",
         "target",
-        "matched",
+        "matching",
         "shown",
         "selectors",
         "runs",
@@ -20613,7 +20783,7 @@ def test_show_with_a_limit_reports_how_many_matched_not_how_many_it_printed(
     _, printed, said = shown("--limit", "2")
     for field, spelling in (
         ("shown", "2 of"),
-        ("matched", "of 5 run(s)"),
+        ("matching", "of 5 run(s)"),
         ("target", "matching 'build'"),
         ("unreadable", "1 unreadable line(s) skipped"),
     ):
@@ -20805,7 +20975,7 @@ def test_every_field_the_log_payload_carries_is_stated_by_the_timeline(tmp_path)
         selectors=runprov.__main__._log_selectors(
             argparse.Namespace(script="", run_id="", failed=False, limit=0)
         ),
-        matched=None,
+        matched_any=None,
         matching=3,
         unfinished=4,
     )
@@ -20826,7 +20996,7 @@ def test_every_field_the_log_payload_carries_is_stated_by_the_timeline(tmp_path)
         "unreadable",
         "unfinished",
         "selectors",
-        "matched",
+        "matched_any",
         "cannot_check",
         "records",
     }, f"a field was added to `log`'s answer and this guard did not follow: {sorted(answer)}"
@@ -20861,7 +21031,7 @@ def test_every_field_the_log_payload_carries_is_stated_by_the_timeline(tmp_path)
     # AND THE FOUR THE PAYLOAD CARRIES ALONE, named as a set so a fifth fails here. Each is about
     # the QUESTION rather than the answer, and a person reading a terminal already knows what
     # they typed.
-    assert {"schema", "path", "selectors", "matched"} <= set(answer)
+    assert {"schema", "path", "selectors", "matched_any"} <= set(answer)
 
 
 def test_no_cli_subcommand_is_documented_inside_another_ones_section():
