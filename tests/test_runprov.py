@@ -10344,8 +10344,15 @@ def test_report_carries_the_two_things_a_pin_declares_about_itself(tmp_path):
     runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
     artifact, _ = _reported_run(tmp_path)
     cut = tmp_path / "cut.tsv"
+    #: `newline=""` FOR THE SAME REASON `test_an_edited_artifact_is_ALTERED_and_a_stale_one_is_not`
+    #: states it: *"the byte-for-byte guarantee is made on the WRITE"*. This round trip must
+    #: change the declared input count and NOTHING else; on Windows the default re-terminated
+    #: every line, the body digest stopped matching, and the verdict came back ALTERED — a true
+    #: statement about a file this fixture had edited by accident.
     cut.write_text(
-        artifact.read_text(encoding="utf-8").replace("inputs (1)", "inputs (2)"), encoding="utf-8"
+        artifact.read_text(encoding="utf-8").replace("inputs (1)", "inputs (2)"),
+        encoding="utf-8",
+        newline="",
     )
     short = runprov.report.build(cut, tmp_path, [])
     assert (
@@ -20078,7 +20085,13 @@ def test_chains_cannot_check_reason_reaches_the_payload_over_real_histories(tmp_
         return out
 
     good = tmp_path / "good.jsonl"
-    good.write_text("".join(chained(3)), encoding="utf-8")
+    #: `newline=""` BECAUSE THIS FILE'S BYTES ARE WHAT THE CHAIN SIGNED. Without it,
+    #: `write_text` uses the platform default and Windows writes `\r\n` for every `\n` — so
+    #: the digests computed over `body + "\n"` above describe bytes that are not on disk, and
+    #: `chain` correctly answers `CANNOT_CHECK: an edge is UNCHECKABLE`. **This failed on the
+    #: Windows leg from 2026-09-30 and the local gate never saw it, because `ci.py` does not run
+    #: the matrix.** The product was telling the truth the whole time.
+    good.write_text("".join(chained(3)), encoding="utf-8", newline="")
     intact = runprov.chain.payload(runprov.chain.verify(good), good)
     assert intact["status"] == "INTACT" and intact["cannot_check"] is None
 
@@ -31542,7 +31555,15 @@ def test_the_page_says_when_the_bytes_are_not_the_bytes_that_run_recorded(tmp_pa
     assert "BYTES DIFFER" in text, text
     assert "v2_pipeline" in text and "v1_pipeline" in text
     assert pathlib.Path("staging/summary.csv").name in text
-    assert runprov.report._resolve("staging/summary.csv", str(tmp_path)) in text
+    #: COMPARED IN THE PAGE'S OWN SPELLING. `render_page` prints
+    #: `hashing._posix(match.elsewhere_path)`, so asserting the platform's spelling passes on
+    #: POSIX and fails on Windows, where `_resolve` gives `C:\\...\\staging\\summary.csv`
+    #: and the page prints forward slashes. Red on the Windows leg from 2026-09-30; the fact
+    #: being asserted is unchanged.
+    assert (
+        runprov.hashing._posix(runprov.report._resolve("staging/summary.csv", str(tmp_path)))
+        in text
+    )
 
 
 def test_find_run_keeps_its_name_and_returns_the_record(tmp_path):
