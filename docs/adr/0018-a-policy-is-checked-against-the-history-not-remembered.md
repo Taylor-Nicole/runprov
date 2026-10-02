@@ -50,6 +50,39 @@ captured; no run finished with a non-`ok` status; every declared input still ver
 **R-8.** `--format json` per ADR-0017, because a gate whose result cannot be read by the CI
 system running it is a gate that gets deleted.
 
+**R-11. THE FILE IS JSON OR TOML, and every rule carries a `why`.** Added 2026-10-02 by
+Taylor's ruling: R-1 said *a policy file* and never said what format, and the two constraints
+that decide it are `dependencies = []` and `requires-python = ">=3.10"`.
+
+| format | parser | available |
+|---|---|---|
+| **JSON** | `json`, stdlib | every supported version |
+| **TOML** | `tomllib`, stdlib | **3.11+** only |
+| TOML on 3.10 | `tomli` | the `runprov[toml]` extra |
+
+**`tomli` is an OPTIONAL extra and NOT a dependency**, so `dependencies = []` stays empty — the
+property the README states. A `.toml` policy on 3.10 without the extra is a usage error that
+names its own fix, which is this package's rule everywhere: say what could not be done rather
+than do less of it quietly.
+
+**THE `why` IS REQUIRED ON EVERY RULE, in both formats, and that is the substance rather than
+the syntax.** JSON has no comments, and the first reading of that is a loss: a control's
+rationale has nowhere to live. It is the opposite. **A comment cannot be checked and does not
+travel.** A required field can be demanded of every rule, and it reaches the page and the
+payload — so an assessor reads *ISO 15189 5.5.1: the analysis must be traceable to a known code
+state* beside the verdict, instead of finding it in a file nobody rendered. R-6 already asks each
+rule to say what it cannot see; this asks it to say why it exists. TOML admits comments too, and
+they are welcome, but they are not where the rationale belongs.
+
+**R-12. THE RECOMMENDED INTERPRETER IS 3.12 OR LATER, and the reason is not this file's format.**
+`sys.monitoring` (PEP 669) is 3.12+, so `observation.auto_available` is false on 3.10 and 3.11 and
+automatic step observation does not happen there at all — ADR-0010's stage two is unreachable,
+and ADR-0014 reports `steps` as NOT COMPARABLE across the boundary. 3.11 buys `tomllib` in the
+stdlib and nothing else; **3.12 buys a materially fuller record.** The floor stays at 3.10
+because dropping a version is its own decision with its own cost, and it must not be made to win
+a config-format argument. What changes is that the recommendation is now written down where a
+user reads it rather than implied by a matrix.
+
 ## What this must never become
 
 **R-9.** Not a linter for code. `check` does the static half and this does the recorded half,

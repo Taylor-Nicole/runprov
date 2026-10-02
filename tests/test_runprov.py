@@ -58,6 +58,7 @@ import runprov  # noqa: E402
 import runprov.__main__ as cli  # noqa: E402
 import runprov._report  # noqa: E402
 import runprov.environment  # noqa: E402
+import runprov.policy  # noqa: E402
 import runprov.prune  # noqa: E402
 import runprov.terminal  # noqa: E402
 import runprov.watch  # noqa: E402
@@ -34089,6 +34090,141 @@ def test_every_field_of_the_chain_report_reaches_its_payload(tmp_path):
     # answerable of the payload.
     assert body["lines"] == report.lines and body["chained_from"] == report.chained_from
     assert json.loads(json.dumps(body)) == body, "the payload must survive a JSON round trip"
+
+
+def test_every_registered_rule_can_say_it_could_not_check(tmp_path):
+    """[ADR-0018 R-3] [ADR-0018 R-6] T-34. The requirement made structural, not aspirational.
+
+    R-3: a rule that cannot be evaluated is NEVER a pass. The way that goes wrong is not by
+    someone writing `return MET` on an unevaluable run — it is by a rule reading a field that is
+    `False` both when the answer is *no* and when nobody looked. `git_tree_dirty` is exactly such
+    a field: `False` for a clean tree AND for a run outside a repository, with
+    `git_status_captured` the only thing that separates them.
+
+    **SO EVERY RULE MUST BE ABLE TO REACH `CANNOT_CHECK`, and this proves it by construction**
+    rather than by reading the rule: each rule is handed a record stripped of the fields it
+    declares it reads, and a rule that still answers `MET` or `VIOLATED` there is a rule that
+    will call an unexamined run a pass. A rule that can never say *could not check* has
+    collapsed R-2's third exit code, which the ADR calls the whole design.
+
+    DERIVED FROM THE REGISTRY, so a rule added on any later day is held to this on the day it is
+    added — R-5's reason for the registry existing, applied to the registry's own guard.
+    """
+    registry = runprov.policy.rules()
+    assert registry, "the rule registry is empty, so every assertion below is vacuous"
+    for name, got in registry.items():
+        assert got.reads, f"{name} declares no fields, so this guard cannot strip any"
+        stripped = dict.fromkeys(got.reads)
+        verdict = got.judge(stripped)
+        assert verdict.outcome == runprov.policy.CANNOT_CHECK, (
+            f"[ADR-0018 R-3] `{name}` answered {verdict.outcome} over a record carrying none of "
+            f"the fields it reads {list(got.reads)}. A rule that cannot say *could not check* "
+            "reports an unexamined run as a pass"
+        )
+        assert verdict.reason, (
+            f"`{name}` said CANNOT_CHECK with no reason, which a reader cannot tell from a bug"
+        )
+
+    # AND EVERY RULE SAYS WHAT IT CANNOT SEE [R-6], in its own words rather than by omission.
+    for name, got in registry.items():
+        assert len(got.blind) > 30, (
+            f"{name}'s `blind` must be a sentence, not a shrug: {got.blind!r}"
+        )
+        assert got.asks, f"{name} does not say what it asks"
+
+
+def test_every_rule_reads_only_fields_a_record_really_carries(tmp_path):
+    """[ADR-0018 R-10] T-34. A rule may not assert over a field the record does not have.
+
+    R-10: if a policy wants a property the record does not carry, the answer is a record change
+    with its own ADR — never an inference. A rule naming a field that does not exist would read
+    `None` from `.get` and evaluate something nobody wrote, which is how an inference arrives
+    wearing the clothes of a measurement.
+
+    THE RECORD IS WRITTEN BY THE PACKAGE, not constructed here, so the field list is whatever
+    this version actually produces. A record built by hand would be asserting against what the
+    test's author believed the writer does, which is A-08's shape.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
+    with runprov.Run("demo", {}, provenance=tmp_path / "p.json"):
+        pass
+    record = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    carried = set(record)
+    assert "git_status_captured" in carried, "the premise: a real record names its blindness mark"
+
+    for name, got in runprov.policy.rules().items():
+        unknown = [field for field in got.reads if field not in carried]
+        assert not unknown, (
+            f"[ADR-0018 R-10] `{name}` reads {unknown}, which this version's record does not "
+            f"carry. A policy wanting a property the record lacks needs a RECORD change with "
+            f"its own ADR, not a rule that evaluates `None`"
+        )
+
+
+def test_a_rule_asked_of_nothing_is_not_a_rule_that_passed(tmp_path):
+    """[ADR-0018 R-4] T-34. `check`'s A-08 defect, refused one level up.
+
+    *No violations* over a log matching zero runs is not a pass, and the count is what lets a
+    caller tell the two apart. `assess` carries `evaluated` beside the outcome and says
+    `asked_of_nothing` in words, so neither reading requires arithmetic on three tallies.
+
+    AND THE WORST OUTCOME DECIDES, asserted in both directions: a violation among runs that
+    could not all be checked is still a violation, and an unchecked run among passes is not a
+    pass. That ordering is the fact R-3 states, so it is tested rather than left to the order
+    the implementation happens to use.
+    """
+    nothing = runprov.policy.assess("clean_tree", [])
+    assert nothing["outcome"] == runprov.policy.CANNOT_CHECK, (
+        "[ADR-0018 R-4] a rule asked of no runs must not report MET; `no violations` over an "
+        f"empty selection is the vacuous green: {nothing}"
+    )
+    assert nothing["evaluated"] == 0 and nothing["asked_of_nothing"] is True, nothing
+
+    clean = {"git_status_captured": True, "git_tree_dirty": False}
+    dirty = {"git_status_captured": True, "git_tree_dirty": True}
+    blind = {"git_status_captured": False, "git_tree_dirty": False}
+
+    met = runprov.policy.assess("clean_tree", [clean, clean])
+    assert (met["outcome"], met["evaluated"], met["met"]) == (runprov.policy.MET, 2, 2), met
+    assert met["reasons"] == [] and met["asked_of_nothing"] is False, met
+
+    #: THE BLIND RUN IS THE POINT: `git_tree_dirty` is False here exactly as in `clean`, and only
+    #: the capture mark separates them. A rule reading one field would call this a pass.
+    unknown = runprov.policy.assess("clean_tree", [clean, blind])
+    assert unknown["outcome"] == runprov.policy.CANNOT_CHECK, (
+        "[ADR-0018 R-3] one run whose git status was never captured makes the rule unevaluable "
+        "for the selection; a pass here would be a control that passed because nobody "
+        f"looked: {unknown}"
+    )
+    assert (unknown["met"], unknown["cannot_check"]) == (1, 1), unknown
+    assert unknown["reasons"], "and it says which fact was missing"
+
+    #: A VIOLATION OUTRANKS AN INABILITY, which is L-81's ordering in a new command.
+    worst = runprov.policy.assess("clean_tree", [clean, blind, dirty])
+    assert worst["outcome"] == runprov.policy.VIOLATED, (
+        f"a violation among unexaminable runs is still a violation: {worst}"
+    )
+    assert (worst["met"], worst["violated"], worst["cannot_check"]) == (1, 1, 1), worst
+
+
+def test_the_rule_registry_refuses_two_rules_under_one_name():
+    """[ADR-0018 R-5] T-34. A duplicate name is a silent change of control, so it raises.
+
+    Two rules registered as one name means a policy naming it gets whichever was imported last.
+    That is not a crash a user would see; it is a control that quietly became a different control,
+    which is the failure this whole ADR is about one level down.
+    """
+    existing = next(iter(runprov.policy.rules()))
+    with pytest.raises(ValueError, match="two rules registered"):
+        runprov.policy.rule(existing, asks="x", reads=("status",), blind="y" * 40)(
+            lambda record: runprov.policy.Verdict(runprov.policy.MET)
+        )
+    # AND THE REGISTRY IS UNCHANGED by the refusal — a failed registration must not half-land.
+    assert runprov.policy.rules()[existing].asks != "x"
+
+    # IT IS ALSO READ-ONLY: a caller handed the registry cannot edit the rules this project runs.
+    with pytest.raises(TypeError):
+        runprov.policy.rules()["clean_tree"] = None  # type: ignore[index]
 
 
 def test_every_answer_requirement_has_a_test():
