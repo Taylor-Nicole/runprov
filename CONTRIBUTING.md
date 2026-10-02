@@ -173,6 +173,44 @@ matches the scenario on disk, and, with a planted path, that the leak scanner wo
 Regenerating needs the network and is documented in `tests/corpus/README.md`. **Editing
 `tools/corpus_scenario.py` requires regenerating the trees**, and a test enforces it.
 
+## Cutting a release, in order
+
+The order matters, and every step below exists because skipping it cost something real.
+
+1. **Bump the four version sources** — `pyproject.toml`, `runprov/__init__.py`, `CITATION.cff`,
+   `CHANGELOG.md` — and re-date `CITATION.cff`'s `date-released` in the *same* commit.
+   `release-check` fails on a mismatch and names all four, because a tag on a tree that still
+   says the old version publishes the old version, and PyPI never lets that file name be
+   reused.
+2. **Turn `## [Unreleased]` into `## [<version>] — <tag day>`, and do NOT open a fresh
+   `[Unreleased]` yet.** `build` reads the *first* `## [...]` heading, so a new empty section
+   above the dated one makes the tagged build report the shipped version as unreleased. It
+   refuses, correctly — the alternative is a CHANGELOG on PyPI that describes the release as
+   unreleased, permanently.
+3. **`python ci.py`** — the local gate.
+4. **Push the commit and let the hosted matrix finish, then `python ci.py matrix-check`.**
+   This step is the one that was missing, and the cost of its absence is measured: the Windows
+   leg was red for two days and thirteen commits while the local gate came back green every
+   time. **`ci.py` runs one platform**, so *the gate is green* and *CI is green* are different
+   claims. `publish.yml` does not close the gap either — it gates the upload on
+   `needs: [build, test]`, but its own test job is `ubuntu-latest` only, so the sole Windows
+   signal is `test.yml` on the commit you are about to tag. `matrix-check` reads every job **by
+   name**, because a run can conclude `success` with a leg skipped, and skipped is not passed.
+5. **Tag and push it.** `git tag -a v<version>` then `git push origin v<version>`. The tag
+   alone publishes to PyPI, through `publish.yml`.
+6. **Create the GitHub release** — `gh release create v<version> --verify-tag --notes-file …`.
+   Nothing automates this, and Zenodo's webhook fires on `release`, **not** on the tag: no
+   release, no DOI.
+7. **Then, and only then, the post-release three:** capture the corpus from the wheel PyPI
+   actually serves (`python tools/corpus.py generate --version <version>`), record the new
+   version DOI in `CITATION.cff` and the README's version-DOI example, and open the fresh
+   `## [Unreleased]`.
+
+Zenodo latency is normal and its webhook log is noisy in a way that looks like failure: GitHub
+sends three actions and Zenodo accepts exactly one — `release:released` returns 202 while
+`release:published` and `release:created` return 500. Those 500s are refused duplicates.
+**Re-firing the webhook while a job is queued risks two records for one version.**
+
 ## What the suite skips, and how to un-skip it
 
 **A green run is not a complete run**, and the count is printed so you can tell the

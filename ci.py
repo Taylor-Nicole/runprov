@@ -33,6 +33,7 @@ the output rather than by reading this file.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -200,6 +201,89 @@ _VERSION_SOURCES = {
     # differs between the two shapes.
     "CHANGELOG.md": r"^## \[(?:Unreleased\] — )?(\d[^\]\s]*)",
 }
+
+
+def matrix_check() -> None:
+    """Refuse a tag whose COMMIT has not been through the hosted matrix. Added 2026-10-01.
+
+    **NOT part of `build`, and that is deliberate twice over.** It needs the network and the
+    `gh` CLI, which the local gate must not; and inside Actions it would be a run asking about
+    itself. It is a step a human runs before `git tag`, which is where the gap was.
+
+    THE GAP IT CLOSES, measured: the Windows leg was red from 2026-09-30 to 2026-10-01 and
+    thirteen commits went by with the local gate green each time. `ci.py` runs ONE platform, so
+    *the gate is green* and *CI is green* are different claims, and the second was being
+    asserted from the first. **`publish.yml` does not cover it either** — that workflow gates
+    the upload on `needs: [build, test]`, but its own test job is `ubuntu-latest` only, so the
+    sole Windows signal is `test.yml` on the commit being tagged.
+
+    WHAT THE THREE FAILURES WERE, because the shape recurs: fixtures calling
+    `Path.write_text` with no `newline=""`, which writes CRLF on Windows while this package
+    hashes the bytes AS WRITTEN. `chain` answered CANNOT_CHECK and `report` answered ALTERED,
+    both correctly, about files the fixtures had changed by accident.
+
+    IT READS THE WINDOWS JOB BY NAME rather than the run's conclusion. A conclusion can be
+    `success` while a leg was skipped, and `skipped` is not `passed` — the distinction that
+    makes `0` mean *checked and fine* everywhere else in this package.
+    """
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    if subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True).stdout:
+        raise SystemExit(
+            "the tree is dirty, so the matrix cannot have seen what you are about to tag"
+        )
+    probe = subprocess.run(
+        [
+            "gh",
+            "run",
+            "list",
+            "--limit",
+            "10",
+            "--commit",
+            head,
+            "--workflow",
+            "test.yml",
+            "--json",
+            "databaseId,status,conclusion",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        raise SystemExit(
+            f"could not ask GitHub about {head[:7]} — `gh` is required for this step and it "
+            f"said: {probe.stderr.strip()[:200]}"
+        )
+    runs = json.loads(probe.stdout or "[]")
+    if not runs:
+        raise SystemExit(
+            f"no `test.yml` run for {head[:7]}. Push the commit and let the matrix finish "
+            "BEFORE tagging: a tag publishes to PyPI and a PyPI file can never be replaced."
+        )
+    run = runs[0]
+    if run["status"] != "completed":
+        raise SystemExit(f"the matrix for {head[:7]} is still {run['status']} — wait for it")
+    jobs = json.loads(
+        subprocess.run(
+            ["gh", "run", "view", str(run["databaseId"]), "--json", "jobs"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )["jobs"]
+    #: EVERY JOB BY NAME, so a leg that was SKIPPED is not read as a leg that passed.
+    bad = {j["name"]: (j.get("conclusion") or j.get("status")) for j in jobs}
+    bad = {name: got for name, got in bad.items() if got != "success"}
+    if bad:
+        listed = "\n".join(f"    {got:10} {name}" for name, got in sorted(bad.items()))
+        raise SystemExit(f"the matrix for {head[:7]} is not green:\n{listed}")
+    legs = sorted(j["name"] for j in jobs)
+    if not any("windows" in name for name in legs):
+        raise SystemExit(
+            f"no windows job in the matrix for {head[:7]} — this step exists for that leg: {legs}"
+        )
+    print(f"matrix-check ok — {len(jobs)} job(s) green on {head[:7]}, windows included")
 
 
 def release_check() -> None:
@@ -563,6 +647,8 @@ STEPS = {
     "torture": torture,
     "corpus": corpus,
     "release-check": release_check,
+    #: NOT in the default `lint test build`: it needs the network and `gh`. Run before a tag.
+    "matrix-check": matrix_check,
 }
 
 if __name__ == "__main__":
