@@ -61,6 +61,22 @@ with each rule's `evaluated`, `met`, `violated` and `cannot_check` counts beside
 policy that cannot be read prints nothing at all, which is how a consumer tells a gate that could
 not conclude from one that never had a question.
 
+### Added — the gate payload carries the policy, and `--emit-policy` answers about the file alone
+
+ADR-0018 R-13 and R-14, both from one ruling by Taylor on an open question, and the question's own
+answer shaped the first. **The payload already contained every field of the normalised policy** —
+each rule row carries `rule` and `why`, which is exactly what the parser returns — so the key adds
+a shape rather than data: the control as a separable object, archivable and diffable without being
+reassembled from the verdicts that carry it. It is **projected from those same rows and never
+parsed a second time**, so the two views cannot disagree.
+
+`runprov gate --policy <file> --emit-policy` validates a policy and prints its normalised form,
+through the same reader the gate uses — so a policy that emits is a policy the gate accepts. It
+**opens no history**, proved by exiting 0 with a `--log` that does not exist, and announces that
+`--log` was not read rather than accepting a flag and ignoring it. Versioned
+`"schema": "runprov.policy.v1"`, deliberately not the gate's, because it carries no verdict, no
+count and no run. **Exit 0 usable, 2 not, and there is no 1:** a policy cannot carry a finding.
+
 ### Changed — the recommended interpreter is 3.12 or later
 
 ADR-0018 R-12. The floor stays at **3.10** and nothing is withdrawn. `sys.monitoring` (PEP 669)

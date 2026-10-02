@@ -806,14 +806,26 @@ knowing part of a list is knowing a breach. One unreadable line in the history i
 
 `runprov gate --format json` is the **same answer for a reader that is not a person** — the page
 and the payload are two renderings of one structure, so neither can state something the other does
-not. Each rule carries `evaluated`, `met`, `violated` and `cannot_check` beside its outcome,
+not. Each rule carries `evaluated`, `met`, `violated` and `not_checked` beside its outcome,
 because **"no violations" and "nothing examined" must not serialise the same**: `asked_of_nothing`
 says which, and `cannot_check` carries one sentence naming what the gate could not see, `null`
 when there was nothing. Exit 2 carries the payload too, because it is an answer; a policy file
 that cannot be read prints nothing at all, which is how a consumer tells a gate that could not
 conclude from one that never had a question. The payload is versioned by
 `"schema": "runprov.gate.v1"`, and its shape follows the record-format promise above: a field's
-meaning does not change without a new schema value.
+meaning does not change without a new schema value. It also carries the **normalised policy as its
+own `policy` object** — projected from the same rule rows the verdicts are built from, never parsed
+a second time, so the control can be archived and diffed without being reassembled from the
+verdicts that carry it, and the two cannot disagree.
+
+**`runprov gate --policy <file> --emit-policy` answers about the FILE and about nothing else.**
+It validates the policy through the same reader the gate uses — so a policy that emits is a policy
+the gate accepts — prints the normalised form, and **opens no history**: `--log` is announced as
+unread rather than silently defaulting to the project's. Useful if you write TOML and need the
+machine-readable form to file. Its payload is versioned by `"schema": "runprov.policy.v1"`, which
+is deliberately not the gate's: it carries no verdict, no count and no run, and its shape follows
+the same record-format promise. **Exit 0 usable, 2 not usable, and there is no 1** — a policy
+cannot carry a finding; it is either a document this version can act on or it is not.
 
 **It is not a linter for code, and it never becomes one.** `check` reads source; this reads the
 history. The one place it leaves the record is `inputs_verify`, which re-hashes the files a run

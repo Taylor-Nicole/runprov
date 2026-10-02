@@ -2125,6 +2125,27 @@ def _gate(args: argparse.Namespace) -> int:
         print(f"gate: {exc}", file=sys.stderr)
         return 2
 
+    if args.emit_policy:
+        # R-14. A QUESTION ABOUT THE FILE AND NOT ABOUT ANY RUN. The history is never opened —
+        # which is why this returns before the lookup below rather than after it — and `--log` is
+        # SAID to be unread rather than silently defaulting to the project's history. A flag that
+        # is accepted and does nothing is the silent no-op this package refuses everywhere else;
+        # `verify --log` is the sibling that announces the same thing.
+        if args.log:
+            print(
+                f"gate --emit-policy: --log {args.log} is not read; this answers about the "
+                "policy file alone",
+                file=sys.stderr,
+            )
+        if args.format == "json":
+            print(json.dumps(policy.policy_payload(loaded, source=str(args.policy)), indent=2))
+        else:
+            for line in policy.render_policy(loaded, source=str(args.policy)):
+                print(line)
+        # 0 USABLE, AND THERE IS NO 1. A policy cannot carry a *finding* — it is either a document
+        # this version can act on or it is not, and the `return 2` above is the second case.
+        return 0
+
     log = pathlib.Path(args.log) if args.log else active().resolved_run_log()
     if not log.is_file():
         result = policy.assessment(
@@ -2804,6 +2825,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     gt.add_argument("--policy", required=True, help="a .json or .toml policy file")
     gt.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
+    gt.add_argument(
+        "--emit-policy",
+        action="store_true",
+        help="validate the policy and print its normalised form; reads no history (ADR-0018 R-14)",
+    )
     gt.add_argument("--format", choices=("text", "json"), default="text")
     args = ap.parse_args(argv)
 

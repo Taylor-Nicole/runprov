@@ -35301,6 +35301,130 @@ def test_the_gate_page_says_what_the_payload_says_in_the_states_that_are_not_ord
     )
 
 
+def test_the_payload_carries_the_policy_and_it_is_a_projection_not_a_second_parse(tmp_path, capsys):
+    """[ADR-0018 R-13] T-34. Taylor's ruling, and the question's own answer is the shape.
+
+    **What was established before the ruling:** the payload already contained every field of the
+    normalised policy. Each rule row carries `rule` and `why`, which is exactly what `load()`
+    returns, so *emit the policy as well* was already true in substance — interleaved with the
+    verdicts rather than absent. What the key adds is a SHAPE, not data: the control as a
+    separable object, archivable and diffable without being reassembled from the verdicts.
+
+    **SO THE ASSERTION IS EQUALITY WITH THE PARSER'S OWN OUTPUT**, which is the only form that
+    cannot be satisfied by a second parse that agrees today. `load()` is asked the same question
+    and the two must match exactly — and the rows and the projection must agree field by field,
+    so a `why` cannot say one thing in the control and another beside the verdict.
+
+    ADR-0017 R-10 is the rule this shape exists to respect: one builder, two views. H1-6 is the
+    row where one fact computed twice disagreed with itself; `matched` is the row where two
+    builders invented one name.
+    """
+    _, log = _gated_history(tmp_path)
+    written = _policy_file(tmp_path / "three.json", "finished_ok", "clean_tree", "inputs_verify")
+    capsys.readouterr()
+    runprov.__main__.main(["gate", "--policy", str(written), "--log", str(log), "--format", "json"])
+    body = json.loads(capsys.readouterr().out)
+
+    assert body["policy"] == runprov.policy.load(written), (
+        "[ADR-0018 R-13] the payload's `policy` must be the parser's own output, asked the same "
+        f"question and answered the same way: {body['policy']}"
+    )
+    #: AND IT CARRIES NOTHING ELSE. A verdict leaking into the control would make the archived
+    #: object a result, which is the one thing it must not be — and `_RULE_KEYS` is what governs
+    #: that, the same constant the parser accepts, so the projection cannot name a field a policy
+    #: may not carry.
+    for entry in body["policy"]["rules"]:
+        assert set(entry) == set(runprov.policy._RULE_KEYS), (
+            f"[ADR-0018 R-13] the control must be the policy and not the result: {entry}"
+        )
+    #: THE TWO VIEWS AGREE FIELD BY FIELD, in order. This is the half a consumer would notice:
+    #: a `why` that said one thing in the archived control and another beside the verdict.
+    assert [e["rule"] for e in body["policy"]["rules"]] == [r["rule"] for r in body["rules"]]
+    assert [e["why"] for e in body["policy"]["rules"]] == [r["why"] for r in body["rules"]]
+    assert len(body["policy"]["rules"]) == 3, body["policy"]
+
+
+def test_emit_policy_answers_about_the_file_and_opens_no_history(tmp_path, capsys):
+    """[ADR-0018 R-14] [ADR-0018 R-11] T-34. The third half of Taylor's ruling.
+
+    Someone who writes TOML needs the machine-readable form to file, and that is a question about
+    the FILE rather than about any run. So `--emit-policy` reads the policy through the same
+    `load()` the gate uses — **one validation path, so a policy that emits is a policy the gate
+    accepts** — and answers about nothing else.
+
+    **THE PROOF THAT NO HISTORY IS READ IS A `--log` THAT DOES NOT EXIST.** Every other state of
+    this command exits 2 for that, so an invocation that exits 0 with an absent history is the
+    assertion rather than a claim about it. And the flag is ANNOUNCED on stderr rather than
+    accepted and ignored: `verify --log` is the sibling that does the same, and a flag that is
+    accepted and does nothing is the silent no-op this package refuses everywhere else.
+
+    **0 USABLE, 2 NOT, AND NEVER 1.** A policy cannot carry a finding — it is either a document
+    this version can act on or it is not — so L-81's middle code is deliberately absent here.
+    """
+    reason = "ISO 15189 5.5.1: the analysis must be traceable to a known code state"
+    as_toml = tmp_path / "policy.toml"
+    as_toml.write_text(f'[[rules]]\nrule = "finished_ok"\nwhy = """{reason}"""\n', encoding="utf-8")
+    absent = tmp_path / "there-is-no-history-here.jsonl"
+
+    capsys.readouterr()
+    code = runprov.__main__.main(
+        [
+            "gate",
+            "--policy",
+            str(as_toml),
+            "--emit-policy",
+            "--log",
+            str(absent),
+            "--format",
+            "json",
+        ]
+    )
+    shown = capsys.readouterr()
+    assert code == 0, (
+        "[ADR-0018 R-14] a usable policy is exit 0 even though the history named does not exist, "
+        f"which is the assertion that no history was opened: {shown.err}"
+    )
+    assert not absent.exists(), "the premise: the history named was never there"
+    body = json.loads(shown.out)
+    assert body["schema"] == runprov.policy.POLICY_SCHEMA == "runprov.policy.v1", (
+        "a normalised policy carries no verdict, no count and no history, so it must not wear the "
+        f"gate's version: {body.get('schema')}"
+    )
+    assert body["rules"] == runprov.policy.load(as_toml)["rules"], body
+    assert body["source"] == str(as_toml), body
+    assert "is not read" in shown.err and str(absent) in shown.err, (
+        f"a flag accepted and silently ignored is the no-op this package refuses: {shown.err}"
+    )
+    #: NO GATE FIELD IS PRESENT. A consumer must not be able to read an outcome off a document
+    #: that examined nothing — which is the vacuous green with a schema on it.
+    for forbidden in ("outcome", "exit_code", "cannot_check", "runs", "unreadable", "found"):
+        assert forbidden not in body, (
+            f"[ADR-0018 R-14] `{forbidden}` is a fact about runs, and this answered about none: "
+            f"{sorted(body)}"
+        )
+
+    #: THE PAGE SAYS THE SAME AND SAYS IT IS USABLE, rather than leaving that to be inferred from
+    #: the absence of an error.
+    capsys.readouterr()
+    assert runprov.__main__.main(["gate", "--policy", str(as_toml), "--emit-policy"]) == 0
+    page = capsys.readouterr().out
+    assert "finished_ok" in page and reason in page, page
+    assert "No run was examined" in page, page
+
+    #: AND AN UNUSABLE POLICY IS EXIT 2 WITH NOTHING ON STDOUT — the same class as before, because
+    #: it is the same `load()`. R-15: silence means the invocation had no question in it.
+    broken = tmp_path / "broken.json"
+    broken.write_text('{"rules": [{"rule": "clean_tree"}]}', encoding="utf-8")
+    capsys.readouterr()
+    code = runprov.__main__.main(
+        ["gate", "--policy", str(broken), "--emit-policy", "--format", "json"]
+    )
+    refused = capsys.readouterr()
+    assert code == 2, f"a policy with no `why` is not usable: {refused.out}"
+    assert not refused.out.strip(), f"[ADR-0017 R-15] and it says nothing on stdout: {refused.out}"
+    assert "carries no `why`" in refused.err, refused.err
+
+
 def test_the_readme_rule_table_is_the_registry_and_not_a_copy_of_it(tmp_path):
     """[ADR-0018 R-5] [ADR-0018 R-6] [ADR-0018 R-7] T-34. The documented rule set, checked.
 

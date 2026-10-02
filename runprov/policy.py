@@ -824,10 +824,56 @@ def payload(result: Assessment) -> dict[str, typing.Any]:
     return {
         "schema": SCHEMA,
         **result._asdict(),
+        #: R-13: THE CONTROL AS A SEPARABLE OBJECT, and it is a PROJECTION of the rows above
+        #: rather than a second parse of the file. Every field of the normalised policy was
+        #: already in this payload — each rule row carries `rule` and `why`, which is exactly what
+        #: `load()` returns — so what this adds is not data but a shape: the policy can be
+        #: archived, diffed and filed without being reassembled from the verdicts carrying it.
+        #:
+        #: BUILT FROM `_RULE_KEYS`, the same constant the parser accepts, so the projection cannot
+        #: come to name a field a policy may not carry. Re-reading the file here would be the
+        #: defect: H1-6 is the row where one fact computed twice disagreed with itself.
+        "policy": {"rules": [{key: row[key] for key in _RULE_KEYS} for row in result.rules]},
         "outcome": result.outcome,
         "cannot_check": result.cannot_check,
         "exit_code": result.exit_code,
     }
+
+
+#: A NORMALISED POLICY IS ITS OWN SHAPE and must not wear the gate's version: it carries no
+#: verdict, no count and no history, so a consumer that branched on `runprov.gate.v1` and met one
+#: would find every field it expected missing. R-14.
+POLICY_SCHEMA = "runprov.policy.v1"
+
+
+def policy_payload(
+    policy: typing.Mapping[str, typing.Any], *, source: str
+) -> dict[str, typing.Any]:
+    """A policy file, validated and normalised, as one object. R-14, ADR-0017 R-5.
+
+    `source` TRAVELS WITH IT for the same reason it travels with an assessment: this is evidence a
+    laboratory files, and *which controls* is half of what makes it evidence.
+    """
+    return {"schema": POLICY_SCHEMA, "source": source, **policy}
+
+
+def render_policy(policy: typing.Mapping[str, typing.Any], *, source: str) -> list[str]:
+    """The same policy as a page. R-14, and ADR-0017 R-1 again: one structure, two renderings.
+
+    IT SAYS THE POLICY IS USABLE RATHER THAN LEAVING THAT TO BE INFERRED. Reaching this function
+    means `load()` accepted the file, every rule in it is registered in this version, and every
+    one carries a `why` — three facts a reader would otherwise have to deduce from the absence of
+    an error, which is the inference this package refuses everywhere else.
+    """
+    lines = [f"POLICY {source}", ""]
+    for entry in policy["rules"]:
+        lines.append(f"  {entry['rule']:<22}{entry['why']}")
+    lines.append("")
+    lines.append(
+        f"{len(policy['rules'])} rule(s), every one registered in this version and carrying a "
+        "`why`. No run was examined."
+    )
+    return lines
 
 
 def render(result: Assessment) -> list[str]:

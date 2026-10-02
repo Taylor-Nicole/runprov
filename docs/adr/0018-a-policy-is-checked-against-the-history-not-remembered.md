@@ -115,6 +115,42 @@ because dropping a version is its own decision with its own cost, and it must no
 a config-format argument. What changes is that the recommendation is now written down where a
 user reads it rather than implied by a matrix.
 
+**R-13. THE PAYLOAD CARRIES THE NORMALISED POLICY AS ITS OWN OBJECT, and it is a PROJECTION of
+the rule rows rather than a second parse.** Added 2026-10-03 by Taylor's ruling on an open
+question, and the question's own answer is the reason for the shape.
+
+**What was established first:** the payload already contained every field of the normalised
+policy. Each rule row carries `rule` and `why`, which is exactly what `load()` returns, so
+*emit the policy as well* was already true in substance — interleaved with the verdicts rather
+than absent. The argument against a top-level key was therefore that it duplicates data already
+present, and ADR-0017 R-10 forbids a second source of truth.
+
+**So the key is added and the duplication is not.** `policy` is built from the same rule rows
+the verdicts are built from, in one place, so the two cannot disagree: one builder, two views,
+which is ADR-0017 R-1's shape applied inside a single payload. **A second pass over the parsed
+file would be the defect** — H1-6 is the row where one fact computed twice disagreed with
+itself, and `matched` is the row where two builders invented one name. What a consumer gains is
+the control as a separable object: the policy can be archived, diffed and filed without
+reassembling it from the verdicts that happen to carry it.
+
+**R-14. `--emit-policy` READS AND VALIDATES A POLICY AND ANSWERS ABOUT NOTHING ELSE.** Taylor,
+2026-10-03, the third half of the same ruling: someone who writes TOML needs the machine-readable
+form to file, and that is a question about the FILE rather than about any run.
+
+| | |
+|---|---|
+| **reads** | the policy, through the same `load()` the gate uses — one validation path, so a policy that emits is a policy the gate accepts |
+| **never reads** | the history. `--log` is not consulted and the command says so rather than silently defaulting to the project's |
+| **schema** | `runprov.policy.v1`, its own, because a normalised policy is a different shape from a gate result and must not wear the gate's version |
+| **exit codes** | **0 usable, 2 not usable, and there is no 1.** A policy cannot carry a *finding*; it is either a document this version can act on or it is not, which is L-81's second and third codes with the middle one deliberately absent |
+
+**A FLAG ON `gate` AND NOT A SUBCOMMAND, with the reason recorded so it is not re-proposed.**
+ADR-0017 R-3 partitions subcommands by the question each answers, and a validator for the policy
+file is a question about the thing `gate` already reads — the only command that has one. A
+`runprov policy` subcommand would be heavier than the question deserves, and it would be a second
+place where a policy is read.
+
+
 ## What this must never become
 
 **R-9.** Not a linter for code. `check` does the static half and this does the recorded half,
