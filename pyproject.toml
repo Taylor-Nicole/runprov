@@ -138,7 +138,7 @@ test = ["pytest>=7", "pytest-cov>=4", "pyyaml>=6",  # pyyaml only to CHECK the r
 # `comrak` is readme_renderer's markdown backend and is NOT pulled in by twine. Without it
 # `twine check --strict` passes without rendering the description at all — see the probe in
 # `ci.py build`, which refuses to run the check until the renderer is proved to work.
-dev = ["runprov[test]", "ruff==0.16.6", "mypy==2.3.1",
+dev = ["runprov[test]", "ruff==0.16.9", "mypy==2.3.1",
        "build==1.6.0", "twine==7.0.0", "comrak", "pre-commit"]
 
 [project.scripts]
