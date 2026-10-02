@@ -32,6 +32,12 @@ and neither says whether what happened is still true.
 It reads the artifact and nothing else -- no history, no sidecar, no `configure()`, which
 is the whole reason the pin is written into the bytes. See `verify.py`.
 Its `--format json` answer is ADR-0017, T-33: one builder, two renderings.
+
+`gate` IS ADR-0018, and it is the one subcommand whose answer is a POLICY rather than a
+property of the records: it reads a file of rules the project wrote for itself and reports,
+per rule, met / violated / could not be checked. Cited here because this module implements
+the command, and `test_every_adr_is_listed_in_the_adr_index` reads this docstring to decide
+which decisions are built.
 """
 
 from __future__ import annotations
@@ -61,7 +67,7 @@ import typing
 from . import chain as chain_mod
 from . import check as check_mod
 from . import diff as diff_mod
-from . import hashing
+from . import hashing, policy
 from . import impact as impact_mod
 from . import prune as prune_mod
 from . import report as report_mod
@@ -2098,6 +2104,54 @@ def _report(args: argparse.Namespace) -> int:
     return CANNOT_CHECK
 
 
+def _gate(args: argparse.Namespace) -> int:
+    """ADR-0018. A written policy, checked against the runs that were actually recorded.
+
+    THREE EXIT CODES, UNCHANGED [R-2]: 0 every rule checked and met, 1 a rule violated, 2 a rule
+    that could not be checked. L-81's vocabulary, and the code is READ OFF the assessment rather
+    than decided a second time here — `report`'s I-10 is the row where a second expression folded
+    the verdicts and sent a reader to re-run a pipeline over a problem re-running cannot touch.
+
+    A POLICY THAT CANNOT BE READ IS SILENT ON STDOUT [ADR-0017 R-15], and that is a decision
+    rather than an omission. R-15 says silence means the INVOCATION was wrong, and the policy IS
+    the question: without one there is nothing to answer about, which is the same class as
+    `report` handed an artifact that is not there. A MISSING HISTORY IS THE OTHER CLASS — the
+    question was formed, the command looked where it was told, and its finding is that there is
+    nothing to read, so that one carries a payload.
+    """
+    try:
+        loaded = policy.load(args.policy)
+    except policy.PolicyError as exc:
+        print(f"gate: {exc}", file=sys.stderr)
+        return 2
+
+    log = pathlib.Path(args.log) if args.log else active().resolved_run_log()
+    if not log.is_file():
+        result = policy.assessment(
+            loaded, [], source=str(args.policy), history=str(log), found=False
+        )
+        print(f"gate: no run history at {log}", file=sys.stderr)
+    else:
+        # UNREADABLE LINES ARE COUNTED, NOT SKIPPED. A torn line is a run this gate did not
+        # examine, so it has to stop the gate reporting MET: `_counted` keeps the number and
+        # `_completed` is the sibling that drops it. I-01 is the row where exactly this count was
+        # computed and thrown away.
+        bad = [0]
+        records = list(_counted(log, bad))
+        result = policy.assessment(
+            loaded, records, source=str(args.policy), history=str(log), unreadable=bad[0]
+        )
+
+    if args.format == "json":
+        # NOTHING ELSE ON STDOUT [ADR-0017 R-4]. Both diagnostics above go to stderr, so a caller
+        # parses what it is handed instead of stripping a line first.
+        print(json.dumps(policy.payload(result), indent=2))
+    else:
+        for line in policy.render(result):
+            print(line)
+    return result.exit_code
+
+
 def _check(args: argparse.Namespace) -> int:
     """ADR-0011. Exit 1 on a finding, so it can gate a build — which is the point of it.
 
@@ -2735,6 +2789,22 @@ def main(argv: list[str] | None = None) -> int:
         help="also remove markers from OTHER hosts, whose liveness cannot be checked here",
     )
     pr.add_argument("--dry-run", action="store_true", help="say what would go; remove nothing")
+    gt = sub.add_parser(
+        "gate",
+        help="did the recorded runs meet a written policy? (ADR-0018)",
+        # R-5's OTHER HALF: THE RULE SET IS NOT TYPED HERE. A policy's author needs the names and
+        # what each one asks, and the registry is the only list of them — so `--help` reads it.
+        # A list in this epilog would be the second copy R-5 exists to forbid, and the one most
+        # likely to go stale, because nothing fails when a help text is wrong.
+        epilog="rules (the names a policy may use):\n"
+        + "".join(f"  {name:<22}{got.asks}\n" for name, got in sorted(policy.rules().items()))
+        + "\neach rule in the policy carries a `why`, which is required and is printed beside "
+        "its verdict",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    gt.add_argument("--policy", required=True, help="a .json or .toml policy file")
+    gt.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
+    gt.add_argument("--format", choices=("text", "json"), default="text")
     args = ap.parse_args(argv)
 
     if args.cmd == "exec":
@@ -2773,6 +2843,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "impact":
         return _impact(args)
+
+    # BEFORE the run-history lookup below, and the order is the decision rather than the layout.
+    # THE POLICY IS THE QUESTION: a gate whose policy cannot be read has nothing to ask, while a
+    # gate whose history is missing has a question and cannot answer it. Looking for the history
+    # first would report a missing history for an invocation that never had a question — and the
+    # two are different exit-2 classes under ADR-0017 R-15, one silent and one carrying a payload.
+    if args.cmd == "gate":
+        return _gate(args)
 
     path = pathlib.Path(args.log) if args.log else active().resolved_run_log()
     if not path.is_file():

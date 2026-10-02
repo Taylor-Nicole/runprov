@@ -44,7 +44,7 @@ A *Proposed* ADR is the right place to think out loud. It is not a promise.
 | [0015](0015-impact-answers-what-did-depend-on-this-never-what-will.md) | `impact` answers what did depend on this, never what will | Accepted |
 | [0016](0016-a-history-shows-whether-it-has-been-edited.md) | A history shows whether it has been edited | Accepted |
 | [0017](0017-one-answer-two-renderings-and-the-table-is-derived.md) | One answer, two renderings, and the table is derived from the data | Accepted |
-| [0018](0018-a-policy-is-checked-against-the-history-not-remembered.md) | A policy is checked against the history, not remembered | Proposed |
+| [0018](0018-a-policy-is-checked-against-the-history-not-remembered.md) | A policy is checked against the history, not remembered | Accepted |
 | [0019](0019-rerun-prints-and-never-runs.md) | `rerun` prints, and never runs | Proposed |
 | [0020](0020-an-environment-rendered-from-a-record-is-a-floor.md) | An environment rendered from a record is a floor | Proposed |
 | [0021](0021-many-histories-are-merged-at-read-time-never-rewritten.md) | Many histories are merged at read time, and never rewritten | Proposed |

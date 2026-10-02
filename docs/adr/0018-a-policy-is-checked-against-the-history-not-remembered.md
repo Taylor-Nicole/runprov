@@ -1,7 +1,16 @@
 # 18. A policy is checked against the history, not remembered
 
-**Status:** Proposed — T-34. Specification for a feature that is not built. Depends on ADR-0017
-for its machine-readable form.
+**Status:** Accepted — T-34, built 2026-10-02, **not yet released** (`[Unreleased]`). Depends on
+ADR-0017 for its machine-readable form. Amended the same day by Taylor's rulings: R-11 the policy
+format, R-12 the recommended interpreter, R-7 turned from a prose sentence into a table so the
+rule set can be derived from it, and R-9 clarified — *the source* means source code, not the
+filesystem, which is what put `inputs_verify` in scope.
+
+**THIS LINE WAS MOVED IN THE LAST BUILD COMMIT AND NOT AFTER IT**, which is the one thing ADR-0017
+got wrong: it read *a feature that is not built* through the release that shipped it. The guard
+that catches that reads a module's TOP docstring for the ADR number, so `policy.py` deliberately
+did not cite ADR-0018 until this commit — citing it earlier would have turned the guard red while
+the feature was half-built, and that ordering is now enforced rather than remembered.
 
 ## Context
 

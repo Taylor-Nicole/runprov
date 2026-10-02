@@ -112,12 +112,21 @@ Also available:
 `runprov capture` (record a script that has no `runprov` calls in it at all), and
 `runprov export` (RO-Crate and W3C PROV-JSON).
 
-## Five commands for the questions asked afterwards
+## Six commands for the questions asked afterwards
 
 **`runprov check`** reads your source and reports entry points that open files and record
 nothing — the case a runtime hook can never see, because code that is not imported does not
 run. It never imports or executes your code, so it works on a pipeline that has never heard
 of `runprov`. Exit 1 on a finding, so it can gate a build.
+
+**`runprov gate --policy policy.json`** is the other half of that question: not *could this
+code fail to record*, but **did the runs that actually happened meet the rules this project set
+for itself?** The rules live in a JSON or TOML file in the repository, each with a required `why`,
+and the command reports per rule whether it was met, violated, or **could not be checked** — with
+the number of runs it was evaluated against, because *no violations* over nothing examined is not
+a pass. One unreadable line in the history is enough to make the answer *could not check*. An
+accredited laboratory has to show documented controls and evidence they were met; this is the
+first half stated in a file a diff can review.
 
 **`runprov report <artifact>`** is one artifact on one page: the run that produced it, the
 commit and whether the tree was clean, which `runprov` recorded it, every input with its

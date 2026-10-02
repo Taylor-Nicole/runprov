@@ -740,6 +740,88 @@ A file that opens nothing directly and calls a library that does; `getattr(built
 nothing"* and never *"everything else is recorded"* — no static check can make the second
 claim, and one that implied it would be this package's own defect class.
 
+## `runprov gate`: did the recorded runs meet a written policy?
+
+`check` is the static half — *could this code fail to record*. This is the other half: *did the
+runs that actually happened meet the rules this project set for itself?* It reads the history and
+never the source.
+
+An accredited laboratory has to show two things, documented controls and evidence they were met.
+This package has always produced the evidence and had no way to state the control, so the control
+lived in a lab manual, in prose, checked by a person remembering to look.
+
+```bash
+runprov gate --policy policy.json --log runs.jsonl
+```
+
+```json
+{"rules": [
+  {"rule": "clean_tree",
+   "why": "ISO 15189 5.5.1: the analysis must be traceable to a known code state"},
+  {"rule": "finished_ok",
+   "why": "a result filed as evidence must come from a run that completed"},
+  {"rule": "inputs_verify",
+   "why": "the evidence must still match the files it was derived from"}
+]}
+```
+
+**The file is JSON or TOML**, chosen by the suffix. JSON parses with nothing installed on every
+supported version, which is why it is the one the examples use; `.toml` needs `tomllib` (Python
+3.11+) or `pip install runprov[toml]` below that, and a `.toml` policy on 3.10 without the extra
+is a usage error that names the fix rather than quietly doing less.
+
+**`why` is required on every rule, and that is the substance rather than the syntax.** JSON has no
+comments, and the first reading of that is a loss — a control's rationale has nowhere to live. It
+is the opposite: a comment cannot be checked and does not travel, while a required field is
+demanded of every rule and is printed beside its verdict on the page and in the payload, so an
+assessor reads *why this control exists* next to *whether it was met*.
+
+**It is read strictly.** A key this version does not understand is refused rather than ignored,
+because a rule under a mistyped name is a control its author believes is in force and the gate
+never applies — a control lost to a typo, which is the failure this command exists to prevent.
+
+### The rules, and what each one cannot see
+
+| rule | asks | cannot answer when |
+|---|---|---|
+| `clean_tree` | the working tree was clean when the run started | a run whose git status could not be captured at all |
+| `commit_recorded` | the run names the commit it ran from | a run outside a repository or with no git on PATH, where the absence of a commit is not a missing one |
+| `environment_captured` | the run recorded the packages it ran with | a record with no `observation` block, which cannot say whether packages were recorded at all |
+| `finished_ok` | the run reached its end and recorded success | a line carrying no status |
+| `inputs_verify` | every input the run declared still hashes to what it recorded | a declared input that is no longer on disk, or a run that declared none at all |
+| `no_unregistered_reads` | the run opened no data file it did not register | a run whose record carries no `observation` block at all |
+| `outputs_pin_inputs` | every run that produced an output declared what it read | a run that recorded no outputs, which this rule has nothing to ask about |
+
+**Every rule names what it cannot see, and two of them exist mostly to say so.** `git_tree_dirty`
+is `False` both for a clean tree and for a run that never looked, so `clean_tree` reads
+`git_status_captured` as well; `unregistered_reads` is empty both for a run that missed nothing
+and for a run whose watch hit its cap, so `no_unregistered_reads` reads the truncation mark. A
+rule reading only the first field of either pair would report an unexamined run as a pass.
+
+**Three exit codes, and the third is the whole design.** 0 every rule checked and met, 1 a rule
+violated, **2 a rule that could not be checked** — and a violation outranks an inability, because
+knowing part of a list is knowing a breach. One unreadable line in the history is enough to turn a
+`MET` gate into exit 2: that line is a run the gate did not examine, and a gate that greens on
+*not examined* is the shape this package exists to catch.
+
+`runprov gate --format json` is the **same answer for a reader that is not a person** — the page
+and the payload are two renderings of one structure, so neither can state something the other does
+not. Each rule carries `evaluated`, `met`, `violated` and `cannot_check` beside its outcome,
+because **"no violations" and "nothing examined" must not serialise the same**: `asked_of_nothing`
+says which, and `cannot_check` carries one sentence naming what the gate could not see, `null`
+when there was nothing. Exit 2 carries the payload too, because it is an answer; a policy file
+that cannot be read prints nothing at all, which is how a consumer tells a gate that could not
+conclude from one that never had a question. The payload is versioned by
+`"schema": "runprov.gate.v1"`, and its shape follows the record-format promise above: a field's
+meaning does not change without a new schema value.
+
+**It is not a linter for code, and it never becomes one.** `check` reads source; this reads the
+history. The one place it leaves the record is `inputs_verify`, which re-hashes the files a run
+declared — data files are not source, and *does the evidence still match the files* is the
+question an assessor asks first. A declared input that is gone is `CANNOT_CHECK` naming the path,
+never a violation: the file may have been archived, and an accusation cannot be withdrawn from a
+record.
+
 ## It tells you when a read bypassed registration
 
 `run.input(p)` makes registration the ordinary way to open a file. It cannot make it the only
@@ -2964,7 +3046,7 @@ The Windows leg skips ten times what any other does, and it is the only leg that
 assert the coverage floor — skipped tests leave their lines unmeasured, so 100% is
 unreachable there by construction rather than by regression. No other leg may lower it.
 
-Coverage is **100%** of **about 5,200 statements and 1,830 branches**, and the gate is set
+Coverage is **100%** of **about 5,800 statements and 2,050 branches**, and the gate is set
 there with `--cov-branch`.
 
 *Every figure in this section is approximate on purpose.* They exist to convey scale, and an

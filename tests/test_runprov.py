@@ -18269,6 +18269,11 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
     absent, no_log = tmp_path / "ghost.tsv", tmp_path / "missing.jsonl"
     empty_dir = tmp_path / "no_python_here"
     empty_dir.mkdir()
+    gate_policy = tmp_path / "policy.json"
+    gate_policy.write_text(
+        '{"rules": [{"rule": "finished_ok", "why": "a filed result comes from a complete run"}]}',
+        encoding="utf-8",
+    )
     bare_log = tmp_path / "bare.jsonl"
     bare_log.write_text(
         json.dumps({"schema": "runprov.run.v2", "script": "s", "run_id": "x"}) + "\n",
@@ -18329,6 +18334,14 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
         # finding is an answer. Removing a row from this bucket must never mean removing its
         # coverage, which is the mistake available here.
         "diff, two addresses resolving to one run": ["diff", "demo", "demo", "--log", str(log)],
+        # T-34. THE POLICY PARSED, SO THE QUESTION WAS FORMED; the history it names is not there.
+        "gate, no history to read": [
+            "gate",
+            "--policy",
+            str(gate_policy),
+            "--log",
+            str(no_log),
+        ],
     }
     # SILENT BY DESIGN, AND ASSERTED TO BE. These are not outstanding work: the command could
     # not FORM the question, so under R-15 silence on stdout is the correct signal and a payload
@@ -18343,6 +18356,16 @@ def test_exit_two_puts_a_payload_on_stdout_wherever_r15_already_holds(tmp_path, 
         "report, the artifact is not there": ["report", str(absent), "--log", str(log)],
         "impact, target is neither a file nor a digest": ["impact", str(absent), "--log", str(log)],
         "diff, the first run address is empty": ["diff", "", "x", "--log", str(log)],
+        # T-34. THE POLICY IS THE QUESTION, so a policy that cannot be read is an invocation with
+        # nothing to ask — the same class as `report` handed an artifact that is not there, and the
+        # reason `gate` loads its policy BEFORE it looks for the history.
+        "gate, a policy that cannot be read": [
+            "gate",
+            "--policy",
+            str(tmp_path / "nothing.json"),
+            "--log",
+            str(log),
+        ],
     }
 
     def answered(argv):
@@ -19365,6 +19388,12 @@ _R16_INABILITY = {
     # verdict, `cannot_check` says which of the four routes reached the only verdict that has
     # several. R-16 named the missing reason as open; this closed it.
     "chain": ("status", "cannot_check"),
+    # T-34. TWO FIELDS, LIKE `chain`'s, and for the same reason: `outcome` says WHICH of the three
+    # answers this is, from a closed vocabulary, and `cannot_check` carries the sentence naming
+    # what the gate could not see. They are independent on purpose — a VIOLATED gate that also
+    # could not check two rules says both, because a reader repairing the violation has to know
+    # the rest was not cleared either.
+    "gate": ("outcome", "cannot_check"),
     # J-18. WAS `("artifacts_seen", "artifacts_pinned")` — a relationship, and false in three of
     # the four states it describes. The counters are all still there and unrenamed; what is new
     # is the conclusion drawn from them, which is the part a consumer cannot derive because its
@@ -19525,6 +19554,12 @@ _PATH_SUBJECT = {
     "capture": None,
     "exec": None,
     "prune": None,
+    #: `gate` TAKES NO POSITIONAL AT ALL: both its paths are options, so the arity clause of the
+    #: rule has nothing to measure — the same position `show`, `log` and `diff` are in. Its two
+    #: absent-path states are ruled and asserted in the R-15 buckets instead: an unreadable
+    #: `--policy` is SILENCE, because the policy is the question, and an absent `--log` is an
+    #: ANSWER, because the question was formed and there was nothing to read.
+    "gate": None,
 }
 
 
@@ -19704,6 +19739,13 @@ def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsy
         "        run.input('in.tsv')\n",
         encoding="utf-8",
     )
+    #: AND A POLICY `gate` CAN ANSWER FROM. Both its runs finished, so `finished_ok` is MET and
+    #: the invocation exits 0 — an answering shape, which is what this guard reads.
+    gate_policy = tmp_path / "policy.json"
+    gate_policy.write_text(
+        '{"rules": [{"rule": "finished_ok", "why": "a filed result comes from a complete run"}]}',
+        encoding="utf-8",
+    )
 
     #: ONE ANSWERING INVOCATION PER SHAPE. The invocations cannot be derived — reaching a state
     #: is not a fact about the parser — but WHICH COMMANDS must appear is, and that is asserted
@@ -19721,6 +19763,7 @@ def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsy
         "report": ["report", str(artifact), "--log", str(log)],
         "chain": ["chain", str(log)],
         "verify": ["verify", str(artifact), "--root", str(tmp_path)],
+        "gate": ["gate", "--policy", str(gate_policy), "--log", str(log)],
     }
     assert {name.split(" ")[0] for name in shapes} == _cli_json_commands(), (
         "[ADR-0017 R-5] every command that answers in JSON needs a shape here, and only those: "
@@ -19812,6 +19855,11 @@ def test_every_json_command_says_it_could_not_check_where_r16_says_it_does(tmp_p
     src = tmp_path / "src"
     src.mkdir()
     (src / "m.py").write_text("import runprov\n", encoding="utf-8")
+    gate_policy = tmp_path / "policy.json"
+    gate_policy.write_text(
+        '{"rules": [{"rule": "finished_ok", "why": "a filed result comes from a complete run"}]}',
+        encoding="utf-8",
+    )
     invocations = {
         "impact": ["impact", str(artifact), "--log", str(log)],
         "diff": ["diff", "demo", "demo", "--log", str(log)],
@@ -19823,6 +19871,7 @@ def test_every_json_command_says_it_could_not_check_where_r16_says_it_does(tmp_p
         "report": ["report", str(artifact), "--log", str(log)],
         "chain": ["chain", str(log)],
         "verify": ["verify", str(artifact), "--root", str(tmp_path)],
+        "gate": ["gate", "--policy", str(gate_policy), "--log", str(log)],
     }
     assert set(invocations) == set(_R16_INABILITY), "one invocation per named command"
 
@@ -20328,6 +20377,11 @@ def test_every_json_commands_two_shapes_carry_the_same_keys(tmp_path, capsys):
     (src / "m.py").write_text("import runprov\n", encoding="utf-8")
     empty_dir = tmp_path / "nothing"
     empty_dir.mkdir()
+    gate_policy = tmp_path / "policy.json"
+    gate_policy.write_text(
+        '{"rules": [{"rule": "finished_ok", "why": "a filed result comes from a complete run"}]}',
+        encoding="utf-8",
+    )
 
     #: answered invocation, and one that reaches this command's own cannot-check state.
     pairs = {
@@ -20348,6 +20402,14 @@ def test_every_json_commands_two_shapes_carry_the_same_keys(tmp_path, capsys):
         ),
         "show": (["show", "--log", str(log)], ["show", "--log", str(gone)]),
         "check": (["check", str(src)], ["check", str(empty_dir)]),
+        # T-34. `gate` HAS THE PROPERTY BY CONSTRUCTION — both shapes come from one `Assessment`
+        # and `found` is a FIELD rather than the absence of one — and that is precisely why it
+        # belongs here: a property held by construction is one a later refactor can lose without
+        # anything saying so, which is what happened to `lineage`.
+        "gate": (
+            ["gate", "--policy", str(gate_policy), "--log", str(log)],
+            ["gate", "--policy", str(gate_policy), "--log", str(gone)],
+        ),
         # `report` and `verify` are absent BY MEASUREMENT, not by omission: neither has a
         # cannot-check state that produces a DIFFERENT shape. `report`'s NO PIN and `verify`'s
         # unpinned sweep both emit their ordinary object with a different verdict in it, which is
@@ -30742,6 +30804,12 @@ CORPUS_RECIPES: dict[str, list[str]] = {
     "export": ["export", "prov/align.prov.json"],
     "check": ["check", "."],
     "chain": ["chain", "prov/history.jsonl"],
+    # T-34. THE ONE RECIPE THAT NEEDS A SECOND FILE, written into the materialised tree by the
+    # test below. This is the most interesting row in the table: today's rules against records
+    # written by every released wheel, where `observation` did not exist at all in the earliest of
+    # them — so `environment_captured` must answer CANNOT_CHECK for those rather than accusing a
+    # year-old run of recording nothing.
+    "gate": ["gate", "--policy", "policy.json", "--log", "prov/history.jsonl"],
 }
 
 #: Not pointed at the corpus, with the reason. `exec` and `capture` CREATE a run rather than
@@ -30820,6 +30888,23 @@ def test_every_command_reads_a_history_written_by_a_released_version(
     """
     tree = corpus_tool.materialise(version, tmp_path / "tree")
     monkeypatch.chdir(tree)
+    # `gate` NEEDS A POLICY AS WELL AS A HISTORY, and the corpus contains none: the trees are what
+    # each released wheel WROTE, and a policy is what a project writes about them. Written into the
+    # materialised copy — which is a tmp tree, not the committed corpus — and naming EVERY
+    # registered rule, derived, so a rule added later is pointed at old records on the day it
+    # exists. The assertion is the exit-code contract below: no rule may traceback on a record
+    # written before it was conceived, and none may invent a verdict for one.
+    (tree / "policy.json").write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {"rule": name, "why": "exercised against a released version's records"}
+                    for name in sorted(runprov.policy.rules())
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
 
     commands = _corpus_commands(capsys)
     unrecipe = [c for c in commands if c not in CORPUS_RECIPES and c not in CORPUS_NOT_READERS]
@@ -34259,6 +34344,17 @@ def test_each_rule_reaches_all_three_verdicts_over_the_state_its_row_names(tmp_p
         "finished_ok": [
             ({"status": "ok"}, met),
             ({"status": "failed", "failure": "ValueError: boom"}, violated),
+            #: A STATUS THAT FAILED AND NOTHING TO QUOTE. The verdict is still VIOLATED and the
+            #: sentence must not end in a dangling colon — and a record written before the
+            #: failure block existed carries a STRING there, which is the row above.
+            ({"status": "failed"}, violated),
+            #: AND TODAY'S SHAPE, a mapping of `type`, `message` and `traceback`. Interpolating it
+            #: whole put an escaped multi-line traceback inside one line of a filed report, found
+            #: by rendering the command once by hand rather than by a test.
+            (
+                {"status": "failed", "failure": {"type": "ValueError", "message": "boom"}},
+                violated,
+            ),
             #: A START WITH NO ENDING IS NOT A FAILURE — `show`'s INTERRUPTED distinction.
             ({}, unknown),
         ],
@@ -34987,7 +35083,7 @@ def test_a_rule_asked_of_nothing_is_not_a_rule_that_passed(tmp_path):
         "for the selection; a pass here would be a control that passed because nobody "
         f"looked: {unknown}"
     )
-    assert (unknown["met"], unknown["cannot_check"]) == (1, 1), unknown
+    assert (unknown["met"], unknown["not_checked"]) == (1, 1), unknown
     assert unknown["reasons"], "and it says which fact was missing"
 
     #: A VIOLATION OUTRANKS AN INABILITY, which is L-81's ordering in a new command.
@@ -34995,7 +35091,270 @@ def test_a_rule_asked_of_nothing_is_not_a_rule_that_passed(tmp_path):
     assert worst["outcome"] == runprov.policy.VIOLATED, (
         f"a violation among unexaminable runs is still a violation: {worst}"
     )
-    assert (worst["met"], worst["violated"], worst["cannot_check"]) == (1, 1, 1), worst
+    assert (worst["met"], worst["violated"], worst["not_checked"]) == (1, 1, 1), worst
+
+
+def _gated_history(tmp_path):
+    """A real history: one complete run with an input and an output, and one that failed.
+
+    REAL RUNS, NOT HAND-BUILT RECORDS. `status`, `failure` and the input's digests are written by
+    this package, so the verdicts below are asserted against what the writer really produces — the
+    A-08 shape is a fixture that asserts what its author believed the writer does.
+    """
+    histories = tmp_path / "gated"
+    histories.mkdir()
+    log = histories / "h.jsonl"
+    runprov.configure(root=histories, run_log=log, auto_steps="off")
+    (histories / "in.tsv").write_text("a\n", encoding="utf-8")
+    with runprov.Run("good", {}, provenance=histories / "p1.json") as run:
+        run.input(histories / "in.tsv")
+        with run.open_output(histories / "out.tsv") as fh:
+            fh.write("z\n")
+    try:
+        with runprov.Run("bad", {}, provenance=histories / "p2.json") as run:
+            run.input(histories / "in.tsv")
+            raise ValueError("boom")
+    except ValueError:
+        pass
+    return histories, log
+
+
+_WHY = "a control this project states, and states in a file"
+
+
+def _policy_file(path: pathlib.Path, *names: str) -> pathlib.Path:
+    """A policy naming these rules, each with the `why` R-11 requires."""
+    path.write_text(
+        json.dumps({"rules": [{"rule": name, "why": _WHY} for name in names]}), encoding="utf-8"
+    )
+    return path
+
+
+def test_the_gate_answers_three_ways_and_the_exit_code_is_the_verdict(tmp_path, capsys):
+    """[ADR-0018 R-1] [ADR-0018 R-2] [ADR-0018 R-8] T-34. The command, in all three outcomes.
+
+    R-2 keeps the existing exit codes: 0 every rule checked and met, 1 a rule violated, **2 a rule
+    that could not be checked.** The third is the whole design — a policy engine that cannot tell
+    *violated* from *unverifiable* produces the vacuous pass this project has now fixed in five
+    places — so all three are reached here over ONE history, with the rule chosen to select the
+    state rather than the record edited to force it.
+
+    THE PREMISES ARE ASSERTED BEFORE THE VERDICTS ARE READ OFF THEM. A history written outside a
+    repository is what makes `clean_tree` unevaluable, and a run that really failed is what makes
+    `finished_ok` violated; a fixture whose name asserts a state it does not contain is a control
+    that did not run, which this project has now found five times.
+
+    AND THE EXIT CODE DOES NOT MOVE WITH THE FORMAT [ADR-0017]. `--format json` is a rendering
+    choice, not a different question, and a gate that answers differently depending on how it was
+    asked to print is a gate nobody can reason about.
+    """
+    _, log = _gated_history(tmp_path)
+    finished = [
+        json.loads(line)
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if line.strip() and json.loads(line).get("schema") != "runprov.start.v1"
+    ]
+    assert len(finished) == 2, finished
+    assert not any(record.get("git_status_captured") for record in finished), (
+        "the premise of the CANNOT_CHECK case: a history written outside a git repository, so "
+        f"`clean_tree` has nothing to read: {[r.get('git_status_captured') for r in finished]}"
+    )
+    assert [record.get("status") for record in finished].count("ok") == 1, (
+        f"the premise of the other two: one run finished and one did not: {finished}"
+    )
+
+    cases = {
+        0: ("met.json", "inputs_verify", runprov.policy.MET),
+        1: ("violated.json", "finished_ok", runprov.policy.VIOLATED),
+        2: ("blind.json", "clean_tree", runprov.policy.CANNOT_CHECK),
+    }
+    for expected, (name, rule, outcome) in cases.items():
+        argv = ["gate", "--policy", str(_policy_file(tmp_path / name, rule)), "--log", str(log)]
+        capsys.readouterr()
+        code = runprov.__main__.main(argv)
+        page = capsys.readouterr().out
+        assert code == expected, (
+            f"[ADR-0018 R-2] a policy of `{rule}` over this history is {outcome}, which is "
+            f"exit {expected}; got {code}. Page:\n{page}"
+        )
+        capsys.readouterr()
+        as_json = runprov.__main__.main([*argv, "--format", "json"])
+        body = json.loads(capsys.readouterr().out)
+        assert as_json == code, (
+            "the exit code must not move with the format; the question is the same one asked "
+            f"two ways: {rule} gave {code} as text and {as_json} as JSON"
+        )
+
+        assert body["schema"] == runprov.policy.SCHEMA == "runprov.gate.v1", (
+            "[ADR-0017 R-5] a consumer branches on the schema and not on what it finds, so the "
+            f"literal is asserted here as well as named in the README: {body.get('schema')}"
+        )
+        assert (body["outcome"], body["exit_code"], body["runs"]) == (outcome, code, 2), body
+        assert body["rules"][0]["rule"] == rule and len(body["rules"]) == 1, body
+        #: THE PAGE AND THE PAYLOAD NAME THE SAME VERDICT AND THE SAME ROUTE TO IT. J-04 is the
+        #: row where two renderings of one answer named different routes, each having worked it
+        #: out for itself.
+        assert f"GATE: {outcome}" in page and rule in page, page
+        #: R-11: THE `why` IS IN BOTH, which is the whole reason it is a required field. An
+        #: assessor reads why the control exists beside whether it was met.
+        assert _WHY in page and body["rules"][0]["why"] == _WHY, (page, body)
+        #: R-4: AND SO IS THE COUNT IT WAS EVALUATED AGAINST, in words rather than only in a
+        #: field — a reader who has to ask for JSON to see it is a reader who will not ask.
+        assert f"{body['rules'][0]['evaluated']} run(s)" in page, page
+
+
+def test_one_unreadable_line_is_not_a_gate_that_passed(tmp_path, capsys):
+    """[ADR-0018 R-2] [ADR-0018 R-3] T-34. The vacuous green, refused one level above the rules.
+
+    A torn line is a run the gate did not examine. Every rule can still be MET over the runs it
+    DID see, and reporting that as a pass would be exactly the shape this feature exists to
+    catch — so the history not being whole is enough on its own to make the answer exit 2.
+
+    **THE CONTROL RUNS FIRST AND IS THE POINT.** The same policy over the same history exits 0;
+    one appended line that is not JSON moves it to 2. Without that pass, a test asserting 2 here
+    would be satisfied by a gate that exits 2 for any reason at all, which is how a check comes to
+    measure something other than what it names.
+
+    AND THE RULE STILL SAYS MET, asserted, because the two facts must not collapse. *A rule
+    failed* and *the history could not all be read* send a reader to completely different places,
+    and a gate that reported the second as the first would send them to the wrong one.
+    """
+    _, log = _gated_history(tmp_path)
+    argv = [
+        "gate",
+        "--policy",
+        str(_policy_file(tmp_path / "met.json", "inputs_verify")),
+        "--log",
+        str(log),
+        "--format",
+        "json",
+    ]
+    capsys.readouterr()
+    assert runprov.__main__.main(argv) == 0, "the control: this policy is MET over this history"
+    before = json.loads(capsys.readouterr().out)
+    assert (before["unreadable"], before["cannot_check"]) == (0, None), (
+        "[ADR-0017 R-8] `null` is *looked and found none*, and it is what a whole history gets"
+    )
+
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write("this line is not json\n")
+    capsys.readouterr()
+    assert runprov.__main__.main(argv) == 2, (
+        "[ADR-0018 R-3] a history the gate could not entirely read cannot be reported as met"
+    )
+    after = json.loads(capsys.readouterr().out)
+    assert after["unreadable"] == 1, after
+    assert "could not be read" in (after["cannot_check"] or ""), after
+    assert after["rules"][0]["outcome"] == runprov.policy.MET, (
+        "the RULE is still met over the runs it saw; the GATE cannot be, because the history was "
+        f"not whole. Collapsing those two sends a reader to repair a rule that is fine: {after}"
+    )
+
+
+def test_the_gate_page_says_what_the_payload_says_in_the_states_that_are_not_ordinary(
+    tmp_path, capsys
+):
+    """[ADR-0018 R-2] [ADR-0018 R-4] T-34. The page, in the states a happy path never reaches.
+
+    A rendering is only as good as its worst state, and these are the states in which a gate
+    report is actually read: the history was not there, and the history was not whole. Each must
+    say so **on the page** — a reader who has to ask for JSON to discover that nothing was
+    examined is a reader who will not ask, and R-4's count exists precisely so that *no
+    violations* cannot be mistaken for *nothing was checked*.
+
+    THE EARLIER TESTS ASSERT THESE STATES THROUGH THE PAYLOAD, which is not the same claim. J-04
+    is the row where a page and a payload named different routes to one verdict, and H1-3 the row
+    where the text silently dropped findings the JSON carried; a state asserted in one rendering
+    only is a state unasserted in the other.
+    """
+    _, log = _gated_history(tmp_path)
+    policy_file = _policy_file(tmp_path / "met.json", "inputs_verify")
+
+    #: 1. THE HISTORY IS NOT THERE. `found` is a field and not an inference from a count, so the
+    #: page says NOT FOUND beside the path AND reports that the rule was asked of nothing — two
+    #: different facts, and a reader needs the first to know the second is not a project that has
+    #: simply recorded nothing yet.
+    capsys.readouterr()
+    code = runprov.__main__.main(
+        ["gate", "--policy", str(policy_file), "--log", str(tmp_path / "absent.jsonl")]
+    )
+    page = capsys.readouterr().out
+    assert code == 2, page
+    assert "(NOT FOUND)" in page, page
+    assert "0 run(s) examined" in page and "ASKED OF NOTHING" in page, page
+    assert "COULD NOT CHECK" in page and "GATE: CANNOT_CHECK" in page, page
+
+    #: 2. THE HISTORY IS NOT WHOLE, on the page this time. The count of lines that could not be
+    #: read is printed where the run count is, because they are the same fact seen from two sides:
+    #: this many runs were examined, and this many could not be.
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write("this line is not json\n")
+    capsys.readouterr()
+    code = runprov.__main__.main(["gate", "--policy", str(policy_file), "--log", str(log)])
+    page = capsys.readouterr().out
+    assert code == 2, page
+    assert "1 line(s) unreadable" in page, page
+    assert "MET" in page and "GATE: CANNOT_CHECK" in page, (
+        "the rule is still met over the runs the gate saw, and the gate is not — both on the "
+        "page, because a reader sent to repair a rule that is fine has been sent to the wrong "
+        f"place:\n{page}"
+    )
+
+
+def test_the_readme_rule_table_is_the_registry_and_not_a_copy_of_it(tmp_path):
+    """[ADR-0018 R-5] [ADR-0018 R-6] [ADR-0018 R-7] T-34. The documented rule set, checked.
+
+    R-5 forbids a second list of the rules. A README cannot execute, so the table in it is written
+    out — which makes it exactly the kind of copy that goes stale in silence, since nothing fails
+    when a help text is wrong. **This is what makes it not a copy:** every registered rule must
+    have a row, every row must name a registered rule, and each row's `asks` cell must be the
+    rule's own `asks` VERBATIM.
+
+    AND THE THIRD COLUMN MUST BE THE OPENING OF THE RULE'S `blind` TEXT [R-6], not a paraphrase of
+    it. A row that summarised what a rule cannot see in a reader's own words would drift from the
+    sentence the rule actually prints, and the README would be documenting a different limit from
+    the one the gate reports.
+
+    `--help` IS THE OTHER HALF AND IS DERIVED RATHER THAN CHECKED: the `gate` subparser builds its
+    epilog from `rules()`, so it cannot disagree.
+    """
+    del tmp_path
+    readme = (_repo_root() / "README.md").read_text(encoding="utf-8")
+    heading = "### The rules, and what each one cannot see"
+    assert heading in readme, "the README no longer documents the rule set"
+    table = readme[readme.index(heading) :].split("\n\n")[1]
+    rows = {}
+    for line in table.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) == 3 and cells[0].startswith("`"):
+            rows[cells[0].strip("`")] = (cells[1], cells[2])
+    assert set(rows) == set(runprov.policy.rules()), (
+        "[ADR-0018 R-5] the README's table and the registry are two statements of one rule set "
+        f"and they disagree: {sorted(set(rows) ^ set(runprov.policy.rules()))}"
+    )
+    for name, (asks, blind) in rows.items():
+        got = runprov.policy.rules()[name]
+        assert asks == got.asks, (
+            f"[ADR-0018 R-7] the README says `{name}` asks {asks!r} and the rule says {got.asks!r}"
+        )
+        assert got.blind.startswith(blind), (
+            f"[ADR-0018 R-6] the README's `cannot answer when` for `{name}` is not the opening of "
+            f"the sentence the rule prints, so the two document different limits:\n"
+            f"  README: {blind}\n  rule:   {got.blind}"
+        )
+
+    # AND THE `--help` EPILOG IS BUILT FROM THE REGISTRY, so the other documented copy cannot
+    # disagree at all. Asserted through the parser rather than by reading the source, because what
+    # matters is what a user is shown.
+    with contextlib.redirect_stdout(io.StringIO()) as shown:
+        with pytest.raises(SystemExit):
+            runprov.__main__.main(["gate", "--help"])
+    helped = shown.getvalue()
+    for name, got in runprov.policy.rules().items():
+        assert name in helped and got.asks in helped, (
+            f"[ADR-0018 R-5] `runprov gate --help` does not name `{name}` and what it asks, so a "
+            f"policy's author has no derived list of the names they may use:\n{helped}"
+        )
 
 
 def test_the_rule_registry_refuses_two_rules_under_one_name():
@@ -35016,6 +35375,55 @@ def test_the_rule_registry_refuses_two_rules_under_one_name():
     # IT IS ALSO READ-ONLY: a caller handed the registry cannot edit the rules this project runs.
     with pytest.raises(TypeError):
         runprov.policy.rules()["clean_tree"] = None  # type: ignore[index]
+
+
+def test_every_gate_requirement_has_a_test():
+    r"""ADR-0018's specification is checked, not remembered — ADR-0013's mechanism, fourth use.
+
+    **WRITTEN IN THE LAST BUILD COMMIT, which is the whole lesson of T-33.** ADR-0017 named this
+    guard as its row's closing condition and shipped in 0.7.0 without it; the backlog note that
+    recorded the omission is the reason this one exists on the day the feature is finished rather
+    than after an audit asks for it.
+
+    **THE CONVENTION WAS CHECKED BEFORE THE REGEX WAS COPIED.** ADR-0017's guard records that
+    copying ITS sibling would have found 14 of 16, because R-15 and R-16 bold the whole sentence
+    while R-1 … R-14 bold only the number. ADR-0018 has both shapes too — R-11 and R-12 were added
+    by Taylor's rulings and bold their whole opening — so the pattern anchors on the number and the
+    period at the start of a line and never on the closing bold. Measured when this was written:
+    twelve requirements, and a closing-bold pattern finds ten.
+
+    SET EQUALITY, NOT A FLOOR, for the reason G-11 gives: `>= 12` cannot see a requirement deleted
+    from the ADR, and a bare `== 12` turns red on a future R-13 whose obvious fix is to bump the
+    number. Equality catches a dropped requirement, a mistyped citation, and a test citing
+    something the ADR no longer says, in both directions and with no number to maintain.
+
+    CITATIONS ARE READ FROM BEFORE THIS `def`, like all three siblings, so this docstring's own
+    mentions of R-11 and R-12 cannot satisfy the requirements it is checking.
+    """
+    adr = (
+        _repo_root()
+        / "docs"
+        / "adr"
+        / "0018-a-policy-is-checked-against-the-history-not-remembered.md"
+    )
+    if not adr.is_file():  # pragma: no cover - docs ship in the sdist, a bare tree may not
+        pytest.skip("ADR-0018 not present")
+    text = adr.read_text(encoding="utf-8")
+    required = set(re.findall(r"^\*\*(R-\d+)\.", text, re.M))
+    assert len(required) > 10, (
+        "ADR-0018 declares R-1 through R-10 with the bold closing after the number and R-11 and "
+        "R-12 with their whole opening bold. A pattern that finds ten is matching only the first "
+        f"convention and is blind to the two requirements Taylor added: {sorted(required)}"
+    )
+    tests = pathlib.Path(__file__).read_text(encoding="utf-8")
+    cited = set(
+        re.findall(r"\[ADR-0018 (R-\d+)\]", tests.split("def test_every_gate_requirement")[0])
+    )
+    assert required == cited, (
+        "ADR-0018 and its tests disagree. Requirements the ADR states that no test names: "
+        f"{sorted(required - cited, key=lambda s: (len(s), s))}. Requirements the tests cite "
+        f"that the ADR no longer states: {sorted(cited - required, key=lambda s: (len(s), s))}"
+    )
 
 
 def test_every_answer_requirement_has_a_test():

@@ -8,13 +8,13 @@
 the other half — *did the runs that actually happened meet the rules this project set?* — and so
 it reads only the history and never the source.
 
-THE SPECIFICATION IS `docs/adr/0018-a-policy-is-checked-against-the-history-not-remembered.md`,
-and it is deliberately not cited by number in this docstring yet.
-`test_every_adr_is_listed_in_the_adr_index` reads a module's TOP docstring to decide which
-decisions are BUILT and asserts none of those is still proposed. That decision is still proposed
-because this feature is half-built, so the citation belongs in the LAST build commit — which is
-exactly the closing condition T-33 shipped without, and the guard enforcing the right order
-rather than merely describing it.
+ADR-0018 IS THE SPECIFICATION, and the citation landed in the last build commit rather than the
+first. `test_every_adr_is_listed_in_the_adr_index` reads a module's TOP docstring to decide which
+decisions are BUILT and asserts none of those is still proposed — so naming the number here while
+the feature was half-built would have turned that guard red, and the number arrived with the
+twelfth requirement. ADR-0017 is the reason the ordering is worth stating: its status read *a
+feature that is not built* through the release that shipped it, because nine modules cited it
+everywhere except the one place the guard looks.
 
 THE REGISTRY IS THE ONLY LIST OF RULES. R-5: a rule registers itself here, and the parser, the
 documentation and the tests all read this one dict. Three places to update is two places to
@@ -177,7 +177,14 @@ def assess(
         "evaluated": evaluated,
         "met": tally[MET],
         "violated": tally[VIOLATED],
-        "cannot_check": tally[CANNOT_CHECK],
+        #: `not_checked` AND NOT `cannot_check`, AND THE REASON IS WHO OWNS THE NAME. ADR-0017
+        #: R-16 gives `cannot_check` to the COMMAND, as the one sentence saying what it could not
+        #: see; six commands already carry it that way. A COUNT under the same name one level down
+        #: would put a string and an int behind one key in a single document — J-36's defect, which
+        #: is resolved by asking which structure owns the word rather than by renaming whichever is
+        #: more convenient. The gate's cross-command guard cannot see nested keys, so this is a
+        #: finding the rule produced rather than one a check caught.
+        "not_checked": tally[CANNOT_CHECK],
         #: EMPTY over a clean pass, and a LIST because several runs can fail differently and a
         #: reader repairs each one separately.
         "reasons": reasons,
@@ -354,8 +361,22 @@ def _finished_ok(record: typing.Mapping[str, typing.Any], context: Context) -> V
     if status == "ok":
         return Verdict(MET)
     failure = record.get("failure")
-    named = f": {failure}" if failure else ""
-    return Verdict(VIOLATED, f"the run finished with status {status!r}{named}")
+    #: THE TYPE AND THE MESSAGE, NEVER THE WHOLE BLOCK. `failure` is a mapping of `type`,
+    #: `message` and `traceback`, and interpolating it whole put an escaped multi-line traceback
+    #: inside one line of a report a laboratory files — found by reading the page rather than by a
+    #: test, which is the argument for rendering a command once by hand before believing it.
+    #: THE TRACEBACK IS STILL IN THE RECORD and `show` is where a reader goes for it; a verdict's
+    #: reason is one sentence or it stops being one.
+    if isinstance(failure, dict):
+        said = ": ".join(str(failure[key]) for key in ("type", "message") if failure.get(key))
+    else:
+        #: A STRING IS ACCEPTED TOO, because a record written by a version before the block
+        #: existed carries one, and a rule that only understands today's shape reports every older
+        #: run as a failure with no reason.
+        said = str(failure) if failure else ""
+    return Verdict(
+        VIOLATED, f"the run finished with status {status!r}" + (f": {said}" if said else "")
+    )
 
 
 #: THE RECORD'S OWN KEY, paired with the function that computes THAT quantity. I-02's sentence:
@@ -673,3 +694,176 @@ def _checked(parsed: object, path: pathlib.Path) -> dict[str, typing.Any]:
         #: written in is a document whose diff stops being the evidence that it did not loosen.
         chosen.append({"rule": name, "why": why.strip()})
     return {"rules": chosen}
+
+
+#: THE ANSWER'S SHAPE, VERSIONED. ADR-0017 R-5: a consumer branches on this and not on what it
+#: finds, and the command is `gate` even though the module is `policy` — the schema names the
+#: question that was asked, not the file that answered it.
+SCHEMA = "runprov.gate.v1"
+
+
+class Assessment(typing.NamedTuple):
+    """One policy over one history: every rule's verdict, and what the gate could not see.
+
+    THE FACTS ARE FIELDS AND THE CONCLUSIONS ARE PROPERTIES, which is `check.Report`'s shape and
+    for its reason: `outcome` and `cannot_check` are computed once, here, and read by both
+    renderings. H1-6 is the row where a second computation of one fact disagreed with the first.
+
+    `found` IS A FIELD AND NOT AN INFERENCE FROM `runs == 0`. A history that is not there and a
+    history that is there and empty are different findings — the first is a path to fix, the
+    second is a project that has recorded nothing yet — and ADR-0017 R-8 is the rule that they
+    must not be collapsed.
+    """
+
+    #: The policy file this was read from, and the history it was applied to. Named because the
+    #: payload is evidence a laboratory files: *which controls, against which runs*.
+    source: str
+    history: str
+    found: bool
+    runs: int
+    #: LINES THE HISTORY COULD NOT GIVE UP. A torn line is a run the gate did not examine, so it
+    #: has to stop the gate saying MET — counted rather than skipped, which is what `_counted`
+    #: exists for.
+    unreadable: int
+    rules: tuple[dict[str, typing.Any], ...]
+
+    @property
+    def outcome(self) -> str:
+        """The worst of the rules', and never MET over a history that was not whole. R-2, R-3.
+
+        THE ORDER IS VIOLATED, CANNOT_CHECK, MET, the same order `assess` uses one level down and
+        for the same reason: a violation among runs that could not all be examined is still a
+        violation, and an unexamined run among passes is not a pass.
+        """
+        if any(row["outcome"] == VIOLATED for row in self.rules):
+            return VIOLATED
+        if not self.found or self.unreadable or not self.rules:
+            return CANNOT_CHECK
+        if any(row["outcome"] == CANNOT_CHECK for row in self.rules):
+            return CANNOT_CHECK
+        return MET
+
+    @property
+    def cannot_check(self) -> str | None:
+        """What the gate could not see, in one sentence, or `None`. ADR-0017 R-16.
+
+        `None` MEANS LOOKED AND FOUND NOTHING MISSING — R-8's distinction, not *did not look*.
+
+        IT IS INDEPENDENT OF `outcome`, deliberately. A history with one violation AND two
+        unexaminable rules is a VIOLATED gate that still could not see everything, and a reader
+        repairing the violation needs to know the rest was not cleared. Tying this to the outcome
+        would hide the second half behind the first.
+        """
+        parts = []
+        if not self.found:
+            parts.append(f"there is no run history at {self.history}, so no run was examined")
+        if self.unreadable:
+            parts.append(
+                f"{self.unreadable} line(s) of the history could not be read, so the runs they "
+                "describe were not examined"
+            )
+        blind = [row["rule"] for row in self.rules if row["outcome"] == CANNOT_CHECK]
+        if blind:
+            parts.append(f"{len(blind)} rule(s) could not be checked: {', '.join(blind)}")
+        return "; ".join(parts) or None
+
+    @property
+    def exit_code(self) -> int:
+        """0 met, 1 violated, 2 could not check. R-2, and L-81's vocabulary unchanged.
+
+        DERIVED FROM `outcome` RATHER THAN RE-DECIDED. `report`'s I-10 is the row where a second
+        expression folded five verdicts into two exit codes, and the repair was to derive the code
+        from the verdict the command had already formed.
+        """
+        return {MET: 0, VIOLATED: 1, CANNOT_CHECK: 2}[self.outcome]
+
+
+def assessment(
+    policy: typing.Mapping[str, typing.Any],
+    records: typing.Iterable[typing.Mapping[str, typing.Any]],
+    *,
+    source: str,
+    history: str,
+    found: bool = True,
+    unreadable: int = 0,
+) -> Assessment:
+    """One policy over one history. R-1, R-4, and R-11's `why` carried into the answer.
+
+    ONE `Context` FOR EVERY RULE IN THE POLICY, which is the whole reason the cache is a parameter
+    and not a global: a reference file declared by twenty runs and read by three rules is hashed
+    ONCE per invocation. Per-rule caches would be three reads of it, and a global would be a
+    digest held across invocations.
+
+    THE `why` TRAVELS BESIDE THE VERDICT. R-11's substance is that a control's rationale is a
+    required field rather than a comment — this is where that becomes true of the answer, so an
+    assessor reads *why this control exists* next to *whether it was met*, in both renderings.
+    """
+    seen = list(records)
+    context = Context(digests={})
+    return Assessment(
+        source=source,
+        history=history,
+        found=found,
+        runs=len(seen),
+        unreadable=unreadable,
+        rules=tuple(
+            {**assess(entry["rule"], seen, context), "why": entry["why"]}
+            for entry in policy["rules"]
+        ),
+    )
+
+
+def payload(result: Assessment) -> dict[str, typing.Any]:
+    """The assessment as one object, for `--format json`. ADR-0017 R-1, R-5, R-10, R-12.
+
+    DERIVED FROM `Assessment`'s OWN FIELDS, so a field added to the structure reaches the payload
+    without anyone remembering to add it. The three computed properties are added explicitly,
+    exactly as `check.payload` adds `ok` and `examined_nothing`: `_fields` does not reach a
+    property, and they are READ here rather than recomputed.
+    """
+    return {
+        "schema": SCHEMA,
+        **result._asdict(),
+        "outcome": result.outcome,
+        "cannot_check": result.cannot_check,
+        "exit_code": result.exit_code,
+    }
+
+
+def render(result: Assessment) -> list[str]:
+    """The same assessment as a page. ADR-0017 R-1: one builder, two renderings.
+
+    EVERYTHING HERE IS READ OFF THE STRUCTURE AND NOTHING IS RECOMPUTED. J-04 is the row where a
+    page and a payload named different routes to one verdict because each worked it out for itself;
+    the repair was to make the page a rendering of the answer rather than a second answer.
+
+    THE INABILITY IS PRINTED EVEN WHEN THE GATE FAILED, because `cannot_check` is independent of
+    the outcome: a reader fixing the violation has to know the rest was not cleared either.
+    """
+    lines = [
+        f"POLICY {result.source}",
+        f"  history  {result.history}"
+        + ("" if result.found else "  (NOT FOUND)")
+        + f"  —  {result.runs} run(s) examined"
+        + (f", {result.unreadable} line(s) unreadable" if result.unreadable else ""),
+        "",
+    ]
+    for row in result.rules:
+        lines.append(f"{row['outcome']:<13}{row['rule']} — {row['asks']}")
+        lines.append(f"  why          {row['why']}")
+        #: R-4 ON THE PAGE AND NOT ONLY IN THE PAYLOAD. *No violations* over a selection of zero
+        #: runs is the vacuous green this requirement exists to refuse, and a reader who has to
+        #: ask for JSON to see the count is a reader who will not ask.
+        lines.append(
+            f"  evaluated    {row['evaluated']} run(s): {row['met']} met, "
+            f"{row['violated']} violated, {row['not_checked']} not checked"
+            + ("  — ASKED OF NOTHING" if row["asked_of_nothing"] else "")
+        )
+        for reason in row["reasons"]:
+            lines.append(f"  finding      {reason}")
+        lines.append(f"  cannot see   {row['blind']}")
+        lines.append("")
+    if result.cannot_check:
+        lines.append(f"COULD NOT CHECK: {result.cannot_check}")
+    lines.append(f"GATE: {result.outcome} (exit {result.exit_code})")
+    return lines

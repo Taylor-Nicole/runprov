@@ -9,6 +9,66 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Added — `runprov gate`: a policy, checked against the history that was actually recorded
+
+T-34, ADR-0018. `check` is the static half — *could this code fail to record*. This is the other
+half: *did the runs that actually happened meet the rules this project set for itself?* An
+accredited laboratory has to show documented controls and evidence they were met; the evidence was
+always here and there was no way to state the control, so the control lived in a lab manual, in
+prose, checked by a person remembering to look.
+
+```bash
+runprov gate --policy policy.json --log runs.jsonl
+```
+
+**The rule set is derived from a registry rules register into**, never a hand-typed list in the
+parser, the docs and the tests. There are exactly two statements of it — the registry and the
+ADR's table — and a test compares them. `--help` builds its rule list from the registry, and the
+README's table is checked against it cell by cell, including that each row's *cannot answer when*
+is the opening of the sentence the rule itself prints.
+
+**Seven rules:** `clean_tree`, `no_unregistered_reads`, `outputs_pin_inputs`, `commit_recorded`,
+`environment_captured`, `finished_ok` and `inputs_verify`. Every one names what it cannot see, and
+two exist mostly to say so: `git_tree_dirty` is `False` both for a clean tree and for a run that
+never looked, and `unregistered_reads` is empty both for a run that missed nothing and for one
+whose watch hit its cap. A rule reading only the first field of either pair would report an
+unexamined run as a pass.
+
+**Three exit codes, and the third is the design.** 0 every rule checked and met, 1 a rule
+violated, **2 a rule that could not be checked.** A violation outranks an inability — knowing part
+of a list is knowing a breach — and **one unreadable line in the history turns a met gate into
+exit 2**, because that line is a run the gate did not examine and a gate that greens on *not
+examined* is the shape this package exists to catch. Measured: the same policy over the same
+history exits 0, and exits 2 after one appended line that is not JSON.
+
+**The policy file is JSON or TOML, chosen by the suffix, and every rule carries a required
+`why`.** JSON parses with nothing installed on every supported version; `.toml` needs `tomllib`
+(3.11+) or `pip install runprov[toml]` below it, and `dependencies = []` is unchanged. The `why` is
+a field and not a comment because **a comment cannot be checked and does not travel** — it is
+printed beside the verdict on the page and in the payload, so an assessor reads why a control
+exists next to whether it was met. The file is read strictly: a key this version does not
+understand is refused rather than ignored, because a rule under a mistyped name is a control its
+author believes is in force and the gate never applies.
+
+**`inputs_verify` is the one rule that leaves the record**, and R-9 was clarified before it was
+written: *the source* means source code, not the filesystem. It re-hashes what each run declared,
+on the record's own digest key, comparing all 256 bits rather than the 16 characters a pin
+carries. A declared input that is gone is `CANNOT_CHECK` naming the path and never a violation —
+the file may have been archived, and an accusation cannot be withdrawn from a record.
+
+`runprov gate --format json` carries the same answer, versioned `"schema": "runprov.gate.v1"`,
+with each rule's `evaluated`, `met`, `violated` and `cannot_check` counts beside its outcome. A
+policy that cannot be read prints nothing at all, which is how a consumer tells a gate that could
+not conclude from one that never had a question.
+
+### Changed — the recommended interpreter is 3.12 or later
+
+ADR-0018 R-12. The floor stays at **3.10** and nothing is withdrawn. `sys.monitoring` (PEP 669)
+arrives in 3.12, so automatic step observation is unreachable below it and `steps` is **not
+comparable** across that boundary — 3.11 buys `tomllib` in the standard library and nothing else.
+Stated in both READMEs with its reason, because a bare version preference is the first thing a
+reader discounts.
+
 ### Fixed — ADR-0017 said its own feature was not built, through the release that shipped it
 
 T-33's two closing conditions, which 0.7.0 went out without.
