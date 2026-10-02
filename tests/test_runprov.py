@@ -34199,6 +34199,186 @@ def _record_field_vocabulary(tmp_path, monkeypatch) -> set[str]:
     return vocabulary
 
 
+def test_each_rule_reaches_all_three_verdicts_over_the_state_its_row_names(tmp_path):
+    """[ADR-0018 R-3] [ADR-0018 R-7] T-34. Every rule's three answers, state by state.
+
+    The derived guards prove the STRUCTURE — that each rule can say `CANNOT_CHECK`, reads only
+    real fields, and agrees with its row. They do not prove the verdicts. This does, one state at
+    a time, with the state constructed so that exactly one fact distinguishes the three cases.
+
+    CONSTRUCTED RECORDS HERE AND REAL ONES BELOW, deliberately. A constructed record isolates the
+    single field under test, which is what makes a three-way comparison legible; the next test
+    runs the same rules over records this package actually wrote, which is what stops the
+    constructed ones from drifting into a shape the writer never produces.
+    """
+    met, violated, unknown = (
+        runprov.policy.MET,
+        runprov.policy.VIOLATED,
+        runprov.policy.CANNOT_CHECK,
+    )
+    cases = {
+        "clean_tree": [
+            ({"git_status_captured": True, "git_tree_dirty": False}, met),
+            ({"git_status_captured": True, "git_tree_dirty": True}, violated),
+            #: THE WHOLE POINT: `git_tree_dirty` is False here exactly as in the MET case.
+            ({"git_status_captured": False, "git_tree_dirty": False}, unknown),
+        ],
+        "no_unregistered_reads": [
+            ({"observation": {}}, met),
+            ({"observation": {}, "unregistered_reads": ["a.tsv"]}, violated),
+            ({"observation": {"unregistered_watch_truncated": 7}}, unknown),
+            #: A VIOLATION OUTRANGES THE TRUNCATION: knowing part of a list is knowing a breach.
+            (
+                {"observation": {"unregistered_watch_truncated": 7}, "unregistered_reads": ["a"]},
+                violated,
+            ),
+            ({}, unknown),
+        ],
+        "outputs_pin_inputs": [
+            ({"outputs": [{"path": "o"}], "inputs": [{"path": "i"}]}, met),
+            ({"outputs": [{"path": "o"}], "inputs": []}, violated),
+            ({"outputs": []}, unknown),
+            ({}, unknown),
+        ],
+        "commit_recorded": [
+            ({"git_status_captured": True, "git_commit": "abc123"}, met),
+            ({"git_status_captured": True, "git_commit": None}, violated),
+            ({"git_status_captured": False, "git_commit": None}, unknown),
+        ],
+        "environment_captured": [
+            ({"observation": {"packages_recorded": "tracked"}, "packages": {"x": "1"}}, met),
+            ({"observation": {"packages_recorded": "snapshot"}, "packages": {}}, met),
+            #: `none` IS AN ANSWER, not an inability: the record positively says nothing was kept.
+            ({"observation": {"packages_recorded": "none"}, "packages": {}}, violated),
+            ({"observation": {}}, unknown),
+            ({}, unknown),
+        ],
+        "finished_ok": [
+            ({"status": "ok"}, met),
+            ({"status": "failed", "failure": "ValueError: boom"}, violated),
+            #: A START WITH NO ENDING IS NOT A FAILURE — `show`'s INTERRUPTED distinction.
+            ({}, unknown),
+        ],
+    }
+    assert set(cases) == set(runprov.policy.rules()), (
+        "every registered rule needs its verdicts asserted here, and only registered ones: "
+        f"{sorted(set(cases) ^ set(runprov.policy.rules()))}"
+    )
+    for name, rows in cases.items():
+        outcomes = set()
+        for record, expected in rows:
+            got = runprov.policy.rules()[name].judge(record)
+            assert got.outcome == expected, (
+                f"`{name}` over {record} answered {got.outcome} ({got.reason}), not {expected}"
+            )
+            if expected != met:
+                assert got.reason, f"`{name}` said {expected} without saying why"
+            outcomes.add(got.outcome)
+        assert outcomes == {met, violated, unknown}, (
+            f"[ADR-0018 R-3] `{name}` was not exercised in all three answers here, so one of them "
+            f"is unasserted: {sorted(outcomes)}"
+        )
+
+
+def test_the_rules_agree_with_records_this_package_really_wrote(tmp_path, monkeypatch):
+    """[ADR-0018 R-7] [ADR-0018 R-10] T-34. The constructed records, checked against real ones.
+
+    A hand-built record asserts against what the test's author believes the writer produces — A-08's
+    shape. So the same rules run over the four records `_record_field_vocabulary` builds, and the
+    verdicts are asserted against what those states MEAN rather than against a literal.
+
+    THE CAPPED RUN IS THE ONE THAT MATTERS, AND IT TAKES TWO OF THEM. Capping the watch at one
+    path while the first file opened is UNREGISTERED gives a record carrying both fields — a known
+    violation and a truncation — and the rule answers VIOLATED, because knowing part of a list is
+    knowing a breach. **My first version of this test expected CANNOT_CHECK there and the rule was
+    right:** the expectation was wrong, not the precedence.
+
+    The state C-06 is actually about needs the opposite order: the one path the watch keeps must be
+    a REGISTERED one, so `unregistered_reads` comes out EMPTY while the dropped paths were the
+    unregistered ones. Then the empty list means *the watch lost them*, not *none were missed* —
+    and only then must the rule refuse to pass. Both are built below, from real runs.
+    """
+    histories = tmp_path / "real"
+    histories.mkdir()
+    monkeypatch.setattr(runprov.watch, "WATCH_MAX_PATHS", 1)
+    runprov.configure(root=histories, run_log=histories / "h.jsonl", auto_steps="off")
+    for name in ("one.tsv", "two.tsv", "three.tsv"):
+        (histories / name).write_text("x\n", encoding="utf-8")
+    with runprov.Run("capped", {}, provenance=histories / "p.json"):
+        for name in ("one.tsv", "two.tsv", "three.tsv"):
+            with open(histories / name, encoding="utf-8") as fh:
+                fh.read()
+    capped = [
+        json.loads(line)
+        for line in (histories / "h.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip() and json.loads(line).get("schema") != "runprov.start.v1"
+    ][-1]
+    assert capped["observation"].get("unregistered_watch_truncated"), (
+        f"the premise: the cap bit and the record says so: {capped['observation']}"
+    )
+
+    assert capped.get("unregistered_reads"), (
+        "the premise of THIS fixture: the watch kept one unregistered path before the cap bit, so "
+        f"the record names a breach as well as a truncation: {capped}"
+    )
+    verdict = runprov.policy.rules()["no_unregistered_reads"].judge(capped)
+    assert verdict.outcome == runprov.policy.VIOLATED, (
+        "a truncated watch that still caught something knows at least one read was missed, so the "
+        f"violation outranks the inability: {verdict}"
+    )
+
+    # AND THE STATE C-06 IS ABOUT: the kept path is REGISTERED, so the missed list comes out empty
+    # while the dropped paths were the unregistered ones. Only the truncation mark separates this
+    # from a clean run, which is the whole of why the rule reads it.
+    pure = histories / "pure.jsonl"
+    runprov.configure(root=histories, run_log=pure, auto_steps="off")
+    with runprov.Run("c06", {}, provenance=histories / "p3.json") as run:
+        with open(run.input(histories / "one.tsv"), encoding="utf-8") as fh:
+            fh.read()
+        for name in ("two.tsv", "three.tsv"):
+            with open(histories / name, encoding="utf-8") as fh:
+                fh.read()
+    lost = [
+        json.loads(line)
+        for line in pure.read_text(encoding="utf-8").splitlines()
+        if line.strip() and json.loads(line).get("schema") != "runprov.start.v1"
+    ][-1]
+    assert not lost.get("unregistered_reads"), (
+        f"the premise: nothing was RECORDED as missed, because the cap dropped it: {lost}"
+    )
+    assert lost["observation"].get("unregistered_watch_truncated"), (
+        f"and the record says the watch lost paths: {lost['observation']}"
+    )
+    verdict = runprov.policy.rules()["no_unregistered_reads"].judge(lost)
+    assert verdict.outcome == runprov.policy.CANNOT_CHECK, (
+        "[ADR-0018 R-3] an empty `unregistered_reads` after the cap bit cannot mean none were "
+        f"missed — this is C-06 as a policy, and a pass here is the vacuous green: {verdict}"
+    )
+    assert "cap" in (verdict.reason or ""), verdict
+
+    # AND A REAL FAILED RUN, whose status and failure the writer sets rather than this test.
+    failed = histories / "failed.jsonl"
+    runprov.configure(root=histories, run_log=failed, auto_steps="off")
+    try:
+        with runprov.Run("boom", {}, provenance=histories / "p2.json"):
+            raise ValueError("boom")
+    except ValueError:
+        pass
+    record = [
+        json.loads(line)
+        for line in failed.read_text(encoding="utf-8").splitlines()
+        if line.strip() and json.loads(line).get("schema") != "runprov.start.v1"
+    ][-1]
+    assert record["status"] != "ok", f"the premise: a real failed run: {record['status']}"
+    got = runprov.policy.rules()["finished_ok"].judge(record)
+    assert got.outcome == runprov.policy.VIOLATED and "boom" in (got.reason or ""), got
+
+    # AND `assess` OVER THE WHOLE HISTORY, so R-4's count comes from a real selection.
+    tally = runprov.policy.assess("finished_ok", [record])
+    assert (tally["evaluated"], tally["violated"]) == (1, 1), tally
+    assert tally["asked_of_nothing"] is False and tally["reasons"], tally
+
+
 def test_the_rule_set_is_the_registry_and_the_adr_and_nothing_else(tmp_path):
     """[ADR-0018 R-5] [ADR-0018 R-7] T-34. Two sources, derived from each other, no third.
 
@@ -34261,8 +34441,13 @@ def test_no_rule_reads_a_field_the_record_cannot_carry(tmp_path, monkeypatch):
     R-10: a rule may only assert over fields that exist, and if a policy wants a property the
     record does not carry, the answer is a record change with its own ADR — never an inference.
 
-    **THE FIRST VERSION OF THIS GUARD READ ONE CLEAN RECORD'S TOP-LEVEL KEYS, which is too strict
-    in two directions at once.** `unregistered_reads` is written only when reads were missed and
+    **THIS REPLACED `test_every_rule_reads_only_fields_a_record_really_carries`, which read ONE
+    clean record's top-level keys and was too strict in two directions at once.** It was deleted
+    rather than loosened, and the gate is what forced the issue: it stayed in the suite for one
+    commit beside this one, and the five new rules made it fail the moment they declared a
+    conditional or nested field. Two guards for one requirement, and the narrow one had to go.
+
+    `unregistered_reads` is written only when reads were missed and
     `observation.unregistered_watch_truncated` only when the watch hit its cap — both absent from
     a clean run, both legitimate. And a nested field could not be expressed at all. So the
     vocabulary is now the union over records REACHING each of those states, built by the package,
@@ -34341,34 +34526,6 @@ def test_every_registered_rule_can_say_it_could_not_check(tmp_path):
             f"{name}'s `blind` must be a sentence, not a shrug: {got.blind!r}"
         )
         assert got.asks, f"{name} does not say what it asks"
-
-
-def test_every_rule_reads_only_fields_a_record_really_carries(tmp_path):
-    """[ADR-0018 R-10] T-34. A rule may not assert over a field the record does not have.
-
-    R-10: if a policy wants a property the record does not carry, the answer is a record change
-    with its own ADR — never an inference. A rule naming a field that does not exist would read
-    `None` from `.get` and evaluate something nobody wrote, which is how an inference arrives
-    wearing the clothes of a measurement.
-
-    THE RECORD IS WRITTEN BY THE PACKAGE, not constructed here, so the field list is whatever
-    this version actually produces. A record built by hand would be asserting against what the
-    test's author believed the writer does, which is A-08's shape.
-    """
-    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl", auto_steps="off")
-    with runprov.Run("demo", {}, provenance=tmp_path / "p.json"):
-        pass
-    record = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").splitlines()[-1])
-    carried = set(record)
-    assert "git_status_captured" in carried, "the premise: a real record names its blindness mark"
-
-    for name, got in runprov.policy.rules().items():
-        unknown = [field for field in got.reads if field not in carried]
-        assert not unknown, (
-            f"[ADR-0018 R-10] `{name}` reads {unknown}, which this version's record does not "
-            f"carry. A policy wanting a property the record lacks needs a RECORD change with "
-            f"its own ADR, not a rule that evaluates `None`"
-        )
 
 
 def test_a_rule_asked_of_nothing_is_not_a_rule_that_passed(tmp_path):

@@ -173,3 +173,144 @@ def _clean_tree(record: typing.Mapping[str, typing.Any]) -> Verdict:
     if record.get("git_tree_dirty"):
         return Verdict(VIOLATED, "the working tree had uncommitted changes when the run started")
     return Verdict(MET)
+
+
+@rule(
+    "no_unregistered_reads",
+    asks="the run opened no data file it did not register",
+    reads=("unregistered_reads", "observation.unregistered_watch_truncated"),
+    blind="a run whose record carries no `observation` block at all — written by a version "
+    "before the watch existed; and, named here because the record cannot close it, a run whose "
+    "watch itself raised, which warns on stderr and leaves both fields unset exactly as a clean "
+    "run does",
+)
+def _no_unregistered_reads(record: typing.Mapping[str, typing.Any]) -> Verdict:
+    """R-6'S OWN EXAMPLE: the field that qualifies the answer is consulted, not just the answer.
+
+    `unregistered_reads` is ABSENT from a clean run rather than empty, so absence is the ordinary
+    good case — and that is why the `observation` block's presence is what makes this evaluable.
+    A record without one came from a version that did not watch, and reading its silence as
+    *nothing was missed* would be the vacuous green over the whole of history.
+
+    A VIOLATION OUTRANKS THE TRUNCATION, and the order is the fact. When the watch hit its cap AND
+    still caught something, at least one read was certainly missed — knowing part of a list is
+    knowing a violation. The reverse, an empty list after the cap bit, is the C-06 defect and is
+    never a pass.
+    """
+    if record.get("observation") is None:
+        return Verdict(CANNOT_CHECK, "the record carries no observation block, so nothing watched")
+    missed = record.get("unregistered_reads") or []
+    if missed:
+        return Verdict(
+            VIOLATED, f"{len(missed)} file(s) were read without being registered: {missed[0]}"
+        )
+    dropped = (record.get("observation") or {}).get("unregistered_watch_truncated")
+    if dropped:
+        return Verdict(
+            CANNOT_CHECK,
+            f"the watch lost at least {dropped} path(s) to its cap, so an empty list no longer "
+            "means none were missed",
+        )
+    return Verdict(MET)
+
+
+@rule(
+    "outputs_pin_inputs",
+    asks="every run that produced an output declared what it read",
+    reads=("outputs", "inputs"),
+    blind="a run that recorded no outputs, which this rule has nothing to ask about — and a run "
+    "that genuinely read nothing, which is indistinguishable in the history from one that read "
+    "something and failed to say so",
+)
+def _outputs_pin_inputs(record: typing.Mapping[str, typing.Any]) -> Verdict:
+    """THE LIMIT IS NAMED RATHER THAN GUESSED AT, and it is the honest half of this rule.
+
+    A record showing outputs and no inputs is either a generator that truly read nothing or a run
+    that read without registering. The HISTORY cannot separate them — `no_unregistered_reads` is
+    the rule that can, which is why these two belong in a policy together and why this one does
+    not pretend to subsume it.
+    """
+    outputs = record.get("outputs")
+    if outputs is None:
+        return Verdict(CANNOT_CHECK, "the record does not say what this run produced")
+    if not outputs:
+        return Verdict(CANNOT_CHECK, "the run recorded no outputs, so there is nothing to ask")
+    if record.get("inputs"):
+        return Verdict(MET)
+    return Verdict(
+        VIOLATED, f"{len(outputs)} output(s) recorded and no input declared for any of them"
+    )
+
+
+@rule(
+    "commit_recorded",
+    asks="the run names the commit it ran from",
+    reads=("git_commit", "git_status_captured"),
+    blind="a run outside a repository or with no git on PATH, where the absence of a commit is "
+    "not a missing one — the record says which through `git_status_captured`",
+)
+def _commit_recorded(record: typing.Mapping[str, typing.Any]) -> Verdict:
+    """THE SAME TWO-FIELD SHAPE AS `clean_tree`, and for the same reason.
+
+    `git_commit` is `None` both for a run outside a repository and for one in a repository with no
+    commit to name. Only `git_status_captured` separates *we could not look* from *there was
+    nothing there*, and a rule reading the commit alone would report every run on an unversioned
+    machine as a violation — an accusation rather than a finding.
+    """
+    if not record.get("git_status_captured"):
+        return Verdict(CANNOT_CHECK, "git status was not captured, so no commit could be recorded")
+    if record.get("git_commit"):
+        return Verdict(MET)
+    return Verdict(VIOLATED, "git status was captured and the record names no commit")
+
+
+@rule(
+    "environment_captured",
+    asks="the run recorded the packages it ran with",
+    reads=("packages", "observation.packages_recorded"),
+    blind="a record with no `observation` block, which cannot say whether packages were recorded "
+    "at all — `packages: {}` alone is indistinguishable from nobody having asked, which is the "
+    "whole reason ADR-0010 added the field this rule reads",
+)
+def _environment_captured(record: typing.Mapping[str, typing.Any]) -> Verdict:
+    """`packages: {}` CANNOT BE TOLD FROM *NOBODY ASKED*, which ADR-0010 states in those words.
+
+    So the verdict comes from `observation.packages_recorded` — a closed vocabulary of `snapshot`,
+    `tracked` and `none` — rather than from the dict's emptiness. `none` is a VIOLATION and not an
+    inability: the record positively says nothing was captured, which is an answer.
+    """
+    observation = record.get("observation")
+    if observation is None:
+        return Verdict(CANNOT_CHECK, "the record carries no observation block")
+    recorded = observation.get("packages_recorded")
+    if recorded is None:
+        return Verdict(
+            CANNOT_CHECK, "the record does not say whether packages were recorded at all"
+        )
+    if recorded == "none":
+        return Verdict(VIOLATED, "the run recorded no packages")
+    return Verdict(MET)
+
+
+@rule(
+    "finished_ok",
+    asks="the run reached its end and recorded success",
+    reads=("status", "failure"),
+    blind="a line carrying no status — a `start` with no ending is a run still going or one "
+    "killed before it could record, and neither is a failure this rule may assert",
+)
+def _finished_ok(record: typing.Mapping[str, typing.Any]) -> Verdict:
+    """A MISSING STATUS IS NOT A FAILURE, which is the distinction `show`'s INTERRUPTED exists for.
+
+    A `start` line with no ending means the run is in flight or was killed before it could say
+    anything — and a policy that read that as a violation would turn every machine that lost power
+    into a non-compliant one, permanently, in a record nobody can amend.
+    """
+    status = record.get("status")
+    if status is None:
+        return Verdict(CANNOT_CHECK, "the record carries no status, so the run recorded no ending")
+    if status == "ok":
+        return Verdict(MET)
+    failure = record.get("failure")
+    named = f": {failure}" if failure else ""
+    return Verdict(VIOLATED, f"the run finished with status {status!r}{named}")
