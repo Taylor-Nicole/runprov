@@ -115,7 +115,19 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-test = ["pytest>=7", "pytest-cov>=4", "pyyaml>=6"]  # pyyaml only to CHECK the rendered YAML
+# THE ONE EXTRA A USER MIGHT WANT, and it is a parser rather than a feature. `runprov gate`
+# accepts a policy written in JSON or TOML (ADR-0018 R-11); `tomllib` is in the standard library
+# from 3.11, and on 3.10 this supplies the same parser under its original name. The marker keeps
+# it OFF 3.11+, where installing it would duplicate the standard library. `dependencies = []`
+# above is untouched and stays the property the README states: a `.json` policy needs nothing
+# installed on any supported version, and a `.toml` policy on 3.10 without this extra is a usage
+# error that names it.
+toml = ["tomli>=2.0; python_version < '3.11'"]
+# `tomli` IS HERE TOO, and for a different reason: the suite loads a real `.toml` policy, and on
+# the 3.10 leg of the matrix there is no stdlib parser to load it with. A test extra is not a
+# runtime dependency.
+test = ["pytest>=7", "pytest-cov>=4", "pyyaml>=6",  # pyyaml only to CHECK the rendered YAML
+        "tomli>=2.0; python_version < '3.11'"]
 # PINNED EXACTLY, and deliberately. ruff and mypy are moving specifications, and an
 # unpinned formatter turns an unrelated push red. `build` and `twine` are pinned for a
 # sharper reason: they produce and check the artifact the release job uploads, `on: push:

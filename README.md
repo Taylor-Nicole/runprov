@@ -12,7 +12,9 @@ One command, `runprov verify`, re-derives every recorded digest and reports whet
 still follows from the inputs it was made from — or has itself been edited — **reading only
 the file**. No database, no history, no network.
 
-- **Zero runtime dependencies.** Python 3.10+.
+- **Zero runtime dependencies.** Python 3.10+; **3.12 or later is recommended**, where
+  `sys.monitoring` (PEP 669) makes automatic step observation possible — below it that part of the
+  record is unreachable and `steps` is not comparable across the boundary. The floor stays 3.10.
 - **Observed, not declared.** A CPython audit hook sees every `open`, including those made by
   a library nobody thought to instrument; unregistered reads are recorded rather than ignored.
 - **The record does not depend on the tool that wrote it.** With the package uninstalled,

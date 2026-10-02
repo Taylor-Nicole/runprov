@@ -34574,6 +34574,232 @@ def test_the_digest_cache_is_one_assess_wide_and_no_wider(tmp_path):
     assert list(supplied.digests) == [(str(data), "content_sha256")], supplied.digests
 
 
+def test_a_policy_is_json_or_toml_and_the_two_load_to_the_same_thing(tmp_path):
+    """[ADR-0018 R-11] T-34. One checked representation, two ways of writing it.
+
+    R-11's table is the constraint and `dependencies = []` is the reason: JSON parses on every
+    supported version with nothing installed, TOML needs `tomllib` (3.11+) or the `runprov[toml]`
+    extra below it. **So both are accepted and neither is privileged** — and the thing worth
+    asserting is not that each parses but that they AGREE, which is R-1's shape one level down.
+
+    AND THE `why` SURVIVES INTO THE STRUCTURE, which is the whole of R-11's substance. A policy's
+    rationale is a required field rather than a comment because a comment cannot be checked and
+    does not travel: this is the assertion that it travels.
+    """
+    reason = "ISO 15189 5.5.1: the analysis must be traceable to a known code state"
+    as_json = tmp_path / "policy.json"
+    as_json.write_text(
+        json.dumps({"rules": [{"rule": "clean_tree", "why": reason}]}), encoding="utf-8"
+    )
+    as_toml = tmp_path / "policy.toml"
+    as_toml.write_text(
+        f'[[rules]]\nrule = " clean_tree "\nwhy = """{reason}"""\n', encoding="utf-8"
+    )
+
+    loaded = runprov.policy.load(as_json)
+    assert loaded == {"rules": [{"rule": "clean_tree", "why": reason}]}, loaded
+    assert runprov.policy.load(as_toml) == loaded, (
+        "[ADR-0018 R-11] the same policy written in the two accepted formats must load to the "
+        "same checked structure, or the format decides what the gate does"
+    )
+
+    # AND THE AUTHOR'S ORDER IS KEPT, because a policy read back in another order is a document
+    # whose diff stops being the evidence that it did not quietly loosen.
+    ordered = tmp_path / "ordered.json"
+    names = ["finished_ok", "clean_tree", "commit_recorded"]
+    ordered.write_text(
+        json.dumps({"rules": [{"rule": name, "why": reason} for name in names]}), encoding="utf-8"
+    )
+    assert [row["rule"] for row in runprov.policy.load(ordered)["rules"]] == names
+
+
+def test_a_policy_that_cannot_be_used_names_the_file_and_the_fix(tmp_path):
+    """[ADR-0018 R-11] [ADR-0018 R-5] T-34. Every refusal is actionable, and none is a traceback.
+
+    *Invalid policy* is not a finding a laboratory can act on. A policy is the document an
+    assessor reads the controls out of, so each refusal below names the file, the rule number
+    where one applies, and what to change.
+
+    **READ STRICTLY, AND THAT IS THE SUBSTANCE RATHER THAN PEDANTRY.** A key this version does not
+    understand is refused instead of ignored: a rule under a mistyped table name is a control its
+    author believes is in force and the gate never applies. A control lost to a typo is the exact
+    failure this feature exists to prevent, and letting one in through the parser would be a
+    bitter way to produce it.
+    """
+    cases: list[tuple[str, str, str]] = [
+        ("broken.json", "{not json", "not valid JSON"),
+        ("broken.toml", "[[rules]\nrule = 1", "not valid TOML"),
+        ("policy.yaml", "rules: []", "neither a .json nor a .toml"),
+        ("top.json", "[]", "at the top level"),
+        (
+            "settings.json",
+            '{"rules": [{"rule": "clean_tree", "why": "w"}], "strict": true}',
+            "does not understand",
+        ),
+        ("empty.json", '{"rules": []}', "non-empty"),
+        ("scalar.json", '{"rules": "clean_tree"}', "non-empty"),
+        ("string.json", '{"rules": ["clean_tree"]}', "each rule is a table"),
+        (
+            "extra.json",
+            '{"rules": [{"rule": "clean_tree", "why": "w", "when": "tuesday"}]}',
+            "when",
+        ),
+        ("nameless.json", '{"rules": [{"why": "w"}]}', "does not name a rule"),
+        (
+            "twice.json",
+            '{"rules": [{"rule": "clean_tree", "why": "a"}, {"rule": "clean_tree", "why": "b"}]}',
+            "a second time",
+        ),
+        ("silent.json", '{"rules": [{"rule": "clean_tree", "why": "   "}]}', "carries no `why`"),
+    ]
+    for name, body, phrase in cases:
+        written = tmp_path / name
+        written.write_text(body, encoding="utf-8")
+        with pytest.raises(runprov.policy.PolicyError) as raised:
+            runprov.policy.load(written)
+        assert phrase in str(raised.value), f"{name}: {raised.value}"
+        assert str(written) in str(raised.value), (
+            f"{name}: a refusal that does not name the file sends the reader to look for "
+            f"it: {raised.value}"
+        )
+
+    # A FILE THAT IS NOT THERE, AND ONE THAT IS NOT TEXT. Both are refusals about the file rather
+    # than about its contents, and both have to say which.
+    with pytest.raises(runprov.policy.PolicyError, match="could not be read"):
+        runprov.policy.load(tmp_path / "absent.json")
+    raw = tmp_path / "bytes.json"
+    raw.write_bytes(b'{"rules": [{"rule": "clean_tree", "why": "\xff\xfe"}]}')
+    with pytest.raises(runprov.policy.PolicyError, match="not UTF-8"):
+        runprov.policy.load(raw)
+
+    #: AN UNKNOWN RULE IS REPORTED WITH THE NAMES THAT EXIST, DERIVED FROM THE REGISTRY [R-5].
+    #: *Unknown rule* on its own sends a reader to the source of a package they installed — and a
+    #: hand-typed list of names in this message would be the second copy R-5 forbids.
+    mistyped = tmp_path / "mistyped.json"
+    mistyped.write_text('{"rules": [{"rule": "clean_trees", "why": "w"}]}', encoding="utf-8")
+    with pytest.raises(runprov.policy.PolicyError) as raised:
+        runprov.policy.load(mistyped)
+    for registered in runprov.policy.rules():
+        assert registered in str(raised.value), (
+            f"the refusal must name every rule that does exist, and omits {registered}: "
+            f"{raised.value}"
+        )
+
+
+def test_a_toml_policy_with_no_parser_names_the_extra_that_supplies_one(tmp_path, monkeypatch):
+    """[ADR-0018 R-11] [ADR-0018 R-12] T-34. The 3.10 arm, exercised on this interpreter.
+
+    `tomllib` arrives in 3.11, so on 3.10 a `.toml` policy needs the `runprov[toml]` extra —
+    **and `tomli` is an extra and not a dependency, because `dependencies = []` is a property the
+    README states.** A `.toml` policy on 3.10 without it is a usage error that names its own fix,
+    which is this package's rule everywhere: say what could not be done rather than quietly do
+    less of it.
+
+    **THE LOADER IS REPLACED RATHER THAN THE INTERPRETER**, which is why this is a test and not a
+    matrix leg. `_toml_parser` goes through `importlib.import_module` precisely so all three arms
+    are reachable on one version; a guarded `import` would leave the arm that matters to a 3.10
+    user as the one branch only CI could enter, and a branch only CI can enter is a branch whose
+    failure nobody reads.
+    """
+    written = tmp_path / "policy.toml"
+    written.write_text('[[rules]]\nrule = "clean_tree"\nwhy = "w"\n', encoding="utf-8")
+    real = importlib.import_module
+
+    def nothing_installed(name: str, *args: object, **kwargs: object) -> types.ModuleType:
+        if name in ("tomllib", "tomli"):
+            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", nothing_installed)
+    with pytest.raises(runprov.policy.PolicyError) as raised:
+        runprov.policy.load(written)
+    assert "runprov[toml]" in str(raised.value), (
+        f"a refusal a user cannot act on is a traceback with better manners: {raised.value}"
+    )
+    assert ".json" in str(raised.value), (
+        "and the other half of the fix is the format that needs nothing installed at all: "
+        f"{raised.value}"
+    )
+
+    #: AND THE FALLBACK IS WIRED — the 3.10-with-the-extra arm. The stub is a module named
+    #: `tomli` carrying the two names this parser uses, and it answers with a policy no file here
+    #: contains, so what comes back is proof that the module FOUND was the module USED. A real
+    #: parser under the other name would have made this a test of TOML instead, and would have
+    #: been unavailable on the one version where the arm matters.
+    stub = types.ModuleType("tomli")
+    stub.TOMLDecodeError = ValueError
+    stub.loads = lambda text: {"rules": [{"rule": "finished_ok", "why": "from the fallback"}]}
+
+    def only_tomli(name: str, *args: object, **kwargs: object) -> types.ModuleType:
+        if name == "tomllib":
+            raise ModuleNotFoundError("No module named 'tomllib'", name="tomllib")
+        if name == "tomli":
+            return stub
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", only_tomli)
+    assert runprov.policy.load(written) == {
+        "rules": [{"rule": "finished_ok", "why": "from the fallback"}]
+    }, "the parser that was found is the parser that was used"
+
+    #: AND A SYNTAX ERROR FROM THE FALLBACK IS STILL A POLICY ERROR, not a traceback from a module
+    #: the user did not know was involved. `TOMLDecodeError` is read off the module that was
+    #: found, so the `except` clause names whichever parser is in use.
+    stub.loads = lambda text: (_ for _ in ()).throw(stub.TOMLDecodeError("line 1"))
+    with pytest.raises(runprov.policy.PolicyError, match="not valid TOML"):
+        runprov.policy.load(written)
+
+
+def test_the_toml_extra_is_an_extra_and_the_recommendation_says_why():
+    """[ADR-0018 R-11] [ADR-0018 R-12] T-34. `dependencies = []` is a promise, not a default.
+
+    The README's first bullet says zero runtime dependencies, and R-11 chose the policy formats
+    around it: JSON parses with nothing installed on every supported version. TOML needs a parser,
+    so the parser is an EXTRA carrying a marker that keeps it off the versions that ship one.
+    **Asserted in the file that decides it**, because a resolver reads `pyproject.toml` and does
+    not read an ADR.
+
+    AND R-12's RECOMMENDATION IS CHECKED WITH ITS REASON. *Use 3.12* without *because
+    `sys.monitoring` arrives there and the record is thinner below it* is a preference, and a
+    preference in a README is the first thing a reader discounts. The floor stays at 3.10:
+    dropping a version is its own decision with its own cost and must not be made to win a
+    config-format argument.
+    """
+    pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
+    assert re.search(r"^dependencies = \[\]\s*$", pyproject, re.M), (
+        "[ADR-0018 R-11] the TOML parser must not have become a runtime dependency; the whole "
+        "reason JSON is accepted at all is that it needs nothing installed"
+    )
+    extra = re.search(r"^toml = \[(.*?)\]\s*$", pyproject, re.M)
+    assert extra, "pyproject declares no `toml` extra, so a .toml policy on 3.10 has no fix to name"
+    assert "tomli" in extra.group(1), extra.group(1)
+    assert "python_version < '3.11'" in extra.group(1), (
+        "without the marker the extra installs a duplicate of the standard library on every "
+        f"version that already has `tomllib`: {extra.group(1)}"
+    )
+    #: IN BOTH READMES, DERIVED FROM THE ONE PyPI FREEZES. `README-pypi.md` is the page most
+    #: people read first and the only one that cannot be edited after upload, so a recommendation
+    #: that lived in the long form alone would be absent exactly where it is read — and
+    #: `test_the_two_readmes_open_with_the_same_words` compares the shared opening verbatim, which
+    #: is how this was caught rather than noticed.
+    name, _ = _pypi_description()
+    for readme in ("README.md", name):
+        text = (_repo_root() / readme).read_text(encoding="utf-8")
+        assert "3.12 or later is recommended" in text, (
+            f"[ADR-0018 R-12] {readme} does not carry the recommendation; it must be written "
+            "where a user reads it rather than implied by a matrix"
+        )
+        recommendation = text[text.index("3.12 or later is recommended") :][:400]
+        assert "sys.monitoring" in recommendation and "PEP 669" in recommendation, (
+            f"[ADR-0018 R-12] and {readme} must carry its reason: a bare version preference is "
+            f"the first thing a reader discounts: {recommendation[:200]}"
+        )
+    assert re.search(r'^requires-python = ">=3\.10"', pyproject, re.M), (
+        "[ADR-0018 R-12] the floor stays at 3.10 — the recommendation is a recommendation, and "
+        "dropping a version is its own decision with its own cost"
+    )
+
+
 def test_the_rule_set_is_the_registry_and_the_adr_and_nothing_else(tmp_path):
     """[ADR-0018 R-5] [ADR-0018 R-7] T-34. Two sources, derived from each other, no third.
 

@@ -23,6 +23,8 @@ forget, and that is the scope pattern this codebase has now found ten times.
 
 from __future__ import annotations
 
+import importlib
+import json
 import pathlib
 import types
 import typing
@@ -507,3 +509,167 @@ def _inputs_verify(record: typing.Mapping[str, typing.Any], context: Context) ->
     if unknown:
         return Verdict(CANNOT_CHECK, _and_more(unknown))
     return Verdict(MET)
+
+
+class PolicyError(Exception):
+    """A policy file that cannot be used, with a sentence naming what to fix.
+
+    NOT `__main__.UsageError`, AND THE IMPORT DIRECTION IS THE WHOLE REASON. This module must not
+    import the command module: `check`, `verify` and `report` are importable without a CLI, and a
+    policy parser that dragged `__main__` in would make `import runprov.policy` build an argument
+    parser. The command catches this and turns it into its own exit 2 — which is L-81's code for
+    *could not check*, and a malformed policy is exactly that: nothing was examined.
+    """
+
+
+#: THE KEYS A RULE ENTRY MAY CARRY, and there are two. `why` is required by R-11 and is not a
+#: comment: a comment cannot be checked and does not travel, while a field reaches the page and
+#: the payload beside the verdict, where an assessor reads it.
+_RULE_KEYS = ("rule", "why")
+
+
+def _toml_parser() -> types.ModuleType:
+    """The TOML parser this interpreter has, or a `PolicyError` naming its own fix. R-11.
+
+    `importlib.import_module` RATHER THAN TWO GUARDED `import` STATEMENTS, so all three arms are
+    reachable on one interpreter: a test replaces the loader and the *3.10 without the extra* arm
+    is exercised on 3.12. A version-guarded `import` would leave a branch only one leg of the
+    matrix could enter, and a branch only CI can reach is a branch whose failure nobody reads.
+
+    IT IS ALSO THE ONLY WAY TO REACH `tomllib` AT ALL AT THIS FLOOR, which is the reason that
+    needs no argument. `requires-python` is `>=3.10` and the suite's `_TOO_YOUNG` guard refuses a
+    static import of any stdlib module younger than the declared floor — it names `tomllib` and
+    `(3, 11)` explicitly. A bare `import tomllib` is therefore not something this package may
+    write until the floor moves, whatever the `try` around it says.
+
+    `tomllib` FIRST. On 3.11+ it is the standard library and `tomli` is the same parser under its
+    original name; preferring an installed extra would let the version a user happens to have
+    decide how their policy is parsed.
+    """
+    for name in ("tomllib", "tomli"):
+        try:
+            return importlib.import_module(name)
+        except ModuleNotFoundError:
+            continue
+    raise PolicyError(
+        "a .toml policy needs a TOML parser, and this interpreter has none: `tomllib` is in the "
+        "standard library from Python 3.11, and on 3.10 the extra supplies the same parser — "
+        "`pip install runprov[toml]`. A .json policy needs nothing and works on every supported "
+        "version."
+    )
+
+
+def load(path: str | pathlib.Path) -> dict[str, typing.Any]:
+    """A policy file, parsed, checked against the registry, and normalised. R-11.
+
+    JSON OR TOML, DECIDED BY THE SUFFIX AND NOT BY SNIFFING THE CONTENT. A file that is tried as
+    one format and then the other reports the second parser's error for a typo in the first, which
+    sends the reader to the wrong line of their own file.
+
+    EVERYTHING THIS RAISES NAMES THE FILE AND THE FIX. A policy is a document a laboratory is
+    audited against; *invalid policy* is not a finding anybody can act on.
+
+    THE TWO FORMATS RETURN THE SAME STRUCTURE, which is R-1's shape one level down: one checked
+    representation, two ways of writing it, and a test asserts the same policy written both ways
+    loads equal.
+    """
+    path = pathlib.Path(path)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise PolicyError(f"{path} could not be read: {exc.strerror or exc}") from None
+    except UnicodeDecodeError:
+        raise PolicyError(f"{path} is not UTF-8 text, so it is neither JSON nor TOML") from None
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise PolicyError(f"{path} is not valid JSON: {exc}") from None
+    elif suffix == ".toml":
+        parser = _toml_parser()
+        try:
+            parsed = parser.loads(raw)
+        except parser.TOMLDecodeError as exc:
+            raise PolicyError(f"{path} is not valid TOML: {exc}") from None
+    else:
+        raise PolicyError(
+            f"{path} is neither a .json nor a .toml policy "
+            f"({suffix or 'the name carries no suffix'}), and the suffix is what chooses the parser"
+        )
+    return _checked(parsed, path)
+
+
+def _checked(parsed: object, path: pathlib.Path) -> dict[str, typing.Any]:
+    """The parsed file against the registry, or a `PolicyError` naming the one thing wrong.
+
+    READ STRICTLY, AND THAT IS THE POINT RATHER THAN PEDANTRY. A policy key this version does not
+    understand is refused instead of ignored: `rule = "clean_tree"` under a mistyped table name is
+    a control the author believes is in force and the gate never applies — a control that was lost
+    to a typo, which is the whole failure this feature exists to prevent and would be an
+    especially bitter way to produce it.
+
+    THE REGISTRY DECIDES WHICH NAMES EXIST. R-5: there is no list of rules here, and an unknown
+    name is reported with the names that do exist, because *unknown rule* without them sends the
+    reader to the source of a package they installed.
+    """
+    if not isinstance(parsed, dict):
+        raise PolicyError(
+            f"{path} is a {type(parsed).__name__} at the top level; a policy is a table with a "
+            "`rules` list"
+        )
+    unknown = sorted(set(parsed) - {"rules"})
+    if unknown:
+        raise PolicyError(
+            f"{path} carries settings this version does not understand: {', '.join(unknown)}. "
+            "They are refused rather than ignored, because a rule under a mistyped name is a "
+            "control its author believes is in force and the gate never applies"
+        )
+    declared = parsed.get("rules")
+    if not isinstance(declared, list) or not declared:
+        raise PolicyError(
+            f"{path} must carry a non-empty `rules` list; an empty policy would pass every "
+            "history, which is the vacuous green in a file"
+        )
+    registered = rules()
+    chosen: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(declared, start=1):
+        where = f"{path} rule {index}"
+        if not isinstance(entry, dict):
+            raise PolicyError(
+                f"{where} is a {type(entry).__name__}; each rule is a table carrying `rule` and "
+                "`why`"
+            )
+        extra = sorted(set(entry) - set(_RULE_KEYS))
+        if extra:
+            raise PolicyError(
+                f"{where} carries keys a rule does not take: {', '.join(extra)}. A rule takes "
+                f"{' and '.join(_RULE_KEYS)}"
+            )
+        name = entry.get("rule")
+        if not isinstance(name, str) or not name.strip():
+            raise PolicyError(f"{where} does not name a rule")
+        name = name.strip()
+        if name not in registered:
+            raise PolicyError(
+                f"{where} names `{name}`, which is not a rule this version has. The rules are: "
+                f"{', '.join(sorted(registered))}"
+            )
+        if name in seen:
+            raise PolicyError(
+                f"{where} names `{name}` a second time, and two reasons for one rule leave no "
+                "answer to which of them the gate applied"
+            )
+        why = entry.get("why")
+        if not isinstance(why, str) or not why.strip():
+            raise PolicyError(
+                f"{where} (`{name}`) carries no `why`. R-11: a comment cannot be checked and does "
+                "not travel, so the reason a control exists is a required field that reaches the "
+                "report beside the verdict"
+            )
+        seen.add(name)
+        #: THE AUTHOR'S ORDER IS KEPT. A policy read back in a different order from the one it was
+        #: written in is a document whose diff stops being the evidence that it did not loosen.
+        chosen.append({"rule": name, "why": why.strip()})
+    return {"rules": chosen}
