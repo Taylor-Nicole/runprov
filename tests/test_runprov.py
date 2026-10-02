@@ -34216,6 +34216,9 @@ def test_each_rule_reaches_all_three_verdicts_over_the_state_its_row_names(tmp_p
         runprov.policy.VIOLATED,
         runprov.policy.CANNOT_CHECK,
     )
+    stable = tmp_path / "stable.tsv"
+    stable.write_text("a\n", encoding="utf-8")
+    recorded = runprov.hashing.content_digest(stable)
     cases = {
         "clean_tree": [
             ({"git_status_captured": True, "git_tree_dirty": False}, met),
@@ -34259,6 +34262,23 @@ def test_each_rule_reaches_all_three_verdicts_over_the_state_its_row_names(tmp_p
             #: A START WITH NO ENDING IS NOT A FAILURE — `show`'s INTERRUPTED distinction.
             ({}, unknown),
         ],
+        #: THE ONE RULE WHOSE THREE STATES ARE STATES OF THE DISK rather than shapes of a dict,
+        #: so the record is constructed and the digest is NOT: it comes from the same function
+        #: the writer uses, which is why the MET row cannot pass by agreeing with a literal
+        #: somebody typed. A digest typed into a test is a test of the typing.
+        "inputs_verify": [
+            ({"inputs": [{"path": str(stable), "content_sha256": recorded}]}, met),
+            ({"inputs": [{"path": str(stable), "content_sha256": "0" * 64}]}, violated),
+            #: GONE IS AN INABILITY, NOT A VIOLATION — R-9's clarification in one row. The file
+            #: may have been archived, and accusing the run of changing it would be an
+            #: accusation nobody can withdraw from a record.
+            (
+                {"inputs": [{"path": str(tmp_path / "gone.tsv"), "content_sha256": recorded}]},
+                unknown,
+            ),
+            ({"inputs": []}, unknown),
+            ({}, unknown),
+        ],
     }
     assert set(cases) == set(runprov.policy.rules()), (
         "every registered rule needs its verdicts asserted here, and only registered ones: "
@@ -34267,7 +34287,11 @@ def test_each_rule_reaches_all_three_verdicts_over_the_state_its_row_names(tmp_p
     for name, rows in cases.items():
         outcomes = set()
         for record, expected in rows:
-            got = runprov.policy.rules()[name].judge(record)
+            #: A FRESH CONTEXT PER CASE. One shared between them would serve the VIOLATED row a
+            #: digest cached by the MET row for the same path, and the two rows differ only in
+            #: the digest the record claims — the comparison would still be right, but it would
+            #: no longer be a comparison against the disk.
+            got = runprov.policy.rules()[name].judge(record, runprov.policy.Context())
             assert got.outcome == expected, (
                 f"`{name}` over {record} answered {got.outcome} ({got.reason}), not {expected}"
             )
@@ -34321,7 +34345,9 @@ def test_the_rules_agree_with_records_this_package_really_wrote(tmp_path, monkey
         "the premise of THIS fixture: the watch kept one unregistered path before the cap bit, so "
         f"the record names a breach as well as a truncation: {capped}"
     )
-    verdict = runprov.policy.rules()["no_unregistered_reads"].judge(capped)
+    verdict = runprov.policy.rules()["no_unregistered_reads"].judge(
+        capped, runprov.policy.Context()
+    )
     assert verdict.outcome == runprov.policy.VIOLATED, (
         "a truncated watch that still caught something knows at least one read was missed, so the "
         f"violation outranks the inability: {verdict}"
@@ -34349,7 +34375,7 @@ def test_the_rules_agree_with_records_this_package_really_wrote(tmp_path, monkey
     assert lost["observation"].get("unregistered_watch_truncated"), (
         f"and the record says the watch lost paths: {lost['observation']}"
     )
-    verdict = runprov.policy.rules()["no_unregistered_reads"].judge(lost)
+    verdict = runprov.policy.rules()["no_unregistered_reads"].judge(lost, runprov.policy.Context())
     assert verdict.outcome == runprov.policy.CANNOT_CHECK, (
         "[ADR-0018 R-3] an empty `unregistered_reads` after the cap bit cannot mean none were "
         f"missed — this is C-06 as a policy, and a pass here is the vacuous green: {verdict}"
@@ -34370,13 +34396,182 @@ def test_the_rules_agree_with_records_this_package_really_wrote(tmp_path, monkey
         if line.strip() and json.loads(line).get("schema") != "runprov.start.v1"
     ][-1]
     assert record["status"] != "ok", f"the premise: a real failed run: {record['status']}"
-    got = runprov.policy.rules()["finished_ok"].judge(record)
+    got = runprov.policy.rules()["finished_ok"].judge(record, runprov.policy.Context())
     assert got.outcome == runprov.policy.VIOLATED and "boom" in (got.reason or ""), got
 
     # AND `assess` OVER THE WHOLE HISTORY, so R-4's count comes from a real selection.
     tally = runprov.policy.assess("finished_ok", [record])
     assert (tally["evaluated"], tally["violated"]) == (1, 1), tally
     assert tally["asked_of_nothing"] is False and tally["reasons"], tally
+
+
+def test_inputs_verify_answers_for_each_declared_entry_and_names_which(tmp_path):
+    """[ADR-0018 R-3] [ADR-0018 R-7] [ADR-0018 R-9] T-34. The rule that leaves the record, entry
+    by entry.
+
+    Every other rule reads fields. This one reads FILES, which is why R-9 had to be clarified
+    before it existed — Taylor's ruling, 2026-10-02: *the source* means source code, not the
+    filesystem, so re-hashing a declared input is in scope.
+
+    THE INABILITIES ARE THE SUBSTANCE HERE, not the pass. A gate that reported *the evidence
+    matches* for a directory it never walked, for a file it could not open, or for a path that no
+    longer exists would be the vacuous green with a laboratory's name on it. Each of those states
+    is built from a real path on disk and each must come back `CANNOT_CHECK` **saying which**, so
+    a reader is sent to one file rather than to the whole history.
+    """
+    met, violated, unknown = (
+        runprov.policy.MET,
+        runprov.policy.VIOLATED,
+        runprov.policy.CANNOT_CHECK,
+    )
+    data = tmp_path / "in.tsv"
+    data.write_text("a\n", encoding="utf-8")
+    folder = tmp_path / "tree"
+    folder.mkdir()
+    content = runprov.hashing.content_digest(data)
+    raw = runprov.hashing.sha256(data)
+    absent = "0" * 64
+
+    #: EACH ROW IS (entry, expected, a phrase the reason must contain). The phrase is asserted
+    #: because `CANNOT_CHECK` with the wrong sentence is a finding a reader cannot act on, and
+    #: four of these rows answer `CANNOT_CHECK` for four different reasons.
+    cases: list[tuple[dict[str, object], str, str | None]] = [
+        ({}, unknown, "carries no path"),
+        ({"path": str(data)}, unknown, "no digest this rule can take again"),
+        #: A DECLARED DIRECTORY IS NOT RE-WALKED, and both ways a record says *directory* are
+        #: tested: older entries carry `sha256_tree` without a `kind`.
+        ({"path": str(folder), "kind": "tree", "sha256_tree": absent}, unknown, "verify"),
+        ({"path": str(folder), "sha256_tree": absent}, unknown, "verify"),
+        #: `content_digest` RETURNS None FOR ANYTHING IT WILL NOT CANONICALISE, and a digest that
+        #: could not be taken is not a disagreement. Inventing one would accuse a path nobody
+        #: could hash.
+        ({"path": str(folder), "content_sha256": absent}, unknown, "not a file whose"),
+        #: AND THE SAME PATH ON THE OTHER KEY TAKES THE OTHER ROUTE: `hashing.sha256` raises on a
+        #: directory rather than returning None, so the OSError arm is reached by a state this
+        #: test can build on every platform instead of by a permission bit it cannot.
+        ({"path": str(folder), "sha256": absent}, unknown, "could not be read"),
+        (
+            {"path": str(tmp_path / "gone.tsv"), "content_sha256": content},
+            unknown,
+            "no longer on disk",
+        ),
+        #: THE V1 SHAPE: an entry carrying only a raw `sha256` is compared with `hashing.sha256`.
+        ({"path": str(data), "sha256": raw}, met, None),
+        ({"path": str(data), "sha256": absent}, violated, "sha256"),
+        ({"path": str(data), "content_sha256": content}, met, None),
+        ({"path": str(data), "content_sha256": absent}, violated, "content_sha256"),
+        #: LIKE FOR LIKE, AND ONLY ONE KEY — I-02's repair, asserted rather than inherited. An
+        #: entry carrying both is compared on `content_sha256` and the raw digest is not consulted
+        #: at all. That is not a leniency: equal content digests mean identical content by this
+        #: package's own definition, and a file whose line endings were rewritten is exactly the
+        #: case the two digests are designed to disagree about.
+        ({"path": str(data), "content_sha256": content, "sha256": absent}, met, None),
+    ]
+    for entry, expected, phrase in cases:
+        got = runprov.policy.rules()["inputs_verify"].judge(
+            {"inputs": [entry]}, runprov.policy.Context()
+        )
+        assert got.outcome == expected, f"{entry} answered {got.outcome} ({got.reason})"
+        if phrase is not None:
+            assert phrase in (got.reason or ""), (
+                f"{entry} answered {expected} with a sentence that does not say why: {got.reason}"
+            )
+            assert str(entry.get("path", "")) in (got.reason or "") or not entry.get("path"), (
+                f"and the sentence must name the file a reader has to go and look at: {got.reason}"
+            )
+        else:
+            assert got.reason is None, f"a MET verdict explains nothing: {got.reason}"
+
+    #: SEVERAL ENTRIES, ONE VERDICT, AND THE COUNT TRAVELS. Nothing is short-circuited on the
+    #: first mismatch: a laboratory asks WHICH files no longer match, and a gate naming one and
+    #: stopping sends the reader back for a second run to find the next.
+    second = tmp_path / "also.tsv"
+    second.write_text("b\n", encoding="utf-8")
+    both_changed = runprov.policy.rules()["inputs_verify"].judge(
+        {
+            "inputs": [
+                {"path": str(data), "content_sha256": absent},
+                {"path": str(second), "content_sha256": absent},
+            ]
+        },
+        runprov.policy.Context(),
+    )
+    assert both_changed.outcome == violated and "and 1 more" in (both_changed.reason or ""), (
+        both_changed
+    )
+
+    #: AND A VIOLATION OUTRANKS AN INABILITY WITHIN ONE RUN, as it does across runs in `assess`.
+    #: L-81's ordering, one level further down: a changed file is a finding whatever else could
+    #: not be examined beside it.
+    mixed = runprov.policy.rules()["inputs_verify"].judge(
+        {
+            "inputs": [
+                {"path": str(tmp_path / "gone.tsv"), "content_sha256": content},
+                {"path": str(data), "content_sha256": absent},
+            ]
+        },
+        runprov.policy.Context(),
+    )
+    assert mixed.outcome == violated, (
+        f"a changed file is a finding beside an unexaminable one: {mixed}"
+    )
+
+
+def test_the_digest_cache_is_one_assess_wide_and_no_wider(tmp_path):
+    """[ADR-0018 R-7] T-34. Why the cache lives in a `Context` and not in an `lru_cache`.
+
+    N runs declaring one reference genome is N full reads of it without a cache — the cost
+    `verify.check_input` memoises for, and it measured the shape there at 40,000 reads over 20
+    files. So `assess` builds one cache and hands it to every verdict it forms.
+
+    **AND THE SAME FACT IS WHAT MAKES IT DANGEROUS, WHICH IS WHAT THIS TEST IS FOR.** A cache
+    outliving one `assess` would answer a later question with an earlier run's bytes — a gate
+    reporting MET about a file that changed between two calls. So the staleness is demonstrated
+    INSIDE one context deliberately, and then a fresh context is shown to catch what the held one
+    missed. The cache is a saving within one answer and never a memory between two.
+    """
+    data = tmp_path / "ref.tsv"
+    data.write_text("a\n", encoding="utf-8")
+    record = {
+        "inputs": [{"path": str(data), "content_sha256": runprov.hashing.content_digest(data)}]
+    }
+    rule = runprov.policy.rules()["inputs_verify"]
+
+    held = runprov.policy.Context(digests={})
+    assert rule.judge(record, held).outcome == runprov.policy.MET
+    assert list(held.digests) == [(str(data), "content_sha256")], (
+        "keyed by path AND key, because `sha256` and `content_sha256` are two quantities taken "
+        f"from the same bytes and a cache that forgot which it held would compare one with the "
+        f"other: {held.digests}"
+    )
+
+    data.write_text("CHANGED\n", encoding="utf-8")
+    assert rule.judge(record, held).outcome == runprov.policy.MET, (
+        "the premise of the per-call scope, stated as a measurement rather than a worry: inside "
+        "ONE context the cached digest is reused, which is the saving and the staleness in the "
+        "same sentence"
+    )
+    assert rule.judge(record, runprov.policy.Context()).outcome == runprov.policy.VIOLATED, (
+        "and a context that was not told anything earlier reads the file as it is now"
+    )
+
+    #: `assess` BUILDS ITS OWN PER CALL, so neither a stale one nor none at all reaches a rule.
+    #: Two identical records here read the file ONCE and both answer about the same bytes.
+    tally = runprov.policy.assess("inputs_verify", [record, record])
+    assert (tally["outcome"], tally["evaluated"], tally["violated"]) == (
+        runprov.policy.VIOLATED,
+        2,
+        2,
+    ), tally
+    assert len(tally["reasons"]) == 1, (
+        f"one changed file named once, however many runs declared it: {tally['reasons']}"
+    )
+
+    #: AND A CALLER THAT SUPPLIES ONE GETS IT USED RATHER THAN REPLACED, which is what makes a
+    #: `gate` over many rules able to read each file once instead of once per rule.
+    supplied = runprov.policy.Context(digests={})
+    runprov.policy.assess("inputs_verify", [record], context=supplied)
+    assert list(supplied.digests) == [(str(data), "content_sha256")], supplied.digests
 
 
 def test_the_rule_set_is_the_registry_and_the_adr_and_nothing_else(tmp_path):
@@ -34388,7 +34583,10 @@ def test_the_rule_set_is_the_registry_and_the_adr_and_nothing_else(tmp_path):
 
     **THE SUBSET DIRECTION IS THE ONE THAT HOLDS TODAY**, and that is deliberate: a rule must not
     exist that the specification never asked for, while rules the specification asks for may still
-    be unbuilt. Six of the seven are.
+    be unbuilt. **All seven are now built, so the two sets are equal today — and the assertion
+    stays a subset**, because equality is owed to `Accepted` and the ADR is not: R-1, R-2, R-8,
+    R-11 and R-12 have no code. A guard tightened to equality the day the last rule registered
+    would be measuring the rule set to decide a question about the whole feature.
 
     **AND EQUALITY IS REQUIRED THE MOMENT THE ADR SAYS `Accepted`** — which makes closing
     condition 1 enforceable instead of remembered. ADR-0017 was marked `Proposed` through the
@@ -34510,7 +34708,7 @@ def test_every_registered_rule_can_say_it_could_not_check(tmp_path):
     for name, got in registry.items():
         assert got.reads, f"{name} declares no fields, so this guard cannot strip any"
         stripped = dict.fromkeys(got.reads)
-        verdict = got.judge(stripped)
+        verdict = got.judge(stripped, runprov.policy.Context())
         assert verdict.outcome == runprov.policy.CANNOT_CHECK, (
             f"[ADR-0018 R-3] `{name}` answered {verdict.outcome} over a record carrying none of "
             f"the fields it reads {list(got.reads)}. A rule that cannot say *could not check* "

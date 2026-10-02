@@ -23,8 +23,11 @@ forget, and that is the scope pattern this codebase has now found ten times.
 
 from __future__ import annotations
 
+import pathlib
 import types
 import typing
+
+from . import hashing
 
 #: A rule's three answers. `CANNOT_CHECK` is the whole design (R-2, R-3): *violated* and
 #: *unverifiable* are different findings, and a policy engine that collapses them produces the
@@ -47,6 +50,30 @@ class Verdict(typing.NamedTuple):
     reason: str | None = None
 
 
+class Context(typing.NamedTuple):
+    """What a rule may consult BESIDES the record — declared, so a verdict's inputs are readable.
+
+    Five of the six rules never touch this, and that is the point of passing it to all of them
+    rather than letting one reach for a module global: a rule's inputs are its `reads` plus this,
+    both written down, so *what could this answer have depended on* is answerable from the
+    signature. R-9 is the boundary it must not cross — the source is off limits; the data the
+    history declares is not.
+
+    `digests` MEMOISES ONE `assess`, for the reason `verify.check_input` documents in the same
+    words: a fan-out of N runs declaring one reference genome is N full reads of it otherwise.
+    Keyed by `(path, key)` AND NOT BY PATH ALONE, because `sha256` and `content_sha256` are two
+    different quantities taken from the same bytes, and a cache that forgot which one it holds
+    would compare a raw digest against a content one — I-02, which is the defect this rule's
+    like-for-like comparison exists to avoid.
+
+    IT IS PER-CALL AND DELIBERATELY NOT A MODULE-LEVEL `lru_cache`. A digest cache that outlived
+    one `assess` would answer a later question with an earlier run's bytes, which is the exact
+    opposite of what this command exists to establish.
+    """
+
+    digests: dict[tuple[str, str], str | None] | None = None
+
+
 class Rule(typing.NamedTuple):
     """One question the record already answers, and what the question cannot see.
 
@@ -65,7 +92,7 @@ class Rule(typing.NamedTuple):
     asks: str
     reads: tuple[str, ...]
     blind: str
-    judge: typing.Callable[[typing.Mapping[str, typing.Any]], Verdict]
+    judge: typing.Callable[[typing.Mapping[str, typing.Any], Context], Verdict]
 
 
 _REGISTRY: dict[str, Rule] = {}
@@ -74,8 +101,8 @@ _REGISTRY: dict[str, Rule] = {}
 def rule(
     name: str, *, asks: str, reads: tuple[str, ...], blind: str
 ) -> typing.Callable[
-    [typing.Callable[[typing.Mapping[str, typing.Any]], Verdict]],
-    typing.Callable[[typing.Mapping[str, typing.Any]], Verdict],
+    [typing.Callable[[typing.Mapping[str, typing.Any], Context], Verdict]],
+    typing.Callable[[typing.Mapping[str, typing.Any], Context], Verdict],
 ]:
     """Register a rule. The decorator IS the registry's only entry point.
 
@@ -84,8 +111,8 @@ def rule(
     """
 
     def register(
-        judge: typing.Callable[[typing.Mapping[str, typing.Any]], Verdict],
-    ) -> typing.Callable[[typing.Mapping[str, typing.Any]], Verdict]:
+        judge: typing.Callable[[typing.Mapping[str, typing.Any], Context], Verdict],
+    ) -> typing.Callable[[typing.Mapping[str, typing.Any], Context], Verdict]:
         if name in _REGISTRY:  # pragma: no cover - a programming error, asserted by a test
             raise ValueError(f"two rules registered as {name!r}")
         _REGISTRY[name] = Rule(name, asks, reads, blind, judge)
@@ -105,7 +132,9 @@ def rules() -> types.MappingProxyType[str, Rule]:
 
 
 def assess(
-    name: str, records: typing.Iterable[typing.Mapping[str, typing.Any]]
+    name: str,
+    records: typing.Iterable[typing.Mapping[str, typing.Any]],
+    context: Context | None = None,
 ) -> dict[str, typing.Any]:
     """One rule over many runs, with the count it was evaluated against. R-4.
 
@@ -119,10 +148,15 @@ def assess(
     checked is still a violation; an unchecked run among passes is not a pass.
     """
     got = _REGISTRY[name]
+    #: ONE CACHE PER CALL, built here rather than demanded of the caller, so a caller that knows
+    #: nothing about digests still gets the memoisation and no caller can hand in a stale one.
+    context = Context() if context is None else context
+    if context.digests is None:
+        context = context._replace(digests={})
     tally = {MET: 0, VIOLATED: 0, CANNOT_CHECK: 0}
     reasons: list[str] = []
     for record in records:
-        verdict = got.judge(record)
+        verdict = got.judge(record, context)
         tally[verdict.outcome] += 1
         if verdict.outcome != MET and verdict.reason and verdict.reason not in reasons:
             reasons.append(verdict.reason)
@@ -160,7 +194,7 @@ def assess(
     "no git on PATH; the record says so and this rule reports it rather than reading the "
     "absence as clean",
 )
-def _clean_tree(record: typing.Mapping[str, typing.Any]) -> Verdict:
+def _clean_tree(record: typing.Mapping[str, typing.Any], context: Context) -> Verdict:
     """THE RULE R-6 IS ABOUT, which is why it is the first one built.
 
     `git_tree_dirty` is `False` both for a clean tree and for a run that never looked, and
@@ -168,6 +202,7 @@ def _clean_tree(record: typing.Mapping[str, typing.Any]) -> Verdict:
     report *clean* for every run outside a repository — a control that passes because nothing was
     examined, which is the exact shape this ADR's third requirement exists to refuse.
     """
+    del context  # this rule reads the record only
     if not record.get("git_status_captured"):
         return Verdict(CANNOT_CHECK, "git status was not captured, so the tree state is unknown")
     if record.get("git_tree_dirty"):
@@ -184,7 +219,7 @@ def _clean_tree(record: typing.Mapping[str, typing.Any]) -> Verdict:
     "watch itself raised, which warns on stderr and leaves both fields unset exactly as a clean "
     "run does",
 )
-def _no_unregistered_reads(record: typing.Mapping[str, typing.Any]) -> Verdict:
+def _no_unregistered_reads(record: typing.Mapping[str, typing.Any], context: Context) -> Verdict:
     """R-6'S OWN EXAMPLE: the field that qualifies the answer is consulted, not just the answer.
 
     `unregistered_reads` is ABSENT from a clean run rather than empty, so absence is the ordinary
@@ -197,6 +232,7 @@ def _no_unregistered_reads(record: typing.Mapping[str, typing.Any]) -> Verdict:
     knowing a violation. The reverse, an empty list after the cap bit, is the C-06 defect and is
     never a pass.
     """
+    del context  # this rule reads the record only
     if record.get("observation") is None:
         return Verdict(CANNOT_CHECK, "the record carries no observation block, so nothing watched")
     missed = record.get("unregistered_reads") or []
@@ -222,7 +258,7 @@ def _no_unregistered_reads(record: typing.Mapping[str, typing.Any]) -> Verdict:
     "that genuinely read nothing, which is indistinguishable in the history from one that read "
     "something and failed to say so",
 )
-def _outputs_pin_inputs(record: typing.Mapping[str, typing.Any]) -> Verdict:
+def _outputs_pin_inputs(record: typing.Mapping[str, typing.Any], context: Context) -> Verdict:
     """THE LIMIT IS NAMED RATHER THAN GUESSED AT, and it is the honest half of this rule.
 
     A record showing outputs and no inputs is either a generator that truly read nothing or a run
@@ -230,6 +266,7 @@ def _outputs_pin_inputs(record: typing.Mapping[str, typing.Any]) -> Verdict:
     the rule that can, which is why these two belong in a policy together and why this one does
     not pretend to subsume it.
     """
+    del context  # this rule reads the record only
     outputs = record.get("outputs")
     if outputs is None:
         return Verdict(CANNOT_CHECK, "the record does not say what this run produced")
@@ -249,7 +286,7 @@ def _outputs_pin_inputs(record: typing.Mapping[str, typing.Any]) -> Verdict:
     blind="a run outside a repository or with no git on PATH, where the absence of a commit is "
     "not a missing one — the record says which through `git_status_captured`",
 )
-def _commit_recorded(record: typing.Mapping[str, typing.Any]) -> Verdict:
+def _commit_recorded(record: typing.Mapping[str, typing.Any], context: Context) -> Verdict:
     """THE SAME TWO-FIELD SHAPE AS `clean_tree`, and for the same reason.
 
     `git_commit` is `None` both for a run outside a repository and for one in a repository with no
@@ -257,6 +294,7 @@ def _commit_recorded(record: typing.Mapping[str, typing.Any]) -> Verdict:
     nothing there*, and a rule reading the commit alone would report every run on an unversioned
     machine as a violation — an accusation rather than a finding.
     """
+    del context  # this rule reads the record only
     if not record.get("git_status_captured"):
         return Verdict(CANNOT_CHECK, "git status was not captured, so no commit could be recorded")
     if record.get("git_commit"):
@@ -272,13 +310,14 @@ def _commit_recorded(record: typing.Mapping[str, typing.Any]) -> Verdict:
     "at all — `packages: {}` alone is indistinguishable from nobody having asked, which is the "
     "whole reason ADR-0010 added the field this rule reads",
 )
-def _environment_captured(record: typing.Mapping[str, typing.Any]) -> Verdict:
+def _environment_captured(record: typing.Mapping[str, typing.Any], context: Context) -> Verdict:
     """`packages: {}` CANNOT BE TOLD FROM *NOBODY ASKED*, which ADR-0010 states in those words.
 
     So the verdict comes from `observation.packages_recorded` — a closed vocabulary of `snapshot`,
     `tracked` and `none` — rather than from the dict's emptiness. `none` is a VIOLATION and not an
     inability: the record positively says nothing was captured, which is an answer.
     """
+    del context  # this rule reads the record only
     observation = record.get("observation")
     if observation is None:
         return Verdict(CANNOT_CHECK, "the record carries no observation block")
@@ -299,13 +338,14 @@ def _environment_captured(record: typing.Mapping[str, typing.Any]) -> Verdict:
     blind="a line carrying no status — a `start` with no ending is a run still going or one "
     "killed before it could record, and neither is a failure this rule may assert",
 )
-def _finished_ok(record: typing.Mapping[str, typing.Any]) -> Verdict:
+def _finished_ok(record: typing.Mapping[str, typing.Any], context: Context) -> Verdict:
     """A MISSING STATUS IS NOT A FAILURE, which is the distinction `show`'s INTERRUPTED exists for.
 
     A `start` line with no ending means the run is in flight or was killed before it could say
     anything — and a policy that read that as a violation would turn every machine that lost power
     into a non-compliant one, permanently, in a record nobody can amend.
     """
+    del context  # this rule reads the record only
     status = record.get("status")
     if status is None:
         return Verdict(CANNOT_CHECK, "the record carries no status, so the run recorded no ending")
@@ -314,3 +354,156 @@ def _finished_ok(record: typing.Mapping[str, typing.Any]) -> Verdict:
     failure = record.get("failure")
     named = f": {failure}" if failure else ""
     return Verdict(VIOLATED, f"the run finished with status {status!r}{named}")
+
+
+#: THE RECORD'S OWN KEY, paired with the function that computes THAT quantity. I-02's sentence:
+#: like for like, or it is not a comparison. The choice is made on what the entry CARRIES and
+#: never on today's precedence — a v1-shaped entry holding only a raw `sha256`, compared against
+#: a content digest, reports every untouched text file as changed, which is the defect `report`
+#: was repaired for.
+#:
+#: `report._COMPARABLE_AS` IS THE SIBLING OF THIS AND IS DELIBERATELY NOT SHARED. It omits
+#: `sha256_tree` for a reason local to its caller — `build` hashes with `hashing.sha256`, which
+#: raises on a directory, so that arm is unreachable there and an arm that cannot fire reads as a
+#: case that can happen. This rule is handed whatever the history declared, directories included,
+#: and answers for one differently below. Two callers whose reasons differ must not share one
+#: constant: the next widening would be made for one of them and inherited by the other.
+_COMPARABLE_AS: tuple[tuple[str, typing.Callable[[pathlib.Path], str | None]], ...] = (
+    ("content_sha256", hashing.content_digest),
+    ("sha256", hashing.sha256),
+)
+
+
+def _comparable_on(entry: typing.Mapping[str, typing.Any]) -> tuple[str, str, typing.Any] | None:
+    """The one key this entry can be re-checked on, with the function that recomputes it.
+
+    `None` means the entry carries no digest this rule knows how to take again — not that it is
+    wrong. The caller turns that into `CANNOT_CHECK`, because a rule that cannot recompute a
+    quantity has not found a violation of it.
+    """
+    for key, how in _COMPARABLE_AS:
+        was = entry.get(key)
+        if was:
+            return key, str(was), how
+    return None
+
+
+def _and_more(reasons: list[str]) -> str:
+    """One sentence for a list of them: the first, and how many more there were."""
+    if len(reasons) == 1:
+        return reasons[0]
+    return f"{reasons[0]} (and {len(reasons) - 1} more)"
+
+
+def _input_still_matches(entry: typing.Mapping[str, typing.Any], context: Context) -> Verdict:
+    """One declared input, re-read from disk. The three answers, for that one file."""
+    raw = entry.get("path")
+    if not raw:
+        return Verdict(CANNOT_CHECK, "an input entry carries no path")
+    #: A DECLARED DIRECTORY IS NOT RE-WALKED HERE, and the limit is named rather than approximated.
+    #: Reproducing `sha256_tree` means reproducing the ordering key A-14 and C-03 were both about,
+    #: and then deciding whether a record's `sha256_tree_casefolded` or its `sha256_tree` is
+    #: authoritative for a tree written by an older version on Windows. `verify` makes that
+    #: decision and is its only reader; a second implementation of it inside a policy rule is how
+    #: the two would come to disagree.
+    if entry.get("kind") == "tree" or entry.get("sha256_tree"):
+        return Verdict(
+            CANNOT_CHECK,
+            f"{raw} was declared as a directory, which `runprov verify` re-walks and this rule "
+            "does not",
+        )
+    comparable = _comparable_on(entry)
+    if comparable is None:
+        return Verdict(CANNOT_CHECK, f"{raw} carries no digest this rule can take again")
+    key, was, how = comparable
+    seen = context.digests
+    if seen is not None and (raw, key) in seen:
+        now = seen[(raw, key)]
+    else:
+        try:
+            #: THE ADR'S OWN CASE, AND IT IS AN INABILITY RATHER THAN A VIOLATION. R-9's
+            #: clarification says so in those words: a declared input that is gone is a
+            #: `CANNOT_CHECK` naming the path. The alternative accuses a run of changing a file
+            #: that may simply have been archived, in a record nobody can amend.
+            if not pathlib.Path(raw).exists():
+                return Verdict(
+                    CANNOT_CHECK,
+                    f"{raw} is no longer on disk, so what it holds now cannot be compared with "
+                    "what the run recorded",
+                )
+            now = how(pathlib.Path(raw))
+        except OSError as exc:
+            return Verdict(CANNOT_CHECK, f"{raw} could not be read: {exc.strerror or exc}")
+        if seen is not None:
+            seen[(raw, key)] = now
+    if now is None:
+        return Verdict(
+            CANNOT_CHECK, f"{raw} is not a file whose {key} can be taken, so nothing was compared"
+        )
+    if now != was:
+        width = hashing.PIN_DIGEST_CHARS
+        #: COMPARED WHOLE, DISPLAYED SHORT — `report`'s sentence, for the same reason. Truncating
+        #: before the comparison lets two different digests agree on sixteen characters and pass.
+        return Verdict(
+            VIOLATED,
+            f"{raw} no longer matches the {key} the run recorded ({was[:width]} -> {now[:width]})",
+        )
+    return Verdict(MET)
+
+
+@rule(
+    "inputs_verify",
+    asks="every input the run declared still hashes to what it recorded",
+    reads=("inputs",),
+    blind="a declared input that is no longer on disk, or a run that declared none at all — and, "
+    "named here because the record cannot close it, a history read on a machine other than the "
+    "one that wrote it, where the recorded path is absolute and names nothing even though the "
+    "file itself still exists somewhere",
+)
+def _inputs_verify(record: typing.Mapping[str, typing.Any], context: Context) -> Verdict:
+    """THE ONE RULE THAT LEAVES THE RECORD, which is why R-9 had to be clarified before it.
+
+    Taylor's ruling, 2026-10-02: *the source* means SOURCE CODE — the thing `check` parses — not
+    the filesystem. Data files are not source, and *does the evidence still match the files* is
+    the question an accredited laboratory asks first. So this rule re-hashes, and the cost is
+    stated rather than hidden: with it in a policy, `gate` scales with the DATA and not with the
+    history.
+
+    IT IS ALSO THE RULE THAT FORCED THE `judge` CONTRACT TO TAKE A SECOND ARGUMENT, and the
+    reason is the cache and not a root. The recorded `path` is ABSOLUTE, so there is nothing to
+    resolve it against — I had planned a `root` and dropped it when the record settled the
+    question: a root would be a second answer to *where is this file* competing with the one the
+    history already gives, and R-9's clarification states the behaviour for a path that names
+    nothing, which is `CANNOT_CHECK`. What a root WOULD buy — re-checking a history on a machine
+    that did not write it — is not in ADR-0018, and an unspecified option is how a feature grows
+    a flag nobody asked for. The rule's `blind` text names that limit instead.
+
+    NOT `verify.check_input`, AND THE REASON IS WORTH STATING. It asks exactly this question, and
+    `pin_digest(describe(f))` is exactly `content_sha256[:16]`, so the two conventions ARE
+    compatible after truncation. But truncating throws away 48 characters of a digest the history
+    already holds at full width: a pin is 16 characters because it lives in an artifact's own
+    bytes, and a gate has no such constraint. It compares all 256 bits.
+    """
+    declared = record.get("inputs")
+    if declared is None:
+        return Verdict(CANNOT_CHECK, "the record does not say what this run read")
+    if not declared:
+        return Verdict(CANNOT_CHECK, "the run declared no inputs, so there is nothing to re-hash")
+    changed: list[str] = []
+    unknown: list[str] = []
+    for entry in declared:
+        verdict = _input_still_matches(entry, context)
+        if verdict.outcome == VIOLATED:
+            changed.append(verdict.reason or "")
+        elif verdict.outcome == CANNOT_CHECK:
+            unknown.append(verdict.reason or "")
+    #: EVERY ENTRY IS RE-READ BEFORE THE VERDICT IS FORMED, and this is deliberately not
+    #: short-circuited on the first mismatch. The question a laboratory asks is *which* of the
+    #: declared files no longer match, and a gate naming one and stopping sends the reader back
+    #: for a second run to find the next. The MET case reads all of them anyway, so the only
+    #: saving forgone is in the case that has already failed.
+    if changed:
+        return Verdict(VIOLATED, _and_more(changed))
+    if unknown:
+        return Verdict(CANNOT_CHECK, _and_more(unknown))
+    return Verdict(MET)
