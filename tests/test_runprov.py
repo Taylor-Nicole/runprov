@@ -34092,6 +34092,216 @@ def test_every_field_of_the_chain_report_reaches_its_payload(tmp_path):
     assert json.loads(json.dumps(body)) == body, "the payload must survive a JSON round trip"
 
 
+def _adr_0018_rules() -> dict[str, dict[str, str]]:
+    """ADR-0018 R-7's table, read from the ADR. The ONLY list of rule names outside the registry.
+
+    R-5 forbids a second copy of the rule set in the parser, the docs or the tests, so this reads
+    the specification rather than restating it. R-7 was a PROSE SENTENCE until 2026-10-02 — *"the
+    tree was clean; no unregistered reads; …"* — which no test could derive canonical names from,
+    so it became a table. That amendment is what makes R-5 enforceable rather than aspirational.
+    """
+    adr = (
+        _repo_root()
+        / "docs"
+        / "adr"
+        / "0018-a-policy-is-checked-against-the-history-not-remembered.md"
+    )
+    if not adr.is_file():  # pragma: no cover - docs ship in the sdist, a bare tree may not
+        pytest.skip("ADR-0018 not present")
+    out: dict[str, dict[str, str]] = {}
+    for row in re.finditer(
+        r"^\| `(?P<rule>[a-z_]+)` \| (?P<asks>[^|]+) \| (?P<reads>[^|]+) \| (?P<blind>[^|]+) \|$",
+        adr.read_text(encoding="utf-8"),
+        re.M,
+    ):
+        out[row["rule"]] = {
+            "asks": row["asks"].strip(),
+            "reads": row["reads"].strip(),
+            "blind": row["blind"].strip(),
+        }
+    return out
+
+
+def _record_field_vocabulary(tmp_path, monkeypatch) -> set[str]:
+    """Every field a record can carry, as dotted paths, from records REACHING each state.
+
+    R-10 says a rule may only assert over fields that exist. Deciding that from ONE record is too
+    strict: `unregistered_reads` is written only when reads were missed, and
+    `observation.unregistered_watch_truncated` only when the watch hit its cap — both absent from
+    a clean run and both legitimate fields of the schema.
+
+    SO THE VOCABULARY IS THE UNION OVER RECORDS THAT REACH THOSE STATES, built by this package
+    rather than declared here. A hand-written field list would be the stale-list pattern one level
+    down, and a list of conditional fields is exactly the kind that goes stale silently — the
+    field stops being written and the list still names it.
+
+    `WATCH_MAX_PATHS` IS MONKEYPATCHED TO REACH THE CAP. It is 2000, so the truncation state is
+    unreachable in a test at full size; the cap is a module constant precisely so it can be moved.
+    """
+    vocabulary: set[str] = set()
+    histories = tmp_path / "vocab"
+    histories.mkdir()
+
+    def harvest(log: pathlib.Path) -> None:
+        for line in log.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("schema") == "runprov.start.v1":
+                continue
+            for key, value in record.items():
+                vocabulary.add(key)
+                if isinstance(value, dict):
+                    vocabulary.update(f"{key}.{inner}" for inner in value)
+
+    #: 1. A CLEAN RUN, with an input and an output.
+    clean = histories / "clean.jsonl"
+    runprov.configure(root=histories, run_log=clean, auto_steps="off")
+    (histories / "in.tsv").write_text("a\n", encoding="utf-8")
+    with runprov.Run("clean", {}, provenance=histories / "p1.json") as run:
+        run.input(histories / "in.tsv")
+        with run.open_output(histories / "out.tsv") as fh:
+            fh.write("a\n")
+    harvest(clean)
+
+    #: 2. A RUN THAT READ WITHOUT REGISTERING, which is the only way `unregistered_reads` appears.
+    missed = histories / "missed.jsonl"
+    runprov.configure(root=histories, run_log=missed, auto_steps="off")
+    with runprov.Run("missed", {}, provenance=histories / "p2.json"):
+        with open(histories / "in.tsv", encoding="utf-8") as fh:
+            fh.read()
+    harvest(missed)
+    assert "unregistered_reads" in vocabulary, (
+        "the premise of this fixture: an unregistered read puts the field in the record"
+    )
+
+    #: 3. A WATCH THAT HIT ITS CAP, reached by moving the cap rather than opening 2,000 files.
+    monkeypatch.setattr(runprov.watch, "WATCH_MAX_PATHS", 1)
+    capped = histories / "capped.jsonl"
+    runprov.configure(root=histories, run_log=capped, auto_steps="off")
+    for name in ("one.tsv", "two.tsv", "three.tsv"):
+        (histories / name).write_text("x\n", encoding="utf-8")
+    with runprov.Run("capped", {}, provenance=histories / "p3.json"):
+        for name in ("one.tsv", "two.tsv", "three.tsv"):
+            with open(histories / name, encoding="utf-8") as fh:
+                fh.read()
+    harvest(capped)
+
+    #: 4. A RUN THAT FAILED, so `failure` is a string rather than null.
+    failed = histories / "failed.jsonl"
+    runprov.configure(root=histories, run_log=failed, auto_steps="off")
+    try:
+        with runprov.Run("failed", {}, provenance=histories / "p4.json"):
+            raise ValueError("boom")
+    except ValueError:
+        pass
+    harvest(failed)
+    return vocabulary
+
+
+def test_the_rule_set_is_the_registry_and_the_adr_and_nothing_else(tmp_path):
+    """[ADR-0018 R-5] [ADR-0018 R-7] T-34. Two sources, derived from each other, no third.
+
+    R-5: the rule set is derived from a registry rules register into, **never a hand-typed list in
+    the parser, the docs and the tests.** So there are exactly two statements of it — the registry
+    and R-7's table — and this compares them rather than carrying a third.
+
+    **THE SUBSET DIRECTION IS THE ONE THAT HOLDS TODAY**, and that is deliberate: a rule must not
+    exist that the specification never asked for, while rules the specification asks for may still
+    be unbuilt. Six of the seven are.
+
+    **AND EQUALITY IS REQUIRED THE MOMENT THE ADR SAYS `Accepted`** — which makes closing
+    condition 1 enforceable instead of remembered. ADR-0017 was marked `Proposed` through the
+    release that shipped it; the inverse mistake is flipping a status while requirements are
+    unbuilt, and `Accepted` with two rules missing would be exactly that. The guard fails either
+    way round, so the status cannot be moved early and cannot be forgotten late.
+    """
+    del tmp_path
+    specified = set(_adr_0018_rules())
+    assert len(specified) == 7, (
+        f"R-7's table states the opening rule set; this read {len(specified)}: {sorted(specified)}"
+    )
+    registered = set(runprov.policy.rules())
+    assert registered <= specified, (
+        "[ADR-0018 R-5] a rule is registered that R-7 does not specify. Either the ADR needs "
+        f"amending with its own row, or the rule is not the opening set's: "
+        f"{sorted(registered - specified)}"
+    )
+
+    adr = (
+        _repo_root()
+        / "docs"
+        / "adr"
+        / "0018-a-policy-is-checked-against-the-history-not-remembered.md"
+    ).read_text(encoding="utf-8")
+    status = re.search(r"\*\*Status:\*\*\s*(\w+)", adr)
+    assert status, "ADR-0018 declares no Status"
+    if status.group(1).lower() == "accepted":
+        assert registered == specified, (
+            "[ADR-0018 R-5] ADR-0018 says `Accepted` while R-7's rule set is not built. That is "
+            "T-33's defect inverted — a status moved ahead of the code instead of behind it — and "
+            f"these rows have no registered rule: {sorted(specified - registered)}"
+        )
+
+    # AND EACH REGISTERED RULE AGREES WITH ITS ROW about the fields it reads, so the table cannot
+    # document one thing while the code consults another.
+    for name, row in _adr_0018_rules().items():
+        if name not in registered:
+            continue
+        declared = {field.strip(" `") for field in row["reads"].split(",")}
+        assert declared == set(runprov.policy.rules()[name].reads), (
+            f"[ADR-0018 R-7] `{name}` reads {sorted(runprov.policy.rules()[name].reads)} and its "
+            f"row says {sorted(declared)}"
+        )
+
+
+def test_no_rule_reads_a_field_the_record_cannot_carry(tmp_path, monkeypatch):
+    """[ADR-0018 R-10] T-34. Widened from one clean record to the states that produce each field.
+
+    R-10: a rule may only assert over fields that exist, and if a policy wants a property the
+    record does not carry, the answer is a record change with its own ADR — never an inference.
+
+    **THE FIRST VERSION OF THIS GUARD READ ONE CLEAN RECORD'S TOP-LEVEL KEYS, which is too strict
+    in two directions at once.** `unregistered_reads` is written only when reads were missed and
+    `observation.unregistered_watch_truncated` only when the watch hit its cap — both absent from
+    a clean run, both legitimate. And a nested field could not be expressed at all. So the
+    vocabulary is now the union over records REACHING each of those states, built by the package,
+    and a rule may name a dotted path.
+    """
+    vocabulary = _record_field_vocabulary(tmp_path, monkeypatch)
+    #: EVERY STATE THE FIXTURE SET EXISTS TO REACH, named — including the two only one of its
+    #: four runs produces. **The first version of this omitted
+    #: `observation.unregistered_watch_truncated`, and a control proved the omission mattered:**
+    #: raising `WATCH_MAX_PATHS` so the cap never bites left the capped fixture reaching nothing
+    #: and the guard still passed. A fixture whose state is unasserted can stop doing its job in
+    #: silence — the fifth time that shape has been found here, and the first inside a guard
+    #: written the same hour.
+    required = {
+        "git_status_captured",
+        "git_commit",
+        "status",
+        "failure",
+        "inputs",
+        "outputs",
+        "packages",
+        "unregistered_reads",
+        "observation.auto_available",
+        "observation.packages_recorded",
+        "observation.unregistered_watch_truncated",
+    }
+    assert required <= vocabulary, (
+        "the fixture set did not reach the states it exists for; these fields were never "
+        f"produced: {sorted(required - vocabulary)}"
+    )
+    for name, got in runprov.policy.rules().items():
+        unknown = [field for field in got.reads if field not in vocabulary]
+        assert not unknown, (
+            f"[ADR-0018 R-10] `{name}` reads {unknown}, which no record this package writes "
+            f"carries. A policy wanting a property the record lacks needs a RECORD change with "
+            f"its own ADR, not a rule that evaluates `None`"
+        )
+
+
 def test_every_registered_rule_can_say_it_could_not_check(tmp_path):
     """[ADR-0018 R-3] [ADR-0018 R-6] T-34. The requirement made structural, not aspirational.
 

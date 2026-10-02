@@ -43,9 +43,32 @@ unregistered reads" must say that it can only speak for runs whose watch did not
 and consult `observation.unregistered_watch_truncated` to know. A rule that reads a field
 without reading that field's own truncation mark is the C-06 defect rewritten as a policy.
 
-**R-7.** Opening rule set, each a question the record already answers: the tree was clean; no
-unregistered reads; every output pins its inputs; a commit was recorded; the environment was
-captured; no run finished with a non-`ok` status; every declared input still verifies.
+**R-7.** Opening rule set, each a question the record already answers. **The names are
+canonical and this table is the only list of them** — R-5 forbids a second copy in the parser,
+the docs or the tests, so a test derives the rule set from here and from the registry and fails
+when they disagree. Amended 2026-10-02 from a prose sentence, which could not be derived from.
+
+| rule | asks | reads | CANNOT_CHECK when |
+|---|---|---|---|
+| `clean_tree` | the working tree was clean when the run started | `git_tree_dirty`, `git_status_captured` | the status was never captured — outside a repository, or no git on PATH |
+| `no_unregistered_reads` | the run opened no data file it did not register | `unregistered_reads`, `observation.unregistered_watch_truncated` | the watch hit its cap, so an empty list no longer means none were missed |
+| `outputs_pin_inputs` | every run that produced an output declared what it read | `outputs`, `inputs` | the run recorded no outputs, so there is nothing to ask about |
+| `commit_recorded` | the run names the commit it ran from | `git_commit`, `git_status_captured` | the status was never captured, so an absent commit is not a missing one |
+| `environment_captured` | the run recorded the packages it ran with | `packages`, `observation.packages_recorded` | the record does not say whether packages were recorded at all |
+| `finished_ok` | the run reached its end and recorded success | `status`, `failure` | the line carries no status — a `start` with no ending is not a failure |
+| `inputs_verify` | every input the run declared still hashes to what it recorded | `inputs` | a declared input is no longer on disk, or none was declared |
+
+**THE `CANNOT_CHECK` COLUMN IS THE SPECIFICATION, not a footnote.** R-3 says an unevaluable rule
+is never a pass, and every entry above names the exact state in which this rule cannot answer. A
+rule whose column is empty would be a rule claiming it can always decide, which no rule reading a
+record can honestly claim.
+
+**`no_unregistered_reads` CARRIES A BLIND SPOT THE RECORD CANNOT CLOSE, and it is named rather
+than hidden.** The watch runs inside a `try` whose `except` warns on stderr and returns, leaving
+neither field set — indistinguishable in the record from a run that was watched and read nothing.
+That branch is defensive and believed unreachable, and until a record field says *the watch
+completed*, the rule's own `blind` text states the limit. R-10's remedy for wanting a property the
+record does not carry is a record change with its own ADR, not an inference here.
 
 **R-8.** `--format json` per ADR-0017, because a gate whose result cannot be read by the CI
 system running it is a gate that gets deleted.
@@ -87,6 +110,14 @@ user reads it rather than implied by a matrix.
 
 **R-9.** Not a linter for code. `check` does the static half and this does the recorded half,
 and the boundary is that this command **reads only the history and never the source.**
+
+**CLARIFIED 2026-10-02 by Taylor, because the sentence admits two readings and one of R-7's own
+rules depends on which.** *The source* means SOURCE CODE — the thing `check` parses. It does not
+mean the filesystem. So `inputs_verify` re-hashing a declared input is in scope: data files are
+not source, and *"does the evidence still match the files"* is the question an accredited
+laboratory asks first. The cost is stated rather than hidden: with that rule in a policy, `gate`
+scales with the DATA and not with the history, and a declared input that is gone is a
+`CANNOT_CHECK` naming the path rather than a violation.
 
 **R-10.** Not a way to make a record say something it does not. A rule may only assert over
 fields that exist; if a policy wants a property the record does not carry, the answer is a
