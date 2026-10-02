@@ -61,6 +61,7 @@ message saying so. "We could not look" rendering as the reassuring answer is the
 this package refuses everywhere else — `git_status_captured: false` exists for the same
 reason — and a CI gate that goes green over a directory whose artifacts carry no pins is
 worse than no gate, because someone will trust it.
+Its `--format json` answer is ADR-0017, T-33: one builder, two renderings.
 """
 
 from __future__ import annotations

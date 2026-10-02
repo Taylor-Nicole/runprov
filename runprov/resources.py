@@ -20,6 +20,7 @@ concurrently report 162 MiB, not 450. A figure from here is a FLOOR, and the blo
 
 Every requirement below is numbered in ADR-0013 and checked by
 `test_every_resource_requirement_has_a_test`, which derives the list from the ADR.
+Its `--format json` answer is ADR-0017, T-33: one builder, two renderings.
 """
 
 from __future__ import annotations

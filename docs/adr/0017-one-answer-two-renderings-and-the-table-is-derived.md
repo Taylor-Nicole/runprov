@@ -1,6 +1,6 @@
 # 17. One answer, two renderings, and the table is derived from the data
 
-**Status:** Proposed — T-33. Specification for a feature that is not built.
+**Status:** Accepted — T-33, built across 2026-09-25 … 2026-09-30 and **shipped in 0.7.0** (2026-10-01). Amended by Audit I with R-15 and R-3's derived list; by Audit J with R-16, `chain`'s reason, `export`'s exclusion and the absent-path rule. **This line read `Proposed — a feature that is not built` through the release that shipped it.** The guard that catches exactly that reads a module's TOP docstring for the ADR number, and no module's docstring named this one until 2026-10-02 — so it had nothing to check.
 
 ## Context
 

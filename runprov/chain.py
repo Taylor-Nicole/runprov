@@ -32,6 +32,7 @@ edit to line 3 as line 4 breaking:
 
 A chain that needed this package to check it would contradict the claim the README leads with,
 and would be worth less than no chain — because it would be believed.
+Its `--format json` answer is ADR-0017, T-33: one builder, two renderings.
 """
 
 from __future__ import annotations

@@ -9,6 +9,37 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — ADR-0017 said its own feature was not built, through the release that shipped it
+
+T-33's two closing conditions, which 0.7.0 went out without.
+
+**ADR-0017 was still `Proposed — T-33. Specification for a feature that is not built.`** The
+feature reaches all ten answering commands and shipped on 2026-10-01. The ADR and the index row
+now say `Accepted`.
+
+**And a guard for exactly this already existed, which is the part worth reading.**
+`test_every_adr_is_listed_in_the_adr_index` asserts that no ADR is still proposed while code
+implements it — and it decides *implements* from a module's **top docstring**, deliberately, so a
+passing mention of a future decision in a mid-file comment is not read as an implementation. T-33
+cited ADR-0017 in function docstrings and comments across ten commands and in **no module
+docstring**, so the guard never had `0017` in its set. It was not wrong; it was uninformed, and a
+guard cannot tell that from satisfied. The nine modules that define a payload schema now name it,
+and **a new test enforces the convention the old guard depends on** — deriving the set from the
+parser, so a tenth answering command is covered the day its schema appears.
+
+**ADR-0017 also had no `test_every_answer_requirement_has_a_test`**, which ADR-0013 and ADR-0016
+both have and which the backlog named as T-33's own closing condition. All 16 requirements were
+cited on the day it was written — which is exactly the state that rots unwatched.
+
+Copying the sibling guard would have been the obvious mistake and it is now asserted against:
+`test_every_chain_requirement_has_a_test` matches `**R-n.**`, with the bold closing after the
+number. That is ADR-0017's convention for R-1 … R-14 — but **R-15 and R-16, both added by later
+audits, bold the whole requirement sentence**. A copied guard would have found 14 of 16 and
+passed while ignoring the two newest requirements in the document: the scope pattern, in the
+guard written to stop it. The pattern here matches both conventions, and a floor assertion fails
+if it ever finds only 14.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise

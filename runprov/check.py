@@ -34,6 +34,7 @@ directly and calls a library that does; `getattr(builtins, "open")`, `importlib`
 string; anything outside the root. Its answer is *"these files record nothing"* and never
 *"everything else is recorded"* — no static check can make the second claim, and one that
 implied it would be the defect this package exists to catch.
+Its `--format json` answer is ADR-0017, T-33: one builder, two renderings.
 """
 
 from __future__ import annotations

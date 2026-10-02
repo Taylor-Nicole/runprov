@@ -28,6 +28,7 @@ So each dimension carries its own precondition, and two facts give four states:
 
 The last cell is the point: a record that could not see all its inputs must never be the
 source of "nothing changed".
+Its `--format json` answer is ADR-0017, T-33: one builder, two renderings.
 """
 
 from __future__ import annotations

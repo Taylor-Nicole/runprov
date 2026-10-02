@@ -31,6 +31,7 @@ and neither says whether what happened is still true.
 
 It reads the artifact and nothing else -- no history, no sidecar, no `configure()`, which
 is the whole reason the pin is written into the bytes. See `verify.py`.
+Its `--format json` answer is ADR-0017, T-33: one builder, two renderings.
 """
 
 from __future__ import annotations

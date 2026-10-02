@@ -34091,6 +34091,110 @@ def test_every_field_of_the_chain_report_reaches_its_payload(tmp_path):
     assert json.loads(json.dumps(body)) == body, "the payload must survive a JSON round trip"
 
 
+def test_every_answer_requirement_has_a_test():
+    r"""ADR-0017's specification is checked, not remembered — ADR-0013's mechanism, third use.
+
+    **T-33 SHIPPED IN 0.7.0 WITHOUT THIS GUARD, and the backlog had named it as the row's own
+    closing condition.** ADR-0016 and ADR-0013 each have one; the ADR whose feature reaches every
+    command in the package did not. Coverage was complete on the day it was written — all 16
+    requirements cited — which is exactly the state that rots silently.
+
+    **THE SIBLING'S REGEX WOULD HAVE FOUND 14 OF 16, and copying it was the obvious mistake.**
+    `test_every_chain_requirement_has_a_test` matches `^\*\*(R-\d+)\.\*\*` — bold closing
+    right after the number — which is ADR-0016's convention and ADR-0017's for R-1 … R-14. R-15
+    and R-16, both added by later audits, bold the WHOLE requirement sentence: `**R-15. A payload
+    is emitted whenever …**`. So a copied guard would have passed while silently ignoring the two
+    newest requirements in the document — the scope pattern, in the guard written to stop it, for
+    the tenth time in this project. Measured before this test was written: 14 against 16.
+
+    The pattern here therefore requires the number and the period at the start of a line and NOT
+    the closing bold, which matches both conventions this ADR uses. A prose reference cannot
+    satisfy it: `**R-12 names this structure**` has no period after the number.
+
+    SET EQUALITY, NOT A FLOOR, for the reason G-11 gives on the chain guard: `>= 16` cannot see a
+    requirement deleted from the ADR, and `== 16` turns red on a future R-17 whose obvious fix is
+    to bump the number. Equality catches a dropped requirement, a mistyped citation, and a test
+    citing something the ADR no longer says — in both directions and with no number to maintain.
+
+    CITATIONS ARE READ FROM BEFORE THIS `def`, like both siblings, so this docstring's own
+    mentions of R-15 and R-16 cannot satisfy the requirements it is checking.
+    """
+    adr = (
+        _repo_root() / "docs" / "adr" / "0017-one-answer-two-renderings-and-the-table-is-derived.md"
+    )
+    if not adr.is_file():  # pragma: no cover - docs ship in the sdist, a bare tree may not
+        pytest.skip("ADR-0017 not present")
+    text = adr.read_text(encoding="utf-8")
+    required = set(re.findall(r"^\*\*(R-\d+)\.", text, re.M))
+    assert len(required) > 14, (
+        "ADR-0017 declares R-1 through R-14 with the bold closing after the number and R-15 "
+        "onward with the whole sentence bold. A pattern that finds 14 is matching only the "
+        f"first convention and is blind to the newest requirements: {sorted(required)}"
+    )
+    tests = pathlib.Path(__file__).read_text(encoding="utf-8")
+    cited = set(
+        re.findall(r"\[ADR-0017 (R-\d+)\]", tests.split("def test_every_answer_requirement")[0])
+    )
+    assert required == cited, (
+        "ADR-0017 and its tests disagree. Requirements the ADR states that no test names: "
+        f"{sorted(required - cited, key=lambda s: (len(s), s))}. Requirements the tests cite "
+        f"that the ADR no longer states: {sorted(cited - required, key=lambda s: (len(s), s))}"
+    )
+
+
+def test_every_module_that_answers_in_json_cites_adr_0017_where_the_index_guard_looks():
+    """[T-33]. The convention `test_every_adr_is_listed_in_the_adr_index` depends on, enforced.
+
+    **THIS IS WHY ADR-0017 STAYED `Proposed` THROUGH ITS OWN RELEASE.** That guard asserts no ADR
+    is still proposed while code implements it, and it decides *implements* from a module's TOP
+    docstring — deliberately, so a passing mention of a future decision in a mid-file comment is
+    not read as an implementation. T-33 cited ADR-0017 in function docstrings and comments across
+    ten commands and in **no module docstring**, so `shipped` never contained `0017` and the
+    guard had nothing to check. It was not wrong; it was uninformed, which a guard cannot
+    distinguish from satisfied.
+
+    THE SET IS DERIVED FROM THE CODE, not listed here: a module that defines a payload schema
+    `runprov.<command>.v1` implements this ADR, and `runprov.run.v2` is the RECORD schema and not
+    one of them. So a tenth answering command is covered on the day its schema appears, rather
+    than on the day somebody remembers this test.
+
+    `log` and `lineage` have no module of their own — their payload schemas live in `__main__.py`
+    — which is why that module is in the set too, found by the same pattern.
+    """
+    #: A PAYLOAD SCHEMA IS ONE WHOSE NAME IS A COMMAND THAT ANSWERS IN JSON, and that set is
+    #: derived from the parser by `_cli_json_commands`. The first version of this sweep matched
+    #: any `runprov.<x>.vN` with a `(?!run\.)` lookahead and still caught `run.py`, which also
+    #: defines `runprov.history.v2` and `runprov.start.v1` — RECORD schemas, not answers.
+    #: Excluding one name by hand would have been the stale-list pattern; asking the parser is
+    #: not, and a tenth answering command is covered on the day its schema appears.
+    commands = _cli_json_commands()
+    root = _repo_root() / "runprov"
+    answering = set()
+    for module in sorted(root.glob("*.py")):
+        source = module.read_text(encoding="utf-8")
+        named = set(re.findall(r'^[A-Z_]*SCHEMA = "runprov\.([a-z]+)\.v\d+"', source, re.M))
+        if named & commands:
+            answering.add(module.name)
+    assert len(answering) >= 9, (
+        f"the sweep for payload schemas found {sorted(answering)}; the scope broke"
+    )
+    assert "run.py" not in answering, (
+        "`run.py` defines the RECORD schemas — `runprov.run.v2`, `runprov.history.v2`, "
+        "`runprov.start.v1` — and implements no answer. The first version of this sweep caught "
+        "it, because it asked the shape of the string instead of asking the parser"
+    )
+    missing = []
+    for name in sorted(answering):
+        doc = ast.get_docstring(ast.parse((root / name).read_text(encoding="utf-8"))) or ""
+        if "0017" not in set(re.findall(r"ADR-(\d{4})", doc)):
+            missing.append(name)
+    assert not missing, (
+        "these modules define a `--format json` payload schema and their TOP docstring does not "
+        "name ADR-0017, so `test_every_adr_is_listed_in_the_adr_index` cannot tell that the "
+        f"decision is built — which is how it stayed `Proposed` through 0.7.0: {missing}"
+    )
+
+
 def test_every_chain_requirement_has_a_test():
     """ADR-0016's specification is checked, not remembered — the ADR-0013 mechanism, reused.
 

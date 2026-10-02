@@ -23,6 +23,7 @@ TEXT AND YAML, not HTML. The audience runs this over ssh in a terminal beside th
 times a day, and a browser is a worse place to read it from than the shell it was launched
 in. YAML because the fields are the same ones `log --format yaml` emits, so anything that
 reads one reads the other.
+Its `--format json` answer is ADR-0017, T-33: one builder, two renderings.
 """
 
 from __future__ import annotations

@@ -29,6 +29,7 @@ than copy either, `_lineage` fills two out-parameters during the passes it alrea
 convention `bad` and `scripts` already follow — and everything here is a walk over what it
 produced. Two traversals of one history that disagree about what is connected is a defect this
 project keeps finding.
+Its `--format json` answer is ADR-0017, T-33: one builder, two renderings.
 """
 
 from __future__ import annotations

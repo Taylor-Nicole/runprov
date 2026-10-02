@@ -21,6 +21,7 @@ WHAT IT SAYS IT CANNOT TELL YOU, on the page itself rather than in documentation
 beside it. A quality document that overstates is worse than none, because it is the version
 that gets cited; and the limits are not incidental — "it records, it does not audit" is the
 package's own boundary and belongs where the claim is made.
+Its `--format json` answer is ADR-0017, T-33: one builder, two renderings.
 """
 
 from __future__ import annotations
