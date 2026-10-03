@@ -31025,7 +31025,13 @@ CORPUS_RECIPES: dict[str, list[str]] = {
     # written by every released wheel, where `observation` did not exist at all in the earliest of
     # them — so `environment_captured` must answer CANNOT_CHECK for those rather than accusing a
     # year-old run of recording nothing.
-    "gate": ["gate", "--policy", "policy.json", "--log", "prov/history.jsonl"],
+    #: `--format json` IS PART OF THE RECIPE [K-40]. The whole assertion used to be
+    #: `code in (0, 1, 2)`, and the comment above claimed a behaviour the exit code cannot
+    #: carry. PROVED: a derived policy naming ZERO rules sends `load()` down its refusal path,
+    #: exit 2 with **0 bytes on stdout** — inside the legal set — and all seven parametrised
+    #: versions stayed green. With every rule it also exits 2, with a 3 274-byte page, and the
+    #: assertion could not tell the two apart. The payload is what distinguishes them.
+    "gate": ["gate", "--policy", "policy.json", "--log", "prov/history.jsonl", "--format", "json"],
 }
 
 #: Not pointed at the corpus, with the reason. `exec` and `capture` CREATE a run rather than
@@ -31129,6 +31135,16 @@ def test_every_command_reads_a_history_written_by_a_released_version(
         f"CORPUS_RECIPES, or name them in CORPUS_NOT_READERS with the reason."
     )
 
+    #: THE TREE'S OWN RECORD COUNT, read from the history this version wrote rather than
+    #: assumed, because it is what `gate`'s payload is held to below [K-40].
+    lines = [
+        json.loads(line)
+        for line in (tree / "prov" / "history.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    written = [r for r in lines if r.get("schema") != runprov.run.START_SCHEMA]
+    assert len(written) >= 3, f"{version}: the tree holds {len(written)} record(s); the premise"
+
     checked = 0
     for name, argv in CORPUS_RECIPES.items():
         if name not in commands:  # pragma: no cover - a command was removed, not added
@@ -31140,8 +31156,39 @@ def test_every_command_reads_a_history_written_by_a_released_version(
             code = exc.code if isinstance(exc.code, int) else 2
         except Exception as exc:  # the thing under test is that this never happens
             pytest.fail(f"{version}: `runprov {' '.join(argv)}` raised {type(exc).__name__}: {exc}")
-        capsys.readouterr()
+        out = capsys.readouterr().out
         assert code in (0, 1, 2), f"{version}: `runprov {name}` exited {code}"
+        if name == "gate":
+            #: AND THE GATE REALLY RAN TODAY'S RULES AGAINST THIS VERSION'S RECORDS [K-40]. This
+            #: is the only check in the suite that points today's rules at an earlier release's
+            #: history, and until now it could not tell *the gate answered* from *the gate
+            #: refused to start*. `json.loads` is the first half: the zero-rule refusal that
+            #: proved the hole emits nothing at all, so it fails here before any assertion.
+            body = json.loads(out)
+            assert body["schema"] == runprov.policy.SCHEMA, body.get("schema")
+            assert [row["rule"] for row in body["rules"]] == sorted(runprov.policy.rules()), (
+                f"{version}: the policy written above names every registered rule, so the answer "
+                f"must carry a row for each: {[row['rule'] for row in body['rules']]}"
+            )
+            assert body["runs"] == len(written), (
+                f"{version}: the gate examined {body['runs']} of the {len(written)} record(s) "
+                f"this version wrote"
+            )
+            for row in body["rules"]:
+                assert row["evaluated"] == len(written), (
+                    f"{version}: `{row['rule']}` was evaluated against {row['evaluated']} of "
+                    f"{len(written)} record(s), so this recipe's green is partly vacuous: {row}"
+                )
+            #: **NOT ASSERTED HERE, AND THE MEASUREMENT IS THE REASON [K-40, disputed clause].**
+            #: K-40's remedy also asked for *every rule's `outcome != VIOLATED`*, as the way to
+            #: catch a rule that has begun ACCUSING a year-old record. It cannot be asserted of
+            #: this corpus: `tools/corpus_scenario.py` reads `data/lookup.csv` WITHOUT
+            #: registering it — its own comment says *"UNREGISTERED ON PURPOSE"*, so that the
+            #: corpus can show the field surviving a version change — so
+            #: `no_unregistered_reads` answers VIOLATED on six of the seven histories and
+            #: CANNOT_CHECK on 0.1.0, which has no `observation` block. The verdict is correct
+            #: and the clause would be red on day one. It is recorded as refuted rather than
+            #: replaced with a substitute remedy this applier invented.
         checked += 1
     assert checked >= 8, f"only {checked} commands were run against {version}"
 
@@ -35073,13 +35120,33 @@ def test_inputs_verify_answers_for_each_declared_entry_and_names_which(tmp_path)
         ({"path": str(data), "sha256": absent}, violated, "sha256"),
         ({"path": str(data), "content_sha256": content}, met, None),
         ({"path": str(data), "content_sha256": absent}, violated, "content_sha256"),
-        #: LIKE FOR LIKE, AND ONLY ONE KEY — I-02's repair, asserted rather than inherited. An
-        #: entry carrying both is compared on `content_sha256` and the raw digest is not consulted
-        #: at all. That is not a leniency: equal content digests mean identical content by this
-        #: package's own definition, and a file whose line endings were rewritten is exactly the
-        #: case the two digests are designed to disagree about.
-        ({"path": str(data), "content_sha256": content, "sha256": absent}, met, None),
     ]
+    #: WHAT THE TABLE MUST REACH [K-42]. The twelve rows asserted nothing about what the loop
+    #: got to, so a row could be deleted invisibly — PROVED in two stages: neutralising the whole
+    #: table left the test passing with only coverage objecting, over 5 lines of 296; then
+    #: deleting ONE semantically distinct row left **100% statement and branch coverage and a
+    #: green suite**. Its sibling twelve lines up the same file had the remedy
+    #: (`outcomes == {met, violated, unknown}`) and this test had none.
+    #:
+    #: DECLARED HERE AND NOT DERIVED FROM `cases`, because a property computed from the table
+    #: cannot notice a row leaving it. A row that answers an inability is identified by its
+    #: sentence; a row that answers MET has no sentence, so it is identified by the KEYS it
+    #: carried — which is what a MET row is for, since the whole question is which digest key
+    #: the entry offers and therefore which one is compared.
+    must_reach = {
+        (unknown, "carries no path"),
+        (unknown, "no digest this rule can take again"),
+        (unknown, "`runprov verify` re-walks"),
+        (unknown, "not a file whose"),
+        (unknown, "could not be read"),
+        (unknown, "no longer on disk"),
+        (violated, "sha256"),
+        (violated, "content_sha256"),
+        (met, ("content_sha256", "kind", "path")),
+        (met, ("path", "sha256")),
+        (met, ("content_sha256", "path")),
+    }
+    reached = set()
     for entry, expected, phrase in cases:
         got = runprov.policy.rules()["inputs_verify"].judge(
             {"inputs": [entry]}, runprov.policy.Context()
@@ -35094,6 +35161,46 @@ def test_inputs_verify_answers_for_each_declared_entry_and_names_which(tmp_path)
             )
         else:
             assert got.reason is None, f"a MET verdict explains nothing: {got.reason}"
+        reached.add((expected, phrase) if phrase else (expected, tuple(sorted(entry))))
+
+    assert reached == must_reach, (
+        "[K-42] this table asserted nothing about what the loop reached, so a row could be "
+        "deleted with the suite green at 100% coverage. Every row above answers for a state the "
+        "rule has to distinguish; if one is gone, the state is unasserted:\n"
+        f"  declared and not reached: {sorted(map(str, must_reach - reached))}\n"
+        f"  reached and not declared: {sorted(map(str, reached - must_reach))}"
+    )
+    assert {outcome for outcome, _ in reached} == {met, violated, unknown}, (
+        f"[ADR-0018 R-3] all three answers must be exercised here: {sorted(reached)}"
+    )
+
+    #: I-02, LIFTED OUT OF THE TABLE AND GIVEN ITS PREMISE [K-42]. It was one row of twelve, and
+    #: **deleting that one row left 1 192 passed, 0 failed and `policy.py` at 296/124, 100%
+    #: statement AND branch** — measured, which is the whole row. It is the only assertion that
+    #: an entry carrying BOTH digests is compared on `content_sha256` ALONE, and the premise is
+    #: what makes it a test rather than a leniency: the raw digest in this entry is DELIBERATELY
+    #: WRONG, so a rule that consulted it at all would answer VIOLATED here. Equal content
+    #: digests mean identical content by this package's own definition, and a file whose line
+    #: endings were rewritten is exactly the case the two digests are designed to disagree about
+    #: — so if that leniency regressed, such a file would be reported VIOLATED: a false
+    #: accusation with nothing red.
+    both = {"path": str(data), "content_sha256": content, "sha256": absent}
+    assert runprov.hashing.sha256(data) != absent, (
+        "the premise: the raw digest this entry carries is NOT the file's, so a rule that "
+        "consulted it would be visible rather than merely redundant"
+    )
+    chosen = runprov.policy._comparable_on(both)
+    assert chosen is not None and chosen[:2] == ("content_sha256", content), (
+        f"[I-02] an entry carrying both digests is comparable on `content_sha256` and the raw "
+        f"one is not consulted: {chosen}"
+    )
+    i02 = runprov.policy.rules()["inputs_verify"].judge(
+        {"inputs": [both]}, runprov.policy.Context()
+    )
+    assert (i02.outcome, i02.reason) == (met, None), (
+        f"[I-02] like for like, and only one key: the content digest matches, so this is MET and "
+        f"the wrong raw digest beside it is not a finding: {i02}"
+    )
 
     #: SEVERAL ENTRIES, ONE VERDICT, AND THE COUNT TRAVELS. Nothing is short-circuited on the
     #: first mismatch: a laboratory asks WHICH files no longer match, and a gate naming one and
@@ -35693,7 +35800,31 @@ def test_every_registered_rule_can_say_it_could_not_check(tmp_path):
     assert registry, "the rule registry is empty, so every assertion below is vacuous"
     for name, got in registry.items():
         assert got.reads, f"{name} declares no fields, so this guard cannot strip any"
-        stripped = dict.fromkeys(got.reads)
+        #: THE HEAD OF EVERY READ, BECAUSE THE DOTTED HALF OF THIS STRIP WAS A NO-OP [K-26].
+        #: `dict.fromkeys(got.reads)` put the LITERAL key
+        #: `"observation.unregistered_watch_truncated"` into the record — a key no rule reads at
+        #: all — so for the two rules with nested `reads` the CANNOT_CHECK below came from the
+        #: `observation` block being absent and never from the strip. The guard that makes R-3
+        #: structural was weaker than it looked for exactly the two rules R-6 is about, and it
+        #: was written to prevent this class.
+        #:
+        #: **AND THE CONTROL THE ROW ASKED FOR IS FALSE, which is why this is a HEAD strip and
+        #: not a walk into the nested dict.** Measured: a strip that leaves `observation` present
+        #: and empty gives `no_unregistered_reads -> MET`, and **MET is the right answer there** —
+        #: a run that read nothing unregistered is that rule's ordinary good case. Asserting
+        #: CANNOT_CHECK for it would be a guard satisfiable only by breaking the rule. Stripping
+        #: the head removes the whole block, which is what *carrying none of the fields it reads*
+        #: means, and all seven rules answer CANNOT_CHECK over it.
+        stripped = dict.fromkeys(r.split(".")[0] for r in got.reads)
+        #: AND THE STRIP IS WHAT IT CLAIMS TO BE, which is the assertion that makes the line above
+        #: load-bearing rather than a silent no-op again [K-26]. A DOTTED key is a key no record
+        #: carries and no rule reads, so a CANNOT_CHECK obtained over one proves nothing about the
+        #: field the rule actually consults — and that is precisely the state this guard was in.
+        assert not [key for key in stripped if "." in key], (
+            f"[K-26] `{name}`'s stripped record carries a dotted key, which no record has and no "
+            f"rule reads, so the verdict below would come from the parent block's absence and not "
+            f"from the strip: {sorted(stripped)}"
+        )
         verdict = got.judge(stripped, runprov.policy.Context())
         assert verdict.outcome == runprov.policy.CANNOT_CHECK, (
             f"[ADR-0018 R-3] `{name}` answered {verdict.outcome} over a record carrying none of "
@@ -36735,10 +36866,23 @@ def test_the_readme_rule_table_is_the_registry_and_not_a_copy_of_it(tmp_path):
         assert asks == got.asks, (
             f"[ADR-0018 R-7] the README says `{name}` asks {asks!r} and the rule says {got.asks!r}"
         )
-        assert got.blind.startswith(blind), (
-            f"[ADR-0018 R-6] the README's `cannot answer when` for `{name}` is not the opening of "
-            f"the sentence the rule prints, so the two document different limits:\n"
-            f"  README: {blind}\n  rule:   {got.blind}"
+        #: EQUALITY WITH THE FIRST CLAUSE, NOT `startswith` [K-39]. `got.blind.startswith(blind)`
+        #: is satisfied by an EMPTY cell — proved by emptying one in a copy: the targeted test
+        #: and the full suite both stayed green at 100% branch coverage. It admits a
+        #: one-character cell too, and it admits ANOTHER RULE'S prefix: four of the seven `blind`
+        #: texts begin *"a run "*, so those cells can be swapped and the README would document a
+        #: different limit from the one the gate prints — the stale-doc copy this test exists to
+        #: prevent. Measured before the change: all seven cells are already exactly
+        #: `blind.split(" — ")[0]`, so the equality costs no README edit.
+        #:
+        #: **THE EM DASH IS NOW LOAD-BEARING IN EVERY FUTURE `blind`**, and that clause is in
+        #: `policy.Rule`'s own docstring, where the author of the next rule reads it.
+        assert blind == got.blind.split(" — ")[0], (
+            f"[ADR-0018 R-6] the README's `cannot answer when` for `{name}` is not the FIRST "
+            f"CLAUSE of the sentence the rule prints, so the two document different limits — and "
+            f"an equality here rather than a prefix is the row: a prefix admits an empty cell, a "
+            f"truncated one, and another rule's opening words.\n"
+            f"  README: {blind}\n  rule:   {got.blind.split(' — ')[0]}"
         )
 
     # AND THE `--help` EPILOG IS BUILT FROM THE REGISTRY, so the other documented copy cannot

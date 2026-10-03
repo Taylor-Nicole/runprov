@@ -94,6 +94,15 @@ class Rule(typing.NamedTuple):
     speak for runs whose git status was captured at all. A rule that reads a field without
     reading that field's own blindness mark is the C-06 defect rewritten as a policy, and it is
     the single most likely way this feature goes quietly wrong.
+
+    **AND THE EM DASH IN `blind` IS LOAD-BEARING, WHICH IS A CONSTRAINT ON THE NEXT RULE WRITTEN
+    HERE [K-39].** The README's rule table documents what each rule cannot see, and
+    `test_the_readme_rule_table_is_the_registry_and_not_a_copy_of_it` holds its third column
+    EQUAL to `blind.split(" — ")[0]` — the first clause of this sentence. The comparison was
+    `startswith`, which an EMPTY cell satisfies, and a one-character one, and another rule's
+    opening words: four of the seven texts begin *"a run "*. So a `blind` written as one long
+    clause with no em dash gives the README a cell it has to carry whole, and the split is where
+    a rule says *this much is the documented limit, the rest is the detail*.
     """
 
     name: str
