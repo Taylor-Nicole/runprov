@@ -84,6 +84,18 @@ class Context(typing.NamedTuple):
     IT IS PER-CALL AND DELIBERATELY NOT A MODULE-LEVEL `lru_cache`. A digest cache that outlived
     one `assess` would answer a later question with an earlier run's bytes, which is the exact
     opposite of what this command exists to establish.
+
+    **BUT A CALLER THAT HANDS IN A `Context` OWNS ITS FRESHNESS [K-31].** This paragraph used to
+    say *IT IS PER-CALL* as an absolute and `assess`'s own comment said *no caller can hand in a
+    stale one*; both were false. `assess` replaces `digests` only when it is `None`, so a cache
+    passed in is used verbatim — reproduced: zero files read, and an unchanged file reported
+    VIOLATED, which is a false accusation and the one answer a gate must never give.
+
+    That behaviour is DELIBERATE and asserted by
+    `test_the_digest_cache_is_one_assess_wide_and_no_wider`, because `assessment()` needs one
+    cache across every rule in a policy rather than one per rule; what was wrong was the promise
+    written beside it. So: a library caller that reuses a `Context` between calls is reusing
+    digests, and the entries have to still describe the disk.
     """
 
     digests: dict[tuple[str, str], str | None] | None = None
@@ -173,7 +185,21 @@ def assess(
     """
     got = _REGISTRY[name]
     #: ONE CACHE PER CALL, built here rather than demanded of the caller, so a caller that knows
-    #: nothing about digests still gets the memoisation and no caller can hand in a stale one.
+    #: nothing about digests still gets the memoisation. **AND A CALLER THAT HANDS ONE IN OWNS
+    #: ITS FRESHNESS [K-31].** This said *no caller can hand in a stale one*, which is false, and
+    #: the failure mode is the one output a gate must never produce: `digests` is replaced only
+    #: when it is `None`, so a `Context(digests={(path, key): "deadbeef" * 8})` is used verbatim,
+    #: **zero files are read**, and an unchanged file reports VIOLATED. Reproduced, including the
+    #: zero reads — patching `content_digest` to raise still gave VIOLATED.
+    #:
+    #: **THE CODE IS RIGHT AND THE SENTENCE WAS WRONG, which is why only the sentence moved.**
+    #: Replacing `digests` unconditionally would break
+    #: `test_the_digest_cache_is_one_assess_wide_and_no_wider`, which asserts the opposite
+    #: behaviour deliberately — *a caller that supplies one gets it used rather than replaced* —
+    #: and `assessment()` depends on exactly that to read each file ONCE across every rule in a
+    #: policy instead of once per rule. `assess`, `Context` and `digests` are all public, so the
+    #: old sentence told the next caller that reusing a context is impossible and that nobody
+    #: need guard against it.
     context = Context() if context is None else context
     if context.digests is None:
         context = context._replace(digests={})

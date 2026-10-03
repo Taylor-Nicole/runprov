@@ -34735,13 +34735,28 @@ def test_each_rule_reaches_all_three_verdicts_over_the_state_its_row_names(tmp_p
         "every registered rule needs its verdicts asserted here, and only registered ones: "
         f"{sorted(set(cases) ^ set(runprov.policy.rules()))}"
     )
+    #: A BARE `Context` CACHES NOTHING, AND THIS IS AN ASSERTION BECAUSE A COMMENT HERE TAUGHT
+    #: THE OPPOSITE [K-36]. It justified the fresh context below by saying a shared one *would
+    #: serve the VIOLATED row a digest cached by the MET row*. `Context().digests` is `None` and
+    #: the cache path guards on it, so the file is read twice either way — and even a shared
+    #: `Context(digests={})` would not move these verdicts, because the cache holds the DISK
+    #: digest while the two rows differ only in what the RECORD claims.
+    #:
+    #: **IT MATTERS BECAUSE THE BELIEF IT TAUGHT IS WHAT MAKES K-31 LOOK IMPOSSIBLE.** A reader
+    #: who thinks a bare `Context()` memoises cannot see the one shape that really produces a
+    #: wrong answer: a cache handed in ALREADY POISONED, which `assess` uses verbatim — zero
+    #: files read, an unchanged file reported VIOLATED. The same false belief was in `assess`'s
+    #: own comment and in `Context`'s docstring, and this is the third place it lived.
+    assert runprov.policy.Context().digests is None, (
+        "[K-36] [K-31] a bare `Context` holds no cache at all. The assertion is here rather than "
+        "a corrected comment because the comment that was here taught a reader that it does, "
+        "which is the belief that hides K-31's poisoned cache"
+    )
     for name, rows in cases.items():
         outcomes = set()
         for record, expected in rows:
-            #: A FRESH CONTEXT PER CASE. One shared between them would serve the VIOLATED row a
-            #: digest cached by the MET row for the same path, and the two rows differ only in
-            #: the digest the record claims — the comparison would still be right, but it would
-            #: no longer be a comparison against the disk.
+            #: A FRESH CONTEXT PER CASE — for isolation, and NOT because a shared one would cache
+            #: anything. See the assertion above: it would not.
             got = runprov.policy.rules()[name].judge(record, runprov.policy.Context())
             assert got.outcome == expected, (
                 f"`{name}` over {record} answered {got.outcome} ({got.reason}), not {expected}"
