@@ -56,6 +56,18 @@ on the record's own digest key, comparing all 256 bits rather than the 16 charac
 carries. A declared input that is gone is `CANNOT_CHECK` naming the path and never a violation —
 the file may have been archived, and an accusation cannot be withdrawn from a record.
 
+**`environment_captured` reads the snapshot the record NAMES, and opens no file.** A run whose
+environment snapshot could not be written records `environment_snapshot: {"error": …}` and is
+still marked `packages_recorded: "snapshot"` — the mark comes from the key's presence — so a run
+that printed *WARNING: could not write environment snapshot* and recorded no package at all
+answered MET over `packages: {}`, which this rule's own *cannot see* sentence calls
+indistinguishable from nobody having asked. An unwritable snapshot directory in CI turned the
+environment control into a no-op for every run after it. The rule now answers CANNOT_CHECK naming
+the error, and CANNOT_CHECK when the record marks a snapshot and names no package count in it.
+**No snapshot file is opened** — the record attests the count and the digest, and the test deletes
+the file and takes the verdict again to prove it. Measured on all seven released histories: no
+verdict moves, because every one of them names `n_packages: 2`.
+
 **A breach and an inability are two lists and two words.** Each rule row used to carry one
 `reasons` list holding both, and the page printed every member of it under the word `finding` — so
 *the run recorded no outputs, so there is nothing to ask* was rendered as an accusation beside a

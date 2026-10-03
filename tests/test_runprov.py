@@ -34281,6 +34281,21 @@ def _record_field_vocabulary(tmp_path, monkeypatch) -> set[str]:
     except ValueError:
         pass
     harvest(failed)
+
+    #: 5. A RUN THAT CAPTURED AN ENVIRONMENT SNAPSHOT, which is the only way
+    #: `environment_snapshot` appears — added for K-19, where `environment_captured` had to start
+    #: reading it. `environment` itself is `None` in a history record: `run.py` FLATTENS the block
+    #: to this top-level key and `environment.snapshot` exists only in the sidecar, which `gate`
+    #: never opens. **That is the half of K-19 a skeptic caught**: the row sent an applier to
+    #: `environment["snapshot"]`, which would have read `None` on every record — uninformed and
+    #: indistinguishable from satisfied — and this fixture is what makes the right field provable.
+    snapped = histories / "snapped.jsonl"
+    snapshots = histories / "env"
+    snapshots.mkdir()
+    runprov.configure(root=histories, run_log=snapped, auto_steps="off", env_snapshot_dir=snapshots)
+    with runprov.Run("snapped", {}, provenance=histories / "p5.json"):
+        pass
+    harvest(snapped)
     return vocabulary
 
 
@@ -34335,7 +34350,40 @@ def test_each_rule_reaches_all_three_verdicts_over_the_state_its_row_names(tmp_p
         ],
         "environment_captured": [
             ({"observation": {"packages_recorded": "tracked"}, "packages": {"x": "1"}}, met),
-            ({"observation": {"packages_recorded": "snapshot"}, "packages": {}}, met),
+            #: A SNAPSHOT THAT NAMES ITS PACKAGE COUNT, which is what every released wheel wrote
+            #: and why MET is correct for all seven — the row that was here before carried the
+            #: MARK ALONE and answered MET, which is K-19.
+            (
+                {
+                    "observation": {"packages_recorded": "snapshot"},
+                    "packages": {},
+                    "environment_snapshot": {"n_packages": 2, "sha256": "ab" * 32},
+                },
+                met,
+            ),
+            #: THE MARK WITHOUT THE SNAPSHOT [K-19]. `_observed_packages` returns `"snapshot"` on
+            #: the mere presence of the key, so a capture that RAISED is marked the same way as
+            #: one that worked, and the rule vouched for it over `packages: {}` — which its own
+            #: `blind` text calls indistinguishable from nobody having asked.
+            (
+                {
+                    "observation": {"packages_recorded": "snapshot"},
+                    "packages": {},
+                    "environment_snapshot": {"error": "[Errno 13] Permission denied"},
+                },
+                unknown,
+            ),
+            ({"observation": {"packages_recorded": "snapshot"}, "packages": {}}, unknown),
+            #: AND A RUN THAT TRACKED PACKAGES *AND* TOOK A SNAPSHOT IS NOT RELYING ON IT, so the
+            #: snapshot is not consulted at all: the packages themselves are in the record.
+            (
+                {
+                    "observation": {"packages_recorded": "snapshot"},
+                    "packages": {"x": "1"},
+                    "environment_snapshot": {"error": "this is not read"},
+                },
+                met,
+            ),
             #: `none` IS AN ANSWER, not an inability: the record positively says nothing was kept.
             ({"observation": {"packages_recorded": "none"}, "packages": {}}, violated),
             ({"observation": {}}, unknown),
@@ -34499,6 +34547,127 @@ def test_the_rules_agree_with_records_this_package_really_wrote(tmp_path, monkey
     tally = runprov.policy.assess("finished_ok", [record])
     assert (tally["evaluated"], tally["violated"]) == (1, 1), tally
     assert tally["asked_of_nothing"] is False and tally["reasons"], tally
+
+
+def test_environment_captured_reads_the_snapshot_the_record_names_and_opens_no_file(
+    tmp_path, monkeypatch
+):
+    """[ADR-0018 R-3] [ADR-0018 R-7] [ADR-0018 R-9] [ADR-0018 R-10] Audit K, K-19 in its narrow
+    form. A `snapshot` mark is not a snapshot.
+
+    **THE DEFECT.** `_observed_packages` returns `"snapshot"` on the mere PRESENCE of the key, and
+    a capture that raised stores `{"error": str(exc)}` under it. So a run that printed *WARNING:
+    could not write environment snapshot* and recorded no package at all answered **MET**, over
+    `packages: {}` — which this rule's own `blind` text calls indistinguishable from nobody having
+    asked. An unwritable snapshot directory in CI turns the environment control into a no-op for
+    every run after it, which on an accreditation audit is the one control an assessor cares about
+    most: *name the software this result was produced with.* Reproduced live with `chmod 500`.
+
+    **THE WIDER FORM OF THIS ROW IS WITHDRAWN, refuted twice and independently.** It claimed the
+    rule is MET over the records of every released wheel *"on a document the gate never
+    examined"*. Those records carry `environment_snapshot: {path, sha256, n_packages: 2, …}`: the
+    count AND the digest are attested in the record, so those runs did record what they ran with
+    and MET is correct for all seven. The row also forbade and prescribed the same read — it cited
+    R-9 against opening the snapshot file, when R-9's clarification says *the source* means source
+    code and explicitly not the filesystem.
+
+    **AND THE REMEDY AS FILED COULD NEVER HAVE FIRED**, which is the half a skeptic caught: it
+    sent an applier to `environment["snapshot"]`, and in a HISTORY record `environment` is `None`
+    because the block is flattened to a top-level `environment_snapshot`. `environment.snapshot`
+    exists only in the sidecar, which `gate` never opens. A rule reading it would have evaluated
+    `None` on every record — a guard that is uninformed looking exactly like one that is
+    satisfied, which is this project's own named defect.
+
+    **SO NO FILE IS OPENED, AND THAT IS ASSERTED RATHER THAN CLAIMED**: the verdict is taken, the
+    snapshot file is deleted, and the verdict is taken again.
+    """
+    met, unknown = runprov.policy.MET, runprov.policy.CANNOT_CHECK
+    rule = runprov.policy.rules()["environment_captured"]
+
+    def last(log: pathlib.Path):
+        return [
+            json.loads(line)
+            for line in log.read_text(encoding="utf-8").splitlines()
+            if line.strip() and json.loads(line).get("schema") != "runprov.start.v1"
+        ][-1]
+
+    #: 1. A SNAPSHOT THAT WORKED. The positive companion, and it comes first so the failure below
+    #: is a comparison against a measured baseline rather than against an expectation.
+    good = tmp_path / "good"
+    (good / "env").mkdir(parents=True)
+    runprov.configure(
+        root=good, run_log=good / "h.jsonl", auto_steps="off", env_snapshot_dir=good / "env"
+    )
+    with runprov.Run("ok", {}, provenance=good / "p.json"):
+        pass
+    kept = last(good / "h.jsonl")
+    assert kept["observation"]["packages_recorded"] == "snapshot", kept
+    assert not kept.get("packages"), (
+        f"the premise of the whole row: a snapshot run records `packages: {{}}`, which is "
+        f"indistinguishable from nobody having asked: {kept.get('packages')}"
+    )
+    snapshot = kept.get("environment_snapshot") or {}
+    assert snapshot.get("n_packages"), (
+        f"and the premise of the FIX: the record attests the snapshot's package COUNT, so the "
+        f"rule needs no file: {snapshot}"
+    )
+    assert rule.judge(kept, runprov.policy.Context()).outcome == met, (
+        "a run whose snapshot names its packages recorded what it ran with"
+    )
+    #: AND `environment` ITSELF IS `None` HERE, which is the half of this row that was wrong as
+    #: filed: the block is flattened, so the field the remedy named reads `None` on every record.
+    assert kept.get("environment") is None, (
+        f"[K-19] the remedy as filed read `environment['snapshot']`, which a history record does "
+        f"not carry: {kept.get('environment')}"
+    )
+
+    #: 2. NO FILE IS OPENED. The snapshot the record names is deleted and the verdict is taken
+    #: again — R-9's boundary, asserted rather than asserted-about.
+    named = good / snapshot["path"] if not pathlib.Path(snapshot["path"]).is_absolute() else None
+    written = sorted((good / "env").glob("*"))
+    assert written, f"the premise: a snapshot file really was written: {snapshot}"
+    for path in written:
+        path.unlink()
+    assert rule.judge(kept, runprov.policy.Context()).outcome == met, (
+        f"[ADR-0018 R-9] the verdict moved when a file was removed, so this rule is reading the "
+        f"snapshot rather than the record that attests it ({named})"
+    )
+
+    #: 3. A SNAPSHOT WHOSE WRITE FAILED. Reproduced live with `chmod 500` on the snapshot
+    #: directory; here the failure is injected at the one call `run.py` guards, so the record is
+    #: still written by this package — `{"error": str(exc)}` is `run.py`'s own except arm — and
+    #: the test needs no permission bit a Windows runner cannot provide.
+    def refuse(directory):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(runprov.run, "write_snapshot", refuse)
+    bad = tmp_path / "bad"
+    (bad / "env").mkdir(parents=True)
+    runprov.configure(
+        root=bad, run_log=bad / "h.jsonl", auto_steps="off", env_snapshot_dir=bad / "env"
+    )
+    with runprov.Run("raised", {}, provenance=bad / "p.json"):
+        pass
+    failed = last(bad / "h.jsonl")
+    assert failed["observation"]["packages_recorded"] == "snapshot", (
+        f"the premise, and the whole defect: a capture that RAISED is marked exactly as one that "
+        f"worked, because the mark comes from the key's presence: {failed['observation']}"
+    )
+    assert failed["environment_snapshot"].get("error"), (
+        f"and the record says so, in a field the gate can read: {failed['environment_snapshot']}"
+    )
+    assert not failed.get("packages"), failed.get("packages")
+
+    got = rule.judge(failed, runprov.policy.Context())
+    assert got.outcome == unknown, (
+        f"[K-19] a run that printed *could not write environment snapshot* and recorded no "
+        f"package answered {got.outcome} over `packages: {{}}`: {got}"
+    )
+    assert "could not be written" in (got.reason or ""), got.reason
+    assert "Permission denied" in (got.reason or ""), (
+        f"[ADR-0018 R-3] and it names the error, or a reader cannot tell this from a bug: "
+        f"{got.reason}"
+    )
 
 
 def test_inputs_verify_answers_for_each_declared_entry_and_names_which(tmp_path):
@@ -35167,6 +35336,10 @@ def test_no_rule_reads_a_field_the_record_cannot_carry(tmp_path, monkeypatch):
         "observation.auto_available",
         "observation.packages_recorded",
         "observation.unregistered_watch_truncated",
+        #: K-19. Written only by a run with a snapshot directory configured, which is the fifth
+        #: fixture's whole purpose — and named here because a fixture whose state is unasserted
+        #: can stop doing its job in silence, which this guard has already been caught by once.
+        "environment_snapshot",
     }
     assert required <= vocabulary, (
         "the fixture set did not reach the states it exists for; these fields were never "

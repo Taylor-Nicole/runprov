@@ -91,7 +91,7 @@ when they disagree. Amended 2026-10-02 from a prose sentence, which could not be
 | `no_unregistered_reads` | the run opened no data file it did not register | `unregistered_reads`, `observation.unregistered_watch_truncated` | the watch hit its cap, so an empty list no longer means none were missed |
 | `outputs_pin_inputs` | every run that produced an output declared what it read | `outputs`, `inputs` | the run recorded no outputs, so there is nothing to ask about |
 | `commit_recorded` | the run names the commit it ran from | `git_commit`, `git_status_captured` | the status was never captured, so an absent commit is not a missing one |
-| `environment_captured` | the run recorded the packages it ran with | `packages`, `observation.packages_recorded` | the record does not say whether packages were recorded at all |
+| `environment_captured` | the run recorded the packages it ran with | `packages`, `observation.packages_recorded`, `environment_snapshot` | the record does not say whether packages were recorded at all, or it marks a snapshot whose write FAILED or that names no package count |
 | `finished_ok` | the run reached its end and recorded success | `status`, `failure` | the line carries no status — a `start` with no ending is not a failure |
 | `inputs_verify` | every input the run declared still hashes to what it recorded | `inputs` | a declared input is no longer on disk, none was declared, or one was declared as a DIRECTORY — which `runprov verify` re-walks and this rule does not |
 
@@ -99,6 +99,24 @@ when they disagree. Amended 2026-10-02 from a prose sentence, which could not be
 is never a pass, and every entry above names the exact state in which this rule cannot answer. A
 rule whose column is empty would be a rule claiming it can always decide, which no rule reading a
 record can honestly claim.
+
+**AMENDED 2026-10-03 for K-19: `environment_captured` READS THE RECORD'S OWN
+`environment_snapshot`, and opens no file.** `_observed_packages` returns `"snapshot"` on the mere
+PRESENCE of the key, and a capture that raised stores `{"error": …}` under it — so a run that
+printed *WARNING: could not write environment snapshot* and recorded no package answered MET over
+`packages: {}`, which this rule's own `blind` text calls indistinguishable from nobody having
+asked. An unwritable snapshot directory in CI turned the environment control into a no-op for
+every run after it. The flattened `environment_snapshot` carries the snapshot's digest, its path
+AND its package count, so the count is in hand and **R-9 is not bent: no snapshot file is
+opened.**
+
+**The wider claim this row first carried is WITHDRAWN** — refuted twice, independently. *Every
+released wheel answers MET over `packages: {}`* is true and is not a defect: those records carry
+`n_packages: 2` beside the digest, so they did record what they ran with and MET is correct for
+all seven. **And `environment["snapshot"]` is the wrong field to read**: in a HISTORY record
+`environment` is `None`, because the block is flattened to the top level and `environment.snapshot`
+exists only in the sidecar, which `gate` never opens. A rule reading it would have evaluated
+`None` on every record — a guard that is uninformed looking exactly like one that is satisfied.
 
 **AMENDED 2026-10-03 by Taylor's ruling on K-20: EXIT 2 FOR A DECLARED DIRECTORY IS INTENDED.**
 The column said nothing about directories either way, so a project that registers one — which the

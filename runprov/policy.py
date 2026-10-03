@@ -343,10 +343,11 @@ def _commit_recorded(record: typing.Mapping[str, typing.Any], context: Context) 
 @rule(
     "environment_captured",
     asks="the run recorded the packages it ran with",
-    reads=("packages", "observation.packages_recorded"),
+    reads=("packages", "observation.packages_recorded", "environment_snapshot"),
     blind="a record with no `observation` block, which cannot say whether packages were recorded "
     "at all — `packages: {}` alone is indistinguishable from nobody having asked, which is the "
-    "whole reason ADR-0010 added the field this rule reads",
+    "whole reason ADR-0010 added the field this rule reads; and a snapshot whose write FAILED, "
+    "which the record marks `snapshot` all the same",
 )
 def _environment_captured(record: typing.Mapping[str, typing.Any], context: Context) -> Verdict:
     """`packages: {}` CANNOT BE TOLD FROM *NOBODY ASKED*, which ADR-0010 states in those words.
@@ -354,6 +355,26 @@ def _environment_captured(record: typing.Mapping[str, typing.Any], context: Cont
     So the verdict comes from `observation.packages_recorded` — a closed vocabulary of `snapshot`,
     `tracked` and `none` — rather than from the dict's emptiness. `none` is a VIOLATION and not an
     inability: the record positively says nothing was captured, which is an answer.
+
+    AND A `snapshot` MARK IS NOT A SNAPSHOT [K-19]. `_observed_packages` returns `"snapshot"` on
+    the mere PRESENCE of the key, and a capture that raised stores `{"error": str(exc)}` under it
+    — so a run that printed *WARNING: could not write environment snapshot* and recorded no
+    package at all answered MET, over `packages: {}`, which this rule's own `blind` text says is
+    indistinguishable from nobody having asked. An unwritable snapshot directory in CI turned the
+    environment control into a no-op for every run after it. Reproduced live with `chmod 500`.
+
+    THE RECORD'S OWN `environment_snapshot` IS WHAT ANSWERS IT, AND NO FILE IS OPENED. The row as
+    filed sent an applier to `environment["snapshot"]`, which is `None` in every HISTORY record —
+    `run.py` flattens the block to a top-level `environment_snapshot` and `environment.snapshot`
+    exists only in the sidecar, which `gate` never reads. **An applier following the row would
+    have read `None` on every record**, which is a guard that is uninformed looking exactly like
+    one that is satisfied. The flattened field carries the snapshot's digest, its path AND its
+    package count, so the count is in hand and R-9 need not be bent at all.
+
+    THE WIDER CLAIM THIS ROW CARRIED IS WITHDRAWN, refuted twice independently: *every released
+    wheel answers MET over `packages: {}`* is true and is not a defect, because those records
+    carry `n_packages: 2` beside the digest. They did record what they ran with. MET is the
+    correct answer for all seven.
     """
     del context  # this rule reads the record only
     observation = record.get("observation")
@@ -366,6 +387,27 @@ def _environment_captured(record: typing.Mapping[str, typing.Any], context: Cont
         )
     if recorded == "none":
         return Verdict(VIOLATED, "the run recorded no packages")
+    #: ONLY WHERE THE MARK IS THE WHOLE OF THE EVIDENCE. A `tracked` record carries the packages
+    #: themselves, and a `snapshot` record that ALSO tracked some is not relying on the snapshot
+    #: to say what it ran with — so neither needs the snapshot consulted, and widening this to
+    #: every record would make the rule ask for a field older writers never wrote.
+    if recorded == "snapshot" and not record.get("packages"):
+        #: `or {}` IS THE HOUSE IDIOM AND IT IS LOAD-BEARING HERE: a record marking a snapshot and
+        #: carrying none reaches the count test below and answers the same way, rather than adding
+        #: an arm no writer of this package can produce — the mark comes from the key's presence.
+        snapshot = record.get("environment_snapshot") or {}
+        if snapshot.get("error"):
+            return Verdict(
+                CANNOT_CHECK,
+                f"the environment snapshot could not be written ({snapshot['error']}), so no "
+                "package was recorded",
+            )
+        if not snapshot.get("n_packages"):
+            return Verdict(
+                CANNOT_CHECK,
+                "the record marks a snapshot and names no package count in it, so `packages: {}` "
+                "cannot be told from nobody having asked",
+            )
     return Verdict(MET)
 
 
