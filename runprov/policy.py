@@ -163,11 +163,29 @@ def assess(
         context = context._replace(digests={})
     tally = {MET: 0, VIOLATED: 0, CANNOT_CHECK: 0}
     reasons: list[str] = []
+    blocked: list[str] = []
     for record in records:
         verdict = got.judge(record, context)
         tally[verdict.outcome] += 1
-        if verdict.outcome != MET and verdict.reason and verdict.reason not in reasons:
-            reasons.append(verdict.reason)
+        #: A BREACH AND AN INABILITY GO TO DIFFERENT LISTS [K-10]. They used to share one, and
+        #: the page printed every member of it under the word `finding` — so *the run recorded no
+        #: outputs, so there is nothing to ask* was rendered as an accusation, which is Audit H's
+        #: "a true verdict wearing a false sentence" in new code. A person can tell the two apart
+        #: by reading them; a CONSUMER cannot, because `reasons` is `list[str]` and `len(reasons)`
+        #: was 2 where `violated` was 1. The outcome is already in hand here, which is what makes
+        #: this a split rather than a second pass.
+        #:
+        #: `blocked` IS ADR-0014's WORD FOR THIS AND THE BORROWING IS DELIBERATE. `diff` keeps an
+        #: incomparability in its own field under that name rather than mixing it into the
+        #: differences, which is this same decision one command over. A DECLARED collision, in
+        #: R-9/R-12's sense: `diff.Dimension.blocked` is one `str | None` about a dimension and
+        #: this is a `list[str]` about a rule's runs, so the two agree on the MEANING and not on
+        #: the type. `test_no_undeclared_name_means_two_things_across_the_commands` cannot see it
+        #: — it reads top-level keys and this is nested — so the declaration is here.
+        if verdict.reason:
+            into = reasons if verdict.outcome == VIOLATED else blocked
+            if verdict.reason not in into:
+                into.append(verdict.reason)
     evaluated = sum(tally.values())
     if tally[VIOLATED]:
         outcome = VIOLATED
@@ -192,8 +210,13 @@ def assess(
         #: finding the rule produced rather than one a check caught.
         "not_checked": tally[CANNOT_CHECK],
         #: EMPTY over a clean pass, and a LIST because several runs can fail differently and a
-        #: reader repairs each one separately.
+        #: reader repairs each one separately. **VIOLATIONS ONLY** since K-10: `len(reasons)` is
+        #: now a number a consumer can compare with `violated`.
         "reasons": reasons,
+        #: WHY A RUN COULD NOT BE ANSWERED FOR, which is a different finding from a breach and is
+        #: now a different field. R-3 is that the two are different answers; this is that applied
+        #: to the sentences as well as to the verdict.
+        "blocked": blocked,
         #: R-4 again, as a sentence rather than an inference: a rule asked of nothing is not a
         #: rule that passed, and this is the field that says so without a consumer doing
         #: arithmetic on the three tallies.
@@ -863,9 +886,29 @@ class Assessment(typing.NamedTuple):
                 f"{self.unfinished} run(s) started with no ending on record, so they were not "
                 "examined — a run still going, or one killed before it could record"
             )
-        blind = [row["rule"] for row in self.rules if row["outcome"] == CANNOT_CHECK]
+        #: BUILT FROM THE ROWS' OWN COUNTS AND NOT FROM THEIR AGGREGATE OUTCOME [K-09]. It used
+        #: to list the rules whose aggregate was CANNOT_CHECK — and `assess` folds a rule to
+        #: VIOLATED as soon as one run breaches it, so a rule with one breach and one unexamined
+        #: run vanished from the one field a consumer is pointed at. Reproduced: one rule
+        #: `outputs_pin_inputs`, run A with an output and no input, run B with no outputs — the
+        #: payload carried `not_checked: 1` and `cannot_check: null` together. The docstring
+        #: above already claimed to handle exactly this, which was true at the RULE level and
+        #: false at the RUN level: a docstring that is not a contract.
+        #:
+        #: AND IT NAMES RUNS. The old sentence counted rules and said nothing about how many runs
+        #: each one left unanswered, so a reader could not tell *this rule saw nothing* from *this
+        #: rule saw all but one*. `asked_of_nothing` is carried alongside because a rule asked of
+        #: no run has `not_checked == 0` and is the vacuous case R-4 exists for — reading the
+        #: counts alone would have dropped it.
+        blind = [row for row in self.rules if row["not_checked"] or row["asked_of_nothing"]]
         if blind:
-            parts.append(f"{len(blind)} rule(s) could not be checked: {', '.join(blind)}")
+            named = ", ".join(
+                f"{row['rule']} (no run to check)"
+                if row["asked_of_nothing"]
+                else f"{row['rule']} ({row['not_checked']} of {row['evaluated']} run(s))"
+                for row in blind
+            )
+            parts.append(f"not every run was checked against {len(blind)} rule(s): {named}")
         return "; ".join(parts) or None
 
     @property
@@ -1012,6 +1055,12 @@ def render(result: Assessment) -> list[str]:
         )
         for reason in row["reasons"]:
             lines.append(f"  finding      {reason}")
+        #: A DIFFERENT WORD, BECAUSE IT IS A DIFFERENT ANSWER [K-10]. These used to print under
+        #: `finding` beside the breaches, so *the run recorded no outputs, so there is nothing to
+        #: ask* was labelled an accusation. `cannot see` below is the rule's standing blind spot;
+        #: this is what it could not answer about THESE runs.
+        for reason in row["blocked"]:
+            lines.append(f"  not checked  {reason}")
         lines.append(f"  cannot see   {row['blind']}")
         lines.append("")
     if result.cannot_check:

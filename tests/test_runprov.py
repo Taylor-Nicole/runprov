@@ -35248,6 +35248,7 @@ def test_a_rule_asked_of_nothing_is_not_a_rule_that_passed(tmp_path):
     met = runprov.policy.assess("clean_tree", [clean, clean])
     assert (met["outcome"], met["evaluated"], met["met"]) == (runprov.policy.MET, 2, 2), met
     assert met["reasons"] == [] and met["asked_of_nothing"] is False, met
+    assert met["blocked"] == [], met
 
     #: THE BLIND RUN IS THE POINT: `git_tree_dirty` is False here exactly as in `clean`, and only
     #: the capture mark separates them. A rule reading one field would call this a pass.
@@ -35258,7 +35259,13 @@ def test_a_rule_asked_of_nothing_is_not_a_rule_that_passed(tmp_path):
         f"looked: {unknown}"
     )
     assert (unknown["met"], unknown["not_checked"]) == (1, 1), unknown
-    assert unknown["reasons"], "and it says which fact was missing"
+    #: AND THE SENTENCE IS IN `blocked`, NOT IN `reasons` [K-10]. This assertion read
+    #: `unknown["reasons"]` until the two lists were split, which is the half of that row a
+    #: consumer meets: `reasons` was `list[str]` and `len(reasons)` was 1 where `violated` was 0.
+    assert unknown["blocked"], "and it says which fact was missing"
+    assert unknown["reasons"] == [], (
+        f"[K-10] `reasons` is the breaches, and nothing here is a breach: {unknown}"
+    )
 
     #: A VIOLATION OUTRANKS AN INABILITY, which is L-81's ordering in a new command.
     worst = runprov.policy.assess("clean_tree", [clean, blind, dirty])
@@ -35266,6 +35273,12 @@ def test_a_rule_asked_of_nothing_is_not_a_rule_that_passed(tmp_path):
         f"a violation among unexaminable runs is still a violation: {worst}"
     )
     assert (worst["met"], worst["violated"], worst["not_checked"]) == (1, 1, 1), worst
+    #: AND THE TWO SENTENCES ARE IN THE TWO LISTS, one each, which is the state K-10 was filed
+    #: over: both used to sit in `reasons` and both printed under the word `finding`.
+    assert len(worst["reasons"]) == 1 and len(worst["blocked"]) == 1, worst
+    assert len(worst["reasons"]) == worst["violated"], (
+        f"[K-10] `len(reasons)` is now a number a consumer can compare with `violated`: {worst}"
+    )
 
 
 def _gated_history(tmp_path):
@@ -35423,6 +35436,213 @@ def test_one_unreadable_line_is_not_a_gate_that_passed(tmp_path, capsys):
         "the RULE is still met over the runs it saw; the GATE cannot be, because the history was "
         f"not whole. Collapsing those two sends a reader to repair a rule that is fine: {after}"
     )
+
+
+def _breach_and_inability(tmp_path):
+    """One history and ONE rule over it, where one run breaches and another cannot be answered.
+
+    `outputs_pin_inputs` selects both states from real runs rather than from an edited record:
+    a run that wrote an output and declared no input is a VIOLATION, and a run that recorded no
+    output is a CANNOT_CHECK — *there is nothing to ask*. The audit reproduced K-09 and K-10 in
+    this one state, and one rule rather than two is what makes it the interesting one: `assess`
+    folds the rule to VIOLATED, which is where the unexamined run used to disappear.
+    """
+    histories = tmp_path / "mixed"
+    histories.mkdir()
+    log = histories / "m.jsonl"
+    runprov.configure(root=histories, run_log=log, auto_steps="off")
+    (histories / "in.tsv").write_text("a\n", encoding="utf-8")
+    with runprov.Run("gen", {}, provenance=histories / "a.json") as run:
+        with run.open_output(histories / "outA.tsv") as fh:
+            fh.write("x\n")
+    with runprov.Run("look", {}, provenance=histories / "b.json") as run:
+        run.input(histories / "in.tsv")
+    return log
+
+
+def test_a_breach_and_an_inability_are_two_lists_and_two_words(tmp_path, capsys):
+    """[ADR-0018 R-3] [ADR-0017 R-9] Audit K, K-10. An inability rendered as an accusation.
+
+    **THE DEFECT.** `reasons` merged violations and inabilities into one unlabelled list and the
+    page printed every member under the word `finding`. Reproduced: *1 output(s) recorded and no
+    input declared for any of them* and *the run recorded no outputs, so there is nothing to ask*
+    appeared together, both labelled `finding` — one a breach and one a limit. **That is Audit H's
+    "a true verdict wearing a false sentence" in new code**, and ADR-0018 R-3 is precisely that
+    the two are different answers.
+
+    **THE HARM IS MEDIUM AND THE ONE-WAY DOOR IS WHAT MAKES IT HIGH.** A person can tell the two
+    apart by reading them. A CONSUMER cannot: `reasons` is `list[str]`, so `len(reasons)` was 2
+    where `violated` was 1, and `runprov.gate.v1` freezes at upload — after which ADR-0017 R-9
+    forbids renaming a field.
+
+    **THE REMEDY SHAPE WAS REFUTED AND REWRITTEN.** The row asked for each `reasons` row to carry
+    its own outcome, i.e. `list[dict]`. That is not this project's vocabulary: `diff` keeps an
+    incomparability in its OWN FIELD (`blocked`, per ADR-0014) rather than labelling members of
+    the differences. So `reasons` narrows to breaches and `blocked` is the second list, under
+    ADR-0014's word for the same idea one command over.
+    """
+    log = _breach_and_inability(tmp_path)
+    policy_file = _policy_file(tmp_path / "p.json", "outputs_pin_inputs")
+    capsys.readouterr()
+    code = runprov.__main__.main(
+        ["gate", "--policy", str(policy_file), "--log", str(log), "--format", "json"]
+    )
+    row = json.loads(capsys.readouterr().out)["rules"][0]
+
+    #: THE PREMISE: one rule, two runs, one of each state — asserted before anything is read off
+    #: it, because a fixture that reached only one state would make this test pass vacuously.
+    assert (code, row["evaluated"], row["violated"], row["not_checked"]) == (1, 2, 1, 1), row
+    assert row["outcome"] == runprov.policy.VIOLATED, row
+
+    #: 1. TWO LISTS, AND EACH COUNT MATCHES ITS OWN LIST. This is the half a consumer meets.
+    assert len(row["reasons"]) == row["violated"] == 1, (
+        f"[K-10] `len(reasons)` must be a number a consumer can compare with `violated`: {row}"
+    )
+    assert len(row["blocked"]) == 1, f"[K-10] the inability needs its own field: {row}"
+    assert "no input declared" in row["reasons"][0], row["reasons"]
+    assert "nothing to ask" in row["blocked"][0], row["blocked"]
+    assert row["blocked"][0] not in row["reasons"], (
+        f"[K-10] an inability in the breach list is an accusation: {row}"
+    )
+
+    #: 2. AND TWO WORDS ON THE PAGE. The payload split is useless to a reader if the page still
+    #: calls both a finding — ADR-0017 R-1 is one builder and two views, and this is the view.
+    capsys.readouterr()
+    assert runprov.__main__.main(["gate", "--policy", str(policy_file), "--log", str(log)]) == 1
+    page = capsys.readouterr().out
+    #: READ BY LABEL, so the assertion is about which WORD each sentence is printed under rather
+    #: than about whether a phrase appears anywhere on the page. The rule's standing `blind` text
+    #: contains the same phrase as its inability sentence, so a substring search over the whole
+    #: page matches both lines and proves nothing.
+    labelled: dict[str, list[str]] = {}
+    for line in page.splitlines():
+        for label in ("finding", "not checked", "cannot see"):
+            if line.strip().startswith(label):
+                labelled.setdefault(label, []).append(line.strip()[len(label) :].strip())
+    assert labelled.get("finding") == [row["reasons"][0]], (
+        f"[ADR-0017 R-1] the page prints the breaches the payload carries: {labelled}"
+    )
+    assert labelled.get("not checked") == [row["blocked"][0]], (
+        f"[K-10] *the run recorded no outputs, so there is nothing to ask* is not a finding "
+        f"about anybody, and the page printed it under `finding` beside a real breach: {labelled}"
+    )
+    #: AND IT IS NOT THE `cannot see` LINE EITHER, which is the rule's STANDING blind spot rather
+    #: than what it could not answer about THESE runs. Two facts, two labels.
+    assert labelled.get("cannot see") == [row["blind"]], labelled
+
+    #: 3. A CLEAN PASS LEAVES BOTH EMPTY, the positive companion: without it this test would pass
+    #: against a `blocked` that is filled unconditionally.
+    _, clean = _gated_history(tmp_path)
+    capsys.readouterr()
+    runprov.__main__.main(
+        [
+            "gate",
+            "--policy",
+            str(_policy_file(tmp_path / "clean.json", "inputs_verify")),
+            "--log",
+            str(clean),
+            "--format",
+            "json",
+        ]
+    )
+    passed = json.loads(capsys.readouterr().out)["rules"][0]
+    assert (passed["outcome"], passed["reasons"], passed["blocked"]) == (
+        runprov.policy.MET,
+        [],
+        [],
+    ), passed
+
+
+def test_an_unchecked_run_reaches_cannot_check_even_when_the_same_rule_is_violated(
+    tmp_path, capsys
+):
+    """[ADR-0018 R-2] [ADR-0018 R-3] [ADR-0017 R-8] Audit K, K-09. The field a consumer is
+    pointed at, and the run that vanished from it.
+
+    **THE DEFECT.** Top-level `cannot_check` was `null` over a history where a run was not
+    checked, whenever a violation of the SAME RULE outranked it. Reproduced: one rule
+    `outputs_pin_inputs`, run A with an output and no input (VIOLATED), run B with no outputs
+    (CANNOT_CHECK) — the payload carried `not_checked: 1` and `cannot_check: null` together, and
+    exited 1. The property listed only rules whose AGGREGATE outcome was CANNOT_CHECK, and
+    `assess` folds this rule to VIOLATED, so the unexamined run disappeared from the one field
+    ADR-0017 R-8 points a consumer at.
+
+    **THE PROPERTY'S OWN DOCSTRING CLAIMED TO HANDLE EXACTLY THIS** — *"a VIOLATED gate that
+    still could not see everything"* — which is true at the RULE level and false at the RUN
+    level. A docstring is not a contract until something checks it, and this is the something.
+
+    **THE CITATION IS ADR-0017 R-8, NOT R-16**, which a skeptic corrected: R-16's table predates
+    T-34 and does not list `gate`.
+
+    **AND THE SENTENCE NAMES RUNS.** The old one counted rules and said nothing about how many
+    runs each left unanswered, so a reader could not tell *this rule saw nothing at all* from
+    *this rule saw all but one*. The severity was cut to medium for a good reason — `not_checked:
+    1` sits three lines above the `null` and the page prints *1 not checked* — so what this fixes
+    is the SUMMARY, which is the only part a consumer reading one field sees.
+    """
+    log = _breach_and_inability(tmp_path)
+    policy_file = _policy_file(tmp_path / "p.json", "outputs_pin_inputs")
+    capsys.readouterr()
+    code = runprov.__main__.main(
+        ["gate", "--policy", str(policy_file), "--log", str(log), "--format", "json"]
+    )
+    body = json.loads(capsys.readouterr().out)
+    row = body["rules"][0]
+
+    assert (row["outcome"], row["violated"], row["not_checked"]) == (
+        runprov.policy.VIOLATED,
+        1,
+        1,
+    ), f"the premise: ONE rule folding to VIOLATED with a run it could not answer for: {row}"
+
+    assert body["cannot_check"] is not None, (
+        f"[K-09] `not_checked: {row['not_checked']}` and `cannot_check: null` in one document, "
+        f"and R-8 makes null mean *looked and found nothing missing*: {body}"
+    )
+    assert "outputs_pin_inputs" in body["cannot_check"], body["cannot_check"]
+    #: IT NAMES THE RUNS, which the old sentence did not. `1 of 2` is the whole repair of the
+    #: wording: a reader can tell a rule that saw nothing from one that saw all but one.
+    assert "1 of 2 run(s)" in body["cannot_check"], (
+        f"[K-09] the sentence must say how many RUNS went unchecked, not only which rules: "
+        f"{body['cannot_check']}"
+    )
+
+    #: AND THE VERDICT IS UNTOUCHED. `cannot_check` is independent of `outcome` by design — a
+    #: reader repairing the breach has to know the rest was not cleared either — so this must
+    #: fix the sentence and move no exit code. Measured zero blast on all seven corpus histories.
+    assert (body["outcome"], body["exit_code"], code) == (runprov.policy.VIOLATED, 1, 1), body
+
+    #: THE PAGE SAYS IT TOO, under COULD NOT CHECK, beside a GATE line that still says VIOLATED.
+    capsys.readouterr()
+    assert runprov.__main__.main(["gate", "--policy", str(policy_file), "--log", str(log)]) == 1
+    page = capsys.readouterr().out
+    assert "COULD NOT CHECK" in page and "1 of 2 run(s)" in page, page
+    assert "GATE: VIOLATED (exit 1)" in page, page
+
+    #: AND A RULE ASKED OF NO RUN AT ALL IS STILL NAMED, which reading `not_checked` alone would
+    #: have dropped: over an empty selection every tally is zero, so the count is 0 and
+    #: `asked_of_nothing` is the fact. R-4 exists for exactly that state, and a repair that
+    #: silenced it would have traded K-09 for the vacuous green one level up.
+    capsys.readouterr()
+    assert (
+        runprov.__main__.main(
+            [
+                "gate",
+                "--policy",
+                str(policy_file),
+                "--log",
+                str(tmp_path / "absent.jsonl"),
+                "--format",
+                "json",
+            ]
+        )
+        == 2
+    )
+    empty = json.loads(capsys.readouterr().out)
+    assert empty["cannot_check"] and "no run to check" in empty["cannot_check"], (
+        f"[ADR-0018 R-4] a rule asked of nothing must stay in the sentence: {empty}"
+    )
+    assert "outputs_pin_inputs" in empty["cannot_check"], empty["cannot_check"]
 
 
 def test_the_gate_page_says_what_the_payload_says_in_the_states_that_are_not_ordinary(

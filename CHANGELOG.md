@@ -56,6 +56,23 @@ on the record's own digest key, comparing all 256 bits rather than the 16 charac
 carries. A declared input that is gone is `CANNOT_CHECK` naming the path and never a violation —
 the file may have been archived, and an accusation cannot be withdrawn from a record.
 
+**A breach and an inability are two lists and two words.** Each rule row used to carry one
+`reasons` list holding both, and the page printed every member of it under the word `finding` — so
+*the run recorded no outputs, so there is nothing to ask* was rendered as an accusation beside a
+real breach. A person can tell the two apart by reading them; a consumer cannot, and
+`len(reasons)` was 2 where `violated` was 1. `reasons` is now the breaches alone and `blocked`
+carries what could not be answered, which is the word `runprov diff` already uses for an
+incomparability in its own field. The page prints them under `finding` and `not checked`.
+
+**And the gate's summary no longer loses a run to a breach of the same rule.** `cannot_check` was
+`null` over a history where a run was not checked, whenever a violation of the SAME rule outranked
+it: measured with one rule `outputs_pin_inputs`, one run with an output and no input, one with no
+outputs — the payload carried `not_checked: 1` and `cannot_check: null` together. The sentence is
+built from the rows' own counts now rather than from each rule's folded outcome, and **it names
+runs**: *not every run was checked against 1 rule(s): outputs_pin_inputs (1 of 2 run(s))*, where
+before it counted only rules and said nothing about how many runs each left unanswered. No exit
+code moves — measured zero change on all seven released histories.
+
 **A run that started and never ended is named, and never changes the verdict.** `gate` used to
 drop every `runprov.start.v1` line before any rule saw it, so a history holding a SIGKILLed run
 answered `MET`, exit 0 and `cannot_check: null` — *looked and found nothing missing* — about a run
