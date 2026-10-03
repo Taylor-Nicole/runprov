@@ -13,8 +13,14 @@ first. `test_every_adr_is_listed_in_the_adr_index` reads a module's TOP docstrin
 decisions are BUILT and asserts none of those is still proposed — so naming the number here while
 the feature was half-built would have turned that guard red, and the number arrived with the
 twelfth requirement. ADR-0017 is the reason the ordering is worth stating: its status read *a
-feature that is not built* through the release that shipped it, because nine modules cited it
-everywhere except the one place the guard looks.
+feature that is not built* through the release that shipped it, because **eight** modules cited it
+in function docstrings and comments and **none in a module docstring**, which is the one place the
+guard looks.
+
+EIGHT IS THE RELEASED COUNT AND IT IS CHECKABLE FOREVER [K-38]: `git archive v0.7.0` and look, a
+tag cannot move. This sentence said nine, which is the count AFTER the repair that followed —
+measured on the wrong side of the fix it describes, which is the same error as taking a figure
+from the instrument you are correcting.
 
 THE REGISTRY IS THE ONLY LIST OF RULES. R-5: a rule registers itself here, and the parser, the
 documentation and the tests all read this one dict. Three places to update is two places to
@@ -215,7 +221,15 @@ def assess(
         "violated": tally[VIOLATED],
         #: `not_checked` AND NOT `cannot_check`, AND THE REASON IS WHO OWNS THE NAME. ADR-0017
         #: R-16 gives `cannot_check` to the COMMAND, as the one sentence saying what it could not
-        #: see; six commands already carry it that way. A COUNT under the same name one level down
+        #: see; **R-16's own table is the list of which commands carry it that way, and that
+        #: table is the citation rather than a number repeated here [K-35].** This sentence said
+        #: *six* twice over — the count was copied out of ADR-0017's prose, which was itself two
+        #: stale (J-18 had moved `verify` into that family and `chain` was never counted), so a
+        #: reader who re-counted stopped trusting the paragraph. Measured from live output, eight
+        #: shipped commands carry it: `log`, `lineage`, `impact`, `diff`, `resources`, `show`,
+        #: `verify` and `chain`. A number restated beside a table is a copy that rots, and this
+        #: docstring has now been wrong about this one twice. A COUNT under the same name one
+        #: level down
         #: would put a string and an int behind one key in a single document — J-36's defect, which
         #: is resolved by asking which structure owns the word rather than by renaming whichever is
         #: more convenient. The gate's cross-command guard cannot see nested keys, so this is a

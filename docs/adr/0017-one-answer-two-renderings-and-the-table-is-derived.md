@@ -258,8 +258,15 @@ has none carries a reason.
 
 **`check` keeps `examined_nothing` because of R-9.** Renaming it to `cannot_check` for uniformity
 would be the one thing R-9 forbids: it is the structure's own property, and the payload uses the
-structure's names. The six that carry `cannot_check` have no such conflict — there the key is
-added by the payload function and shadows nothing.
+structure's names. The **eight** that carry `cannot_check` have no such conflict — there the key
+is added by the payload function and shadows nothing.
+
+> **CORRECTED [K-35]: this sentence said *six* while the table twelve lines above listed
+> eight.** `verify` joined the family with J-18's correction, recorded in this very section, and
+> `chain` has carried both `status` and `cannot_check` since J-01 gave it a reason — so the
+> prose was two behind its own table. Measured from live output: `log`, `lineage`, `impact`,
+> `diff`, `resources`, `show`, `verify` and `chain`. **The table is the statement; this sentence
+> counts it**, which is why `policy.py` now cites the table instead of repeating the number.
 
 > **CORRECTED 2026-10-01 by J-18. `verify`'s entry was `artifacts_seen` > 0 with
 > `artifacts_pinned` = 0, and the paragraph here called it "the weakest of the five" — a
