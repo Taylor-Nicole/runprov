@@ -65,12 +65,24 @@ when they disagree. Amended 2026-10-02 from a prose sentence, which could not be
 | `commit_recorded` | the run names the commit it ran from | `git_commit`, `git_status_captured` | the status was never captured, so an absent commit is not a missing one |
 | `environment_captured` | the run recorded the packages it ran with | `packages`, `observation.packages_recorded` | the record does not say whether packages were recorded at all |
 | `finished_ok` | the run reached its end and recorded success | `status`, `failure` | the line carries no status — a `start` with no ending is not a failure |
-| `inputs_verify` | every input the run declared still hashes to what it recorded | `inputs` | a declared input is no longer on disk, or none was declared |
+| `inputs_verify` | every input the run declared still hashes to what it recorded | `inputs` | a declared input is no longer on disk, none was declared, or one was declared as a DIRECTORY — which `runprov verify` re-walks and this rule does not |
 
 **THE `CANNOT_CHECK` COLUMN IS THE SPECIFICATION, not a footnote.** R-3 says an unevaluable rule
 is never a pass, and every entry above names the exact state in which this rule cannot answer. A
 rule whose column is empty would be a rule claiming it can always decide, which no rule reading a
 record can honestly claim.
+
+**AMENDED 2026-10-03 by Taylor's ruling on K-20: EXIT 2 FOR A DECLARED DIRECTORY IS INTENDED.**
+The column said nothing about directories either way, so a project that registers one — which the
+cross-version corpus scenario does on purpose — could read its permanent exit 2 as a defect rather
+than as the specification. It is the specification: `inputs_verify` stops at files, and
+`verify.py` owns the tree comparison, its ordering key (A-14, C-03) and the Windows casefold
+precedence. A second walk inside a policy rule is how the two come to disagree. The ruling changes
+no verdict: `inputs_verify` answered CANNOT_CHECK over a declared directory before and after, and
+what K-20 repaired was the SENTENCE — the guard tested a `kind` the writer has never emitted, so
+every real record fell through to *could not be read: Is a directory* and sent the reader to an
+imagined permissions problem instead of to `runprov verify`. **Reaching the directory from a
+policy is T-39 and is new capability, not this.**
 
 **`no_unregistered_reads` CARRIES A BLIND SPOT THE RECORD CANNOT CLOSE, and it is named rather
 than hidden.** The watch runs inside a `try` whose `except` warns on stderr and returns, leaving

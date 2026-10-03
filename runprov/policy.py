@@ -63,10 +63,16 @@ class Context(typing.NamedTuple):
 
     `digests` MEMOISES ONE `assess`, for the reason `verify.check_input` documents in the same
     words: a fan-out of N runs declaring one reference genome is N full reads of it otherwise.
-    Keyed by `(path, key)` AND NOT BY PATH ALONE, because `sha256` and `content_sha256` are two
-    different quantities taken from the same bytes, and a cache that forgot which one it holds
-    would compare a raw digest against a content one — I-02, which is the defect this rule's
+    Keyed by `(resolved path, key)` AND NOT BY PATH ALONE, because `sha256` and `content_sha256`
+    are two different quantities taken from the same bytes, and a cache that forgot which one it
+    holds would compare a raw digest against a content one — I-02, which is the defect this rule's
     like-for-like comparison exists to avoid.
+
+    THE *RESOLVED* PATH AND NEVER THE RECORDED SPELLING [K-17]. Two runs in two projects that
+    each declared `data/m.tsv` write the same spelling and mean different files: a cache keyed on
+    the spelling answers the second run with the first one's bytes and names a real file as
+    altered with nothing on disk touched. Measured: `1 met, 1 violated`, exit 1, over two
+    projects sharing one history and the gate run from one project's own root.
 
     IT IS PER-CALL AND DELIBERATELY NOT A MODULE-LEVEL `lru_cache`. A digest cache that outlived
     one `assess` would answer a later question with an earlier run's bytes, which is the exact
@@ -418,8 +424,27 @@ def _and_more(reasons: list[str]) -> str:
     return f"{reasons[0]} (and {len(reasons) - 1} more)"
 
 
-def _input_still_matches(entry: typing.Mapping[str, typing.Any], context: Context) -> Verdict:
-    """One declared input, re-read from disk. The three answers, for that one file."""
+def _input_still_matches(
+    entry: typing.Mapping[str, typing.Any],
+    context: Context,
+    base: pathlib.Path | None = None,
+) -> Verdict:
+    """One declared input, re-read from disk. The three answers, for that one file.
+
+    `base` IS THE RUN'S OWN RECORDED `cwd` AND NEVER THE GATE PROCESS'S [K-17]. `run.input(p)`
+    records `hashing._posix(p)` verbatim, so a relative registration is recorded relative — which
+    is what this project's own corpus generator writes, and therefore what every released wheel's
+    history carries. Resolved against wherever the gate happens to be standing, the same record
+    answers `2 met, 1 not checked` from the tree it describes and `0 met, 0 violated, 3 not
+    checked` from one directory up with nothing on disk changed, and in a tree holding same-named
+    files it answers VIOLATED about three files it never opened.
+
+    THE IDIOM IS `hashing.moved_since`'s, DELIBERATELY AND NOT BY COINCIDENCE. That function
+    anchors the same recorded spelling on the same recorded `cwd` and reads an absent `kind` as a
+    file, and its docstring records what re-deriving the answer cost the first time. A second
+    expression for *where is this file* is how the two come to disagree, which is I-02's lesson
+    and K-17's.
+    """
     raw = entry.get("path")
     if not raw:
         return Verdict(CANNOT_CHECK, "an input entry carries no path")
@@ -429,7 +454,15 @@ def _input_still_matches(entry: typing.Mapping[str, typing.Any], context: Contex
     #: authoritative for a tree written by an older version on Windows. `verify` makes that
     #: decision and is its only reader; a second implementation of it inside a policy rule is how
     #: the two would come to disagree.
-    if entry.get("kind") == "tree" or entry.get("sha256_tree"):
+    #:
+    #: THE TEST IS `moved_since`'s AND THE OLD ONE WAS DEAD [K-20]. It asked `kind == "tree"` or a
+    #: `sha256_tree` key; the writer folds a directory's tree digest into `sha256` and spells the
+    #: kind `directory`, so no record this package has ever written reached this arm — measured
+    #: over all seven corpus versions, where `data/refs` fell through to the OSError arm and told
+    #: the reader *could not be read: Is a directory* instead. Exit 2 for a declared directory is
+    #: intended (Taylor, 2026-10-03) and R-7's own column now says so; what was wrong was the
+    #: sentence, which sent a reader to a permissions problem rather than to `runprov verify`.
+    if entry.get("kind") not in ("file", None):
         return Verdict(
             CANNOT_CHECK,
             f"{raw} was declared as a directory, which `runprov verify` re-walks and this rule "
@@ -439,26 +472,32 @@ def _input_still_matches(entry: typing.Mapping[str, typing.Any], context: Contex
     if comparable is None:
         return Verdict(CANNOT_CHECK, f"{raw} carries no digest this rule can take again")
     key, was, how = comparable
+    spelled = pathlib.Path(raw)
+    target = spelled if spelled.is_absolute() or base is None else base / spelled
+    #: KEYED ON THE RESOLVED PATH, which is the half of this fix a reading would miss. Two runs
+    #: whose `cwd` differ and whose recorded spelling is the same are two different files, and a
+    #: cache keyed on the spelling hands the second one the first one's digest.
+    cached = (target.as_posix(), key)
     seen = context.digests
-    if seen is not None and (raw, key) in seen:
-        now = seen[(raw, key)]
+    if seen is not None and cached in seen:
+        now = seen[cached]
     else:
         try:
             #: THE ADR'S OWN CASE, AND IT IS AN INABILITY RATHER THAN A VIOLATION. R-9's
             #: clarification says so in those words: a declared input that is gone is a
             #: `CANNOT_CHECK` naming the path. The alternative accuses a run of changing a file
             #: that may simply have been archived, in a record nobody can amend.
-            if not pathlib.Path(raw).exists():
+            if not target.exists():
                 return Verdict(
                     CANNOT_CHECK,
                     f"{raw} is no longer on disk, so what it holds now cannot be compared with "
                     "what the run recorded",
                 )
-            now = how(pathlib.Path(raw))
+            now = how(target)
         except OSError as exc:
             return Verdict(CANNOT_CHECK, f"{raw} could not be read: {exc.strerror or exc}")
         if seen is not None:
-            seen[(raw, key)] = now
+            seen[cached] = now
     if now is None:
         return Verdict(
             CANNOT_CHECK, f"{raw} is not a file whose {key} can be taken, so nothing was compared"
@@ -480,8 +519,9 @@ def _input_still_matches(entry: typing.Mapping[str, typing.Any], context: Contex
     reads=("inputs",),
     blind="a declared input that is no longer on disk, or a run that declared none at all — and, "
     "named here because the record cannot close it, a history read on a machine other than the "
-    "one that wrote it, where the recorded path is absolute and names nothing even though the "
-    "file itself still exists somewhere",
+    "one that wrote it, where the recorded path names nothing even though the file itself still "
+    "exists somewhere; and a declared DIRECTORY, which `runprov verify` re-walks and this rule "
+    "does not, so a project registering one gets exit 2 from this rule by design",
 )
 def _inputs_verify(record: typing.Mapping[str, typing.Any], context: Context) -> Verdict:
     """THE ONE RULE THAT LEAVES THE RECORD, which is why R-9 had to be clarified before it.
@@ -493,13 +533,22 @@ def _inputs_verify(record: typing.Mapping[str, typing.Any], context: Context) ->
     history.
 
     IT IS ALSO THE RULE THAT FORCED THE `judge` CONTRACT TO TAKE A SECOND ARGUMENT, and the
-    reason is the cache and not a root. The recorded `path` is ABSOLUTE, so there is nothing to
-    resolve it against — I had planned a `root` and dropped it when the record settled the
-    question: a root would be a second answer to *where is this file* competing with the one the
-    history already gives, and R-9's clarification states the behaviour for a path that names
-    nothing, which is `CANNOT_CHECK`. What a root WOULD buy — re-checking a history on a machine
-    that did not write it — is not in ADR-0018, and an unspecified option is how a feature grows
-    a flag nobody asked for. The rule's `blind` text names that limit instead.
+    reason is the cache and not a root.
+
+    **THE PREMISE THIS WAS BUILT ON WAS FALSE AND K-17 IS THE CORRECTION.** It read: *the
+    recorded `path` is ABSOLUTE, so there is nothing to resolve it against* — and `run.input(p)`
+    records `hashing._posix(p)` verbatim, so a relative registration is recorded relative. This
+    project's own corpus generator calls `run.input("data/m.tsv")`, so every released wheel's
+    history carries relative paths and the dropped anchor was resolving them against the GATE
+    PROCESS'S working directory. One run that happened to pass an absolute path was measured and
+    generalised from.
+
+    THE ANCHOR IS THE RECORD'S OWN `cwd` AND NOT A `root` FLAG, which is the part of the original
+    reasoning that survives: a root would be a second answer to *where is this file* competing
+    with the one the history already gives, while `cwd` IS the answer the history gives and is
+    present in every corpus version. No record change was needed. What a root WOULD buy —
+    re-checking a history on a machine that did not write it — is still not in ADR-0018, and the
+    rule's `blind` text names that limit instead.
 
     NOT `verify.check_input`, AND THE REASON IS WORTH STATING. It asks exactly this question, and
     `pin_digest(describe(f))` is exactly `content_sha256[:16]`, so the two conventions ARE
@@ -512,10 +561,16 @@ def _inputs_verify(record: typing.Mapping[str, typing.Any], context: Context) ->
         return Verdict(CANNOT_CHECK, "the record does not say what this run read")
     if not declared:
         return Verdict(CANNOT_CHECK, "the run declared no inputs, so there is nothing to re-hash")
+    #: THE RUN'S OWN `cwd`, read off the record exactly as `hashing.moved_since` takes it. A
+    #: record written before the field existed, or by a writer that omits it, leaves this `None`
+    #: and the recorded spelling is then taken as it stands — which is the old behaviour for
+    #: exactly the records that cannot do better, and not for the ones that can.
+    recorded_cwd = record.get("cwd")
+    base = pathlib.Path(recorded_cwd) if recorded_cwd else None
     changed: list[str] = []
     unknown: list[str] = []
     for entry in declared:
-        verdict = _input_still_matches(entry, context)
+        verdict = _input_still_matches(entry, context, base)
         if verdict.outcome == VIOLATED:
             changed.append(verdict.reason or "")
         elif verdict.outcome == CANNOT_CHECK:

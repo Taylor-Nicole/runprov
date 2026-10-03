@@ -56,6 +56,23 @@ on the record's own digest key, comparing all 256 bits rather than the 16 charac
 carries. A declared input that is gone is `CANNOT_CHECK` naming the path and never a violation —
 the file may have been archived, and an accusation cannot be withdrawn from a record.
 
+**A recorded path is resolved against the RUN'S OWN `cwd`, never the gate process's**, exactly as
+`describe`'s own staleness check resolves it, and the per-invocation digest cache is keyed on the
+resolved path. `run.input(p)` records the spelling it was handed, so a relative registration is
+recorded relative — and this was measured, not reasoned: over a corpus history carrying
+`data/m.tsv`, the same records answered `2 met, 1 not checked` from the tree they describe,
+`0 met, 0 violated, 3 not checked` from one directory up, and **`0 met, 3 violated` — exit 1,
+naming three files the gate never opened** — from an unrelated project holding the same names.
+All seven released histories now answer identically from every working directory, and none of
+their verdicts moved.
+
+**A declared DIRECTORY is `CANNOT_CHECK` by design, and the sentence now says which tool
+re-walks a tree.** `runprov verify` owns the tree comparison, its ordering key and the Windows
+casefold precedence; a second implementation inside a policy rule is how the two come to
+disagree. Measured: every one of the seven released histories reaches this through `data/refs`,
+and before this the guard tested a `kind` the writer has never emitted, so all of them were told
+*could not be read: Is a directory* instead.
+
 `runprov gate --format json` carries the same answer, versioned `"schema": "runprov.gate.v1"`,
 with each rule's `evaluated`, `met`, `violated` and `cannot_check` counts beside its outcome. A
 policy that cannot be read prints nothing at all, which is how a consumer tells a gate that could

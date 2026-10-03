@@ -34524,9 +34524,34 @@ def test_inputs_verify_answers_for_each_declared_entry_and_names_which(tmp_path)
     data.write_text("a\n", encoding="utf-8")
     folder = tmp_path / "tree"
     folder.mkdir()
+    (folder / "r.fa").write_text(">x\n", encoding="utf-8")
     content = runprov.hashing.content_digest(data)
     raw = runprov.hashing.sha256(data)
     absent = "0" * 64
+
+    #: THE DIRECTORY ENTRY AS THE WRITER REALLY EMITS IT, derived from `describe` and folded the
+    #: way `Run.__exit__` folds it, rather than typed out here. **K-20 is the row this replaces
+    #: two hand-built rows for:** they asserted `{"kind": "tree"}` and `{"sha256_tree": ...}`,
+    #: and this package has never written either — the writer spells the kind `directory` and
+    #: folds the tree digest into `sha256`. Both rows passed, the guard they were covering was
+    #: dead for every real record, and the comment above them (*"older entries carry
+    #: `sha256_tree` without a `kind`"*) was false of 0.1.0 onwards. Measured over all seven
+    #: corpus versions: the only `kind` values in any history are `None` and `"directory"`.
+    described = runprov.hashing.describe(folder)
+    assert described["kind"] == "directory" and described.get("sha256_tree"), (
+        f"the premise of this fixture: a directory describes as one, with a tree digest: "
+        f"{described}"
+    )
+    as_recorded = {
+        "path": str(folder),
+        "sha256": described["sha256_tree"],
+        "content_sha256": described.get("content_sha256"),
+        "kind": described["kind"],
+    }
+    assert as_recorded["kind"] != "tree" and "sha256_tree" not in as_recorded, (
+        f"and the premise of the ROW: neither thing the old guard tested for is in the entry a "
+        f"record carries, which is why it never fired: {as_recorded}"
+    )
 
     #: EACH ROW IS (entry, expected, a phrase the reason must contain). The phrase is asserted
     #: because `CANNOT_CHECK` with the wrong sentence is a finding a reader cannot act on, and
@@ -34534,10 +34559,16 @@ def test_inputs_verify_answers_for_each_declared_entry_and_names_which(tmp_path)
     cases: list[tuple[dict[str, object], str, str | None]] = [
         ({}, unknown, "carries no path"),
         ({"path": str(data)}, unknown, "no digest this rule can take again"),
-        #: A DECLARED DIRECTORY IS NOT RE-WALKED, and both ways a record says *directory* are
-        #: tested: older entries carry `sha256_tree` without a `kind`.
-        ({"path": str(folder), "kind": "tree", "sha256_tree": absent}, unknown, "verify"),
-        ({"path": str(folder), "sha256_tree": absent}, unknown, "verify"),
+        #: A DECLARED DIRECTORY IS NOT RE-WALKED, and this is the entry a real record carries.
+        #: Exit 2 for a declared directory is INTENDED — Taylor's ruling on K-20, now in R-7's
+        #: `CANNOT_CHECK` column — so what is asserted is the SENTENCE: a reader is sent to
+        #: `runprov verify`, which re-walks the tree, and not to the OSError arm's *could not be
+        #: read: Is a directory*, which reads as a permissions problem and sent them to nothing.
+        (as_recorded, unknown, "`runprov verify` re-walks"),
+        #: AND AN EXPLICIT `file` KIND IS NOT READ AS A DIRECTORY, which is the other side of
+        #: `moved_since`'s test. The writer omits `kind` for the ordinary case; a record carrying
+        #: it must not be diverted.
+        ({"path": str(data), "kind": "file", "content_sha256": content}, met, None),
         #: `content_digest` RETURNS None FOR ANYTHING IT WILL NOT CANONICALISE, and a digest that
         #: could not be taken is not a disagreement. Inventing one would accuse a path nobody
         #: could hash.
@@ -34613,6 +34644,148 @@ def test_inputs_verify_answers_for_each_declared_entry_and_names_which(tmp_path)
     )
 
 
+def test_inputs_verify_anchors_a_recorded_path_on_the_runs_own_cwd_and_not_the_gates(
+    tmp_path, monkeypatch
+):
+    """[ADR-0018 R-7] [ADR-0018 R-9] Audit K, K-17 and K-20. The answer may not depend on where
+    the gate was invoked from.
+
+    **THIS IS THE TEST AND THE CODE CHANGE ASSERTS NOTHING**, which was measured rather than
+    assumed: K-17's and K-20's repairs both leave the full suite at rc=0 when injected, so the
+    deliverable for each is this file.
+
+    **THE PREMISE THE RULE WAS BUILT ON WAS FALSE.** Its docstring read *the recorded `path` is
+    ABSOLUTE, so there is nothing to resolve it against*, and `run.input(p)` records
+    `hashing._posix(p)` verbatim — so a relative registration is recorded relative, which is what
+    this project's own corpus generator writes and therefore what every released wheel's history
+    carries. Resolved against the GATE PROCESS'S working directory, one record answered three
+    different ways over files nothing had touched:
+
+    * from the tree it describes:        `2 met, 0 violated, 1 not checked`, exit 2
+    * from one directory up:             `0 met, 0 violated, 3 not checked`, exit 2, three
+      sentences reading *is no longer on disk* about files that are right there
+    * from a project with same-named files: `0 met, 3 violated`, **exit 1 — a false accusation
+      naming three files the gate never opened**
+
+    So the anchor is the record's own `cwd`, taken exactly as `hashing.moved_since` takes it, and
+    the digest cache is keyed on the RESOLVED path — without which two runs in two projects that
+    each declared `data/m.tsv` collide inside one `assess` and the second is reported VIOLATED
+    with nothing on disk touched (measured: `1 met, 1 violated`, exit 1).
+
+    **AND K-20 RIDES WITH IT, because K-17's fix alone makes K-20's wrong sentence reachable from
+    EVERY working directory** rather than only from the tree itself: before, a gate run from one
+    directory up left the declared directory via *is no longer on disk*; resolved correctly it
+    reaches the real directory and must say which tool re-walks a tree.
+
+    EVERY RECORD HERE IS WRITTEN BY THIS PACKAGE, not built as a dict. The whole of both rows is
+    that two hand-built fixtures asserted shapes no history contains.
+    """
+    met, unknown = runprov.policy.MET, runprov.policy.CANNOT_CHECK
+
+    def project(name: str, payload: str) -> tuple[pathlib.Path, dict]:
+        """One real project: a relative file input, a declared directory, and a real record."""
+        root = tmp_path / name
+        (root / "data" / "refs").mkdir(parents=True)
+        (root / "data" / "m.tsv").write_text(payload, encoding="utf-8")
+        (root / "data" / "refs" / "r.fa").write_text(f">{name}\n", encoding="utf-8")
+        monkeypatch.chdir(root)
+        runprov.configure(root=".", run_log="prov/history.jsonl", auto_steps="off")
+        with runprov.Run(name, {}, provenance="prov/p.json") as run:
+            #: REGISTERED RELATIVE, which is the spelling `tools/corpus_scenario.py` uses and
+            #: therefore the one in all seven committed histories.
+            run.input("data/m.tsv")
+            run.input("data/refs")
+        written = [
+            json.loads(line)
+            for line in (root / "prov" / "history.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip() and json.loads(line).get("schema") != "runprov.start.v1"
+        ]
+        assert len(written) == 1, written
+        return root, written[0]
+
+    a_root, a = project("projA", "project A's own reference data\n")
+    b_root, b = project("projB", "a DIFFERENT project's data under the same name\n")
+
+    #: THE FIXTURE'S OWN STATE, ASSERTED. A fixture whose premise is unchecked can stop reaching
+    #: the state it exists for in silence — and in this pair of rows that is not hypothetical:
+    #: both of K-20's deleted rows were fixtures asserting a shape the writer never emits.
+    entries = {entry["path"]: entry for entry in a["inputs"]}
+    assert sorted(entries) == ["data/m.tsv", "data/refs"], (
+        f"the premise of K-17: the recorded paths are RELATIVE, verbatim as registered: {entries}"
+    )
+    assert a["cwd"] == str(a_root) and b["cwd"] == str(b_root), (
+        f"the premise of the fix: the record says which directory those paths are relative TO, "
+        f"so no `--root` flag is needed: {a['cwd']} / {b['cwd']}"
+    )
+    assert entries["data/refs"]["kind"] == "directory", (
+        f"the premise of K-20: the writer spells a directory's kind `directory`: {entries}"
+    )
+    assert "sha256_tree" not in entries["data/refs"] and entries["data/refs"]["sha256"], (
+        f"and folds its tree digest into `sha256` — so the old guard's `kind == 'tree' or "
+        f"sha256_tree` tested for two things no record carries: {entries['data/refs']}"
+    )
+    assert (
+        a["inputs"][0]["path"] == b["inputs"][0]["path"]
+        and entries["data/m.tsv"]["content_sha256"]
+        != {e["path"]: e for e in b["inputs"]}["data/m.tsv"]["content_sha256"]
+    ), "the premise of the cache half: one spelling, two projects, two different files"
+
+    rule = runprov.policy.rules()["inputs_verify"]
+    file_only = {**a, "inputs": [entries["data/m.tsv"]]}
+
+    #: THE THREE WORKING DIRECTORIES OF THE REPRODUCTION, and the answer may not move between
+    #: them. `b_root` is the cruel one: it holds a `data/m.tsv` that is a real file with different
+    #: bytes, so the unanchored rule does not merely fail to find the file — it finds the WRONG
+    #: one and reports a violation of a control that was met.
+    for where in (a_root, tmp_path, b_root):
+        monkeypatch.chdir(where)
+        got = rule.judge(file_only, runprov.policy.Context(digests={}))
+        assert got.outcome == met, (
+            f"[K-17] the gate was invoked from {where.name} and answered {got.outcome} about a "
+            f"file nothing had touched: {got.reason}"
+        )
+
+        #: AND THE WHOLE RECORD, directory included: `2 met, 1 not checked` from everywhere,
+        #: which is what the corpus measures from inside its own tree today.
+        whole = rule.judge(a, runprov.policy.Context(digests={}))
+        assert whole.outcome == unknown, f"from {where.name}: {whole}"
+        assert "data/refs" in (whole.reason or ""), (
+            f"[ADR-0018 R-7] the sentence must name the path a reader goes and looks at: {whole}"
+        )
+        assert "`runprov verify` re-walks" in (whole.reason or ""), (
+            f"[K-20] from {where.name} a declared directory must say which tool re-walks a tree. "
+            f"Exit 2 here is intended (Taylor, 2026-10-03) and R-7's column says so; the sentence "
+            f"is what the dead guard cost: {whole.reason}"
+        )
+        for wrong in ("could not be read", "no longer on disk", "data/m.tsv"):
+            assert wrong not in (whole.reason or ""), (
+                f"[K-17] [K-20] from {where.name} the reason says {wrong!r}, which sends the "
+                f"reader to a problem that is not there: {whole.reason}"
+            )
+
+    #: THE CACHE HALF, WHICH A READING OF THE FIX WOULD MISS. Two runs, two projects, one
+    #: recorded spelling, ONE `assess` — so one cache. Keyed on the spelling, the second run is
+    #: answered with the first one's bytes and the tally reads `1 met, 1 violated`.
+    monkeypatch.chdir(a_root)
+    tally = runprov.policy.assess(
+        "inputs_verify",
+        [file_only, {**b, "inputs": [{e["path"]: e for e in b["inputs"]}["data/m.tsv"]]}],
+    )
+    assert (tally["outcome"], tally["met"], tally["violated"], tally["not_checked"]) == (
+        met,
+        2,
+        0,
+        0,
+    ), f"[K-17] two projects sharing one history, neither file touched: {tally}"
+
+    #: AND THE KEY IS THE RESOLVED PATH, stated rather than inferred from the tally above.
+    supplied = runprov.policy.Context(digests={})
+    runprov.policy.assess("inputs_verify", [file_only], context=supplied)
+    assert list(supplied.digests) == [((a_root / "data" / "m.tsv").as_posix(), "content_sha256")], (
+        f"[K-17] the cache holds what was HASHED and not what was spelled: {supplied.digests}"
+    )
+
+
 def test_the_digest_cache_is_one_assess_wide_and_no_wider(tmp_path):
     """[ADR-0018 R-7] T-34. Why the cache lives in a `Context` and not in an `lru_cache`.
 
@@ -34635,9 +34808,10 @@ def test_the_digest_cache_is_one_assess_wide_and_no_wider(tmp_path):
 
     held = runprov.policy.Context(digests={})
     assert rule.judge(record, held).outcome == runprov.policy.MET
-    assert list(held.digests) == [(str(data), "content_sha256")], (
-        "keyed by path AND key, because `sha256` and `content_sha256` are two quantities taken "
-        f"from the same bytes and a cache that forgot which it held would compare one with the "
+    assert list(held.digests) == [(data.as_posix(), "content_sha256")], (
+        "keyed by the RESOLVED path AND the key, because `sha256` and `content_sha256` are two "
+        f"quantities taken from the same bytes and a cache that forgot which it held would "
+        f"compare one with the "
         f"other: {held.digests}"
     )
 
@@ -34667,7 +34841,7 @@ def test_the_digest_cache_is_one_assess_wide_and_no_wider(tmp_path):
     #: `gate` over many rules able to read each file once instead of once per rule.
     supplied = runprov.policy.Context(digests={})
     runprov.policy.assess("inputs_verify", [record], context=supplied)
-    assert list(supplied.digests) == [(str(data), "content_sha256")], supplied.digests
+    assert list(supplied.digests) == [(data.as_posix(), "content_sha256")], supplied.digests
 
 
 def test_a_policy_is_json_or_toml_and_the_two_load_to_the_same_thing(tmp_path):
