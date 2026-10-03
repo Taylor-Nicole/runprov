@@ -187,6 +187,15 @@ The order matters, and every step below exists because skipping it cost somethin
    above the dated one makes the tagged build report the shipped version as unreleased. It
    refuses, correctly — the alternative is a CHANGELOG on PyPI that describes the release as
    unreleased, permanently.
+
+   **In the SAME commit, clear every ADR status that still says *not yet released*.**
+   `docs/adr/` ships in the sdist, so a status saying the feature is unreleased is permanent in
+   the release that shipped it. ADR-0017 went out reading *a feature that is not built* through
+   0.7.0; this is the same miss one rung over, on the release-state half of the line rather than
+   the Proposed/Accepted half, and it is enforced rather than remembered:
+   `test_every_adr_is_listed_in_the_adr_index` reads the same first heading `build` does and
+   refuses any such status once it is not `[Unreleased]`. Dating the heading and clearing the
+   statuses are therefore one commit, not two.
 3. **`python ci.py`** — the local gate.
 4. **Push the commit and let the hosted matrix finish, then `python ci.py matrix-check`.**
    This step is the one that was missing, and the cost of its absence is measured: the Windows

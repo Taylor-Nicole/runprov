@@ -1068,6 +1068,15 @@ def payload(result: Assessment) -> dict[str, typing.Any]:
         #: BUILT FROM `_RULE_KEYS`, the same constant the parser accepts, so the projection cannot
         #: come to name a field a policy may not carry. Re-reading the file here would be the
         #: defect: H1-6 is the row where one fact computed twice disagreed with itself.
+        #:
+        #: THIS IS THE CONTROL *AS APPLIED* AND NOT THE CONTROL [K-13]. `--emit-policy`'s
+        #: `runprov.policy.v1` is the document a laboratory files: it names itself and carries
+        #: the file it came from. This object is the same rules inside the ANSWER, so a filed
+        #: result carries what it was judged against — and it deliberately carries no `schema`
+        #: and no `policy_path`, because the payload around it already carries both and putting
+        #: them here would be the duplication R-13 says it avoided. `{"rules": [...]}` is what a
+        #: policy FILE may contain, not an unversioned invention: `_checked` refuses a `schema`
+        #: key in one.
         "policy": {"rules": [{key: row[key] for key in _RULE_KEYS} for row in result.rules]},
         "outcome": result.outcome,
         "cannot_check": result.cannot_check,

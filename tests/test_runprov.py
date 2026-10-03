@@ -28935,6 +28935,50 @@ def test_every_adr_is_listed_in_the_adr_index():
         f"ADR(s) implemented in code but still marked proposed: {still_proposed}"
     )
 
+    # AND NO ADR SAYS ITS FEATURE IS *NOT YET RELEASED* ONCE THE CHANGELOG IS DATED [K-27]. Every
+    # check above reads ONE WORD of the status line — `Status[:*\s]*([A-Za-z]+)` — so the rest of
+    # it was never read by anything, and ADR-0018's says `Accepted … **not yet released**` with
+    # nothing in "Cutting a release, in order" to update it. `docs/adr/` ships in the sdist, so
+    # that sentence would be permanent in the release that shipped the feature — which is
+    # ADR-0017's 0.7.0 miss on the other half of the same line.
+    #
+    # THE TRIGGER IS THE HEADING `build` ALREADY READS, so no new convention is needed and the
+    # fresh-`[Unreleased]` trap does not bite: CONTRIBUTING step 2 says in bold not to open one
+    # yet, so on the tag commit the first heading IS `[<version>] — <day>` and this fires exactly
+    # then.
+    def _unreleased_statuses(heading: str, texts: dict[str, str]) -> list[str]:
+        if heading == "Unreleased":
+            return []
+        said = {}
+        for filename, text in texts.items():
+            line = re.search(r"\*\*Status:\*\*(.*?)\n[ \t]*\n", text, re.S)
+            if line and "not yet released" in line.group(1).lower():
+                said[filename] = line.group(1).strip()[:120]
+        return sorted(said)
+
+    changelog = (_repo_root() / "CHANGELOG.md").read_text(encoding="utf-8")
+    heading = re.search(r"^## \[([^\]]+)\]", changelog, re.M)
+    assert heading, "CHANGELOG.md carries no version heading, so this check reads nothing"
+    texts = {f.name: f.read_text(encoding="utf-8") for f in adrs}
+    assert not _unreleased_statuses(heading.group(1), texts), (
+        "[K-27] the CHANGELOG's first heading is dated, so this tree is a release — and these "
+        "ADR statuses still say their feature is *not yet released*. `docs/adr/` ships in the "
+        "sdist, so the sentence is permanent in that release. CONTRIBUTING step 2 is where this "
+        f"is cleared, in the same commit that dates the heading: "
+        f"{_unreleased_statuses(heading.group(1), texts)}"
+    )
+    # POSITIVE CONTROL, THROUGH THE SAME FUNCTION, AND ON A SYNTHETIC ADR. Today's first heading
+    # is `[Unreleased]`, so the clause above returns early and its silence would mean nothing —
+    # and a control built on the REAL ADRs would start failing on the day step 2 does its job,
+    # which is the one day this guard must survive.
+    probe = {"0099-probe.md": "# 99. p\n\n**Status:** Accepted — built, **not yet released**.\n\n"}
+    assert _unreleased_statuses("0.9.9", probe) == ["0099-probe.md"], (
+        "the release-state scan cannot see its own subject, so its silence proves nothing"
+    )
+    assert _unreleased_statuses("Unreleased", probe) == [], (
+        "and it must say nothing while the CHANGELOG is still open, or no release could be cut"
+    )
+
 
 def _orphan_marker(tmp_path, **extra):
     """A marker beside a history file that does not exist — what a killed run leaves."""

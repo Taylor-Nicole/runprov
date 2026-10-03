@@ -208,6 +208,20 @@ itself, and `matched` is the row where two builders invented one name. What a co
 the control as a separable object: the policy can be archived, diffed and filed without
 reassembling it from the verdicts that happen to carry it.
 
+**WHICH OF THE TWO IS *THE CONTROL*, because there are now two shapes and a consumer has to know
+[K-13].** `--emit-policy`'s `runprov.policy.v1` IS the control: a document that names itself,
+carries the file it was read from, and can be filed and diffed on its own. `gate.policy` is **the
+control AS APPLIED** — the same rules, inside the answer, so a filed result carries what it was
+judged against.
+
+**AND IT IS DELIBERATELY NOT A SECOND COPY OF THAT DOCUMENT.** Making the two one shape would put
+`schema` and `policy_path` **twice in one payload**, which is exactly the duplication the
+paragraph above says this requirement avoided. `{"rules": [...]}` is not an unversioned invention
+either: it is precisely what a policy FILE may contain, and `_checked` refuses a `schema` key in
+one. ADR-0017 R-5 governs PAYLOADS and not the objects nested inside them — the container already
+carries the version and the path — and R-9 forbids renaming a field, not adding one, so nothing
+here freezes at 0.8.0 and this can be revisited with evidence rather than before it.
+
 **R-14. `--emit-policy` READS AND VALIDATES A POLICY AND ANSWERS ABOUT NOTHING ELSE.** Taylor,
 2026-10-03, the third half of the same ruling: someone who writes TOML needs the machine-readable
 form to file, and that is a question about the FILE rather than about any run.
@@ -220,10 +234,23 @@ form to file, and that is a question about the FILE rather than about any run.
 | **exit codes** | **0 usable, 2 not usable, and there is no 1.** A policy cannot carry a *finding*; it is either a document this version can act on or it is not, which is L-81's second and third codes with the middle one deliberately absent |
 
 **A FLAG ON `gate` AND NOT A SUBCOMMAND, with the reason recorded so it is not re-proposed.**
-ADR-0017 R-3 partitions subcommands by the question each answers, and a validator for the policy
-file is a question about the thing `gate` already reads — the only command that has one. A
-`runprov policy` subcommand would be heavier than the question deserves, and it would be a second
-place where a policy is read.
+
+> **CORRECTED [K-33]. This paragraph cited `ADR-0017 R-3` as *partitioning subcommands by the
+> question each answers*, and R-3 is the `--format text|json` requirement.** The only partition
+> R-3 draws is answering-versus-acting, to keep `exec`, `capture` and `prune` out of the format
+> flag, and it does not reach this question. The paragraph exists so the decision *"is not
+> re-proposed"* — and the next person to re-propose `runprov policy` would have followed the
+> citation, found a format rule, and concluded the reason was never written down, which is the
+> state it was added to prevent. **The rule it should have cited is written down twice:**
+> **ADR-0016's 2026-09-17 amendment** states it in those words — *"this package has given every
+> distinct question its own subcommand"* — and it rests on **this ADR's own R-9**, whose objection
+> to folding the policy gate into `check` is that one command's exit code would then answer two
+> different questions.
+
+The argument stated directly rather than by citation: `--emit-policy` is not a distinct QUESTION.
+It is a question about the file `gate` already reads, and `gate` is the only command that reads
+one. A `runprov policy` subcommand would be a second place where a policy is read — the
+duplication R-9's boundary exists to prevent — and heavier than the question deserves.
 
 
 ## What this must never become
