@@ -35645,6 +35645,166 @@ def test_an_unchecked_run_reaches_cannot_check_even_when_the_same_rule_is_violat
     assert "outputs_pin_inputs" in empty["cannot_check"], empty["cannot_check"]
 
 
+def test_the_gates_precedence_is_asserted_over_every_inability_it_can_report(tmp_path, capsys):
+    """[ADR-0018 R-2] [ADR-0018 R-3] Audit K, K-01. The ordering the exit code is read from.
+
+    **THE DEFECT.** `Assessment.outcome`'s ordering was unasserted: reversing it so an inability
+    outranks a violation passed all 1,196 tests. Verified by hand rather than inferred — a
+    history with a failed run AND one torn line answers `VIOLATED` / exit **1** today and
+    `CANNOT_CHECK` / exit **2** reversed, over the same file. **The same ordering one level down,
+    in `assess`, IS asserted**, so this was exactly the gap between a rule's verdict and the
+    gate's, which is where J-01 found its defect one level up. A CI job keys on the exit code,
+    and the two readings send a reader to different work: repair a violation, or go and find out
+    why a line is unreadable.
+
+    **NOBODY MEETS IT TODAY — the ordering is CORRECT.** You meet it only if someone later edits
+    `outcome`, and then silently, which is why the severity was cut to medium and the fix is
+    still worth three lines.
+
+    **WRITTEN PARAMETRICALLY OVER THE INABILITY SOURCES, AND THAT IS THE WHOLE POINT.** Over the
+    torn-line case alone, a new clause for a new inability can land in the wrong position — inside
+    the verdict's own branch, where it fires only when nothing else is wrong — and this test
+    would not see it. K-08 and K-23 each added one in the same audit. **So the field set is
+    DERIVED from `Assessment` and the complement is declared**: a field added later fails here
+    until somebody decides which kind it is, which is the shape that makes `runprov.gate.v1`'s
+    freeze survivable.
+
+    **ASSESSMENTS ARE CONSTRUCTED DIRECTLY HERE, which nothing else does.** A property over the
+    FIELDS cannot be stated through a history, because reaching one inability means reaching a
+    particular state of a file and varying one field at a time is what makes the ordering
+    readable. The real-history case is asserted too, below, end to end through the command.
+    """
+    #: REAL ROWS FROM REAL RUNS, so the verdicts the ordering is applied to are the writer's own.
+    _, log = _gated_history(tmp_path)
+    records = [
+        json.loads(line)
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if line.strip() and json.loads(line).get("schema") != "runprov.start.v1"
+    ]
+    good = [r for r in records if r.get("status") == "ok"]
+    bad = [r for r in records if r.get("status") != "ok"]
+    assert len(good) == 1 and len(bad) == 1, (
+        f"the premise: one run passed and one failed: {records}"
+    )
+
+    def rows(selection):
+        return ({**runprov.policy.assess("finished_ok", selection), "why": _WHY},)
+
+    passing, breaching = rows(good), rows(bad)
+    blinded = rows([])
+    assert passing[0]["outcome"] == runprov.policy.MET, passing
+    assert breaching[0]["outcome"] == runprov.policy.VIOLATED, breaching
+    assert blinded[0]["outcome"] == runprov.policy.CANNOT_CHECK, blinded
+
+    #: EVERY FIELD OF `Assessment` IS EITHER A SUBJECT OR AN INABILITY, and the subjects are the
+    #: four that say WHAT was assessed. Derived, so a new field is not silently neither.
+    facts = set(runprov.policy.Assessment._fields) - {"source", "history", "runs", "rules"}
+    #: WHAT EACH INABILITY LOOKS LIKE CLEAN AND BROKEN. Declared rather than derived because no
+    #: expression can know it — and the assertion below is what makes the declaration load-bearing.
+    inability: dict[str, tuple[object, object]] = {
+        "found": (True, False),
+        "read_error": (None, "Permission denied"),
+        "unreadable": (0, 1),
+        "unfinished": (0, 1),
+    }
+    assert set(inability) == facts, (
+        "[K-01] `Assessment` grew or lost a field that is not a subject of the assessment, so it "
+        "is an inability the gate can report and this test does not cover it. Adding a field "
+        "reaches `runprov.gate.v1` through `_asdict()` with no other guard objecting at all: "
+        f"{sorted(set(inability) ^ facts)}"
+    )
+    #: AND WHICH OF THEM MOVE THE VERDICT. `unfinished` deliberately does NOT — Taylor's ruling
+    #: on K-08, because the start line is append-only and reading it here would fail a project's
+    #: gate for ever over one power cut. This is where that ruling is pinned: a later change that
+    #: quietly put it in `outcome` fails here.
+    moves_the_verdict = {"found", "read_error", "unreadable"}
+    assert facts - moves_the_verdict == {"unfinished"}, (
+        f"[K-08] Taylor's ruling is that `unfinished` is named and never changes the verdict, and "
+        f"every other inability does change it: {sorted(facts - moves_the_verdict)}"
+    )
+
+    def built(rules, **facts_set):
+        #: EVERY FIELD NAMED, so a field added to `Assessment` raises here rather than defaulting
+        #: into a state this test never varied. `runs` is nominal: this is a property over the
+        #: FIELDS, and the real history below is where a consistent one is asserted.
+        base: dict[str, object] = {
+            "source": "policy.json",
+            "history": str(log),
+            "found": True,
+            "read_error": None,
+            "runs": 1,
+            "unreadable": 0,
+            "unfinished": 0,
+            "rules": rules,
+        }
+        return runprov.policy.Assessment(**{**base, **facts_set})
+
+    #: THE THREE-WAY ORDERING OVER THE ROWS ALONE, with every fact clean — VIOLATED above
+    #: CANNOT_CHECK above MET, which is the half `assess` already asserts one level down.
+    assert built(passing).outcome == runprov.policy.MET
+    assert built(passing).exit_code == 0 and built(passing).cannot_check is None
+    assert built(blinded).outcome == runprov.policy.CANNOT_CHECK
+    assert built(blinded).exit_code == 2
+    assert built(breaching + blinded).outcome == runprov.policy.VIOLATED, (
+        "[ADR-0018 R-2] a violation among rules that could not all be checked is still a "
+        "violation — this is the ordering a reversed `outcome` silently inverts"
+    )
+
+    for field, (clean, broken) in sorted(inability.items()):
+        #: 1. A VIOLATION OUTRANKS IT. K-01's own assertion, now over every source rather than
+        #: over the torn line alone.
+        beside = built(breaching, **{field: broken})
+        assert (beside.outcome, beside.exit_code) == (runprov.policy.VIOLATED, 1), (
+            f"[K-01] `{field}` turned a violation into an inability. A CI job keys on the exit "
+            f"code, and 1 and 2 send a reader to different work: {beside}"
+        )
+
+        #: 2. AND IT IS STILL REPORTED, which is the half a position error hides. `cannot_check`
+        #: is independent of `outcome` by design — a reader repairing the violation has to know
+        #: the rest was not cleared — so a clause placed inside the verdict's own branch passes
+        #: (1) and fails here. **DERIVED rather than matched against a sentence**: the comparison
+        #: is with the same assessment carrying the clean value, so each field must ADD something.
+        reference = built(breaching, **{field: clean}).cannot_check
+        assert reference is None, (
+            f"the baseline must be silent for this to mean anything: {reference}"
+        )
+        assert beside.cannot_check, (
+            f"[K-01] [ADR-0017 R-8] `{field}` is set and the gate reports nothing missing, which "
+            f"is documented to mean *looked and found nothing*: {beside}"
+        )
+
+        #: 3. AND WHAT IT DOES TO AN OTHERWISE CLEAN GATE is the declared table above.
+        alone = built(passing, **{field: broken})
+        expected = runprov.policy.CANNOT_CHECK if field in moves_the_verdict else runprov.policy.MET
+        assert alone.outcome == expected, (
+            f"[K-01] over a gate with nothing else wrong, `{field}` must answer {expected}: {alone}"
+        )
+        assert alone.cannot_check, f"and say so whatever the verdict is: {alone}"
+
+    #: AND THE SAME ORDERING END TO END, over a real history carrying a violation AND a torn line
+    #: at once — which is the state K-01 was verified by hand over, and the one a reversed
+    #: `outcome` answers exit 2 for.
+    policy_file = _policy_file(tmp_path / "ordering.json", "finished_ok")
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write("this line is not json\n")
+    capsys.readouterr()
+    code = runprov.__main__.main(
+        ["gate", "--policy", str(policy_file), "--log", str(log), "--format", "json"]
+    )
+    body = json.loads(capsys.readouterr().out)
+    #: THE PREMISES, AND `unfinished` IS ONE OF THEM. Built from a history with NO unpaired start
+    #: line on purpose: with one, the CANNOT_CHECK a reversed `outcome` produces could come from
+    #: K-08's clause instead and this assertion would not be about the ordering at all.
+    assert (body["unreadable"], body["unfinished"], body["found"]) == (1, 0, True), body
+    assert body["rules"][0]["violated"] == 1, body
+    assert (body["outcome"], body["exit_code"], code) == (runprov.policy.VIOLATED, 1, 1), (
+        f"[K-01] a failed run and a torn line in one history: the failure is the finding and the "
+        f"torn line is reported beside it. Reversed, this answers CANNOT_CHECK and exit 2 over "
+        f"the same file: {body}"
+    )
+    assert body["cannot_check"] and "could not be read" in body["cannot_check"], body
+
+
 def test_the_gate_page_says_what_the_payload_says_in_the_states_that_are_not_ordinary(
     tmp_path, capsys
 ):
