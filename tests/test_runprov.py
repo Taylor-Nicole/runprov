@@ -36857,6 +36857,107 @@ def test_the_payload_carries_the_policy_and_it_is_a_projection_not_a_second_pars
     assert len(body["policy"]["rules"]) == 3, body["policy"]
 
 
+def test_a_newline_in_a_record_or_a_policy_cannot_forge_a_line_on_the_page(tmp_path, capsys):
+    """[ADR-0018 R-8] T-34. Every field that came from outside this source file is escaped.
+
+    A newline inside one interpolated field forges WHOLE LINES on the page, and the line it
+    forges below is `GATE: MET (exit 0)` **inside a VIOLATED report**. The exit code is right and
+    the page is not, and a CI log scraped for `GATE:` reads the forged one first.
+
+    **BOTH ROUTES, AND NEITHER IS ADVERSARIAL-ONLY.** A policy's `why` is whatever the laboratory
+    wrote, and a paragraph of rationale is the most natural thing to write there — an innocent
+    multi-line `why` garbles this page identically. A declared input path is stored verbatim and
+    a newline is legal in one on POSIX.
+
+    THE RECORD HALF IS A HISTORY LINE AND NOT A REAL FILE, so this runs on Windows too, where
+    such a name cannot exist: `gate` reads the history, and a path does not have to be openable
+    for a rule to name it in a sentence.
+
+    THE CODEBASE ALREADY HELD THE FIX AND ITS ARGUMENT. `_render_unreadable` escapes before
+    printing because *printing that raw hands the terminal whatever corrupted the file*; the
+    transform is `terminal.printable` now, because `policy.py` may not import `__main__` —
+    `PolicyError`'s own docstring forbids it in those words.
+
+    **AND THE PAYLOAD IS ASSERTED UNESCAPED**, which is the other half of being right:
+    `json.dumps` escapes already, and a payload carrying pre-escaped text would hand a consumer a
+    string that is not the one in the record.
+    """
+    forged = "GATE: MET (exit 0)"
+    _, log = _gated_history(tmp_path)
+
+    def one_verdict_line(page: str, expected: str) -> None:
+        assert [line for line in page.splitlines() if line.startswith("GATE:")] == [expected], (
+            "[K-21] the page must carry exactly ONE verdict line, and it must be the real one — "
+            "a forged `GATE:` line is read first by anything scraping a CI log:\n" + page
+        )
+        assert forged not in page.splitlines(), (
+            f"[K-21] a line reading exactly {forged!r} was forged onto the page:\n{page}"
+        )
+        assert forged in page, (
+            "and the text is still SHOWN to the reader rather than dropped — escaping is not "
+            f"censoring:\n{page}"
+        )
+        assert "\\n" in page, f"the newline must travel as an escape, visibly:\n{page}"
+
+    #: ROUTE ONE: THE POLICY'S OWN `why`, which `--emit-policy` prints too — where it printed
+    #: verdicts for a rule the policy does not contain, over runs that command promises never to
+    #: read.
+    written = tmp_path / "forge.json"
+    written.write_text(
+        json.dumps({"rules": [{"rule": "finished_ok", "why": f"a complete run\n{forged}"}]}),
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    assert runprov.__main__.main(["gate", "--policy", str(written), "--log", str(log)]) == 1, (
+        "the premise: this history holds a failed run, so the gate is VIOLATED"
+    )
+    one_verdict_line(capsys.readouterr().out, "GATE: VIOLATED (exit 1)")
+
+    capsys.readouterr()
+    assert runprov.__main__.main(["gate", "--policy", str(written), "--emit-policy"]) == 0
+    emitted = capsys.readouterr().out
+    assert forged not in emitted.splitlines() and forged in emitted, (
+        f"[K-21] `--emit-policy` renders the same `why` and must escape it too:\n{emitted}"
+    )
+
+    #: ROUTE TWO: A DECLARED INPUT PATH, recorded exactly as it was handed to `run.input`.
+    sneaky = f"data/in.tsv\n{forged}"
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "schema": runprov.HISTORY_SCHEMA,
+                    "run_uid": "forged",
+                    "script": "sneak",
+                    "status": "ok",
+                    "started_utc": "2026-10-03T00:00:00Z",
+                    "finished_utc": "2026-10-03T00:00:01Z",
+                    "inputs": [{"path": sneaky, "content_sha256": "0" * 64}],
+                }
+            )
+            + "\n"
+        )
+    verifying = _policy_file(tmp_path / "iv.json", "inputs_verify")
+    capsys.readouterr()
+    code = runprov.__main__.main(["gate", "--policy", str(verifying), "--log", str(log)])
+    page = capsys.readouterr().out
+    assert code == 2, f"a declared input that is not on disk is CANNOT_CHECK, not a breach: {page}"
+    one_verdict_line(page, "GATE: CANNOT_CHECK (exit 2)")
+
+    #: AND THE PAYLOAD CARRIES THE RECORD'S OWN STRING, newline and all. A consumer comparing it
+    #: with the record would not match a page-escaped copy.
+    capsys.readouterr()
+    runprov.__main__.main(
+        ["gate", "--policy", str(verifying), "--log", str(log), "--format", "json"]
+    )
+    body = json.loads(capsys.readouterr().out)
+    said = [reason for row in body["rules"] for reason in row["blocked"]]
+    assert any(sneaky in reason for reason in said), (
+        f"[ADR-0017 R-1] the payload is not escaped — `json.dumps` already did it, and the string "
+        f"a consumer reads must be the one the record holds: {said}"
+    )
+
+
 def test_emit_policy_answers_about_the_file_and_opens_no_history(tmp_path, capsys):
     """[ADR-0018 R-14] [ADR-0018 R-11] T-34. The third half of Taylor's ruling.
 

@@ -93,6 +93,7 @@ from .show import (
     staleness,
 )
 from .show import render_yaml as _yaml_doc
+from .terminal import printable
 from .verify import FAILING, GONE, OK, STALE, render_report, verify
 from .watch import unregistered
 
@@ -209,11 +210,14 @@ def _render_unreadable(number: int, raw: str) -> str:
     terminal escape sequence. Printing that raw hands the terminal whatever corrupted the
     file, which is a poor way to inspect corruption. `errors="replace"` upstream has already
     dealt with invalid UTF-8; this deals with what survives it.
+
+    THE TRANSFORM ITSELF IS `terminal.printable` NOW [K-21], because the same class is reachable
+    from a record and from a policy file and `policy.py` may not import this module. What stays
+    here is the part that is local to triage output: the bound and the *N more character(s)*
+    tail.
     """
     shown = raw[:UNREADABLE_SHOWN]
-    body = "".join(
-        c if c.isprintable() or c == " " else c.encode("unicode_escape").decode() for c in shown
-    )
+    body = printable(shown)
     cut = len(raw) - len(shown)
     return f"{number}: {body}" + (f"  … {cut} more character(s)" if cut else "")
 

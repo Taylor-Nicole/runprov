@@ -36,6 +36,7 @@ import types
 import typing
 
 from . import hashing
+from .terminal import printable
 
 #: A rule's three answers. `CANNOT_CHECK` is the whole design (R-2, R-3): *violated* and
 #: *unverifiable* are different findings, and a policy engine that collapses them produces the
@@ -1160,9 +1161,13 @@ def render_policy(policy: typing.Mapping[str, typing.Any], *, policy_path: str) 
     one carries a `why` — three facts a reader would otherwise have to deduce from the absence of
     an error, which is the inference this package refuses everywhere else.
     """
-    lines = [f"POLICY {policy_path}", ""]
+    lines = [f"POLICY {printable(policy_path)}", ""]
     for entry in policy["rules"]:
-        lines.append(f"  {entry['rule']:<22}{entry['why']}")
+        #: ESCAPED, BECAUSE A `why` IS WHATEVER THE POLICY SAID [K-21]. A multi-line rationale —
+        #: a paragraph, which is what a laboratory writes — forged whole lines on this page, and
+        #: through `--emit-policy` it printed verdicts for a rule the policy does not contain over
+        #: runs this command promises never to read.
+        lines.append(f"  {printable(entry['rule']):<22}{printable(entry['why'])}")
     lines.append("")
     lines.append(
         f"{len(policy['rules'])} rule(s), every one registered in this version and carrying a "
@@ -1181,9 +1186,21 @@ def render(result: Assessment) -> list[str]:
     THE INABILITY IS PRINTED EVEN WHEN THE GATE FAILED, because `cannot_check` is independent of
     the outcome: a reader fixing the violation has to know the rest was not cleared either.
     """
+    #: EVERY FIELD THAT CAME FROM A RECORD OR A POLICY IS ESCAPED ON THE WAY TO THE PAGE [K-21].
+    #: A newline in one of them forges whole lines, including a line reading exactly
+    #: `GATE: MET (exit 0)` inside a VIOLATED report — and a CI log scraped for `GATE:` reads the
+    #: forged one first. Both routes were reproduced against a real invocation: a declared input
+    #: path containing a newline (legal on POSIX, stored verbatim) and a policy's `why`. **And an
+    #: innocent multi-line `why` garbles the page identically**, so this is not adversarial-only.
+    #:
+    #: WHAT IS NOT ESCAPED IS WHAT CAME FROM THIS SOURCE FILE: `outcome`, `rule`, `asks` and
+    #: `blind` are the registry's own strings, written here and validated against it by the
+    #: parser. Escaping them would say the registry is untrusted, which is a different and false
+    #: claim. The JSON payload is untouched: `json.dumps` escapes already, and a payload carrying
+    #: pre-escaped text would hand a consumer a string that is not the one in the record.
     lines = [
-        f"POLICY {result.policy_path}",
-        f"  history  {result.history}"
+        f"POLICY {printable(result.policy_path)}",
+        f"  history  {printable(result.history)}"
         + ("" if result.found else "  (NOT FOUND)")
         + f"  —  {result.runs} run(s) examined"
         + (f", {result.unreadable} line(s) unreadable" if result.unreadable else ""),
@@ -1191,7 +1208,7 @@ def render(result: Assessment) -> list[str]:
     ]
     for row in result.rules:
         lines.append(f"{row['outcome']:<13}{row['rule']} — {row['asks']}")
-        lines.append(f"  why          {row['why']}")
+        lines.append(f"  why          {printable(row['why'])}")
         #: R-4 ON THE PAGE AND NOT ONLY IN THE PAYLOAD. *No violations* over a selection of zero
         #: runs is the vacuous green this requirement exists to refuse, and a reader who has to
         #: ask for JSON to see the count is a reader who will not ask.
@@ -1201,16 +1218,16 @@ def render(result: Assessment) -> list[str]:
             + ("  — ASKED OF NOTHING" if row["asked_of_nothing"] else "")
         )
         for reason in row["reasons"]:
-            lines.append(f"  finding      {reason}")
+            lines.append(f"  finding      {printable(reason)}")
         #: A DIFFERENT WORD, BECAUSE IT IS A DIFFERENT ANSWER [K-10]. These used to print under
         #: `finding` beside the breaches, so *the run recorded no outputs, so there is nothing to
         #: ask* was labelled an accusation. `cannot see` below is the rule's standing blind spot;
         #: this is what it could not answer about THESE runs.
         for reason in row["blocked"]:
-            lines.append(f"  not checked  {reason}")
+            lines.append(f"  not checked  {printable(reason)}")
         lines.append(f"  cannot see   {row['blind']}")
         lines.append("")
     if result.cannot_check:
-        lines.append(f"COULD NOT CHECK: {result.cannot_check}")
+        lines.append(f"COULD NOT CHECK: {printable(result.cannot_check)}")
     lines.append(f"GATE: {result.outcome} (exit {result.exit_code})")
     return lines

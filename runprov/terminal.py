@@ -499,6 +499,39 @@ def _flush_std() -> None:
             del exc
 
 
+def printable(text: str) -> str:
+    """One field's worth of text, safe to interpolate into a line a person reads.
+
+    LIFTED OUT OF `__main__._render_unreadable` [K-21], WHOSE OWN ARGUMENT IS THE REASON:
+    *printing that raw hands the terminal whatever corrupted the file*. The same class is
+    reachable from a RECORD and from a POLICY rather than from a torn line — a declared input
+    path may contain a newline (legal on POSIX and stored verbatim), and a policy's `why` may be
+    a paragraph of rationale, which is the most natural thing a laboratory writes. A newline
+    inside one interpolated field forges WHOLE LINES on the page, including a line reading
+    exactly `GATE: MET (exit 0)` inside a VIOLATED report, and a CI log scraped for `GATE:` reads
+    the forged one first. **So this is not an adversarial case:** an innocent multi-line `why`
+    garbles the page identically.
+
+    IT LIVES HERE AND NOT IN `__main__` BECAUSE OF THE IMPORT DIRECTION. `policy.py` must not
+    import the command module — `PolicyError`'s own docstring forbids it in those words, because
+    a policy parser that dragged `__main__` in would make `import runprov.policy` build an
+    argument parser — so a transform both of them need belongs in a module both may import.
+
+    THE JSON SIDE IS LEFT ALONE, deliberately: `json.dumps` already escapes, and a payload
+    carrying pre-escaped text would hand a consumer a string that is not the one in the record.
+    One structure, two renderings — and escaping is the renderer's job.
+
+    A SPACE SURVIVES AND NOTHING ELSE NON-PRINTABLE DOES. `str.isprintable()` is False for a
+    space, so a page whose columns were escaped would be unreadable; every other character that
+    is not printable — a newline, a tab, a terminal escape sequence, a stray control byte —
+    becomes its `unicode_escape` form. Accented letters, CJK and the em dash are printable and
+    pass through unchanged, which matters for a `why` a French laboratory writes.
+    """
+    return "".join(
+        c if c.isprintable() or c == " " else c.encode("unicode_escape").decode() for c in text
+    )
+
+
 def _write_all(fd: int, data: bytes) -> None:
     """`os.write` may write short. Losing the tail of a line to that is not acceptable."""
     view = memoryview(data)
