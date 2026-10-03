@@ -35552,6 +35552,17 @@ def test_a_policy_that_cannot_be_used_names_the_file_and_the_fix(tmp_path):
         ("broken.json", "{not json", "not valid JSON"),
         ("broken.toml", "[[rules]\nrule = 1", "not valid TOML"),
         ("policy.yaml", "rules: []", "neither a .json nor a .toml"),
+        #: AND A NAME WITH NO SUFFIX AT ALL SAYS SO [K-05]. A reader who typed `policy` gets told
+        #: what was read, which is this package's standard: a refusal names its own fix.
+        #:
+        #: **THE ROW'S OTHER HALF IS A CHECK THAT CANNOT FAIL AND IS DELIBERATELY NOT HERE.** It
+        #: asked for an assertion that the offending SUFFIX appears in the message — and measured
+        #: with the mutation applied (`{suffix or ...}` deleted), `".yaml" in message` is still
+        #: **True**, because the interpolated `{path}` already carries the suffix and the loop
+        #: below already asserts the path appears. `path.suffix` is a pure function of `path`, so
+        #: the clause carries no information the message lacks. Only this half moves, and a
+        #: verification that passes with the mutation re-applied proves nothing.
+        ("policy", "rules: []", "the name carries no suffix"),
         ("top.json", "[]", "at the top level"),
         (
             "settings.json",
