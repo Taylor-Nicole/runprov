@@ -35572,8 +35572,35 @@ def test_a_policy_that_cannot_be_used_names_the_file_and_the_fix(tmp_path):
 
     # A FILE THAT IS NOT THERE, AND ONE THAT IS NOT TEXT. Both are refusals about the file rather
     # than about its contents, and both have to say which.
-    with pytest.raises(runprov.policy.PolicyError, match="could not be read"):
-        runprov.policy.load(tmp_path / "absent.json")
+    #
+    # AND THE OS'S OWN REASON TRAVELS [K-04]. Dropping `exc.strerror` from that refusal leaves
+    # *could not be read* with no *No such file or directory* and no *Is a directory*, and this
+    # assertion was a phrase match that the mutant satisfied. A user meets this on a mistyped
+    # `--policy` on their first run, and a gate that will not start and will not say why is the
+    # hardest kind of CI failure to act on.
+    #
+    # **`strerror` ITSELF IS NOT ASSERTED, AND THAT IS THE ROW'S CORRECTION:** the string is
+    # host- and locale-supplied, and the change-verification bar forbids a test to assert on what
+    # the host supplies. What is asserted is DERIVED — the prefix, a NON-EMPTY tail after it, and
+    # that two different OS failures do not produce the SAME tail. The last clause is what kills
+    # a constant put in `strerror`'s place, on every platform and in every language.
+    tails = {}
+    for label, candidate in (("absent", tmp_path / "absent.json"), ("a directory", tmp_path)):
+        with pytest.raises(runprov.policy.PolicyError) as raised:
+            runprov.policy.load(candidate)
+        said = str(raised.value)
+        opening = f"{candidate} could not be read: "
+        assert said.startswith(opening), f"{label}: {said!r} does not open with {opening!r}"
+        tails[label] = said[len(opening) :].strip()
+        assert tails[label], (
+            f"[K-04] {label}: the refusal says the file could not be read and not WHY. The OS "
+            f"said something and it was dropped: {said!r}"
+        )
+    assert tails["absent"] != tails["a directory"], (
+        f"[K-04] the tail must carry the OS's own reason rather than a constant in its place: "
+        f"two different failures produced the same sentence: {tails}"
+    )
+
     raw = tmp_path / "bytes.json"
     raw.write_bytes(b'{"rules": [{"rule": "clean_tree", "why": "\xff\xfe"}]}')
     with pytest.raises(runprov.policy.PolicyError, match="not UTF-8"):

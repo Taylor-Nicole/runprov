@@ -318,6 +318,22 @@ def _no_unregistered_reads(record: typing.Mapping[str, typing.Any], context: Con
     del context  # this rule reads the record only
     if record.get("observation") is None:
         return Verdict(CANNOT_CHECK, "the record carries no observation block, so nothing watched")
+    #: `or []` IS REDUNDANT HERE AND IT STAYS, WITH THE REASON [K-07]. `if missed:` guards the
+    #: only use and `len()` is never reached with `None`, so deleting it changes nothing and a
+    #: mutation that deletes it survives the whole suite. That makes it an EQUIVALENT mutant, and
+    #: an equivalent mutant is a finding about the design rather than about the test — so the
+    #: design is stated instead of the code being changed: this is the HOUSE IDIOM for this field
+    #: and it is load-bearing at two of its three sites. `__main__.py` does
+    #: `len(record.get("unregistered_reads") or [])` and `report.py` does `tuple(... or [])`, and
+    #: `len(None)` and `tuple(None)` both raise. Deleting it would make this the one reader of
+    #: three that spells the field differently, which is how two readers of one field come to
+    #: disagree about what its absence means.
+    #:
+    #: AND `FEATURE_WORKFLOW.md`'s EQUIVALENT-MUTANT RULE DOES NOT REACH IT. That rule is about
+    #: two DERIVATIONS of one quantity — `PurePosixPath(n).parts` against `n.split("/")`, where
+    #: the pair can silently disagree — not about a defensive default whose other arm is
+    #: unreachable. Without that distinction every `or []` and `or {}` in the package is a future
+    #: audit row.
     missed = record.get("unregistered_reads") or []
     if missed:
         return Verdict(
@@ -486,9 +502,26 @@ def _finished_ok(record: typing.Mapping[str, typing.Any], context: Context) -> V
     if isinstance(failure, dict):
         said = ": ".join(str(failure[key]) for key in ("type", "message") if failure.get(key))
     else:
-        #: A STRING IS ACCEPTED TOO, because a record written by a version before the block
-        #: existed carries one, and a rule that only understands today's shape reports every older
-        #: run as a failure with no reason.
+        #: A STRING IS ACCEPTED TOO — AND THE PREMISE THIS ARM WAS WRITTEN ON IS FALSE [K-02].
+        #: It said *a record written by a version before the block existed carries one*. No such
+        #: version existed: `git show v0.1.0|v0.4.0|v0.7.0:runprov/run.py` shows every released
+        #: version writing `failure` as a `{type, message, traceback}` MAPPING. So the string
+        #: shape is not a backward-compatibility arm, and a fixture pinning one would be a
+        #: fixture asserting a state this package's writer never emits — the defect K-20 was
+        #: filed for.
+        #:
+        #: THE EMPTY-`said` BRANCH BELOW IS UNREACHABLE FOR THE SAME REASON [K-03]. `run.py` sets
+        #: `status = "failed"` and that mapping in ONE block, and `failure["type"]` is
+        #: `exc_type.__name__`, which is never empty — so a record this package wrote can never
+        #: produce the dangling colon the conditional avoids.
+        #:
+        #: **BOTH ARMS STAY, AS TOLERANCE FOR A RECORD THIS PACKAGE DID NOT WRITE:** a
+        #: hand-edited history, a line from another tool, a record repaired by a person reading
+        #: it. A rule that met one of those and reported *the run finished with status 'failed'*
+        #: with no reason, or with a sentence trailing off after a colon, would be a finding a
+        #: reader cannot act on. What they are not is history, and the arm every real record DOES
+        #: carry is asserted by name in
+        #: `test_the_rules_agree_with_records_this_package_really_wrote`.
         said = str(failure) if failure else ""
     return Verdict(
         VIOLATED, f"the run finished with status {status!r}" + (f": {said}" if said else "")
