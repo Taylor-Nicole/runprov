@@ -856,7 +856,21 @@ class Assessment(typing.NamedTuple):
 
     #: The policy file this was read from, and the history it was applied to. Named because the
     #: payload is evidence a laboratory files: *which controls, against which runs*.
-    source: str
+    #:
+    #: `policy_path` AND NOT `source`, AND THE WORD WAS ALREADY TAKEN [K-12]. ADR-0017 R-12's own
+    #: table defines `source` for the twelve payloads as *which MECHANISM answered* — `resources`
+    #: carries `source: "getrusage"`, and ADR-0013 R-5 is the row establishing that a cgroup peak
+    #: and a `getrusage` peak are different quantities. Four shipped payloads use it that way;
+    #: these two new ones used it for a FILE PATH. All the values are strings, so no type-based
+    #: guard can ever see the collision — the cross-command guard's own docstring says that is the
+    #: half it cannot see — and ADR-0017 R-9 forbids renaming a field once it is uploaded. So this
+    #: rename had one window and this is it.
+    #:
+    #: THE SIBLING STAYS `history`, so the payload reads `policy_path` / `history` rather than
+    #: `policy_path` / `history_path`. `history` is what every other command in the package calls
+    #: the same file and R-9 governs it: renaming it here to match a word invented today would
+    #: trade a frozen vocabulary for a local symmetry.
+    policy_path: str
     history: str
     found: bool
     #: THE HISTORY IS THERE AND COULD NOT BE READ, which is a third state beside `found` and not
@@ -987,7 +1001,7 @@ def assessment(
     policy: typing.Mapping[str, typing.Any],
     records: typing.Iterable[typing.Mapping[str, typing.Any]],
     *,
-    source: str,
+    policy_path: str,
     history: str,
     found: bool = True,
     unreadable: int = 0,
@@ -1008,7 +1022,7 @@ def assessment(
     seen = list(records)
     context = Context(digests={})
     return Assessment(
-        source=source,
+        policy_path=policy_path,
         history=history,
         found=found,
         read_error=read_error,
@@ -1056,17 +1070,21 @@ POLICY_SCHEMA = "runprov.policy.v1"
 
 
 def policy_payload(
-    policy: typing.Mapping[str, typing.Any], *, source: str
+    policy: typing.Mapping[str, typing.Any], *, policy_path: str
 ) -> dict[str, typing.Any]:
     """A policy file, validated and normalised, as one object. R-14, ADR-0017 R-5.
 
-    `source` TRAVELS WITH IT for the same reason it travels with an assessment: this is evidence a
-    laboratory files, and *which controls* is half of what makes it evidence.
+    `policy_path` TRAVELS WITH IT for the same reason it travels with an assessment: this is
+    evidence a laboratory files, and *which controls* is half of what makes it evidence.
+
+    IT WAS `source` AND THAT WORD MEANS SOMETHING ELSE IN THIS PACKAGE [K-12]: ADR-0017 R-12
+    gives it to *which mechanism answered*, which is what `resources.source` carries. See
+    `Assessment.policy_path`.
     """
-    return {"schema": POLICY_SCHEMA, "source": source, **policy}
+    return {"schema": POLICY_SCHEMA, "policy_path": policy_path, **policy}
 
 
-def render_policy(policy: typing.Mapping[str, typing.Any], *, source: str) -> list[str]:
+def render_policy(policy: typing.Mapping[str, typing.Any], *, policy_path: str) -> list[str]:
     """The same policy as a page. R-14, and ADR-0017 R-1 again: one structure, two renderings.
 
     IT SAYS THE POLICY IS USABLE RATHER THAN LEAVING THAT TO BE INFERRED. Reaching this function
@@ -1074,7 +1092,7 @@ def render_policy(policy: typing.Mapping[str, typing.Any], *, source: str) -> li
     one carries a `why` — three facts a reader would otherwise have to deduce from the absence of
     an error, which is the inference this package refuses everywhere else.
     """
-    lines = [f"POLICY {source}", ""]
+    lines = [f"POLICY {policy_path}", ""]
     for entry in policy["rules"]:
         lines.append(f"  {entry['rule']:<22}{entry['why']}")
     lines.append("")
@@ -1096,7 +1114,7 @@ def render(result: Assessment) -> list[str]:
     the outcome: a reader fixing the violation has to know the rest was not cleared either.
     """
     lines = [
-        f"POLICY {result.source}",
+        f"POLICY {result.policy_path}",
         f"  history  {result.history}"
         + ("" if result.found else "  (NOT FOUND)")
         + f"  —  {result.runs} run(s) examined"

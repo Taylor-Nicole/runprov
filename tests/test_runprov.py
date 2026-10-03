@@ -35972,7 +35972,7 @@ def test_the_gates_precedence_is_asserted_over_every_inability_it_can_report(tmp
 
     #: EVERY FIELD OF `Assessment` IS EITHER A SUBJECT OR AN INABILITY, and the subjects are the
     #: four that say WHAT was assessed. Derived, so a new field is not silently neither.
-    facts = set(runprov.policy.Assessment._fields) - {"source", "history", "runs", "rules"}
+    facts = set(runprov.policy.Assessment._fields) - {"policy_path", "history", "runs", "rules"}
     #: WHAT EACH INABILITY LOOKS LIKE CLEAN AND BROKEN. Declared rather than derived because no
     #: expression can know it — and the assertion below is what makes the declaration load-bearing.
     inability: dict[str, tuple[object, object]] = {
@@ -36002,7 +36002,7 @@ def test_the_gates_precedence_is_asserted_over_every_inability_it_can_report(tmp
         #: into a state this test never varied. `runs` is nominal: this is a property over the
         #: FIELDS, and the real history below is where a consistent one is asserted.
         base: dict[str, object] = {
-            "source": "policy.json",
+            "policy_path": "policy.json",
             "history": str(log),
             "found": True,
             "read_error": None,
@@ -36435,17 +36435,31 @@ def test_emit_policy_answers_about_the_file_and_opens_no_history(tmp_path, capsy
         f"gate's version: {body.get('schema')}"
     )
     assert body["rules"] == runprov.policy.load(as_toml)["rules"], body
-    assert body["source"] == str(as_toml), body
+    assert body["policy_path"] == str(as_toml), body
     assert "is not read" in shown.err and str(absent) in shown.err, (
         f"a flag accepted and silently ignored is the no-op this package refuses: {shown.err}"
     )
-    #: NO GATE FIELD IS PRESENT. A consumer must not be able to read an outcome off a document
-    #: that examined nothing — which is the vacuous green with a schema on it.
-    for forbidden in ("outcome", "exit_code", "cannot_check", "runs", "unreadable", "found"):
-        assert forbidden not in body, (
-            f"[ADR-0018 R-14] `{forbidden}` is a fact about runs, and this answered about none: "
-            f"{sorted(body)}"
-        )
+    #: NO GATE FIELD IS PRESENT, AND THIS IS THE DERIVED COMPLEMENT RATHER THAN A LIST OF THEM
+    #: [K-41]. A consumer must not be able to read an outcome — or a history path — off a document
+    #: that examined nothing, which is the vacuous green with a schema on it.
+    #:
+    #: **IT WAS A HAND-TYPED TUPLE OF GATE FIELDS AND THAT FAILS OPEN.** `history` and `policy`
+    #: were never in it, and the two fields K-08 and K-23 added — `unfinished` and `read_error` —
+    #: widened the gap to four. Measured in a copied tree: leaking each of the four into
+    #: `policy_payload` in turn left this test and the whole suite GREEN, four times out of four.
+    #: A key SET fails CLOSED, which is the correct bias for a check whose requirement is
+    #: *answers about nothing else*, and this one is derived from `load()`'s own return — the
+    #: parser's normalised shape — so a policy that grows a key cannot be mistaken for a leak and
+    #: a gate field that grows cannot slip in. This project's own rule: derive a check's scope,
+    #: never extend the list.
+    expected = {"schema", "policy_path"} | set(runprov.policy.load(as_toml))
+    assert set(body) == expected, (
+        "[ADR-0018 R-14] [ADR-0017 R-8] a normalised policy is the schema, the file it was read "
+        "from and the policy's own keys, and nothing else — every other key in the gate payload "
+        "is a fact about runs, and this invocation answered about none:\n"
+        f"  present and not allowed: {sorted(set(body) - expected)}\n"
+        f"  allowed and missing:     {sorted(expected - set(body))}"
+    )
 
     #: THE PAGE SAYS THE SAME AND SAYS IT IS USABLE, rather than leaving that to be inferred from
     #: the absence of an error.

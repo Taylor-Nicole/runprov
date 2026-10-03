@@ -2118,6 +2118,15 @@ def _gate(args: argparse.Namespace) -> int:
     `report` handed an artifact that is not there. A MISSING HISTORY IS THE OTHER CLASS — the
     question was formed, the command looked where it was told, and its finding is that there is
     nothing to read, so that one carries a payload.
+
+    BOTH PATHS ARE `_posix`-SPELLED, AND A DERIVED GUARD IS WHY [K-12]. Renaming `source` to
+    `policy_path` brought the field inside
+    `test_no_recorded_path_is_spelled_with_a_bare_str`, whose scope is every key and keyword
+    ending in `path` — so it fired on `policy_path=str(...)` the moment the rename landed. That
+    is the guard working: a path in a filed payload is read on a machine other than the one that
+    wrote it, which is T-08's rule and `lineage`'s `path: path.as_posix()` one command over.
+    `history` is spelled the same way in the same call, because a payload POSIX in one path field
+    and native in its sibling is worse than either — the reader could not tell which they hold.
     """
     try:
         loaded = policy.load(args.policy)
@@ -2138,9 +2147,13 @@ def _gate(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
         if args.format == "json":
-            print(json.dumps(policy.policy_payload(loaded, source=str(args.policy)), indent=2))
+            print(
+                json.dumps(
+                    policy.policy_payload(loaded, policy_path=hashing._posix(args.policy)), indent=2
+                )
+            )
         else:
-            for line in policy.render_policy(loaded, source=str(args.policy)):
+            for line in policy.render_policy(loaded, policy_path=hashing._posix(args.policy)):
                 print(line)
         # 0 USABLE, AND THERE IS NO 1. A policy cannot carry a *finding* — it is either a document
         # this version can act on or it is not, and the `return 2` above is the second case.
@@ -2149,7 +2162,11 @@ def _gate(args: argparse.Namespace) -> int:
     log = pathlib.Path(args.log) if args.log else active().resolved_run_log()
     if not log.is_file():
         result = policy.assessment(
-            loaded, [], source=str(args.policy), history=str(log), found=False
+            loaded,
+            [],
+            policy_path=hashing._posix(args.policy),
+            history=hashing._posix(log),
+            found=False,
         )
         print(f"gate: no run history at {log}", file=sys.stderr)
     else:
@@ -2184,14 +2201,18 @@ def _gate(args: argparse.Namespace) -> int:
             said = exc.strerror or str(exc)
             print(f"gate: {log} could not be read: {said}", file=sys.stderr)
             result = policy.assessment(
-                loaded, [], source=str(args.policy), history=str(log), read_error=said
+                loaded,
+                [],
+                policy_path=hashing._posix(args.policy),
+                history=hashing._posix(log),
+                read_error=said,
             )
         else:
             result = policy.assessment(
                 loaded,
                 records,
-                source=str(args.policy),
-                history=str(log),
+                policy_path=hashing._posix(args.policy),
+                history=hashing._posix(log),
                 unreadable=bad[0],
                 unfinished=len(scan.open),
             )
