@@ -255,7 +255,11 @@ def _clean_tree(record: typing.Mapping[str, typing.Any], context: Context) -> Ve
     blind="a run whose record carries no `observation` block at all — written by a version "
     "before the watch existed; and, named here because the record cannot close it, a run whose "
     "watch itself raised, which warns on stderr and leaves both fields unset exactly as a clean "
-    "run does",
+    "run does; and — the ordinary route, not the defensive one — a run configured with "
+    "`warn_unregistered_reads=False`, which is documented and recommended for a step that "
+    "deliberately reads files it does not want recorded: the watch is never attached, so the "
+    "record is silent exactly as a clean run's is, and the setting is PROJECT-level, so one "
+    "step's exemption silences it for every run that shares the project",
 )
 def _no_unregistered_reads(record: typing.Mapping[str, typing.Any], context: Context) -> Verdict:
     """R-6'S OWN EXAMPLE: the field that qualifies the answer is consulted, not just the answer.
@@ -264,6 +268,21 @@ def _no_unregistered_reads(record: typing.Mapping[str, typing.Any], context: Con
     good case — and that is why the `observation` block's presence is what makes this evaluable.
     A record without one came from a version that did not watch, and reading its silence as
     *nothing was missed* would be the vacuous green over the whole of history.
+
+    AND THE `observation` BLOCK'S PRESENCE IS NOT ENOUGH, WHICH IS K-18 AND IS NOT FIXED HERE.
+    `warn_unregistered_reads=False` skips `attach()` altogether and the run still records a full
+    `observation` block, so this rule answers MET for a run that performed real unregistered reads
+    — reproduced, with a documented and package-recommended setting, which is the most ordinary
+    route there is to the vacuous green this ADR exists to refuse. **The record carries no field
+    saying whether the watch ran**, so R-10's remedy applies and it is a record change with its own
+    ADR, not an inference here.
+
+    **DELIBERATELY NOT FIXED BEFORE 0.8.0, and the reason is measured rather than preferred.** The
+    field cannot be back-filled, so a rule requiring it turns every clean pre-0.8.0 history from
+    MET to CANNOT_CHECK for ever — worse than the defect — and a check placed before the violation
+    arm turns a real VIOLATED finding into CANNOT_CHECK on all seven corpus histories. What landed
+    now is the honest half: the limit is named in `blind`, where R-6 requires it, and ADR-0018's
+    paragraph no longer presents the watch's `except` arm as the only way to reach this state.
 
     A VIOLATION OUTRANKS THE TRUNCATION, and the order is the fact. When the watch hit its cap AND
     still caught something, at least one read was certainly missed — knowing part of a list is

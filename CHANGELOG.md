@@ -56,6 +56,17 @@ on the record's own digest key, comparing all 256 bits rather than the 16 charac
 carries. A declared input that is gone is `CANNOT_CHECK` naming the path and never a violation —
 the file may have been archived, and an accusation cannot be withdrawn from a record.
 
+**`no_unregistered_reads` now names the setting that switches its watch off.**
+`warn_unregistered_reads=False` — documented, and recommended for a step that deliberately reads
+files it does not want recorded — skips the watch altogether, so such a run records a full
+`observation` block and neither field and the rule answers MET over real unregistered reads. The
+setting is PROJECT-level, so one step's exemption silences the watch for every run that shares the
+project. **The verdict is deliberately unchanged and the limit is written down instead**, in the
+sentence the gate prints under `cannot see` and in ADR-0018, whose paragraph presented the watch's
+own `except` arm as the only route to that state. The field that would let the rule answer
+properly cannot be back-filled: requiring it would turn every clean pre-0.8.0 history from MET to
+CANNOT_CHECK for ever, which is worse than the defect, so it gets its own ADR.
+
 **`environment_captured` reads the snapshot the record NAMES, and opens no file.** A run whose
 environment snapshot could not be written records `environment_snapshot: {"error": …}` and is
 still marked `packages_recorded: "snapshot"` — the mark comes from the key's presence — so a run

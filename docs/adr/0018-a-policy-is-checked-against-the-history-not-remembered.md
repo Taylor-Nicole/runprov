@@ -137,6 +137,23 @@ That branch is defensive and believed unreachable, and until a record field says
 completed*, the rule's own `blind` text states the limit. R-10's remedy for wanting a property the
 record does not carry is a record change with its own ADR, not an inference here.
 
+**CORRECTED 2026-10-03 for K-18: the paragraph above was DEFECTIVE BY OMISSION, and the omission
+is the ordinary route rather than the defensive one.** `warn_unregistered_reads=False` skips
+`attach()` altogether, and such a run records a full `observation` block and neither field — so
+the state reached is identical and the rule answers **MET** for a run that performed real
+unregistered reads. Reproduced. The setting is documented, package-recommended for a step that
+deliberately reads files it does not want recorded, and **PROJECT-level**, so one step's exemption
+silences the watch for every run that shares the project and the rule says MET over all of them.
+Presenting the `except` arm as the only route made a supported configuration look impossible.
+
+**THE VERDICT IS DELIBERATELY LEFT ALONE UNTIL THE RECORD CAN CARRY THE FACT, and that decision is
+measured rather than preferred.** `observation.unregistered_watch` cannot be back-filled, so a rule
+requiring it would turn **every clean pre-0.8.0 history from MET to CANNOT_CHECK for ever** —
+worse than the defect — and the same check placed before the violation arm turns a real VIOLATED
+finding into CANNOT_CHECK on all seven corpus histories, measured. The record field gets its own
+ADR, which is R-10's answer and not a loosening of it. What this amendment does is make the limit
+true where R-6 requires it to be written: in the rule's own `blind` text, and here.
+
 **R-8.** `--format json` per ADR-0017, because a gate whose result cannot be read by the CI
 system running it is a gate that gets deleted.
 

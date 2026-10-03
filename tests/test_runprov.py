@@ -34549,6 +34549,107 @@ def test_the_rules_agree_with_records_this_package_really_wrote(tmp_path, monkey
     assert tally["asked_of_nothing"] is False and tally["reasons"], tally
 
 
+def test_the_watch_can_be_switched_off_and_the_rule_says_so_rather_than_pretending(tmp_path):
+    """[ADR-0018 R-6] [ADR-0018 R-10] Audit K, K-18. The one row a skeptic recommends NOT fixing
+    before release, and this is where the decision is recorded so it stays a decision.
+
+    **THE DEFECT.** `no_unregistered_reads` answers MET for a run whose watch was switched off by
+    `warn_unregistered_reads=False` — a documented, package-recommended setting for a step that
+    deliberately reads files it does not want recorded. Reproduced: such a run performed a real
+    unregistered `open()`, recorded neither `unregistered_reads` nor the truncation mark, kept a
+    full `observation` block, and the rule said MET. **This is the rule the whole ADR is built
+    around, producing the vacuous green through the most ordinary route there is.** And the
+    setting is PROJECT-level, so one step's exemption silences the watch for every run that shares
+    the project and the rule says MET over all of them — more ordinary than the row first filed.
+
+    **THE VERDICT IS DELIBERATELY NOT CHANGED, and the reason is measured.** The record carries no
+    field saying whether the watch ran, and `observation.unregistered_watch` cannot be
+    back-filled: a rule requiring it would turn **every clean pre-0.8.0 history from MET to
+    CANNOT_CHECK for ever**, which is worse than the defect — in the one release that is also the
+    last chance to add fields. And the same check placed before the violation arm turns a real
+    VIOLATED finding into CANNOT_CHECK on all seven corpus histories. So the record field gets its
+    own ADR, which is R-10's answer rather than a loosening of it.
+
+    **WHAT LANDED IS THE HONEST HALF, AND THIS IS THE TEST OF IT.** R-6 requires each rule to name
+    what it cannot see, so the route is named in the rule's own `blind` text and ADR-0018 no
+    longer presents the watch's `except` arm as the only way to reach that state. **The MET is
+    asserted here on purpose**: a known limit that nothing records reads exactly like an
+    oversight, and the next pass over this code would file it again.
+    """
+    project = tmp_path / "watchoff"
+    project.mkdir()
+    (project / "secret.tsv").write_text("data nobody declared\n", encoding="utf-8")
+    runprov.configure(
+        root=project,
+        run_log=project / "h.jsonl",
+        auto_steps="off",
+        warn_unregistered_reads=False,
+    )
+    with runprov.Run("sneaky", {}, provenance=project / "p.json"):
+        with open(project / "secret.tsv", encoding="utf-8") as fh:
+            fh.read()
+    record = [
+        json.loads(line)
+        for line in (project / "h.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip() and json.loads(line).get("schema") != "runprov.start.v1"
+    ][-1]
+
+    #: THE STATE, ASSERTED RATHER THAN DESCRIBED. The `observation` block is what makes this rule
+    #: evaluable at all, so a record that kept it and still says nothing about the watch is
+    #: exactly the shape the rule cannot tell from a clean run.
+    assert record.get("observation") is not None, (
+        f"the premise: the run still records a full observation block, which is what makes the "
+        f"rule think it can answer: {record.get('observation')}"
+    )
+    assert "unregistered_reads" not in record, (
+        f"and nothing of the read reached the record, because the watch was never attached: "
+        f"{record.get('unregistered_reads')}"
+    )
+    assert not record["observation"].get("unregistered_watch_truncated"), record["observation"]
+
+    got = runprov.policy.rules()["no_unregistered_reads"].judge(record, runprov.policy.Context())
+    #: AND THE VERDICT IS MET, WHICH IS WRONG AND IS LEFT WRONG ON PURPOSE [K-18]. Asserted so
+    #: that the day the record can say whether the watch ran, this line fails and sends whoever
+    #: changes it to the paragraph in ADR-0018 that explains why it was waiting.
+    assert got.outcome == runprov.policy.MET, (
+        f"[K-18] this is the KNOWN limit, recorded rather than hidden: if this rule has started "
+        f"answering {got.outcome} here, the record has gained a field saying whether the watch "
+        f"ran, and ADR-0018's R-10 amendment is the thing to update next: {got}"
+    )
+
+    #: SO R-6 IS WHAT MUST HOLD: the rule's own text names the route. A limit the rule does not
+    #: state is a limit a reader of the gate's page never learns.
+    blind = runprov.policy.rules()["no_unregistered_reads"].blind
+    assert "warn_unregistered_reads=False" in blind, (
+        f"[ADR-0018 R-6] a rule that cannot see a state reached by a DOCUMENTED setting must say "
+        f"so in its own words — this is the sentence the gate prints under `cannot see`: {blind}"
+    )
+    assert "PROJECT-level" in blind, (
+        f"[ADR-0018 R-6] and that it is project-level, which is what makes one step's exemption "
+        f"silence the watch for every run in the history: {blind}"
+    )
+
+    #: AND THE ADR NO LONGER PRESENTS THE `except` ARM AS THE ONLY ROUTE. Its paragraph justified
+    #: accepting this blind spot on the grounds that the only way in is a branch *"defensive and
+    #: believed unreachable"* — which made a supported configuration look impossible. The ADR is
+    #: the specification, so the correction belongs there and not only in the code.
+    adr = (
+        _repo_root()
+        / "docs"
+        / "adr"
+        / "0018-a-policy-is-checked-against-the-history-not-remembered.md"
+    ).read_text(encoding="utf-8")
+    assert "warn_unregistered_reads=False" in adr, (
+        "[ADR-0018 R-6] [ADR-0018 R-10] ADR-0018 states that the watch's `except` arm is the only "
+        "route to both fields being unset, and a documented setting reaches the same state. The "
+        "paragraph is defective by OMISSION and the omission is the ordinary route"
+    )
+    #: AND THE README'S THIRD COLUMN IS UNTOUCHED BY THIS, which is why the `blind` text was
+    #: APPENDED to rather than rewritten: the README's cell is checked with `startswith`, so the
+    #: cheap half of this row really is two edits and costs no third.
+    assert blind.startswith("a run whose record carries no `observation` block at all"), blind
+
+
 def test_environment_captured_reads_the_snapshot_the_record_names_and_opens_no_file(
     tmp_path, monkeypatch
 ):
