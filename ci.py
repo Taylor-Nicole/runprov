@@ -46,6 +46,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
+#: COVERAGE'S OWN REPORT, WRITTEN BY THE GATE RUN AND READ BACK BY IT [K-37]. The README quotes
+#: the statement and branch counts to convey scale, and that sentence has now drifted FIVE times.
+#: L-09's fix field asked for the structural remedy four drifts ago — *"have `ci.py` regenerate
+#: these numbers so they cannot drift again"* — and each repair since was another exact number
+#: that went stale, the last one taken from the SUITE'S AST PROXY rather than from coverage.
+#:
+#: THE PROXY RUNS 5.2% HIGH, PERMANENTLY, AND THAT IS WHY THE DOCUMENT AND THE GATE MUST SHARE
+#: ONE INSTRUMENT. Measured: 5 829 statements by the AST walk against 5 543 by coverage, a ratio
+#: of 1.052 — so a README quoting coverage while a guard compares against the proxy burns half of
+#: a 10% tolerance band from the day it is written, and the next repair reaches for the guard's
+#: number again. That is the mechanism behind all five drifts.
+#:
+#: Gitignored: it is derived, it changes with every line added, and a provenance tool whose
+#: repository tracks a stale coverage artefact is a poor advertisement.
+SCALE_REPORT = ROOT / ".coverage-scale.json"
+
 
 def run(*cmd: str, cwd: Path | None = None) -> None:
     printable = " ".join(cmd)
@@ -143,7 +159,14 @@ def _coverage_args() -> list[str]:
     # still works for a downstream packager without pytest-cov installed. --cov-branch is
     # the gate: statement coverage read 100% while five conditions had never been evaluated
     # both ways.
-    cov = ["--cov=runprov", "--cov-branch", "--cov-report=term-missing"]
+    cov = [
+        "--cov=runprov",
+        "--cov-branch",
+        "--cov-report=term-missing",
+        #: AND COVERAGE'S OWN TOTALS TO A FILE [K-37], so `scale_drift` below compares the
+        #: README's figures with the instrument that measured them rather than with a proxy.
+        f"--cov-report=json:{SCALE_REPORT}",
+    ]
     # THE FLOOR IS ON BY DEFAULT, and off only where it is unreachable by construction
     # rather than by regression: 22 tests need a FIFO, a symlink or a file `chmod(0o000)`
     # actually makes unreadable, and Windows provides none of the three, so they skip and
@@ -163,8 +186,72 @@ def _coverage_args() -> list[str]:
     return cov
 
 
+#: THE QUOTED FIGURE AND THE KEY COVERAGE REPORTS IT UNDER. Two figures, one sentence, and the
+#: patterns are anchored on the sentence so rewording it fails loudly rather than checking
+#: nothing — which is the half `test_the_quoted_scale_figures_have_not_drifted_out_of_meaning`
+#: already learned when a known-stale figure sat inside the tolerance of a baseline it had never
+#: been compared against.
+_SCALE_FIGURES = {
+    "statements": (r"about ([\d,]+) statements and [\d,]+ branches", "num_statements"),
+    "branches": (r"about [\d,]+ statements and ([\d,]+) branches", "num_branches"),
+}
+
+#: TEN PER CENT IS THE ARGUMENT AND NOT A CONVENIENT SLACK. These figures exist to convey SCALE
+#: — *a small package, fully covered*. A number 5% out still conveys it; one 17% out does not,
+#: and by then nobody trusts the rest of the section either.
+SCALE_TOLERANCE = 0.10
+
+
+def scale_drift(readme: str, totals: dict[str, int]) -> list[str]:
+    """Which quoted scale figures are more than 10% from COVERAGE'S OWN totals. K-37.
+
+    A function rather than inline code so it is testable without a gate run, which is the same
+    reason `_coverage_args` is one: the thing that must never happen quietly is this check
+    becoming vacuous.
+
+    IT LIVES HERE AND NOT ONLY IN THE SUITE BECAUSE OF THE ORDER OF EVENTS. Coverage's totals do
+    not exist until the suite has finished, so a test inside that run can only read the PREVIOUS
+    run's file — and CI checks out a fresh tree every time, where there is no previous run. The
+    comparison therefore has to happen after the run, which is here. The suite tests this
+    function and asserts that `test()` calls it.
+    """
+    drifted = []
+    for label, (pattern, key) in _SCALE_FIGURES.items():
+        found = re.search(pattern, readme)
+        if not found:
+            drifted.append(f"{label}: the sentence quoting it is gone from README.md ({pattern})")
+            continue
+        stated = int(found.group(1).replace(",", ""))
+        actual = totals[key]
+        if abs(stated - actual) > SCALE_TOLERANCE * actual:
+            drifted.append(f"{label}: README says {stated:,}, coverage measured {actual:,}")
+    return drifted
+
+
+def _check_scale() -> None:
+    """Hold the README's two quoted figures to the numbers the run just measured. K-37."""
+    if not SCALE_REPORT.is_file():
+        raise SystemExit(
+            f"scale-check: {SCALE_REPORT.name} was not written, so the README's statement and "
+            "branch figures were compared with nothing. `_coverage_args` asks pytest-cov for it; "
+            "a missing file means the report flag went away, not that the figures are fine."
+        )
+    totals = json.loads(SCALE_REPORT.read_text(encoding="utf-8"))["totals"]
+    drifted = scale_drift((ROOT / "README.md").read_text(encoding="utf-8"), totals)
+    if drifted:
+        raise SystemExit(
+            "scale-check: these figures no longer convey the scale they were written to convey "
+            f"— re-measure and update README.md: {'; '.join(drifted)}"
+        )
+    print(
+        f"scale-check ok — README within {SCALE_TOLERANCE:.0%} of coverage's own "
+        f"{totals['num_statements']} statements and {totals['num_branches']} branches"
+    )
+
+
 def test() -> None:
     run(PY, "-m", "pytest", *_coverage_args())
+    _check_scale()
 
 
 #: Written and run inside the clean venv: the installed wheel must be able to RECORD a run,

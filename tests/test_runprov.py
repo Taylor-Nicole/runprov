@@ -4545,16 +4545,21 @@ def _measured_figures():
     )
     found = re.search(r"(\d+) tests? collected", collected.stdout)
     assert found, f"could not count the suite: {collected.stdout[-400:]}"
-    stmts = 0
-    for mod in sorted((root / "runprov").glob("*.py")):
-        tree = ast.parse(mod.read_text(encoding="utf-8"))
-        # Not coverage's own definition, and it does not need to be: this asks whether the
-        # quoted SCALE is still true, so any stable proxy that moves with the code will do.
-        stmts += sum(1 for n in ast.walk(tree) if isinstance(n, ast.stmt))
+    # THE AST STATEMENT PROXY IS GONE FROM HERE [K-37], AND THE NUMBER IS WHY. It said "any
+    # stable proxy that moves with the code will do", which is true of a proxy compared against
+    # ITSELF and false the moment the document quotes coverage: measured, the walk counts 5 829
+    # statements where coverage counts 5 543, a ratio of **1.052** that does not shrink. So a
+    # README quoting coverage while this compared against the proxy burned half of its own 10%
+    # tolerance on the day it was written — which is the mechanism behind all five drifts of that
+    # sentence, the last of them a repair that reached for the GUARD's instrument.
+    #
+    # The two coverage figures are now checked by `ci.py` against the totals of the run that just
+    # happened; see `test_the_quoted_coverage_figures_are_coverages_own_and_not_a_proxys`. They
+    # cannot be checked from inside that run: coverage has no totals until it ends, and CI checks
+    # out a fresh tree, so there is never a previous run's file to read.
     return {
         "tests": int(found.group(1)),
         "tmp_path": len(re.findall(r"\btmp_path\b", suite)),
-        "statements": stmts,
     }
 
 
@@ -4594,21 +4599,22 @@ def test_the_quoted_scale_figures_have_not_drifted_out_of_meaning():
             quoted(readme, r"\*\*about ([\d,]+)\*\* uses of `tmp_path`", "tmp_path"),
             measured["tmp_path"],
         ),
+        # BOTH COVERAGE FIGURES ARE PARSED HERE AND ASSERTED BY `ci.py` [K-37], against the
+        # totals of the run that just finished. They are still parsed so that rewording the
+        # sentence fails here loudly rather than silently checking nothing — and the parse is
+        # the same pattern `ci.scale_drift` uses, which that function's own test holds it to.
+        #
+        # WHY NOT HERE: coverage has no totals until the run ends, so a test inside it could
+        # only read a PREVIOUS run's file, and CI checks out a fresh tree where there is none.
+        # A guard that can only see the figure on a developer's second run is a guard CI never
+        # enters, which is the shape this project refuses elsewhere.
         (
-            "statements",
+            "statements (parsed; `ci.py` asserts it against coverage)",
             quoted(readme, r"about ([\d,]+) statements and [\d,]+ branches", "statements"),
-            measured["statements"],
+            None,
         ),
-        # THE BRANCH FIGURE IS PARSED BUT NOT ASSERTED, and pretending otherwise would be
-        # worse than leaving it out. Coverage counts branch ARCS — two per `if` — while an
-        # AST walk counts branching NODES: measured here, 910 against 548. Reconciling them
-        # needs either a fudge factor, which is a number nobody can check, or running
-        # coverage inside a test, which makes the suite depend on its own instrumentation.
-        # The statement figure is the proxy: the two move together, and the drift that
-        # prompted this row had BOTH out by 17%. It is still PARSED, so rewording the
-        # sentence fails here loudly rather than silently checking nothing.
         (
-            "branches (parsed, not asserted)",
+            "branches (parsed; `ci.py` asserts it against coverage)",
             quoted(readme, r"about [\d,]+ statements and ([\d,]+) branches", "branches"),
             None,
         ),
@@ -4626,6 +4632,81 @@ def test_the_quoted_scale_figures_have_not_drifted_out_of_meaning():
         "these figures no longer convey the scale they were written to convey — re-measure "
         f"and update the documents: {drifted}"
     )
+
+
+def test_the_quoted_coverage_figures_are_coverages_own_and_not_a_proxys():
+    """K-37, and it is the structural fix L-09's fix field asked for four drifts ago.
+
+    **THE README'S SCALE SENTENCE HAS DRIFTED FIVE TIMES, and the fifth was a change of
+    INSTRUMENT rather than of code.** It said *about 5,800 statements and 2,050 branches* and
+    named `coverage` and `--cov-branch`; coverage measured 5,514 and 2,068. The branch figure was
+    0.9% out and right. The statement figure was 5.2% high because it was taken from the suite's
+    own AST proxy — the thing the guard beside it compared against — and the guard therefore
+    structurally could not see the error.
+
+    **AND THE PROXY'S BIAS IS PERMANENT, WHICH IS WHY ANOTHER EXACT NUMBER WAS NOT THE FIX.**
+    Measured: 5,829 by the AST walk against 5,543 by coverage, a ratio of **1.052**. A README
+    quoting coverage while the guard compared against the proxy burns half of a 10% tolerance
+    band from the day it is written, so the next repair reaches for the guard's number again —
+    which is exactly what the fifth drift was. The document and the gate have to share ONE
+    instrument.
+
+    SO `ci.py` ASKS PYTEST-COV FOR COVERAGE'S OWN TOTALS AND HOLDS THE SENTENCE TO THEM, after
+    the run that produced them. It cannot be done from inside that run: coverage has no totals
+    until it ends, and CI checks out a fresh tree, so there is never a previous run's file to
+    read — a guard that can only fire on a developer's second run is one CI never enters.
+
+    WHAT THIS TEST IS FOR: the comparison is only a gate if `test()` calls it, and the function
+    is only a check if it can fail. Both are asserted here, and the wiring is read from the
+    source exactly as `test_release_check_runs_before_a_build` reads its own.
+    """
+    ci = _ci_module()
+    readme = _readme()
+    stated = {
+        label: int(re.search(pattern, readme).group(1).replace(",", ""))
+        for label, (pattern, _key) in ci._SCALE_FIGURES.items()
+    }
+    assert set(stated) == {"statements", "branches"}, stated
+
+    #: IT PASSES ON THE FIGURES IT QUOTES, FAILS BEYOND THE BAND, AND FAILS LOUDLY IF THE
+    #: SENTENCE IS GONE. Three arms, because a check that cannot fail is the thing this row is
+    #: about.
+    exact = {"num_statements": stated["statements"], "num_branches": stated["branches"]}
+    assert not ci.scale_drift(readme, exact), "the README's own figures must satisfy it"
+    edge = {key: int(value * 1.09) for key, value in exact.items()}
+    assert not ci.scale_drift(readme, edge), "9% out still conveys the scale"
+    drifted = {key: int(value * 1.2) for key, value in exact.items()}
+    said = sorted(ci.scale_drift(readme, drifted))
+    assert said == [
+        f"branches: README says {stated['branches']:,}, "
+        f"coverage measured {drifted['num_branches']:,}",
+        f"statements: README says {stated['statements']:,}, "
+        f"coverage measured {drifted['num_statements']:,}",
+    ], said
+    assert len(ci.scale_drift("a page with no figures in it", exact)) == 2, (
+        "rewording the sentence must fail loudly rather than check nothing"
+    )
+
+    #: AND THE GATE CALLS IT. `ci.py test` takes minutes, so this reads the wiring rather than
+    #: running it: deleting the call is the whole regression.
+    src = (_repo_root() / "ci.py").read_text(encoding="utf-8")
+    assert re.search(
+        r'def test\(\) -> None:\n    run\(PY, "-m", "pytest", \*_coverage_args\(\)\)\n'
+        r"    _check_scale\(\)",
+        src,
+    ), "ci.py test must compare the README's scale figures with the run it just made"
+    assert any("--cov-report=json:" in flag for flag in ci._coverage_args()), (
+        "and the totals have to be asked for, or `_check_scale` reads nothing"
+    )
+
+    #: AND IF AN EARLIER GATE RUN LEFT COVERAGE'S REPORT ON DISK, THE REAL COMPARISON RUNS HERE
+    #: TOO. Not asserted when it is absent — on CI it always is, which is the whole reason the
+    #: check lives in `ci.py`.
+    if ci.SCALE_REPORT.is_file():
+        totals = json.loads(ci.SCALE_REPORT.read_text(encoding="utf-8"))["totals"]
+        assert not ci.scale_drift(readme, totals), (
+            f"coverage's own last totals disagree with the README: {ci.scale_drift(readme, totals)}"
+        )
 
 
 def test_the_exported_name_count_in_why_md_is_the_real_one():

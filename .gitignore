@@ -4,6 +4,9 @@ __pycache__/
 *.py[cod]
 .coverage
 .coverage.*
+# Coverage's own statement and branch totals, written by `ci.py test` and read back by its
+# scale-check [K-37]. Derived, and it changes with every line added.
+.coverage-scale.json
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

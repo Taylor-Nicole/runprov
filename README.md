@@ -3058,15 +3058,23 @@ The Windows leg skips ten times what any other does, and it is the only leg that
 assert the coverage floor — skipped tests leave their lines unmeasured, so 100% is
 unreachable there by construction rather than by regression. No other leg may lower it.
 
-Coverage is **100%** of **about 5,800 statements and 2,050 branches**, and the gate is set
-there with `--cov-branch`.
+Coverage is **100%** of **about 5,500 statements and 2,100 branches**, and the gate is set
+there with `--cov-branch`. Both figures are coverage's own, and `ci.py` compares this sentence
+with the totals of the run it just made.
 
 *Every figure in this section is approximate on purpose.* They exist to convey scale, and an
-exact count is stale the moment anything is added — this section has drifted four times, and
-each repair was another exact number that went stale. A test now re-derives all of them and
-fails if any is more than 10% out, which is the point at which the number stops conveying the
-scale it was written to convey. The **100%** is not approximate: the gate enforces it, and a
-separate test asserts the gate is set there.
+exact count is stale the moment anything is added — this section has drifted **five** times, and
+each repair was another exact number that went stale. Every figure is re-derived and must be
+within 10% of what is measured, which is the point at which a number stops conveying the scale
+it was written to convey.
+
+**The fifth drift was a change of INSTRUMENT, not of code**, and it is why the two coverage
+figures are checked by `ci.py` rather than by the suite: the previous statement figure came from
+the suite's own AST proxy, which runs 5.2% high against coverage permanently, so a sentence
+quoting one while a guard compared against the other burned half the tolerance band from the day
+it was written. `ci.py` now asks pytest-cov for coverage's totals and holds this sentence to
+them, so the document and the gate share one instrument. The **100%** is not approximate: the
+gate enforces it, and a separate test asserts the gate is set there.
 
  The branch half was added 2026-08-11 and was not decoration: statement
 coverage read 100% while five conditions had never been evaluated both ways — including the
