@@ -35663,12 +35663,22 @@ def test_the_toml_extra_is_an_extra_and_the_recommendation_says_why():
     )
 
 
-def test_the_rule_set_is_the_registry_and_the_adr_and_nothing_else(tmp_path):
-    """[ADR-0018 R-5] [ADR-0018 R-7] T-34. Two sources, derived from each other, no third.
+def test_the_rule_set_is_the_registry_and_the_adr_table_agrees_with_it(tmp_path):
+    """[ADR-0018 R-5] [ADR-0018 R-7] T-34. The registry is the source; this holds R-7 to it.
 
     R-5: the rule set is derived from a registry rules register into, **never a hand-typed list in
-    the parser, the docs and the tests.** So there are exactly two statements of it — the registry
-    and R-7's table — and this compares them rather than carrying a third.
+    the parser, the docs and the tests.** This compares R-7's table with the registry rather than
+    carrying a third list of its own.
+
+    **THERE ARE THREE CHECKED STATEMENTS OF THE RULE SET, NOT TWO, AND THIS TEST USED TO SAY TWO
+    IN ITS OWN NAME [K-34].** The registry, R-7's table (here) and the README's table, which has
+    its own guard — `--help` is a fourth copy and is DERIVED, so it cannot disagree. The name
+    said *and nothing else*, the docstring said *exactly two statements*, and the CHANGELOG entry
+    said it a third time while naming the README's checked table in the next clause. The count
+    was the claim a reviewer would treat as authoritative, so it is corrected in all three places
+    — and the CHANGELOG's own hand-typed list of the seven rule names is now labelled as prose
+    the registry overrides, because nothing reads it and K-28 is the proof that the unchecked copy
+    is the one that rots: the same entry was already one key stale.
 
     **THE SUBSET DIRECTION IS THE ONE THAT HOLDS TODAY**, and that is deliberate: a rule must not
     exist that the specification never asked for, while rules the specification asks for may still

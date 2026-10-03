@@ -22,13 +22,18 @@ runprov gate --policy policy.json --log runs.jsonl
 ```
 
 **The rule set is derived from a registry rules register into**, never a hand-typed list in the
-parser, the docs and the tests. There are exactly two statements of it — the registry and the
-ADR's table — and a test compares them. `--help` builds its rule list from the registry, and the
-README's table is checked against it cell by cell, including that each row's *cannot answer when*
-is the opening of the sentence the rule itself prints.
+parser, the docs and the tests. There are **three checked statements** of it — the registry, the
+ADR's table and the README's table — and a test holds each of the other two to the registry.
+`--help` builds its rule list from the registry, so that copy cannot disagree at all; the
+README's table is checked cell by cell, including that each row's *cannot answer when* is the
+first clause of the sentence the rule itself prints, compared by EQUALITY rather than by prefix,
+because a prefix was satisfied by an empty cell.
 
 **Seven rules:** `clean_tree`, `no_unregistered_reads`, `outputs_pin_inputs`, `commit_recorded`,
-`environment_captured`, `finished_ok` and `inputs_verify`. Every one names what it cannot see, and
+`environment_captured`, `finished_ok` and `inputs_verify` — **prose, and the registry overrides
+it.** Nothing reads this list: it is release notes, the fourth statement of the rule set and the
+only unchecked one, which is why the entry above says three and not four. `runprov gate --help`
+is the derived list a policy's author should read. Every one names what it cannot see, and
 two exist mostly to say so: `git_tree_dirty` is `False` both for a clean tree and for a run that
 never looked, and `unregistered_reads` is empty both for a run that missed nothing and for one
 whose watch hit its cap. A rule reading only the first field of either pair would report an
@@ -135,7 +140,7 @@ and before this the guard tested a `kind` the writer has never emitted, so all o
 *could not be read: Is a directory* instead.
 
 `runprov gate --format json` carries the same answer, versioned `"schema": "runprov.gate.v1"`,
-with each rule's `evaluated`, `met`, `violated` and `cannot_check` counts beside its outcome. A
+with each rule's `evaluated`, `met`, `violated` and `not_checked` counts beside its outcome. A
 policy that cannot be read prints nothing at all, which is how a consumer tells a gate that could
 not conclude from one that never had a question.
 
