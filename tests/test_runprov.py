@@ -35475,6 +35475,222 @@ def test_the_gate_page_says_what_the_payload_says_in_the_states_that_are_not_ord
     )
 
 
+def test_a_run_that_started_and_never_ended_is_named_and_never_changes_the_verdict(
+    tmp_path, capsys
+):
+    """[ADR-0018 R-3] [ADR-0018 R-7] [ADR-0017 R-8] Audit K, K-08. The critical row, and Taylor's
+    ruling on it.
+
+    **THE DEFECT.** A history holding a run that started and never ended passed the gate with
+    `outcome: MET`, `exit_code: 0`, `cannot_check: null` — and the in-flight run counted in **no
+    field of the payload at all**. Reproduced with a real SIGKILL: a run entered, the process
+    killed, the history left holding `runprov.start.v1` with no record. `gate` said
+    `1 run / MET / exit 0 / cannot_check None` while `runprov log` said `unfinished: 1` over the
+    same file. `_counted` drops every start line, so `finished_ok`'s judge never received a
+    statusless line and its own documented `status is None -> CANNOT_CHECK` arm was unreachable
+    through the command. **`cannot_check: null` is documented as *looked and found nothing
+    missing*, and it was asserting the opposite of what happened.**
+
+    **TAYLOR'S RULING, 2026-10-03: NAME IT, NEVER CHANGE THE VERDICT.** A skeptic implemented the
+    row's own remedy — treat `unfinished` in `outcome` exactly as `unreadable` is treated — and
+    measured what it costs: after two further SUCCESSFUL runs and after `runprov prune` removed
+    the marker, the gate is **still exit 2**. The start line is append-only, so one lost run in a
+    project's lifetime pins `gate` at exit 2 for ever in a record nobody can amend, and
+    `_finished_ok`'s own docstring already argues against exactly that shape. It also fails the
+    gate because another job is merely in progress. So the fact becomes a field and a
+    `cannot_check` clause, and `outcome` and `exit_code` never read it.
+
+    **THE RESIDUAL LIMIT IS ASSERTED HERE RATHER THAN LEFT IMPLICIT**: a consumer keying only on
+    the exit code still greens over a lost run. That is now the documented contract, and this
+    test is where it is written down — so a later change that quietly made the exit code move
+    would fail here rather than pass unnoticed.
+    """
+    histories = tmp_path / "flight"
+    histories.mkdir()
+    log = histories / "h.jsonl"
+    runprov.configure(root=histories, run_log=log, auto_steps="off")
+    with runprov.Run("good", {}, provenance=histories / "p1.json"):
+        pass
+    #: ENTERED AND NOT EXITED, which is the state a SIGKILL leaves behind — the audit reproduced
+    #: it with a real `os.kill(os.getpid(), SIGKILL)` and the file on disk is the same shape: a
+    #: `runprov.start.v1` line whose `run_uid` never gets a record. Built in process so the suite
+    #: needs no subprocess, and released in the `finally` so nothing is left for a later test.
+    lost = runprov.Run("lost", {}, provenance=histories / "p2.json")
+    lost.__enter__()
+    try:
+        written = [
+            json.loads(line)
+            for line in log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        starts = [r for r in written if r.get("schema") == "runprov.start.v1"]
+        ended = {r.get("run_uid") for r in written if r.get("schema") != "runprov.start.v1"}
+        unpaired = [r for r in starts if r.get("run_uid") not in ended]
+        assert len(unpaired) == 1 and unpaired[0]["script"] == "lost", (
+            f"the premise: exactly one run started and has no ending on record: {written}"
+        )
+
+        policy_file = _policy_file(tmp_path / "finished.json", "finished_ok")
+        capsys.readouterr()
+        code = runprov.__main__.main(
+            ["gate", "--policy", str(policy_file), "--log", str(log), "--format", "json"]
+        )
+        body = json.loads(capsys.readouterr().out)
+
+        #: 1. IT IS NAMED, in a field and in the sentence. This is the whole of the fix.
+        assert body["unfinished"] == 1, (
+            f"[K-08] a run started with no ending on record, and the payload counts it in no "
+            f"field: {body}"
+        )
+        assert body["cannot_check"] is not None, (
+            "[ADR-0017 R-8] `cannot_check: null` is documented as *looked and found nothing "
+            f"missing*, and one run was never examined: {body}"
+        )
+        assert "started with no ending on record" in body["cannot_check"], body["cannot_check"]
+        assert "runprov log" not in body["cannot_check"], (
+            "the sentence names the fact, not another command's output"
+        )
+
+        #: 2. AND THE VERDICT DOES NOT MOVE. Taylor's ruling, asserted as the thing a later
+        #: change must not do: the rule is met over every run the gate examined, and one lost run
+        #: must not fail this project's gate for ever over a record nobody can amend.
+        assert (body["outcome"], body["exit_code"], code) == (runprov.policy.MET, 0, 0), (
+            f"[K-08] Taylor's ruling is NAME IT, NEVER CHANGE THE VERDICT — the start line is "
+            f"append-only and `runprov prune` does not clear it, so an `outcome` arm here pins a "
+            f"project at exit 2 for ever after one power cut: {body}"
+        )
+        assert body["runs"] == 1 and body["rules"][0]["evaluated"] == 1, (
+            f"and the examined count is unchanged: a start line still reaches no rule, because a "
+            f"line carrying no `outputs`, `inputs` or `git_status_captured` makes EVERY rule "
+            f"answer CANNOT_CHECK, which is exit 2 by another route: {body}"
+        )
+
+        #: 3. THE PAGE SAYS IT TOO, because a state asserted in one rendering is unasserted in
+        #: the other — J-04's row, and ADR-0017 R-1 is one builder and two views.
+        capsys.readouterr()
+        assert runprov.__main__.main(["gate", "--policy", str(policy_file), "--log", str(log)]) == 0
+        page = capsys.readouterr().out
+        assert "COULD NOT CHECK" in page and "started with no ending on record" in page, page
+        assert "GATE: MET (exit 0)" in page, page
+    finally:
+        lost.__exit__(None, None, None)
+
+    #: 4. AND A WHOLE HISTORY STILL SAYS `null`, which is the positive companion: without it this
+    #: test would pass against a clause that fires unconditionally, and *nothing was missing* has
+    #: to stay sayable or the field means nothing.
+    capsys.readouterr()
+    code = runprov.__main__.main(
+        ["gate", "--policy", str(policy_file), "--log", str(log), "--format", "json"]
+    )
+    whole = json.loads(capsys.readouterr().out)
+    assert (whole["unfinished"], whole["cannot_check"], code) == (0, None, 0), (
+        f"the run that was in flight has ended, so the gate looked and found nothing missing: "
+        f"{whole}"
+    )
+
+
+@requires_unreadable_files
+def test_a_history_that_cannot_be_read_is_an_answer_and_not_a_traceback(tmp_path, capsys):
+    """[ADR-0018 R-2] [ADR-0017 R-15] Audit K, K-23. The third state beside there and not there.
+
+    **THE DEFECT.** A history that exists and cannot be READ raised out of `_gate` uncaught: a
+    raw traceback, **zero bytes on stdout**, and **exit 1**. Reproduced with `chmod 000`. Both
+    signals are false. R-15 gives silence on stdout one meaning — *the invocation was wrong, this
+    command never had a question* — and the invocation HAD a question: a policy that loaded and a
+    history it was told to read. And exit 1 is L-81's code for *a rule was checked and your
+    controls were violated*, about a file nothing ever opened a line of.
+
+    **ON THIS PROJECT IT IS NOT HYPOTHETICAL.** An EIO from the external drive this repository
+    lives on is an `OSError` on the same path, so a failing disk made the gate report a policy
+    violation. `show` crashes identically and inherits no handler, but only `gate` reserves exit
+    1 for *checked and violated*.
+
+    **IT NEEDS ITS OWN FIELD AND BOTH AVAILABLE REUSES PRINT A FALSE SENTENCE** — which is the
+    half of this row a skeptic had to add. `found=False` prints *there is no run history at …*
+    about a file that is right there, and collapses the ADR-0017 R-8 distinction `found` exists
+    to keep; `unreadable=1` prints *1 line(s) of the history could not be read* about a file
+    whose lines were never reached. So `read_error` is a field of its own, and it lands before
+    0.8.0 because `runprov.gate.v1` freezes at upload.
+    """
+    _, log = _gated_history(tmp_path)
+    policy_file = _policy_file(tmp_path / "p.json", "finished_ok")
+
+    #: THE ANSWERED STATE FIRST, so the comparison below is against a measured baseline rather
+    #: than against an expectation — and so a fixture that had stopped producing a readable
+    #: history could not make the unreadable case look like a repair.
+    capsys.readouterr()
+    assert (
+        runprov.__main__.main(
+            ["gate", "--policy", str(policy_file), "--log", str(log), "--format", "json"]
+        )
+        == 1
+    ), "the premise: this history is readable and holds a run that really failed"
+    before = json.loads(capsys.readouterr().out)
+    assert (before["found"], before["read_error"]) == (True, None), before
+
+    log.chmod(0o000)
+    try:
+        capsys.readouterr()
+        code = runprov.__main__.main(
+            ["gate", "--policy", str(policy_file), "--log", str(log), "--format", "json"]
+        )
+        shown = capsys.readouterr()
+        #: 1. IT IS AN ANSWER: a payload on stdout, not a traceback and not silence.
+        assert shown.out.strip(), (
+            "[ADR-0017 R-15] silence on stdout says the invocation had no question in it, and "
+            f"this one had a policy and a history: {shown.err[-300:]}"
+        )
+        body = json.loads(shown.out)
+        #: 2. AND IT IS EXIT 2, NOT 1. L-81: 1 is *checked and violated*.
+        assert (code, body["exit_code"], body["outcome"]) == (2, 2, runprov.policy.CANNOT_CHECK), (
+            f"[K-23] exit 1 says a control failed, about a file nothing opened: {body}"
+        )
+        #: 3. THE SENTENCE IS TRUE OF WHAT HAPPENED, which is why neither reuse would do.
+        assert body["read_error"], f"[K-23] the failure must be named: {body}"
+        assert body["found"] is True, (
+            "[ADR-0017 R-8] the history IS there — `found=False` would print *there is no run "
+            f"history at …* about a file a reader can see: {body}"
+        )
+        assert body["unreadable"] == 0, (
+            "and no LINE was unreadable: not one was reached, so a count of them would be a "
+            f"second false sentence: {body}"
+        )
+        assert body["cannot_check"] and str(log) in body["cannot_check"], body["cannot_check"]
+        assert "could not be read" in body["cannot_check"], body["cannot_check"]
+        assert "no run history at" not in body["cannot_check"], (
+            f"the two states must not share a sentence: {body['cannot_check']}"
+        )
+        assert "line(s) of the history could not be read" not in body["cannot_check"], (
+            f"nothing opened a line: {body['cannot_check']}"
+        )
+        #: 4. AND THE DIAGNOSTIC IS ON STDERR, so a caller parses stdout without stripping a line.
+        assert "could not be read" in shown.err and str(log) in shown.err, shown.err
+
+        #: 5. THE PAGE IS THE SAME ANSWER [ADR-0017 R-1].
+        capsys.readouterr()
+        assert runprov.__main__.main(["gate", "--policy", str(policy_file), "--log", str(log)]) == 2
+        page = capsys.readouterr().out
+        assert "COULD NOT CHECK" in page and "could not be read" in page, page
+        assert "(NOT FOUND)" not in page, (
+            f"the history is there; NOT FOUND is the other state's word: {page}"
+        )
+    finally:
+        log.chmod(0o644)
+
+    #: AND IT IS NOT PERMANENT, which is the difference from `unfinished` and the reason this one
+    #: IS read by `outcome`: the mode is a fact about this invocation, so the next answer is the
+    #: ordinary one again.
+    capsys.readouterr()
+    assert (
+        runprov.__main__.main(
+            ["gate", "--policy", str(policy_file), "--log", str(log), "--format", "json"]
+        )
+        == 1
+    )
+    after = json.loads(capsys.readouterr().out)
+    assert after == before, f"the same question over the same file answers the same way: {after}"
+
+
 def test_the_payload_carries_the_policy_and_it_is_a_projection_not_a_second_parse(tmp_path, capsys):
     """[ADR-0018 R-13] T-34. Taylor's ruling, and the question's own answer is the shape.
 

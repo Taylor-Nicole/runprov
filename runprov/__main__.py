@@ -2157,11 +2157,44 @@ def _gate(args: argparse.Namespace) -> int:
         # examine, so it has to stop the gate reporting MET: `_counted` keeps the number and
         # `_completed` is the sibling that drops it. I-01 is the row where exactly this count was
         # computed and thrown away.
+        #
+        # AND A RUN THAT STARTED AND NEVER ENDED IS COUNTED THE SAME WAY [K-08]. `_counted`
+        # drops every start line before any rule sees it, so a SIGKILLed run reached no rule,
+        # appeared in no field of the payload, and the gate answered MET / exit 0 /
+        # `cannot_check: null` over a history `log` was already reporting `unfinished: 1` for.
+        # The scan rides on the pass that has to happen anyway — which is A-20's whole point,
+        # and `_counted`'s docstring's one condition is met here: this pass is EXHAUSTED by the
+        # `list()` below, so no run that ends further down the file is reported unfinished.
+        #
+        # `report()` IS NOT CALLED. `show` prints a banner from this; a gate's answer is the
+        # payload and the page, and R-4 gives stdout to the payload alone. The count reaches the
+        # reader as a field and as a `cannot_check` clause instead.
         bad = [0]
-        records = list(_counted(log, bad))
-        result = policy.assessment(
-            loaded, records, source=str(args.policy), history=str(log), unreadable=bad[0]
-        )
+        scan = _InFlightScan(log.parent / ".incomplete")
+        try:
+            records = list(_counted(log, bad, scan))
+        except OSError as exc:
+            # THE HISTORY IS THERE AND CANNOT BE READ [K-23]. This used to raise out of the
+            # command: a raw traceback, nothing on stdout, and exit 1 — which is L-81's code for
+            # *a rule was checked and your controls were violated*, about a file nothing ever
+            # opened. `show` crashes the same way and inherits no handler, but only `gate`
+            # reserves exit 1 for that meaning. The question WAS formed and the finding is that
+            # the history could not be read, so this carries a payload and exits 2, exactly as
+            # the missing-history branch above does.
+            said = exc.strerror or str(exc)
+            print(f"gate: {log} could not be read: {said}", file=sys.stderr)
+            result = policy.assessment(
+                loaded, [], source=str(args.policy), history=str(log), read_error=said
+            )
+        else:
+            result = policy.assessment(
+                loaded,
+                records,
+                source=str(args.policy),
+                history=str(log),
+                unreadable=bad[0],
+                unfinished=len(scan.open),
+            )
 
     if args.format == "json":
         # NOTHING ELSE ON STDOUT [ADR-0017 R-4]. Both diagnostics above go to stderr, so a caller

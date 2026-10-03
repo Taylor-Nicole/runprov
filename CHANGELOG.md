@@ -56,6 +56,27 @@ on the record's own digest key, comparing all 256 bits rather than the 16 charac
 carries. A declared input that is gone is `CANNOT_CHECK` naming the path and never a violation —
 the file may have been archived, and an accusation cannot be withdrawn from a record.
 
+**A run that started and never ended is named, and never changes the verdict.** `gate` used to
+drop every `runprov.start.v1` line before any rule saw it, so a history holding a SIGKILLed run
+answered `MET`, exit 0 and `cannot_check: null` — *looked and found nothing missing* — about a run
+it never examined, while `runprov log` reported `unfinished: 1` over the same file. The payload
+now carries `unfinished` and says so in `cannot_check`. **The exit code deliberately does not
+move**: the start line is append-only and `runprov prune` clears markers and not history, so
+failing the gate on it would fail a project for ever over one power cut — measured, including
+after two further successful runs — and would fail a gate because another job is merely running.
+The limit that remains is stated rather than hidden: a consumer keying only on the exit code still
+greens over a lost run, and must read `unfinished` or `cannot_check` to see it.
+
+**A history that is there and cannot be read is an answer, not a traceback.** `chmod 000` on a run
+log used to raise out of the command: a raw traceback, **zero bytes on stdout and exit 1**, which
+is this package's code for *a rule was checked and your controls were violated* — about a file
+nothing ever opened a line of — while silence on stdout is its signal for *this command never had
+a question*. It now carries the payload with the failure in its own `read_error` field, names it
+in `cannot_check`, and exits 2. `found` stays `true`, because the history IS there: *not there*
+and *there and unreadable* are different findings. On a project whose data lives on an external
+drive this is not hypothetical — an EIO mid-read is an `OSError` on the same path, so a failing
+disk reported a policy violation.
+
 **A recorded path is resolved against the RUN'S OWN `cwd`, never the gate process's**, exactly as
 `describe`'s own staleness check resolves it, and the per-invocation digest cache is keyed on the
 resolved path. `run.input(p)` records the spelling it was handed, so a relative registration is

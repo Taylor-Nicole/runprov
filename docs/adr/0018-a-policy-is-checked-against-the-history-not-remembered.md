@@ -39,6 +39,34 @@ distinction applied one level up: *violated* and *unverifiable* are different an
 policy engine that collapses them produces the vacuous green that five rows of the ledger
 already exist about.
 
+**AMENDED 2026-10-03 by Taylor's ruling on K-08, and the amendment is a LIMIT rather than a
+widening.** A run that started and has no ending on record — a SIGKILL, the OOM killer, a power
+cut — is a run the gate did not examine, and the gate counted it in no field at all: `MET`,
+exit 0, `cannot_check: null`, over a history `runprov log` was already reporting `unfinished: 1`
+for. It is now a field (`unfinished`) and a `cannot_check` clause, **and `outcome` and the exit
+code deliberately do not read it.** The reason is permanence: the start line is append-only,
+`runprov prune` clears markers and not history, so an `outcome` arm would fail a project's gate
+for ever over one power cut, in a record nobody can amend — measured, including after two further
+successful runs — and it would also fail a gate because another job is merely in progress.
+`finished_ok`'s own text already refuses to read a missing status as a failure, for the same
+reason one level down.
+
+**So the residual limit is documented rather than hidden: a consumer keying only on the exit code
+still greens over a lost run, and must read `unfinished` or `cannot_check` to see it.** That is
+the contract. The alternative the row implied — feeding unpaired start lines to the rules so
+`finished_ok`'s own arm becomes reachable — is not more targeted: a start line carries no
+`outputs`, `inputs` or `git_status_captured`, so every rule answers CANNOT_CHECK and exit 2 is
+just as universal.
+
+**AND A HISTORY THAT IS THERE AND CANNOT BE READ IS A THIRD STATE, not either of `found`'s two
+(K-23).** An `OSError` from the read used to leave the command: a traceback, nothing on stdout,
+and exit 1 — which R-2 reserves for *checked and violated*, about a file nothing ever opened a
+line of, while ADR-0017 R-15 gives silence on stdout the single meaning *this command never had
+a question*. The invocation had one. So it carries a payload, names the failure in its own field
+(`read_error`) and exits 2, exactly as a missing history does. **`outcome` DOES read this one**,
+and the asymmetry with `unfinished` is the point: an unreadable file is a fact about this
+invocation and the next answer is the ordinary one again.
+
 **R-4.** The report states **how many runs each rule was evaluated against**, not only whether
 it passed. "No violations" over a log matching zero runs is the same failure as `check`'s A-08,
 where a sweep that parsed no files printed a clean bill and exited 0.

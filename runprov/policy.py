@@ -775,11 +775,40 @@ class Assessment(typing.NamedTuple):
     source: str
     history: str
     found: bool
+    #: THE HISTORY IS THERE AND COULD NOT BE READ, which is a third state beside `found` and not
+    #: either of its two [K-23]. Before this, an `OSError` from the read raised out of `_gate`:
+    #: a raw traceback, zero bytes on stdout and **exit 1**, which under L-81 says *a rule was
+    #: checked and your controls were violated*. Both signals were false — the invocation HAD a
+    #: question, so R-15's silence wrongly said it did not. On this project it is not
+    #: hypothetical: an EIO from a failing external drive is an `OSError` on the same path, so a
+    #: dying disk reported a policy violation.
+    #:
+    #: ITS OWN FIELD AND NOT A REUSE OF `found` OR `unreadable`, measured: `found=False` prints
+    #: *there is no run history at …* about a file that is right there and collapses the R-8
+    #: distinction `found` exists to keep, and `unreadable` prints *N line(s) could not be read*
+    #: about a file nothing ever opened a line of.
+    read_error: str | None
     runs: int
     #: LINES THE HISTORY COULD NOT GIVE UP. A torn line is a run the gate did not examine, so it
     #: has to stop the gate saying MET — counted rather than skipped, which is what `_counted`
     #: exists for.
     unreadable: int
+    #: RUNS THAT STARTED AND HAVE NO ENDING ON RECORD — `log`'s own fact under `log`'s own name
+    #: [K-08]. A run entered and the process killed leaves `runprov.start.v1` with no record, and
+    #: `_counted` drops every start line before any rule sees it. So `gate` said `1 run / MET /
+    #: exit 0 / cannot_check null` while `log` said `unfinished: 1` over the same file, and
+    #: `cannot_check: null` — documented as *looked and found nothing missing* — asserted the
+    #: opposite of what happened.
+    #:
+    #: **IT IS NAMED AND IT NEVER CHANGES THE VERDICT.** Taylor's ruling, 2026-10-03, after a
+    #: skeptic measured the cost of the arm this row originally asked for: the start line is
+    #: append-only and `runprov prune` does not help, so reading this in `outcome` pins a project
+    #: at exit 2 for ever after one power cut, in a record nobody can amend — and
+    #: `_finished_ok`'s own docstring already argues against exactly that shape. It also fails a
+    #: gate because another job is merely in progress. **The residual limit is stated rather than
+    #: hidden: a consumer keying only on the exit code still greens over a lost run, and must
+    #: read `unfinished` or `cannot_check` to see it.**
+    unfinished: int
     rules: tuple[dict[str, typing.Any], ...]
 
     @property
@@ -789,10 +818,17 @@ class Assessment(typing.NamedTuple):
         THE ORDER IS VIOLATED, CANNOT_CHECK, MET, the same order `assess` uses one level down and
         for the same reason: a violation among runs that could not all be examined is still a
         violation, and an unexamined run among passes is not a pass.
+
+        `read_error` IS HERE AND `unfinished` IS DELIBERATELY NOT [K-08, K-23], and the
+        difference is permanence. An unreadable history is a fact about THIS invocation: fix the
+        mode, replace the drive, and the next run answers. An unpaired start line is a fact about
+        an APPEND-ONLY record — nothing can ever remove it, `runprov prune` clears markers and not
+        history, so reading it here would fail a project's gate for ever over one power cut.
+        Taylor's ruling, 2026-10-03: name it in `cannot_check`, never in the verdict.
         """
         if any(row["outcome"] == VIOLATED for row in self.rules):
             return VIOLATED
-        if not self.found or self.unreadable or not self.rules:
+        if not self.found or self.read_error or self.unreadable or not self.rules:
             return CANNOT_CHECK
         if any(row["outcome"] == CANNOT_CHECK for row in self.rules):
             return CANNOT_CHECK
@@ -812,10 +848,20 @@ class Assessment(typing.NamedTuple):
         parts = []
         if not self.found:
             parts.append(f"there is no run history at {self.history}, so no run was examined")
+        if self.read_error:
+            parts.append(
+                f"the history at {self.history} is there and could not be read "
+                f"({self.read_error}), so no run was examined"
+            )
         if self.unreadable:
             parts.append(
                 f"{self.unreadable} line(s) of the history could not be read, so the runs they "
                 "describe were not examined"
+            )
+        if self.unfinished:
+            parts.append(
+                f"{self.unfinished} run(s) started with no ending on record, so they were not "
+                "examined — a run still going, or one killed before it could record"
             )
         blind = [row["rule"] for row in self.rules if row["outcome"] == CANNOT_CHECK]
         if blind:
@@ -841,6 +887,8 @@ def assessment(
     history: str,
     found: bool = True,
     unreadable: int = 0,
+    unfinished: int = 0,
+    read_error: str | None = None,
 ) -> Assessment:
     """One policy over one history. R-1, R-4, and R-11's `why` carried into the answer.
 
@@ -859,8 +907,10 @@ def assessment(
         source=source,
         history=history,
         found=found,
+        read_error=read_error,
         runs=len(seen),
         unreadable=unreadable,
+        unfinished=unfinished,
         rules=tuple(
             {**assess(entry["rule"], seen, context), "why": entry["why"]}
             for entry in policy["rules"]
