@@ -35683,6 +35683,47 @@ def test_a_toml_policy_with_no_parser_names_the_extra_that_supplies_one(tmp_path
     with pytest.raises(runprov.policy.PolicyError, match="not valid TOML"):
         runprov.policy.load(written)
 
+    #: AND WITH BOTH IMPORTABLE, `tomllib` WINS [K-06]. Reversing `("tomllib", "tomli")` passes
+    #: every arm above, because none of them constructs the state where both can be imported —
+    #: and on this interpreter `tomli` is absent, so that mutation is IDENTICAL rather than merely
+    #: equivalent. The state is ordinary in the wild: `tomli` is a widespread transitive
+    #: dependency, and `pytest` itself declares `tomli>=1; python_version < "3.11"` and cannot
+    #: start without it there.
+    #:
+    #: THE CONTRACT IS IN `_toml_parser`'s DOCSTRING AND A DOCSTRING IS NOT A CONTRACT UNTIL
+    #: SOMETHING CHECKS IT: on 3.11+ `tomllib` is the standard library and `tomli` is the same
+    #: parser under its original name, so *preferring the installed extra would let the version a
+    #: user happens to have decide how their policy is parsed*. Behaviourally equivalent while the
+    #: two agree — which is the point, because the guard is against the day they do not.
+    #:
+    #: **BOTH NAMES ARE STUBBED, AND THAT IS DELIBERATE.** Stubbing only `tomli` and letting
+    #: `tomllib` import for real would fail on the 3.10 matrix leg, where there is no `tomllib`
+    #: at all — a guard only part of the matrix can enter, which is exactly what `_toml_parser`'s
+    #: own docstring argues against. The two stubs answer with DIFFERENT policies, so what comes
+    #: back names which module was chosen rather than merely that one was.
+    from_stdlib = types.ModuleType("tomllib")
+    from_stdlib.TOMLDecodeError = ValueError  # type: ignore[attr-defined]
+    from_stdlib.loads = lambda text: {  # type: ignore[attr-defined]
+        "rules": [{"rule": "clean_tree", "why": "from tomllib"}]
+    }
+    stub.loads = lambda text: {"rules": [{"rule": "finished_ok", "why": "from tomli"}]}
+
+    def both_installed(name: str, *args: object, **kwargs: object) -> types.ModuleType:
+        if name == "tomllib":
+            return from_stdlib
+        if name == "tomli":
+            return stub
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", both_installed)
+    assert runprov.policy.load(written) == {
+        "rules": [{"rule": "clean_tree", "why": "from tomllib"}]
+    }, (
+        "[K-06] with both parsers importable the STANDARD LIBRARY must be the one used, on every "
+        "supported version — otherwise which parser reads a policy depends on what the user "
+        "happens to have installed"
+    )
+
 
 def test_the_toml_extra_is_an_extra_and_the_recommendation_says_why():
     """[ADR-0018 R-11] [ADR-0018 R-12] T-34. `dependencies = []` is a promise, not a default.
