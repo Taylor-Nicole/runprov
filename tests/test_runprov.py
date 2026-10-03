@@ -19445,21 +19445,155 @@ def test_export_is_outside_r15_and_r16_by_construction_and_not_by_omission():
 #: project chose — and every entry below is a `@property` or a NamedTuple field on one side at
 #: least. What the guard refuses is an UNDECLARED one: a new field that quietly makes a third
 #: meaning for a name a consumer has already learned.
+#: THE RECORD'S OWN SCHEMAS, which are not answers and have no `--format json` shape to produce
+#: them. Named rather than filtered by a pattern, so a fourth record schema has to be ruled on
+#: here instead of quietly dropping out of the set below.
+_RECORD_SCHEMAS = {
+    "runprov.run.v2": "the sidecar record a run writes about itself",
+    "runprov.history.v2": "one line of the history",
+    "runprov.start.v1": "the line appended when a run BEGAN and before it ended",
+}
+
+
+def _versioned_answer_schemas() -> set[str]:
+    """Every answer shape this package VERSIONS, read from the modules' own constants by AST.
+
+    PARSED AND NOT GREPPED, for the reason the atomic-write guard gives: a line matcher fires on
+    docstrings that quote the code, and this file quotes schema names in about forty of them.
+
+    IT EXISTS TO MAKE A SHAPE ROW LOAD-BEARING [K-16]. `gate --emit-policy` was outside the
+    collision guard entirely — a second schema on one command, about to freeze at upload — and a
+    row added to a dict can be deleted again without anything failing. Equality against this set
+    means a versioned answer with no shape to produce it fails, in both directions.
+    """
+    found: set[str] = set()
+    for mod in sorted((_repo_root() / "runprov").glob("*.py")):
+        tree = ast.parse(mod.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if not (isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)):
+                continue
+            if not isinstance(node.value.value, str):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id.endswith("SCHEMA"):
+                    found.add(node.value.value)
+    assert found >= set(_RECORD_SCHEMAS), (
+        f"the record's own schemas are no longer declared where this reads them: "
+        f"{sorted(set(_RECORD_SCHEMAS) - found)}"
+    )
+    return found - set(_RECORD_SCHEMAS)
+
+
+#: DICTS WHOSE KEYS ARE DATA AND NOT FIELD NAMES [K-16]. The guard below walks every leaf at
+#: every depth, and a walk that did not know the difference would read the TEST'S OWN tmp
+#: directory as a field name — so its output would depend on where it ran, which is the one thing
+#: a derived check may not do. Declared by the field that HOLDS the map, with the reason, because
+#: no expression can tell a field name from a string a user chose.
+#:
+#: FIVE OF THE SEVEN ARE EMPTY IN THIS FIXTURE AND ARE DECLARED ANYWAY. `notes`, `packages` and
+#: `parameters` are keyed by words the USER picked: a run with a parameter named `ok` or a note
+#: keyed `found` would otherwise manufacture a collision with this package's own vocabulary, in a
+#: fixture nobody would think to look at. The paths are what leaks today; the user's words are
+#: what would leak next.
+_DATA_KEYED = {
+    "artifacts": "`show`'s project page keys each artifact's answer by the artifact's own path",
+    "scripts": "`show`'s project page keys each script's summary by the script's name",
+    "inputs": "`show`'s project page keys a script's input digests by path (a LIST elsewhere)",
+    "outputs": "and the same for its outputs — the map is the project-wide question, not one run's",
+    "parameters": "a run's parameters are keyed by the names the user gave them",
+    "notes": "a run's notes are keyed by the keys the caller passed to `run.note`",
+    "packages": "the environment block is keyed by package name",
+}
+
+#: ONE NAME MEANING TWO THINGS, WITH THE REASON IT STANDS. R-12 gives each command its
+#: structure's own field names and R-9 forbids renaming a shipped one, so some of these are a
+#: consequence of rules this project chose rather than an oversight. The guard below is an
+#: EQUALITY against this table: a collision that appears without a row fails, and a row whose
+#: collision is gone fails too.
 _SHARED_NAMES = {
     "artifacts": (
         "`impact.Chain.artifacts` is a @property counting what a rebuild would touch; "
-        "`verify`'s is the list of pinned artifact reports. Both structure-owned, and "
-        "`verify`'s shipped in 0.6.0."
+        "`verify`'s is the list of pinned artifact reports; `show`'s project page keys a MAP of "
+        "them by path. Three structures, one English word, and `verify`'s shipped in 0.6.0."
+    ),
+    #: [K-10's declaration, promoted from a comment beside the field to a row here.] The previous
+    #: tranche wrote `blocked` knowing it collided with `diff`'s and said so in `policy.py`,
+    #: because the guard could not see a nested key. It can now, so the declaration lives where
+    #: the check reads it.
+    "blocked": (
+        "`diff.Dimension.blocked` is one `str | None` saying why ONE dimension could not be "
+        "compared (ADR-0014); `gate`'s is a `list[str]` of what a rule could not answer for over "
+        "its runs (K-10). Both structure-owned, both ADR-0014's word for an incomparability: they "
+        "agree on the meaning and not on the type."
+    ),
+    #: [K-16] `verify` carries this name at two depths ON PURPOSE, which is why the widened walk
+    #: finds a collision inside ONE payload.
+    "body_checked": (
+        "per artifact it is the bool *were this artifact's own bytes re-derived*; at the top it is "
+        "the COUNT of artifacts for which they were, which is what makes an OK that checked "
+        "nothing visible. Both shipped in 0.6.0, and the pair is the point rather than a clash."
+    ),
+    "examined": (
+        "`check.Report.examined` is the number of files parsed; `diff`'s is a dimension's own "
+        "`'<a> vs <b>'` sentence saying what was compared. Both structure-owned, both shipped."
+    ),
+    #: [K-16] The other within-one-payload pair, and this one is J-12's rule producing it.
+    "failed": (
+        "`log.failed` is the count of failed runs in the window; `log.selectors.failed` is the "
+        "`--failed` FLAG as given, echoed because J-12 requires a window to report what it "
+        "narrowed FROM; `show`'s project page carries the count per script. A count and the flag "
+        "that produced it cannot share one key and must not lose either."
+    ),
+    #: [K-11, and the row asked for a RENAME which is refused.] `gate.found` is in the legitimate
+    #: class: both sides are NamedTuple fields, neither invented by a payload builder, so R-9
+    #: binds both — and the `runs` row below already blesses this exact top-level-versus-nested
+    #: shape. Renaming `gate.found` to `history_found` would make it the only one of sixteen so
+    #: treated, and it produces no failure here as long as this row exists.
+    "found": (
+        "`gate.found` is the bool *is the history there at all*, which ADR-0017 R-8 forbids "
+        "collapsing into `runs == 0`; `report.inputs[].found` and "
+        "`verify.artifacts[].inputs[].found` are the 16-character digest a declared input hashes "
+        "to NOW, beside the `pinned` one it was recorded with. Both shipped in 0.6.0."
+    ),
+    "inputs": (
+        "`log`, `report`, `show <target>` and `verify` carry a run's declared entries as a LIST, "
+        "the record's own shape; `show`'s project page carries a MAP keyed by path, because the "
+        "project-wide question is *which files, hashed how* and not *what did this run declare*."
     ),
     "ok": (
         "`check.Report.ok` is a @property — the verdict. `verify`'s `ok` is one of the "
-        "per-status counts beside `stale` and `gone`, and shipped in 0.6.0. A verdict and a "
-        "tally, both named for the same word in English."
+        "per-status counts beside `stale` and `gone`, and shipped in 0.6.0; `show`'s project page "
+        "counts a script's successful runs. A verdict and two tallies, one English word."
+    ),
+    "outputs": "the same pair as `inputs`, one key over: a list per run, a map per project.",
+    "parameters": (
+        "`log` and `show <target>` carry the run's parameter MAP as recorded; `show`'s project "
+        "page carries the sorted list of parameter NAMES the script has been run with. A map and "
+        "the list of its own keys, one level apart."
+    ),
+    "run": (
+        "`report.run` is the run record's own block — script, status, times, command; "
+        "`show <target>`'s `runs[].run` is the script NAME the run belongs to. Both shipped in "
+        "0.6.0."
     ),
     "runs": (
         "`lineage`'s is one of the join's own counters (`_LINEAGE_COUNTERS`, shipped in "
         "0.6.0); `show <target>`'s is the list of run pages, which is what the command IS. "
-        "`show`'s project shape also carries `project.runs` as a count, one level down."
+        "`show`'s project shape also carries `project.runs` as a count, one level down, and "
+        "`gate.runs` is the number of runs the policy was applied to."
+    ),
+    "scripts": (
+        "`show`'s project page keys a map of per-script summaries by script name; `verify`'s is "
+        "the list of script names an artifact's pin names. Both structure-owned, both shipped."
+    ),
+    "steps": (
+        "`impact.steps` is the list of steps a rebuild would touch; `log` and `report` carry "
+        "`observation.steps`, which is ADR-0010's MARK for how step observation was obtained "
+        "(`none`, `auto`, `declared`). A list and a mark, and ADR-0010 owns the second."
+    ),
+    "truncated": (
+        "`impact.truncated` is the bool *was this answer cut short*; `report.checked.truncated` "
+        "is the list of fields whose check was cut. Both shipped in 0.6.0."
     ),
     "unreadable": (
         "`chain` NAMES the lines — it walks the file line by line, so it can — and that list "
@@ -19706,10 +19840,34 @@ def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsy
     above, because R-12 gives each command its structure's names and R-9 forbids renaming them
     — so those collisions are a consequence of rules this project chose, not an oversight.
 
+    **WIDENED TO EVERY LEAF AT EVERY DEPTH [K-16], AND THE COUNT WENT FROM 4 TO 16.** It read
+    top-level keys only, so a name that collided one level down was invisible to it — which is
+    exactly how `found` (K-11) and `source` (K-12) reached an audit instead of a check, both in
+    nested positions, and how the `cannot_check` count-versus-reason clash reached one before
+    them. Measured on the thirteen answering shapes: **twelve undeclared names**, every one of
+    them nested on at least one side.
+
+    **FOUR OF THEM ARE IN OUTPUT THAT SHIPPED IN 0.6.0** (`body_checked`, `examined`,
+    `truncated`, `run`), which makes them DECLARATIONS and not renames: R-9 forbids renaming a
+    field a release has carried. Four more are the audit's own count being wrong twice —
+    Audit K filed three, Stage 5 measured eight, and the truth today is twelve: `inputs`,
+    `outputs` and `parameters` are in the skeptic's own instrument output and were not in its
+    list, and `blocked` was created by the repair for K-10 after Stage 5 measured. **A partial
+    declaration would have left this guard RED on the day it widened — a gate that cannot
+    pass** — so the rule is the one the row stated and not the number it guessed: declare every
+    name the walk refuses, with the reason it stands.
+
+    **TWO OF THE TWELVE DISAGREE WITH THEMSELVES INSIDE ONE PAYLOAD** — `verify.body_checked`
+    (bool per artifact, int at the top) and `log.failed` (int at the top, bool under
+    `selectors`) — so a type per (name, shape) could not even express them, and each shape
+    carries a SET of types.
+
     WHAT THIS CANNOT SEE, stated so nobody mistakes its silence for proof: two fields with the
     SAME type and different meanings pass. Type disagreement is the mechanically checkable half;
     the table above carries the other half as prose, and the invariant below carries the part of
-    the vocabulary that IS checkable.
+    the vocabulary that IS checkable. **And it cannot tell a field name from a string a user
+    chose** — that half is `_DATA_KEYED`, declared, with an assertion below that makes the
+    declaration load-bearing.
     """
     artifact, log = _reported_run(tmp_path)
     #: A SECOND RUN, so `diff` has two to compare. With one, `diff demo demo` is the
@@ -19764,6 +19922,13 @@ def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsy
         "chain": ["chain", str(log)],
         "verify": ["verify", str(artifact), "--root", str(tmp_path)],
         "gate": ["gate", "--policy", str(gate_policy), "--log", str(log)],
+        #: THE THIRTEENTH SHAPE, AND IT WAS OUTSIDE THIS GUARD ENTIRELY [K-16]. `--emit-policy`
+        #: answers in `runprov.policy.v1`, a second schema on one command, and until this row the
+        #: only check policing cross-command vocabulary never saw it — with its key set about to
+        #: freeze at upload. `gate` appears twice for the same reason `show` does: a command with
+        #: two answering shapes needs both, and a guard over commands rather than shapes misses
+        #: whichever one it did not pick.
+        "gate --emit-policy": ["gate", "--policy", str(gate_policy), "--emit-policy"],
     }
     assert {name.split(" ")[0] for name in shapes} == _cli_json_commands(), (
         "[ADR-0017 R-5] every command that answers in JSON needs a shape here, and only those: "
@@ -19783,23 +19948,74 @@ def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsy
         #: A line that cannot matter, under a comment claiming it mattered most.
         return "null" if value is None else type(value).__name__
 
-    carried: dict[str, dict[str, str]] = {}
+    #: EVERY LEAF AT EVERY DEPTH [K-16]. This walked TOP-LEVEL KEYS ONLY, and widening it IS the
+    #: row: twelve of the sixteen collisions below are invisible to a top-level walk, and four of
+    #: those are in output that shipped in 0.6.0 — which is how `found` (K-11) and `source` (K-12)
+    #: reached an audit instead of a check. **A TYPE PER (name, shape) IS NOT ENOUGH EITHER:**
+    #: `body_checked` and `failed` disagree with themselves INSIDE one payload, one level apart,
+    #: so each shape carries the SET of types it uses the name for.
+    carried: dict[str, dict[str, set[str]]] = {}
+    #: WHICH SHAPE ANSWERED IN WHICH SCHEMA, kept so the shape table can be held to the set of
+    #: schemas the package versions rather than to a count somebody maintains.
+    answered: dict[str, str] = {}
+
+    def record(node: object, shape: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                carried.setdefault(key, {}).setdefault(shape, set()).add(kind(value))
+                if key in _DATA_KEYED and isinstance(value, dict):
+                    #: A DATA-KEYED MAP'S OWN KEYS ARE NOT NAMES — but its VALUES are still
+                    #: structures and are still walked, which is where `scripts.*.outputs` is
+                    #: found.
+                    for inner in value.values():
+                        record(inner, shape)
+                else:
+                    record(value, shape)
+        elif isinstance(node, list):
+            for item in node:
+                record(item, shape)
+
     for name, argv in shapes.items():
         capsys.readouterr()
         code = runprov.__main__.main([*argv, "--format", "json"])
         out = capsys.readouterr().out
         assert out.strip(), f"{name} produced no payload: this guard reads them"
         assert code in (0, 1), f"{name} must reach an ANSWERING state here, not exit {code}"
-        for key, value in json.loads(out).items():
-            carried.setdefault(key, {})[name] = kind(value)
+        body = json.loads(out)
+        answered[name] = body["schema"]
+        record(body, name)
+
+    #: AND EVERY ANSWER SHAPE THIS PACKAGE VERSIONS IS EXERCISED HERE [K-16]. The thirteenth row
+    #: above is a row in a dict, and a row can be deleted with nothing failing — which is the
+    #: defect K-42 is about, met while repairing K-16. Derived from the modules' own `*SCHEMA`
+    #: constants, so a versioned answer with no shape here fails, and so does a shape for a schema
+    #: that is gone.
+    versioned = _versioned_answer_schemas()
+    assert set(answered.values()) == versioned, (
+        "[K-16] [ADR-0017 R-5] every versioned answer shape needs an invocation here, and only "
+        "those — a schema no shape produces is a vocabulary nothing polices:\n"
+        f"  versioned and unexercised: {sorted(versioned - set(answered.values()))}\n"
+        f"  produced and not versioned: {sorted(set(answered.values()) - versioned)}"
+    )
+
+    #: AND NOTHING THE WALK COLLECTED IS DATA, which is what makes `_DATA_KEYED` load-bearing
+    #: rather than decorative. A path, a digest or a user's parameter value read as a field name
+    #: would make this guard's answer depend on the tmp directory it ran in — the one thing a
+    #: derived check may not do. So the SHAPE of a field name is asserted: a map keyed by data and
+    #: not declared fails here, by name, instead of appearing in the table below as a mystery.
+    not_a_name = sorted(k for k in carried if not re.fullmatch(r"[a-z][a-z0-9_]*", k))
+    assert not not_a_name, (
+        "[K-16] the leaf walk read something that is not a field name, so a dict keyed by DATA is "
+        f"missing from `_DATA_KEYED`: {[k[:60] for k in not_a_name]}"
+    )
 
     #: A `null` AGREES WITH EVERYTHING. `cannot_check` is null in nine shapes and a string in
     #: one, and `target` is null on the project page — neither is a collision, and treating an
     #: absence of evidence as a disagreement would fill the table above with noise.
     collisions = {
-        key: where
+        key: {shape: sorted(types) for shape, types in where.items()}
         for key, where in carried.items()
-        if len({t for t in where.values() if t != "null"}) > 1
+        if len({t for types in where.values() for t in types if t != "null"}) > 1
     }
     assert set(collisions) == set(_SHARED_NAMES), (
         "[J-36] a name now means two things across two commands, with no reason written down. "

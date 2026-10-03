@@ -180,8 +180,11 @@ def assess(
         #: differences, which is this same decision one command over. A DECLARED collision, in
         #: R-9/R-12's sense: `diff.Dimension.blocked` is one `str | None` about a dimension and
         #: this is a `list[str]` about a rule's runs, so the two agree on the MEANING and not on
-        #: the type. `test_no_undeclared_name_means_two_things_across_the_commands` cannot see it
-        #: — it reads top-level keys and this is nested — so the declaration is here.
+        #: the type. **THE DECLARATION HAS MOVED TO WHERE THE CHECK READS IT [K-16].** It was
+        #: written here because `test_no_undeclared_name_means_two_things_across_the_commands`
+        #: read top-level keys only and could not see a nested one; that guard now walks every
+        #: leaf, so `blocked` is a row in its `_SHARED_NAMES` table and a reason in a comment is
+        #: no longer the only thing standing between this name and the next audit.
         if verdict.reason:
             into = reasons if verdict.outcome == VIOLATED else blocked
             if verdict.reason not in into:
