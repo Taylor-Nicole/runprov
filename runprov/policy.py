@@ -62,10 +62,15 @@ class Verdict(typing.NamedTuple):
 class Context(typing.NamedTuple):
     """What a rule may consult BESIDES the record — declared, so a verdict's inputs are readable.
 
-    Five of the six rules never touch this, and that is the point of passing it to all of them
+    Six of the SEVEN rules never touch this, and that is the point of passing it to all of them
     rather than letting one reach for a module global: a rule's inputs are its `reads` plus this,
     both written down, so *what could this answer have depended on* is answerable from the
-    signature. R-9 is the boundary it must not cross — the source is off limits; the data the
+    signature. (**This sentence said *five of the six* and both numbers were wrong [K-32]**, in
+    the commit whose own subject line was *six rules the record answers, and the seventh that has
+    to read the files*. Seven are registered and six carry `del context`. The number is a
+    reader's cross-check that they have found every rule, and one who counts six stops looking
+    for `inputs_verify` — the only rule with a filesystem side effect and the only reason this
+    class exists.) R-9 is the boundary it must not cross — the source is off limits; the data the
     history declares is not.
 
     `digests` MEMOISES ONE `assess`, for the reason `verify.check_input` documents in the same
@@ -1047,6 +1052,20 @@ class Assessment(typing.NamedTuple):
                 f"{self.unfinished} run(s) started with no ending on record, so they were not "
                 "examined — a run still going, or one killed before it could record"
             )
+        #: THE POLICY NAMED NO RULE, WHICH `outcome` ALREADY TREATS AS REACHABLE [K-24]. Without
+        #: this clause the two properties disagreed about one state: `outcome` CANNOT_CHECK,
+        #: `exit_code` 2, `cannot_check` **null** — documented as *looked and found nothing
+        #: missing* — and a page with no reason on it at all. `Verdict`'s own docstring calls a
+        #: CANNOT_CHECK with no reason *indistinguishable from a bug*, and this was the gate
+        #: producing one.
+        #:
+        #: THE REACHABILITY ARGUMENT IS THE WEAK DEFENCE AND IS NOT THE REASON. `_checked`
+        #: refuses an empty `rules` list, so no policy FILE reaches here — but `policy` is
+        #: importable without the CLI by design, `assessment()` is public, and a payload that
+        #: asserts *I could not check* and *nothing was missing* in one object is wrong whoever
+        #: built it.
+        if not self.rules:
+            parts.append("the policy names no rule, so no control was applied")
         #: BUILT FROM THE ROWS' OWN COUNTS AND NOT FROM THEIR AGGREGATE OUTCOME [K-09]. It used
         #: to list the rules whose aggregate was CANNOT_CHECK — and `assess` folds a rule to
         #: VIOLATED as soon as one run breaches it, so a rule with one breach and one unexamined

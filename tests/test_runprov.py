@@ -36870,6 +36870,68 @@ def test_the_payload_carries_the_policy_and_it_is_a_projection_not_a_second_pars
     assert [e["rule"] for e in body["policy"]["rules"]] == [r["rule"] for r in body["rules"]]
     assert [e["why"] for e in body["policy"]["rules"]] == [r["why"] for r in body["rules"]]
     assert len(body["policy"]["rules"]) == 3, body["policy"]
+    #: AND THE ASSESSMENT IT TRAVELLED WITH WAS NOT VACUOUS [K-25] — the premise this test's
+    #: three siblings already assert and this one did not. MEASURED: truncating
+    #: `_gated_history`'s log to produce zero records fails three of its four consumers and
+    #: leaves THIS test green, because the projection is exercised either way.
+    #:
+    #: **STATED HONESTLY: no regression escapes the suite for want of this line**, since the
+    #: siblings go red first. What it buys is that R-13 stops being satisfiable by an assessment
+    #: of nothing — the control travelling beside no verdict at all is the archived-evidence
+    #: equivalent of the vacuous green, and R-13's whole point is that the control is evidence.
+    assert (body["runs"], body["unreadable"]) == (2, 0), (
+        f"[K-25] the premise: two real runs, both read — a projection that travelled with a "
+        f"vacuous assessment would prove nothing about R-13: {body['runs']}, {body['unreadable']}"
+    )
+
+
+def test_an_assessment_that_applied_no_control_says_so_in_both_properties():
+    """[ADR-0018 R-3] T-34. `outcome` and `cannot_check` must agree about every state.
+
+    **THEY DISAGREED ABOUT ONE [K-24]:** `outcome` guarded the no-rules case and `cannot_check`
+    did not, so an assessment over a policy naming no rule answered CANNOT_CHECK, `exit_code` 2
+    and `cannot_check` **null** — which is documented as *looked and found nothing missing* — with
+    a page carrying no reason at all. `Verdict`'s own docstring calls a CANNOT_CHECK with no
+    reason *indistinguishable from a bug*.
+
+    **NOT REACHABLE THROUGH THE CLI, AND THAT IS NOT THE DEFENCE.** `_checked` refuses an empty
+    `rules` list, so no policy file reaches this state. But `policy` is importable without the CLI
+    BY DESIGN — `check`, `verify` and `report` are too — `assessment()` is public, `outcome`
+    already treats the state as reachable, and a payload asserting two contradictory things about
+    one state is wrong whoever built it.
+
+    CONSTRUCTED DIRECTLY, because a property over a FIELD SET cannot be reached through a history:
+    this is the second test in the suite to build an `Assessment` by hand, after K-01's, and it
+    names every field for the same reason — a field added later raises here rather than defaulting
+    into a state nothing varied.
+    """
+    empty = runprov.policy.Assessment(
+        policy_path="policy.json",
+        history="h.jsonl",
+        found=True,
+        read_error=None,
+        runs=2,
+        unreadable=0,
+        unfinished=0,
+        rules=(),
+    )
+    assert (empty.outcome, empty.exit_code) == (runprov.policy.CANNOT_CHECK, 2), empty
+    assert empty.cannot_check, (
+        "[K-24] the gate says it could not check and that nothing was missing, in one object: "
+        "`cannot_check` is null over an assessment that applied no control at all"
+    )
+    assert "no rule" in empty.cannot_check, empty.cannot_check
+    #: AND THE PAGE CARRIES IT, because a reason that exists only in the payload is a reason the
+    #: person reading the report does not get.
+    page = "\n".join(runprov.policy.render(empty))
+    assert "COULD NOT CHECK" in page and "no control was applied" in page, page
+    assert "GATE: CANNOT_CHECK (exit 2)" in page, page
+
+    #: AND A NON-EMPTY POLICY IS UNAFFECTED — the clause fires on the state and not on the shape.
+    one = empty._replace(
+        rules=({**runprov.policy.assess("finished_ok", [{"status": "ok"}]), "why": _WHY},)
+    )
+    assert (one.outcome, one.exit_code, one.cannot_check) == (runprov.policy.MET, 0, None), one
 
 
 def test_a_newline_in_a_record_or_a_policy_cannot_forge_a_line_on_the_page(tmp_path, capsys):
