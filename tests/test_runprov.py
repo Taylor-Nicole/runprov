@@ -31439,16 +31439,101 @@ def test_every_command_reads_a_history_written_by_a_released_version(
                     f"{version}: `{row['rule']}` was evaluated against {row['evaluated']} of "
                     f"{len(written)} record(s), so this recipe's green is partly vacuous: {row}"
                 )
-            #: **NOT ASSERTED HERE, AND THE MEASUREMENT IS THE REASON [K-40, disputed clause].**
-            #: K-40's remedy also asked for *every rule's `outcome != VIOLATED`*, as the way to
-            #: catch a rule that has begun ACCUSING a year-old record. It cannot be asserted of
-            #: this corpus: `tools/corpus_scenario.py` reads `data/lookup.csv` WITHOUT
-            #: registering it — its own comment says *"UNREGISTERED ON PURPOSE"*, so that the
-            #: corpus can show the field surviving a version change — so
-            #: `no_unregistered_reads` answers VIOLATED on six of the seven histories and
-            #: CANNOT_CHECK on 0.1.0, which has no `observation` block. The verdict is correct
-            #: and the clause would be red on day one. It is recorded as refuted rather than
-            #: replaced with a substitute remedy this applier invented.
+
+            #: AND THE OUTCOME IS RE-DERIVED FROM THE PAYLOAD'S OWN TALLIES [L-17]. This recipe
+            #: asserted the schema, the rule-row set, `runs` and each rule's `evaluated` — and
+            #: **NO OUTCOME AT ALL**, which is the one thing a corpus oracle exists to be an
+            #: oracle for. Mutating `assess`'s fold so a MET majority outranks a single
+            #: inability flipped `inputs_verify` from CANNOT_CHECK to **MET on all seven
+            #: released histories** — `GATE: MET (exit 0)` printed above its own page line
+            #: reading `1 not checked` — and this recipe stayed RC=0. ADR-0018 R-3's central
+            #: claim broken at the fold, over every released history, with the oracle green.
+            #:
+            #: **AND THE CAUSE WAS A PROCESS ERROR RATHER THAN AN OVERSIGHT**, which is why the
+            #: paragraph this replaces is quoted below instead of deleted: K-40's remedy
+            #: correctly refuted the clause it was handed — *every rule's `outcome !=
+            #: VIOLATED`*, which is red on day one because `tools/corpus_scenario.py` reads
+            #: `data/lookup.csv` **unregistered on purpose**, so `no_unregistered_reads` answers
+            #: VIOLATED on six of the seven histories and CANNOT_CHECK on 0.1.0, correctly —
+            #: **and wrote no substitute.** The refutation closed the proposed FORM of the
+            #: assertion and was read as closing the REQUIREMENT. A refuted remedy leaves its
+            #: requirement open.
+            #:
+            #: **AND THE REMEDY FILED FOR *THIS* ROW WAS REFUTED TOO, measured.** A declared
+            #: `CORPUS_VERDICTS` table asserted by equality is green today and raises a bare
+            #: `KeyError` the first time an eighth wheel is captured — **red on correct code, on
+            #: the one act `corpus_versions()` was written to make free.** So the second side is
+            #: DERIVED from the payload itself: each row's own `violated` / `not_checked` /
+            #: `evaluated` counts must fold to the `outcome` the row states, and the row set
+            #: must fold to the top-level one. **Version-free and scenario-free**: it says
+            #: nothing about which rule answers what on which release, so a new wheel and a
+            #: changed scenario both cost nothing, and a fold that stops respecting R-3's
+            #: precedence is red on every history at once.
+            def folded(violated: int, not_checked: int, evaluated: int) -> str:
+                #: R-3's PRECEDENCE, in the order the ADR states it: a violation outranks an
+                #: inability, because knowing part of a list is knowing a breach; an inability
+                #: outranks a pass, because an unexamined run is never one; and a rule asked of
+                #: nothing could not answer either.
+                if violated:
+                    return runprov.policy.VIOLATED
+                if not_checked or not evaluated:
+                    return runprov.policy.CANNOT_CHECK
+                return runprov.policy.MET
+
+            for row in body["rules"]:
+                want = folded(row["violated"], row["not_checked"], row["evaluated"])
+                assert row["outcome"] == want, (
+                    f"[ADR-0018 R-3] [L-17] {version}: `{row['rule']}` states outcome "
+                    f"{row['outcome']} while its own counts are violated={row['violated']}, "
+                    f"not_checked={row['not_checked']}, evaluated={row['evaluated']}, which fold "
+                    f"to {want}. A rule that calls an unexamined run a pass is R-3's whole "
+                    f"subject, and this is the only check in the suite that sees it over a "
+                    f"released wheel's records"
+                )
+            outcomes = {row["outcome"] for row in body["rules"]}
+            top = next(
+                outcome
+                for outcome in (
+                    runprov.policy.VIOLATED,
+                    runprov.policy.CANNOT_CHECK,
+                    runprov.policy.MET,
+                )
+                if outcome in outcomes
+            )
+            assert body["outcome"] == top, (
+                f"[ADR-0018 R-3] [L-17] {version}: the gate answered {body['outcome']} over rows "
+                f"answering {sorted(outcomes)}; the top of that set is {top}"
+            )
+
+            #: AND THE TEXT PAGE, OVER THE SAME TREE [L-22]. Widening this recipe to assert the
+            #: payload switched it off the DEFAULT renderer, so `gate`'s page became the only
+            #: one of twelve recipes never rendered against any released wheel's history — the
+            #: other eleven all still run the default. What that lost is this branch's own
+            #: `except Exception -> pytest.fail` over the gate's TEXT renderer for records
+            #: written by every released wheel, **including 0.1.0, which has no `observation`
+            #: block at all** — and the text page is exactly where K-21 found a defect two
+            #: commits later. It also puts K-21's territory under the corpus for the first time.
+            runprov.configure(root=".", run_log="prov/history.jsonl")
+            try:
+                shown_code = runprov.__main__.main(
+                    [arg for arg in argv if arg not in ("--format", "json")]
+                )
+            except SystemExit as exc:
+                shown_code = exc.code if isinstance(exc.code, int) else 2
+            except Exception as exc:
+                pytest.fail(
+                    f"{version}: `runprov gate` rendered as TEXT raised {type(exc).__name__}: {exc}"
+                )
+            page = capsys.readouterr().out
+            assert shown_code == body["exit_code"], (
+                f"[ADR-0017 R-1] {version}: the page exited {shown_code} and the payload says "
+                f"{body['exit_code']} — one answer, two renderings"
+            )
+            assert page.strip(), f"{version}: the gate rendered an empty page"
+            assert page.count("GATE: ") == 1, (
+                f"[K-21] {version}: the page carries {page.count('GATE: ')} verdict lines, and "
+                f"exactly one of them can be the real one:\n{page}"
+            )
         checked += 1
     assert checked >= 8, f"only {checked} commands were run against {version}"
 
