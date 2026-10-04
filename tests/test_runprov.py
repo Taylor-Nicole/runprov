@@ -36935,6 +36935,73 @@ def test_a_history_that_cannot_be_read_is_an_answer_and_not_a_traceback(tmp_path
     assert after == before, f"the same question over the same file answers the same way: {after}"
 
 
+def test_the_read_error_arm_carries_the_reason_the_os_gave(tmp_path, capsys, monkeypatch):
+    """Audit L, L-04. The arm `read_error` lands on had nothing holding what it carries.
+
+    **THE DEFECT.** K-04's derived invariant was applied to the PARSER's refusal and never to
+    `_gate`'s `read_error` arm, which has the identical host-supplied `strerror` shape.
+    Measured: replace the OS's reason with the constant `"unavailable"` and the suite is
+    **1 203 passed, rc=0** — the test above asserts only that the field is TRUTHY, and it
+    exercises one failure mode. `runprov.gate.v1` freezes at upload, so the field is about to
+    become permanent with nothing asserting it says anything.
+
+    **THE FILED REMEDY WAS *exercise a second OS failure and assert the two tails differ*, and
+    it is UNSATISFIABLE IN EITHER ORDER** — which is why this test has a different shape from
+    its K-04 sibling. That sibling can compare two tails because `load()` meets two genuinely
+    different OS failures, *absent* and *is a directory*. This arm meets one: before L-01's
+    repair the unreadable-parent route did not reach it at all, and after L-01 it reaches it
+    reporting the SAME `strerror` — *Permission denied*, both times, measured. A pair of tails
+    that are equal by construction is a gate that cannot pass.
+
+    **SO THE VALUE IS INJECTED RATHER THAN SUPPLIED BY THE HOST**, which is the
+    change-verification bar and the only form that is both discriminating and honest here: the
+    test chooses the string, so asserting it is not asserting what the platform or the locale
+    happened to say. A constant in `strerror`'s place fails this on every platform and in every
+    language, which is exactly what the K-04 tail comparison buys next door.
+
+    **AND THE REAL FAILURE STAYS BESIDE IT.** The two tests above drive this arm from a real
+    `chmod(0o000)` — the file's own mode and its parent's — so the wiring is proved live by an
+    actual `OSError` from an actual filesystem, and this test proves the reason it carries is
+    the reason it was given. Neither alone is enough: a mock can pass over dead wiring, and a
+    real failure can pass over a discarded reason.
+    """
+    _, log = _gated_history(tmp_path)
+    policy_file = _policy_file(tmp_path / "p.json", "finished_ok")
+    chosen = "a reason this test chose and no OS would ever say"
+
+    def _refuses(*args, **kwargs):
+        raise OSError(errno.EIO, chosen)
+
+    #: THE HISTORY IS READABLE AND THE READ IS WHAT FAILS, so the arm under test is reached
+    #: through its own route rather than through the probe L-01 wrapped.
+    assert log.is_file(), "the premise: the probe succeeds and the read is what raises"
+    monkeypatch.setattr(runprov.__main__, "_counted", _refuses)
+
+    capsys.readouterr()
+    code = runprov.__main__.main(
+        ["gate", "--policy", str(policy_file), "--log", str(log), "--format", "json"]
+    )
+    shown = capsys.readouterr()
+    body = json.loads(shown.out)
+    assert (code, body["exit_code"], body["outcome"]) == (2, 2, runprov.policy.CANNOT_CHECK), body
+    assert body["read_error"] == chosen, (
+        f"[L-04] the OS said why and the field carries something else. A constant in "
+        f"`strerror`'s place reaches here unchanged and nothing else in the suite sees it: "
+        f"{body['read_error']!r}"
+    )
+    assert chosen in (body["cannot_check"] or ""), (
+        f"[L-04] and it reaches the one sentence a consumer is pointed at: {body['cannot_check']}"
+    )
+    assert chosen in shown.err, f"[L-04] and the stderr diagnostic: {shown.err!r}"
+
+    #: THE PAGE IS THE SAME ANSWER [ADR-0017 R-1], so the reason is not lost in the rendering
+    #: that a person reads rather than parses.
+    capsys.readouterr()
+    assert runprov.__main__.main(["gate", "--policy", str(policy_file), "--log", str(log)]) == 2
+    page = capsys.readouterr().out
+    assert chosen in page, f"[L-04] the page drops the reason the payload carries: {page}"
+
+
 @requires_unreadable_files
 def test_a_history_in_an_unreadable_directory_is_the_same_answer(tmp_path, capsys):
     """[ADR-0018 R-2] Audit L, L-01. K-23's repair guarded the READ and not the PROBE.
