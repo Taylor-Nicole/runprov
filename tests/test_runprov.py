@@ -36148,7 +36148,7 @@ def test_no_rule_reads_a_field_the_record_cannot_carry(tmp_path, monkeypatch):
         )
 
 
-def test_every_registered_rule_can_say_it_could_not_check(tmp_path):
+def test_every_registered_rule_can_say_it_could_not_check(tmp_path, monkeypatch):
     """[ADR-0018 R-3] [ADR-0018 R-6] T-34. The requirement made structural, not aspirational.
 
     R-3: a rule that cannot be evaluated is NEVER a pass. The way that goes wrong is not by
@@ -36168,6 +36168,12 @@ def test_every_registered_rule_can_say_it_could_not_check(tmp_path):
     """
     registry = runprov.policy.rules()
     assert registry, "the rule registry is empty, so every assertion below is vacuous"
+    #: WHAT A RECORD REALLY CARRIES, DERIVED, AND CALLED ONCE [L-20]. `_record_field_vocabulary`
+    #: is a plain function and not a fixture — it builds four histories with this package — so it
+    #: is called here rather than taken as a parameter, and once rather than per rule.
+    vocabulary = _record_field_vocabulary(tmp_path, monkeypatch)
+    carried = {name for name in vocabulary if "." not in name}
+    assert len(carried) > 10, f"the vocabulary found {sorted(carried)}, so the check below is thin"
     for name, got in registry.items():
         assert got.reads, f"{name} declares no fields, so this guard cannot strip any"
         #: THE HEAD OF EVERY READ, BECAUSE THE DOTTED HALF OF THIS STRIP WAS A NO-OP [K-26].
@@ -36186,14 +36192,29 @@ def test_every_registered_rule_can_say_it_could_not_check(tmp_path):
         #: the head removes the whole block, which is what *carrying none of the fields it reads*
         #: means, and all seven rules answer CANNOT_CHECK over it.
         stripped = dict.fromkeys(r.split(".")[0] for r in got.reads)
-        #: AND THE STRIP IS WHAT IT CLAIMS TO BE, which is the assertion that makes the line above
-        #: load-bearing rather than a silent no-op again [K-26]. A DOTTED key is a key no record
-        #: carries and no rule reads, so a CANNOT_CHECK obtained over one proves nothing about the
-        #: field the rule actually consults — and that is precisely the state this guard was in.
-        assert not [key for key in stripped if "." in key], (
-            f"[K-26] `{name}`'s stripped record carries a dotted key, which no record has and no "
-            f"rule reads, so the verdict below would come from the parent block's absence and not "
-            f"from the strip: {sorted(stripped)}"
+        #: AND THE STRIP IS WHAT IT CLAIMS TO BE, which is the assertion that makes the line
+        #: above load-bearing rather than a silent no-op again [K-26]. A CANNOT_CHECK obtained
+        #: over a key no record carries proves nothing about the field the rule actually
+        #: consults — and that is precisely the state this guard was in.
+        #:
+        #: **HELD AGAINST WHAT A RECORD CARRIES, NOT AGAINST A SPELLING [L-20].** K-26's own
+        #: assertion was *no stripped key contains a dot* — **a TAUTOLOGY over every possible
+        #: registry**, because `r.split(".")[0]` can never return a string containing a dot.
+        #: It was a tripwire on one spelling of the line above it, not a statement about the
+        #: strip, and both dot-free rewrites reintroduce K-26 verbatim with it green:
+        #: `r.split(".")[-1]` yields `unregistered_watch_truncated`, a LEAF name, and
+        #: `r.replace(".", "__")` yields `observation__unregistered_watch_truncated`. Neither
+        #: is a key any record has, so the rule would again answer CANNOT_CHECK because the
+        #: `observation` block is absent rather than because anything was stripped. The defect
+        #: class is a SEMANTICS and the old assertion was about a SHAPE. This one asks the
+        #: question directly, against a vocabulary built by the package from real records,
+        #: and it is satisfied by every rule in the registry today.
+        unknown = sorted(set(stripped) - carried)
+        assert not unknown, (
+            f"[L-20] `{name}`'s stripped record carries {unknown}, which no record this package "
+            f"writes has. A CANNOT_CHECK obtained over a key that does not exist comes from the "
+            f"field's parent being absent, not from the strip — which is K-26 exactly. The keys "
+            f"a record really carries: {sorted(carried)}"
         )
         verdict = got.judge(stripped, runprov.policy.Context())
         assert verdict.outcome == runprov.policy.CANNOT_CHECK, (
@@ -36209,6 +36230,16 @@ def test_every_registered_rule_can_say_it_could_not_check(tmp_path):
     for name, got in registry.items():
         assert len(got.blind) > 30, (
             f"{name}'s `blind` must be a sentence, not a shrug: {got.blind!r}"
+        )
+        #: AND ITS FIRST CLAUSE IS NOT EMPTY [L-21]. The README's *cannot answer when* cell is
+        #: held to `blind.split(" — ")[0]` by equality, which is what K-39 built to forbid an
+        #: empty cell — and a `blind` that OPENS with the separator makes that clause the empty
+        #: string, re-admitting the empty cell through the one input shape K-39's repair made
+        #: load-bearing. Built and measured: RC=0 before this line. `len(blind) > 30` constrains
+        #: the sentence and not the clause, so it cannot stand in for this.
+        assert got.blind.split(" — ")[0].strip(), (
+            f"[L-21] `{name}`'s `blind` opens with the em-dash separator, so its first clause is "
+            f"empty — and that clause is the README's *cannot answer when* cell: {got.blind!r}"
         )
         assert got.asks, f"{name} does not say what it asks"
 

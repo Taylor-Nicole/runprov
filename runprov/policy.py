@@ -146,6 +146,13 @@ class Rule(typing.NamedTuple):
     opening words: four of the seven texts begin *"a run "*. So a `blind` written as one long
     clause with no em dash gives the README a cell it has to carry whole, and the split is where
     a rule says *this much is the documented limit, the rest is the detail*.
+
+    **AND THE FIRST CLAUSE MAY NOT BE EMPTY, which is the half K-39's repair left open [L-21].**
+    A `blind` that OPENS with the separator — `" — a run that …"` — splits to the empty string,
+    and the README cell K-39 exists to forbid is admitted again through the one input shape that
+    repair made load-bearing. Built and measured: the suite was RC=0 for such a rule.
+    `test_every_registered_rule_can_say_it_could_not_check` now asserts the clause is non-empty,
+    so this paragraph is a contract rather than advice. Start the sentence, then the em dash.
     """
 
     name: str
