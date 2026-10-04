@@ -24637,18 +24637,32 @@ def test_every_module_declares_its_surface_and_none_of_them_invents_one():
     diagnostic`, which is how `run`, `terminal` and `sinks` actually import it."""
     import runprov._report
 
+    # THE SCOPE IS DERIVED, NOT TYPED [L-10]. The list used to be ten modules written out by
+    # hand, and it omitted `policy` — the largest module in the package — so about twenty
+    # public names were on course to freeze in the 0.8.0 wheel with nothing asserting any of
+    # them had been promised. That is this test's own subject, one level down: a list is a
+    # derivation's clothes, and the thing it cannot do is grow when the package does. The
+    # scope is every `runprov/*.py` whose name does not begin with an underscore, because an
+    # underscored MODULE name is already the statement — the reasoning `_report` carries in
+    # its own paragraph below.
+    #
+    # `__main__` IS ADDED BACK EXPLICITLY, and it is the one exception the literal rule gets
+    # wrong in the other direction: its name starts with an underscore, so the glob drops it,
+    # while `pyproject.toml`'s `[project.scripts]` makes it the most public module in the
+    # tree. It is also the only one whose `__all__` is not empty.
+    package_dir = pathlib.Path(runprov.__file__).resolve().parent
     modules = {
-        "environment": runprov.environment,
-        "hashing": runprov.hashing,
-        "project": runprov.project,
-        "run": runprov.run,
-        "show": runprov.show,
-        "sinks": runprov.sinks,
-        "terminal": runprov.terminal,
-        "verify": runprov.verify,
-        "watch": runprov.watch,
-        "__main__": cli,
+        path.stem: importlib.import_module(f"runprov.{path.stem}")
+        for path in sorted(package_dir.glob("*.py"))
+        if not path.stem.startswith("_")
     }
+    modules["__main__"] = cli
+    assert len(modules) >= 21, (
+        f"the derivation found only {sorted(modules)} — a glob that stops matching is a "
+        f"scope that silently shrinks, which is the failure this derivation replaced"
+    )
+    assert "policy" in modules, "the module whose absence from the hand-typed list filed L-10"
+
     for name, mod in modules.items():
         assert hasattr(mod, "__all__"), f"runprov.{name} declares no surface"
         missing = [n for n in mod.__all__ if not hasattr(mod, n)]

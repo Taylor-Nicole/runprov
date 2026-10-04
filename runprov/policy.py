@@ -29,6 +29,25 @@ forget, and that is the scope pattern this codebase has now found ten times.
 
 from __future__ import annotations
 
+# A MODULE'S `__all__` RATIFIES THE PACKAGE'S PROMISE; IT NEVER MAKES ONE.
+# A name belongs here if and only if `runprov/__init__.py` re-exports it and lists it in the
+# package `__all__` (decided 2026-08-19, ledger L-24; the list, and its count, live
+# there and nowhere else). Nothing else qualifies:
+# cross-module use inside `runprov/` is INTERNAL and `__all__` neither describes nor protects
+# it; tests reach into internals on purpose and prove nothing; and prose that documents a
+# printed string, a CLI flag or a record key is not an instruction to call a name.
+# Adding or withdrawing a promise is a package-level decision taken in `__init__.py`.
+#
+# THIS MODULE HAD NO `__all__` AT ALL [L-10], the only non-underscore module in the package
+# without one, so about twenty names were on course to freeze in the 0.8.0 wheel BY USE
+# rather than by decision. `[]` is the RATIFICATION, not a withdrawal: ledger L-84 and
+# ADR-0003 settle that a module's list only mirrors a promise `__init__.py` has already
+# made, and `show` and `verify` were given `[]` on exactly that reasoning. The guard that
+# should have caught the absence read a HAND-TYPED module list that omitted this file; it
+# now derives its scope from `runprov/*.py`, so the next module cannot be missed the same
+# way.
+__all__: list[str] = []
+
 import importlib
 import json
 import pathlib
@@ -202,9 +221,11 @@ def assess(
     #: `test_the_digest_cache_is_one_assess_wide_and_no_wider`, which asserts the opposite
     #: behaviour deliberately — *a caller that supplies one gets it used rather than replaced* —
     #: and `assessment()` depends on exactly that to read each file ONCE across every rule in a
-    #: policy instead of once per rule. `assess`, `Context` and `digests` are all public, so the
-    #: old sentence told the next caller that reusing a context is impossible and that nobody
-    #: need guard against it.
+    #: policy instead of once per rule. `assess`, `Context` and `digests` are module-level and
+    #: importable, which is NOT a package promise [L-10] — this module's `__all__` is `[]` and
+    #: `runprov/__init__.py` re-exports none of them — but a caller who imports
+    #: `runprov.policy` directly can reach all three, so the old sentence told that caller that
+    #: reusing a context is impossible and that nobody need guard against it.
     context = Context() if context is None else context
     if context.digests is None:
         context = context._replace(digests={})
