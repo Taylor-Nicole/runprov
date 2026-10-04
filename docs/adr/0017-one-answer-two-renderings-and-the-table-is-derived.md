@@ -240,7 +240,7 @@ which field carries it per command.** Added 2026-09-30 after R-15 was applied an
 attempts at a single cross-command assertion failed.
 
 R-15 requires the payload to be emitted. It does not say how a consumer finds the inability
-inside it, and the answer turned out not to be one field. Measured across all ten:
+inside it, and the answer turned out not to be one field. Measured across all eleven:
 
 | command | where it says *could not check* | shape |
 |---|---|---|
@@ -249,16 +249,17 @@ inside it, and the answer turned out not to be one field. Measured across all te
 | `report` | `verdict` ∈ `NO PIN`, `UNVERIFIABLE` | a VALUE in a closed enum |
 | `chain` | `status` = `CANNOT_CHECK`, **and `cannot_check` for which of four routes** | a VALUE in a closed enum, plus a REASON |
 | `verify` | `cannot_check` | a REASON, or `null` |
+| `gate` | `outcome` = `CANNOT_CHECK`, **and `cannot_check` for what it could not see** | a VALUE in a closed enum, plus a REASON |
 
-**These are not an inconsistency to unify, and that is the ruling.** For `report` and `chain`,
-*could not check* IS the answer — a legitimate member of the verdict's own vocabulary, not a
+**These are not an inconsistency to unify, and that is the ruling.** For `report`, `chain`
+and `gate`, *could not check* IS the answer — a legitimate member of the verdict's own vocabulary, not a
 failure to produce one. For the other eight there is no verdict enum, so the inability is a
 separate fact and needs its own key. A command that has a verdict states it there; a command that
 has none carries a reason.
 
 **`check` keeps `examined_nothing` because of R-9.** Renaming it to `cannot_check` for uniformity
 would be the one thing R-9 forbids: it is the structure's own property, and the payload uses the
-structure's names. The **eight** that carry `cannot_check` have no such conflict — there the key
+structure's names. The **nine** that carry `cannot_check` have no such conflict — there the key
 is added by the payload function and shadows nothing.
 
 > **CORRECTED [K-35]: this sentence said *six* while the table twelve lines above listed
@@ -267,6 +268,18 @@ is added by the payload function and shadows nothing.
 > prose was two behind its own table. Measured from live output: `log`, `lineage`, `impact`,
 > `diff`, `resources`, `show`, `verify` and `chain`. **The table is the statement; this sentence
 > counts it**, which is why `policy.py` now cites the table instead of repeating the number.
+
+> **CORRECTED [L-09]: the table had no `gate` row and this section still said *all ten*.** K-35's
+> correction above was stale the day it was written, because `gate` was already in the tree — and
+> `policy.py:255` pointed a reader at a table that omitted the one command `policy.py` itself
+> implements. This ADR's own J-23 note predicted exactly this divergence in writing. There are
+> **eleven** answering commands and **nine** carriers of `cannot_check`; `gate` carries both an
+> `outcome` from a closed vocabulary and a `cannot_check` reason, which is `chain`'s shape and
+> for `chain`'s reason. The test's copy, `_R16_INABILITY`, was already right and is held equal to
+> the parser's own command set, so nothing a machine reads was affected — but the sdist of 0.8.0
+> is what an assessor reads, and `docs/adr/` ships in it. **And the restated eight-command list in
+> `policy.py` is DELETED rather than corrected**, which is what that comment's own argument
+> demands: *a number restated beside a table is a copy that rots*.
 
 > **CORRECTED 2026-10-01 by J-18. `verify`'s entry was `artifacts_seen` > 0 with
 > `artifacts_pinned` = 0, and the paragraph here called it "the weakest of the five" — a

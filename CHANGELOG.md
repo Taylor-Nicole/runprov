@@ -182,9 +182,17 @@ implements it — and it decides *implements* from a module's **top docstring**,
 passing mention of a future decision in a mid-file comment is not read as an implementation. T-33
 cited ADR-0017 in function docstrings and comments across ten commands and in **no module
 docstring**, so the guard never had `0017` in its set. It was not wrong; it was uninformed, and a
-guard cannot tell that from satisfied. The nine modules that define a payload schema now name it,
-and **a new test enforces the convention the old guard depends on** — deriving the set from the
-parser, so a tenth answering command is covered the day its schema appears.
+guard cannot tell that from satisfied. The **ten** modules that define a payload schema now name
+it, and **a new test enforces the convention the old guard depends on** — deriving the set from
+the parser, so a further answering command is covered the day its schema appears.
+
+> **CORRECTED [L-15]: this said *nine*.** `policy.py` makes ten, and it was already in the tree —
+> the same staleness as the sentence above it, in the entry whose whole subject is a count that
+> went stale unwatched. **The number beside it was a `>= 9` FLOOR, which is G-11's shape: a floor
+> is one below the truth the moment anything is added, and it cannot say so.** The floor is
+> replaced by a derivation — every command the parser offers `--format json` must be covered by
+> some module's schema constant — so the guard is red the moment a command answers in JSON with
+> no schema constant, rather than two commands later.
 
 **ADR-0017 also had no `test_every_answer_requirement_has_a_test`**, which ADR-0013 and ADR-0016
 both have and which the backlog named as T-33's own closing condition. All 16 requirements were

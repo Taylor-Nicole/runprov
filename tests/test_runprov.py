@@ -38323,13 +38323,26 @@ def test_every_module_that_answers_in_json_cites_adr_0017_where_the_index_guard_
     commands = _cli_json_commands()
     root = _repo_root() / "runprov"
     answering = set()
+    covered: set[str] = set()
     for module in sorted(root.glob("*.py")):
         source = module.read_text(encoding="utf-8")
         named = set(re.findall(r'^[A-Z_]*SCHEMA = "runprov\.([a-z]+)\.v\d+"', source, re.M))
         if named & commands:
             answering.add(module.name)
-    assert len(answering) >= 9, (
-        f"the sweep for payload schemas found {sorted(answering)}; the scope broke"
+            covered |= named & commands
+    #: A DERIVATION, NOT A FLOOR [L-15]. This was `len(answering) >= 9` — G-11's shape, and it
+    #: was already one below the truth: `policy.py` makes TEN modules, and it was in the tree
+    #: when the nine was written. A floor cannot distinguish *the scope broke* from *something
+    #: was added*, so it says nothing on the day it matters and nothing on the day it is stale.
+    #: The question the sweep exists to ask is answerable exactly: **every command the parser
+    #: offers `--format json` must be covered by some module's schema constant.** Red the moment
+    #: a command answers in JSON with no schema constant — which is the state that let ADR-0017
+    #: stay `Proposed` through its own release — instead of two commands later.
+    assert covered == commands, (
+        f"these commands answer in JSON and no module defines `runprov.<command>.vN` for them: "
+        f"{sorted(commands - covered)}. The sweep below reads module docstrings, so a command "
+        f"with no schema constant is one this guard cannot see at all. Found "
+        f"{sorted(answering)} covering {sorted(covered)}"
     )
     assert "run.py" not in answering, (
         "`run.py` defines the RECORD schemas — `runprov.run.v2`, `runprov.history.v2`, "

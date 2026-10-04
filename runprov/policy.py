@@ -283,12 +283,15 @@ def assess(
         #: R-16 gives `cannot_check` to the COMMAND, as the one sentence saying what it could not
         #: see; **R-16's own table is the list of which commands carry it that way, and that
         #: table is the citation rather than a number repeated here [K-35].** This sentence said
-        #: *six* twice over — the count was copied out of ADR-0017's prose, which was itself two
-        #: stale (J-18 had moved `verify` into that family and `chain` was never counted), so a
-        #: reader who re-counted stopped trusting the paragraph. Measured from live output, eight
-        #: shipped commands carry it: `log`, `lineage`, `impact`, `diff`, `resources`, `show`,
-        #: `verify` and `chain`. A number restated beside a table is a copy that rots, and this
-        #: docstring has now been wrong about this one twice. A COUNT under the same name one
+        #: *six* twice over, copied out of ADR-0017's prose, which was itself two stale.
+        #:
+        #: **THE RESTATED LIST THAT STOOD HERE IS DELETED RATHER THAN CORRECTED [L-09], and the
+        #: deletion is what the paragraph above asks for.** It named eight shipped commands by
+        #: hand — and omitted `gate`, the command THIS MODULE IMPLEMENTS, which was already in
+        #: the tree when the list was written. Wrong about the same count a third time, in the
+        #: comment whose own argument is that *a number restated beside a table is a copy that
+        #: rots*. Correcting it to nine would have bought one more correct reading and the same
+        #: defect. The table is the statement; read it there. A COUNT under the same name one
         #: level down
         #: would put a string and an int behind one key in a single document — J-36's defect, which
         #: is resolved by asking which structure owns the word rather than by renaming whichever is
