@@ -719,7 +719,19 @@ def _input_still_matches(
 @rule(
     "inputs_verify",
     asks="every input the run declared still hashes to what it recorded",
-    reads=("inputs",),
+    #: `cwd` IS DECLARED BECAUSE THE BODY READS IT [L-02]. K-17's repair made this verdict
+    #: depend on the record's own `cwd` — the anchor a relative recorded path is resolved
+    #: against — and left `reads` naming `inputs` alone, one commit away from the commit that
+    #: amended both the tuple and R-7's table for `environment_captured`. Nothing could see it:
+    #: the only guard over `reads` asserted `reads ⊆ vocabulary`, ONE DIRECTION, so a field the
+    #: body consults and the tuple omits was invisible. No verdict is wrong today because every
+    #: released history carries `cwd`, but a writer that omitted it would silently return this
+    #: rule to resolving against the gate process's working directory with the registry, the ADR
+    #: table and the guard all green — and `test_every_registered_rule_can_say_it_could_not_check`
+    #: strips what `reads` names, so an undeclared dependency is a dependency that guard never
+    #: removes. `test_every_rule_declares_the_fields_its_judge_actually_reads` now derives the
+    #: other direction from this function's own AST.
+    reads=("inputs", "cwd"),
     blind="a declared input that is no longer on disk, or a run that declared none at all — and, "
     "named here because the record cannot close it, a history read on a machine other than the "
     "one that wrote it, where the recorded path names nothing even though the file itself still "

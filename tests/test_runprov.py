@@ -36092,6 +36092,93 @@ def test_the_rule_set_is_the_registry_and_the_adr_table_agrees_with_it(tmp_path)
         )
 
 
+def test_every_rule_declares_the_fields_its_judge_actually_reads():
+    """[ADR-0018 R-7] [ADR-0018 R-5] Audit L, L-02. The direction nothing checked.
+
+    **THE DEFECT, FOUND TWICE INDEPENDENTLY** — by the cause lens from the repair and by the
+    contract lens from R-7's table, arriving from opposite directions. K-17's repair made
+    `inputs_verify`'s verdict depend on the record's own `cwd`, the anchor a relative recorded
+    path is resolved against, and declared it nowhere: the body read `record.get("cwd")` while
+    `reads` said `('inputs',)` and R-7's row said `inputs`. **It sat one commit away from the
+    commit that amended both the tuple and the table for `environment_captured`.**
+
+    **AND NOTHING COULD SEE IT, which is the finding rather than the typo.** Every guard over
+    `reads` ran in ONE DIRECTION — `reads ⊆ the record's vocabulary`, and `reads` against R-7's
+    cell — so a field the tuple names and no body reads was caught and **a field a body reads
+    and the tuple omits was invisible.** The consequence is not cosmetic:
+    `test_every_registered_rule_can_say_it_could_not_check` strips exactly what `reads` names,
+    so an undeclared dependency is one that guard never removes, and R-3's structural proof is
+    weaker than it reads for precisely the rule that has one.
+
+    **A LATENT FALSE GREEN IN THE SPECIFICATION LAYER.** No verdict is wrong today, because
+    every released history carries `cwd`. A writer that omitted it would silently return this
+    rule to resolving against the GATE PROCESS's working directory — K-17's exact symptom — with
+    the registry, the ADR table and every guard green.
+
+    **SO THE SECOND DIRECTION IS DERIVED FROM THE JUDGE'S OWN AST**: every `record.get("X")` and
+    `record["X"]` in the function's body, held by EQUALITY against the heads of `reads`. Heads,
+    because a dotted read like `observation.unregistered_watch_truncated` is a read of
+    `observation` as far as the body is concerned, and that is the key a strip removes.
+
+    **ITS LIMIT, STATED, because a guard whose reach is unstated is read as universal.** It sees
+    DIRECT reads in the judge's own body: a field consulted through a helper taking the record,
+    or through a dynamic key, is outside it. **All seven judges read directly today**, and that
+    is the premise this is worth having on — measured before it was trusted, over the whole
+    registry: exactly one finding (`inputs_verify` reads undeclared `['cwd']`) and zero false
+    positives. A judge that grows a helper will fail here and needs its reads declared, which is
+    the right outcome either way.
+    """
+    registry = runprov.policy.rules()
+    assert registry, "the registry is empty, so this looked at nothing"
+
+    def reads_in(judge) -> set[str]:
+        source = textwrap.dedent(inspect.getsource(judge))
+        tree = ast.parse(source)
+        fn = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)), None)
+        # NOT a quiet empty result: a walk that located no function reads exactly like a judge
+        # that consults nothing, and the two must not look the same.
+        assert fn is not None, f"no function body found for {judge!r}"
+        assert fn.args.args, f"{fn.name} takes no record to read"
+        record = fn.args.args[0].arg
+        found: set[str] = set()
+        for node in ast.walk(fn):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == record
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                found.add(node.args[0].value)
+            elif (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == record
+                and isinstance(node.slice, ast.Constant)
+                and isinstance(node.slice.value, str)
+            ):
+                found.add(node.slice.value)
+        return found
+
+    for name, got in registry.items():
+        consulted = reads_in(got.judge)
+        declared = {field.split(".")[0] for field in got.reads}
+        assert consulted, (
+            f"`{name}`'s judge reads no field of the record by name, so this guard sees nothing "
+            f"of it — if it now consults the record through a helper, say so here"
+        )
+        assert consulted == declared, (
+            f"[ADR-0018 R-7] `{name}`'s judge reads {sorted(consulted)} and declares "
+            f"{sorted(declared)}. Undeclared: {sorted(consulted - declared)}; declared and "
+            f"unread: {sorted(declared - consulted)}. `reads` is what R-7's table documents and "
+            f"what `test_every_registered_rule_can_say_it_could_not_check` strips, so an "
+            f"undeclared field is one R-3's structural proof never removes"
+        )
+
+
 def test_no_rule_reads_a_field_the_record_cannot_carry(tmp_path, monkeypatch):
     """[ADR-0018 R-10] T-34. Widened from one clean record to the states that produce each field.
 

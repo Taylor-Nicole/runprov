@@ -93,7 +93,7 @@ when they disagree. Amended 2026-10-02 from a prose sentence, which could not be
 | `commit_recorded` | the run names the commit it ran from | `git_commit`, `git_status_captured` | the status was never captured, so an absent commit is not a missing one |
 | `environment_captured` | the run recorded the packages it ran with | `packages`, `observation.packages_recorded`, `environment_snapshot` | the record does not say whether packages were recorded at all, or it marks a snapshot whose write FAILED or that names no package count |
 | `finished_ok` | the run reached its end and recorded success | `status`, `failure` | the line carries no status — a `start` with no ending is not a failure |
-| `inputs_verify` | every input the run declared still hashes to what it recorded | `inputs` | a declared input is no longer on disk, none was declared, or one was declared as a DIRECTORY — which `runprov verify` re-walks and this rule does not |
+| `inputs_verify` | every input the run declared still hashes to what it recorded | `inputs`, `cwd` | a declared input is no longer on disk, none was declared, or one was declared as a DIRECTORY — which `runprov verify` re-walks and this rule does not |
 
 **THE `CANNOT_CHECK` COLUMN IS THE SPECIFICATION, not a footnote.** R-3 says an unevaluable rule
 is never a pass, and every entry above names the exact state in which this rule cannot answer. A
