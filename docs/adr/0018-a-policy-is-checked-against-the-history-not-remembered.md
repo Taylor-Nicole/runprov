@@ -87,18 +87,38 @@ when they disagree. Amended 2026-10-02 from a prose sentence, which could not be
 
 | rule | asks | reads | CANNOT_CHECK when |
 |---|---|---|---|
-| `clean_tree` | the working tree was clean when the run started | `git_tree_dirty`, `git_status_captured` | the status was never captured — outside a repository, or no git on PATH |
-| `no_unregistered_reads` | the run opened no data file it did not register | `unregistered_reads`, `observation.unregistered_watch_truncated` | the watch hit its cap, so an empty list no longer means none were missed |
-| `outputs_pin_inputs` | every run that produced an output declared what it read | `outputs`, `inputs` | the run recorded no outputs, so there is nothing to ask about |
-| `commit_recorded` | the run names the commit it ran from | `git_commit`, `git_status_captured` | the status was never captured, so an absent commit is not a missing one |
-| `environment_captured` | the run recorded the packages it ran with | `packages`, `observation.packages_recorded`, `environment_snapshot` | the record does not say whether packages were recorded at all, or it marks a snapshot whose write FAILED or that names no package count |
-| `finished_ok` | the run reached its end and recorded success | `status`, `failure` | the line carries no status — a `start` with no ending is not a failure |
-| `inputs_verify` | every input the run declared still hashes to what it recorded | `inputs`, `cwd` | a declared input is no longer on disk, none was declared, or one was declared as a DIRECTORY — which `runprov verify` re-walks and this rule does not |
+| `clean_tree` | the working tree was clean when the run started | `git_tree_dirty`, `git_status_captured` | a run whose git status could not be captured at all |
+| `no_unregistered_reads` | the run opened no data file it did not register | `unregistered_reads`, `observation.unregistered_watch_truncated` | a run whose record carries no `observation` block at all |
+| `outputs_pin_inputs` | every run that produced an output declared what it read | `outputs`, `inputs` | a run that recorded no outputs, which this rule has nothing to ask about |
+| `commit_recorded` | the run names the commit it ran from | `git_commit`, `git_status_captured` | a run outside a repository or with no git on PATH, where the absence of a commit is not a missing one |
+| `environment_captured` | the run recorded the packages it ran with | `packages`, `observation.packages_recorded`, `environment_snapshot` | a record with no `observation` block, which cannot say whether packages were recorded at all |
+| `finished_ok` | the run reached its end and recorded success | `status`, `failure` | a line carrying no status |
+| `inputs_verify` | every input the run declared still hashes to what it recorded | `inputs`, `cwd` | a declared input that is no longer on disk, or a run that declared none at all |
 
 **THE `CANNOT_CHECK` COLUMN IS THE SPECIFICATION, not a footnote.** R-3 says an unevaluable rule
 is never a pass, and every entry above names the exact state in which this rule cannot answer. A
 rule whose column is empty would be a rule claiming it can always decide, which no rule reading a
 record can honestly claim.
+
+**AMENDED 2026-10-04 for L-14: THE COLUMN IS NOW DERIVED, AND HELD BY THE SAME EQUALITY THE
+README'S IS.** Each cell must be exactly `blind.split(" — ")[0]` — the FIRST CLAUSE of the
+sentence the rule itself prints — which is the form K-39 built for the README's third column
+because a prefix comparison is satisfied by an empty cell, by a one-character cell, and by
+another rule's opening words.
+
+The row that forced it: `no_unregistered_reads`'s cell named only *the watch hit its cap* and
+omitted **a run whose record carries no `observation` block at all** — the rule's FIRST arm, and
+the one that actually fires on the corpus oracle, where 0.1.0 has no `observation` block. The
+README's guarded table named it correctly, so two documents agreed and this one did not. K-18's
+repair amended the prose beside this table and left the row alone, while the same tranche amended
+two other rules' columns.
+
+**AND THE REST OF EACH LIMIT TRAVELS IN THE RULE'S OWN SENTENCE, which is where it belongs.** A
+cell holds the documented limit; the clauses after the em dash — the defensive routes, the
+*named here because the record cannot close it* ones — are carried by `blind` itself, which
+`gate` prints beside every verdict and the payload carries in full. Three statements of one fact
+with one of them hand-kept is how this column went wrong; now there is one statement and two
+derived views of it.
 
 **AMENDED 2026-10-03 for K-19: `environment_captured` READS THE RECORD'S OWN
 `environment_snapshot`, and opens no file.** `_observed_packages` returns `"snapshot"` on the mere
@@ -112,8 +132,14 @@ opened.**
 
 **The wider claim this row first carried is WITHDRAWN** — refuted twice, independently. *Every
 released wheel answers MET over `packages: {}`* is true and is not a defect: those records carry
-`n_packages: 2` beside the digest, so they did record what they ran with and MET is correct for
-all seven. **And `environment["snapshot"]` is the wrong field to read**: in a HISTORY record
+`n_packages: 2` beside the digest, so they did record what they ran with. **CORRECTED [L-11]: the
+withdrawal paragraph then said *MET is correct for all seven*, and it is correct for SIX.** 0.1.0
+answers CANNOT_CHECK — correctly — through the no-`observation` arm, because it predates ADR-0010,
+carries no `observation` block and never reaches the snapshot arms. Measured:
+`0.1.0: CANNOT_CHECK`, `0.2.0 … 0.7.0: MET`. **The claim is corrected and the REASON is not:**
+`n_packages: 2` is exactly why the other six are stable, which is the half the row's own gloss got
+loose. It is the K-38 error one row over — a figure taken from the wrong side of the thing it
+describes. **And `environment["snapshot"]` is the wrong field to read**: in a HISTORY record
 `environment` is `None`, because the block is flattened to the top level and `environment.snapshot`
 exists only in the sidecar, which `gate` never opens. A rule reading it would have evaluated
 `None` on every record — a guard that is uninformed looking exactly like one that is satisfied.

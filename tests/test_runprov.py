@@ -35008,9 +35008,11 @@ def test_each_rule_reaches_all_three_verdicts_over_the_state_its_row_names(tmp_p
         ],
         "environment_captured": [
             ({"observation": {"packages_recorded": "tracked"}, "packages": {"x": "1"}}, met),
-            #: A SNAPSHOT THAT NAMES ITS PACKAGE COUNT, which is what every released wheel wrote
-            #: and why MET is correct for all seven — the row that was here before carried the
-            #: MARK ALONE and answered MET, which is K-19.
+            #: A SNAPSHOT THAT NAMES ITS PACKAGE COUNT, which is what every released wheel
+            #: from 0.2.0 on wrote and why MET is correct for SIX of the seven [L-11] — 0.1.0
+            #: predates ADR-0010, carries no `observation` block and answers CANNOT_CHECK
+            #: through the arm above, correctly. The row that was here before carried the MARK
+            #: ALONE and answered MET, which is K-19.
             (
                 {
                     "observation": {"packages_recorded": "snapshot"},
@@ -35341,7 +35343,14 @@ def test_environment_captured_reads_the_snapshot_the_record_names_and_opens_no_f
     rule is MET over the records of every released wheel *"on a document the gate never
     examined"*. Those records carry `environment_snapshot: {path, sha256, n_packages: 2, …}`: the
     count AND the digest are attested in the record, so those runs did record what they ran with
-    and MET is correct for all seven. The row also forbade and prescribed the same read — it cited
+    and MET is correct for them.
+
+    **CORRECTED [L-11]: the withdrawal said *all seven* and it is SIX.** 0.1.0 answers
+    CANNOT_CHECK through the no-`observation` arm, correctly: it predates ADR-0010 and never
+    reaches the snapshot arms. Measured `0.1.0: CANNOT_CHECK`, `0.2.0 … 0.7.0: MET`. The claim
+    moves and the reason does not — `n_packages: 2` is exactly why the other six are stable.
+
+    The row also forbade and prescribed the same read — it cited
     R-9 against opening the snapshot file, when R-9's clarification says *the source* means source
     code and explicitly not the filesystem.
 
@@ -36220,10 +36229,35 @@ def test_the_rule_set_is_the_registry_and_the_adr_table_agrees_with_it(tmp_path)
     for name, row in _adr_0018_rules().items():
         if name not in registered:
             continue
+        got = runprov.policy.rules()[name]
         declared = {field.strip(" `") for field in row["reads"].split(",")}
-        assert declared == set(runprov.policy.rules()[name].reads), (
-            f"[ADR-0018 R-7] `{name}` reads {sorted(runprov.policy.rules()[name].reads)} and its "
-            f"row says {sorted(declared)}"
+        assert declared == set(got.reads), (
+            f"[ADR-0018 R-7] `{name}` reads {sorted(got.reads)} and its row says {sorted(declared)}"
+        )
+        assert row["asks"] == got.asks, (
+            f"[ADR-0018 R-7] the ADR says `{name}` asks {row['asks']!r} and the rule says "
+            f"{got.asks!r}"
+        )
+        #: AND THE `CANNOT_CHECK` COLUMN, BY THE EQUALITY THE README'S IS ALREADY HELD TO
+        #: [L-14]. This column was the one cell of R-7 nothing read, and it had gone wrong on
+        #: the arm that matters most: `no_unregistered_reads`'s named only *the watch hit its
+        #: cap* and omitted **a run whose record carries no `observation` block at all** — the
+        #: rule's FIRST arm, and the one that actually fires on the corpus oracle, where 0.1.0
+        #: has no `observation` block at all. The README's table named it correctly, so two
+        #: documents agreed and the ADR did not; K-18's repair amended the prose beside this
+        #: table and left the row alone, in the same tranche that amended two other rules'
+        #: columns.
+        #:
+        #: THE SAME FORM AS `test_the_readme_rule_table_is_the_registry_and_not_a_copy_of_it`,
+        #: deliberately: `blind.split(" — ")[0]` by EQUALITY and never a prefix, because a
+        #: prefix admits an empty cell, a one-character cell and another rule's opening words —
+        #: four of the seven `blind` texts begin *"a run "*. And it was satisfiable for all
+        #: seven before it was asserted: the README's cells already equalled the first clause
+        #: exactly, which is what proved the ADR's seven could be set to the same strings.
+        assert row["blind"] == got.blind.split(" — ")[0], (
+            f"[ADR-0018 R-6] [L-14] R-7's `CANNOT_CHECK when` for `{name}` is not the FIRST "
+            f"CLAUSE of the sentence the rule prints, so the specification and the gate document "
+            f"different limits.\n  ADR:  {row['blind']}\n  rule: {got.blind.split(' — ')[0]}"
         )
 
 

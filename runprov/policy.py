@@ -497,8 +497,13 @@ def _environment_captured(record: typing.Mapping[str, typing.Any], context: Cont
 
     THE WIDER CLAIM THIS ROW CARRIED IS WITHDRAWN, refuted twice independently: *every released
     wheel answers MET over `packages: {}`* is true and is not a defect, because those records
-    carry `n_packages: 2` beside the digest. They did record what they ran with. MET is the
-    correct answer for all seven.
+    carry `n_packages: 2` beside the digest. They did record what they ran with.
+
+    MET IS THE CORRECT ANSWER FOR SIX OF THE SEVEN, AND THAT SENTENCE SAID ALL SEVEN [L-11].
+    0.1.0 answers CANNOT_CHECK, through the `observation is None` arm immediately below: it
+    predates ADR-0010, carries no `observation` block and never reaches the snapshot arms at all.
+    Measured: `0.1.0: CANNOT_CHECK`, `0.2.0 … 0.7.0: MET`. **The claim is corrected and the
+    reason is not** — `n_packages: 2` is exactly why the other six are stable.
     """
     del context  # this rule reads the record only
     observation = record.get("observation")
