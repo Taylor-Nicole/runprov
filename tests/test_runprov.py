@@ -30038,6 +30038,38 @@ def test_every_recorded_path_is_spelled_one_way_on_every_platform():
     )
 
 
+#: THE RECORDED-PATH NAMES THIS PACKAGE SPELLS `_posix` THAT DO NOT END IN `path` [L-05].
+#:
+#: THE GUARD BELOW SCOPED ITSELF BY A SUFFIX, and `history` was deliberately named without the
+#: word — `policy.py` records that naming decision — so the field sat OUTSIDE the check that
+#: exists to enforce its spelling. All three of its sites reverted to `str()` with the suite
+#: green. `df4964b` is the proof the class escapes: it took a Windows CI leg to find one
+#: instance, and L-06 then found four more (`artifact` three times and `root`) with L-07 adding
+#: `cwd` and `project_root`. A suffix test is a one-item list wearing a derivation's clothes.
+#:
+#: AND THIS DECLARATION IS HELD BY EQUALITY AGAINST A SIDE DERIVED WITHOUT IT: the names the
+#: package ALREADY spells `_posix`, found by the same AST walk, minus the ones the suffix
+#: already covers. That is the form L-19 earns the rule for — *a declared table is only held by
+#: equality when something else can compute its right-hand side* — and here something can.
+#:
+#: SO WHY DECLARE IT AT ALL, if it is derived? Because the derivation alone is not enough, and
+#: the measurement is the reason. Revert ONE of a name's `_posix` sites to `str()` and the
+#: derivation still carries the name, so the offender arm names the line. Revert ALL of them and
+#: the name vanishes from the derived side — the scan would lose its own subject silently. The
+#: declared set keeps the name in scope, so the offender arm still fires, AND the equality below
+#: fires too, naming the name that stopped being spelled at all. Measured: one-site revert RED
+#: on one arm, all-sites revert RED on BOTH.
+#:
+#: ONE EXEMPTION, RECORDED HERE SO IT IS NOT READ AS AN OVERSIGHT. `history_destination` — and
+#: the `history.destination` field it fills — is deliberately NOT `_posix`-spelled, and its own
+#: docstring carries the reason: it is a field that is SOMETIMES A TYPE NAME (a sink with no
+#: path answers with its class), and a field that is sometimes a type name cannot be a path. The
+#: same docstring states what to do if that ever stops being enough: *if a reader ever needs to
+#: join on where the history went, the repair is a second machine-readable field, not a spelling
+#: change.* It is not in the set below because the derivation never found it there.
+_ALSO_PATHS = frozenset({"artifact", "cwd", "history", "project_root", "root"})
+
+
 def test_no_recorded_path_is_spelled_with_a_bare_str():
     """DERIVED, NOT LISTED — the ninth and tenth instance of the pattern this repository
     keeps finding, and the reason this test exists rather than seven fixed lines.
@@ -30070,35 +30102,83 @@ def test_no_recorded_path_is_spelled_with_a_bare_str():
     and the probe would still have said the scan could see its subject. A probe that does
     not run the code under test is a second implementation agreeing with itself."""
 
-    def offenders_in(source: str, name: str) -> dict[str, str]:
-        def is_str_call(v: ast.expr | None) -> bool:
-            return isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and v.func.id == "str"
+    #: ONE WALK, TWO CALLEES [L-05]. The scan for `str(` and the derivation of `_posix(`-spelled
+    #: names are the SAME function with a different callee, for the reason the probe below
+    #: exists: two walks are two chances for the derived side to see shapes the offender side
+    #: does not, and the two sides are then not about the same thing.
+    def keyed_calls(source: str, name: str, callee: str) -> list[tuple[str, str, str]]:
+        """Every `<callee>(...)` that is KEYED BY A NAME, in all three recorded shapes."""
 
-        def names_a_path(x: ast.expr | None) -> bool:
-            return (
-                isinstance(x, ast.Constant)
-                and isinstance(x.value, str)
-                and x.value.endswith("path")
+        def is_the_call(v: ast.expr | None) -> bool:
+            if not isinstance(v, ast.Call):
+                return False
+            # `str(...)` is a bare name; `_posix(...)` is spelled both bare (`run.py`,
+            # `verify.py`, which import it) and qualified (`hashing._posix(...)` in
+            # `__main__.py`, `policy.py` and `report.py`). Both have to count or the derived
+            # side is short by whichever modules happen to use the other form.
+            return (isinstance(v.func, ast.Name) and v.func.id == callee) or (
+                isinstance(v.func, ast.Attribute) and v.func.attr == callee
             )
 
-        found: dict[str, str] = {}
+        def key_of(x: ast.expr | None) -> str | None:
+            if isinstance(x, ast.Constant) and isinstance(x.value, str):
+                return x.value
+            return None
+
+        out: list[tuple[str, str, str]] = []
         for node in ast.walk(ast.parse(source, filename=name)):
             if isinstance(node, ast.Dict):
                 for k, v in zip(node.keys, node.values, strict=False):
-                    if names_a_path(k) and is_str_call(v):
-                        found[f"{name}:{v.lineno}"] = ast.unparse(v)
-            elif isinstance(node, ast.Assign) and is_str_call(node.value):
+                    key = key_of(k)
+                    if key is not None and is_the_call(v):
+                        out.append((key, f"{name}:{v.lineno}", ast.unparse(v)))
+            elif isinstance(node, ast.Assign) and is_the_call(node.value):
                 for t in node.targets:
-                    if isinstance(t, ast.Subscript) and names_a_path(t.slice):
-                        found[f"{name}:{node.lineno}"] = ast.unparse(node)
-            elif isinstance(node, ast.keyword) and node.arg and node.arg.endswith("path"):
-                if is_str_call(node.value):
-                    found[f"{name}:{node.value.lineno}"] = ast.unparse(node)
-        return found
+                    if isinstance(t, ast.Subscript):
+                        key = key_of(t.slice)
+                        if key is not None:
+                            out.append((key, f"{name}:{node.lineno}", ast.unparse(node)))
+            elif isinstance(node, ast.keyword) and node.arg and is_the_call(node.value):
+                out.append((node.arg, f"{name}:{node.value.lineno}", ast.unparse(node)))
+        return out
+
+    sources = {
+        mod.name: mod.read_text(encoding="utf-8")
+        for mod in sorted(pathlib.Path(runprov.__file__).parent.glob("*.py"))
+    }
+    assert len(sources) >= 24, f"the walk found only {sorted(sources)}"
+
+    #: THE SECOND SIDE, DERIVED WITHOUT CONSULTING `_ALSO_PATHS`: the names this package already
+    #: spells `_posix`. This is what makes the declaration falsifiable rather than circular —
+    #: *held by equality both ways* names no second side, and a set compared only against itself
+    #: is RC=0 with a row deleted.
+    posix_spelled = {
+        key
+        for name, src in sources.items()
+        for key, _site, _src in keyed_calls(src, name, "_posix")
+    }
+    assert set(_ALSO_PATHS) == {n for n in posix_spelled if not n.endswith("path")}, (
+        f"[L-05] `_ALSO_PATHS` and the names this package actually spells `_posix` disagree. "
+        f"Declared {sorted(_ALSO_PATHS)}; derived (minus the ones the suffix already covers) "
+        f"{sorted(n for n in posix_spelled if not n.endswith('path'))}. A name that stopped "
+        f"being `_posix`-spelled ANYWHERE falls out of the derived side, and the scan would "
+        f"lose its own subject silently — which is what `history` did for three commits."
+    )
+
+    #: THE SCOPE: the suffix, plus what is derived, plus what is declared. The declared half is
+    #: the only one that survives a name losing every `_posix` site it had.
+    scope = set(_ALSO_PATHS) | posix_spelled
+
+    def offenders_in(source: str, name: str) -> dict[str, str]:
+        return {
+            site: src
+            for key, site, src in keyed_calls(source, name, "str")
+            if key.endswith("path") or key in scope
+        }
 
     offenders = {}
-    for mod in sorted(pathlib.Path(runprov.__file__).parent.glob("*.py")):
-        offenders |= offenders_in(mod.read_text(encoding="utf-8"), mod.name)
+    for name, src in sources.items():
+        offenders |= offenders_in(src, name)
     assert not offenders, (
         f"a recorded path spelled the platform's way: {offenders}. Use `hashing._posix`, so "
         f"a record written on Windows can be read on Linux and vice versa."
@@ -30107,13 +30187,20 @@ def test_no_recorded_path_is_spelled_with_a_bare_str():
     # the same green. One line per arm, and each arm twice -- once with the bare key and
     # once with a suffixed one -- so narrowing the key back to `== "path"` fails here rather
     # than quietly halving the scan's reach, and so does losing either `str` condition.
+    #: AND EACH ARM AGAIN FOR A NAME THAT DOES NOT END IN `path` [L-05], so the widened scope
+    #: is probed in all three shapes too. Without these three lines the widening could be a
+    #: no-op — the suffix half would answer every probe line and the new half would never be
+    #: exercised, which is the "green because it is uninformed" shape this row is about.
     hits = offenders_in(
         'rec = {"path": str(p)}\n'
         'rec = {"provenance_path": str(p)}\n'
         'rec["path"] = str(p)\n'
         'rec["provenance_path"] = str(p)\n'
         "f(path=str(p))\n"
-        "f(script_path=str(p))\n",
+        "f(script_path=str(p))\n"
+        'rec = {"artifact": str(p)}\n'
+        'rec["cwd"] = str(p)\n'
+        "f(history=str(p))\n",
         "<probe>",
     )
     assert hits == {
@@ -30123,6 +30210,9 @@ def test_no_recorded_path_is_spelled_with_a_bare_str():
         "<probe>:4": "rec['provenance_path'] = str(p)",
         "<probe>:5": "path=str(p)",
         "<probe>:6": "script_path=str(p)",
+        "<probe>:7": "str(p)",
+        "<probe>:8": "rec['cwd'] = str(p)",
+        "<probe>:9": "history=str(p)",
     }, f"the scan cannot see its own subject in all three shapes: {hits}"
 
 
