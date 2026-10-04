@@ -175,11 +175,25 @@ addopts = "-q"
 # for. The gate is not weakened: `ci.py test` passes the same flags, and CI calls ci.py.
 testpaths = ["tests"]
 
-# 100, and it is reachable here: the package is roughly 2,560 statements and 910 branches, no I/O
-# it cannot fake. 100 is the only threshold that does not need defending -- any other number
-# is an argument about which lines deserve a test, held once and then never revisited. The
-# earlier 80 was set because the suite achieved 85.68; that is the wrong direction of
-# reasoning, and the tests were written to close the gap instead.
+# 100, and it is reachable here because there is no I/O this package cannot fake. 100 is the
+# only threshold that does not need defending -- any other number is an argument about which
+# lines deserve a test, held once and then never revisited. The earlier 80 was set because the
+# suite achieved 85.68; that is the wrong direction of reasoning, and the tests were written to
+# close the gap instead.
+#
+# THIS SENTENCE QUOTED A SIZE AND IT WAS THE WORST FIGURE IN THE TREE [L-26] -- out by more
+# than double on statements and more than that on branches, in the file that SETS the gate
+# those numbers were defending, and on no instrument at all. It is DELETED rather than
+# corrected, for two reasons that point the same way. The size was never the argument: what
+# makes 100 reachable is the absence of unfakeable I/O, and that clause is still above. And
+# this project already has ONE gated statement of its scale -- the README's, which `ci.py`
+# compares with the totals of the run that just finished -- so a figure here would be a second
+# instrument for one fact, measured by nothing, which is K-37's defect and L-08's.
+#
+# THE OLD NUMBERS ARE NOT QUOTED HERE EITHER, deliberately: the measurement belongs in the
+# ledger and in the commit that removed it, and a stale figure in a parenthesis is still a
+# stale figure the next reader can copy. `test_the_coverage_threshold_quotes_no_size` asserts
+# that this block states no count of statements or branches.
 #
 # `--cov-branch` IS THE GATE, and it was missing until 2026-08-11. Statement coverage read
 # 100% while five conditions had never been evaluated both ways: the with-block that records

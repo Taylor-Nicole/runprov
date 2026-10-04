@@ -4642,6 +4642,59 @@ def test_the_quoted_scale_figures_have_not_drifted_out_of_meaning():
     )
 
 
+def test_the_coverage_threshold_quotes_no_size():
+    """Audit L, L-26. The worst figure in the tree, in the file that sets the gate.
+
+    **MEASURED.** `pyproject.toml`'s comment justifying `fail_under = 100` said *the package is
+    roughly 2,560 statements and 910 branches*. Coverage measures **5,564 and 2,086** — 117% and
+    129% out. Same class as L-08 and K-37: in the sentence claiming smallness, the figure IS the
+    evidence, and this one sat in the file that configures the threshold it was defending.
+
+    **DELETED RATHER THAN CORRECTED, and the choice is the row.** The size was never the
+    argument — what makes 100 reachable is that there is no I/O this package cannot fake, which
+    is a property and not a number. And this project already has exactly ONE gated statement of
+    its scale: the README's, which `ci.py` compares against the totals of the run that just
+    finished. A second figure here would be a second instrument for one fact, measured by
+    nothing — which is how the README's own sentence drifted five times before K-37 put it on
+    coverage's instrument.
+
+    SO THIS ASSERTS THE ABSENCE, because a deletion nothing checks comes back: the next person
+    to justify the threshold will reach for a size, and the README is where that number belongs.
+    """
+    text = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
+    heading = "[tool.coverage.report]"
+    assert heading in text, "pyproject no longer configures coverage; this reads nothing"
+    #: THE COMMENT BLOCK THAT DEFENDS THE THRESHOLD: everything between the pytest section and
+    #: the coverage section, which is where the figure was and where the argument still is.
+    #: THE COMMENT PROSE, with the `#` markers and the hard wrapping taken out, so that a
+    #: sentence a reader sees as one line is one string here. A guard a reflow can satisfy is a
+    #: guard about formatting.
+    raw = text[text.index('testpaths = ["tests"]') : text.index(heading)]
+    block = " ".join(line.lstrip("# ").strip() for line in raw.splitlines())
+    block = " ".join(block.split())
+    assert "100 is the only threshold" in block, (
+        "the threshold's own argument has moved; this guard is reading the wrong block"
+    )
+    #: A SIZE, NOT ANY NUMBER. This block legitimately cites `85.68` (the coverage the earlier
+    #: threshold was reverse-engineered from), a date and `91/91` — all facts about history
+    #: rather than measurements of the package today. What may not be here is a COUNT OF THE
+    #: THING COVERAGE MEASURES, because that is the figure with a live instrument elsewhere.
+    quoted = re.findall(r"[\d,]+ (?:statements|branches)", block)
+    assert not quoted, (
+        f"[L-26] the comment defending `fail_under = 100` quotes {quoted}. A size measured by "
+        f"nothing goes stale in the file that sets the gate it defends — this one was 117% and "
+        f"129% out. The gated statement of this project's scale is the README's, which `ci.py` "
+        f"holds to coverage's own totals; there must not be a second"
+    )
+    #: AND THE ARGUMENT THAT REPLACED IT IS STILL THERE, so this is not satisfied by deleting
+    #: the paragraph: 100 is reachable because of a PROPERTY, which is what the number was
+    #: standing in for.
+    assert "no I/O this package cannot fake" in block, (
+        "[L-26] the figure was removed and so was the reason the threshold is reachable. The "
+        "property is the argument; the number never was"
+    )
+
+
 def test_the_quoted_coverage_figures_are_coverages_own_and_not_a_proxys():
     """K-37, and it is the structural fix L-09's fix field asked for four drifts ago.
 
