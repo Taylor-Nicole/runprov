@@ -95,6 +95,7 @@ from .hashing import (
     PIN_BODY_PENDING,
     PIN_DIGEST_CHARS,
     PIN_SIDECAR_SUFFIX,
+    _posix,
     describe,
     pin_digest,
 )
@@ -583,7 +584,14 @@ def verify_artifact(
     """
     blocks = read_pins(path)
     if not blocks:
-        return {"artifact": str(path), "status": NO_PIN, "inputs": []}
+        # `_posix`, NEVER `str()` [L-06]. `artifact` is a field of `runprov.verify.v1` AND of
+        # `runprov.report.v1`, declared as a deliberate name collision, and `report` has always
+        # spelled its half `_posix` while these three spelled theirs the platform's way. On
+        # Windows one payload says `C:\Users\…` and the other `C:/Users/…`, so a consumer
+        # joining the two on `artifact` — the obvious join, and the reason the name is shared —
+        # matches nothing. Neither name ends in `path`, so the one-spelling guard could not see
+        # any of them; L-05 is the widening that makes it.
+        return {"artifact": _posix(path), "status": NO_PIN, "inputs": []}
 
     speaks_for = None
     if path.name.endswith(PIN_SIDECAR_SUFFIX):
@@ -593,7 +601,7 @@ def verify_artifact(
             # artifact, the artifact is absent, and that is a finding a checker exists to
             # make. GONE is in FAILING, so the exit code follows.
             return {
-                "artifact": str(speaks_for),
+                "artifact": _posix(speaks_for),  # one spelling, every platform [L-06]
                 "status": GONE,
                 "reason": f"the artifact is no longer there; its pin survives in {path.name}",
                 "inputs": [],
@@ -641,7 +649,7 @@ def verify_artifact(
     out: dict[str, typing.Any] = {
         # The ARTIFACT's name, not the sidecar's. A reader checking `out.png` should see
         # `out.png` in the report; where the pin happened to live is the checker's business.
-        "artifact": str(speaks_for if speaks_for is not None else path),
+        "artifact": _posix(speaks_for if speaks_for is not None else path),  # [L-06]
         "status": status,
         "inputs": checked,
         "pins": len(blocks),
@@ -902,7 +910,10 @@ def verify(paths: typing.Iterable[pathlib.Path], root: pathlib.Path) -> dict[str
     results = [verify_artifact(p, root, cache) for p in examined]
     pinned = [r for r in results if r["status"] != NO_PIN]
     return {
-        "root": str(root),
+        # `root` IS A RECORDED PATH TOO [L-06], and the fourth site in this module that spelled
+        # one the platform's way. It names the directory every `artifact` above is relative to,
+        # so a reader that cannot join the two has nothing.
+        "root": _posix(root),
         "artifacts_seen": len(results),
         "directories_skipped": skipped,
         # A-17. A place this checker COULD NOT look, which is a third thing again: not a

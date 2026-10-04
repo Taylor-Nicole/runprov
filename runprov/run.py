@@ -956,12 +956,26 @@ class Run:
             "command": " ".join(shlex.quote(a) for a in [sys.executable, *sys.argv]),
             "argv": list(sys.argv),
             # A relative script path in `command` means nothing without this.
-            "cwd": str(pathlib.Path.cwd()),
+            #
+            # `_posix`, NEVER `str()` [L-07]. THE DISPOSITION OF THIS ONE WAS REFUTED BY THIS
+            # MODULE'S OWN DOCUMENT. It was filed as a decision rather than a repair, by analogy
+            # with `history_destination` — but that exemption is stated for *a field that is
+            # sometimes a type name*, and `cwd` is always a path. The same docstring states the
+            # rule for this side: **if a reader ever needs to JOIN on it, the repair is a second
+            # machine-readable field, not a spelling change** — and K-17 made `cwd` joined on,
+            # by anchoring `inputs_verify` to it. A path a rule resolves against cannot be
+            # spelled one way on the machine that wrote it and another on the machine that
+            # checks it.
+            "cwd": _posix(pathlib.Path.cwd()),
             "parameters": params or {},
             "code": {
                 # The detected root, recorded. A module that can be wrong about which
                 # repository it is in must at least say which one it chose.
-                "project_root": str(root),
+                #
+                # `_posix` for the same reason as `cwd` above [L-07]: it is the other half of
+                # the pair, always a path, and the thing every relative path in the record is
+                # relative to.
+                "project_root": _posix(root),
                 "git_commit": git(root, "rev-parse", "HEAD"),
                 "git_commit_short": git(root, "rev-parse", "--short", "HEAD"),
                 "git_branch": git(root, "rev-parse", "--abbrev-ref", "HEAD"),

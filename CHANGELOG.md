@@ -199,6 +199,49 @@ guard written to stop it. The pattern here matches both conventions, and a floor
 if it ever finds only 14.
 
 
+### Fixed — six recorded paths were spelled the platform's way, and on Windows nothing joined
+
+Audit L, L-06 and L-07. **This changes VALUES a Windows consumer may already have persisted, and
+that is the whole reason it is here rather than silent.** No key is renamed and no schema moves:
+R-9 governs the name a consumer looks up, and every name is untouched.
+
+**What was wrong.** `_posix` is this package's one spelling for a recorded path — forward slashes
+on every platform, because a record is read on a different machine from the one that wrote it.
+Six fields across two modules still used `str()`:
+
+| schema | field | module |
+|---|---|---|
+| `runprov.verify.v1` | `artifact` (three sites: no pin, gone, and the ordinary result) | `verify.py` |
+| `runprov.verify.v1` | `root` | `verify.py` |
+| `runprov.run.v1` | `cwd` | `run.py` |
+| `runprov.run.v1` | `code.project_root` | `run.py` |
+
+**`artifact` is a DECLARED name collision** — `runprov.verify.v1` and `runprov.report.v1` share it
+on purpose, so that a consumer can join the two — and `report` has always spelled its half
+`_posix`. Measured on `PureWindowsPath`: `verify` emitted `C:\Users\…`, `report` emitted
+`C:/Users/…`, and the join matched **nothing**. The collision was declared, both halves were
+checked for the NAME, and nothing asked whether they agreed on the VALUE.
+
+**`cwd` became joined-on during this cycle**, which is why it moved now: `inputs_verify` anchors a
+run's declared inputs to the `cwd` the run recorded, so a path a rule resolves against was spelled
+one way by the machine that wrote it and another by the machine that checks it.
+`code.project_root` is the other half of that pair.
+
+**ON WINDOWS THIS IS A BEHAVIOUR CHANGE, NOT ONLY A REPAIR.** A Windows consumer that stored the
+old `artifact`, `root`, `cwd` or `code.project_root` strings and compares them literally will stop
+matching: `C:\data\out.tsv` is now `C:/data/out.tsv`. Records written earlier are not rewritten,
+so a history spanning this change carries both spellings — compare with `pathlib.PurePath` on both
+sides, or re-spell the stored value with `as_posix()`. On POSIX nothing changes at all, which is
+exactly why the suite could not see this: `str(PosixPath(...))` and `_posix(...)` are the same
+string, so no content assertion on Linux distinguishes the repair from its absence. The guard is
+structural instead — `test_no_recorded_path_is_spelled_with_a_bare_str` now derives its scope
+rather than matching names that end in `path`, and the six sites are inside it.
+
+**And five assertions in the suite moved in the same commit**, comparing these fields against the
+platform's native spelling. Leaving them would have reproduced `df4964b` exactly: seven jobs
+green, Windows red, and a local gate that structurally cannot see the class.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise

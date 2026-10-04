@@ -591,7 +591,11 @@ def test_run_resolves_the_calling_script_not_the_package_file(tmp_path):
 
 def test_run_records_which_root_it_believed_it_had(tmp_path):
     run = runprov.Run("t", project=_project(tmp_path))
-    assert run.record["code"]["project_root"] == str(tmp_path)
+    # `_posix`, NOT `str()` [L-06/L-07]: the field is a RECORDED PATH and the code now
+    # spells it one way on every platform. Comparing against the platform's native
+    # spelling is `df4964b` exactly — seven jobs green, Windows red — and it is Audit K's
+    # own tenth test smell: a test asserting what the host supplies.
+    assert run.record["code"]["project_root"] == runprov.hashing._posix(tmp_path)
 
 
 # --------------------------------------------------------------------- failure recording
@@ -966,7 +970,11 @@ def test_the_recorded_command_is_re_runnable(tmp_path):
     cmd = run.record["command"]
     assert sys.executable in cmd, "which interpreter ran it"
     assert run.record["argv"] == sys.argv
-    assert run.record["cwd"] == str(pathlib.Path.cwd()), (
+    # `_posix`, NOT `str()` [L-06/L-07]: the field is a RECORDED PATH and the code now
+    # spells it one way on every platform. Comparing against the platform's native
+    # spelling is `df4964b` exactly — seven jobs green, Windows red — and it is Audit K's
+    # own tenth test smell: a test asserting what the host supplies.
+    assert run.record["cwd"] == runprov.hashing._posix(pathlib.Path.cwd()), (
         "a relative script path in the command means nothing without this"
     )
 
@@ -17169,7 +17177,11 @@ def test_verify_cli_reports_text_and_json_and_sets_the_exit_code(tmp_path, monke
         == 1
     )
     payload = json.loads(capsys.readouterr().out)
-    assert payload["stale"] == 2 and payload["root"] == str(tmp_path)
+    # `_posix`, NOT `str()` [L-06/L-07]: the field is a RECORDED PATH and the code now
+    # spells it one way on every platform. Comparing against the platform's native
+    # spelling is `df4964b` exactly — seven jobs green, Windows red — and it is Audit K's
+    # own tenth test smell: a test asserting what the host supplies.
+    assert payload["stale"] == 2 and payload["root"] == runprov.hashing._posix(tmp_path)
 
 
 def test_verify_cli_defaults_to_the_active_project_root(tmp_path, monkeypatch, capsys):
@@ -17332,7 +17344,13 @@ def test_a_sidecar_whose_artifact_was_deleted_is_GONE_not_OK(tmp_path):
     report = runprov.verify.verify([tmp_path], tmp_path)
     assert report["gone"] == 1 and report["ok"] == 0
     entry = next(r for r in report["artifacts"] if r["status"] == runprov.verify.GONE)
-    assert entry["artifact"] == str(art), "the report names the artifact, not its sidecar"
+    # `_posix`, NOT `str()` [L-06/L-07]: the field is a RECORDED PATH and the code now
+    # spells it one way on every platform. Comparing against the platform's native
+    # spelling is `df4964b` exactly — seven jobs green, Windows red — and it is Audit K's
+    # own tenth test smell: a test asserting what the host supplies.
+    assert entry["artifact"] == runprov.hashing._posix(art), (
+        "the report names the artifact, not its sidecar"
+    )
     assert "no longer there" in entry["reason"]
     assert side.is_file(), "the sidecar itself is untouched — it is evidence, not the finding"
 
@@ -35460,7 +35478,13 @@ def test_inputs_verify_anchors_a_recorded_path_on_the_runs_own_cwd_and_not_the_g
     assert sorted(entries) == ["data/m.tsv", "data/refs"], (
         f"the premise of K-17: the recorded paths are RELATIVE, verbatim as registered: {entries}"
     )
-    assert a["cwd"] == str(a_root) and b["cwd"] == str(b_root), (
+    # `_posix`, NOT `str()` [L-06/L-07]: the field is a RECORDED PATH and the code now
+    # spells it one way on every platform. Comparing against the platform's native
+    # spelling is `df4964b` exactly — seven jobs green, Windows red — and it is Audit K's
+    # own tenth test smell: a test asserting what the host supplies.
+    assert a["cwd"] == runprov.hashing._posix(a_root) and b["cwd"] == runprov.hashing._posix(
+        b_root
+    ), (
         f"the premise of the fix: the record says which directory those paths are relative TO, "
         f"so no `--root` flag is needed: {a['cwd']} / {b['cwd']}"
     )
