@@ -29059,14 +29059,37 @@ def test_every_adr_is_listed_in_the_adr_index():
     # fresh-`[Unreleased]` trap does not bite: CONTRIBUTING step 2 says in bold not to open one
     # yet, so on the tag commit the first heading IS `[<version>] — <day>` and this fires exactly
     # then.
+    #: THE SIBLING'S OWN REACH, AND IT IS ONE REGEX [L-12, L-18]. This scan read
+    #: `**Status:**` strictly and saw **8 of 21 ADRs** — while `declared` thirty lines above,
+    #: which REQUIRES every ADR to have a status, is loose and case-insensitive and reads all
+    #: 21. Two instruments for one line, one directory over from K-37. The 13 it could not see
+    #: are ADR-0003 … ADR-0015, which use the inline house style
+    #: `Date: … · Status: accepted · Ledger: …`, and five spellings the loose check accepts made
+    #: this one fail OPEN in silence — including a status with no trailing blank line, which
+    #: `\Z` is why the alternation is here.
+    #:
+    #: L-12's BOUNDING CLAIM WAS WRONG and is recorded rather than repeated: it said the next
+    #: ADRs to be built are in the invisible set. 0019, 0020 and 0021 all use the COVERED
+    #: spelling, and the 13 invisible are all shipped decisions none of which will need a
+    #: release-state status cleared again — so the live exposure is only a NEW ADR written in
+    #: the old house style, which is why the severity is low and the fix is still one line.
+    #:
+    #: NO ADR IS REFORMATTED, which is the half that makes this cheap: the regex moves, the
+    #: documents do not. The shared exposure is stated: like its sibling, this anchors on the
+    #: first `Status` in the file, and both would read an earlier prose "status" if one appeared
+    #: above the line. Measured on all 21 today, every match lands on the real status line.
+    def _status_block(text: str) -> str | None:
+        found = re.search(r"Status[:*\s]*(.*?)(?:\n[ \t]*\n|\Z)", text, re.S | re.I)
+        return found.group(1) if found else None
+
     def _unreleased_statuses(heading: str, texts: dict[str, str]) -> list[str]:
         if heading == "Unreleased":
             return []
         said = {}
         for filename, text in texts.items():
-            line = re.search(r"\*\*Status:\*\*(.*?)\n[ \t]*\n", text, re.S)
-            if line and "not yet released" in line.group(1).lower():
-                said[filename] = line.group(1).strip()[:120]
+            block = _status_block(text)
+            if block and "not yet released" in block.lower():
+                said[filename] = block.strip()[:120]
         return sorted(said)
 
     changelog = (_repo_root() / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -29084,9 +29107,36 @@ def test_every_adr_is_listed_in_the_adr_index():
     # is `[Unreleased]`, so the clause above returns early and its silence would mean nothing —
     # and a control built on the REAL ADRs would start failing on the day step 2 does its job,
     # which is the one day this guard must survive.
-    probe = {"0099-probe.md": "# 99. p\n\n**Status:** Accepted — built, **not yet released**.\n\n"}
-    assert _unreleased_statuses("0.9.9", probe) == ["0099-probe.md"], (
-        "the release-state scan cannot see its own subject, so its silence proves nothing"
+    #: AND THE SCAN'S OWN SCOPE IS ASSERTED [L-18]: the set of ADRs it can read a status from
+    #: must be ALL of them. As L-18 filed it this was a lone assertion and it is `8 != 21` —
+    #: **red on day one** — which is why it lands in the same edit as the regex above and not
+    #: before it. With the sibling's reach it is 21/21, and it is what makes the control below
+    #: mean something: a positive control says *the scan can see A SUBJECT*, and this says *it
+    #: can see EVERY subject*.
+    unreadable = sorted(name for name, text in texts.items() if _status_block(text) is None)
+    assert not unreadable, (
+        f"[L-18] the release-state scan cannot read a status from {unreadable}, so it fails OPEN "
+        f"on them — an ADR whose status it cannot parse is one whose *not yet released* sentence "
+        f"would ship permanently in the sdist with this guard green"
+    )
+
+    # POSITIVE CONTROL, THROUGH THE SAME FUNCTION, AND ON A SYNTHETIC ADR. Today's first heading
+    # is `[Unreleased]`, so the clause above returns early and its silence would mean nothing —
+    # and a control built on the REAL ADRs would start failing on the day step 2 does its job,
+    # which is the one day this guard must survive.
+    #
+    # TWO SPELLINGS, AND THE SECOND ONE IS THE POINT [L-18]. The original control was a single
+    # synthetic file in the ONE spelling the strict scan already handled, so its green said
+    # nothing whatever about coverage of the real subject — a control in the covered spelling is
+    # a tautology. The second is this repository's own inline house style, the one 13 shipped
+    # ADRs use and the one the strict scan was blind to.
+    probe = {
+        "0099-probe.md": "# 99. p\n\n**Status:** Accepted — built, **not yet released**.\n\n",
+        "0098-inline.md": "# 98. p\n\nDate: 2026-10-04 · Status: accepted, **not yet released**",
+    }
+    assert _unreleased_statuses("0.9.9", probe) == ["0098-inline.md", "0099-probe.md"], (
+        "the release-state scan cannot see its own subject in both spellings, so its silence "
+        "proves nothing — and the inline one is the spelling 13 real ADRs are written in"
     )
     assert _unreleased_statuses("Unreleased", probe) == [], (
         "and it must say nothing while the CHANGELOG is still open, or no release could be cut"
