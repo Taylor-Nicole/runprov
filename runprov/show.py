@@ -51,6 +51,7 @@ import sys
 import typing
 
 from .hashing import PIN_DIGEST_CHARS, _posix, describe, moved_since
+from .terminal import printable, printable_lines
 from .verify import GONE, OK, STALE, UNVERIFIABLE
 
 #: How many distinct input versions to name before summarising. A script that has read forty
@@ -1095,7 +1096,17 @@ def payload_no_history(
 
 
 def render_run(view: dict[str, typing.Any]) -> str:
-    """One run, as a page. The order is the order the questions get asked in."""
+    """One run, as a page. The order is the order the questions get asked in.
+
+    THE EMISSION POINT, NOT A LIST OF FIELDS [L-03]. K-21 escaped `policy`'s eight
+    interpolations and `log`'s unreadable-line dump, and five other renderers stayed forgeable: a
+    newline inside one recorded field forges WHOLE LINES on a page, including a line reading
+    exactly `verdict  OK` inside a page whose real verdict is STALE. Escaping each interpolation
+    would be the same list-of-sites shape that left five renderers behind — `log`'s renderer alone
+    interpolates about thirteen fields across ten append sites — so the transform is applied to
+    every line this renderer emits, once, where it emits them. A field added later is covered the
+    day it is written.
+    """
     mark = "ok" if view["status"] == "ok" else view["status"].upper()
     out = [_rule(f"{view['run']}  [{mark}]"), ""]
     out.append(_kv("started", view["started"]))
@@ -1164,7 +1175,7 @@ def render_run(view: dict[str, typing.Any]) -> str:
         out += ["", _kv("seeds", view["seeds"])]
     if view["terminal_log"]:
         out += ["", _kv("terminal", view["terminal_log"])]
-    return "\n".join(out) + "\n"
+    return "\n".join(printable_lines(out)) + "\n"  # the emission point [L-03]
 
 
 def render_project(view: dict[str, typing.Any], states: dict[str, str] | None = None) -> str:
@@ -1198,7 +1209,11 @@ def render_project_lines(
     """
 
     def line(s: str = "") -> str:
-        return s + "\n"
+        # THE EMISSION POINT OF THIS PAGE [L-03], and the reason it is a generator makes it the
+        # only one: there is no list to walk at the end. Every line of the notebook goes through
+        # here, so every field it interpolates is escaped once, including a script name or an
+        # artifact path carrying a newline.
+        return printable(s) + "\n"
 
     yield line(_rule(f"project notebook — {view['runs']} run(s), {len(view['scripts'])} script(s)"))
 

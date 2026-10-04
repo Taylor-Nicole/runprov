@@ -532,6 +532,23 @@ def printable(text: str) -> str:
     )
 
 
+def printable_lines(lines: typing.Iterable[str]) -> list[str]:
+    """Every line a renderer is about to emit, escaped. `printable`, applied once per line.
+
+    THE SHAPE L-03 EARNED. `printable` is a FIELD transform, and escaping fields one at a time
+    is a list of call sites — the thing this repository has had to widen nine times, and the
+    thing that left five renderers forgeable after K-21 escaped two. A renderer has exactly one
+    place where its lines become output; applying the transform there covers every field it
+    interpolates, including the ones nobody has written yet.
+
+    PER LINE AND NOT OVER THE JOINED PAGE, which is the one way to get this wrong: `printable`
+    of a whole page escapes the newlines the page is MADE of, and the result is one very long
+    line. The separator is the renderer's, and only what sits between separators came from
+    outside.
+    """
+    return [printable(line) for line in lines]
+
+
 def _write_all(fd: int, data: bytes) -> None:
     """`os.write` may write short. Losing the tail of a line to that is not acceptable."""
     view = memoryview(data)

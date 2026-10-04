@@ -93,7 +93,7 @@ from .show import (
     staleness,
 )
 from .show import render_yaml as _yaml_doc
-from .terminal import printable
+from .terminal import printable, printable_lines
 from .verify import FAILING, GONE, OK, STALE, render_report, verify
 from .watch import unregistered
 
@@ -303,7 +303,15 @@ def _timeline_entry(r: dict[str, typing.Any], *, separator: bool = True) -> str:
         out.append(f"     history    {r['history_destination']}")
     if r.get("seeds"):
         out.append(f"     seeds      {r['seeds']}")
-    return "\n".join(out) + "\n"
+    # THE EMISSION POINT OF `log`'s PAGE [L-03]. Ten append sites above interpolate about
+    # thirteen recorded fields — `command`, `cwd`, `script`, every input and output path, a
+    # failure message, `history_destination`, `seeds` — and a newline inside any one of them
+    # forges whole lines. L-03's filed remedy said *three f-strings*; there are ten, and a list
+    # of ten is a list of eleven next month. One transform, per line, where the lines become
+    # output. `printable` keeps a space and escapes everything else non-printable, so the
+    # columns survive and a `\r` — which overwrites a line without adding one, and which a
+    # line-count oracle cannot see — does not.
+    return "\n".join(printable_lines(out)) + "\n"
 
 
 def _yaml(rows: list[dict[str, typing.Any]]) -> str:
@@ -2019,7 +2027,15 @@ def _resources(args: argparse.Namespace) -> int:
 
 
 def _resources_text(record: dict[str, typing.Any], m: resources_mod.Measurement) -> list[str]:
-    """The default view: the numbers, in units a person reads, and what was NOT measured."""
+    """The default view: the numbers, in units a person reads, and what was NOT measured.
+
+    THE EMISSION POINT [L-03], and this renderer is the one the row's own list did not contain.
+    L-03 named `log`, `show`, `show <target>`, `report` and `diff`; the PROPERTY that replaced
+    its site list found a sixth here on the first run — `script` and `run_id` are interpolated
+    into the header line straight off the record. That is the whole argument for holding this
+    with a property rather than with a list of renderers: the list was wrong about the count in
+    the same way K-16's was, three rows earlier.
+    """
     mib = resources_mod.MIB
 
     def size(value: int | None) -> str:
@@ -2039,7 +2055,7 @@ def _resources_text(record: dict[str, typing.Any], m: resources_mod.Measurement)
         out.append(f"               FLOOR — {resources_mod.FLOOR_NOTE}")
     for note in m.unavailable:
         out.append(f"  not measured {note}")
-    return out
+    return printable_lines(out)
 
 
 def _report(args: argparse.Namespace) -> int:
@@ -2108,6 +2124,28 @@ def _report(args: argparse.Namespace) -> int:
     return CANNOT_CHECK
 
 
+def _diag(message: str) -> None:
+    """One of `gate`'s stderr diagnostics, escaped [L-23].
+
+    **STDOUT AND STDERR ARE ONE STREAM IN A CI LOG**, which is the whole of this row. K-21's
+    guard docstring promises *every field that came from outside this source file is escaped* —
+    a universal the code did not have, because stdout was escaped and stderr was not. Reproduced
+    with a history whose FILENAME carries a newline: stdout correctly showed zero forged lines
+    and stderr emitted a bare `GATE: MET (exit 0)` on its own line, inside an invocation that
+    exited 2.
+
+    ALL FOUR OF `gate`'s DIAGNOSTICS GO THROUGH HERE, and the fourth is the one the row's own
+    list missed: `gate: {exc}`, where the forgery is in the POLICY FILENAME rather than in the
+    history's — the same list-instead-of-a-derivation shape L-03 criticises, one row later. A
+    helper is cheaper than a list of four and covers the fifth.
+
+    `gate` ONLY, DELIBERATELY. R-4 gives stdout to the answer, so these four lines are the whole
+    of what this command says on the other stream; a package-wide stderr transform is a
+    different decision, taken somewhere a reader of `_gate` would not have to find it.
+    """
+    print(printable(message), file=sys.stderr)
+
+
 def _gate(args: argparse.Namespace) -> int:
     """ADR-0018. A written policy, checked against the runs that were actually recorded.
 
@@ -2135,7 +2173,7 @@ def _gate(args: argparse.Namespace) -> int:
     try:
         loaded = policy.load(args.policy)
     except policy.PolicyError as exc:
-        print(f"gate: {exc}", file=sys.stderr)
+        _diag(f"gate: {exc}")  # the policy FILENAME can carry the forgery [L-23]
         return 2
 
     if args.emit_policy:
@@ -2145,10 +2183,9 @@ def _gate(args: argparse.Namespace) -> int:
         # is accepted and does nothing is the silent no-op this package refuses everywhere else;
         # `verify --log` is the sibling that announces the same thing.
         if args.log:
-            print(
+            _diag(
                 f"gate --emit-policy: --log {args.log} is not read; this answers about the "
-                "policy file alone",
-                file=sys.stderr,
+                "policy file alone"
             )
         if args.format == "json":
             print(
@@ -2221,7 +2258,7 @@ def _gate(args: argparse.Namespace) -> int:
         # the history could not be read, so this carries a payload and exits 2, exactly as
         # the missing-history branch below does.
         said = exc.strerror or str(exc)
-        print(f"gate: {log} could not be read: {said}", file=sys.stderr)
+        _diag(f"gate: {log} could not be read: {said}")
         result = policy.assessment(
             loaded,
             [],
@@ -2247,7 +2284,7 @@ def _gate(args: argparse.Namespace) -> int:
                 history=hashing._posix(log),
                 found=False,
             )
-            print(f"gate: no run history at {log}", file=sys.stderr)
+            _diag(f"gate: no run history at {log}")
 
     if args.format == "json":
         # NOTHING ELSE ON STDOUT [ADR-0017 R-4]. Both diagnostics above go to stderr, so a caller

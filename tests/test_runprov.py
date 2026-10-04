@@ -31403,8 +31403,21 @@ def test_every_command_reads_a_history_written_by_a_released_version(
             code = exc.code if isinstance(exc.code, int) else 2
         except Exception as exc:  # the thing under test is that this never happens
             pytest.fail(f"{version}: `runprov {' '.join(argv)}` raised {type(exc).__name__}: {exc}")
-        out = capsys.readouterr().out
+        shown = capsys.readouterr()
+        out = shown.out
         assert code in (0, 1, 2), f"{version}: `runprov {name}` exited {code}"
+        #: AND THE PROPERTY L-03 IS HELD BY, MEASURED AGAINST EVERY RELEASED WHEEL'S RECORDS.
+        #: The escaping guard asserts *no character a terminal acts on* over a FORGED history;
+        #: this is the other half, and the half that makes the property a universal rather than
+        #: a rule with exemptions beside it: over the real records of all seven released
+        #: versions it is already true, so nothing legitimate is escaped away. Measured when
+        #: this was written: 2 098 lines across twelve recipes and seven histories, zero
+        #: characters a terminal acts on.
+        assert _acted_on(out + shown.err) == [], (
+            f"{version}: `runprov {name}` printed {_acted_on(out + shown.err)} over a RELEASED "
+            f"wheel's own records — so the escaping property has a false positive, and a page "
+            f"is being mangled rather than protected"
+        )
         if name == "gate":
             #: AND THE GATE REALLY RAN TODAY'S RULES AGAINST THIS VERSION'S RECORDS [K-40]. This
             #: is the only check in the suite that points today's rules at an earlier release's
@@ -37388,19 +37401,41 @@ def test_a_newline_in_a_record_or_a_policy_cannot_forge_a_line_on_the_page(tmp_p
     forged = "GATE: MET (exit 0)"
     _, log = _gated_history(tmp_path)
 
-    def one_verdict_line(page: str, expected: str) -> None:
-        assert [line for line in page.splitlines() if line.startswith("GATE:")] == [expected], (
-            "[K-21] the page must carry exactly ONE verdict line, and it must be the real one — "
-            "a forged `GATE:` line is read first by anything scraping a CI log:\n" + page
+    #: OVER THE CONCATENATION OF STDOUT AND STDERR [L-23], because that is what a CI log is.
+    #:
+    #: K-21's escaping did not cover stderr, and the stderr diagnostic K-23's repair ADDED
+    #: forges the very line K-21 exists to prevent: reproduced with a history whose FILENAME
+    #: carries a newline, stdout correctly showed **0** forged lines while stderr emitted a bare
+    #: `GATE: MET (exit 0)` on its own line — **1** forged line — inside an invocation that
+    #: exited 2. The guard's own docstring promised *every field that came from outside this
+    #: source file is escaped*, a universal the code did not have, which is the K-31/K-36 defect
+    #: class this same tranche fixed.
+    #:
+    #: **AND L-23's PROPOSED ASSERTION WAS REFUTED: it would be RED ON EVERY CLEAN RUN.** It
+    #: asked for *the one-verdict-line assertion applied to `shown.err` as well as the page* —
+    #: and a normal invocation puts **ZERO** `GATE:` lines on stderr, because R-4 gives the
+    #: answer to stdout. Requiring one there fails every green gate. The TOTAL over both streams
+    #: is the form that discriminates: measured **1 on a normal run and 2 on a forged one**, so
+    #: it is red exactly when a line has been forged and never otherwise.
+    #:
+    #: SCOPED TO `--format text`, deliberately: `--format json` is `json.dumps`, which escapes
+    #: already, and a payload carrying pre-escaped text would hand a consumer a string that is
+    #: not the one in the record.
+    def one_verdict_line(shown: pytest.CaptureResult, expected: list[str]) -> None:
+        both = shown.out + shown.err
+        assert [line for line in both.splitlines() if line.startswith("GATE:")] == expected, (
+            "[K-21, L-23] stdout and stderr together must carry exactly ONE verdict line, and "
+            "it must be the real one — a forged `GATE:` line is read first by anything scraping "
+            "a CI log, and a CI log is one stream:\n" + both
         )
-        assert forged not in page.splitlines(), (
-            f"[K-21] a line reading exactly {forged!r} was forged onto the page:\n{page}"
+        assert forged not in both.splitlines(), (
+            f"[K-21] a line reading exactly {forged!r} was forged:\n{both}"
         )
-        assert forged in page, (
+        assert forged in both, (
             "and the text is still SHOWN to the reader rather than dropped — escaping is not "
-            f"censoring:\n{page}"
+            f"censoring:\n{both}"
         )
-        assert "\\n" in page, f"the newline must travel as an escape, visibly:\n{page}"
+        assert "\\n" in both, f"the newline must travel as an escape, visibly:\n{both}"
 
     #: ROUTE ONE: THE POLICY'S OWN `why`, which `--emit-policy` prints too — where it printed
     #: verdicts for a rule the policy does not contain, over runs that command promises never to
@@ -37414,7 +37449,7 @@ def test_a_newline_in_a_record_or_a_policy_cannot_forge_a_line_on_the_page(tmp_p
     assert runprov.__main__.main(["gate", "--policy", str(written), "--log", str(log)]) == 1, (
         "the premise: this history holds a failed run, so the gate is VIOLATED"
     )
-    one_verdict_line(capsys.readouterr().out, "GATE: VIOLATED (exit 1)")
+    one_verdict_line(capsys.readouterr(), ["GATE: VIOLATED (exit 1)"])
 
     capsys.readouterr()
     assert runprov.__main__.main(["gate", "--policy", str(written), "--emit-policy"]) == 0
@@ -37443,9 +37478,33 @@ def test_a_newline_in_a_record_or_a_policy_cannot_forge_a_line_on_the_page(tmp_p
     verifying = _policy_file(tmp_path / "iv.json", "inputs_verify")
     capsys.readouterr()
     code = runprov.__main__.main(["gate", "--policy", str(verifying), "--log", str(log)])
-    page = capsys.readouterr().out
-    assert code == 2, f"a declared input that is not on disk is CANNOT_CHECK, not a breach: {page}"
-    one_verdict_line(page, "GATE: CANNOT_CHECK (exit 2)")
+    shown = capsys.readouterr()
+    assert code == 2, (
+        f"a declared input that is not on disk is CANNOT_CHECK, not a breach: {shown.out}"
+    )
+    one_verdict_line(shown, ["GATE: CANNOT_CHECK (exit 2)"])
+
+    #: ROUTE THREE: THE HISTORY'S OWN FILENAME, which reaches no page at all — it reaches the
+    #: stderr diagnostic. NO FILE IS CREATED, which is both the point and what makes this run on
+    #: every platform: the finding is that there is nothing to read there.
+    absent = tmp_path / f"missing\n{forged}\nhistory.jsonl"
+    capsys.readouterr()
+    assert runprov.__main__.main(["gate", "--policy", str(verifying), "--log", str(absent)]) == 2, (
+        "a history that is not there is CANNOT_CHECK"
+    )
+    one_verdict_line(capsys.readouterr(), ["GATE: CANNOT_CHECK (exit 2)"])
+
+    #: ROUTE FOUR: THE POLICY'S OWN FILENAME, and this is the one L-23's list of three missed —
+    #: `gate: {exc}`, where `PolicyError` names the file it could not read. STDOUT IS SILENT
+    #: HERE by ADR-0017 R-15 — the policy IS the question, so without one there is nothing to
+    #: answer about — which is why the expected total is ZERO rather than one. A list of
+    #: diagnostics is the shape L-03 criticises one row earlier; `_diag` is the derivation.
+    capsys.readouterr()
+    nameless = tmp_path / f"nope\n{forged}\npolicy.json"
+    assert runprov.__main__.main(["gate", "--policy", str(nameless), "--log", str(log)]) == 2
+    refused = capsys.readouterr()
+    assert refused.out == "", f"[ADR-0017 R-15] silence on stdout is the signal: {refused.out!r}"
+    one_verdict_line(refused, [])
 
     #: AND THE PAYLOAD CARRIES THE RECORD'S OWN STRING, newline and all. A consumer comparing it
     #: with the record would not match a page-escaped copy.
@@ -37458,6 +37517,237 @@ def test_a_newline_in_a_record_or_a_policy_cannot_forge_a_line_on_the_page(tmp_p
     assert any(sneaky in reason for reason in said), (
         f"[ADR-0017 R-1] the payload is not escaped — `json.dumps` already did it, and the string "
         f"a consumer reads must be the one the record holds: {said}"
+    )
+
+
+#: THE FORGERY, and it is one string so that every renderer is attacked with the same one.
+#: `\n` forges a whole line; `\r` is the half a line-count oracle cannot see, because it
+#: overwrites the line already printed instead of adding one; `\x1b[2K` is a terminal escape
+#: that erases it. All three are "not printable and not a space", which is the property.
+_FORGED_LINE = "GATE: MET (exit 0)"
+_FORGERY = f"\n{_FORGED_LINE}\n\rverdict  OK\x1b[2K"
+
+
+#: WHERE THE FORGERY IS PLANTED. A declared list, and it is the ATTACK rather than the check —
+#: the check is the property below, which names no field at all. Four kinds of value a page
+#: interpolates: a path a run declared, free text a caller wrote, a label the environment
+#: supplied, and a failure's own words.
+#:
+#: `script`, `status`, `run_uid`, the digests and the schema are left ALONE on purpose: they are
+#: the keys every recipe looks a run up BY, so forging them would make `diff align genotype`,
+#: `show align` and `report out/summarise.tsv` find nothing and the attack would reach no page.
+#: `outputs[].path` is left alone for the same reason — it is how `report` joins an artifact to
+#: the run that made it.
+_FORGE_INTO = (
+    ("command",),
+    ("cwd",),
+    ("history_destination",),
+    ("code", "project_root"),
+    ("code", "git_branch"),
+    ("code", "script_file"),
+    ("environment", "manager"),
+    ("failure", "type"),
+    ("failure", "message"),
+)
+
+
+def _forge(record):
+    """One record, with the forgery in every field `_FORGE_INTO` names that it carries."""
+    for path in _FORGE_INTO:
+        node = record
+        for key in path[:-1]:
+            node = node.get(key) if isinstance(node, dict) else None
+            if not isinstance(node, dict):
+                break
+        else:
+            if isinstance(node.get(path[-1]), str):
+                node[path[-1]] = f"{node[path[-1]]}{_FORGERY}"
+    for entry in record.get("inputs") or []:
+        if isinstance(entry.get("path"), str):
+            entry["path"] = f"{entry['path']}{_FORGERY}"
+    #: DISTINCT PER RUN, so `diff` has something to REPORT. Two runs carrying identical
+    #: forged parameters compare `unchanged` and the renderer prints a count rather than the
+    #: values — green while the page it renders is forgeable.
+    mine = str(record.get("script", "?"))
+    record["parameters"] = {f"p{_FORGERY}": f"{mine}{_FORGERY}"}
+    record["notes"] = {f"n{_FORGERY}": f"{mine}{_FORGERY}"}
+    record["seeds"] = {f"numpy{_FORGERY}": 1}
+    obs = record.get("observation")
+    if isinstance(obs, dict):
+        obs["unregistered_reads"] = [f"sneak.csv{_FORGERY}"]
+    return record
+
+
+def _forged_history(tmp_path):
+    """A REAL tree, written by this package, with the forgery injected into the history after.
+
+    Real runs rather than hand-written records, and the reason is a measurement: a hand-built
+    history cannot be POINTED AT by half the recipes. `report` joins an artifact to the run that
+    made it through the artifact's own pin, and `verify` re-derives that pin from the file — so
+    without real pinned artifacts both commands stop at NO PIN before reaching any field a
+    forgery could sit in, and reverting their escaping stayed GREEN. The attack has to reach the
+    page it is attacking.
+    """
+    root = tmp_path / "forged"
+    for sub in ("prov", "data", "out"):
+        (root / sub).mkdir(parents=True)
+    (root / "data" / "m.tsv").write_text("id\tv\n1\tx\n", encoding="utf-8")
+    log = root / "prov" / "history.jsonl"
+    project = runprov.Project(root=root, run_log=log, run_id=lambda: "r", generation=lambda: "g")
+    for name in ("align", "genotype", "summarise"):
+        with runprov.Run(
+            name, project=project, provenance=root / "prov" / f"{name}.prov.json"
+        ) as r:
+            r.input(root / "data" / "m.tsv")
+            made = r.output(root / "out" / f"{name}.tsv")
+            made.write_text("id\tv\n1\ty\n", encoding="utf-8")
+    with contextlib.suppress(ValueError):
+        with runprov.Run("boom", project=project, provenance=root / "prov" / "boom.prov.json"):
+            raise ValueError("it broke")
+    #: AND ONE RUN WHOSE SCRIPT NAME IS ITSELF FORGED, last in the history. `resources` picks
+    #: the most recent run carrying a measurement and interpolates only `script` and `run_id`,
+    #: so it is the one renderer the forgery cannot reach through any other field — and leaving
+    #: `script` clean everywhere made reverting its escaping GREEN, measured. The lookups the
+    #: other recipes use are by `align`, `genotype` and `summarise`, which this does not touch.
+    with runprov.Run(
+        f"measured{_FORGERY}", project=project, provenance=root / "prov" / "last.prov.json"
+    ):
+        pass
+
+    rows = [
+        _forge(json.loads(line))
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    log.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    (root / "policy.json").write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {"rule": name, "why": f"a control this laboratory states{_FORGERY}"}
+                    for name in sorted(runprov.policy.rules())
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return root
+
+
+def _acted_on(text: str) -> list[str]:
+    """Every character a terminal would ACT on rather than show. The property, in one line."""
+    return sorted({repr(c) for c in text if not (c.isprintable() or c in " \n")})
+
+
+def test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on(
+    tmp_path, monkeypatch, capsys
+):
+    """[ADR-0018 R-8] Audit L, L-03 and L-23. The PROPERTY, because the site list was wrong.
+
+    **WHAT K-21 LEFT.** `printable` had two call sites in the package — `log`'s unreadable-line
+    dump and `policy`'s eight interpolations — and **five other renderers were still forgeable**:
+    `log`'s own page, `show`, `show <target>`, `report` and `diff`. A newline inside one recorded
+    field forges WHOLE LINES, and the line reproduced was `verdict  OK` inside a page whose real
+    verdict is STALE, from a REAL run with no record editing: one `sys.argv` argument is enough,
+    because `command` is built by this package from `sys.argv`.
+
+    **IT IS A WRONG PRINTED RECORD AND NOT A FALSE GREEN**, and the distinction was measured
+    rather than assumed: `action.yml` and `.pre-commit-hooks.yaml` read only the exit code and
+    never invoke `gate`, there are zero `runprov` invocations in any workflow, zero pipe-to-grep
+    hits across every yml/md/py/toml in the tree, and the README's grep examples scrape RECORD
+    files. Nothing shipped reads a page for a verdict. The ground is `report.py`'s own docstring
+    instead — the page is *for a quality file… printed and filed beside the result*, and *a
+    quality document that overstates is worse than none, because it is the version that gets
+    cited.*
+
+    **L-03's FILED REMEDY IS REFUTED AND IT REPEATS THE ERROR IT NAMES.** It said *apply
+    `printable` in `report._kv`, `show._kv` and `log`'s three f-strings*. `log`'s renderer has
+    **ten** append sites interpolating about thirteen fields, not three f-strings; **`diff` is
+    omitted although the row names it** and cannot be reached through either `_kv` because it
+    imports nothing from the package and builds its lines from its own f-strings; and `_kv` takes
+    `value: Any` and is called with ints and lists, so `printable(value)` raises. The remedy that
+    criticises a list of eight sites in one module was a list of three sites in three modules.
+
+    **AND ITS ORACLE WAS BLIND TO `\\r`.** *Assert the line count is unchanged* cannot see a
+    carriage return, which overwrites the line already printed without adding one — so a forged
+    `GATE: MET (exit 0)` can REPLACE the real verdict line and leave the count identical.
+
+    **SO: ESCAPE AT EACH RENDERER'S EMISSION POINT, AND HOLD IT WITH A PROPERTY.** Five
+    chokepoints — `__main__._timeline_entry`, `report.render_page`, `show.render_run`,
+    `show.render_project_lines`'s `line()` and `diff.render` — plus `__main__._diag` for all four
+    of `gate`'s stderr diagnostics. The property names no field and no shape: **no character in
+    anything this package prints may be one a terminal acts on rather than shows.** A field added
+    to a page later is covered the day it is written, and `\\r` and `\x1b[` are caught by the
+    same sentence as `\\n`.
+
+    **THE PROPERTY NEEDS NO EXEMPTIONS, which is what makes it a universal rather than a rule
+    with excuses.** Measured over the seven released histories, clean: **2 098 lines across
+    twelve recipes, zero characters a terminal acts on** — asserted in the corpus test, so the
+    premise is re-measured against every released wheel rather than stated here.
+
+    **AND STDOUT AND STDERR ARE ONE STREAM** [L-23]: the concatenation is what this asserts,
+    because that is what a CI log is.
+    """
+    root = _forged_history(tmp_path)
+    monkeypatch.chdir(root)
+
+    #: THE SCOPE IS DERIVED FROM THE PARSER, not typed here — the same table the corpus
+    #: recipes use, so a new subcommand fails this file until it is given a recipe or named as
+    #: a deliberate omission with its reason.
+    commands = _corpus_commands(capsys)
+    missing = [c for c in commands if c not in CORPUS_RECIPES and c not in CORPUS_NOT_READERS]
+    assert not missing, f"{missing} is not attacked by this test and has no stated exemption"
+
+    #: TEXT, NOT JSON — `--format json` is `json.dumps`, which escapes already and is not what
+    #: this is about. `gate`'s corpus recipe asks for JSON for a different reason, so the flag
+    #: is dropped here rather than the recipe being written out a second time.
+    recipes = {
+        name: [a for a in argv if a not in ("--format", "json")]
+        for name, argv in CORPUS_RECIPES.items()
+    }
+    #: TWO MORE PAGES NO RECIPE REACHES: `show <target>`, which is a different renderer from
+    #: `show`, and `--emit-policy`, which renders the policy's `why` with no history at all.
+    #: THE TARGET IS THE CLEAN NAME, and that is the difference between attacking this page
+    #: and attacking the refusal above it: a forged target matches no run, so `show` prints a
+    #: *no such run* diagnostic and `render_run` is never called. Reverting its escaping stayed
+    #: GREEN until this recipe named a run that exists.
+    recipes["show <target>"] = ["show", "align", "--log", "prov/history.jsonl"]
+    recipes["gate --emit-policy"] = ["gate", "--policy", "policy.json", "--emit-policy"]
+
+    carried: list[str] = []
+    for name, argv in recipes.items():
+        if name in CORPUS_NOT_READERS:  # pragma: no cover - they are not in CORPUS_RECIPES
+            continue
+        runprov.configure(root=".", run_log="prov/history.jsonl")
+        capsys.readouterr()
+        try:
+            code = runprov.__main__.main(list(argv))
+        except SystemExit as exc:
+            code = exc.code if isinstance(exc.code, int) else 2
+        except Exception as exc:
+            pytest.fail(f"`runprov {' '.join(argv)}` raised {type(exc).__name__}: {exc}")
+        shown = capsys.readouterr()
+        both = shown.out + shown.err
+        assert code in (0, 1, 2), f"{name} exited {code}"
+        assert _acted_on(both) == [], (
+            f"[L-03] `{name}` printed {_acted_on(both)} — a character a terminal ACTS on rather "
+            f"than shows, so a recorded field can forge or erase a line of this page:\n{both!r}"
+        )
+        assert _FORGED_LINE not in both.splitlines(), (
+            f"[L-03] `{name}` forged a line reading exactly {_FORGED_LINE!r}:\n{both}"
+        )
+        #: ESCAPING IS NOT CENSORING, held as a FLOOR over the set rather than asserted per
+        #: command. The text must still reach the reader — only its power to move the cursor is
+        #: gone — and without this clause the property above is satisfiable by printing LESS.
+        #: It cannot be per-command because some pages legitimately name no forged field at all:
+        #: `lineage` prints edge COUNTS and `check` reads source rather than records. A floor is
+        #: the claim that can be made honestly, and the names are in the message when it fails.
+        if _FORGED_LINE in both:
+            carried.append(name)
+    assert len(carried) >= 8, (
+        f"only these pages showed the forged text at all: {carried}. Escaping is not censoring, "
+        f"and a package that printed LESS would satisfy the property above while telling the "
+        f"reader less than the record holds"
     )
 
 

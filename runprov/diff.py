@@ -37,6 +37,8 @@ __all__: list[str] = []
 
 import typing
 
+from .terminal import printable_lines
+
 #: The dimensions, in the order a reader wants them: whether it finished, what went in, what
 #: came out, what the code was, what it was asked to do, what happened inside, what it cost.
 #: Ordered here rather than sorted, so the output reads like an explanation rather than an
@@ -883,6 +885,21 @@ def payload(
 def render(comparison: Comparison) -> list[str]:
     """The three states, spelled out. `unchanged` always says what it examined.
 
+    THE EMISSION POINT, NOT A LIST OF FIELDS [L-03]. K-21 escaped `policy`'s eight
+    interpolations and `log`'s unreadable-line dump, and five other renderers stayed forgeable: a
+    newline inside one recorded field forges WHOLE LINES on a page, including a line reading
+    exactly `verdict  OK` inside a page whose real verdict is STALE. Escaping each interpolation
+    would be the same list-of-sites shape that left five renderers behind — `log`'s renderer alone
+    interpolates about thirteen fields across ten append sites — so the transform is applied to
+    every line this renderer emits, once, where it emits them. A field added later is covered the
+    day it is written.
+
+    AND THIS MODULE IS WHY IT HAS TO BE THE EMISSION POINT RATHER THAN A SHARED FIELD HELPER.
+    L-03's filed remedy named `report._kv` and `show._kv` and omitted `diff` — although the row
+    itself names `diff` as forgeable — because `diff` imports nothing from the package and
+    builds its lines from its own f-strings, so there is no shared helper to reach it through.
+    A remedy that cannot reach one of the renderers it names is the list-of-sites shape again.
+
     IT TAKES THE COMPARISON AND NOTHING ELSE, which is the half of R-2 that reading output
     cannot check: a renderer handed nothing but the structure cannot state a fact the
     structure does not hold.
@@ -918,4 +935,4 @@ def render(comparison: Comparison) -> list[str]:
             f"  {comparison.unreadable} line(s) of the history could not be read, so these "
             "may not be the two runs you meant — `runprov log --unreadable` shows them.",
         ]
-    return out
+    return printable_lines(out)  # the emission point [L-03]

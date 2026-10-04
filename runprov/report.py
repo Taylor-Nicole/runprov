@@ -34,6 +34,7 @@ import typing
 
 from . import hashing
 from . import verify as verify_mod
+from .terminal import printable_lines
 
 #: The width of the rules, matching `show`'s so a printed page from either looks like the
 #: same document.
@@ -693,6 +694,28 @@ def _observation(run: dict[str, typing.Any]) -> Observation | None:
 
 
 def render_page(report: Report) -> list[str]:
+    """The page, escaped at the one point where it becomes output.
+
+    THE EMISSION POINT, NOT A LIST OF FIELDS [L-03]. K-21 escaped `policy`'s eight
+    interpolations and `log`'s unreadable-line dump, and five other renderers stayed forgeable: a
+    newline inside one recorded field forges WHOLE LINES on a page, including a line reading
+    exactly `verdict  OK` inside a page whose real verdict is STALE. Escaping each interpolation
+    would be the same list-of-sites shape that left five renderers behind — `log`'s renderer alone
+    interpolates about thirteen fields across ten append sites — so the transform is applied to
+    every line this renderer emits, once, where it emits them. A field added later is covered the
+    day it is written.
+
+    THIS PAGE IS THE STRONGEST CASE FOR IT IN THE PACKAGE, and it is `report.py`'s own
+    argument: this document is *for a quality file… printed and filed beside the result*, and
+    *a quality document that overstates is worse than none, because it is the version that gets
+    cited.* A forged `verdict  OK` inside a filed STALE report is a WRONG PRINTED RECORD. It is
+    not a false green — nothing in this repository or its documented usage scrapes a page for a
+    verdict — and it does not need to be.
+    """
+    return printable_lines(_page_lines(report))
+
+
+def _page_lines(report: Report) -> list[str]:
     """The page, from the report AND NOTHING ELSE.
 
     The signature is the guarantee, and it is the half of the consistency rule that reading
