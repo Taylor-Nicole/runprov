@@ -2164,62 +2164,90 @@ def _gate(args: argparse.Namespace) -> int:
         return 0
 
     log = pathlib.Path(args.log) if args.log else active().resolved_run_log()
-    if not log.is_file():
+    records: list[dict[str, typing.Any]] = []
+    bad = [0]
+    unfinished = 0
+    try:
+        # THE EXISTENCE PROBE IS INSIDE THE SAME GUARD AS THE READ [L-01]. It used to sit
+        # above the `try`, and K-23's repair was therefore only half applied: `Path.is_file()`
+        # swallows ENOENT, ENOTDIR, EBADF and ELOOP and nothing else, so **EACCES and EIO
+        # propagate out of the probe** and the command still answered with a raw traceback,
+        # no stdout and exit 1 — exit 1 being *a rule was checked and your controls were
+        # violated*, about a file nothing ever opened. Reproduced by making the history's
+        # DIRECTORY unreadable rather than the file; the file's own mode was the half the
+        # original repair fixed, and the half its acceptance test exercised.
+        #
+        # THE MOTIVATION MAKES THE SURVIVING ROUTE THE LIKELIER ONE: an EIO from a failing
+        # disk is an `OSError` on this same path, and `stat()` is on it.
+        #
+        # WRAPPING THE PROBE IS THE FIX, AND ENUMERATING ERRNOS IS NOT — measured, and the
+        # difference matters. **Exactly three errnos must keep `found=False`: ENOENT, ENOTDIR
+        # and ELOOP**, because each describes a path that NAMES NOTHING. Catch "any OSError
+        # but ENOENT" instead and ENOTDIR and ELOOP flip to `found=True` with a `read_error`
+        # — the gate then reports *the history is there and I could not read it* about a path
+        # that does not exist, which is the false sentence `found` exists to prevent. That
+        # set is `is_file()`'s OWN ignore set, so letting `is_file()` answer and catching what
+        # it declines to swallow keeps the three correct by construction rather than by a list
+        # that can drift. Dropping the probe and letting the read decide is a third form and
+        # it is worse than both: `open()` on a FIFO blocks forever, so the gate HANGS.
+        present = log.is_file()
+        if present:
+            # UNREADABLE LINES ARE COUNTED, NOT SKIPPED. A torn line is a run this gate did
+            # not examine, so it has to stop the gate reporting MET: `_counted` keeps the
+            # number and `_completed` is the sibling that drops it. I-01 is the row where
+            # exactly this count was computed and thrown away.
+            #
+            # AND A RUN THAT STARTED AND NEVER ENDED IS COUNTED THE SAME WAY [K-08].
+            # `_counted` drops every start line before any rule sees it, so a SIGKILLed run
+            # reached no rule, appeared in no field of the payload, and the gate answered
+            # MET / exit 0 / `cannot_check: null` over a history `log` was already reporting
+            # `unfinished: 1` for. The scan rides on the pass that has to happen anyway —
+            # which is A-20's whole point, and `_counted`'s docstring's one condition is met
+            # here: this pass is EXHAUSTED by the `list()` below, so no run that ends further
+            # down the file is reported unfinished.
+            #
+            # `report()` IS NOT CALLED. `show` prints a banner from this; a gate's answer is
+            # the payload and the page, and R-4 gives stdout to the payload alone. The count
+            # reaches the reader as a field and as a `cannot_check` clause instead.
+            scan = _InFlightScan(log.parent / ".incomplete")
+            records = list(_counted(log, bad, scan))
+            unfinished = len(scan.open)
+    except OSError as exc:
+        # THE HISTORY IS THERE AND CANNOT BE READ [K-23, L-01]. This used to raise out of the
+        # command: a raw traceback, nothing on stdout, and exit 1 — which is L-81's code for
+        # *a rule was checked and your controls were violated*, about a file nothing ever
+        # opened. `show` crashes the same way and inherits no handler, but only `gate`
+        # reserves exit 1 for that meaning. The question WAS formed and the finding is that
+        # the history could not be read, so this carries a payload and exits 2, exactly as
+        # the missing-history branch below does.
+        said = exc.strerror or str(exc)
+        print(f"gate: {log} could not be read: {said}", file=sys.stderr)
         result = policy.assessment(
             loaded,
             [],
             policy_path=hashing._posix(args.policy),
             history=hashing._posix(log),
-            found=False,
+            read_error=said,
         )
-        print(f"gate: no run history at {log}", file=sys.stderr)
     else:
-        # UNREADABLE LINES ARE COUNTED, NOT SKIPPED. A torn line is a run this gate did not
-        # examine, so it has to stop the gate reporting MET: `_counted` keeps the number and
-        # `_completed` is the sibling that drops it. I-01 is the row where exactly this count was
-        # computed and thrown away.
-        #
-        # AND A RUN THAT STARTED AND NEVER ENDED IS COUNTED THE SAME WAY [K-08]. `_counted`
-        # drops every start line before any rule sees it, so a SIGKILLed run reached no rule,
-        # appeared in no field of the payload, and the gate answered MET / exit 0 /
-        # `cannot_check: null` over a history `log` was already reporting `unfinished: 1` for.
-        # The scan rides on the pass that has to happen anyway — which is A-20's whole point,
-        # and `_counted`'s docstring's one condition is met here: this pass is EXHAUSTED by the
-        # `list()` below, so no run that ends further down the file is reported unfinished.
-        #
-        # `report()` IS NOT CALLED. `show` prints a banner from this; a gate's answer is the
-        # payload and the page, and R-4 gives stdout to the payload alone. The count reaches the
-        # reader as a field and as a `cannot_check` clause instead.
-        bad = [0]
-        scan = _InFlightScan(log.parent / ".incomplete")
-        try:
-            records = list(_counted(log, bad, scan))
-        except OSError as exc:
-            # THE HISTORY IS THERE AND CANNOT BE READ [K-23]. This used to raise out of the
-            # command: a raw traceback, nothing on stdout, and exit 1 — which is L-81's code for
-            # *a rule was checked and your controls were violated*, about a file nothing ever
-            # opened. `show` crashes the same way and inherits no handler, but only `gate`
-            # reserves exit 1 for that meaning. The question WAS formed and the finding is that
-            # the history could not be read, so this carries a payload and exits 2, exactly as
-            # the missing-history branch above does.
-            said = exc.strerror or str(exc)
-            print(f"gate: {log} could not be read: {said}", file=sys.stderr)
-            result = policy.assessment(
-                loaded,
-                [],
-                policy_path=hashing._posix(args.policy),
-                history=hashing._posix(log),
-                read_error=said,
-            )
-        else:
+        if present:
             result = policy.assessment(
                 loaded,
                 records,
                 policy_path=hashing._posix(args.policy),
                 history=hashing._posix(log),
                 unreadable=bad[0],
-                unfinished=len(scan.open),
+                unfinished=unfinished,
             )
+        else:
+            result = policy.assessment(
+                loaded,
+                [],
+                policy_path=hashing._posix(args.policy),
+                history=hashing._posix(log),
+                found=False,
+            )
+            print(f"gate: no run history at {log}", file=sys.stderr)
 
     if args.format == "json":
         # NOTHING ELSE ON STDOUT [ADR-0017 R-4]. Both diagnostics above go to stderr, so a caller

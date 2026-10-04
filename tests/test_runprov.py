@@ -36935,6 +36935,145 @@ def test_a_history_that_cannot_be_read_is_an_answer_and_not_a_traceback(tmp_path
     assert after == before, f"the same question over the same file answers the same way: {after}"
 
 
+@requires_unreadable_files
+def test_a_history_in_an_unreadable_directory_is_the_same_answer(tmp_path, capsys):
+    """[ADR-0018 R-2] Audit L, L-01. K-23's repair guarded the READ and not the PROBE.
+
+    **THE HALF THAT SURVIVED.** The `except OSError` went around `list(_counted(...))`, below an
+    unguarded `log.is_file()`. `Path.is_file()` swallows ENOENT, ENOTDIR, EBADF and ELOOP and
+    nothing else, so **EACCES and EIO propagate out of the probe** — and the test above makes
+    the FILE unreadable, which is the half that was fixed. Make the DIRECTORY unreadable and the
+    probe is what fails: a raw `PermissionError`, zero bytes on stdout, exit 1, with the history
+    sitting there intact. That is K-23's filed evidence verbatim, one `stat()` earlier.
+
+    **AND IT IS THE LIKELIER ROUTE ON THIS HARDWARE**, which is K-23's own motivation: an EIO
+    from the external drive this repository lives on is an `OSError` on the same path, and
+    `stat()` is on that path. A dying disk reported a controls violation, with a traceback.
+
+    **THE ANSWER MUST BE THE SAME ANSWER**, not a second shape for a second way of failing: the
+    history IS there, so `found` stays True, no LINE was reached so `unreadable` stays 0, and
+    the finding is `read_error`. The sibling test above asserts exactly this for the file's own
+    mode; this one asserts the two routes are indistinguishable from the payload, because they
+    are the same fact about the same file.
+    """
+    _, log = _gated_history(tmp_path)
+    policy_file = _policy_file(tmp_path / "p.json", "finished_ok")
+
+    #: THE ANSWERED STATE FIRST, measured rather than expected — the same ordering as the
+    #: sibling, and for the same reason: a fixture that had stopped producing a readable history
+    #: would otherwise make the unreadable case look like a repair.
+    capsys.readouterr()
+    assert (
+        runprov.__main__.main(
+            ["gate", "--policy", str(policy_file), "--log", str(log), "--format", "json"]
+        )
+        == 1
+    ), "the premise: this history is readable and holds a run that really failed"
+    before = json.loads(capsys.readouterr().out)
+    assert (before["found"], before["read_error"], before["unreadable"]) == (True, None, 0), before
+
+    #: THE PARENT, NOT THE FILE. The file's own mode is untouched here, which is what makes this
+    #: a different route and not a restatement.
+    log.parent.chmod(0o000)
+    try:
+        capsys.readouterr()
+        code = runprov.__main__.main(
+            ["gate", "--policy", str(policy_file), "--log", str(log), "--format", "json"]
+        )
+        shown = capsys.readouterr()
+        assert shown.out.strip(), (
+            "[L-01] the probe raised out of the command: no payload, and exit 1 about a file "
+            f"nothing opened: {shown.err[-300:]}"
+        )
+        body = json.loads(shown.out)
+        assert (code, body["exit_code"], body["outcome"]) == (2, 2, runprov.policy.CANNOT_CHECK), (
+            f"[L-01] exit 1 says a control failed; a `stat()` that failed is not a control: {body}"
+        )
+        assert body["read_error"], f"[L-01] the failure must be named: {body}"
+        assert body["found"] is True, (
+            f"[ADR-0017 R-8] the history is there and intact, and still listed: {body}"
+        )
+        assert body["unreadable"] == 0, f"not one line was reached, so a count of them lies: {body}"
+        assert "could not be read" in (body["cannot_check"] or ""), body["cannot_check"]
+        assert "no run history at" not in (body["cannot_check"] or ""), body["cannot_check"]
+    finally:
+        log.parent.chmod(0o755)
+
+    #: AND NOT PERMANENT: the mode is a fact about this invocation.
+    capsys.readouterr()
+    assert (
+        runprov.__main__.main(
+            ["gate", "--policy", str(policy_file), "--log", str(log), "--format", "json"]
+        )
+        == 1
+    )
+    assert json.loads(capsys.readouterr().out) == before, "the same question answers the same way"
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "absent",
+        "enotdir",
+        pytest.param("eloop", marks=requires_symlinks),
+    ],
+)
+def test_a_path_that_names_nothing_is_not_a_history_that_cannot_be_read(shape, tmp_path, capsys):
+    """Audit L, L-01's trap, and it is the reason the PROBE is wrapped rather than rewritten.
+
+    **THE REMEDY AS FILED SAID: *ENOENT keeps `found=False`, any other OSError becomes
+    `read_error`*. THAT IS DEFECTIVE**, and the defect is in this test. Three errnos describe a
+    path that NAMES NOTHING, not a file that cannot be read:
+
+        ENOENT   nothing at that name
+        ENOTDIR  a path component that is not a directory (`plain-file/under`)
+        ELOOP    a symlink cycle, which resolves to no file at all
+
+    Enumerate "any OSError but ENOENT" and the last two flip to `found=True` with a
+    `read_error` — the gate then says *the history is there and I could not read it* about a
+    path that does not exist, which is the exact false sentence `found` exists to prevent, and
+    ADR-0017 R-8's distinction collapses in the other direction.
+
+    **THOSE THREE ARE `Path.is_file()`'s OWN IGNORE SET.** So the fix is to let `is_file()`
+    answer and wrap it — catching only what it declines to swallow — rather than to re-implement
+    its ignore list in a `catch` clause where it can drift. This test is what holds that choice:
+    it is green for the wrapped form and red for the enumerated one.
+
+    **The third form — drop the probe and let the read decide — HANGS**, because `open()` on a
+    FIFO blocks forever, so it has no test here and must never be written.
+    """
+    if shape == "absent":
+        log = tmp_path / "nowhere.jsonl"
+    elif shape == "enotdir":
+        plain = tmp_path / "plain"
+        plain.write_text("not a directory\n", encoding="utf-8")
+        log = plain / "history.jsonl"
+    else:
+        one, two = tmp_path / "loop-a", tmp_path / "loop-b"
+        one.symlink_to(two)
+        two.symlink_to(one)
+        log = one
+
+    policy_file = _policy_file(tmp_path / "p.json", "finished_ok")
+    capsys.readouterr()
+    code = runprov.__main__.main(
+        ["gate", "--policy", str(policy_file), "--log", str(log), "--format", "json"]
+    )
+    shown = capsys.readouterr()
+    body = json.loads(shown.out)
+    assert (code, body["outcome"]) == (2, runprov.policy.CANNOT_CHECK), body
+    assert body["found"] is False, (
+        f"[L-01] {shape} names no file, so this is the NOT FOUND state. `found=True` with a "
+        f"`read_error` would be the gate reporting an unreadable history that does not "
+        f"exist: {body}"
+    )
+    assert body["read_error"] is None, (
+        f"[L-01] {shape}: there is nothing here to have failed to read: {body}"
+    )
+    assert "no run history at" in (body["cannot_check"] or ""), body["cannot_check"]
+    assert "no run history at" in shown.err, shown.err
+
+
 def test_the_payload_carries_the_policy_and_it_is_a_projection_not_a_second_parse(tmp_path, capsys):
     """[ADR-0018 R-13] T-34. Taylor's ruling, and the question's own answer is the shape.
 
