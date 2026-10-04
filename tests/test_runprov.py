@@ -4627,8 +4627,21 @@ def test_the_quoted_scale_figures_have_not_drifted_out_of_meaning():
             None,
         ),
     ]
-    if (m := re.search(r"\*\*about ([\d,]+) record\*\*", why)) is not None:
-        checks.append(("WHY.md record split", int(m.group(1).replace(",", "")), None))
+    #: WHY.md's STATEMENT SPLIT IS GONE AND SO IS ITS PARSE [L-08]. The figure was appended
+    #: here with `actual=None` — parsed and then skipped, so it was never compared with
+    #: anything — and the other two figures of that split were not parsed at all. All three
+    #: were out of tolerance (22%, 70%, 33%) and the bullet's own stated property had stopped
+    #: holding. It was DELETED rather than instrumented: three hand-typed sums in a positioning
+    #: document nothing gates on buy nothing the README's one already-gated figure says, and
+    #: `test_the_exported_name_count_in_why_md_is_the_real_one` keeps the one claim in that
+    #: bullet that has a check behind it. **The conditional append was also the opposite of the
+    #: principle this test applies four lines above** — a figure whose comparison is optional is
+    #: a figure nothing compares.
+    assert "about 1,500 record" not in why, (
+        "[L-08] WHY.md's statement split is back. It is on no instrument, it went 22%, 70% and "
+        "33% out, and its own stated property stopped holding. The gated statement of this "
+        "project's scale is the README's; the claim WHY.md needs is the exported-name count"
+    )
 
     drifted = []
     for label, stated, actual in checks:
@@ -4760,14 +4773,17 @@ def test_the_quoted_coverage_figures_are_coverages_own_and_not_a_proxys():
         "and the totals have to be asked for, or `_check_scale` reads nothing"
     )
 
-    #: AND IF AN EARLIER GATE RUN LEFT COVERAGE'S REPORT ON DISK, THE REAL COMPARISON RUNS HERE
-    #: TOO. Not asserted when it is absent — on CI it always is, which is the whole reason the
-    #: check lives in `ci.py`.
-    if ci.SCALE_REPORT.is_file():
-        totals = json.loads(ci.SCALE_REPORT.read_text(encoding="utf-8"))["totals"]
-        assert not ci.scale_drift(readme, totals), (
-            f"coverage's own last totals disagree with the README: {ci.scale_drift(readme, totals)}"
-        )
+    #: THE `if SCALE_REPORT.is_file()` ARM THAT STOOD HERE IS DELETED [L-24], and deleting it
+    #: rather than restoring it is the finding. It read a PREVIOUS run's coverage report when one
+    #: happened to be on disk — so on CI, which checks out a fresh tree, it never ran at all,
+    #: and the comment beside it said so. Where it CAN fire is a developer's machine, against a
+    #: report that may be from any earlier commit, so its only reachable failure mode is a FALSE
+    #: RED from a stale untracked file. An arm that cannot fire where it would matter and can
+    #: only lie where it does fire is worth less than its absence.
+    #:
+    #: THE REAL COMPARISON IS `ci.py`'s, after the run that produced the totals, and the two
+    #: assertions above hold the wiring and the flag that feeds it. It cannot be done from
+    #: inside the run: coverage has no totals until it ends.
 
 
 def test_the_exported_name_count_in_why_md_is_the_real_one():
@@ -38431,10 +38447,19 @@ def test_the_rule_registry_refuses_two_rules_under_one_name():
 def test_every_gate_requirement_has_a_test():
     r"""ADR-0018's specification is checked, not remembered — ADR-0013's mechanism, fourth use.
 
-    **WRITTEN IN THE LAST BUILD COMMIT, which is the whole lesson of T-33.** ADR-0017 named this
-    guard as its row's closing condition and shipped in 0.7.0 without it; the backlog note that
-    recorded the omission is the reason this one exists on the day the feature is finished rather
-    than after an audit asks for it.
+    **WRITTEN ONE COMMIT BEFORE THE LAST BUILD COMMIT — and the correction is the lesson, not
+    the sentence it replaces [L-16].** This said *written in the last build commit, which is the
+    whole lesson of T-33*, and it is false by exactly one commit: this test landed in `b51ad31`
+    and R-13 and R-14 arrived in `4550a83` after it, so the set equality below was written
+    against twelve requirements and now reads fourteen. **The claim a test makes about its own
+    history is the one claim nothing can check**, which is why the fix is to say what the dates
+    say rather than to reach for a stronger sentence.
+
+    The substance stands: ADR-0017 named this guard as its row's closing condition and shipped in
+    0.7.0 without it, and the backlog note that recorded the omission is the reason this one
+    exists while the feature is being finished rather than after an audit asks for it. **A
+    closing condition belongs IN the last build commit** — which is one commit later than this,
+    and that is the gap the row found.
 
     **THE CONVENTION WAS CHECKED BEFORE THE REGEX WAS COPIED.** ADR-0017's guard records that
     copying ITS sibling would have found 14 of 16, because R-15 and R-16 bold the whole sentence

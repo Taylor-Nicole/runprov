@@ -22,6 +22,16 @@ tag cannot move. This sentence said nine, which is the count AFTER the repair th
 measured on the wrong side of the fix it describes, which is the same error as taking a figure
 from the instrument you are correcting.
 
+AND IT WAS CHECKED RATHER THAN AUTOMATED [L-25]. Reverting the whole commit that corrected this
+count leaves the suite green — it is prose nothing reads — so the row is real and the only remedy
+proposed for it is not: a test shelling out to `git archive v0.7.0` **cannot run from the sdist**,
+which carries no `.git`, and would therefore fire only on a developer's machine. That is the shape
+L-24 says to delete. Because a tag cannot move, the fact needs verifying ONCE instead:
+**reproduced 2026-10-04 at `v0.7.0` — 8 modules cite ADR-0017 (`__main__`, `chain`, `check`,
+`diff`, `impact`, `resources`, `show`, `verify`) and 0 cite it in a MODULE DOCSTRING**, which is
+the one place `test_every_adr_is_listed_in_the_adr_index` looks. The guard was not wrong; it was
+uninformed, and a guard cannot tell that from satisfied.
+
 THE REGISTRY IS THE ONLY LIST OF RULES. R-5: a rule registers itself here, and the parser, the
 documentation and the tests all read this one dict. Three places to update is two places to
 forget, and that is the scope pattern this codebase has now found ten times.

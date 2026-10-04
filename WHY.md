@@ -169,15 +169,26 @@ it is most of the answer to "why did this run differ".
   claim this file was building toward, and a literature check on 2026-09-04 narrowed it — see
   *Related work, checked* below. Say the narrowed version or a reviewer will say it for you.
 
-  Zero runtime dependencies, and the quickstart uses two of the 18 exported names. On size,
-  the honest figure is where the statements sit rather than the total: **about 1,500 record**
-  (`run`, `hashing`, `project`, `sinks`, `environment`, `terminal`) and **about 945 read the
-  record back** (`show`, `__main__`, `verify`). A further ~120 are in neither group —
-  `__init__`, `_report` and `watch` — which the earlier version of this bullet quietly
-  omitted, so the two numbers did not add up to the package. Adopting it costs you the first number; the second is
-  a CLI you can ignore. This bullet claimed **514 statements** until 2026-08-18 — measured
-  before `show`, `verify`, `exec` and the terminal capture existed, which made a stale number
-  the evidence in the sentence about smallness.
+  Zero runtime dependencies, and the quickstart uses two of the 18 exported names — the one
+  size figure in this bullet, and the one a test asserts against `runprov.__all__`.
+
+  **THE STATEMENT SPLIT THAT STOOD HERE IS DELETED [L-08], and the deletion is the repair.** It
+  divided the package into *what records*, *what reads the record back* and a remainder, with a
+  figure for each. Every figure was right to the digit when written and all three were out of
+  tolerance by the time an audit measured them — by 22%, 70% and 33% — and **the bullet's own
+  stated property had stopped holding**: the three groups covered half the modules and left
+  almost two thousand statements in no group at all, which is the exact defect the sentence
+  claimed the earlier version had. One figure was parsed into a guard's list with no measured
+  value to compare against; the other two were on no instrument at all. The numbers are not
+  restated here, for the reason they were removed.
+
+  **IT WAS NOT INSTRUMENTED BECAUSE INSTRUMENTING IT BUYS NOTHING.** Three hand-typed sums and
+  a remainder, on coverage's instrument, in a positioning document nothing gates on, next to a
+  README sentence that already states this project's scale and is held to coverage's own totals
+  by `ci.py`. The claim this bullet needs is *small enough to read*, and the exported-name count
+  carries it with a check behind it. This bullet claimed **514 statements** until 2026-08-18 —
+  measured before `show`, `verify`, `exec` and the terminal capture existed, which is why the
+  lesson here is now *do not quote a size nothing measures* rather than a fresher number.
 
 * **It records; it does not audit.** It cannot tell you a registered read was the read that
   *mattered*, and it cannot see a rule reimplemented as control flow. **Nor does `@run.step`
