@@ -37174,7 +37174,14 @@ def test_emit_policy_answers_about_the_file_and_opens_no_history(tmp_path, capsy
         f"gate's version: {body.get('schema')}"
     )
     assert body["rules"] == runprov.policy.load(as_toml)["rules"], body
-    assert body["policy_path"] == str(as_toml), body
+    #: `_posix`, NEVER `str()` — the sixth site in this file to use the one spelling every
+    #: recorded path uses, and the one that CAUGHT THIS. `str(WindowsPath(...))` is
+    #: `C:\Users\...` while the payload carries `C:/Users/...`, because K-12's rename ran into
+    #: `test_no_recorded_path_is_spelled_with_a_bare_str` on the way in and the CODE was made
+    #: right. **The test was then left asserting what the HOST supplies**, which is the smell
+    #: `FEATURE_WORKFLOW.md` lists tenth — green on Linux and macOS, red on the Windows leg, and
+    #: invisible to the local gate. Ask the same function the code asks.
+    assert body["policy_path"] == runprov.hashing._posix(as_toml), body
     assert "is not read" in shown.err and str(absent) in shown.err, (
         f"a flag accepted and silently ignored is the no-op this package refuses: {shown.err}"
     )
