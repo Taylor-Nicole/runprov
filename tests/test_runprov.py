@@ -19601,6 +19601,13 @@ _DATA_KEYED = {
     "outputs": "and the same for its outputs — the map is the project-wide question, not one run's",
     "parameters": "a run's parameters are keyed by the names the user gave them",
     "notes": "a run's notes are keyed by the keys the caller passed to `run.note`",
+    #: NOT HELD BY THIS GUARD, AND SAID SO HERE SO THE NEXT READER DOES NOT READ IT AS HELD
+    #: [L-19]. Every one of the fourteen shapes carries `packages` EMPTY — this fixture's runs
+    #: record no package map — so there is no key here that could fail the `not_a_name`
+    #: assertion, and deleting this row is invisible. It is **declared for a shape this guard
+    #: does not reach**, on the reasoning in the paragraph above: the user's words are what
+    #: would leak next, and a package name is one of them. The assertion below pins it as the
+    #: ONLY such row, so a second one cannot join it quietly.
     "packages": "the environment block is keyed by package name",
 }
 
@@ -19972,7 +19979,25 @@ def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsy
     #: A SECOND RUN, so `diff` has two to compare. With one, `diff demo demo` is the
     #: two-addresses-resolving-to-one-run state and exits 2 — a cannot-check shape, whose field
     #: types are not the ones this guard is about.
-    with runprov.Run("demo", {"t": 2}, provenance=tmp_path / "p2.json") as run:
+    #:
+    #: **AND ONE KEY PER DECLARED `_DATA_KEYED` ROW THAT CANNOT BE A FIELD NAME [L-19], which
+    #: is what makes the `not_a_name` assertion below load-bearing instead of decorative.**
+    #: Four of the seven rows could be deleted with this guard green, because the fixture's own
+    #: data keys all spelled like field names: a parameter called `t`, a note that did not
+    #: exist, a script called `demo`. The hazard the table's comment NAMES was then built and
+    #: reproduced: undeclare `parameters`, rename this run's parameter to `ok` — a declared
+    #: `_SHARED_NAMES` row — and the guard reads a user's parameter name as a field name and
+    #: says nothing, RC=0.
+    #:
+    #: `sample id` HAS A SPACE, `QC/flag` HAS A SLASH AND A CAPITAL, AND THE SCRIPT NAME HAS A
+    #: DOT AND A DASH. Each is a perfectly ordinary thing a laboratory writes and none can
+    #: match `[a-z][a-z0-9_]*`, so deleting the row that declares its map fails below BY NAME.
+    #: The three path-keyed rows (`artifacts`, `inputs`, `outputs`) were already held this way
+    #: by the tmp paths themselves.
+    with runprov.Run(
+        "qc-step.v2", {"t": 2, "sample id": "S-1"}, provenance=tmp_path / "p2.json"
+    ) as run:
+        run.note("QC/flag", "passed")
         with open(run.input(tmp_path / "in.tsv"), encoding="utf-8") as fh:
             fh.read()
         with run.open_output(tmp_path / "out2.tsv") as out:
@@ -20057,12 +20082,16 @@ def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsy
     #: WHICH SHAPE ANSWERED IN WHICH SCHEMA, kept so the shape table can be held to the set of
     #: schemas the package versions rather than to a count somebody maintains.
     answered: dict[str, str] = {}
+    #: THE KEYS OF EACH DECLARED DATA-KEYED MAP, kept only so that the declaration can be held
+    #: to the fixture [L-19]. See the assertion below.
+    data_keys: dict[str, set[str]] = {}
 
     def record(node: object, shape: str) -> None:
         if isinstance(node, dict):
             for key, value in node.items():
                 carried.setdefault(key, {}).setdefault(shape, set()).add(kind(value))
                 if key in _DATA_KEYED and isinstance(value, dict):
+                    data_keys.setdefault(key, set()).update(str(k) for k in value)
                     #: A DATA-KEYED MAP'S OWN KEYS ARE NOT NAMES — but its VALUES are still
                     #: structures and are still walked, which is where `scripts.*.outputs` is
                     #: found.
@@ -20102,10 +20131,62 @@ def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsy
     #: would make this guard's answer depend on the tmp directory it ran in — the one thing a
     #: derived check may not do. So the SHAPE of a field name is asserted: a map keyed by data and
     #: not declared fails here, by name, instead of appearing in the table below as a mystery.
-    not_a_name = sorted(k for k in carried if not re.fullmatch(r"[a-z][a-z0-9_]*", k))
+    looks_like_a_field = re.compile(r"[a-z][a-z0-9_]*")
+    not_a_name = sorted(k for k in carried if not looks_like_a_field.fullmatch(k))
     assert not not_a_name, (
         "[K-16] the leaf walk read something that is not a field name, so a dict keyed by DATA is "
         f"missing from `_DATA_KEYED`: {[k[:60] for k in not_a_name]}"
+    )
+
+    #: AND THE FIXTURE HOLDS EVERY DECLARED ROW, which is the row L-19 is [L-19]. The assertion
+    #: above only fires on a key that cannot be a field name, so a row whose map is keyed by
+    #: ordinary-looking words is DECLARED AND UNHELD: four of the seven could be deleted with
+    #: this guard green, because the fixture's own data keys were a parameter called `t`, no
+    #: note at all, and a script called `demo`. The hazard the table's own comment names was
+    #: built and reproduced — undeclare `parameters`, call the run's parameter `ok`, and the
+    #: guard reads a user's parameter name as this package's field name and says nothing.
+    #:
+    #: **THE REMEDY AS FILED — *hold `_DATA_KEYED` by equality the way `_SHARED_NAMES` is* —
+    #: IS REFUTED, AND THE REASON GENERALISES.** It has two forms and both are the failure modes
+    #: this check exists to catch. Against evidence derived independently of the table it is
+    #: **RC=1 on correct code**, naming four of seven rows: `notes` and `packages` are observed
+    #: EMPTY in every shape, so no evidence can ever justify them. Against the table itself it
+    #: is RC=0 clean AND RC=0 with a row deleted — a check that cannot fail. **`_SHARED_NAMES`
+    #: can be held by equality because `collisions` is derived from the payloads WITHOUT
+    #: consulting the table; `_DATA_KEYED` cannot, because the thing it declares is unobservable
+    #: by construction** — a data key that spells like a field name IS the defect, so the
+    #: instrument that would derive the right-hand side is the one the row says is broken. **A
+    #: declared table is only held by equality when something else can compute its right-hand
+    #: side.**
+    #:
+    #: So the EXISTING assertion is made load-bearing instead: every declared row the fixture
+    #: reaches must carry at least one key that cannot be a field name, and deleting that row
+    #: then fails above by name. Measured: six of the seven rows red individually.
+    observed = {name: keys for name, keys in data_keys.items() if keys}
+    unheld = sorted(
+        name
+        for name, keys in observed.items()
+        if all(looks_like_a_field.fullmatch(k) for k in keys)
+    )
+    assert not unheld, (
+        f"[L-19] `_DATA_KEYED` declares {unheld} and this fixture's own keys for them all spell "
+        f"like field names, so those rows could be DELETED with this guard green — and a user's "
+        f"parameter or note name would then be read as one of this package's fields. Give each a "
+        f"key no field could have: a space, a slash, a dot, a capital. Observed: "
+        f"{ {name: sorted(keys)[:4] for name, keys in observed.items()} }"
+    )
+
+    #: AND EXACTLY ONE ROW IS OUT OF THIS GUARD'S REACH, named rather than left to be inferred.
+    #: `packages` is keyed by package name in the ENVIRONMENT block, and every shape above
+    #: carries it EMPTY — this fixture's runs record no package map — so nothing here holds it
+    #: and **nobody should read it as held: it is declared for a shape this guard does not
+    #: reach.** Asserted as an equality so that a SECOND row drifting out of reach raises here
+    #: instead of joining it in silence, which is the whole lesson of the four that were unheld.
+    assert sorted(set(_DATA_KEYED) - set(observed)) == ["packages"], (
+        "[L-19] exactly one declared row carries no key in any shape here, and it is `packages`. "
+        f"Empty or unreached now: {sorted(set(_DATA_KEYED) - set(observed))}. A row this guard "
+        f"cannot see is a row whose deletion is invisible, so either the fixture must reach it or "
+        f"this sentence must be amended to say which rows stand on prose alone"
     )
 
     #: A `null` AGREES WITH EVERYTHING. `cannot_check` is null in nine shapes and a string in
