@@ -36261,6 +36261,71 @@ def test_the_rule_set_is_the_registry_and_the_adr_table_agrees_with_it(tmp_path)
         )
 
 
+def test_the_readme_names_every_field_of_the_gate_payload(tmp_path):
+    """[ADR-0018 R-8] Audit L, L-13. The document a USER reads, held to the payload it describes.
+
+    **THE OMISSION.** `runprov.gate.v1` gained `read_error` (K-23), `unfinished` (K-08) and a
+    per-rule `blocked` list (K-10) during Audit K's repairs, and the README — the one document a
+    user reads — named none of them. Its payload paragraph listed the per-rule counts and
+    stopped. **And ADR-0018's whole justification for the gate greening on a lost run rests on
+    that limit being written down**, in prose a person meets, which is this file and not the ADR.
+
+    **THE ROW'S OTHER HALF IS REFUTED AND IS NOT REPAIRED HERE, which is worth more than the
+    half that stands.** L-13 also said the README's exit-code paragraph *"teaches the opposite of
+    the new contract"*, quoting *one unreadable line is enough to turn a MET gate into exit 2*.
+    **Measured: a torn line still gives `CANNOT_CHECK`, exit 2, `unreadable: 1`.** That sentence
+    is TRUE and editing it would have introduced the error the row alleged: the row conflated an
+    UNREADABLE LINE with an UNFINISHED RUN, and only the second greens. So one sentence was ADDED
+    for the unfinished case and none was changed.
+
+    **DERIVED FROM THE PAYLOAD, not a list typed here**, which is what stops the next field
+    repeating this: the gate is asked for a real answer and every top-level key of it must appear
+    in the README's gate section. `schema` and `exit_code` are named in prose rather than as
+    keys, and `rules` and `policy` are the sections themselves, so the assertion is over the keys
+    and the section is what is searched.
+    """
+    policy_file = _policy_file(tmp_path / "p.json", "finished_ok")
+    _, log = _gated_history(tmp_path)
+    answer = runprov.policy.payload(
+        runprov.policy.assessment(
+            runprov.policy.load(policy_file),
+            [],
+            policy_path=str(policy_file),
+            history=str(log),
+        )
+    )
+
+    readme = (_repo_root() / "README.md").read_text(encoding="utf-8")
+    heading = "## `runprov gate`: did the recorded runs meet a written policy?"
+    assert heading in readme, "the README no longer documents `gate`, so this reads nothing"
+    section = readme[readme.index(heading) :]
+    section = section[: section.index("\n## ", 1)]
+
+    missing = [key for key in sorted(answer) if f"`{key}`" not in section]
+    assert not missing, (
+        f"[L-13] `runprov.gate.v1` carries {missing} and the README's `gate` section never names "
+        f"them. The README is the document a user reads, and ADR-0018's justification for this "
+        f"gate greening on a run that started and never ended rests on that limit being written "
+        f"where a person meets it"
+    )
+    #: AND THE PER-RULE ROW TOO, where `blocked` lives — the list K-10 split out of `reasons` so
+    #: that an inability is never rendered as an accusation.
+    row_missing = [key for key in sorted(answer["rules"][0]) if f"`{key}`" not in section]
+    assert not row_missing, (
+        f"[L-13] a rule row of `runprov.gate.v1` carries {row_missing}, unnamed in the README"
+    )
+    #: AND THE UNFINISHED LIMIT IS STATED, which is the sentence ADR-0018 depends on and the one
+    #: thing a field list cannot carry: that this state does NOT move the exit code.
+    #: WHITESPACE-NORMALISED, because the README is hard-wrapped and a sentence a reader sees
+    #: as one line is two in the file. A guard that can be satisfied by a reflow is a guard
+    #: about formatting.
+    flowed = " ".join(section.split())
+    assert "never ended" in flowed and "does not move the exit code" in flowed, (
+        "[L-13] the README names `unfinished` as a field and does not say what it means for the "
+        "verdict. A gate that greens on a lost run must say so where a user reads"
+    )
+
+
 def test_every_rule_declares_the_fields_its_judge_actually_reads():
     """[ADR-0018 R-7] [ADR-0018 R-5] Audit L, L-02. The direction nothing checked.
 

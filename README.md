@@ -804,12 +804,42 @@ knowing part of a list is knowing a breach. One unreadable line in the history i
 `MET` gate into exit 2: that line is a run the gate did not examine, and a gate that greens on
 *not examined* is the shape this package exists to catch.
 
+**A run that STARTED and never ended is a different case, and it deliberately does not move the
+exit code.** It is named — in `unfinished`, as a count, and in the `cannot_check` sentence — and
+the gate still answers 0 if every rule it could check was met. The reason is what the history can
+honestly say: a start line is append-only, so a run killed in a way that runs no code (SIGKILL,
+the OOM killer, a power loss) leaves a start with no ending **and nothing to distinguish it from
+a run still going**, which is not a finding about any control. `runprov show` and `runprov log`
+are where that state is read, with the liveness probe that can tell RUNNING from INTERRUPTED;
+`runprov prune` clears the markers and never the history. So the gate reports the fact and
+declines to grade it — and that limit is written here because ADR-0018's justification rests on
+its being written down somewhere a user reads.
+
 `runprov gate --format json` is the **same answer for a reader that is not a person** — the page
 and the payload are two renderings of one structure, so neither can state something the other does
 not. Each rule carries `evaluated`, `met`, `violated` and `not_checked` beside its outcome,
 because **"no violations" and "nothing examined" must not serialise the same**: `asked_of_nothing`
 says which, and `cannot_check` carries one sentence naming what the gate could not see, `null`
-when there was nothing. Exit 2 carries the payload too, because it is an answer; a policy file
+when there was nothing. A rule row also carries `reasons` — **violations only** — and `blocked`
+beside it, for the inabilities, so that `len(reasons)` is a number a consumer can compare with
+`violated` and *the run recorded no outputs, so there is nothing to ask* is never rendered as an
+accusation. 
+
+**Every field of `runprov.gate.v1`, so that nothing it carries is documented only in prose.** The
+answer: `schema`, `outcome`, `exit_code`, `cannot_check`, `policy_path` and `history` (both
+POSIX-spelled, because a filed payload is read on another machine), `runs` (how many records were
+examined), `policy` (the normalised control, projected from the rule rows) and `rules`. Each entry
+of `rules` carries `rule`, `asks`, `blind`, `why`, `outcome`, `evaluated`, `met`, `violated`,
+`not_checked`, `asked_of_nothing`, `reasons` (**violations only**) and `blocked` — the inabilities,
+split out of `reasons` so that `len(reasons)` is a number a consumer can compare with `violated`,
+and so that *the run recorded no outputs, so there is nothing to ask* is never rendered as an
+accusation.
+
+**And four fields state what the gate COULD NOT DO, as facts rather than as prose:** `found` (the
+history was there at all), `read_error` (it was there and could not be read, carrying the reason
+the OS gave), `unreadable` (how many LINES would not parse) and `unfinished` (how many runs
+started with no ending on record). The first three move the verdict; the fourth, as above, does
+not. Exit 2 carries the payload too, because it is an answer; a policy file
 that cannot be read prints nothing at all, which is how a consumer tells a gate that could not
 conclude from one that never had a question. The payload is versioned by
 `"schema": "runprov.gate.v1"`, and its shape follows the record-format promise above: a field's
