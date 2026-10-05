@@ -707,13 +707,24 @@ NASTY = [
         "status": "failed",
         "failure": {"type": "ValueError", "message": "on: colon\nand a newline"},
     },
+    # A CHARACTER ABOVE THE BMP [Audit M, escape-6], FOLDED INTO THIS ROW RATHER THAN ADDED AS
+    # A FOURTH, because `len(NASTY)` is read by two sibling tests and a fixture that renumbers
+    # its neighbours is a worse fixture. AND THE POINT IS THAT `é` IS NOT ONE: `é` is a single
+    # UTF-16 code unit, so `json.dumps` at the default `ensure_ascii=True` renders it `\u00e9`,
+    # a BMP escape YAML accepts. A character above the BMP needs a SURROGATE PAIR,
+    # `\ud83e\uddac`, and a surrogate escape is legal JSON and ILLEGAL YAML: libyaml raises
+    # `ScannerError` and pyyaml's pure-Python loader hands back a lone-surrogate string that is
+    # not the path. `NASTY` topping out at `é` is why `show._q`'s docstring could name a test as
+    # holding a line the test never reached. U+1F9AC, and an emoji in a sample directory name is
+    # not exotic in practice.
     {
         "script": "yes",
         "command": "true",
         "status": "ok",
         "generation": "2026-08-07",
         "run_id": "0755",
-        "cwd": "/tmp/dir with spaces/é",
+        "cwd": "/tmp/dir with spaces/é_\U0001f9ac",
+        "inputs": [{"path": "/tmp/dir with spaces/é_\U0001f9ac/réf.tsv", "sha256": "a" * 64}],
     },
 ]
 
@@ -783,6 +794,87 @@ def test_rendered_yaml_parses_with_nasty_values():
     assert docs[2]["run_id"] == "0755", "an octal-looking id must stay a string"
     assert docs[2]["generation"] == "2026-08-07", "a date-looking value must stay a string"
     assert docs[0]["cwd"] == "" and "cwd" in docs[1]
+
+
+def test_rendered_yaml_survives_the_c_loader_and_a_character_above_the_bmp():
+    """[ADR-0017 R-1] Audit M, escape-6. The only one of the escaping family that was a WRONG
+    RECORD ON DISK, and the docstring that claimed a test held it was wrong twice over.
+
+    **THE DEFECT.** `show._q` called `json.dumps` at the default `ensure_ascii=True` while its
+    sibling `_structure` twenty lines below passed `ensure_ascii=False` — the only
+    `ensure_ascii` in the whole tree — so ONE MODULE rendered the same data two ways at the
+    character level. Above the BMP, `ensure_ascii=True` emits a SURROGATE PAIR, and **a
+    surrogate escape is legal JSON and illegal YAML.** Measured end to end: `CSafeLoader`
+    raises `ScannerError: found invalid Unicode character escape code`, and `SafeLoader`
+    returns a string that does not equal the record. So `log --format yaml`,
+    `show --format yaml`, and the on-disk `prov/*.prov.yml` and `prov/transformation_log.yml`
+    carried a path that is not the path — and **no reprint fixes a file whose original name is
+    gone.** It is the precise failure the README blames the predecessor's log for.
+
+    **AND IT WAS HELD BY NOTHING, in two independent ways.** `_q`'s docstring named
+    `test_rendered_yaml_parses_with_nasty_values` as holding the line. That test calls
+    `yaml.safe_load` — the **pure-Python** SafeLoader, which never raises on a surrogate escape
+    and silently returns lone surrogates — and `NASTY`'s highest character was `é`, which is
+    inside the BMP and escapes to `\\u00e9`, which YAML accepts. A fixture that cannot reach
+    the case and a loader that cannot refuse it: the claim was true of nothing.
+
+    **SO THIS TEST CHANGES BOTH HALVES.** `NASTY` carries U+1F9AC, and the assertion is an
+    EQUALITY against the record's own string rather than *it parsed*. Parsing is not the
+    property — `SafeLoader` parses the broken form perfectly well and hands back a different
+    string, which is the worse failure of the two because nothing raises.
+
+    **THE C LOADER IS SKIPPED WITH ITS REASON RATHER THAN ASSUMED**, and the Python loader is
+    asserted on every platform, so the equality half runs everywhere even where libyaml is
+    absent.
+    """
+    yaml = pytest.importorskip("yaml")
+    high = "\U0001f9ac"
+    assert ord(high) > 0xFFFF, "the premise: this character needs a surrogate pair in ASCII JSON"
+    record = next((r for r in NASTY if high in str(r.get("cwd"))), None)
+    assert record is not None, (
+        f"[Audit M escape-6] no record in NASTY carries {high!r}, so this test asks nothing. "
+        f"That was the state `show._q`'s docstring named as holding the line: the fixture's "
+        f"highest character was `é`, which is INSIDE the BMP and escapes to a form YAML "
+        f"accepts. A character above the BMP is the whole case."
+    )
+
+    for label, text in (
+        ("_yaml", cli._yaml(NASTY)),
+        ("render_yaml", runprov.show.render_yaml(record)),
+    ):
+        #: THE RENDERED BYTES, FIRST. A surrogate escape in the file is the defect; the loaders
+        #: below are what it does, not what it is.
+        assert "\\ud8" not in text and "\\ude" not in text, (
+            f"[Audit M escape-6] {label} rendered a SURROGATE ESCAPE. That is legal JSON and "
+            f"illegal YAML: libyaml refuses the file and pyyaml returns a string that is not "
+            f"the path. `ensure_ascii=False` is what keeps it out:\n{text}"
+        )
+        assert high in text, f"{label} dropped the character instead of rendering it: {text}"
+
+        loaded = yaml.safe_load(text)
+        rows = loaded if isinstance(loaded, list) else [loaded]
+        found = [
+            r for r in rows if isinstance(r, dict) and high in json.dumps(r, ensure_ascii=False)
+        ]
+        assert found, f"{label}: the pure-Python loader did not return the character: {rows}"
+        #: EQUALITY, NOT "IT PARSED". `SafeLoader` parses the broken rendering too and returns
+        #: lone surrogates, so *it parsed* is exactly the assertion that was green over the
+        #: defect for a whole release.
+        assert "\ud83e" not in json.dumps(found, ensure_ascii=False), (
+            f"[Audit M escape-6] {label}: the loaded value carries a LONE SURROGATE, so it is "
+            f"not the string the record holds: {found}"
+        )
+
+        if not hasattr(yaml, "CSafeLoader"):
+            pytest.skip("this PyYAML has no libyaml binding, so CSafeLoader cannot be asked")
+        #: THE LOADER THAT REFUSES. libyaml is what `yaml.safe_load` uses wherever it is built,
+        #: which is most installations, so this is the loader a reader of these files actually
+        #: has — and it is the one that raises rather than guessing.
+        strict = yaml.load(text, Loader=yaml.CSafeLoader)
+        strict_rows = strict if isinstance(strict, list) else [strict]
+        assert any(
+            isinstance(r, dict) and high in json.dumps(r, ensure_ascii=False) for r in strict_rows
+        ), f"[Audit M escape-6] CSafeLoader read {label} and the character is not in it: {strict}"
 
 
 def test_rendered_yaml_keeps_the_field_names_of_the_log_it_replaces():

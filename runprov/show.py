@@ -337,10 +337,27 @@ def _q(value: object) -> str:
     the values its author happened to think of.
 
     JSON strings are valid YAML scalars (YAML 1.2 is a JSON superset), so quoting
-    unconditionally is both simpler and total. `test_rendered_yaml_parses_with_nasty_values`
-    holds the line.
+    unconditionally is both simpler and total.
+
+    `ensure_ascii=False`, AND IT IS THE ONLY THING ON THIS PAGE THAT WAS A WRONG RECORD
+    [Audit M, escape-6]. At the default `ensure_ascii=True`, `json.dumps` renders a character
+    above the BMP as a SURROGATE PAIR — `"\ud83e\uddac"` — and **a surrogate escape is legal
+    JSON and illegal YAML**. Measured end to end: `yaml.CSafeLoader` RAISES
+    `ScannerError: found invalid Unicode character escape code`, and `yaml.SafeLoader` returns
+    a string that does NOT equal the record. So `log --format yaml`, `show --format yaml` and
+    the on-disk `prov/*.prov.yml` and `prov/transformation_log.yml` carried a path that is not
+    the path, and libyaml refused the file outright. That is the precise failure the README
+    blames the predecessor's log for, and no reprint fixes it once the original name is gone.
+    This is also [ADR-0017 R-1]: `_structure` two functions below already passed
+    `ensure_ascii=False`, so ONE MODULE rendered the same data two ways at the character level.
+
+    AND THE DOCSTRING USED TO CLAIM A TEST HELD THIS, WHICH WAS WRONG TWICE OVER. It named
+    `test_rendered_yaml_parses_with_nasty_values`; that test used `yaml.safe_load` — the
+    PURE-PYTHON loader, which never raises on a surrogate escape — and `NASTY`'s highest
+    character was `é`. It now carries a non-BMP character and round-trips through
+    `yaml.CSafeLoader`, asserting the loaded value EQUALS the record's string.
     """
-    return json.dumps("" if value is None else str(value))
+    return json.dumps("" if value is None else str(value), ensure_ascii=False)
 
 
 def _structure(value: object) -> str:
@@ -1364,7 +1381,7 @@ def render_yaml(obj: object, indent: int = 0) -> str:
     """
     if indent > YAML_MAX_DEPTH:
         try:
-            return "  " * indent + _scalar(json.dumps(obj, default=str)) + "\n"
+            return "  " * indent + _scalar(json.dumps(obj, default=str, ensure_ascii=False)) + "\n"
         except RecursionError:  # pragma: no cover - see below; unreachable on CPython 3.12
             # THE FALLBACK NEEDS A FALLBACK, and this is not hypothetical: `json.dumps`
             # recurses too, on a stack already YAML_MAX_DEPTH frames deep, so how much
@@ -1392,9 +1409,11 @@ def render_yaml(obj: object, indent: int = 0) -> str:
         out = []
         for k, v in obj.items():
             if isinstance(v, (dict, list)) and v:
-                out.append(f"{pad}{json.dumps(str(k))}:\n{render_yaml(v, indent + 1)}")
+                out.append(
+                    f"{pad}{json.dumps(str(k), ensure_ascii=False)}:\n{render_yaml(v, indent + 1)}"
+                )
             else:
-                out.append(f"{pad}{json.dumps(str(k))}: {_scalar(v)}\n")
+                out.append(f"{pad}{json.dumps(str(k), ensure_ascii=False)}: {_scalar(v)}\n")
         return "".join(out)
     if isinstance(obj, list):
         if not obj:
@@ -1411,12 +1430,19 @@ def render_yaml(obj: object, indent: int = 0) -> str:
 
 
 def _scalar(v: object) -> str:
-    """`json.dumps` unconditionally. JSON scalars are valid YAML, so this is total."""
+    """`json.dumps` unconditionally. JSON scalars are valid YAML, so this is total.
+
+    `ensure_ascii=False` ON EVERY ARM [Audit M, escape-6], for the reason `_q` states: a
+    surrogate escape is legal JSON and ILLEGAL YAML, so the ASCII-safe rendering is the one
+    thing on this path that produces a file libyaml refuses. The numeric arm cannot carry a
+    non-ASCII character and takes the keyword anyway, so a reader does not have to work out
+    which arm was an exception and why.
+    """
     if isinstance(v, bool) or v is None or isinstance(v, (int, float)):
-        return json.dumps(v)
+        return json.dumps(v, ensure_ascii=False)
     if isinstance(v, (dict, list)):
-        return json.dumps(v, default=str)
-    return json.dumps(str(v))
+        return json.dumps(v, default=str, ensure_ascii=False)
+    return json.dumps(str(v), ensure_ascii=False)
 
 
 def select(

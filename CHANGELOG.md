@@ -515,6 +515,42 @@ name, the sidecar's `provenance for:` line pushes `PIN_ANCHOR` past `PIN_STARTS_
 `verify` reports NO PIN, which would have made the leg vacuous in a new way.
 
 
+### Fixed — `--format yaml` wrote surrogate escapes, which are legal JSON and illegal YAML
+
+Audit M, escape-6, escalated to high: **the only one of the escaping family that was a wrong
+record ON DISK.** `show._q` called `json.dumps` at the default `ensure_ascii=True` while its
+sibling `_structure` twenty lines below passed `ensure_ascii=False` — **the only `ensure_ascii`
+in the whole tree** — so one module rendered the same data two ways at the character level,
+against ADR-0017 R-1.
+
+**Above the BMP, `ensure_ascii=True` emits a surrogate pair, and a surrogate escape is legal
+JSON and illegal YAML.** Measured end to end: `yaml.CSafeLoader` raises `ScannerError: found
+invalid Unicode character escape code`, and `yaml.SafeLoader` returns a string that **does not
+equal the record**. So `log --format yaml`, `show --format yaml` and the on-disk
+`prov/*.prov.yml` and `prov/transformation_log.yml` carried a path that is not the path, and
+libyaml refused the file outright. **No reprint fixes that once the original filename is gone**
+— it is the precise failure the README blames the predecessor's log for. `ensure_ascii=False`
+now on every arm of the YAML path: `_q`, `render_yaml`'s keys and its deep-nesting fallback, and
+all three arms of `_scalar`.
+
+**And it was held by nothing, in two independent ways.** `_q`'s docstring named
+`test_rendered_yaml_parses_with_nasty_values` as holding the line. That test calls
+`yaml.safe_load` — the **pure-Python** loader, which never raises on a surrogate escape and
+silently hands back lone surrogates — and `NASTY`'s highest character was `é`, which is **inside
+the BMP** and escapes to `\u00e9`, a form YAML accepts. A fixture that could not reach the case
+and a loader that could not refuse it. `NASTY` now carries U+1F9AC, folded into an existing row
+rather than added as a fourth because two sibling tests read its length, and the new guard
+asserts the loaded value **equals** the record's string through `yaml.CSafeLoader`, skipped with
+its reason where libyaml is absent. *It parsed* is the assertion that was green over this for a
+whole release.
+
+Three mutations, each red: `_q` back to the default, `_scalar`'s string arm back to the default,
+and `NASTY` back to `é` — the last one failing with the reason rather than a `StopIteration`.
+**No released history moves:** seven corpus trees × fifteen recipes, 105 of 105 rows
+byte-identical. The README's pinned `hcv_genotyping/transformation_log.yml` is the
+**predecessor's** hand-written log and nothing in `show.py` can move it.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise
