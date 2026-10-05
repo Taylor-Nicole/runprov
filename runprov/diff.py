@@ -410,12 +410,13 @@ def _parameters(
 def _packages_of(record: typing.Mapping[str, typing.Any]) -> dict[str, str]:
     """The tracked packages, from EITHER record shape. Audit B, A-04.
 
-    The history is a projection, and it FLATTENS this field: `run.py:3513` writes a top-level
-    `packages`, while the sidecar keeps `environment.packages`. `_diff` is fed history records
-    — and this read only the sidecar shape, so `left` and `right` were always `{}`, the
-    dimension always reported `unchanged (0 vs 0)`, and it always counted as settled for the
-    exit code. Measured on a real 3 556-line history whose lines carry pyyaml, openpyxl and
-    forty others: diff could not see a single one of them.
+    The history is a projection, and it FLATTENS this field: `Run._append_history` writes a
+    top-level `packages` from `r["environment"]["packages"]`, while the sidecar keeps
+    `environment.packages`. `_diff` is fed history records — and this read only the sidecar
+    shape, so `left` and `right` were always `{}`, the dimension always reported
+    `unchanged (0 vs 0)`, and it always counted as settled for the exit code. Measured on a
+    real 3 556-line history whose lines carry pyyaml, openpyxl and forty others: diff could
+    not see a single one of them.
 
     A package version moving is the most common cause of "same script, different numbers",
     which is the question this command exists to answer.
@@ -539,8 +540,8 @@ def _steps(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any
     # THE HISTORY CARRIES A COUNT, THE SIDECAR CARRIES THE LIST. Audit B, A-03: this iterated
     # whatever it was given, so `runprov diff` raised `TypeError: 'int' object is not iterable`
     # for any pair where either run declared a step — every project that adopted `@run.step`,
-    # which is the feature the digests exist for. `run.py:3472` writes `len(r["steps"])` and
-    # omits the key when zero; the comment there says THE COUNT, NOT THE LIST in capitals.
+    # which is the feature the digests exist for. `Run._append_history` writes `len(r["steps"])`
+    # and omits the key when zero; the comment there says THE COUNT, NOT THE LIST in capitals.
     #
     # A count is still a comparison, just a weaker one: "2 steps vs 3" is a real finding, and
     # "2 vs 2" is NOT grounds for `unchanged`, because two different steps count the same.

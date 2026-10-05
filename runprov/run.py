@@ -957,22 +957,22 @@ class Run:
             "argv": list(sys.argv),
             # A relative script path in `command` means nothing without this.
             #
-            # `_posix`, NEVER `str()` [L-07]. THE DISPOSITION OF THIS ONE WAS REFUTED BY THIS
-            # MODULE'S OWN DOCUMENT. It was filed as a decision rather than a repair, by analogy
-            # with `history_destination` — but that exemption is stated for *a field that is
-            # sometimes a type name*, and `cwd` is always a path. The same docstring states the
-            # rule for this side: **if a reader ever needs to JOIN on it, the repair is a second
-            # machine-readable field, not a spelling change** — and K-17 made `cwd` joined on,
-            # by anchoring `inputs_verify` to it. A path a rule resolves against cannot be
-            # spelled one way on the machine that wrote it and another on the machine that
-            # checks it.
+            # L-07 made this `_posix`; that was reverted, and the measurement is below [M].
+            # THE DISPOSITION OF THIS ONE WAS REFUTED BY THIS MODULE'S OWN DOCUMENT. It was
+            # filed as a decision rather than a repair, by analogy with `history_destination` —
+            # but that exemption is stated for *a field that is sometimes a type name*, and
+            # `cwd` is always a path. The same docstring states the rule for this side: **if a
+            # reader ever needs to JOIN on it, the repair is a second machine-readable field,
+            # not a spelling change** — and K-17 made `cwd` joined on, by anchoring
+            # `inputs_verify` to it. A path a rule resolves against cannot be spelled one way on
+            # the machine that wrote it and another on the machine that checks it.
             # `str()`, NOT `_posix()`, AND THE REASON IS MEASURED ON THE WINDOWS LEG [L-27].
             # L-07 changed this to `_posix()` and 15 tests went red on Windows alone, because
-            # THE WRITER READS THIS FIELD BACK AND COMPARES IT AS A STRING: line 2165 is
-            # `if p.is_absolute() or str(pathlib.Path.cwd()) == self.record["cwd"]`. On POSIX the
-            # two spellings are byte-identical, so the local gate cannot see the difference; on
-            # Windows `str()` is `C:\Users\...` and `_posix()` is `C:/Users/...`, the comparison
-            # fails, and EVERY relative input path is recorded absolute instead.
+            # THE WRITER READS THIS FIELD BACK AND COMPARES IT AS A STRING: `Run._anchor` opens
+            # with `if p.is_absolute() or str(pathlib.Path.cwd()) == self.record["cwd"]`. On
+            # POSIX the two spellings are byte-identical, so the local gate cannot see the
+            # difference; on Windows `str()` is `C:\Users\...` and `_posix()` is `C:/Users/...`,
+            # the comparison fails, and EVERY relative input path is recorded absolute instead.
             #
             # So the spelling of this field is not free: it is one side of an equality with
             # `str(pathlib.Path.cwd())`. L-07's intent was right and its target was wrong — the
@@ -1010,7 +1010,7 @@ class Run:
                 # What "code" meant for THIS record. A boolean whose definition lives only
                 # in the caller's configuration is uninterpretable once the run is history.
                 "code_paths": list(self.project.code_paths),
-                "script_file": str(sp) if sp else None,
+                "script_file": _posix(sp) if sp else None,
                 "script_sha256": sha256(sp) if sp and sp.is_file() else None,
             },
             "environment": {

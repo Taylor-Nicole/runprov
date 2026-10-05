@@ -970,10 +970,6 @@ def test_the_recorded_command_is_re_runnable(tmp_path):
     cmd = run.record["command"]
     assert sys.executable in cmd, "which interpreter ran it"
     assert run.record["argv"] == sys.argv
-    # `_posix`, NOT `str()` [L-06/L-07]: the field is a RECORDED PATH and the code now
-    # spells it one way on every platform. Comparing against the platform's native
-    # spelling is `df4964b` exactly — seven jobs green, Windows red — and it is Audit K's
-    # own tenth test smell: a test asserting what the host supplies.
     #: `str()`, NOT `_posix()` [L-27] — see the sibling premise in the gate's anchoring test. The
     #: writer spells this field with `str()` deliberately, because it is one side of an equality.
     assert run.record["cwd"] == str(pathlib.Path.cwd()), (
@@ -30272,10 +30268,19 @@ def test_every_recorded_path_is_spelled_one_way_on_every_platform():
 #: join on where the history went, the repair is a second machine-readable field, not a spelling
 #: change.* It is not in the set below because the derivation never found it there.
 #: `cwd` IS ABSENT AND THAT IS A MEASUREMENT, NOT AN OMISSION [L-27]. L-07 `_posix`-spelled the
-#: record's `cwd` and 15 tests went red on the Windows leg alone, because `run.py:2165` compares
+#: record's `cwd` and 15 tests went red on the Windows leg alone, because `Run._anchor` compares
 #: that field with `str(pathlib.Path.cwd())` as a string. The spelling of `cwd` is one side of an
 #: equality, so it is not free; `project_root` has no reader and stays.
-_ALSO_PATHS = frozenset({"artifact", "history", "project_root", "root"})
+#: `script_file` JOINED THIS SET WITH THE REPAIR THAT PUT IT IN SCOPE [M/guard-1, guard-2]. It is
+#: `run.py`'s `"script_file": _posix(sp) if sp else None` — a recorded absolute path that was
+#: spelled `str()` for its whole life, twenty-two lines below the `project_root` L-07 fixed in the
+#: same `"code"` dict, and in nobody's list. It is a `_posix` site so the derived side below
+#: carries it, and it is declared here so the name survives losing that site; both halves and the
+#: branch-aware walk had to land in ONE commit, because every two-of-three combination is RED.
+#: The ground for the repair is `_posix`'s own docstring — *THE ONE SPELLING EVERY RECORDED PATH
+#: USES* — and the permanence of a history line, NOT a consumer: there is no `ast.Compare` in the
+#: package mentioning `script_file`, so by L-27's rule the spelling was free to change.
+_ALSO_PATHS = frozenset({"artifact", "history", "project_root", "root", "script_file"})
 
 
 def test_no_recorded_path_is_spelled_with_a_bare_str():
@@ -30333,21 +30338,50 @@ def test_no_recorded_path_is_spelled_with_a_bare_str():
                 return x.value
             return None
 
+        #: BRANCH-AWARE, AND DELIBERATELY NO DEEPER [M/guard-2]. The three shapes above test the
+        #: TOP node of a keyed value, so the same revert wrapped in a conditional expression was
+        #: invisible: measured, `verify.py`'s `_posix(path)` reverted to `str(path)` is RED naming
+        #: the site, and that same revert written `str(path) if path else ""` left the WHOLE SUITE
+        #: at RC=0 — the scope-pattern defect, found again inside a guard written to stop it.
+        #:
+        #: A DEEP `ast.walk` OF THE VALUE IS THE WRONG WIDENING, and it was measured rather than
+        #: argued: it gains `code`, `onerror` and `terminal_log` on the derived side, which breaks
+        #: the equality below, and it reports the legitimate `_posix(str(...))` in `hashing.py`'s
+        #: `onerror` as an offender together with `run.py`'s `script_file` keyed as `code` — a
+        #: report that misnames its own finding. So: `IfExp` arms and `BoolOp` operands, nothing
+        #: else. The package has 24 keyed values of those two shapes and exactly one of them is a
+        #: path, so the absence of false positives here is structural rather than luck.
+        def branches(v: ast.expr) -> list[ast.expr]:
+            """The arms a keyed value can hide the call in — and no other descent."""
+            if isinstance(v, ast.IfExp):
+                return [*branches(v.body), *branches(v.orelse)]
+            if isinstance(v, ast.BoolOp):
+                return [b for x in v.values for b in branches(x)]
+            return [v]
+
         out: list[tuple[str, str, str]] = []
         for node in ast.walk(ast.parse(source, filename=name)):
             if isinstance(node, ast.Dict):
                 for k, v in zip(node.keys, node.values, strict=False):
                     key = key_of(k)
-                    if key is not None and is_the_call(v):
-                        out.append((key, f"{name}:{v.lineno}", ast.unparse(v)))
-            elif isinstance(node, ast.Assign) and is_the_call(node.value):
-                for t in node.targets:
-                    if isinstance(t, ast.Subscript):
-                        key = key_of(t.slice)
-                        if key is not None:
-                            out.append((key, f"{name}:{node.lineno}", ast.unparse(node)))
-            elif isinstance(node, ast.keyword) and node.arg and is_the_call(node.value):
-                out.append((node.arg, f"{name}:{node.value.lineno}", ast.unparse(node)))
+                    if key is None:
+                        continue
+                    for arm in branches(v):
+                        if is_the_call(arm):
+                            out.append((key, f"{name}:{arm.lineno}", ast.unparse(arm)))
+            elif isinstance(node, ast.Assign):
+                for arm in branches(node.value):
+                    if not is_the_call(arm):
+                        continue
+                    for t in node.targets:
+                        if isinstance(t, ast.Subscript):
+                            key = key_of(t.slice)
+                            if key is not None:
+                                out.append((key, f"{name}:{node.lineno}", ast.unparse(node)))
+            elif isinstance(node, ast.keyword) and node.arg:
+                for arm in branches(node.value):
+                    if is_the_call(arm):
+                        out.append((node.arg, f"{name}:{arm.lineno}", ast.unparse(node)))
         return out
 
     sources = {
@@ -30384,6 +30418,21 @@ def test_no_recorded_path_is_spelled_with_a_bare_str():
             if key.endswith("path") or key in scope
         }
 
+    #: THE OFFENDER ARM BELOW IS STRUCTURALLY UNREACHABLE FOR A SINGLE-SITE FIELD, AND THAT IS
+    #: WHY THE REPAIRS IN SCOPE HERE HAVE NO NORMAL DEMONSTRATION [M]. `scope` is
+    #: `_ALSO_PATHS | posix_spelled`, and the equality above holds
+    #: `_ALSO_PATHS == {derived minus *path}` — so a name that does not end in `path` is in scope
+    #: only while something still spells it `_posix`. Revert the ONE site a single-site field has
+    #: and the name leaves the DERIVED side in the same stroke: the equality fails, and that
+    #: assert precedes this one. Measured at HEAD on the field L-27 cleared, nothing else changed
+    #: — `"script_file"`'s neighbour `"project_root": _posix(root)` put back to `str(root)` is RED
+    #: at the equality above, accusing `_ALSO_PATHS` itself, and it NEVER names the line in
+    #: `run.py`. The same is true of `script_file` from the commit that added it onward.
+    #: `artifact` has THREE `_posix` sites, so reverting one of them leaves the name on the
+    #: derived side and this arm does fire — which is why L-05's own measurement looked
+    #: informative and does not generalise. Writing "RED unfixed: the guard names the line" for a
+    #: one-site field would be false; what holds those fields is the EQUALITY, and what holds the
+    #: matcher is the probe below.
     offenders = {}
     for name, src in sources.items():
         offenders |= offenders_in(src, name)
@@ -30408,7 +30457,14 @@ def test_no_recorded_path_is_spelled_with_a_bare_str():
         "f(script_path=str(p))\n"
         'rec = {"artifact": str(p)}\n'
         'rec["cwd"] = str(p)\n'
-        "f(history=str(p))\n",
+        "f(history=str(p))\n"
+        #: AND ONE LINE PER BRANCH ARM [M/guard-2], for the same reason the three shapes each get
+        #: two: without these the branch-aware walk could be a no-op — the top-node half would
+        #: answer every probe line and the new half would never be exercised, which is the
+        #: "green because it is uninformed" shape the widening was filed against.
+        'rec = {"root": str(p) if p else None}\n'
+        'rec["artifact"] = None if p is None else str(p)\n'
+        'f(history=str(p) or "")\n',
         "<probe>",
     )
     assert hits == {
@@ -30422,10 +30478,16 @@ def test_no_recorded_path_is_spelled_with_a_bare_str():
         #: `<probe>:8` IS `rec["cwd"] = str(p)` AND IT IS DELIBERATELY NOT HERE [L-27]. The probe
         #: still writes that line, so its absence from `hits` proves the scan IGNORES a name
         #: outside its scope rather than proving the scan is blind — a control in the other
-        #: direction, free. `cwd` left the scope because `run.py:2165` compares that field with
+        #: direction, free. `cwd` left the scope because `Run._anchor` compares that field with
         #: `str(pathlib.Path.cwd())` as a string, so its spelling is one side of an equality and
         #: `_posix` broke 15 tests on the Windows leg.
         "<probe>:9": "history=str(p)",
+        #: THE THREE BRANCH ARMS [M/guard-2]: an `IfExp` body, an `IfExp` orelse and a `BoolOp`
+        #: operand. `<probe>:10` is the exact shape `run.py`'s `script_file` had while it was
+        #: spelled `str()` and this scan could not see it.
+        "<probe>:10": "str(p)",
+        "<probe>:11": "rec['artifact'] = None if p is None else str(p)",
+        "<probe>:12": "history=str(p) or ''",
     }, f"the scan cannot see its own subject in all three shapes: {hits}"
 
 
@@ -35888,12 +35950,8 @@ def test_inputs_verify_anchors_a_recorded_path_on_the_runs_own_cwd_and_not_the_g
     assert sorted(entries) == ["data/m.tsv", "data/refs"], (
         f"the premise of K-17: the recorded paths are RELATIVE, verbatim as registered: {entries}"
     )
-    # `_posix`, NOT `str()` [L-06/L-07]: the field is a RECORDED PATH and the code now
-    # spells it one way on every platform. Comparing against the platform's native
-    # spelling is `df4964b` exactly — seven jobs green, Windows red — and it is Audit K's
-    # own tenth test smell: a test asserting what the host supplies.
     #: `str()`, NOT `_posix()` [L-27]. This premise was written while `cwd` was `_posix`-spelled;
-    #: that spelling was reverted because `run.py:2165` compares the field with
+    #: that spelling was reverted because `Run._anchor` compares the field with
     #: `str(pathlib.Path.cwd())` as a string, and `_posix` broke 15 tests on the Windows leg. Ask
     #: the same function the writer asks — which is the rule that made this assertion wrong twice,
     #: once in each direction.

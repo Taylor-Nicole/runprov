@@ -250,6 +250,53 @@ platform's native spelling. Leaving them would have reproduced `df4964b` exactly
 green, Windows red, and a local gate that structurally cannot see the class.
 
 
+### Fixed — a SEVENTH recorded path was spelled the platform's way, and the guard could not see it
+
+Audit M, `guard-1` and `guard-2`. **Three parts, and every two-of-three combination was measured
+RED, so they land in one commit.** No key is renamed, no digest convention moves, and R-9 is not
+engaged — this is L-06's disposition applied to the field next door.
+
+**`code.script_file` (`runprov.run.v1`, `run.py`) used `str()`**, twenty-two lines below the
+`code.project_root` L-07 repaired in the same `"code"` dict and in no list this package keeps. On
+Windows one record carried `C:/Users/lab` for `project_root` beside `C:\Users\lab\scripts\align.py`
+for `script_file`. The ground for the repair is `_posix`'s own docstring — *the one spelling every
+recorded path uses, forward slashes on every platform* — and the permanence of a history line, **not
+a consumer:** derived by AST, **no comparison anywhere in the package reads this field**, and the
+only one in the suite is a membership test for v1 records. So by L-27's rule the spelling was free
+to change, which is what made it safe rather than what made it necessary.
+
+**On Windows this moves a value where the field is absolute**, which is the `_caller_file` route; a
+caller that passes `script_path=` records what it was given, unresolved, and that is unchanged.
+Records written earlier are not rewritten. **Measured on the seven released histories: nothing
+moves** — all seven record `script_file` relative (`corpus_scenario.py`), and twelve commands over
+each of the seven trees are byte-identical before and after.
+
+**And the guard was blind to the SHAPE as well as to the name.**
+`test_no_recorded_path_is_spelled_with_a_bare_str` tested the TOP node of a keyed value: measured,
+`verify.py`'s `_posix(path)` reverted to `str(path)` is RED naming the site, and the identical
+revert written `str(path) if path else ""` left the **whole suite** at exit 0 — which is exactly the
+shape `script_file` had. The scan now unwraps the arms of a conditional expression and the operands
+of a boolean value before it looks for the call, with **one probe line per arm** so the widening
+cannot become a no-op. A deeper walk of the value was measured and rejected: it reports the
+legitimate `_posix(str(...))` inside `hashing.py`'s `onerror` as an offender and names
+`script_file` under the wrong key, which is a report that misnames its own finding.
+
+**The offender arm cannot be the demonstration for a single-site field, and the guard now says so.**
+Its scope is the declared table united with the names the package actually spells `_posix`, and the
+declared table is held equal to the derived one — so reverting the one site such a field has takes
+the name off the derived side in the same stroke, and the EQUALITY assert fails first. Verified on
+`project_root`: the revert is red accusing the table, and it never names the line. On POSIX
+`str(PosixPath(...))` and `_posix(...)` are the same string, so no content assertion on this
+platform distinguishes any of this from its absence; the hosted matrix is the instrument, exactly as
+for L-06 and L-07.
+
+**Six stale `file.py:line` citations are replaced by names** — four pointing at the `cwd` string
+equality, which the commit that wrote *line 2165* is the commit that moved to 2178, and two in
+`diff.py` pointing thirteen and twenty-six lines wide of the history projection's own fields. They
+now name `Run._anchor` and `Run._append_history`. C-03 already decided this class: a line number in
+a comment can be held by nothing, a function name can.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise
