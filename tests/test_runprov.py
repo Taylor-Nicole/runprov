@@ -30280,7 +30280,14 @@ def test_every_recorded_path_is_spelled_one_way_on_every_platform():
 #: The ground for the repair is `_posix`'s own docstring — *THE ONE SPELLING EVERY RECORDED PATH
 #: USES* — and the permanence of a history line, NOT a consumer: there is no `ast.Compare` in the
 #: package mentioning `script_file`, so by L-27's rule the spelling was free to change.
-_ALSO_PATHS = frozenset({"artifact", "history", "project_root", "root", "script_file"})
+_ALSO_PATHS = frozenset(
+    #: `symlink_target` JOINED WITH THE M-01 REPAIR: `hashing.describe` records
+    #: `os.readlink`'s answer, which is the native spelling on Windows, and it is now
+    #: `_posix(link_target)`. It is derivable on the right-hand side for the same reason
+    #: every other member is — something spells it `_posix` — which is the condition L-19
+    #: states for a declared table to stay held by equality.
+    {"artifact", "history", "project_root", "root", "script_file", "symlink_target"}
+)
 
 
 def test_no_recorded_path_is_spelled_with_a_bare_str():
@@ -30518,7 +30525,18 @@ def test_inside_describe_every_str_is_wrapped_in_posix():
     IT IS ALSO THE ONLY WAY THIS FIX CAN FAIL HERE. On Linux `str(PosixPath(p))` and
     `_posix(PosixPath(p))` are byte-identical, so no assertion about a record's CONTENT can
     tell the repaired function from the unrepaired one on the platform this suite runs on.
-    A line no mutation can distinguish is decoration; this is the mutation."""
+    A line no mutation can distinguish is decoration; this is the mutation.
+
+    AND THE EXACT SHAPE IT CANNOT SEE, NAMED HERE BECAUSE THE SENTENCE ABOVE IS WHY [M-01].
+    *`describe` contains exactly ONE `str(` call* is true, and it is precisely what makes this
+    blind to a recorded path that arrives WITHOUT a `str()`: `link_target = os.readlink(path)`
+    is already a string, so `"symlink_target": link_target` had no `str(` for this to find and
+    no `Call` node for the scope guard to test. The question *is there a bare `str`* is the
+    wrong question for that family, and asking it harder cannot fix it.
+    `test_inside_describe_every_recorded_path_arrives_through_posix` asks a different one — did
+    the VALUE come through `_posix`, whatever produced it — and that is the guard this pair
+    needs. Both stay: this one is an AST property that needs no fixture, and that one needs a
+    real symlink on disk and skips where the platform has none."""
 
     def scan(source: str, name: str) -> tuple[dict[str, str], dict[str, str]]:
         """Every `str(...)` inside `describe`, split into wrapped and bare."""
@@ -30581,6 +30599,120 @@ def test_inside_describe_every_str_is_wrapped_in_posix():
     # "nothing found and nothing looked at are the same green" failure in its purest form.
     with pytest.raises(AssertionError, match="looked at nothing"):
         scan("def something_else(path):\n    return str(path)\n", "<no-describe>")
+
+
+@requires_symlinks
+def test_inside_describe_every_recorded_path_arrives_through_posix(tmp_path, monkeypatch):
+    """THE SAME INVARIANT ASKED ABOUT THE VALUE, BECAUSE THE SYNTAX QUESTION HAS A BLIND SPOT
+    AND M-01 WAS IN IT. `link_target = os.readlink(path)` is ALREADY a string, so
+    `"symlink_target": link_target` carried the native spelling into the record with no `str(`
+    for the sibling guard to find and no `Call` node at all for the scope guard to test — the
+    fourth undocumented recorded path, six lines below `"path": _posix(path)`, inside the one
+    function this package calls the funnel. Two guards, two different reasons to be blind, and
+    the field was in nobody's list.
+
+    DERIVED, NOT LISTED, AND THE DERIVATION IS THE FILESYSTEM'S. The tempting repair is a set
+    of path-producing functions — `os.readlink`, `os.path.realpath`, `os.readlink`'s next
+    sibling — and that is the list-of-sites shape this repository has had to widen nine times;
+    the eighth path-producer would arrive outside it exactly as `os.readlink` arrived outside
+    the other two. So the question here has no function names in it: **`_posix` is replaced by
+    a marking version, `describe` is run over a real tree, and every recorded string that NAMES
+    SOMETHING ON DISK must carry the mark.** What counts as a path is decided by the operating
+    system, not by this file, so a value that arrives from a call nobody here has heard of is
+    caught on the day it is recorded.
+
+    IT IS ALSO THE DEMONSTRATION THE SPELLING REPAIRS OTHERWISE CANNOT HAVE. On Linux
+    `str(PosixPath(p))` and `_posix(p)` are byte-identical, so no assertion about a record's
+    content distinguishes either state; the mark is not a separator, so this one does. Measured:
+    dropping `_posix` from `symlink_target` is RED here naming `symlink_target`, where the two
+    existing guards stay green.
+
+    WHY NOT AN AST GUARD TOO: because the AST sibling above is kept and this is the other half.
+    That one needs no fixture and holds on every platform; this one needs a real symlink and
+    skips where the platform cannot make one. Neither subsumes the other.
+    """
+    monkeypatch.chdir(tmp_path)
+    mark = "<posix>"
+    spelled = runprov.hashing._posix
+    monkeypatch.setattr(runprov.hashing, "_posix", lambda p: mark + spelled(p))
+
+    #: ONE WALK, TWO USES, for the reason the scope guard's `keyed_calls` is one function: the
+    #: side that reports an offender and the side that proves the walk saw anything at all must
+    #: be about the same leaves, or a green means nothing.
+    def strings_in(obj: object, where: str = "") -> list[tuple[str, str]]:
+        """Every string leaf of a record, keyed by its own path through the structure."""
+        if isinstance(obj, dict):
+            return [
+                leaf
+                for k, v in obj.items()
+                for leaf in strings_in(v, f"{where}.{k}" if where else str(k))
+            ]
+        if isinstance(obj, list):
+            return [leaf for i, v in enumerate(obj) for leaf in strings_in(v, f"{where}[{i}]")]
+        return [(where, obj)] if isinstance(obj, str) else []
+
+    def unspelled_in(rec: object) -> dict[str, str]:
+        """Those leaves that NAME SOMETHING ON DISK and did not come through `_posix`.
+
+        `os.path.lexists`, not `exists`: a recorded `symlink_target` may point at another link,
+        and a dangling one is still a path that was recorded.
+        """
+        return {
+            where: value
+            for where, value in strings_in(rec)
+            if value and mark not in value and os.path.lexists(value)
+        }
+
+    real = tmp_path / "real.tsv"
+    real.write_text("id\tv\nx\t1\n", encoding="utf-8")
+    link = tmp_path / "link.tsv"
+    link.symlink_to(real)
+    tree = tmp_path / "t"
+    (tree / "sub").mkdir(parents=True)
+    (tree / "sub" / "a.tsv").write_text("a\n", encoding="utf-8")
+    (tree / "to_sub").symlink_to(tree / "sub", target_is_directory=True)
+
+    #: A FILE, A LINK AND A DIRECTORY, so the three arms of `describe` are all exercised: the
+    #: link is the one that carries M-01's field, and the directory is the one that carries the
+    #: three lists L-05 found. A record with no symlink in it cannot fail this.
+    names = ("real.tsv", "link.tsv", "t")
+    records = {name: runprov.hashing.describe(pathlib.Path(name)) for name in names}
+    for name, rec in records.items():
+        bad = unspelled_in(rec)
+        assert not bad, (
+            f"`describe({name})` recorded a path that never went through `_posix`: {bad}. Every "
+            f"recorded path is spelled the one way whatever produced it, and `os.readlink`'s "
+            f"answer is the platform's — that is M-01."
+        )
+        # NON-VACUITY ON THE REAL RECORD: "no unspelled path" and "no path at all" are the same
+        # green, and only the record says which one happened.
+        assert [w for w, v in strings_in(rec) if mark in v], (
+            f"`describe({name})` recorded no path through the funnel at all: {rec}"
+        )
+
+    #: AND THE PREMISE OF THE WHOLE TEST, ASSERTED RATHER THAN ASSUMED: the link's record
+    #: actually carries M-01's field, and it carries it SPELLED. Without this the loop above is
+    #: satisfied by `path` alone and the field this guard exists for need not be present.
+    assert mark in records["link.tsv"]["symlink_target"], (
+        f"the subject is missing: {records['link.tsv']}"
+    )
+
+    # AND THE DETECTOR MUST BE ABLE TO REPORT ONE, through the same walk and at depth. A
+    # matcher that had stopped recognising a path would satisfy the negative above in silence.
+    probe = unspelled_in(
+        {
+            "path": mark + "real.tsv",
+            "symlink_target": "real.tsv",
+            "kind": "file",
+            "mtime_utc": "2026-01-01T00:00:00Z",
+            "sha256": "0" * 64,
+            "nested": [{"skipped_nonregular": "t/sub"}],
+        }
+    )
+    assert probe == {
+        "symlink_target": "real.tsv",
+        "nested[0].skipped_nonregular": "t/sub",
+    }, f"the detector cannot tell a spelled path from a bare one, at any depth: {probe}"
 
 
 # ------------------------------------- the gate others can adopt: pre-commit and an Action

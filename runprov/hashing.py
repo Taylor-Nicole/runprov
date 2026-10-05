@@ -412,7 +412,15 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
         # valid while describing different bytes. The digest below is the TARGET's, which is
         # right -- that is what was read -- so the record has to say that is what happened.
         "symlink": link_target is not None,
-        **({"symlink_target": link_target} if link_target is not None else {}),
+        # `_posix`, NOT the raw `os.readlink` result [M-01]. This is a RECORDED PATH six lines
+        # below `"path": _posix(path)`, inside the function whose docstring IS the invariant, and
+        # it was the fourth undocumented one: on Windows `os.readlink` answers in the native
+        # spelling, so one record carried `out/link.tsv` beside `..\real\target.tsv`. Both
+        # existing guards missed it and for different reasons — the scope guard because the name
+        # was in no list and there is no `Call` node in the value at all, and the `describe`-only
+        # guard because there is no `str(...)` here to find, which its own docstring is what says.
+        # `test_inside_describe_every_recorded_path_arrives_through_posix` is the one that can.
+        **({"symlink_target": _posix(link_target)} if link_target is not None else {}),
         "size_bytes": st.st_size,
         "mtime_utc": dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"

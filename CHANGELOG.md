@@ -297,6 +297,37 @@ now name `Run._anchor` and `Run._append_history`. C-03 already decided this clas
 a comment can be held by nothing, a function name can.
 
 
+### Fixed — `symlink_target` was the fourth undocumented recorded path, inside the funnel itself
+
+Audit M, M-01. `hashing.describe` records `os.readlink`'s answer, and `os.readlink` answers in the
+platform's spelling: on Windows one record carried `out/link.tsv` for `path` and
+`..\real\target.tsv` for `symlink_target`, **six lines apart, in the function whose docstring is
+the invariant** — *`_posix` … applied here, at `describe`, because every input and every output goes
+through it; one funnel, one rule, and no list of call sites to keep extending.* It is now
+`_posix(link_target)`. No key is renamed and R-9 is not engaged. The one reader in the tree takes
+`pathlib.Path(...).name` of it, which both spellings answer the same way.
+
+**No released history can move:** none of the seven corpus trees registers a symlink, so no record
+any released wheel wrote carries this field at all — which is also why the cross-version harness
+could not have caught it.
+
+**Both existing guards missed it, for two different reasons, and that is the part worth reading.**
+The scope guard missed it because the name was in no list and the recorded value contains **no
+`Call` node at all** to test. `test_inside_describe_every_str_is_wrapped_in_posix` missed it because
+there is no `str(...)` here to find — its own docstring asserts that `describe` contains exactly
+**one** `str(` call, which is true, and is exactly why asking *is there a bare `str`* harder could
+never have found this.
+
+**So the new guard asks about the VALUE instead, and derives what a path is from the operating
+system.** `_posix` is replaced by a marking version, `describe` is run over a real file, a real
+symlink and a real directory, and **every recorded string that names something on disk must carry
+the mark.** There is no list of path-producing functions in it, so the next value that arrives from
+a call nobody here has heard of is caught on the day it is recorded rather than in the audit after
+it. It is also the only guard in this family that can fail on Linux: a mark is not a separator.
+Measured — dropping `_posix` from `symlink_target` is red naming the field, while the two existing
+guards stay green on that mutation.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise
