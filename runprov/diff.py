@@ -37,7 +37,7 @@ __all__: list[str] = []
 
 import typing
 
-from .terminal import printable_lines
+from ._report import printable_lines
 
 #: The dimensions, in the order a reader wants them: whether it finished, what went in, what
 #: came out, what the code was, what it was asked to do, what happened inside, what it cost.

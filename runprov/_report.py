@@ -48,6 +48,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import typing
 
 #: Set to any value other than these to silence the per-run confirmation. An env var and
 #: not a `Project` field: the noise belongs to the INVOCATION (a chain, a cron job, a CI
@@ -84,6 +85,63 @@ if hasattr(os, "register_at_fork"):  # pragma: no branch - present on every POSI
     os.register_at_fork(after_in_child=_reset_lock_after_fork)
 
 
+def printable(text: str) -> str:
+    """One field's worth of text, safe to interpolate into a line a person reads.
+
+    LIFTED OUT OF `__main__._render_unreadable` [K-21], WHOSE OWN ARGUMENT IS THE REASON:
+    *printing that raw hands the terminal whatever corrupted the file*. The same class is
+    reachable from a RECORD and from a POLICY rather than from a torn line — a declared input
+    path may contain a newline (legal on POSIX and stored verbatim), and a policy's `why` may be
+    a paragraph of rationale, which is the most natural thing a laboratory writes. A newline
+    inside one interpolated field forges WHOLE LINES on the page, including a line reading
+    exactly `GATE: MET (exit 0)` inside a VIOLATED report, and a CI log scraped for `GATE:` reads
+    the forged one first. **So this is not an adversarial case:** an innocent multi-line `why`
+    garbles the page identically.
+
+    IT LIVES HERE AND NOT IN `__main__` BECAUSE OF THE IMPORT DIRECTION. `policy.py` must not
+    import the command module — `PolicyError`'s own docstring forbids it in those words, because
+    a policy parser that dragged `__main__` in would make `import runprov.policy` build an
+    argument parser — so a transform both of them need belongs in a module both may import.
+
+    AND IT MOVED HERE FROM `terminal.py` FOR THE SAME REASON, ONE LAYER DOWN [Audit M].
+    `_write` below is the package's only stderr emission point and it needs this transform;
+    `terminal` imports `_report`, so `_report` importing `terminal` is a circular import that
+    stops the package coming up — measured, not reasoned. This module imports nothing from the
+    package, so it is where a transform everything needs can live. The nine modules that use
+    it import it from here; `terminal.py` carries the comment saying why it is not there.
+
+    THE JSON SIDE IS LEFT ALONE, deliberately: `json.dumps` already escapes, and a payload
+    carrying pre-escaped text would hand a consumer a string that is not the one in the record.
+    One structure, two renderings — and escaping is the renderer's job.
+
+    A SPACE SURVIVES AND NOTHING ELSE NON-PRINTABLE DOES. `str.isprintable()` is False for a
+    space, so a page whose columns were escaped would be unreadable; every other character that
+    is not printable — a newline, a tab, a terminal escape sequence, a stray control byte —
+    becomes its `unicode_escape` form. Accented letters, CJK and the em dash are printable and
+    pass through unchanged, which matters for a `why` a French laboratory writes.
+    """
+    return "".join(
+        c if c.isprintable() or c == " " else c.encode("unicode_escape").decode() for c in text
+    )
+
+
+def printable_lines(lines: typing.Iterable[str]) -> list[str]:
+    """Every line a renderer is about to emit, escaped. `printable`, applied once per line.
+
+    THE SHAPE L-03 EARNED. `printable` is a FIELD transform, and escaping fields one at a time
+    is a list of call sites — the thing this repository has had to widen nine times, and the
+    thing that left five renderers forgeable after K-21 escaped two. A renderer has exactly one
+    place where its lines become output; applying the transform there covers every field it
+    interpolates, including the ones nobody has written yet.
+
+    PER LINE AND NOT OVER THE JOINED PAGE, which is the one way to get this wrong: `printable`
+    of a whole page escapes the newlines the page is MADE of, and the result is one very long
+    line. The separator is the renderer's, and only what sits between separators came from
+    outside.
+    """
+    return [printable(line) for line in lines]
+
+
 def _write(line: str) -> None:
     """Write one line to stderr, and NEVER raise while doing it.
 
@@ -97,7 +155,29 @@ def _write(line: str) -> None:
     A provenance module that kills the run it is describing is the failure this whole
     package exists to prevent, so the message degrades instead: unencodable characters
     become the target encoding's replacement and the warning still arrives.
+
+    THE PACKAGE'S ONE STDERR EMISSION POINT, AND THEREFORE WHERE IT IS ESCAPED
+    [Audit M, escape-4]. All 27 `diagnostic()` calls in `run.py`, all 3 in `sinks.py` and
+    every `summary()` line arrive here, and each of them interpolates values from outside
+    this source file: paths a run opened, a policy's `why`, an exception's own words. A
+    `\r` or an `\x1b[2K` in one of those moves or erases the line already printed.
+
+    **PER LINE, AND THE NEWLINE IS DELIBERATELY NOT TOUCHED, which is the whole of what this
+    does and does not buy.** `printable(message)` over the whole string was measured and is
+    REFUTED: a four-line `AUTO-DETECTED project:` note came out as ONE line of `\n`
+    literals, and at least eight `diagnostic()` callers pass embedded newlines on purpose
+    (`run.py` at 622, 2187, 2264, 2492, 3245, 3302, 3442). `printable_lines`'s own docstring
+    names that as *the one way to get this wrong*. So the message is split on its own
+    separator and each line escaped.
+
+    **WHICH MEANS A NEWLINE FORGERY IS NOT CLOSED HERE AND CANNOT BE.** A `\n` inside an
+    interpolated field is indistinguishable, at this point, from a `\n` the caller wrote for
+    layout: both are just the separator by the time the message is one string. Closing that
+    half needs the transform where the FIELD still exists — which is why `run.py`'s
+    `UNREGISTERED READ` escapes `shown` at the site, and why the in-flight banner in
+    `__main__` escapes its list of lines rather than the joined page.
     """
+    line = "\n".join(printable_lines(line.split("\n")))
     stream = sys.stderr
     # NO STDERR IS NOT A REASON TO USE STDOUT. `print(..., file=None)` falls back to stdout
     # by CPython's own rule, and `sys.stderr is None` is the documented state under

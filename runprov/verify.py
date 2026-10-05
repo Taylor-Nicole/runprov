@@ -89,6 +89,7 @@ import re
 import typing
 
 from ._atomic import TEMP_SUFFIX
+from ._report import printable_lines
 from .hashing import (
     PIN_ANCHOR,
     PIN_BODY_FIELD,
@@ -99,7 +100,6 @@ from .hashing import (
     describe,
     pin_digest,
 )
-from .terminal import printable_lines
 
 # Pins are written at the top of an artifact (`open_output` writes the header first), so
 # reading the whole file to find one would mean reading every byte of a 50 GB BAM to learn

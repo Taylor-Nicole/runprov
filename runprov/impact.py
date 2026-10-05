@@ -39,7 +39,7 @@ __all__: list[str] = []
 import pathlib
 import typing
 
-from .terminal import printable_lines
+from ._report import printable_lines
 
 
 class Step(typing.NamedTuple):

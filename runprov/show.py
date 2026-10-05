@@ -50,8 +50,8 @@ import platform
 import sys
 import typing
 
+from ._report import printable, printable_lines
 from .hashing import PIN_DIGEST_CHARS, _posix, describe, moved_since
-from .terminal import printable, printable_lines
 from .verify import GONE, OK, STALE, UNVERIFIABLE
 
 #: How many distinct input versions to name before summarising. A script that has read forty

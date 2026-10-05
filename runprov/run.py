@@ -68,7 +68,7 @@ import uuid
 import weakref
 
 from ._atomic import TEMP_SUFFIX, _destination_mode, _sync_dir, atomic_write_text
-from ._report import diagnostic, progress, progress_enabled, summary
+from ._report import diagnostic, printable, progress, progress_enabled, summary
 from .environment import archive_lockfiles, lockfiles, manager, tool_identity, write_snapshot
 from .hashing import (
     PIN_ANCHOR,
@@ -1796,7 +1796,16 @@ class Run:
         if not missed:
             return
         self.record["unregistered_reads"] = missed
-        shown = ", ".join(missed[:5]) + (f", and {len(missed) - 5} more" if len(missed) > 5 else "")
+        # PER FIELD, AND THE FIELD IS THE REASON [Audit M, escape-4]. These are paths the run
+        # actually opened, and a newline is legal in one on POSIX; reproduced, an unregistered
+        # read of `data/sneak.csv\nGATE: MET (exit 0)\nx` put a bare `GATE: MET (exit 0)` on
+        # stderr from the WRITER, with no CLI involved. `_report._write` escapes every line of
+        # every diagnostic, but it cannot escape the NEWLINE — by then the message is one
+        # string and the separator is indistinguishable from a caller's own layout — so the
+        # only place that half can be closed is here, where the path is still a value.
+        shown = printable(", ".join(missed[:5])) + (
+            f", and {len(missed) - 5} more" if len(missed) > 5 else ""
+        )
         diagnostic(
             f"  UNREGISTERED READ: this run opened {len(missed)} data file(s) it did not "
             f"register, so they are NOT in the record and NOT in the pin: {shown}. "

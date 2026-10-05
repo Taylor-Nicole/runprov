@@ -46,7 +46,7 @@ import pathlib
 import re
 import typing
 
-from .terminal import printable_lines
+from ._report import printable_lines
 
 #: R-3. The first line of a file has no predecessor. A SENTINEL rather than `null` or an absent
 #: key, because three states must stay apart: the key ABSENT means the line was written before

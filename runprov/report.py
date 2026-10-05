@@ -34,7 +34,7 @@ import typing
 
 from . import hashing
 from . import verify as verify_mod
-from .terminal import printable_lines
+from ._report import printable_lines
 
 #: The width of the rules, matching `show`'s so a printed page from either looks like the
 #: same document.

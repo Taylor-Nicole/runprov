@@ -417,6 +417,50 @@ directory made them disagree on the **baseline**.
 `\nGATE: MET (exit 0)\n` on the line it belongs to. Only its power to start a new line is gone.
 
 
+### Fixed — stderr is escaped too, in three different shapes, because one would not do
+
+Audit M, escape-4. L-23 escaped `gate`'s four stderr diagnostics and `_diag`'s docstring
+declared that narrow scope deliberately — *a package-wide stderr transform is a different
+decision*. This is that decision, taken in the three shapes the sites actually need. **The
+package-wide `printable(message)` it was first filed as does not work, three ways:**
+
+1. **It does not import.** `_report` is the one stderr emission point, and `terminal` imports
+   `_report`, so `_report` importing `terminal` raised `ImportError: cannot import name
+   'diagnostic' from partially initialized module 'runprov._report'` and the package did not
+   come up at all. So `printable` and `printable_lines` **moved to `_report`**, down the import
+   graph to the module that imports nothing from the package. Nine modules import them from
+   there now; `terminal.py` keeps the comment saying why they left.
+2. **It collapses every multi-line diagnostic.** A four-line `AUTO-DETECTED project:` note came
+   out as one line of `\n` literals, and at least eight `diagnostic()` callers pass embedded
+   newlines on purpose — which is exactly what `printable_lines`'s own docstring names as *the
+   one way to get this wrong*.
+3. **The whole suite was GREEN with that regression installed**, so the suite was no evidence of
+   safety here.
+
+**The three shapes:**
+
+* **`_report._write`, per line.** Every `diagnostic()` call in `run.py` (27) and `sinks.py` (3)
+  and every `summary()` line arrive here; each is split on its own separator and each line
+  escaped. `\r`, `\x1b[2K` and stray control bytes are gone from the whole writer-side stderr
+  surface. **A NEWLINE IS NOT CLOSED HERE AND CANNOT BE**, and the docstring says so: by this
+  point the message is one string, and a forged separator is indistinguishable from a
+  deliberate one. Multi-line notes still arrive as multiple lines — measured.
+* **`run.py`'s `UNREGISTERED READ` warning, per field.** It names paths the run actually opened,
+  and a newline is legal in one on POSIX. Reproduced: an unregistered read of
+  `data/sneak.csv\nGATE: MET (exit 0)\nx` put a bare `GATE: MET (exit 0)` on stderr **from the
+  writer, with no CLI involved**. Escaping `shown` at the site is the only place that half can
+  be closed.
+* **`__main__`'s in-flight banner, per line of the list it already joins.** Its `script` comes
+  from a `.incomplete/*.json` marker **or from a `runprov.start.v1` line in the history with no
+  marker file at all** — reproduced, platform-neutral, and invisible to both escaping oracles:
+  the property guard's `_acted_on` whitelists `\n` by construction, and no corpus recipe
+  produces an unfinished run.
+
+**The other 51 `print(..., file=sys.stderr)` sites in `__main__` are NOT routed through one
+transform.** Several are deliberately multi-line, and a single transform over them is the
+regression above in a second place. 105 of 105 released-corpus rows are byte-identical.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise

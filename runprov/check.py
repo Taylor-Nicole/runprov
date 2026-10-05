@@ -46,7 +46,7 @@ import collections
 import pathlib
 import typing
 
-from .terminal import printable_lines
+from ._report import printable_lines
 
 #: Directories whose code is somebody else's. Shared intent with `observe.VENDORED`, kept
 #: separate because this one also excludes build output, which a running process never has.

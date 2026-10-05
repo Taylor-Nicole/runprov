@@ -73,6 +73,16 @@ import threading
 import time
 import typing
 
+# `printable` AND `printable_lines` MOVED TO `_report` [Audit M, escape-4]. They were
+# defined in THIS module, and `_report` — the package's one stderr emission point, through
+# which all 27 `diagnostic()` calls in `run.py` and all 3 in `sinks.py` pass — could
+# therefore not use them: the line below is why. `from ._report import printable` inside
+# `_report` is a cycle, and the obvious one-line fix raised `ImportError: cannot import name
+# 'diagnostic' from partially initialized module 'runprov._report'` with the package not
+# coming up at all. Measured. So the transform moved DOWN the import graph to the module
+# that imports nothing from the package, rather than being copied — two spellings of one
+# property is the defect this repository keeps finding. Nine modules import them from
+# `_report` now; nothing imports them from here.
 from ._report import diagnostic
 from .hashing import _posix
 
@@ -497,56 +507,6 @@ def _flush_std() -> None:
             # mid-swap. Reporting it through `diagnostic` would write to the very stream
             # that just failed, so the exception is named and dropped deliberately.
             del exc
-
-
-def printable(text: str) -> str:
-    """One field's worth of text, safe to interpolate into a line a person reads.
-
-    LIFTED OUT OF `__main__._render_unreadable` [K-21], WHOSE OWN ARGUMENT IS THE REASON:
-    *printing that raw hands the terminal whatever corrupted the file*. The same class is
-    reachable from a RECORD and from a POLICY rather than from a torn line — a declared input
-    path may contain a newline (legal on POSIX and stored verbatim), and a policy's `why` may be
-    a paragraph of rationale, which is the most natural thing a laboratory writes. A newline
-    inside one interpolated field forges WHOLE LINES on the page, including a line reading
-    exactly `GATE: MET (exit 0)` inside a VIOLATED report, and a CI log scraped for `GATE:` reads
-    the forged one first. **So this is not an adversarial case:** an innocent multi-line `why`
-    garbles the page identically.
-
-    IT LIVES HERE AND NOT IN `__main__` BECAUSE OF THE IMPORT DIRECTION. `policy.py` must not
-    import the command module — `PolicyError`'s own docstring forbids it in those words, because
-    a policy parser that dragged `__main__` in would make `import runprov.policy` build an
-    argument parser — so a transform both of them need belongs in a module both may import.
-
-    THE JSON SIDE IS LEFT ALONE, deliberately: `json.dumps` already escapes, and a payload
-    carrying pre-escaped text would hand a consumer a string that is not the one in the record.
-    One structure, two renderings — and escaping is the renderer's job.
-
-    A SPACE SURVIVES AND NOTHING ELSE NON-PRINTABLE DOES. `str.isprintable()` is False for a
-    space, so a page whose columns were escaped would be unreadable; every other character that
-    is not printable — a newline, a tab, a terminal escape sequence, a stray control byte —
-    becomes its `unicode_escape` form. Accented letters, CJK and the em dash are printable and
-    pass through unchanged, which matters for a `why` a French laboratory writes.
-    """
-    return "".join(
-        c if c.isprintable() or c == " " else c.encode("unicode_escape").decode() for c in text
-    )
-
-
-def printable_lines(lines: typing.Iterable[str]) -> list[str]:
-    """Every line a renderer is about to emit, escaped. `printable`, applied once per line.
-
-    THE SHAPE L-03 EARNED. `printable` is a FIELD transform, and escaping fields one at a time
-    is a list of call sites — the thing this repository has had to widen nine times, and the
-    thing that left five renderers forgeable after K-21 escaped two. A renderer has exactly one
-    place where its lines become output; applying the transform there covers every field it
-    interpolates, including the ones nobody has written yet.
-
-    PER LINE AND NOT OVER THE JOINED PAGE, which is the one way to get this wrong: `printable`
-    of a whole page escapes the newlines the page is MADE of, and the result is one very long
-    line. The separator is the renderer's, and only what sits between separators came from
-    outside.
-    """
-    return [printable(line) for line in lines]
 
 
 def _write_all(fd: int, data: bytes) -> None:

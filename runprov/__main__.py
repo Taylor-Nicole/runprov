@@ -75,6 +75,7 @@ from . import resources as resources_mod
 from . import show as show_mod
 from . import verify as verify_mod
 from ._atomic import TEMP_SUFFIX, atomic_write_text
+from ._report import printable, printable_lines
 from .export import FORMATS as EXPORT_FORMATS
 from .export import default_filename, render
 from .hashing import PIN_DIGEST_CHARS
@@ -93,7 +94,6 @@ from .show import (
     staleness,
 )
 from .show import render_yaml as _yaml_doc
-from .terminal import printable, printable_lines
 from .verify import FAILING, GONE, OK, STALE, render_report, verify
 from .watch import unregistered
 
@@ -1608,7 +1608,14 @@ class _InFlightScan:
                 f"#   … and {len(ordered) - MARKERS_SHOWN} more, oldest not shown. "
                 f"`runprov prune` clears the ones that describe nothing running."
             )
-        print("\n".join(out), file=sys.stderr)
+        # THE EMISSION POINT OF THIS BANNER [Audit M, escape-4], and it is already the one
+        # join. `script` comes from a `.incomplete/*.json` marker OR from a
+        # `runprov.start.v1` line in the history with NO MARKER FILE AT ALL — reproduced,
+        # platform-neutral, and invisible to both of the escaping oracles: the property
+        # guard's `_acted_on` whitelists `\n` by construction, and no corpus recipe
+        # produces an unfinished run. A forged `script` printed a bare
+        # `GATE: MET (exit 0)` on stderr inside `runprov show`.
+        print("\n".join(printable_lines(out)), file=sys.stderr)
         n = sum(1 for r in pending if r.get("state") == show_mod.INTERRUPTED)
         if n:
             print(

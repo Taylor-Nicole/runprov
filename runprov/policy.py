@@ -65,7 +65,7 @@ import types
 import typing
 
 from . import hashing
-from .terminal import printable
+from ._report import printable
 
 #: A rule's three answers. `CANNOT_CHECK` is the whole design (R-2, R-3): *violated* and
 #: *unverifiable* are different findings, and a policy engine that collapses them produces the
