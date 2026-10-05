@@ -341,8 +341,8 @@ def _q(value: object) -> str:
 
     `ensure_ascii=False`, AND IT IS THE ONLY THING ON THIS PAGE THAT WAS A WRONG RECORD
     [Audit M, escape-6]. At the default `ensure_ascii=True`, `json.dumps` renders a character
-    above the BMP as a SURROGATE PAIR — `"\ud83e\uddac"` — and **a surrogate escape is legal
-    JSON and illegal YAML**. Measured end to end: `yaml.CSafeLoader` RAISES
+    above the BMP as a SURROGATE PAIR — `"\\ud83e\\uddac"` — and **a surrogate escape is
+    legal JSON and illegal YAML**. Measured end to end: `yaml.CSafeLoader` RAISES
     `ScannerError: found invalid Unicode character escape code`, and `yaml.SafeLoader` returns
     a string that does NOT equal the record. So `log --format yaml`, `show --format yaml` and
     the on-disk `prov/*.prov.yml` and `prov/transformation_log.yml` carried a path that is not

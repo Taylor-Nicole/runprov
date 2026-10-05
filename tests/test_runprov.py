@@ -9802,7 +9802,14 @@ def test_to_yaml_finds_the_script_file_in_a_sidecar_record_too(tmp_path, monkeyp
     from_record = yaml.safe_load(runprov.to_yaml(run.record))[0]
     history = _lines(tmp_path / "runs.jsonl")
     from_history = yaml.safe_load(cli._yaml(history))[0]
-    assert from_record["script"] == str(script)
+    #: `_posix()`, NOT `str()` [Audit M, guard-1]. This view renders the record's
+    #: `code.script_file`, which the writer spells `_posix` on every platform, so a premise
+    #: that asks the host for its native spelling is red on Windows and green on seven other
+    #: jobs. THIS IS L-27'S MECHANISM FOR THE THIRD TIME AND THE FIELD'S OWN CLEARANCE MISSED
+    #: IT: an AST sweep for comparisons naming `script_file` cannot see this one, because the
+    #: reader spells the key `script`. A field's readers are not found by searching for the
+    #: field's name.
+    assert from_record["script"] == runprov.hashing._posix(script)
     assert from_record["script"] == from_history["script"], "the two views must agree"
 
 
@@ -30476,6 +30483,74 @@ _ALSO_PATHS = frozenset(
 )
 
 
+def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
+    """A LONE SURROGATE IN A DOCSTRING IS A MODULE PYTHON 3.13 WILL NOT COMPILE.
+
+    Measured, and this guard exists because it shipped: `4b2ac25` wrote
+    `"\\ud83e\\uddac"` into `show._q`'s docstring as a live escape rather than as text,
+    while explaining that a surrogate escape is legal JSON and illegal YAML. Python read the
+    two escapes as two real lone surrogates, and 3.13 refuses to compile a module whose
+    docstring cannot be encoded to UTF-8:
+
+        py_compile.compile("runprov/show.py", doraise=True)
+        PyCompileError: UnicodeEncodeError: 'utf-8' codec can't encode characters in
+        position 795-796: surrogates not allowed
+
+    So `from .show import render_yaml` raised at IMPORT, the whole test module failed to
+    COLLECT, and the leg reported one error and zero tests. **The local gate could not see it
+    and did not need the matrix to:** `ci.py` runs 3.12, where this compiles, and a 3.13
+    interpreter was on the host the whole time. The CHEAPEST instrument was never asked.
+
+    **A docstring ABOUT an escape has to show the text, not contain the character** — the same
+    confusion as a comment that quotes a regex without raw-stringing it, and the same class as
+    [L-13], where a document taught the opposite of the contract it described.
+
+    Scoped to DOCSTRINGS, not to every constant, and that is derived rather than cautious: a
+    lone surrogate in a function body compiles fine on 3.13 (measured, by compiling every file
+    in the tree), and this suite legitimately holds several — `_safe_for_pin` is tested with
+    `"x\\ud800y.tsv"` because a filesystem can hand the package exactly that. Widening this to
+    all constants would turn those into offenders, which is a guard that cannot pass.
+
+    **THIS GUARD'S FIRST CATCH WAS ITS OWN DOCSTRING**, which is the whole argument for it:
+    the paragraph above named the surrogate as a live escape while explaining that a
+    docstring must show the text. It went red naming this line before it had ever run
+    against the tree, and the care taken writing the sentence substituted for nothing.
+    """
+    import ast
+
+    roots = [*sorted(pathlib.Path("runprov").glob("*.py")), pathlib.Path("tests/test_runprov.py")]
+    roots += [pathlib.Path("ci.py"), *sorted(pathlib.Path("tools").glob("*.py"))]
+    roots = [p for p in roots if p.is_file()]
+    assert len(roots) >= 20, f"the sweep found only {len(roots)} source files"
+
+    offenders: dict[str, str] = {}
+    checked = 0
+    for path in roots:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(
+                node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+            ):
+                continue
+            doc = ast.get_docstring(node, clean=False)
+            if doc is None:
+                continue
+            checked += 1
+            try:
+                doc.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                offenders[f"{path}:{node.lineno}"] = str(exc)
+
+    #: THE SWEEP MUST HAVE READ SOMETHING. Without this, a walk that stopped finding docstrings
+    #: would report zero offenders and read exactly like a clean tree.
+    assert checked >= 400, f"only {checked} docstrings were examined, so this proves nothing"
+    assert not offenders, (
+        f"these docstrings hold a character Python 3.13 cannot compile, so the module will not "
+        f"IMPORT there and every test in it reports as a collection error: {offenders}. A "
+        f"docstring about an escape must show the text -- double the backslashes"
+    )
+
+
 def test_no_recorded_path_is_spelled_with_a_bare_str():
     """DERIVED, NOT LISTED — the ninth and tenth instance of the pattern this repository
     keeps finding, and the reason this test exists rather than seven fixed lines.
@@ -39331,7 +39406,24 @@ def test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on(
     #: refusal pages needed: a command whose page is a refusal, or whose fixture lost the file
     #: the walk had to find, hands no renderer a line with a newline in it and lands here.
     #: Measured at 12 of 12 carriers, so the claim is an equality in all but shape.
-    vacuous = sorted(name for name in carried if not reached.get(name))
+    #: TWO LEGS' ONLY NEWLINE CHANNEL IS A FILENAME, and the fixture already puts both
+    #: behind `_can_name_a_file_with_a_newline`. THIS ASSERTION DID NOT KNOW THAT, so the
+    #: Windows leg of `4b2ac25` went red here naming `verify <tree>`: the docstring above
+    #: states that those legs sit behind the probe, and nothing held the statement — a
+    #: docstring is not a contract until something checks it, one layer in, in the test
+    #: written to retire exactly that shape.
+    #:
+    #: On a host whose names cannot hold a control character the forged TEXT still reaches
+    #: `verify`'s page through the run's `script`, so the name stays in `carried` while no
+    #: renderer is ever handed a newline. That is the probe's own *the defect cannot exist
+    #: here*, not a vacuous leg. THE EXEMPTION IS EMPTY WHERE THE CHANNEL EXISTS, so it
+    #: cannot start covering a real regression on the hosts that can see one.
+    filename_only = (
+        set() if _can_name_a_file_with_a_newline(tmp_path) else {"verify <tree>", "check"}
+    )
+    vacuous = sorted(
+        name for name in carried if not reached.get(name) and name not in filename_only
+    )
     assert not vacuous, (
         f"[Audit M escape-5] {vacuous} printed the forged TEXT but no renderer of theirs was "
         f"ever handed a line with a newline in it, so this leg asserts nothing about the "
