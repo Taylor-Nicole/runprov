@@ -3576,6 +3576,16 @@ class Run:
             "generation": r["generation"],
             # So `grep '"status": "failed"' runs.jsonl` is the whole query. A history of
             # successes only cannot tell you how often a step fails.
+            #
+            # THE DEFAULT STAYS HERE, AND HERE IS THE ONLY PLACE IT MAY [M]. This module is the
+            # field's WRITER: `_seal` runs `setdefault("status", "ok")` and the in-flight branch
+            # of `write()` assigns `RUNNING_STATUS`, so by the time this projection runs the key
+            # is always present and the default is unreachable. It is kept rather than tightened
+            # to `r["status"]` because a KeyError raised HERE loses the record to protect it,
+            # which is the failure the `finished_utc` comment three hundred lines up names in
+            # those words. Every READER of this field goes through `show.status_of` instead; a
+            # reader that defaults it to a verdict says something the record does not, and
+            # `test_only_the_writer_of_status_may_default_it` holds that.
             "status": r.get("status", "ok"),
             "failure": r.get("failure"),
             "started_utc": r["started_utc"],

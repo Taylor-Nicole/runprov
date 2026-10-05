@@ -35641,6 +35641,213 @@ def test_the_rules_agree_with_records_this_package_really_wrote(tmp_path, monkey
     assert tally["asked_of_nothing"] is False and tally["reasons"], tally
 
 
+def test_only_the_writer_of_status_may_default_it(tmp_path, capsys, monkeypatch):
+    """THE GATE AND `show` READ A STATUS-LESS RECORD DIFFERENTLY, AND ONE OF THEM INVENTED A
+    VERDICT. Audit M, the second row the field-comparison table surfaced. Five sites spelled
+    `record.get("status", "ok")` — including the page `show` prints and the entry `log --format
+    yaml` writes — while `policy._finished_ok` spelled `record.get("status")` and answered
+    CANNOT_CHECK. One history, two answers, chosen by which command the reader typed.
+
+    WHICH DEFAULT IS RIGHT, DECIDED BY WHAT THE RECORD MEANS AND NOT BY THE MAJORITY. The gate's
+    is. ADR-0018 R-3 says an unevaluable rule is NEVER a pass, and `_finished_ok`'s own docstring
+    adds the other half — *A MISSING STATUS IS NOT A FAILURE* — so absence is neither verdict.
+    `_status` in `diff.py` reaches the same answer in its own words (*a missing `status` BLOCKS
+    rather than compares*), and `show.py` already states the principle four lines above the line
+    that broke it, about the field next door: *a run that PREDATES the field does not know the
+    answer, and rendering "clean" for it would be the reassuring lie the flag exists to stop.*
+    So every reader now goes through `show.status_of`, which names the third state.
+
+    AND THE STATUS-LESS RECORD IS NOT HYPOTHETICAL, which is worth saying because the row was
+    filed as though it were: `runprov.start.v1` carries no `status` AT ALL, and it is three of
+    every six lines in all seven released histories. It never reaches either side only because
+    `__main__._is_start` drops it in `_load` and `policy` drops it in `_counted` — Taylor's
+    ruling of 2026-10-03, recorded in `policy.Assessment.unfinished`. What does reach them is a
+    hand-edited history, a line from another tool, and `compare()`, which `_status`'s docstring
+    names as *pure and public and fed hand-built mappings*.
+
+    DERIVED, NOT LISTED, AND THE DERIVATION IS THE WRITER'S. The permitted defaults are not a
+    set of filenames: they are *whatever module assigns this field*, found by AST, and the
+    verdict words are *whatever values that module assigns*, found the same way. A sixth reader
+    added next year with a `"ok"` default fails this the day it is written, and a verdict word
+    added to the writer is in scope the day it exists.
+
+    WHAT THIS GUARD DOES NOT COVER, SAID RATHER THAN GLOSSED: `export.py`'s RO-Crate
+    `actionStatus` is `CompletedActionStatus if rec.get("status") == "ok" else
+    FailedActionStatus`, so a status-less record is exported as an ACCUSATION — the opposite
+    invention, in a published interchange format a third party reads, and `export.py` two
+    paragraphs later carries `runprov:status: null` honestly for the same record. It is not a
+    `.get` default, so the rule below does not reach it; it is a filed row and a decision about
+    an interchange field rather than something to change in passing. Named here so the next
+    reader does not take this test's green as covering it.
+    """
+    #: THE WRITER AND ITS VOCABULARY, BOTH DERIVED.
+    package = pathlib.Path(runprov.__file__).parent
+    sources = {m.name: m.read_text(encoding="utf-8") for m in sorted(package.glob("*.py"))}
+    assert len(sources) >= 24, f"the walk found only {sorted(sources)}"
+
+    def value_of(node, module):
+        """A string literal, or a module constant resolved to one. Anything else is not a word."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            held = getattr(getattr(runprov, module.removesuffix(".py"), None), node.id, None)
+            return held if isinstance(held, str) else None
+        return None
+
+    writers = {}
+    for name, src in sources.items():
+        for node in ast.walk(ast.parse(src, filename=name)):
+            assigned = None
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "setdefault"
+                and len(node.args) == 2
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "status"
+            ):
+                assigned = node.args[1]
+            elif isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Subscript)
+                and isinstance(t.slice, ast.Constant)
+                and t.slice.value == "status"
+                for t in node.targets
+            ):
+                assigned = node.value
+            word = value_of(assigned, name) if assigned is not None else None
+            if word is not None:
+                writers.setdefault(name, set()).add(word)
+
+    assert writers == {"run.py": {"ok", "failed", runprov.run.RUNNING_STATUS}}, (
+        f"the writer of `status` is not where this thinks, or its vocabulary moved: {writers}. "
+        f"This test derives BOTH from the code; if a second module now assigns the field, the "
+        f"question of who owns the default has a new answer and this test is the wrong shape."
+    )
+    (writer,) = writers
+    verdicts = writers[writer]
+
+    def verdict_defaults(src, name):
+        """Every `<record>.get("status", <a verdict word>)` — the shape that invents an answer."""
+        found = {}
+        for node in ast.walk(ast.parse(src, filename=name)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and len(node.args) == 2
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "status"
+                and value_of(node.args[1], name) in verdicts
+            ):
+                found[f"{name}:{node.lineno}"] = ast.unparse(node)
+        return found
+
+    inventing = {}
+    for name, src in sources.items():
+        if name == writer:
+            continue  # the writer may: see the comment at `_append_history`'s projection
+        inventing |= verdict_defaults(src, name)
+    assert not inventing, (
+        f"a READER of `status` defaults it to a verdict the writer writes: {inventing}. A record "
+        f"that does not carry the field says nothing, and `show.status_of` is where that is "
+        f"named — `policy._finished_ok` answers CANNOT_CHECK for the same record, and two views "
+        f"of one run disagreeing is the failure this field's readers exist to prevent."
+    )
+    # NON-VACUITY, THROUGH THE SAME MATCHER: a probe for each verdict word, so narrowing the
+    # derivation or losing an argument condition fails here rather than quietly matching nothing.
+    probe = verdict_defaults(
+        "\n".join(f'x = r.get("status", {w!r})' for w in sorted(verdicts))
+        + '\nx = r.get("status")\nx = r.get("status", "?")\nx = r.get("other", "ok")\n',
+        "<probe>",
+    )
+    assert sorted(probe) == [f"<probe>:{i}" for i in range(1, len(verdicts) + 1)], (
+        f"the scan cannot see its own subject, one line per verdict word: {probe}"
+    )
+    #: AND THE EXEMPTION'S OWN SUBJECT, ASSERTED: `run.py` is skipped above, so if its projection
+    #: ever stops carrying that default the skip is covering nothing and should go.
+    assert verdict_defaults(sources[writer], writer), (
+        f"`{writer}` is exempted here and no longer has a defaulted `status` read, so the "
+        f"exemption now hides nothing — delete it rather than leave it unexplained"
+    )
+
+    #: AND THE TWO SIDES, ASKED THE SAME QUESTION ABOUT THE SAME RECORD. The structural half
+    #: forbids the shape; this half is the agreement itself.
+    nameless = {
+        "schema": "runprov.history.v2",
+        "script": "s",
+        "run_uid": "u" * 32,
+        "run_id": "r",
+        "generation": "(default)",
+        "started_utc": "2026-01-01T00:00:00Z",
+        "finished_utc": None,
+        "command": "python s.py",
+        "cwd": str(tmp_path),
+    }
+    assert "status" not in nameless, "the premise"
+    assert runprov.show.status_of(nameless) == runprov.show.UNKNOWN_STATUS
+    gate = runprov.policy.rules()["finished_ok"].judge(nameless, runprov.policy.Context())
+    assert gate.outcome == runprov.policy.CANNOT_CHECK, (
+        f"[ADR-0018 R-3] the gate side of the agreement moved: {gate}"
+    )
+
+    #: AND THROUGH THE COMMANDS, which is where the divergence was visible. Measured first,
+    #: then asserted: `show --format json`'s project view carries COUNTERS and no `status` key
+    #: for the project summary, and `log --format json` passes the record through verbatim and
+    #: adds nothing — so the sites that invented `"ok"` were `show <target>`'s view, the artifact
+    #: block, `render_yaml`'s entry, `log`'s text page and `show`'s own per-script counters. All
+    #: five are below, and each is asserted on the fact the reader actually sees.
+    log = tmp_path / "h.jsonl"
+    monkeypatch.chdir(tmp_path)
+
+    def page(argv, record):
+        log.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        runprov.configure(root=tmp_path, run_log=log)
+        runprov.__main__.main([*argv, "--log", str(log)])
+        return capsys.readouterr().out
+
+    #: THE COUNTERS: a two-bucket tally has no third bucket, so an unknown status increments
+    #: NEITHER and `runs` is what says so. `ok: 1` was the reassuring lie; `failed: 1` would be
+    #: the opposite overstatement, and counting neither is the only answer the payload can hold
+    #: without a new key.
+    counted = json.loads(page(["show", "--format", "json"], dict(nameless)))["project"]
+    assert [counted["runs"], *[counted["scripts"]["s"][k] for k in ("runs", "ok", "failed")]] == [
+        1,
+        1,
+        0,
+        0,
+    ], f"a status-less record is counted as a verdict: {counted}"
+    recorded = json.loads(page(["show", "--format", "json"], dict(nameless, status="ok")))[
+        "project"
+    ]
+    assert recorded["scripts"]["s"]["ok"] == 1, (
+        f"and a RECORDED `ok` must still be counted, or the arm above is uninformed: {recorded}"
+    )
+
+    #: THE VIEW THAT CARRIES THE VALUE: `show <target>` and the artifact block both render the
+    #: status itself, where the third state is expressible and is the whole answer.
+    assert runprov.show.status_of(dict(nameless)) == runprov.show.UNKNOWN_STATUS
+    view = runprov.show.run_view(dict(nameless))
+    assert view["status"] == runprov.show.UNKNOWN_STATUS, (
+        f"`show`'s own view of a status-less record: {view['status']!r}"
+    )
+    #: AND IT SURVIVES THE PAGE, which is what a reader sees: `render_run` does
+    #: `view["status"].upper()` for anything that is not `ok`, so a view with no status at all
+    #: used to be a KeyError there and the `"ok"` default is what hid it.
+    assert "UNKNOWN" in runprov.show.render_run(view), runprov.show.render_run(view)
+
+    #: AND `log`'s PAGE, which marked such a record `  ` — the mark a recorded success gets.
+    #: `!!` now means *not a recorded success*, and the clause below it says which of the two
+    #: reasons applies rather than printing `FAILED  ?:` with an empty message.
+    text = page(["log"], dict(nameless))
+    assert "!!" in text and "NOT RECORDED" in text and "FAILED" not in text, (
+        f"`log`'s page either calls a status-less record clean or accuses it of failing: {text}"
+    )
+    failed = page(["log"], dict(nameless, status="failed", failure={"type": "V", "message": "m"}))
+    assert "FAILED     V: m" in failed and "NOT RECORDED" not in failed, (
+        f"and a RECORDED failure must still reach the failure clause: {failed}"
+    )
+
+
 def test_the_watch_can_be_switched_off_and_the_rule_says_so_rather_than_pretending(tmp_path):
     """[ADR-0018 R-6] [ADR-0018 R-10] Audit K, K-18. The one row a skeptic recommends NOT fixing
     before release, and this is where the decision is recorded so it stays a decision.

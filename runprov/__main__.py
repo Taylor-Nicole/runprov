@@ -268,7 +268,10 @@ def _timeline_entry(r: dict[str, typing.Any], *, separator: bool = True) -> str:
     streaming writer always knows, unlike which record is last (L-74).
     """
     out: list[str] = [""] if separator else []
-    status = r.get("status", "ok")
+    #: THROUGH THE ONE OWNER [M]. This said `r.get("status", "ok")`, so a record that does not
+    #: carry the field was marked `  ` — the same mark a recorded success gets — on the page a
+    #: reader scans for which runs failed.
+    status = show_mod.status_of(r)
     mark = "  " if status == "ok" else "!!"
     out.append(f"{mark} {r.get('started_utc', '?'):20} {r.get('script', '?')}")
     out.append(f"     run_id     {r.get('run_id', '?')}   generation {r.get('generation', '?')}")
@@ -296,7 +299,16 @@ def _timeline_entry(r: dict[str, typing.Any], *, separator: bool = True) -> str:
         out.append(
             f"     out  {str(o.get('sha256') or '')[:PIN_DIGEST_CHARS]}  {o.get('path', '?')}"
         )
-    if status != "ok":
+    #: AND THE THIRD STATE GETS ITS OWN LINE RATHER THAN THE FAILURE CLAUSE [M]. `status` used
+    #: to default to `"ok"` here, so a record that does not carry the field was marked `  ` and
+    #: read as a recorded success. Sending it through `status_of` fixes the mark — `!!` means
+    #: *not a recorded success* — but this clause would then have printed `FAILED  ?:` with an
+    #: empty message, accusing a run of failing on no evidence, which is the overstatement
+    #: `policy._finished_ok` and `diff._status` both refuse in their own words. So an absent
+    #: status says that it is absent, and only a RECORDED non-ok status reaches the failure line.
+    if status == show_mod.UNKNOWN_STATUS:
+        out.append("     status     NOT RECORDED — this line does not say whether the run ended")
+    elif status != "ok":
         f = r.get("failure") or {}
         out.append(f"     FAILED     {f.get('type', '?')}: {str(f.get('message', ''))[:160]}")
     if r.get("history_destination"):

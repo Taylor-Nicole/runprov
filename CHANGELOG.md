@@ -328,6 +328,57 @@ Measured — dropping `_posix` from `symlink_target` is red naming the field, wh
 guards stay green on that mutation.
 
 
+### Fixed — `show` called a status-less record `ok` while the gate could not check it
+
+Audit M, the second row the field-comparison table surfaced. Five readers spelled
+`record.get("status", "ok")` — `show <target>`'s view, the artifact block, `render_yaml`'s entry,
+`show`'s per-script counters and `log`'s text page — while `policy._finished_ok` spelled
+`record.get("status")` and answered CANNOT_CHECK. **One history gave a reader two answers,
+chosen by which command they typed.**
+
+**The gate's default is the right one, and it is the one that stayed.** ADR-0018 R-3: an
+unevaluable rule is never a pass. `_finished_ok`'s own docstring states the other half — *A
+MISSING STATUS IS NOT A FAILURE* — and `diff._status` reaches the same answer in its own words,
+*a missing `status` BLOCKS rather than compares*. So absence is neither verdict, and
+`show.status_of` is where that third state is now named. `show.py` already stated the principle
+four lines above the line that broke it, about the field next door: *a run that PREDATES the field
+does not know the answer, and rendering "clean" for it would be the reassuring lie the flag exists
+to stop.*
+
+**Two of the five sites had nowhere to put a third state, and routing them naively would have
+turned the lie into an accusation** — which is the part worth reading, because it is what the row
+as filed would have produced:
+
+* `log`'s page marks `!!` for anything that is not `ok` and then prints `FAILED <type>:
+  <message>` thirty lines below. A status-less record would have been accused of failing with an
+  empty message. It now prints `status  NOT RECORDED` instead, and only a RECORDED non-ok status
+  reaches the failure clause.
+* `show --format json`'s per-script tally has two buckets. An unknown status now increments
+  **neither**, and `runs` beside them is what says so — `runs: 1, ok: 0, failed: 0`. **This adds no
+  key to `runprov.show.v1`,** and it makes the tally agree with `log --format json`'s own `failed`,
+  which has always counted explicit failures only.
+
+**Behaviour change, stated:** for a record carrying no `status`, `show <target>` and `show
+--format json` now report `unknown` rather than `ok`; the per-script `ok` count no longer includes
+it; and `log`'s page marks it `!!` with a `NOT RECORDED` line. A record this package wrote is
+unaffected — the only status-less line it writes is `runprov.start.v1`, which every reader drops
+by name before any of this. No released history moves: twelve commands over each of the seven
+corpus trees are byte-identical.
+
+**And `export.py`'s RO-Crate `actionStatus` is the opposite invention and is NOT changed here.** It
+is `CompletedActionStatus if rec.get("status") == "ok" else FailedActionStatus`, so a status-less
+record is exported as an accusation — in a published interchange format, two paragraphs above the
+same function's honest `runprov:status: null`. It is named in the guard's docstring so a reader does
+not take the green as covering it; changing a field a third party reads is a decision of its own.
+
+**The guard derives the permitted default from the writer rather than listing sites**: the module
+that ASSIGNS `status` is found by AST, its verdict vocabulary with it, and no other module may
+supply one of those words as a `.get` default. `run.py`'s history projection keeps its default and
+is the one exemption, with the reason at the line — a KeyError raised in the writer loses the
+record to protect it. Five mutations, each red and each naming its site, including the gate itself
+defaulting to a pass.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise

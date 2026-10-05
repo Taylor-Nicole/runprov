@@ -203,7 +203,7 @@ def run_view(record: dict[str, typing.Any]) -> dict[str, typing.Any]:
     }
     return {
         "run": record.get("script", "?"),
-        "status": record.get("status", "ok"),
+        "status": status_of(record),
         "started": record.get("started_utc", "?"),
         "finished": record.get("finished_utc", "?"),
         "run_id": record.get("run_id", "?"),
@@ -274,7 +274,20 @@ def project_view(
             },
         )
         s["runs"] += 1
-        s["ok" if rec.get("status", "ok") == "ok" else "failed"] += 1
+        #: THREE STATES INTO TWO COUNTERS, AND `runs` IS THE THIRD [M]. This was
+        #: `s["ok" if rec.get("status", "ok") == "ok" else "failed"]`, which counted a record
+        #: that does not carry the field as a SUCCESS; routing it through `status_of` without
+        #: this arm would have counted it as a FAILURE instead, which is the opposite
+        #: overstatement and worse — `policy._finished_ok` refuses it in those words. A
+        #: two-bucket counter has no third bucket, so an unknown status increments NEITHER and
+        #: `runs` above is what says so: `runs: 1, ok: 0, failed: 0` is a reader's cue to look,
+        #: and it adds no key to `runprov.show.v1`. It also makes this agree with `log --format
+        #: json`'s own `failed`, which has always counted explicit failures only.
+        status = status_of(rec)
+        if status == "ok":
+            s["ok"] += 1
+        elif status != UNKNOWN_STATUS:
+            s["failed"] += 1
         s["last"] = rec.get("started_utc", s["last"])
         s["script_file"] = rec.get("script_file") or s["script_file"]
         s["note_keys"].update((rec.get("notes") or {}).keys())
@@ -291,7 +304,7 @@ def project_view(
                 "digest": _short(o),
                 "kind": o.get("kind", "file"),
                 "when": rec.get("started_utc", "?"),
-                "status": rec.get("status", "ok"),
+                "status": status_of(rec),
             }
 
     for s in scripts.values():
@@ -418,7 +431,7 @@ def _yaml_entry(r: dict[str, typing.Any], *, separator: bool = True) -> str:
     code = r.get("code") or {}
     commit = r.get("git_commit") or code.get("git_commit_short") or code.get("git_commit")
     out.append(f"  git_commit: {_q(commit if commit is not None else '?')}")
-    out.append(f"  status: {_q(r.get('status', 'ok'))}")
+    out.append(f"  status: {_q(status_of(r))}")
     # `params` and `summary` are the old log's names for these. What changed is where
     # the values come from: `params` is what argparse actually parsed rather than a
     # re-typed prose copy, and `summary` holds `run.note()` values — typed numbers —
@@ -487,6 +500,42 @@ MODIFIED = "MODIFIED"
 #: the digest rather than merely misaligning. A state added here widens the column with it.
 STATES = frozenset({OK, STALE, GONE, MODIFIED, UNVERIFIABLE})
 STATE_COLUMN = max(len(s) for s in STATES) + 1
+
+
+#: WHAT A RECORD WHOSE `status` IS ABSENT IS CALLED [M]. Not `"ok"`, which is what every
+#: renderer in this module used to answer for it.
+#:
+#: The question *did this run finish, and how* has three answers, and two of them are wrong for
+#: a record that does not carry the field. `"ok"` is the reassuring lie — and the argument
+#: against it is stated four lines above `render_run`'s own `status` line, about the field next
+#: door: *`is False`, never falsy: a run that PREDATES the field does not know the answer, and
+#: rendering "clean" for it would be the reassuring lie the flag exists to stop.* `"failed"` is
+#: the opposite overstatement, and `policy._finished_ok`'s docstring refuses it in those words —
+#: *A MISSING STATUS IS NOT A FAILURE* — as does `_status`'s *a missing `status` BLOCKS rather
+#: than compares*. So the third answer gets a name.
+#:
+#: THE GATE ALREADY ANSWERED THIS WAY and that is the agreement being restored, not a new
+#: policy: `policy._finished_ok` returns CANNOT_CHECK for exactly this record, under ADR-0018
+#: R-3, *an unevaluable rule is never a pass*. A page that called the same record `ok` while the
+#: gate could not check it was two views of one run disagreeing, which is the failure this
+#: renderer's own `git_commit` comment exists to prevent.
+UNKNOWN_STATUS = "unknown"
+
+
+def status_of(record: typing.Mapping[str, typing.Any]) -> str:
+    """A record's status, with absence as a NAMED third state rather than a default verdict.
+
+    ONE OWNER FOR THE QUESTION, which is why this is a function and not five `.get` defaults:
+    the field-comparison table's rule is that a value is safe exactly when every site that
+    reads it pushes through one expression. Five sites spelled `record.get("status", "ok")` and
+    the gate spelled `record.get("status")`, so one history gave a reader two answers depending
+    on which command they typed.
+
+    Anything that is not a non-empty string is unknown too: a hand-edited history or a line from
+    another tool can carry `null`, and `None.upper()` is how a renderer finds out.
+    """
+    status = record.get("status")
+    return status if isinstance(status, str) and status else UNKNOWN_STATUS
 
 
 #: What an in-flight marker can be said to be. A marker exists for the WHOLE of a run, so
