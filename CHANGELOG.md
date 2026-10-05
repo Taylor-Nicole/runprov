@@ -551,6 +551,48 @@ byte-identical. The README's pinned `hcv_genotyping/transformation_log.yml` is t
 **predecessor's** hand-written log and nothing in `show.py` can move it.
 
 
+### Fixed — WHY.md's deleted statement split is guarded by its own deletion notice
+
+Audit M, guard-3. L-08 deleted three hand-typed size figures from WHY.md and left a
+**literal-string tripwire on one of them**, so the split returns freely with fresh numbers and
+the suite stays green. **The filed remedy — L-26's shape, a regex — is refuted three ways, each
+measured:**
+
+* `about ([\d,]+) (record|statement)` matches **README.md's `about 5,500 statements`**, which is
+  the one gated figure in this tree and the one `ci.py` asserts against coverage's own totals. It
+  also matches plausible future prose: *a history of about 3,000 records*.
+* it misses a reworded return — *roughly 3,400 lines that record* is the same claim and the same
+  drift, and no pattern tight enough to avoid the false positive above catches it.
+* **L-26's instrument transplanted literally is RED AT HEAD.** `[\d,]+ (?:statements|branches)`
+  finds `**514 statements**`, which WHY.md keeps on purpose as a dated fact about 2026-08-18 and
+  explains in the same paragraph. A regex cannot tell a live claim from a dated historical one,
+  and WHY.md legitimately holds one of each.
+
+**So the guard is the positive form.** WHY.md documents its own deletion — *THE STATEMENT SPLIT
+THAT STOOD HERE IS DELETED [L-08]* — and that paragraph was guarded by nothing. Its presence can
+pass, cannot false-positive on prose, and fails exactly when somebody rewrites the bullet, which
+is the only route the split can return by. **It is a tripwire and not an instrument**, and the
+test says so: it measures no figure. Measured red by rewriting the bullet with fresh numbers —
+the mutation the old literal tripwire stays green for.
+
+### Changed — `printable`'s docstring now says the non-breaking spaces are escaped, and why
+
+Audit M, escape-7, **REFUSED as a code change.** `printable` escapes U+00A0 and U+202F, which
+French typography puts before `:` `;` `!` `?` and which Word and LibreOffice insert
+automatically, so a French laboratory's policy `why` renders `contrôle\xa0: chaque run`. Every
+measurement in the row reproduces and **none of them is a defect**: the contract is *a space
+survives and nothing else non-printable does*, and the accented letters, CJK and em dash the
+docstring promises all pass.
+
+**The remedy — widen the survivor set to `unicodedata.category(c) == "Zs"` — has a coupling it
+did not mention.** The escaping guard's oracle is `c.isprintable() or c in " \n"`, so letting
+the Zs category survive in production would make the first `why` a French laboratory writes with
+a non-breaking space turn that guard **RED over a legitimate character**. Today the suite is
+green only because no corpus page contains one. Widening the set means widening the oracle in the
+same commit, and neither is worth a legible space. The docstring now records the behaviour, the
+reason, and the coupling; the code is unchanged.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise

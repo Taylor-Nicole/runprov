@@ -119,6 +119,17 @@ def printable(text: str) -> str:
     is not printable — a newline, a tab, a terminal escape sequence, a stray control byte —
     becomes its `unicode_escape` form. Accented letters, CJK and the em dash are printable and
     pass through unchanged, which matters for a `why` a French laboratory writes.
+
+    THAT MEANS U+00A0 AND U+202F — the non-breaking spaces French typography puts before `:`
+    `;` `!` `?`, and that Word and LibreOffice insert automatically — ARE ESCAPED, so such a
+    `why` renders `contrôle\xa0: chaque run` on a filed gate page [Audit M, escape-7]. It is
+    `c == " "` and not `unicodedata.category(c) == "Zs"` on purpose, and the reason is a
+    COUPLING rather than a preference: the escaping guard's oracle is
+    `c.isprintable() or c in " \n"`, so letting the Zs category survive in production would make
+    the first `why` a French laboratory writes with a non-breaking space turn
+    `test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on` RED over a
+    legitimate character. Widening this set means widening that oracle in the same commit, and
+    neither is worth a legible space; the value is still there and still legible either way.
     """
     return "".join(
         c if c.isprintable() or c == " " else c.encode("unicode_escape").decode() for c in text

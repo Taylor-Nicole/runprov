@@ -4732,6 +4732,40 @@ def test_the_quoted_scale_figures_have_not_drifted_out_of_meaning():
         "33% out, and its own stated property stopped holding. The gated statement of this "
         "project's scale is the README's; the claim WHY.md needs is the exported-name count"
     )
+    #: AND THE POSITIVE FORM, WHICH IS THE ONE THAT CAN BOTH PASS AND FAIL [Audit M, guard-3].
+    #: The clause above is a literal-string tripwire on ONE of the split's three figures, so the
+    #: split returns freely with fresh numbers and the suite stays green — which is the row.
+    #:
+    #: THE FILED REMEDY WAS A REGEX AND IT IS REFUTED, THREE WAYS, EACH MEASURED HERE:
+    #:
+    #:   * `about ([\d,]+) (record|statement)` matches README.md's `about 5,500 statements` —
+    #:     the ONE gated figure in this tree — so the guard would be red for the figure `ci.py`
+    #:     itself asserts. It also matches plausible future prose: *a history of about 3,000
+    #:     records* is a sentence this document could legitimately gain.
+    #:   * it misses a reworded return. *roughly 3,400 lines that record* is the same claim and
+    #:     the same drift, and no pattern tight enough to avoid the false positive above catches
+    #:     it. A regex cannot tell a live claim from a dated historical one.
+    #:   * L-26's instrument transplanted literally — `[\d,]+ (?:statements|branches)` — is RED
+    #:     AT HEAD: it finds `**514 statements**` fourteen lines below, which WHY.md keeps ON
+    #:     PURPOSE as a dated fact about 2026-08-18 and explains in the same paragraph.
+    #:
+    #: SO THE ASSERTION IS THAT THE DELETION IS STILL DOCUMENTED. WHY.md records its own
+    #: deletion, and that paragraph was guarded by nothing: it can pass, it cannot false-positive
+    #: on prose, and it fails exactly when somebody rewrites the bullet — which is the only route
+    #: the split can return by, because the split WAS that bullet.
+    #:
+    #: AND IT IS A TRIPWIRE, NOT AN INSTRUMENT. It measures no figure and compares nothing; it
+    #: says that the paragraph explaining why there is no figure here is still present. The
+    #: instrumented statement of this project's scale is the README's, asserted by `ci.py`
+    #: against the totals of the run that just finished, and there is exactly one of it.
+    assert "THE STATEMENT SPLIT THAT STOOD HERE IS DELETED [L-08]" in why, (
+        "[Audit M guard-3] WHY.md no longer documents the deletion of its statement split. That "
+        "paragraph is the only thing standing between this document and three hand-typed sums "
+        "that went 22%, 70% and 33% out of tolerance on no instrument at all, and rewriting the "
+        "bullet is the only route they can return by. If the bullet is being rewritten on "
+        "purpose, the deletion still has to be recorded somewhere a reader of it will look — "
+        "and any NEW size figure in this document needs an instrument before it needs prose."
+    )
 
     drifted = []
     for label, stated, actual in checks:
