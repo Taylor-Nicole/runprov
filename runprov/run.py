@@ -966,7 +966,20 @@ class Run:
             # by anchoring `inputs_verify` to it. A path a rule resolves against cannot be
             # spelled one way on the machine that wrote it and another on the machine that
             # checks it.
-            "cwd": _posix(pathlib.Path.cwd()),
+            # `str()`, NOT `_posix()`, AND THE REASON IS MEASURED ON THE WINDOWS LEG [L-27].
+            # L-07 changed this to `_posix()` and 15 tests went red on Windows alone, because
+            # THE WRITER READS THIS FIELD BACK AND COMPARES IT AS A STRING: line 2165 is
+            # `if p.is_absolute() or str(pathlib.Path.cwd()) == self.record["cwd"]`. On POSIX the
+            # two spellings are byte-identical, so the local gate cannot see the difference; on
+            # Windows `str()` is `C:\Users\...` and `_posix()` is `C:/Users/...`, the comparison
+            # fails, and EVERY relative input path is recorded absolute instead.
+            #
+            # So the spelling of this field is not free: it is one side of an equality with
+            # `str(pathlib.Path.cwd())`. L-07's intent was right and its target was wrong — the
+            # defect is the string comparison, not the spelling, and moving it is a change to a
+            # writer that cannot be tested on this host. Reverted to the state the hosted matrix
+            # proved green on all eight jobs at `df4964b`; the comparison is filed as L-27.
+            "cwd": str(pathlib.Path.cwd()),
             "parameters": params or {},
             "code": {
                 # The detected root, recorded. A module that can be wrong about which

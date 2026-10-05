@@ -17431,7 +17431,9 @@ def test_the_verify_report_names_the_artifact_even_when_the_pin_is_beside_it(tmp
     art, _ = _sidecar_pinned(tmp_path)
     report = runprov.verify.verify([tmp_path], tmp_path)
     names = [r["artifact"] for r in report["artifacts"]]
-    assert str(art) in names
+    #: `_posix`, NEVER `str()` [L-06] — the sixth site, which the five named in that row missed
+    #: and which the Windows leg found.
+    assert runprov.hashing._posix(art) in names
     assert not any(n.endswith(runprov.run.PIN_SIDECAR_SUFFIX) for n in names), names
     assert runprov.verify.render_report(report).count("out.png.prov.txt") == 0
 
@@ -30267,7 +30269,11 @@ def test_every_recorded_path_is_spelled_one_way_on_every_platform():
 #: same docstring states what to do if that ever stops being enough: *if a reader ever needs to
 #: join on where the history went, the repair is a second machine-readable field, not a spelling
 #: change.* It is not in the set below because the derivation never found it there.
-_ALSO_PATHS = frozenset({"artifact", "cwd", "history", "project_root", "root"})
+#: `cwd` IS ABSENT AND THAT IS A MEASUREMENT, NOT AN OMISSION [L-27]. L-07 `_posix`-spelled the
+#: record's `cwd` and 15 tests went red on the Windows leg alone, because `run.py:2165` compares
+#: that field with `str(pathlib.Path.cwd())` as a string. The spelling of `cwd` is one side of an
+#: equality, so it is not free; `project_root` has no reader and stays.
+_ALSO_PATHS = frozenset({"artifact", "history", "project_root", "root"})
 
 
 def test_no_recorded_path_is_spelled_with_a_bare_str():
@@ -30411,7 +30417,12 @@ def test_no_recorded_path_is_spelled_with_a_bare_str():
         "<probe>:5": "path=str(p)",
         "<probe>:6": "script_path=str(p)",
         "<probe>:7": "str(p)",
-        "<probe>:8": "rec['cwd'] = str(p)",
+        #: `<probe>:8` IS `rec["cwd"] = str(p)` AND IT IS DELIBERATELY NOT HERE [L-27]. The probe
+        #: still writes that line, so its absence from `hits` proves the scan IGNORES a name
+        #: outside its scope rather than proving the scan is blind — a control in the other
+        #: direction, free. `cwd` left the scope because `run.py:2165` compares that field with
+        #: `str(pathlib.Path.cwd())` as a string, so its spelling is one side of an equality and
+        #: `_posix` broke 15 tests on the Windows leg.
         "<probe>:9": "history=str(p)",
     }, f"the scan cannot see its own subject in all three shapes: {hits}"
 
