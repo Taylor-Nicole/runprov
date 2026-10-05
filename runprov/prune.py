@@ -57,6 +57,7 @@ import pathlib
 import platform
 import typing
 
+from ._report import printable_lines
 from .show import INTERRUPTED, liveness
 from .show import RUNNING as RUNNING_STATE
 
@@ -274,4 +275,11 @@ def render(p: Plan, gone: int | None, directory: pathlib.Path) -> str:
     out += [f"#   {n} {why}" for n, why in kept if n]
     if not p.remove and not any(n for n, _ in kept):
         out.append("#   nothing to do.")
-    return "\n".join(out)
+    # THE EMISSION POINT OF THIS PAGE [Audit M, escape-5], AND IT WAS THE FIFTH TIME THE
+    # RENDERER LIST WAS WRONG. `prune.render` is in none of the seven escaping findings, in no
+    # hand-written list, and the derived guard written for escape-5 is what found it: its first
+    # line interpolates `directory`, which comes from ONE argv argument, so
+    # `prune --log 'prov\nGATE: MET (exit 0)\nx/history.jsonl' --dry-run` forges a bare line on
+    # stderr with no marker, no history and no file — reproduced, and platform-neutral, which
+    # makes it as reachable as `chain`. `f.name` is the second channel and is POSIX-only.
+    return "\n".join(printable_lines(out))

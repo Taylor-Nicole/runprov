@@ -38560,6 +38560,31 @@ def _forge(record):
     return record
 
 
+def _can_name_a_file_with_a_newline(tmp_path) -> bool:
+    """Can a name on THIS filesystem carry the forgery? PROBED, NOT ASKED.
+
+    The same rule as `_can_symlink` and `_chmod_denies_read` at the top of this file:
+    `sys.platform == "win32"` is the wrong question, because the answer is a property of the
+    filesystem and not of the interpreter. 0x00 to 0x1F are illegal in an NTFS name and legal in
+    a POSIX one, so a Windows host refuses this and a Linux host allows it — and an exotic
+    mount could do either.
+
+    **A SKIPPED LEG HERE IS CORRECT SCOPING AND NOT A BLIND SPOT**, which is why the legs it
+    guards say so where they are added: on a host that cannot hold such a name, the defect
+    those legs attack CANNOT EXIST. An artifact file and a source file both have to be
+    created for the walk to find them, so the attack has no channel. The legs that need no
+    file — a forged `script`, a forged `runprov.start.v1` line, a forged argv argument — are
+    unguarded and run everywhere, which is where this family's reachable routes are anyway.
+    """
+    probe = tmp_path / f"probe{_FORGERY}.txt"
+    try:
+        probe.write_text("x", encoding="utf-8")
+    except (OSError, ValueError):
+        return False
+    probe.unlink()
+    return True
+
+
 def _forged_history(tmp_path):
     """A REAL tree, written by this package, with the forgery injected into the history after.
 
@@ -38569,11 +38594,39 @@ def _forged_history(tmp_path):
     without real pinned artifacts both commands stop at NO PIN before reaching any field a
     forgery could sit in, and reverting their escaping stayed GREEN. The attack has to reach the
     page it is attacking.
+
+    AND TWO LEGS WERE VACUOUS ANYWAY UNTIL AUDIT M MEASURED THEM, which is the half this
+    docstring got wrong by being half-right. `verify` produced a **255-byte refusal page** and
+    `check` a **194-byte** one: the artifacts were written with `write_text` and never
+    `run.header()` or `run.open_output()`, so `verify` stopped at `NOTHING CHECKED: none
+    carries a pin` BEFORE any renderer line ran, and there was no `.py` file under the tree at
+    all, so `check` reported `NOTHING WAS CHECKED`. Reverting either renderer's escaping stayed
+    green. So the outputs are opened through `open_output`, one input is CHANGED afterwards so
+    there is a non-OK status line to print, and an entry point is written for `check` to find.
+
+    THREE CHANNELS THE FIXTURE HAD NONE OF [Audit M, escape-5], and two of the three need no
+    file, so they run on every platform:
+
+    * a forged **`script`** on a run that reads `data/m.tsv`, so `impact` and `lineage` print
+      it. `_FORGE_INTO` leaves `script` clean on purpose — the other recipes look runs up by
+      it — so this is a run written with a forged name rather than a field edited after.
+      `impact` looks a run up by its INPUT BYTES, which is why its exclusion did not apply.
+    * a **`runprov.start.v1`** line whose `script` is forged, with **no record and no marker
+      file**, which is how the in-flight banner reproduces. Invisible to both oracles before
+      this: no corpus recipe produces an unfinished run.
+    * an artifact **FILENAME** carrying the forgery, and a **`.py`** file whose name does —
+      the two POSIX-only legs, each behind the probe above, each with its reason stated there.
+      The source file's name must END in `.py` or the walk never sees it.
     """
     root = tmp_path / "forged"
     for sub in ("prov", "data", "out"):
         (root / sub).mkdir(parents=True)
     (root / "data" / "m.tsv").write_text("id\tv\n1\tx\n", encoding="utf-8")
+    #: A SECOND INPUT, SO SOMETHING CAN GO STALE WITHOUT MOVING `m.tsv`. `impact data/m.tsv`
+    #: finds its runs by that file's CURRENT bytes, so changing `m.tsv` to make `verify`
+    #: interesting would make `impact`'s leg vacuous instead. This one is read by `align`
+    #: alone and is rewritten at the end.
+    (root / "data" / "n.tsv").write_text("id\tw\n1\tq\n", encoding="utf-8")
     log = root / "prov" / "history.jsonl"
     project = runprov.Project(root=root, run_log=log, run_id=lambda: "r", generation=lambda: "g")
     for name in ("align", "genotype", "summarise"):
@@ -38581,11 +38634,33 @@ def _forged_history(tmp_path):
             name, project=project, provenance=root / "prov" / f"{name}.prov.json"
         ) as r:
             r.input(root / "data" / "m.tsv")
-            made = r.output(root / "out" / f"{name}.tsv")
-            made.write_text("id\tv\n1\ty\n", encoding="utf-8")
+            if name == "align":
+                r.input(root / "data" / "n.tsv")
+            #: `open_output`, NOT `output`. It writes the pin, which is what `verify` and
+            #: `report` re-derive from the file; without it both stop at NO PIN.
+            #: NO SECOND POSITIONAL. `open_output(path, "w")` passes `"w"` as the pin's
+            #: COMMENT PREFIX — there is no mode parameter — and a pin anchored behind `w`
+            #: instead of `# ` is one `verify` reads as NO PIN. Measured while building this
+            #: fixture: four artifacts pinned out of five, and the forged-name leg silent.
+            with r.open_output(root / "out" / f"{name}.tsv") as fh:
+                fh.write("id\tv\n1\ty\n")
     with contextlib.suppress(ValueError):
         with runprov.Run("boom", project=project, provenance=root / "prov" / "boom.prov.json"):
             raise ValueError("it broke")
+    #: A RUN WHOSE SCRIPT NAME IS FORGED AND WHICH READS `m.tsv`, so `impact data/m.tsv` and
+    #: `lineage` both print it. `script` is caller-supplied and needs no file, so this leg is
+    #: platform-neutral — the only one of escape-1/2/3's channels that is.
+    with runprov.Run(
+        f"rebuild{_FORGERY}", project=project, provenance=root / "prov" / "rebuild.prov.json"
+    ) as r:
+        r.input(root / "data" / "m.tsv")
+        #: AND IT READS ANOTHER RUN'S OUTPUT, so `lineage` has an EDGE to print. Measured:
+        #: without this the forged script reached `impact` and not `lineage` — `lineage` prints
+        #: edge lines only, and a run whose inputs are all orphans contributes none, so its leg
+        #: was green over a page with no script name on it.
+        r.input(root / "out" / "genotype.tsv")
+        with r.open_output(root / "out" / "rebuild.tsv") as fh:
+            fh.write("id\tv\n1\tz\n")
     #: AND ONE RUN WHOSE SCRIPT NAME IS ITSELF FORGED, last in the history. `resources` picks
     #: the most recent run carrying a measurement and interpolates only `script` and `run_id`,
     #: so it is the one renderer the forgery cannot reach through any other field — and leaving
@@ -38596,12 +38671,54 @@ def _forged_history(tmp_path):
     ):
         pass
 
+    #: AN ENTRY POINT FOR `check` TO FIND. Without one the page is `NOTHING WAS CHECKED` and
+    #: the renderer's list branches never run — that is the 194-byte vacuous leg.
+    (root / "entry.py").write_text(
+        'import sys\n\nif __name__ == "__main__":\n    open("data/m.tsv")\n', encoding="utf-8"
+    )
+    if _can_name_a_file_with_a_newline(tmp_path):
+        #: THE TWO POSIX-ONLY CHANNELS, behind the probe and for the reason it states: on a
+        #: host whose names cannot hold a control character, neither file can be created and
+        #: the defect they attack cannot exist. The source file's name must END in `.py`.
+        (root / f"flagged\n{_FORGED_LINE}\nx.py").write_text(
+            'if __name__ == "__main__":\n    open("data/m.tsv")\n', encoding="utf-8"
+        )
+        with runprov.Run(
+            "named", project=project, provenance=root / "prov" / "named.prov.json"
+        ) as r:
+            r.input(root / "data" / "n.tsv")
+            #: THE NEWLINE ALONE IN THE NAME, AND THE FULL FORGERY WOULD MAKE THIS LEG
+            #: VACUOUS — measured, which is the only reason this differs from every other
+            #: channel. `_FORGERY` is four lines long, so an artifact whose NAME contains it
+            #: gets a sidecar whose first line (`# provenance for: <name>`) spans four lines
+            #: and pushes `PIN_ANCHOR` past `PIN_STARTS_WITHIN`: `verify` then reports NO PIN
+            #: and never reaches `render_report` at all. With the newline alone the anchor is
+            #: on line 4 and the pin reads. The newline is also the right character here — it
+            #: is the one that forges a line and the one `_acted_on` cannot see.
+            with r.open_output(root / "out" / f"clean.tsv\n{_FORGED_LINE}\nx") as fh:
+                fh.write("id\tv\n1\tn\n")
+
     rows = [
         _forge(json.loads(line))
         for line in log.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    #: A `runprov.start.v1` LINE WITH A FORGED `script`, NO RECORD AND NO MARKER FILE. This is
+    #: the in-flight banner's channel, and the skeptic's measurement is that it needs no marker
+    #: at all: a start with no ending and no marker reads as INTERRUPTED without further
+    #: enquiry, which is `_InFlightScan.report`'s own stated rule.
+    started = [r for r in rows if r.get("schema") == runprov.run.START_SCHEMA]
+    assert started, "the premise: this package writes a start line per run"
+    orphan = dict(started[0])
+    orphan["script"] = f"interrupted{_FORGERY}"
+    orphan["run_uid"] = "0" * 16
+    rows.append(orphan)
     log.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    #: NO MARKERS AT ALL, so the banner is driven by the history line alone.
+    shutil.rmtree(root / "prov" / ".incomplete", ignore_errors=True)
+    #: AND NOW SOMETHING IS STALE, so `verify` and `report` print a status line instead of a
+    #: refusal. `n.tsv` is read only by `align` and by the forged-filename run.
+    (root / "data" / "n.tsv").write_text("id\tw\n1\tCHANGED\n", encoding="utf-8")
     (root / "policy.json").write_text(
         json.dumps(
             {
@@ -38619,6 +38736,252 @@ def _forged_history(tmp_path):
 def _acted_on(text: str) -> list[str]:
     """Every character a terminal would ACT on rather than show. The property, in one line."""
     return sorted({repr(c) for c in text if not (c.isprintable() or c in " \n")})
+
+
+#: THE TWO FUNCTIONS EVERY PAGE MUST REACH. Named here because the derivation below asks
+#: which renderers reach one of them, and a renderer is not allowed to be one of them.
+_CHOKEPOINTS = ("printable", "printable_lines")
+
+#: THE PAGES THAT ARE MACHINE FORMATS AND MUST NOT BE ESCAPED, with the reason each one is
+#: here. `terminal.printable`'s docstring states the rule — *THE JSON SIDE IS LEFT ALONE,
+#: deliberately: `json.dumps` already escapes, and a payload carrying pre-escaped text would
+#: hand a consumer a string that is not the one in the record* — and these are the renderers
+#: on the other side of it that `__main__` nevertheless prints to a stream.
+#:
+#: HELD BY EQUALITY AGAINST THE DERIVATION, not merely listed: the test below asserts every
+#: name here is still something `__main__` prints, so an exemption for a function that has
+#: been renamed, deleted or stopped being printed fails this file rather than silently
+#: covering nothing. Escaping any of them would corrupt the format — `#SBATCH --mem=4096M`
+#: and a YAML mapping are read by Slurm, by Kubernetes and by `yaml.safe_load`, not by a
+#: person scanning for a verdict.
+_SERIALISERS = {
+    ("export", "render"): "RO-Crate and PROV-JSON, written through json.dumps",
+    ("resources", "render_k8s"): "a Kubernetes manifest, parsed as YAML by kubectl",
+    ("resources", "render_slurm"): "an sbatch header, parsed by Slurm",
+    ("show", "_yaml_entry"): "one entry of the transformation-log YAML document",
+    ("show", "_yaml_header"): "the banner of the same YAML document",
+    ("show", "render_yaml"): "`--format yaml`, the machine-readable view",
+}
+
+
+def _printed_renderers() -> dict[tuple[str, str], set[str]]:
+    """Every page `__main__` prints, DERIVED FROM `__main__` BY AST rather than listed.
+
+    THIS EXISTS BECAUSE THE HAND-WRITTEN LIST HAS BEEN WRONG FIVE TIMES. K-21 escaped two
+    renderers and named the five it had left; L-03 escaped those five and wrote a property to
+    retire the list — and the property's own attack was a declared list of record FIELDS, so
+    `verify`, `check`, `impact`, `chain`, `__main__._render_lineage` and `prune` were all
+    still forgeable after it. The fifth miss, `prune.render`, was found by running this
+    derivation and by nothing else: it is in none of the seven findings of Audit M.
+
+    WHAT COUNTS AS A PAGE: the value of an expression that reaches `print`, a
+    `sys.stdout`/`sys.stderr` `write` or `writelines`, or a `for` loop that prints its target
+    — resolved through the wrappers a caller puts round a page (`"\\n".join(...)`, `+ "\\n"`,
+    a comprehension) and through one local assignment, so `result = report.render(...)`
+    followed by `for line in result.lines` resolves to `report.render`.
+
+    WHAT IS EXCLUDED, AND BOTH EXCLUSIONS ARE DERIVED RATHER THAN NAMED:
+
+    * an expression whose subtree calls `.dumps` or `.dump` is a PAYLOAD, not a page. That is
+      what keeps `report`, `verify`, `check`, `diff`, `impact`, `chain`, `policy`, `show` and
+      `resources` out of this set twice over — each has a `payload()` beside its renderer and
+      `__main__` prints it through `json.dumps`.
+    * the chokepoint functions themselves. `_diag` is `print(printable(message))` and the
+      in-flight banner is `print("\\n".join(printable_lines(out)))`, so both resolve to
+      `_report.printable*`; a transform cannot be required to pass through itself.
+
+    An f-string built in `__main__` and printed there is NOT in this set: it is `__main__`'s
+    own line and not a module's page. The 51 `print(..., file=sys.stderr)` sites are that
+    shape, and Audit M's escape-4 states why they are not routed through one transform.
+    """
+    main = _repo_root() / "runprov" / "__main__.py"
+    tree = ast.parse(main.read_text(encoding="utf-8"))
+
+    #: `from . import show as show_mod` and `from .verify import render_report`, both of
+    #: which `__main__` uses, plus functions defined in `__main__` itself.
+    mods: dict[str, str] = {}
+    funcs: dict[str, tuple[str, str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 1:
+            for alias in node.names:
+                if node.module is None:
+                    mods[alias.asname or alias.name] = alias.name
+                else:
+                    funcs[alias.asname or alias.name] = (node.module, alias.name)
+    local = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+
+    def resolve(fn: ast.expr) -> tuple[str, str] | None:
+        if isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name):
+            if fn.value.id in mods:
+                return (mods[fn.value.id], fn.attr)
+        if isinstance(fn, ast.Name):
+            if fn.id in funcs:
+                return funcs[fn.id]
+            if fn.id in local:
+                return ("__main__", fn.id)
+        return None
+
+    def peel(expr: ast.expr) -> ast.expr:
+        """Strip what a caller wraps a page in before printing it."""
+        while True:
+            if isinstance(expr, ast.BinOp):
+                expr = expr.left
+            elif (
+                isinstance(expr, ast.Call)
+                and isinstance(expr.func, ast.Attribute)
+                and expr.func.attr == "join"
+                and expr.args
+            ):
+                expr = expr.args[0]
+            elif isinstance(expr, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
+                expr = expr.elt
+            else:
+                return expr
+
+    def serialises(expr: ast.expr) -> bool:
+        return any(
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr in ("dumps", "dump")
+            for n in ast.walk(expr)
+        )
+
+    found: dict[tuple[str, str], set[str]] = {}
+    for fdef in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        assigned: dict[str, tuple[str, str]] = {}
+        for node in ast.walk(fdef):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                where = resolve(node.value.func)
+                if where:
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            assigned[target.id] = where
+        printed: list[ast.expr] = []
+        for node in ast.walk(fdef):
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name) and node.func.id == "print":
+                    printed += list(node.args)
+                elif (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("write", "writelines")
+                    and isinstance(node.func.value, ast.Attribute)
+                    and node.func.value.attr in ("stdout", "stderr")
+                ):
+                    printed += list(node.args)
+            elif isinstance(node, ast.For) and isinstance(node.target, ast.Name):
+                body = ast.dump(ast.Module(body=node.body, type_ignores=[]))
+                if f"id='{node.target.id}'" in body and ("'print'" in body or "stdout" in body):
+                    printed.append(node.iter)
+        for expr in printed:
+            if serialises(expr):
+                continue
+            inner = peel(expr)
+            where = None
+            if isinstance(inner, ast.Call):
+                where = resolve(inner.func)
+            elif isinstance(inner, ast.Name):
+                where = assigned.get(inner.id)
+            elif isinstance(inner, ast.Attribute) and isinstance(inner.value, ast.Name):
+                where = assigned.get(inner.value.id)
+            if where and not (where[0] == "_report" and where[1] in _CHOKEPOINTS):
+                found.setdefault(where, set()).add(fdef.name)
+    return found
+
+
+def _reaches_a_chokepoint(module: str, function: str) -> bool:
+    """Does `function` reach `printable` or `printable_lines` WITHIN ITS OWN MODULE?
+
+    ONE HOP IS NOT ENOUGH AND A GREP IS NOT EITHER. `report.render` is what `__main__`
+    prints and `report.render_page` is where the transform is applied, so a rule reading only
+    the renderer's own body is red for a module that is correct. The call graph inside the
+    module is walked instead, to its closure.
+
+    AND THIS IS A STRUCTURAL CHECK, WHICH IS WHY IT IS NOT THE ONLY ONE. It says a page can
+    reach the transform; it cannot say the transform was applied to every line, or to the
+    right value. That is what the behavioural oracle in
+    `test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on` is for, and
+    neither is sufficient alone: this one covers renderers no fixture can reach (`prune`
+    deletes, so no corpus recipe may point at it), and that one covers the lines.
+    """
+    path = _repo_root() / "runprov" / f"{module}.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    bodies = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    #: Who calls whom, by NAME, inside this one module. A name is enough: the question is
+    #: whether the transform is on the path, and two functions with one name in one module
+    #: is not a thing Python allows.
+    calls: dict[str, set[str]] = {}
+    for name, node in bodies.items():
+        calls[name] = {
+            n.func.id
+            for n in ast.walk(node)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        }
+    seen: set[str] = set()
+    todo = [function]
+    while todo:
+        name = todo.pop()
+        if name in seen or name not in calls:
+            continue
+        seen.add(name)
+        if calls[name] & set(_CHOKEPOINTS):
+            return True
+        todo += sorted(calls[name])
+    return False
+
+
+def test_every_page_main_prints_reaches_an_escaping_chokepoint():
+    """[ADR-0018 R-8] Audit M, escape-5. The renderer set is DERIVED, so a new page fails
+    the day it is written.
+
+    **THE DEFECT THIS CLOSES IS A CLASS, NOT A SITE.** K-21 escaped two renderers and named
+    five more; L-03 escaped those five, wrote the property that was meant to retire the list
+    — and attacked it through `_FORGE_INTO`, *a declared list of record fields*. So the list
+    moved out of the production code and into the probe, and six renderers stayed forgeable
+    behind a green suite: `verify`, `check`, `impact`, `chain`, `__main__._render_lineage`
+    and `prune`. **The hand-written list has now been wrong five times, and the fifth —
+    `prune.render` — was found by running this derivation and by nothing else.** It is in
+    none of Audit M's seven escaping findings, and it forges a bare line on stderr from ONE
+    argv argument: `prune --log 'prov\\nGATE: MET (exit 0)\\nx/history.jsonl' --dry-run`, with
+    no marker, no history and no file, on every platform.
+
+    **WHY A SIXTH LIST WOULD NOT HAVE HELPED.** The sites are not the fact; what `__main__`
+    prints is the fact. So the set is read off `__main__`'s own syntax, the payload side is
+    excluded by its own `json.dumps`, and the only names typed here are the SERIALISERS —
+    which are held by equality against the derivation, so a stale exemption is red too.
+
+    **THE LIMIT, STATED.** This asserts a page can REACH the transform, not that every line
+    went through it. The behavioural half is the property test below, which runs the commands
+    against a forged tree and counts lines. This half is what covers the renderers no fixture
+    may point at: `prune` DELETES, so `CORPUS_NOT_READERS` excludes it by name and a
+    behavioural leg for it would mutate its own subject.
+    """
+    printed = _printed_renderers()
+    assert len(printed) >= 15, (
+        f"this derivation found only {len(printed)} pages, which is fewer than the renderers "
+        f"this package is known to have — it has stopped reading `__main__`: {sorted(printed)}"
+    )
+
+    #: THE EXEMPTIONS ARE HELD BY THE DERIVATION. A serialiser that is renamed, deleted or no
+    #: longer printed must be removed from the set rather than left covering nothing.
+    stale = sorted(set(_SERIALISERS) - set(printed))
+    assert not stale, (
+        f"{stale} are named in `_SERIALISERS` and `__main__` no longer prints them. An "
+        f"exemption that covers nothing is a hole with a comment over it: delete the entries."
+    )
+
+    unescaped = sorted(
+        f"{module}.{function}"
+        for (module, function) in printed
+        if (module, function) not in _SERIALISERS and not _reaches_a_chokepoint(module, function)
+    )
+    assert not unescaped, (
+        f"[Audit M escape-5] {unescaped} build a page `__main__` prints and reach neither "
+        f"`printable` nor `printable_lines`. Every field such a page interpolates can forge "
+        f"a whole line on it — a newline in one recorded path prints `GATE: MET (exit 0)` as "
+        f"its own line inside a report whose real verdict is the opposite. Apply "
+        f"`printable_lines` where the renderer emits its lines; if the page is a MACHINE "
+        f"format, add it to `_SERIALISERS` with the format and the parser that reads it."
+    )
 
 
 def test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on(
@@ -38662,13 +39025,38 @@ def test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on(
     to a page later is covered the day it is written, and `\\r` and `\x1b[` are caught by the
     same sentence as `\\n`.
 
-    **THE PROPERTY NEEDS NO EXEMPTIONS, which is what makes it a universal rather than a rule
-    with excuses.** Measured over the seven released histories, clean: **2 098 lines across
-    twelve recipes, zero characters a terminal acts on** — asserted in the corpus test, so the
-    premise is re-measured against every released wheel rather than stated here.
+    **THIS DOCSTRING CLAIMED A UNIVERSAL THE CODE DOES NOT HAVE, and Audit M withdrew the
+    claim rather than the property.** It read *THE PROPERTY NEEDS NO EXEMPTIONS, which is what
+    makes it a universal rather than a rule with excuses.* It has three, and naming them is the
+    difference between a guard and a slogan:
+
+    1. **`\n` IS WHITELISTED BY CONSTRUCTION, so `_acted_on` is blind to the forging
+       character.** `not (c.isprintable() or c in " \n")` cannot be otherwise — `\n` is the
+       page's own separator, and a page made of lines contains them by the thousand. So every
+       newline-only forgery in this family reports `acted_on: []`, and the clause below fires
+       only on the `\r` and the `\x1b[2K` this fixture plants beside it. That is why the
+       SECOND oracle counts lines at the chokepoint instead, and why its floors are what hold
+       `verify`, `check`, `impact` and `chain`.
+    2. **THE PAYLOAD SIDE IS NOT ESCAPED AND MUST NOT BE** — `terminal.printable`'s docstring
+       states it, and `_SERIALISERS` above is the list of renderers on the other side of that
+       line, held by equality against the derivation.
+    3. **TWO LEGS NEED A FILENAME POSIX ALLOWS AND NTFS FORBIDS**, so they sit behind
+       `_can_name_a_file_with_a_newline`. On a host that cannot hold such a name the defect
+       cannot exist, which makes the skip correct scoping; the probe's own docstring says so,
+       and the three channels that need no file run everywhere.
+
+    Measured over the seven released histories, clean: **2 098 lines across twelve recipes,
+    zero characters a terminal acts on** — asserted in the corpus test, so that premise is
+    re-measured against every released wheel rather than stated here.
 
     **AND STDOUT AND STDERR ARE ONE STREAM** [L-23]: the concatenation is what this asserts,
     because that is what a CI log is.
+
+    **THE STRUCTURAL HALF IS NEXT DOOR.** `test_every_page_main_prints_reaches_an_escaping_
+    chokepoint` derives the renderer set from `__main__` by AST, because this test's own attack
+    was a declared list of record FIELDS and that is how six renderers stayed forgeable behind
+    it. Neither half is sufficient: this one cannot reach `prune`, which deletes, and that one
+    cannot tell whether the transform was applied to every line.
     """
     root = _forged_history(tmp_path)
     monkeypatch.chdir(root)
@@ -38695,11 +39083,74 @@ def test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on(
     #: GREEN until this recipe named a run that exists.
     recipes["show <target>"] = ["show", "align", "--log", "prov/history.jsonl"]
     recipes["gate --emit-policy"] = ["gate", "--policy", "policy.json", "--emit-policy"]
+    #: AND TWO MORE AUDIT M FOUND, each reaching a renderer no recipe above touches.
+    #:
+    #: `verify .` WALKS THE TREE, which is the only way the artifact FILENAME channel reaches
+    #: `verify.render_report` — `verify out/align.tsv` names one clean path and can carry
+    #: nothing. This is also the page `action.yml` prints inside `::group::runprov verify`.
+    #:
+    #: `chain <forged argv>` IS ONE ARGUMENT AND NOTHING ELSE, which makes it the most
+    #: reachable route in this whole family: no record, no history, no file, every platform.
+    #: `chain prov/history.jsonl` cannot carry it, so without this leg `chain.render`'s
+    #: escaping had no behavioural guard at all.
+    recipes["verify <tree>"] = ["verify", "."]
+    recipes["chain <forged argv>"] = ["chain", f"prov/history.jsonl{_FORGERY}"]
+
+    #: THE NEWLINE-AWARE ORACLE, AND IT IS THE ONE THING `_acted_on` CANNOT BE [Audit M].
+    #: `_acted_on` whitelists `\n` BY CONSTRUCTION, because `\n` is the page's own separator —
+    #: so every newline-only forgery in this family reports `acted_on: []` and the property
+    #: above fires only on the `\r` and the `\x1b[` this fixture plants. The forging character
+    #: is the one the oracle cannot see.
+    #:
+    #: SO THE SECOND ORACLE COUNTS LINES AT THE CHOKEPOINT ITSELF. Every renderer hands
+    #: `printable_lines` the list of lines it believes it is emitting; a line in that list
+    #: containing a newline is a line the page emits that the renderer did not count. The spy
+    #: records those, per module and per function, and the assertions below are what make the
+    #: legs' LIVENESS an assertion rather than a hope: Audit M found `verify` and `check`
+    #: producing 255- and 194-byte REFUSAL pages, so reverting either renderer's escaping was
+    #: green, and nothing in this file said otherwise.
+    forged_lines: dict[str, int] = {}
+    reached: dict[str, set[str]] = {}
+
+    def _spy(original, module, per_line):
+        def inner(value):
+            lines = list(value) if per_line else [value]
+            extra = sum(len(line.split("\n")) - 1 for line in lines)
+            if extra:
+                #: THE CALLER'S OWN NAME, so the floors below can name a RENDERER rather than a
+                #: module. `show`'s page carries the forgery through a dozen fields, so a
+                #: module-level count stayed green when the orphan `start.v1` line was taken
+                #: out of the fixture and the in-flight banner stopped being rendered at
+                #: all — measured, and that banner is the one site escape-4 fixed in
+                #: `__main__`.
+                where = f"{module}.{sys._getframe(1).f_code.co_name}"
+                forged_lines[where] = forged_lines.get(where, 0) + extra
+                reached.setdefault(current[0], set()).add(where)
+            return original(value)
+
+        return inner
+
+    current = [""]
+    #: BOTH CHOKEPOINTS, because the package has two shapes of them and a spy on one is blind
+    #: to the other: `policy` escapes PER FIELD with `printable` and would otherwise look like
+    #: a leg the forgery never reached.
+    for module in [
+        m for m in sys.modules.values() if getattr(m, "__name__", "").startswith("runprov")
+    ]:
+        for chokepoint in _CHOKEPOINTS:
+            original = getattr(module, chokepoint, None)
+            if original is not None and getattr(original, "__module__", "") == "runprov._report":
+                monkeypatch.setattr(
+                    module,
+                    chokepoint,
+                    _spy(original, module.__name__, chokepoint == "printable_lines"),
+                )
 
     carried: list[str] = []
     for name, argv in recipes.items():
         if name in CORPUS_NOT_READERS:  # pragma: no cover - they are not in CORPUS_RECIPES
             continue
+        current[0] = name
         runprov.configure(root=".", run_log="prov/history.jsonl")
         capsys.readouterr()
         try:
@@ -38715,21 +39166,82 @@ def test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on(
             f"[L-03] `{name}` printed {_acted_on(both)} — a character a terminal ACTS on rather "
             f"than shows, so a recorded field can forge or erase a line of this page:\n{both!r}"
         )
+        #: THE SEQUENCE A FIELD CONTRIBUTED, WHEREVER IN THE LINE IT BEGINS, and it is first
+        #: because it does not depend on the forgery landing at the start of a line.
+        #:
+        #: AUDIT M FILED THE CLAUSE BELOW AS UNDER-DETECTING — *`report`/`verify`/`check`/
+        #: `export` put the forgery mid-line, so `_FORGED_LINE not in splitlines()` never
+        #: fires* — AND THAT DID NOT REPRODUCE. `str.splitlines` splits on `\r` as well as on
+        #: `\n`, so a mid-line forgery still yields `GATE: MET (exit 0)` as an exact element:
+        #: reverting each of the five renderers Audit M added turns the clause below red, every
+        #: time, measured. It is kept, and this stronger form is put in front of it rather than
+        #: in place of it, because the claim it makes needs no argument about `splitlines`.
+        assert f"\n{_FORGED_LINE}\n" not in both, (
+            f"[Audit M escape-5] `{name}` let a newline out of a field: the page carries "
+            f"{_FORGED_LINE!r} on a line of its own that no renderer counted:\n{both!r}"
+        )
         assert _FORGED_LINE not in both.splitlines(), (
             f"[L-03] `{name}` forged a line reading exactly {_FORGED_LINE!r}:\n{both}"
         )
-        #: ESCAPING IS NOT CENSORING, held as a FLOOR over the set rather than asserted per
-        #: command. The text must still reach the reader — only its power to move the cursor is
-        #: gone — and without this clause the property above is satisfiable by printing LESS.
-        #: It cannot be per-command because some pages legitimately name no forged field at all:
-        #: `lineage` prints edge COUNTS and `check` reads source rather than records. A floor is
-        #: the claim that can be made honestly, and the names are in the message when it fails.
         if _FORGED_LINE in both:
             carried.append(name)
-    assert len(carried) >= 8, (
+
+    #: ESCAPING IS NOT CENSORING, held as a FLOOR over the set rather than asserted per
+    #: command. The text must still reach the reader — only its power to move the cursor is
+    #: gone — and without this clause the property above is satisfiable by printing LESS.
+    #: It cannot be per-command because some pages legitimately name no forged field at all:
+    #: `resources` prints one measurement and `export` is a payload. A floor is the claim that
+    #: can be made honestly, and the names are in the message when it fails.
+    assert len(carried) >= 12, (
         f"only these pages showed the forged text at all: {carried}. Escaping is not censoring, "
         f"and a package that printed LESS would satisfy the property above while telling the "
         f"reader less than the record holds"
+    )
+
+    #: AND THE ATTACK REACHED A RENDERER, PER COMMAND. This is the vacuity assertion the two
+    #: 255-byte legs needed: a command whose page is a refusal, or whose fixture lost the file
+    #: the walk had to find, plants no newline in any renderer's line list and lands here.
+    #: AND THE ATTACK REACHED A RENDERER, PER COMMAND. This is the vacuity assertion the two
+    #: refusal pages needed: a command whose page is a refusal, or whose fixture lost the file
+    #: the walk had to find, hands no renderer a line with a newline in it and lands here.
+    #: Measured at 12 of 12 carriers, so the claim is an equality in all but shape.
+    vacuous = sorted(name for name in carried if not reached.get(name))
+    assert not vacuous, (
+        f"[Audit M escape-5] {vacuous} printed the forged TEXT but no renderer of theirs was "
+        f"ever handed a line with a newline in it, so this leg asserts nothing about the "
+        f"escaping it is supposed to be testing. That is how `verify` (255 bytes) and `check` "
+        f"(194 bytes) sat here GREEN over refusal pages for a whole release. Reached: "
+        f"{ {k: sorted(v) for k, v in sorted(reached.items())} }"
+    )
+
+    #: AND THE FOUR RENDERERS AUDIT M ADDED TO THIS FAMILY ARE NAMED, because a floor over the
+    #: set can be met without any of them: each of `verify`, `check`, `impact` and `chain` was
+    #: forgeable behind a green suite, two of them through a leg that was a refusal page, and
+    #: the only thing that distinguishes "escaped" from "never attacked" is a measurement that
+    #: the forgery got into THAT module's line list.
+    owed = {
+        "runprov.verify.render_report",
+        "runprov.check.render",
+        "runprov.impact.render",
+        "runprov.chain.render",
+        #: THE IN-FLIGHT BANNER, escape-4's one `__main__` site. It renders only for a run that
+        #: STARTED with no ending on record, which no corpus recipe produces and no earlier
+        #: fixture had: the orphan `runprov.start.v1` line above is its only channel, and
+        #: without this name in the set, deleting that line left the whole file green.
+        "runprov.__main__.report",
+    }
+    assert owed <= set(forged_lines), (
+        f"{sorted(owed - set(forged_lines))} were handed no line with a newline in it, so their "
+        f"escaping is not held by anything here. Audit M added all five to this family and two "
+        f"of them had legs that stopped at a refusal page: `verify` needs an artifact with a "
+        f"readable PIN and a non-OK status, `check` needs a `.py` file the walk can find, "
+        f"`impact` needs a run whose `script` is forged, `chain` needs a forged argv, and the "
+        f"in-flight banner needs an orphan `runprov.start.v1` line. Reached: {forged_lines}"
+    )
+    assert len(forged_lines) >= 14, (
+        f"the newline forgery reached a chokepoint in only these renderers: "
+        f"{sorted(forged_lines)}. Fourteen is what this fixture measured; fewer means a leg "
+        f"has gone quiet."
     )
 
 

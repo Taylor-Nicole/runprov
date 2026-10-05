@@ -461,6 +461,60 @@ transform.** Several are deliberately multi-line, and a single transform over th
 regression above in a second place. 105 of 105 released-corpus rows are byte-identical.
 
 
+### Fixed — the renderer set is DERIVED now, and the derivation found a fifth missed renderer
+
+Audit M, escape-5, escalated to high. L-03 wrote a property test to retire the hand-written
+list of renderers and then **attacked it through a declared list of record FIELDS**, so the list
+moved out of the production code and into the probe. Six renderers stayed forgeable behind a
+green suite, and **two of the test's own legs were refusal pages** — `verify` 255 bytes and
+`check` 194 bytes, with `carries=False` — so reverting either renderer's escaping was green.
+
+**The derivation.** `test_every_page_main_prints_reaches_an_escaping_chokepoint` reads
+`__main__`'s own syntax: every expression reaching `print`, a `sys.stdout`/`sys.stderr` write or
+a `for` loop that prints its target, resolved through `"\n".join(...)`, `+ "\n"`, a
+comprehension and one local assignment. The payload side excludes itself — an expression whose
+subtree calls `.dumps` is not a page — and the only names typed are the six **serialisers**
+(RO-Crate/PROV, the Kubernetes manifest, the sbatch header, the YAML document and its banner),
+each **held by equality against the derivation**, so an exemption that stops naming a printed
+function is red too. Twenty-one renderers, fifteen of them text.
+
+**And it immediately found the fifth miss: `prune.render`**, in none of Audit M's seven
+findings, in no hand list, and as reachable as `chain` —
+`prune --log 'prov\nGATE: MET (exit 0)\nx/history.jsonl' --dry-run` forges a bare line on
+stderr with no marker, no history and no file, on every platform. It is also the renderer no
+behavioural leg may ever reach, because `prune` DELETES; the structural half is the only thing
+that can hold it.
+
+**A newline-aware oracle, which is the one thing `_acted_on` cannot be.** `_acted_on`'s test is
+`not (c.isprintable() or c in " \n")` — **`\n` is whitelisted by construction**, because it is
+the page's own separator — so every newline-only forgery in this family reported `acted_on: []`.
+The second oracle counts lines at the chokepoint: a line handed to `printable_lines` that
+contains a newline is a line the page emits and the renderer did not count. It records them
+**per renderer**, and three floors hold the legs' own liveness: twelve carriers, no carrier
+without a renderer, and five named renderers that must each be reached.
+
+**Three channels the fixture had none of**, two needing no file and so running everywhere: a
+forged `script` on a run `impact` and `lineage` both print; an orphan `runprov.start.v1` line
+with no record and no marker, which is the in-flight banner's only channel; and an artifact
+FILENAME plus a `.py` filename carrying the forgery, behind a **probe** (not `sys.platform`) with
+the reason stated — on a host whose names cannot hold a control character the defect cannot
+exist.
+
+**Nine mutations, each red and each naming its own site**, including the two vacuity
+regressions: write the forged artifact without a pin and the guard names `verify <tree>` as a leg
+that asserts nothing; take the orphan start line out and it names
+`runprov.__main__.report`. And **the docstring's `THE PROPERTY NEEDS NO EXEMPTIONS` is
+withdrawn**: it has three, and they are now written down.
+
+**Two of the row's claims did not reproduce, and both are recorded rather than quietly dropped.**
+The *under-detecting oracle* — `_FORGED_LINE not in splitlines()` never fires for a mid-line
+forgery — is wrong: `str.splitlines` splits on `\r` too, so the clause goes red for all five
+reverted renderers. The stronger position-independent form was added in front of it anyway. And
+the artifact-FILENAME leg needs the **newline alone**: with the full four-line forgery in the
+name, the sidecar's `provenance for:` line pushes `PIN_ANCHOR` past `PIN_STARTS_WITHIN` and
+`verify` reports NO PIN, which would have made the leg vacuous in a new way.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise
