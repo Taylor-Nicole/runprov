@@ -974,7 +974,9 @@ def test_the_recorded_command_is_re_runnable(tmp_path):
     # spells it one way on every platform. Comparing against the platform's native
     # spelling is `df4964b` exactly — seven jobs green, Windows red — and it is Audit K's
     # own tenth test smell: a test asserting what the host supplies.
-    assert run.record["cwd"] == runprov.hashing._posix(pathlib.Path.cwd()), (
+    #: `str()`, NOT `_posix()` [L-27] — see the sibling premise in the gate's anchoring test. The
+    #: writer spells this field with `str()` deliberately, because it is one side of an equality.
+    assert run.record["cwd"] == str(pathlib.Path.cwd()), (
         "a relative script path in the command means nothing without this"
     )
 
@@ -35890,9 +35892,12 @@ def test_inputs_verify_anchors_a_recorded_path_on_the_runs_own_cwd_and_not_the_g
     # spells it one way on every platform. Comparing against the platform's native
     # spelling is `df4964b` exactly — seven jobs green, Windows red — and it is Audit K's
     # own tenth test smell: a test asserting what the host supplies.
-    assert a["cwd"] == runprov.hashing._posix(a_root) and b["cwd"] == runprov.hashing._posix(
-        b_root
-    ), (
+    #: `str()`, NOT `_posix()` [L-27]. This premise was written while `cwd` was `_posix`-spelled;
+    #: that spelling was reverted because `run.py:2165` compares the field with
+    #: `str(pathlib.Path.cwd())` as a string, and `_posix` broke 15 tests on the Windows leg. Ask
+    #: the same function the writer asks — which is the rule that made this assertion wrong twice,
+    #: once in each direction.
+    assert a["cwd"] == str(a_root) and b["cwd"] == str(b_root), (
         f"the premise of the fix: the record says which directory those paths are relative TO, "
         f"so no `--root` flag is needed: {a['cwd']} / {b['cwd']}"
     )
