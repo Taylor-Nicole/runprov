@@ -39448,6 +39448,31 @@ def test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on(
         #: without this name in the set, deleting that line left the whole file green.
         "runprov.__main__.report",
     }
+    #: AND THE SAME PROBE AGAIN, FOR THE THIRD ASSERTION IN THIS TEST THAT NEEDED TELLING.
+    #: `verify.render_report` and `check.render` are reachable ONLY through a FILENAME — an
+    #: artifact the tree walk finds, and a source file whose name ends in `.py` — so on a host
+    #: whose names cannot hold a control character neither renderer can be handed a forged
+    #: line, and owing them one is owing something the filesystem forbids. The other three are
+    #: platform-neutral by construction (`impact` takes a forged `script`, `chain` takes a
+    #: forged argv, the banner takes an orphan `start.v1` line), so the floor keeps its whole
+    #: force on Windows for everything that CAN be attacked there.
+    #:
+    #: THIS IS THE THIRD PLACE IN ONE TEST where the docstring's clause 3 was true and nothing
+    #: held it: the fixture gates both channels on the probe, and then `vacuous` and this floor
+    #: each assumed they had run. `66f10ca` fixed the first and the Windows leg immediately
+    #: named the second. **A claim stated once and relied on in three places is three
+    #: unguarded claims**, which is the list-of-sites shape this whole test exists to retire,
+    #: appearing inside it for the fourth time.
+    filename_channel = {"runprov.verify.render_report", "runprov.check.render"}
+    if not _can_name_a_file_with_a_newline(tmp_path):
+        owed -= filename_channel
+    #: THE TWO EXEMPTIONS MUST AGREE, so neither can be relaxed alone: the commands dropped
+    #: from `vacuous` above and the renderers dropped here are the same channel seen from the
+    #: two ends, and on a host that CAN hold the name both sets are empty.
+    assert bool(filename_only) == bool(filename_channel - owed), (
+        f"the two filename-channel exemptions disagree: commands {sorted(filename_only)} but "
+        f"renderers {sorted(filename_channel - owed)}. They are one channel seen from two ends"
+    )
     assert owed <= set(forged_lines), (
         f"{sorted(owed - set(forged_lines))} were handed no line with a newline in it, so their "
         f"escaping is not held by anything here. Audit M added all five to this family and two "
@@ -39456,10 +39481,19 @@ def test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on(
         f"`impact` needs a run whose `script` is forged, `chain` needs a forged argv, and the "
         f"in-flight banner needs an orphan `runprov.start.v1` line. Reached: {forged_lines}"
     )
-    assert len(forged_lines) >= 14, (
+    #: AND THE FLOOR IS DERIVED FROM THE EXEMPTION, NOT RESTATED BESIDE IT. This is the FOURTH
+    #: assertion in this test that depends on clause 3 of the docstring, and the first three
+    #: were each found by a separate red leg: `66f10ca` fixed `vacuous`, the next Windows run
+    #: named the `owed` floor, and a local simulation that forces the probe to `False` named
+    #: this one before any matrix saw it. **So the number is computed from the set that was
+    #: actually exempted** — a fifth place to keep in step would have been found the same
+    #: expensive way, and a constant restated beside an exemption is the list-of-sites shape
+    #: again, inside the test that exists to retire it.
+    floor = 14 - len(filename_channel - owed)
+    assert len(forged_lines) >= floor, (
         f"the newline forgery reached a chokepoint in only these renderers: "
-        f"{sorted(forged_lines)}. Fourteen is what this fixture measured; fewer means a leg "
-        f"has gone quiet."
+        f"{sorted(forged_lines)}. Fourteen is what this fixture measured where every channel "
+        f"exists, {floor} is owed on this host, and fewer means a leg has gone quiet."
     )
 
 
