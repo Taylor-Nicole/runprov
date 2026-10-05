@@ -46,6 +46,8 @@ import collections
 import pathlib
 import typing
 
+from .terminal import printable_lines
+
 #: Directories whose code is somebody else's. Shared intent with `observe.VENDORED`, kept
 #: separate because this one also excludes build output, which a running process never has.
 VENDORED = ("site-packages", "dist-packages", ".venv", "node_modules", ".git", "build", "dist")
@@ -303,4 +305,8 @@ def render(report: Report, root: pathlib.Path) -> list[str]:
         # WHAT WAS LOOKED AT, not just what was found. "no entry point records nothing" and
         # "no entry point was examined" are the same sentence without the count above.
         lines.append("no entry point opens files without recording them")
-    return lines
+    # THE EMISSION POINT OF THIS PAGE [Audit M, escape-2]. A `.py` file whose NAME carries a
+    # newline forges this page's own all-clear sentence as a standalone line while the page is
+    # reporting a finding and exiting 1 — reproduced. The forged name must END in `.py` or the
+    # walk never sees it, which is the correction the skeptic measured.
+    return printable_lines(lines)

@@ -807,7 +807,10 @@ def _render_lineage(g: dict[str, typing.Any], scripts: dict[str, str] | None = N
         out.append(f"  ... {len(g['edges']) - EDGES_SHOWN} more edge(s) not shown")
     out.append("")
     out.append(f"{len(g['edges'])} edge(s)")
-    return "\n".join(out)
+    # THE EMISSION POINT OF THIS PAGE [Audit M]. Every edge line interpolates a SCRIPT NAME
+    # (`by_uid`), which is a caller-supplied string needing no file, so this page is forgeable
+    # on all eight legs. It was the sixth unescaped renderer and in nobody's list.
+    return "\n".join(printable_lines(out))
 
 
 class UsageError(Exception):

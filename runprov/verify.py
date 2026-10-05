@@ -99,6 +99,7 @@ from .hashing import (
     describe,
     pin_digest,
 )
+from .terminal import printable_lines
 
 # Pins are written at the top of an artifact (`open_output` writes the header first), so
 # reading the whole file to find one would mean reading every byte of a 50 GB BAM to learn
@@ -990,4 +991,14 @@ def render_report(report: dict[str, typing.Any]) -> str:
                 continue
             detail = i.get("reason") or f"pinned {i['pinned']}, now {i.get('found', '?')}"
             out.append(f"             {i['status']:12} {i['name']}  ({detail})  via {i['via']!r}")
-    return "\n".join(out) + ("\n" if out else "")
+    # THE EMISSION POINT OF THIS PAGE [Audit M, escape-1]. The live channel is the
+    # artifact's OWN FILENAME, read off the disk by the walk: a newline in it forges a
+    # standalone `OK  out/clean.tsv` verdict line inside a page whose real verdict is STALE
+    # and whose exit code is 1 — reproduced. `i['name']` is already escaped at WRITE time by
+    # `run._safe_for_pin`, and `via`/`scripts` go through `{!r}`, so this covers the one
+    # channel that is live today AND every field this page gains later.
+    #
+    # THIS PAGE IS THE ONE THE SHIPPED ACTION PRINTS: `action.yml:59` runs
+    # `python -m runprov verify $root` inside `echo "::group::runprov verify"`, and
+    # `.pre-commit-hooks.yaml:30` runs it too.
+    return "\n".join(printable_lines(out)) + ("\n" if out else "")

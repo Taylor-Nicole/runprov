@@ -46,6 +46,8 @@ import pathlib
 import re
 import typing
 
+from .terminal import printable_lines
+
 #: R-3. The first line of a file has no predecessor. A SENTINEL rather than `null` or an absent
 #: key, because three states must stay apart: the key ABSENT means the line was written before
 #: this feature existed; `GENESIS` means it is the first line of a chain; a digest means it is
@@ -1062,7 +1064,14 @@ def payload(report: Report, path: pathlib.Path) -> dict[str, typing.Any]:
 
 
 def render(report: Report, path: pathlib.Path) -> list[str]:
-    """The report. R-9: states what it checked, not only what it found."""
+    """The report. R-9: states what it checked, not only what it found.
+
+    ESCAPED AT EVERY RETURN [Audit M]. This page's first line interpolates ONE `sys.argv`
+    argument and nothing else, so `chain` forges a bare line on STDOUT with no record, no
+    history and no file — on all eight matrix legs, and it appeared in none of the seven
+    escaping findings. There is no single `"\n".join` here to escape at, so the transform is
+    applied at each of the three returns; the derived renderer guard holds that.
+    """
     out = [f"# chain — {path}"]
     if report.lines == 0:
         # J-04. THE SENTENCE COMES FROM THE FOLD, here and at `head` below. It read
@@ -1071,7 +1080,7 @@ def render(report: Report, path: pathlib.Path) -> list[str]:
         # unifying `status` with `cannot_check` left this as an unreconciled THIRD fold. The
         # wording moved to the fold rather than the fold's wording to the page, because this
         # line is output 0.6.0 shipped and `cannot_check` is unreleased.
-        return [*out, f"  CANNOT CHECK: {report.cannot_check}."]
+        return printable_lines([*out, f"  CANNOT CHECK: {report.cannot_check}."])
     if report.chained_from is None:
         # G-16. THE EARLY RETURN PRINTED THE SENTENCE RULE 3 EXISTS TO PREVENT. It decided
         # from `chained_from` alone and never looked at the edges, so over a torn first line
@@ -1113,20 +1122,24 @@ def render(report: Report, path: pathlib.Path) -> list[str]:
             # them because the third is currently implied is how the FIRST version of this
             # comment came to describe behaviour that was not there.
         ):
-            return [
-                *out,
-                f"{head} This history was written before the chain existed; the next run "
-                f"to append will anchor it.",
-            ]
+            return printable_lines(
+                [
+                    *out,
+                    f"{head} This history was written before the chain existed; the next run "
+                    f"to append will anchor it.",
+                ]
+            )
         # R-7's repair closes a fragment with a newline rather than discarding it, so the
         # next record lands BELOW the last line this file has and carries its digest. The
         # line number is named because "will anchor it" is the clause a reader acts on.
-        return [
-            *out,
-            head,
-            *_findings(report, path),
-            f"    The next run to append will anchor the file from line {report.lines + 1}.",
-        ]
+        return printable_lines(
+            [
+                *out,
+                head,
+                *_findings(report, path),
+                f"    The next run to append will anchor the file from line {report.lines + 1}.",
+            ]
+        )
 
     out.append(
         f"  {report.status}: {report.attested} line(s) attested of {report.lines}, "

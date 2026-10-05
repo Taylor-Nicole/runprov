@@ -38513,6 +38513,13 @@ _FORGERY = f"\n{_FORGED_LINE}\n\rverdict  OK\x1b[2K"
 #: `show align` and `report out/summarise.tsv` find nothing and the attack would reach no page.
 #: `outputs[].path` is left alone for the same reason — it is how `report` joins an artifact to
 #: the run that made it.
+#:
+#: AND THAT REASON IS FALSE FOR `impact` [Audit M, escape-3], which is why it held nothing while
+#: `impact.render` was forgeable: `impact` looks a run up BY ITS INPUT BYTES, not by `script`, so
+#: a forged `script` reaches its rebuild-order page intact. The clean-name requirement is a fact
+#: about the OTHER recipes, not about this exclusion as a whole. The leg that covers it is
+#: `test_every_renderer_main_prints_escapes_at_a_chokepoint`'s forged-`script` channel below,
+#: which plants the forgery in `script` on a run `impact` and `lineage` both print.
 _FORGE_INTO = (
     ("command",),
     ("cwd",),

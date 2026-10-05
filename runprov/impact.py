@@ -39,6 +39,8 @@ __all__: list[str] = []
 import pathlib
 import typing
 
+from .terminal import printable_lines
+
 
 class Step(typing.NamedTuple):
     """One run in the chain, and how far it is from the file that changed."""
@@ -390,4 +392,9 @@ def render(chain: Chain, root: pathlib.Path | None = None) -> list[str]:
         )
     out.append("    any script that never imported runprov — `runprov check` finds those")
     out.append("    any run whose records were pruned, or written to another history")
-    return out
+    # THE EMISSION POINT OF THIS PAGE [Audit M, escape-3]. The channel is `step.script`, NOT
+    # `outputs[].path` as the row first said: `script` is a caller-supplied string needing no
+    # file to exist, so this is the one renderer in the family the forgery reaches on ALL EIGHT
+    # matrix legs. A forged line in a REBUILD ORDER is an instruction to rebuild something that
+    # was never recorded.
+    return printable_lines(out)

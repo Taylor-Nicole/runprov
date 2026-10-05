@@ -379,6 +379,44 @@ record to protect it. Five mutations, each red and each naming its site, includi
 defaulting to a pass.
 
 
+### Fixed — five more renderers forged lines on the page a person reads
+
+Audit M, escape-1/2/3 and two the seven findings did not name. K-21 escaped two renderers and
+L-03 escaped five more at their emission points; **the hand-written list of renderers has now
+been wrong four times**, and this is the fourth. The five that were still forgeable:
+
+* **`verify.render_report`** — the artifact's **own filename, read off the disk**. A newline in
+  it prints a standalone `OK           out/clean.tsv` verdict line inside a page whose real
+  verdict is `STALE` and whose exit code is 1. Reproduced. **This is the page the shipped
+  action prints:** `action.yml` runs `python -m runprov verify $root` inside
+  `echo "::group::runprov verify"`, and `.pre-commit-hooks.yaml` runs it too. The other three
+  channels the row named are not live — `inputs[].name` is already escaped at write time by
+  `run._safe_for_pin`, and `via` and `scripts` go through `{!r}`.
+* **`check.render`** — a `.py` file whose NAME carries a newline forges this page's own
+  all-clear sentence, *no entry point opens files without recording them*, as a standalone line
+  while the page is reporting a finding and exiting 1. The forged name must **end** in `.py` or
+  the walk never sees it.
+* **`impact.render`** — through **`step.script`**, not `outputs[].path`. `script` is a
+  caller-supplied string needing no file to exist, so of the three this is the only one that
+  reaches the page on **every** platform; the other two need a filename POSIX allows and NTFS
+  does not. A forged line in a rebuild order is an instruction to rebuild something that was
+  never recorded.
+* **`chain.render`** — in **none** of the findings, and the most reachable route in the family:
+  its first line is `# chain — {path}`, interpolating **one `sys.argv` argument**, so it forges a
+  bare line on **stdout** with no record, no history and no file, on every platform. Escaped at
+  each of its three returns, because there is no single join to escape at.
+* **`__main__._render_lineage`** — every edge line interpolates a script name.
+
+**The payload side is untouched, measured rather than asserted.** Seven released corpus trees
+× fifteen recipes — every `--format json`, `yaml`, the export and the twelve text pages — are
+**byte-identical**, 105 of 105 rows unmoved, after the instrument itself was fixed: the `chain`
+rows are digests over a history that records the tree's own absolute path, so a per-run temporary
+directory made them disagree on the **baseline**.
+
+**Escaping is not censoring:** in all five the forged text still reaches the reader as
+`\nGATE: MET (exit 0)\n` on the line it belongs to. Only its power to start a new line is gone.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise
