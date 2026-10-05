@@ -116,6 +116,21 @@ OOXML_STAMP = re.compile(
 #: here so a hostile archive claiming that name cannot be read into memory unbounded.
 _ENTRY_WHOLE_MAX = 1 << 20
 
+#: THE STAMP EVERY RECORDED `mtime_utc` IS WRITTEN AND READ BACK WITH [M].
+#:
+#: Named because this module holds BOTH SIDES OF A STRING EQUALITY over it: `describe` writes
+#: the field and `moved_since` re-renders today's `stat` with `_mtime_utc` and compares the two
+#: strings. The format was spelled out three times -- twice inline in `describe`, once in
+#: `_mtime_utc` -- with nothing holding them equal, so a drift between any writer and the reader
+#: would make EVERY INPUT EVER RECORDED read `mtime`, silently and for every project at once.
+#: That is not a hypothetical about a format nobody changes: it is the one comparison in this
+#: package where the two sides are rendered by different expressions.
+#:
+#: `prune.py` already had this constant under the same name for `started_utc`, which is the
+#: shape this module lacked; a test holds the two equal, because one wire format spelled by two
+#: named constants is still one format.
+_STAMP = "%Y-%m-%dT%H:%M:%SZ"
+
 
 def sha256(path: str | pathlib.Path, chunk: int = 1 << 20) -> str:
     """Streamed, so multi-GB inputs are fine."""
@@ -422,9 +437,7 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
         # `test_inside_describe_every_recorded_path_arrives_through_posix` is the one that can.
         **({"symlink_target": _posix(link_target)} if link_target is not None else {}),
         "size_bytes": st.st_size,
-        "mtime_utc": dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        ),
+        "mtime_utc": dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc).strftime(_STAMP),
     }
     if path.is_dir():
         # os.walk with `onerror`, NOT rglob. `rglob` skips a directory it cannot enter and
@@ -540,13 +553,19 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
             rec["unstable_during_hash"] = True
         rec["size_bytes"] = after.st_size
         rec["mtime_utc"] = dt.datetime.fromtimestamp(after.st_mtime, dt.timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
+            _STAMP
         )
     return rec
 
 
 def _mtime_utc(st: os.stat_result) -> str:
-    return dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """TODAY's stamp for a `stat`, rendered the way `describe` recorded it. See `_STAMP`.
+
+    This is the READER half of the only comparison in this package whose two sides are
+    produced by different expressions: `moved_since` calls this and compares the result with
+    the recorded string. Both halves go through `_STAMP` so they cannot disagree.
+    """
+    return dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc).strftime(_STAMP)
 
 
 PIN_DIGEST_CHARS = 16

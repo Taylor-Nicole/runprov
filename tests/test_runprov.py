@@ -16097,6 +16097,66 @@ def test_an_unchanged_input_is_not_flagged(tmp_path, monkeypatch):
     assert all("changed_after_registration" not in e for e in run.record["inputs"])
 
 
+def test_the_recorded_mtime_and_the_one_moved_since_rerenders_are_one_format(tmp_path):
+    """THE ONE COMPARISON IN THIS PACKAGE WHOSE TWO SIDES ARE RENDERED BY DIFFERENT
+    EXPRESSIONS, held equal. Audit M's field-comparison table: a recorded field is safe under
+    change exactly when nothing compares it to a second rendering of the same thing — and
+    `moved_since` does exactly that, `_mtime_utc(st) != rec.get("mtime_utc")`. Every other
+    comparison in the tree pushes both sides through ONE function (`_resolve`, `_name`,
+    `pin_digest`) and is drift-proof by construction; this one did not.
+
+    WHAT WAS UNGUARDED. `"%Y-%m-%dT%H:%M:%SZ"` was spelled THREE times in `hashing.py` — twice
+    inline in `describe` (the record literal, and the re-stat after a regular file is hashed)
+    and once in `_mtime_utc` — with nothing holding them equal. A drift between any writer and
+    the reader would make EVERY INPUT EVER RECORDED report `mtime`, for every project at once,
+    with no error anywhere: `moved_since`'s whole job is to answer that question and its answer
+    would simply have been wrong. `prune.py` already had the named `_STAMP` for `started_utc`;
+    that is the shape `hashing.py` lacked.
+
+    ASKED AS A VALUE, NOT AS A GREP, so it holds whatever the constant becomes. Both writers
+    are reached: a DIRECTORY takes the record literal's stamp and never the re-stat, and a
+    regular FILE is overwritten by the re-stat — so describing one of each exercises both
+    inline sites, and each is compared against what the reader renders from the same `stat`.
+
+    AND ONE WIRE FORMAT SPELLED BY TWO NAMED CONSTANTS IS STILL ONE FORMAT, so `prune`'s is
+    held to this one. `prune` PARSES `started_utc` with it, and a drift there is a loud
+    `ValueError` rather than a silent wrong verdict, which is why the repair stayed inside
+    `hashing.py` — but the two constants agreeing is free to assert and is the thing a reader
+    of either would assume.
+    """
+    f = tmp_path / "x.tsv"
+    f.write_text("aaaa\n", encoding="utf-8")
+    d = tmp_path / "t"
+    d.mkdir()
+    (d / "a.tsv").write_text("a\n", encoding="utf-8")
+
+    for target in (f, d):
+        rec = runprov.describe(target)
+        assert rec["mtime_utc"] == runprov.hashing._mtime_utc(target.stat()), (
+            f"the writer and the reader disagree for {target.name}: the record says "
+            f"{rec['mtime_utc']!r} and `_mtime_utc` renders the same `stat` as "
+            f"{runprov.hashing._mtime_utc(target.stat())!r}. `moved_since` compares those two "
+            f"strings, so this is every recorded input reading `mtime` at once."
+        )
+        # AND THE READER MUST AGREE WITH ITSELF ABOUT THE UNCHANGED FILE, which is the sentence
+        # the equality above is only half of: equal strings matter because `moved_since` is
+        # silent on them.
+        assert runprov.hashing.moved_since(rec) is None, f"{target.name} has not moved"
+
+    #: THE RE-STAT SITE IS REALLY THE ONE THAT ANSWERED FOR THE FILE, asserted rather than
+    #: assumed: `describe` writes `mtime_utc` twice for a regular file and once for a tree, and
+    #: a premise that stopped being true would leave the loop above holding one site twice.
+    assert "content_sha256" in runprov.describe(f) and "n_files" in runprov.describe(d), (
+        "the premise: one of these two went down `describe`'s file arm and one down its tree arm"
+    )
+
+    assert runprov.hashing._STAMP == runprov.prune._STAMP, (
+        f"one wire format, two named constants, and they disagree: `hashing._STAMP` is "
+        f"{runprov.hashing._STAMP!r} and `prune._STAMP` is {runprov.prune._STAMP!r}. `run.py` "
+        f"writes `started_utc` with this shape and `prune` parses it back with its copy."
+    )
+
+
 def test_moved_since_reports_a_time_only_change(tmp_path):
     """Size is the cheap signal; mtime is the one that catches a rewrite of the SAME
     length, which is what a corrected value in a fixed-width table looks like."""
