@@ -38975,6 +38975,15 @@ _SERIALISERS = {
     ("show", "_yaml_entry"): "one entry of the transformation-log YAML document",
     ("show", "_yaml_header"): "the banner of the same YAML document",
     ("show", "render_yaml"): "`--format yaml`, the machine-readable view",
+    #: SNAKEMAKE'S BENCHMARK COLUMNS, header and one row, joined with tabs and read by
+    #: Snakemake's own benchmark parser and by every plotting script pointed at that TSV
+    #: [Audit N, guards-1]. It is a MACHINE format on the far side of the same line the entry
+    #: above states: escaping a cell would hand `pandas.read_csv` a value that is not the one
+    #: in the record. It was in NEITHER the derived set nor this table until the derivation was
+    #: widened to see a tuple binding, so it was an UNDECLARED exemption — the one shape this
+    #: table exists to make impossible. `snakemake_row` interpolates only numbers today, so
+    #: there is no live forging channel through it; this is a derivation defect, not a forgery.
+    ("resources", "snakemake_row"): "Snakemake's benchmark TSV, parsed by Snakemake itself",
 }
 
 
@@ -39049,6 +39058,13 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
                 expr = expr.args[0]
             elif isinstance(expr, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
                 expr = expr.elt
+            #: AND ONE ELEMENT OF A PAGE IS STILL THAT PAGE [Audit N, guards-1]. `result[0]`
+            #: printed on its own is the same renderer's output as `result`; without this the
+            #: tuple widening above would be half a fix, catching the unpacked spelling and
+            #: missing the subscripted one. Measured against the tree: the two together ADD
+            #: exactly one page and REMOVE none, so this peels nothing that was resolving.
+            elif isinstance(expr, ast.Subscript):
+                expr = expr.value
             else:
                 return expr
 
@@ -39070,6 +39086,24 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
                     for target in node.targets:
                         if isinstance(target, ast.Name):
                             assigned[target.id] = where
+                        #: A RENDERER BOUND BY TUPLE UNPACKING IS STILL THAT RENDERER'S PAGE
+                        #: [Audit N, guards-1]. Every `Name` element binds to the SAME
+                        #: `(module, function)`, because the call is one call and each name
+                        #: holds a part of its one answer. `__main__:2034` is
+                        #: `header, row = resources_mod.snakemake_row(m)`, printed line by
+                        #: line immediately below — a shape ALREADY IN THE TREE that this
+                        #: derivation could not see, so the docstring's *a new page fails the
+                        #: file the day it is written* was false for a print shape already
+                        #: shipped. Measured: with `prune.render`'s chokepoint removed and its
+                        #: print site rewritten this way, the structural half PASSED and the
+                        #: whole suite was RC=0, while the forgery reproduced from one argv
+                        #: argument — and `prune` is the one renderer no behavioural leg may
+                        #: ever reach, because `prune` deletes, which is what this half of
+                        #: the family exists for.
+                        elif isinstance(target, (ast.Tuple, ast.List)):
+                            for element in target.elts:
+                                if isinstance(element, ast.Name):
+                                    assigned[element.id] = where
         printed: list[ast.expr] = []
         for node in ast.walk(fdef):
             if isinstance(node, ast.Call):
@@ -39170,6 +39204,20 @@ def test_every_page_main_prints_reaches_an_escaping_chokepoint():
     behavioural leg for it would mutate its own subject.
     """
     printed = _printed_renderers()
+    #: THE FLOOR IS SLACK AND SAYS SO, WHICH IS THE WHOLE OF WHAT IT CLAIMS [Audit N,
+    #: guards-1]. Measured today: 22 pages against a floor of 15. The slack is deliberate and
+    #: it is not a number anybody should tighten:
+    #:
+    #: * AN EQUALITY HERE WOULD ROT ON EVERY NEW SUBCOMMAND, which is the K-37/L-08 defect and
+    #:   the reason `pyproject`'s coverage figures were DELETED rather than corrected. Seven
+    #:   derived guards in this file already fire the day a subcommand is added; an eighth that
+    #:   fires because a RENDERER was added says nothing a reviewer needs.
+    #: * AND THE FLOOR IS NOT WHAT HOLDS THE SET. `stale` below is an EQUALITY — every name in
+    #:   `_SERIALISERS` must still be something `__main__` prints — and `unescaped` is a
+    #:   complement over the whole derived set, so a renderer that goes missing from this
+    #:   derivation is caught by neither a count nor a list but by the two assertions that
+    #:   quantify over it. This one answers one cruder question: has the derivation stopped
+    #:   READING `__main__` at all, the way a changed AST or a renamed import would make it.
     assert len(printed) >= 15, (
         f"this derivation found only {len(printed)} pages, which is fewer than the renderers "
         f"this package is known to have — it has stopped reading `__main__`: {sorted(printed)}"
