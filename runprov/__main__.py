@@ -211,7 +211,8 @@ def _render_unreadable(number: int, raw: str) -> str:
     file, which is a poor way to inspect corruption. `errors="replace"` upstream has already
     dealt with invalid UTF-8; this deals with what survives it.
 
-    THE TRANSFORM ITSELF IS `terminal.printable` NOW [K-21], because the same class is reachable
+    THE TRANSFORM ITSELF IS `_report.printable` NOW [K-21, and moved one layer down by
+    Audit M], because the same class is reachable
     from a record and from a policy file and `policy.py` may not import this module. What stays
     here is the part that is local to triage output: the bound and the *N more character(s)*
     tail.

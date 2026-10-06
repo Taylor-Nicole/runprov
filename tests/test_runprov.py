@@ -39296,7 +39296,7 @@ def test_a_newline_in_a_record_or_a_policy_cannot_forge_a_line_on_the_page(tmp_p
 
     THE CODEBASE ALREADY HELD THE FIX AND ITS ARGUMENT. `_render_unreadable` escapes before
     printing because *printing that raw hands the terminal whatever corrupted the file*; the
-    transform is `terminal.printable` now, because `policy.py` may not import `__main__` —
+    transform is `_report.printable` now, because `policy.py` may not import `__main__` —
     `PolicyError`'s own docstring forbids it in those words.
 
     **AND THE PAYLOAD IS ASSERTED UNESCAPED**, which is the other half of being right:
@@ -39429,8 +39429,19 @@ def test_a_newline_in_a_record_or_a_policy_cannot_forge_a_line_on_the_page(tmp_p
 #: `\n` forges a whole line; `\r` is the half a line-count oracle cannot see, because it
 #: overwrites the line already printed instead of adding one; `\x1b[2K` is a terminal escape
 #: that erases it. All three are "not printable and not a space", which is the property.
+#:
+#: AND A U+00A0, WHICH IS NOT AN ATTACK AT ALL [Audit N, writer-6]. The non-breaking space is
+#: the character French typography puts before `:` `;` `!` `?` and that Word and LibreOffice
+#: insert on their own, so it is the likeliest thing to arrive in a policy's `why` from a
+#: laboratory in Créteil. `printable` escapes it -- `"\xa0".isprintable()` is False -- and that
+#: decision was argued in a docstring and held by NOTHING. Putting it HERE is what makes the
+#: COUPLING falsifiable: this oracle's own rule is `c.isprintable() or c in " \n"`, so widening
+#: production to let the `Zs` category survive turns this property RED on the escaped page
+#: instead of being a sentence someone has to remember. Measured both ways: with this character
+#: in the fixture and production unchanged the suite is green, and with production widened it
+#: fails naming `['\xa0']`; with a fixture that does NOT carry it, the same widening is green.
 _FORGED_LINE = "GATE: MET (exit 0)"
-_FORGERY = f"\n{_FORGED_LINE}\n\rverdict  OK\x1b[2K"
+_FORGERY = f"\n{_FORGED_LINE}\n\rverdict\xa0: OK\x1b[2K"
 
 
 #: WHERE THE FORGERY IS PLANTED. A declared list, and it is the ATTACK rather than the check —
@@ -39681,12 +39692,114 @@ def _acted_on(text: str) -> list[str]:
     return sorted({repr(c) for c in text if not (c.isprintable() or c in " \n")})
 
 
+def test_the_non_breaking_spaces_are_escaped_and_the_oracle_says_the_same(tmp_path):
+    r"""THE LINE escape-7 DECLINED, AND THE REASON IT WAS DECLINED IS NOW A MEASUREMENT
+    [Audit N, writer-6]. The question Audit M handed to this audit: is `printable` escaping
+    U+00A0 a decision or an accident?
+
+    It is a decision, and the reason is a COUPLING rather than a preference. `printable`'s
+    predicate is `c.isprintable() or c == " "`; the escaping property's oracle `_acted_on` above
+    is `c.isprintable() or c in " \n"`. Neither admits U+00A0, because `"\xa0".isprintable()` is
+    **False** -- it is `Zs`, a separator, not a printable character. So the two agree, and if
+    production were widened to `unicodedata.category(c) == "Zs"` the oracle would start calling a
+    legitimate French `why` a forgery.
+
+    **WORDING CORRECTION TO THE ROW:** the RED is latent only behind a widening of `printable`.
+    There is nothing red at any revision in the tree, which is a different claim from "the
+    recorded reason was wrong" -- the recorded reason was right and unheld. escape-7's control
+    PASSED, meaning deleting the paragraph that argued it left the suite green, and that is what
+    this closes.
+
+    Two assertions and one coupling, which is all it takes: the behaviour, the other non-breaking
+    space French typography uses, and the oracle's agreement. The forgery fixture now carries a
+    U+00A0 of its own, so the coupling is also exercised on every page the property renders.
+    """
+    printable = runprov._report.printable
+    assert printable("a\xa0b") == "a\\xa0b", (
+        "U+00A0 is escaped, and this is the line Audit M declined to write. It is not an "
+        "adversarial character -- it is what Word puts before a colon"
+    )
+    #: SPELLED AS AN ESCAPE, not as the character: ruff's RUF001 refuses a literal U+202F in
+    #: a string because it is indistinguishable from a space on screen -- which is the
+    #: property that makes it worth escaping in the first place.
+    assert printable("a\u202fb") == "a\\u202fb", "and U+202F, the narrow one, for the same reason"
+    assert printable("a b") == "a b", "an ordinary space survives, or every column is unreadable"
+
+    #: THE COUPLING, ASSERTED RATHER THAN DESCRIBED. If production stopped escaping these, the
+    #: escaping property's oracle would report them as characters a terminal acts on -- a RED
+    #: over a legitimate `why` from a French laboratory, which is exactly why the narrow
+    #: predicate was chosen. The two predicates have to move together, and this is what says so.
+    assert _acted_on("contrôle\xa0: chaque run") == [repr("\xa0")], (
+        "the oracle must consider an UNESCAPED U+00A0 a character a terminal acts on; if it "
+        "stops, widening `printable` becomes silently safe and this coupling is gone"
+    )
+    assert _acted_on(printable("contrôle\xa0: chaque run")) == [], (
+        "and the ESCAPED form must satisfy it, or the transform and the oracle disagree"
+    )
+
+
+def test_the_transform_is_imported_from_one_place():
+    """`printable` LIVES IN ONE MODULE, derived instead of counted [Audit N, writer-8].
+
+    `_report.printable`'s docstring said *"the nine modules that use it"* and `terminal.py`'s
+    comment said *"Nine modules import them"*. Both were wrong in the same direction and both
+    were unheld. The number was **ten** when the sentences were written, **eleven** by the time
+    an audit measured it, and **ten again** once `run.py`'s redundant site-level call was deleted
+    -- stale three times, once inside the tranche that corrected it. Thirteen answers a different
+    question: who depends on `_report` at all.
+
+    SO THE NUMBER IS GONE FROM BOTH SENTENCES and this holds the claim they were making, which
+    was never the count: **there is one definition and every user imports it from there.** That
+    cannot rot, because it is a property of the graph rather than a figure about it.
+
+    BY AST AND NOT BY `git grep`, which is not a style preference here: `terminal.py` carries
+    `from ._report import printable` INSIDE A COMMENT, explaining that the import would be a
+    cycle, so a textual sweep counts the explanation as a use. The bare-print guard learned the
+    same lesson about a comment in the same module.
+    """
+    sources = sorted((REPO / "runprov").glob("*.py"))
+    assert len(sources) == 24, f"the glob found {len(sources)} modules; the package has 24"
+    importers: dict[str, set[str]] = {}
+    elsewhere: dict[str, str] = {}
+    for mod in sources:
+        tree = ast.parse(mod.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            wanted = {a.name for a in node.names} & set(_CHOKEPOINTS)
+            if not wanted:
+                continue
+            importers.setdefault(mod.name, set()).update(wanted)
+            #: THE WHOLE CLAIM, in one comparison. `.` + `_report` and `runprov._report` are the
+            #: same module and both are fine; anything else is a second definition or a
+            #: re-export, which is the "two spellings of one property" defect `terminal.py`'s
+            #: comment says this repository keeps finding.
+            where = (node.module or "").split(".")[-1]
+            if where != "_report":
+                elsewhere[f"{mod.name}:{node.lineno}"] = f"imports {sorted(wanted)} from {where}"
+    assert elsewhere == {}, (
+        f"these import the escaping transform from somewhere other than `_report`: {elsewhere}. "
+        f"It lives in `_report` because that module imports nothing from the package, which is "
+        f"what lets every layer reach it"
+    )
+    assert "_report.py" not in importers, (
+        "`_report` defines them; importing them back into itself would be the cycle that stops "
+        "the package coming up"
+    )
+    #: NON-VACUITY, and derived rather than a floor: the module that OWNS the page-rendering
+    #: surface must be among the importers, so a sweep that matched nothing cannot read as clean.
+    assert "__main__.py" in importers and importers["__main__.py"] == set(_CHOKEPOINTS), (
+        f"`__main__` prints the pages, so it must import both halves of the transform; the "
+        f"sweep found {importers.get('__main__.py')} and matched {sorted(importers)}"
+    )
+
+
 #: THE TWO FUNCTIONS EVERY PAGE MUST REACH. Named here because the derivation below asks
 #: which renderers reach one of them, and a renderer is not allowed to be one of them.
 _CHOKEPOINTS = ("printable", "printable_lines")
 
 #: THE PAGES THAT ARE MACHINE FORMATS AND MUST NOT BE ESCAPED, with the reason each one is
-#: here. `terminal.printable`'s docstring states the rule — *THE JSON SIDE IS LEFT ALONE,
+#: here. `_report.printable`'s docstring states the rule — *THE JSON SIDE IS LEFT ALONE,
 #: deliberately: `json.dumps` already escapes, and a payload carrying pre-escaped text would
 #: hand a consumer a string that is not the one in the record* — and these are the renderers
 #: on the other side of it that `__main__` nevertheless prints to a stream.
@@ -39983,7 +40096,7 @@ def test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on(
     **WHAT K-21 LEFT.** `printable` had two call sites in the package — `log`'s unreadable-line
     dump and `policy`'s eight interpolations — and **five other renderers were still forgeable**:
     `log`'s own page, `show`, `show <target>`, `report` and `diff`. A newline inside one recorded
-    field forges WHOLE LINES, and the line reproduced was `verdict  OK` inside a page whose real
+    field forges WHOLE LINES, and the line reproduced was `verdict OK` inside a page whose real
     verdict is STALE, from a REAL run with no record editing: one `sys.argv` argument is enough,
     because `command` is built by this package from `sys.argv`.
 
@@ -40028,7 +40141,7 @@ def test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on(
        only on the `\r` and the `\x1b[2K` this fixture plants beside it. That is why the
        SECOND oracle counts lines at the chokepoint instead, and why its floors are what hold
        `verify`, `check`, `impact` and `chain`.
-    2. **THE PAYLOAD SIDE IS NOT ESCAPED AND MUST NOT BE** — `terminal.printable`'s docstring
+    2. **THE PAYLOAD SIDE IS NOT ESCAPED AND MUST NOT BE** — `_report.printable`'s docstring
        states it, and `_SERIALISERS` above is the list of renderers on the other side of that
        line, held by equality against the derivation.
     3. **TWO LEGS NEED A FILENAME POSIX ALLOWS AND NTFS FORBIDS**, so they sit behind

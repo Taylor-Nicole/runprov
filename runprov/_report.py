@@ -107,8 +107,15 @@ def printable(text: str) -> str:
     `_write` below is the package's only stderr emission point and it needs this transform;
     `terminal` imports `_report`, so `_report` importing `terminal` is a circular import that
     stops the package coming up — measured, not reasoned. This module imports nothing from the
-    package, so it is where a transform everything needs can live. The nine modules that use
-    it import it from here; `terminal.py` carries the comment saying why it is not there.
+    package, so it is where a transform everything needs can live. Every module that uses it
+    imports it from here, and `test_the_transform_is_imported_from_one_place` says so by walking
+    the tree rather than by counting.
+
+    HOW MANY MODULES THAT IS IS DELIBERATELY NOT WRITTEN DOWN [Audit N, writer-8]. This sentence
+    said *nine*; it was TEN when it was written, ELEVEN by the time an audit checked it, and it
+    is TEN again now that `run.py`'s redundant site-level call has gone -- stale three times,
+    once inside the very tranche that corrected it. The fourth number in this family to rot, and
+    the rule the repository earned from the first three is to derive it or to stop stating it.
 
     THE JSON SIDE IS LEFT ALONE, deliberately: `json.dumps` already escapes, and a payload
     carrying pre-escaped text would hand a consumer a string that is not the one in the record.

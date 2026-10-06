@@ -75,14 +75,22 @@ import typing
 
 # `printable` AND `printable_lines` MOVED TO `_report` [Audit M, escape-4]. They were
 # defined in THIS module, and `_report` — the package's one stderr emission point, through
-# which all 27 `diagnostic()` calls in `run.py` and all 3 in `sinks.py` pass — could
+# which every `diagnostic()`, `summary()` and `progress()` call in the package passes — could
 # therefore not use them: the line below is why. `from ._report import printable` inside
 # `_report` is a cycle, and the obvious one-line fix raised `ImportError: cannot import name
 # 'diagnostic' from partially initialized module 'runprov._report'` with the package not
 # coming up at all. Measured. So the transform moved DOWN the import graph to the module
 # that imports nothing from the package, rather than being copied — two spellings of one
-# property is the defect this repository keeps finding. Nine modules import them from
-# `_report` now; nothing imports them from here.
+# property is the defect this repository keeps finding. Nothing imports them from here.
+#
+# NEITHER FIGURE IS STATED ANY MORE [Audit N, writer-8]. This comment used to say *"all 27
+# `diagnostic()` calls in `run.py` and all 3 in `sinks.py`"*, which omitted THIS MODULE'S SIX
+# and reported a 40-site surface as 30; and *"Nine modules import them"*, which was ten when it
+# was written and eleven when an audit checked it. Both are derived now, by
+# `test_no_writer_argument_carries_a_newline_of_its_own` and
+# `test_the_transform_is_imported_from_one_place`. The reason this module may not import
+# `_report` BACK is held by `test_the_package_imports_only_downwards`, which is the claim this
+# comment used to be the only statement of.
 from ._report import diagnostic
 from .hashing import _posix
 
