@@ -7542,6 +7542,175 @@ def test_a_writer_call_with_no_arguments_says_nothing(capsys, monkeypatch):
     assert (cap.out, cap.err) == ("", ""), "a writer call with nothing to say must say nothing"
 
 
+#: THE PACKAGE'S IMPORT DIRECTION, as a layer table [Audit N, writer-9]. Two tiers carry a
+#: written reason and everything else is the middle:
+#:
+#: * `_report` is the BOTTOM. Its own docstring says why, in these words: *"`terminal` imports
+#:   `_report`, so `_report` importing `terminal` is a circular import that stops the package
+#:   coming up -- measured, not reasoned."* A transform everything needs can only live in a
+#:   module that needs nothing.
+#: * `__main__` is the TOP. `PolicyError`'s docstring forbids a library module from importing the
+#:   command module in those words, because *"a policy parser that dragged `__main__` in would
+#:   make `import runprov.policy` build an argument parser"*.
+#:
+#: THE MIDDLE IS DELIBERATELY UNORDERED, and the finer table this row proposed -- `terminal` and
+#: `sinks` as a tier ABOVE the library -- is REFUTED by the graph: `sinks` imports `run` and
+#: `show` (deferred, with its own comment saying why) and `terminal` imports `hashing` at module
+#: level, so a table claiming they sit above the middle is RED at HEAD. A full topological order
+#: of 22 modules would also rot on every new import, which is the floor-beside-the-set shape this
+#: audit has filed repeatedly. These two boundaries are the ones with reasons behind them.
+_IMPORT_LAYERS = {"_report": 0, "__main__": 2}
+_LIBRARY_LAYER = 1
+
+
+def test_the_package_imports_only_downwards():
+    """`_report`'s claim about ITSELF, held for the package rather than for one module.
+
+    **THE ONE-LINE FORM THAT WAS PROPOSED IS REFUTED, BY MEASUREMENT.** *"`_report.py`'s AST must
+    contain no `ImportFrom` with `level >= 1`"* PASSES over an import that reproduces the exact
+    failure this is about: `from runprov.terminal import _DEFAULT_LEVEL` is level **0** -- an
+    absolute import of the package from inside the package -- and with it the package does not
+    come up at all:
+
+        ImportError: cannot import name 'diagnostic' from partially initialized module
+        'runprov._report' (most likely due to a circular import)
+
+    Both spellings were planted and both produce that, with `level` 0 and 1 respectively. **So
+    `level >= 1` tests the SPELLING and not the DIRECTION**, and inside a package the
+    cycle-creating spelling is the one it cannot see.
+
+    AND ONE MODULE IS THE WRONG SUBJECT. `terminal.py` carries a comment explaining why the
+    transform is NOT there, which is the same claim a second time with nothing checking it -- the
+    list-of-sites shape this audit has now filed four times. Here it is a CONSEQUENCE: if
+    `_report` may not import `terminal`, the transform cannot live in `terminal` and be reached
+    from `_report`, and nobody has to restate it.
+
+    WHAT THIS CANNOT SEE, declared rather than closed: an `importlib.import_module` call built
+    from a string, and a deferred import is treated exactly like a module-level one. The second
+    is deliberate -- `sinks` defers `run` and `show` precisely to break a cycle, so a check that
+    only read module-level imports would bless `_report` deferring `terminal`, which fails just as
+    hard the first time a message is written.
+    """
+    offenders: dict[str, str] = {}
+    seen: dict[str, int] = {}
+    for mod in sorted((REPO / "runprov").glob("*.py")):
+        if mod.stem == "__init__":
+            continue  # the package's re-export surface, which must reach every layer by design
+        here = _IMPORT_LAYERS.get(mod.stem, _LIBRARY_LAYER)
+        seen[mod.stem] = here
+        tree = ast.parse(mod.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            #: BOTH SPELLINGS, WHICH IS THE WHOLE POINT. A relative `from .terminal import x` and
+            #: an absolute `from runprov.terminal import x` create the same cycle, and only the
+            #: first has a `level`. `import runprov.terminal` is the third spelling of it.
+            targets: list[str] = []
+            if isinstance(node, ast.ImportFrom):
+                parts = (node.module or "").split(".")
+                if node.level >= 1:
+                    targets = [parts[0]]
+                elif parts[0] == "runprov":
+                    targets = [parts[1]] if len(parts) > 1 else []
+            elif isinstance(node, ast.Import):
+                targets = [
+                    alias.name.split(".")[1]
+                    for alias in node.names
+                    if alias.name.split(".")[0] == "runprov" and "." in alias.name
+                ]
+            for target in targets:
+                if not target or target == "__init__":
+                    continue
+                there = _IMPORT_LAYERS.get(target, _LIBRARY_LAYER)
+                if there > here:
+                    offenders[f"{mod.name}:{node.lineno}"] = (
+                        f"imports `{target}` (layer {there}) from layer {here}"
+                    )
+
+    #: THE SWEEP MUST HAVE READ THE MODULES THE TABLE NAMES, or a glob that stopped matching
+    #: reports a clean graph. `runprov` has 24 modules -- the figure `mypy runprov/` prints on
+    #: every gate run -- and 23 of them are not `__init__`. An EQUALITY, like the docstring
+    #: sweep's file floor next door: it moves only when a module is added or removed, which is
+    #: exactly when somebody should re-read which layer it belongs in.
+    assert set(_IMPORT_LAYERS) <= set(seen), (
+        f"the layer table names a module this sweep did not read: "
+        f"{sorted(set(_IMPORT_LAYERS) - set(seen))}"
+    )
+    assert len(seen) == 23, (
+        f"the sweep read {len(seen)} modules besides `__init__` and the package has 23, so a "
+        f"glob has stopped matching or a module was added without a layer: {sorted(seen)}"
+    )
+    assert offenders == {}, (
+        f"these imports go UP the layer table, which is the circular import that has already "
+        f"stopped this package importing: {offenders}. `_report` is the bottom layer precisely "
+        f"so a transform everything needs can live there, and `__main__` is the top because "
+        f"`import runprov.policy` must not build an argument parser"
+    )
+
+
+def test_report_write_is_the_librarys_only_stderr_emission_point():
+    """The other half of `_report`'s claim: it is not only the bottom, it is the ONLY way out.
+
+    `_write`'s docstring calls itself *"the package's one stderr emission point, and therefore
+    where it is escaped"*, and the per-argument transform in `diagnostic` is worth exactly as much
+    as that sentence is true. The bare-print guard next door holds `print`, and says in its own
+    docstring that *"a `sys.stdout.write` would slip past it"*. This closes that named hole for
+    the stream writes: `sys.stderr.write`, `sys.stdout.write` and a raw `os.write` to fd 2.
+
+    MEASURED AND WORTH KEEPING: `watch.py`, `heartbeat.py` and `observe.py` contain zero
+    `diagnostic`, `summary`, `progress` or `print` calls, so the 40 writer sites really are the
+    whole non-CLI surface rather than the part somebody enumerated.
+
+    `terminal.py` IS EXEMPT FOR ONE CALL AND THE SUBJECT IS ASSERTED. Its `os.write` is a
+    short-write loop copying the captured stream BACK to the real terminal -- the artifact being
+    mirrored, not a message about the run -- and the module's `sys.stderr` references are
+    assignments that install a tee, not writes. The exemption is keyed to `os.write` with a
+    non-literal fd, so a `sys.stderr.write` added to `terminal.py` is still an offender.
+    """
+    emitters: dict[str, list[str]] = {}
+    quiet_modules = {"watch.py", "heartbeat.py", "observe.py"}
+    silent: dict[str, list[str]] = {}
+    for mod in sorted((REPO / "runprov").glob("*.py")):
+        tree = ast.parse(mod.read_text(encoding="utf-8"))
+        if mod.name in quiet_modules:
+            said = [
+                name
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                for name in [
+                    node.func.id
+                    if isinstance(node.func, ast.Name)
+                    else getattr(node.func, "attr", "")
+                ]
+                if name in ("diagnostic", "summary", "progress", "print")
+            ]
+            if said:
+                silent[mod.name] = said
+        if mod.name in ("_report.py", "__main__.py"):
+            continue  # the emission point itself, and the CLI whose rendered log IS its output
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            rendered = ast.unparse(node.func)
+            if rendered.endswith(".write") and ("stderr" in rendered or "stdout" in rendered):
+                emitters.setdefault(mod.name, []).append(f"{node.lineno}: {rendered}")
+            #: `os.write(2, ...)` IS A WRITE TO STDERR and `os.write(fd, ...)` is not -- that is
+            #: `terminal.py`'s mirror loop, whose subject is the captured stream rather than a
+            #: message. Keyed on the fd being a LITERAL, so the exemption cannot widen.
+            if rendered == "os.write" and node.args:
+                first = node.args[0]
+                if isinstance(first, ast.Constant) and first.value in (1, 2):
+                    emitters.setdefault(mod.name, []).append(f"{node.lineno}: os.write(fd 2)")
+
+    assert emitters == {}, (
+        f"these library modules write to a standard stream without going through "
+        f"`_report._write`, so the per-argument escaping in `diagnostic` does not cover them: "
+        f"{emitters}"
+    )
+    assert silent == {}, (
+        f"{sorted(silent)} now say something, and they were measured as saying nothing -- the "
+        f"claim that the derived writer surface is COMPLETE rests on that: {silent}"
+    )
+
+
 def test_a_posix_locking_failure_is_announced(monkeypatch, tmp_path, capsys):
     """The notice sat inside the win32-only branch, so a POSIX `flock` that raised -- NFS,
     CIFS, a container without the syscall -- degraded to an unlocked append in SILENCE.
