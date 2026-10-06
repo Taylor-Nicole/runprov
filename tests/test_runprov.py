@@ -825,7 +825,25 @@ def test_rendered_yaml_survives_the_c_loader_and_a_character_above_the_bmp():
 
     **THE C LOADER IS SKIPPED WITH ITS REASON RATHER THAN ASSUMED**, and the Python loader is
     asserted on every platform, so the equality half runs everywhere even where libyaml is
-    absent.
+    absent. **THAT SENTENCE WAS FALSE FOR A WHOLE RELEASE, and in the test written to retire
+    exactly that shape** [Audit N, guards-3]: the `pytest.skip` sat INSIDE the two-label loop,
+    after the first label's assertions, so on a PyYAML without libyaml the `render_yaml` label
+    executed NO assertion at all and the test reported SKIPPED. `render_yaml` has SIX
+    `ensure_ascii=False` sites of its own, independent of `_q`, and measured: with libyaml
+    present the regression confined to those six is caught by EXACTLY ONE test in the suite —
+    this one — and with libyaml genuinely absent that one test SKIPS and the suite is RC=0,
+    1 217 passed, 10 skipped. **A skip inside a loop does not report a narrower subject; it
+    silently truncates the subject list.** So the C loader is now a CONDITIONAL BLOCK and the
+    "never asked" is said ONCE, outside the loop, after both labels have run both halves.
+
+    **WHOSE PYYAML THIS IS, CORRECTED.** An earlier draft of this paragraph named Debian, conda
+    and Nix. Those all appear to build PyYAML AGAINST libyaml, and PyPI's manylinux wheels
+    bundle it, so **no leg of this project's matrix has this configuration** — stated as a flag
+    rather than asserted, because it was checked offline and a distribution's build flags are
+    not something this file can measure. The audience that genuinely has it is an sdist build
+    with no libyaml headers: musl and Alpine, `pip install --no-binary :all:`, some HPC
+    builds. **The fix needs no audience argument**; it needs only that a skip must not be able
+    to delete an assertion about a different subject.
     """
     yaml = pytest.importorskip("yaml")
     high = "\U0001f9ac"
@@ -838,6 +856,9 @@ def test_rendered_yaml_survives_the_c_loader_and_a_character_above_the_bmp():
         f"accepts. A character above the BMP is the whole case."
     )
 
+    #: PROBED ONCE, BEFORE THE LOOP, so the answer cannot change between subjects and the
+    #: report about it cannot stand in for an assertion about one of them.
+    c_loader = getattr(yaml, "CSafeLoader", None)
     for label, text in (
         ("_yaml", cli._yaml(NASTY)),
         ("render_yaml", runprov.show.render_yaml(record)),
@@ -865,16 +886,31 @@ def test_rendered_yaml_survives_the_c_loader_and_a_character_above_the_bmp():
             f"not the string the record holds: {found}"
         )
 
-        if not hasattr(yaml, "CSafeLoader"):
-            pytest.skip("this PyYAML has no libyaml binding, so CSafeLoader cannot be asked")
-        #: THE LOADER THAT REFUSES. libyaml is what `yaml.safe_load` uses wherever it is built,
-        #: which is most installations, so this is the loader a reader of these files actually
-        #: has — and it is the one that raises rather than guessing.
-        strict = yaml.load(text, Loader=yaml.CSafeLoader)
-        strict_rows = strict if isinstance(strict, list) else [strict]
-        assert any(
-            isinstance(r, dict) and high in json.dumps(r, ensure_ascii=False) for r in strict_rows
-        ), f"[Audit M escape-6] CSafeLoader read {label} and the character is not in it: {strict}"
+        #: THE LOADER THAT REFUSES, AS A CONDITIONAL BLOCK AND NOT A SKIP [Audit N, guards-3].
+        #: libyaml is what `yaml.safe_load` uses wherever it is built, which is most
+        #: installations, so this is the loader a reader of these files actually has — and it is
+        #: the one that raises rather than guessing. A `pytest.skip` here ends the TEST, not the
+        #: iteration, so on a PyYAML without libyaml the second label's rendered-bytes and
+        #: pure-Python halves above never ran and the file reported SKIPPED over a live
+        #: regression in six `ensure_ascii=False` sites. The absence is reported once, below.
+        if c_loader is not None:
+            strict = yaml.load(text, Loader=c_loader)
+            strict_rows = strict if isinstance(strict, list) else [strict]
+            assert any(
+                isinstance(r, dict) and high in json.dumps(r, ensure_ascii=False)
+                for r in strict_rows
+            ), (
+                f"[Audit M escape-6] CSafeLoader read {label} and the character is not in it: "
+                f"{strict}"
+            )
+
+    #: AND THE ONE THING THIS HOST COULD NOT ASK, SAID ONCE AND AFTER EVERY SUBJECT HAS BEEN
+    #: ASKED EVERYTHING ELSE [Audit N, guards-3]. Both labels have now run their rendered-bytes
+    #: half and their pure-Python half, so the surrogate-escape regression is RED here on a
+    #: libyaml-less host instead of invisible; what is genuinely unavailable is reported, and
+    #: nothing else is dropped with it.
+    if c_loader is None:
+        pytest.skip("this PyYAML has no libyaml binding, so CSafeLoader cannot be asked")
 
 
 def test_rendered_yaml_keeps_the_field_names_of_the_log_it_replaces():
