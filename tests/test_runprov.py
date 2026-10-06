@@ -38862,21 +38862,19 @@ def _forged_history(tmp_path):
         r.input(root / "out" / "genotype.tsv")
         with r.open_output(root / "out" / "rebuild.tsv") as fh:
             fh.write("id\tv\n1\tz\n")
-    #: AND ONE RUN WHOSE SCRIPT NAME IS ITSELF FORGED, last in the history. `resources` picks
-    #: the most recent run carrying a measurement and interpolates only `script` and `run_id`,
-    #: so it is the one renderer the forgery cannot reach through any other field — and leaving
-    #: `script` clean everywhere made reverting its escaping GREEN, measured. The lookups the
-    #: other recipes use are by `align`, `genotype` and `summarise`, which this does not touch.
-    with runprov.Run(
-        f"measured{_FORGERY}", project=project, provenance=root / "prov" / "last.prov.json"
-    ):
-        pass
-
-    #: AN ENTRY POINT FOR `check` TO FIND. Without one the page is `NOTHING WAS CHECKED` and
-    #: the renderer's list branches never run — that is the 194-byte vacuous leg.
-    (root / "entry.py").write_text(
-        'import sys\n\nif __name__ == "__main__":\n    open("data/m.tsv")\n', encoding="utf-8"
-    )
+    #: THE TWO POSIX-ONLY CHANNELS COME BEFORE `measured`, AND THE ORDER IS THE WHOLE
+    #: POINT [Audit N, guards-2]. `resources` picks the MOST RECENT run carrying a
+    #: measurement, so while the clean `named` run was created after `measured{_FORGERY}`
+    #: it won that pick on every host where the probe is TRUE — which is every host the
+    #: gate runs on — and `_resources_text` was handed no forged line at all. The leg was
+    #: VACUOUS on POSIX and `vacuous` could not say so, because it only inspects names that
+    #: are IN `carried` and `resources` interpolates no other field. Measured: a PARTIAL
+    #: regression — `printable_lines` on every line but the header, the one line that
+    #: interpolates `script` and `run_id` straight off the record — was RC=0 locally and on
+    #: SEVEN of the eight matrix jobs, red only on `windows-latest / 3.12`, the one leg where
+    #: the probe is false. With these two created FIRST, `measured{_FORGERY}` is the most
+    #: recent measured run on BOTH branches, so the probe no longer decides whether a
+    #: renderer is attacked.
     if _can_name_a_file_with_a_newline(tmp_path):
         #: THE TWO POSIX-ONLY CHANNELS, behind the probe and for the reason it states: on a
         #: host whose names cannot hold a control character, neither file can be created and
@@ -38899,6 +38897,21 @@ def _forged_history(tmp_path):
             with r.open_output(root / "out" / f"clean.tsv\n{_FORGED_LINE}\nx") as fh:
                 fh.write("id\tv\n1\tn\n")
 
+    #: AND ONE RUN WHOSE SCRIPT NAME IS ITSELF FORGED, last in the history. `resources` picks
+    #: the most recent run carrying a measurement and interpolates only `script` and `run_id`,
+    #: so it is the one renderer the forgery cannot reach through any other field — and leaving
+    #: `script` clean everywhere made reverting its escaping GREEN, measured. The lookups the
+    #: other recipes use are by `align`, `genotype` and `summarise`, which this does not touch.
+    with runprov.Run(
+        f"measured{_FORGERY}", project=project, provenance=root / "prov" / "last.prov.json"
+    ):
+        pass
+
+    #: AN ENTRY POINT FOR `check` TO FIND. Without one the page is `NOTHING WAS CHECKED` and
+    #: the renderer's list branches never run — that is the 194-byte vacuous leg.
+    (root / "entry.py").write_text(
+        'import sys\n\nif __name__ == "__main__":\n    open("data/m.tsv")\n', encoding="utf-8"
+    )
     rows = [
         _forge(json.loads(line))
         for line in log.read_text(encoding="utf-8").splitlines()
@@ -39489,10 +39502,17 @@ def test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on(
     #: actually exempted** — a fifth place to keep in step would have been found the same
     #: expensive way, and a constant restated beside an exemption is the list-of-sites shape
     #: again, inside the test that exists to retire it.
-    floor = 14 - len(filename_channel - owed)
+    #: AND THE BASE MOVED 14 -> 15 IN THE COMMIT THAT REORDERED THE FIXTURE [Audit N,
+    #: guards-2]. Making `resources` a live leg adds `__main__._resources_text` to this set, so
+    #: a base left at 14 would have been slack by one on both branches — and a floor restated
+    #: beside a fixture it is measured from is the list-of-sites shape a SIXTH time, created by
+    #: the fix for the fifth. Measured after the reorder: 15 renderers where every channel
+    #: exists, 13 where the filename channel does not, and `filename_channel - owed` is exactly
+    #: the 2 that separates them. The figure is EXACT on both probe branches, not slack.
+    floor = 15 - len(filename_channel - owed)
     assert len(forged_lines) >= floor, (
         f"the newline forgery reached a chokepoint in only these renderers: "
-        f"{sorted(forged_lines)}. Fourteen is what this fixture measured where every channel "
+        f"{sorted(forged_lines)}. Fifteen is what this fixture measured where every channel "
         f"exists, {floor} is owed on this host, and fewer means a leg has gone quiet."
     )
 
