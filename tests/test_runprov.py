@@ -115,6 +115,41 @@ def _assert_symlink_loop(path: pathlib.Path) -> None:
     )
 
 
+#: WHAT HOLDS THESE PROBES, WRITTEN DOWN BECAUSE IT EXISTS AND NOTHING CREDITED IT [Audit N,
+#: guards-11]. A probe that silently regresses — a tempdir on a mount that refuses symlinks, a
+#: container running as root, a PyYAML without libyaml — disables up to a fifth of this suite and
+#: leaves a bare `pytest` green with no failures at all. The obvious repair is a test asserting
+#: that each probe answers the way this platform should answer, and it was REFUSED after being
+#: measured four ways: it is red at HEAD, because `os.geteuid` is in
+#: `test_nothing_evaluated_at_import_needs_a_posix_only_name`'s `posix_only` set; under genuine
+#: mapped root it either SKIPS — disabled by the very probe whose liveness it asserts — or passes
+#: because the remedy itself tests for euid 0; it goes permanently red on a libyaml-less PyYAML,
+#: which ADR-0011 already decided (*a permanently red check teaches its audience to ignore it*);
+#: and the only form that passes on Windows asserts nothing on the one leg of eight where probe
+#: answers differ.
+#:
+#: THE HONEST INSTRUMENT IS ALREADY IN THE TREE: `ci.py test`'s `--cov-fail-under=100`. It
+#: asserts the probe's CONSEQUENCE rather than its cause — the lines a skipped test covered go
+#: unmeasured — which is why it can both fail and pass, needs no per-platform table, and is off
+#: precisely on the two legs where it is unreachable by construction. `ci.py:_coverage_args`
+#: carries the other half of this comment. Measured in a copied tree, against a baseline of
+#: 2 missing statements / 0 partial branches:
+#:
+#:   `_can_symlink` False       -> 16 missing / 3 partial: hashing.py:506, run.py:1858-1861,
+#:                                 2088-2089, 3148-3155, 3184->3186, 3443-3444, verify.py:790,
+#:                                 watch.py:231-232, 274-275   (bare pytest: RC=0, 1 198 / 29)
+#:   `_chmod_denies_read` False -> 8 missing / 1 partial: hashing.py:510, 713-716, run.py:2291,
+#:                                 verify.py:317-318           (bare pytest: RC=0, 1 211 / 16)
+#:
+#: AND ITS LIMIT, MEASURED RATHER THAN ASSUMED. The two probes that gate branches INSIDE tests
+#: rather than whether tests run are invisible to it: `_can_name_a_file_with_a_newline` False and
+#: a genuinely libyaml-less PyYAML both report 2 / 0, identical to baseline. A SKIP BUDGET does
+#: not help either — 9 declared skips at baseline becomes 29, 16 and 10 for three of the four and
+#: stays 9 for the newline probe, so a total misses it entirely and a "no undeclared reason"
+#: budget misses all four, since every extra skip carries its own marker's declared reason. For
+#: those two the answer is not an assertion about the probe: it is removing the probe's power to
+#: silence an assertion, which is what guards-2's fixture reorder and guards-3's conditional
+#: block do.
 def _can_symlink() -> bool:
     with tempfile.TemporaryDirectory() as d:
         try:

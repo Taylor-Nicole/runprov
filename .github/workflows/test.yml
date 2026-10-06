@@ -83,14 +83,24 @@ jobs:
             python: "3.12"
           - os: windows-latest
             python: "3.12"
-            # 49 tests build something Windows cannot build — a FIFO, a symlink, a file
+            # THIS IS THE ONE PLACE THE COUNT IS STATED [Audit N]. `ci.py`'s own floor
+            # comment used to carry a second, different figure for the same set of tests —
+            # "22 tests" there against "49 tests" here — so it now states the mechanism and
+            # names this file, and the number lives here beside the `off` it justifies.
+            #
+            # Tests that build something Windows cannot build — a FIFO, a symlink, a file
             # `chmod(0o000)` genuinely makes unreadable, an executable `#!/bin/sh` script, a
             # directory opened as a file, an `os.kill` that delivers a signal instead of
-            # terminating the process — and they skip there (see the probes at the top of
-            # the suite). MEASURED on run 33575026376, 2026-09-02: 722 passed, 50 skipped,
-            # against 769 and 5 on ubuntu. Skipped tests leave their lines unmeasured, so the
-            # 100% floor is unreachable HERE by construction, not by regression. Every other
-            # leg still asserts it; this is the only place the word `off` appears, on purpose.
+            # terminating the process — skip there; see the probes at the top of the suite.
+            # MEASURED on run 33575026376, 2026-09-02: 49 such tests, 722 passed, 50 skipped,
+            # against 769 and 5 on ubuntu. That is a DATED measurement and reads as one: it
+            # is not re-derived on every run and will drift as the suite grows, which is why
+            # it carries its date and its run id rather than being restated as a live claim.
+            # Skipped tests leave their lines unmeasured, so the 100% floor is unreachable
+            # HERE by construction, not by regression. Every other leg still asserts it; this
+            # is the only place the word `off` appears, on purpose — and that floor is also
+            # what catches a filesystem probe that silently regresses, which is recorded at
+            # the probes themselves and in `ci.py:_coverage_args`.
             coverage_floor: "off"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -167,13 +167,32 @@ def _coverage_args() -> list[str]:
         #: README's figures with the instrument that measured them rather than with a proxy.
         f"--cov-report=json:{SCALE_REPORT}",
     ]
-    # THE FLOOR IS ON BY DEFAULT, and off only where it is unreachable by construction
-    # rather than by regression: 22 tests need a FIFO, a symlink or a file `chmod(0o000)`
-    # actually makes unreadable, and Windows provides none of the three, so they skip and
-    # the lines they cover go unmeasured. The Windows matrix leg in `test.yml` sets this,
-    # and nothing else does -- a floor that quietly lowered itself by sniffing the platform
-    # would be the same failure this repository keeps finding, so it has to be asked for in
-    # a file a reader can see.
+    # THE FLOOR IS ON BY DEFAULT, and off only where it is unreachable by construction rather
+    # than by regression: some tests need a FIFO, a symlink or a file `chmod(0o000)` actually
+    # makes unreadable, Windows provides none of the three, so they skip and the lines they
+    # cover go unmeasured. The Windows matrix leg in `test.yml` sets this, and nothing else
+    # does -- a floor that quietly lowered itself by sniffing the platform would be the same
+    # failure this repository keeps finding, so it has to be asked for in a file a reader can
+    # see.
+    #
+    # HOW MANY TESTS, AND IT IS SAID IN ONE PLACE [Audit N]. This comment used to say "22
+    # tests" while `test.yml`'s own comment said "49 tests" for the same set, with a dated
+    # measurement of 722 passed / 50 skipped beside it. Two figures for one fact, on no
+    # instrument, in the two files that set the gate -- and correcting both would only reset
+    # the clock, which is what this repository keeps paying for. So the count lives in
+    # `test.yml` beside the `coverage_floor: "off"` it justifies, dated and with its run id,
+    # and this comment states the mechanism and no number.
+    #
+    # AND THIS FLOOR IS THE PROBE INSTRUMENT, which nothing credited until Audit N looked for
+    # one [guards-11]. The suite's filesystem probes (`_can_symlink`, `_chmod_denies_read` at
+    # the top of `tests/test_runprov.py`) decide whether whole tests run, and a probe that
+    # silently starts answering False disables up to a fifth of the suite while a bare
+    # `pytest` stays green with zero failures. This floor catches that WITHOUT asserting
+    # anything about a probe, because an unmeasured line is the probe's consequence: measured
+    # against a 2-missing / 0-partial baseline, forcing `_can_symlink` False is 16 missing / 3
+    # partial and forcing `_chmod_denies_read` False is 8 / 1, each naming the production
+    # lines that went unmeasured. The probe comment in the suite carries the full table and
+    # the two probes this cannot see.
     if os.environ.get("RUNPROV_COVERAGE_FLOOR", "").lower() == "off":
         print(
             "\n!! coverage FLOOR DISABLED by RUNPROV_COVERAGE_FLOOR=off. The suite still\n"
