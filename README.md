@@ -2810,6 +2810,16 @@ guard.
 their first line can be a shebang, and a pin above it stops the file being executable.
 "Is `#` a comment" is not the same question as "is line 1 free".
 
+**The allowlist names a MARKER per suffix, not just the suffix.** A `comment=` that is not the
+one that format is known to take gets the sidecar, exactly as an unrecognised suffix does. Until
+0.8.0 the suffix alone decided and any string was accepted as the marker, so
+`open_output(p, "DATA ")` wrote `DATA provenance — …` into a `.yaml` and left it unparseable
+while `runprov verify` read it as **OK, exit 0** — the Newick failure again, through the path
+advertised as the safe default. Measured: eight different second arguments broke the same YAML
+identically, so refusing them by name would have caught one of eight. `comment` is
+**keyword-only** for the same reason: `open_output(path, comment="# ")` reads like
+`open(path, mode)`, and `open_output(p, "w")` is now a `TypeError` at the call site.
+
 **A format that cannot hold a pin gets one beside it.** `open_output()` writes the artifact
 untouched and puts the pin in `<artifact>.prov.txt`, registered and hashed like any other
 output — so a FASTA, a FASTQ, a JSONL or a Newick tree keeps the property that matters:

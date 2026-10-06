@@ -22331,6 +22331,145 @@ def test_the_readme_documents_the_in_band_allowlist_exactly():
     )
 
 
+def test_every_allowlisted_suffix_demands_the_marker_it_declares(tmp_path, capsys):
+    """THE ALLOWLIST IS A MARKER PER SUFFIX, NOT A SET OF SUFFIXES [Audit N, writer-7].
+
+    `PIN_INLINE` was a `frozenset`, so its 17 suffixes accepted ANY string as the comment
+    marker while `PIN_ALTERNATIVE`'s 7 demanded the exact one. There was no reason for the
+    asymmetry and it was live: measured on a `.yaml`, `'w'`, `'DATA '`, `''`, `'note: '`,
+    `'// '`, `'-- '`, `'%'` and `';'` each wrote an in-band pin that left the artifact
+    unparseable -- `ScannerError` -- and `runprov verify` read all eight as **OK, exit 0**. The
+    pin was fine; the ARTIFACT was destroyed, which is the Newick class the inversion to an
+    allowlist exists to prevent, arriving through the path advertised as the safe default.
+
+    REFUSING THE KNOWN FILE MODES BY NAME WAS REFUSED, and `open_output`'s own comment twelve
+    lines above the site had already refused it: *"This asked `is the suffix KNOWN to be
+    unsafe?` ... every round of review found another one nobody had thought of: Newick, then SVG
+    and JSON from a real plotting script, then pickle. A guard whose default is to corrupt is not
+    a guard."* A mode blocklist catches `'w'` and misses the other seven.
+
+    DERIVED OVER THE WHOLE TABLE rather than over the `.yaml` that was reported, so a suffix
+    added to the allowlist is covered the day it is added. Each one is written twice: once with
+    the marker it declares, which must land in-band, and once with a marker it does not, which
+    must land in a sidecar and leave the artifact's own first line intact.
+    """
+    project = _project(tmp_path)
+    src = tmp_path / "in.tsv"
+    src.write_text("x\n1\n", encoding="utf-8")
+    run = runprov.Run("a", project=project)
+    run.input(src)
+    body = "col\n1\n"
+    #: Eight strings, and only the first is a file mode -- which is the measurement that
+    #: refuted the blocklist. `''` is in the list because an empty marker is what a caller
+    #: reaching for "no pin" types, and `open_output` has no way to say that.
+    not_markers = ("w", "DATA ", "", "note: ", "// ", "-- ", "%", ";")
+    assert "# " not in not_markers, "a control that includes the real marker proves nothing"
+
+    for i, suffix in enumerate(sorted(runprov.run.PIN_INLINE)):
+        declared = runprov.run.PIN_INLINE[suffix]
+        good = tmp_path / f"good{i}{suffix}"
+        with run.open_output(good, comment=declared) as fh:
+            fh.write(body)
+        assert good.read_text(encoding="utf-8").startswith(f"{declared}provenance"), (
+            f"{suffix} declares {declared!r} and must take an in-band pin behind it"
+        )
+        assert not good.with_name(good.name + ".prov.txt").exists(), (
+            f"{suffix} took the pin in-band, so there must be no second file as well"
+        )
+
+        bad = tmp_path / f"bad{i}{suffix}"
+        marker = not_markers[i % len(not_markers)]
+        with run.open_output(bad, comment=marker) as fh:
+            fh.write(body)
+        assert bad.read_text(encoding="utf-8") == body, (
+            f"{suffix} was written with {marker!r}, which this package does not know it takes, "
+            f"so the artifact must be UNTOUCHED -- it is {bad.read_text(encoding='utf-8')!r}"
+        )
+        assert bad.with_name(bad.name + ".prov.txt").is_file(), (
+            f"{suffix} with {marker!r} must get the SIDECAR, which is the safe default the "
+            f"allowlist inversion was built for -- not nothing"
+        )
+    err = capsys.readouterr().err
+    assert "does take one behind '# '" in err, (
+        "and the note must say the format DOES take an in-band pin behind another marker; "
+        "'cannot hold an in-band pin' alone is false for these and sends the caller to look "
+        "for the wrong thing"
+    )
+
+
+def test_open_output_refuses_a_comment_passed_where_a_mode_would_go(tmp_path):
+    """`comment` IS KEYWORD-ONLY, because the signature invited the mistake
+    [Audit N, writer-7]. `open_output(path, comment="# ")` reads exactly like
+    `open(path, mode)`, and `open_output(p, "w")` used to write `wprovenance ...` into the
+    artifact. Validation rather than a blocklist: the call cannot be made at all now.
+
+    SAFE BECAUSE NOTHING PASSED IT POSITIONALLY, verified by AST over every tracked `.py` file
+    rather than by reading the README: **no call anywhere in this repository gives
+    `open_output` a second positional argument**, and every non-default `comment=` in the tree
+    names a `PIN_ALTERNATIVE` suffix (`README.md`'s two opt-in lines, `.sql` here and in
+    `examples/format_compatibility.py`, `.fasta` in the FASTA test) or a `.vcf`, which is
+    refused either way. `record_header` follows `comment` and so became keyword-only with it;
+    nothing passed that positionally either.
+
+    `header()` KEEPS ITS POSITIONAL MARKER and that is deliberate -- `open_output`'s docstring
+    offers `run.header(";")` as the by-hand escape hatch for a format with its own comment
+    syntax, so there the marker IS the subject of the call rather than a second thought.
+    """
+    project = _project(tmp_path)
+    run = runprov.Run("a", project=project)
+    with pytest.raises(TypeError, match="positional"):
+        run.open_output(tmp_path / "out.tsv", "w")  # type: ignore[misc]
+    assert not (tmp_path / "out.tsv").exists(), "refused before anything is opened"
+
+    sources = [
+        path
+        for path in sorted((REPO).rglob("*.py"))
+        if ".venv" not in path.parts
+        and ".kilo" not in path.parts
+        and "__pycache__" not in str(path)
+    ]
+    assert len(sources) >= 32, f"the sweep found {len(sources)} sources; the repository tracks 32"
+    positional: dict[str, str] = {}
+    refused: dict[str, str] = {}
+    for path in sources:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        #: THE ONE EXEMPTION IS DERIVED FROM ITS REASON, not from a line number: a call inside
+        #: `with pytest.raises(...)` is a call that is MEANT to fail, and the assertion above is
+        #: one. Its subject is asserted below rather than declared, so the exemption cannot
+        #: start covering an ordinary call -- the shape guards-1 was filed for.
+        expected_to_raise = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.With):
+                continue
+            if not any(
+                isinstance(item.context_expr, ast.Call)
+                and getattr(item.context_expr.func, "attr", None) == "raises"
+                for item in node.items
+            ):
+                continue
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Call):
+                    expected_to_raise.add(id(inner))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and getattr(node.func, "attr", None) == "open_output"
+                and len(node.args) >= 2
+            ):
+                where = f"{path.relative_to(REPO)}:{node.lineno}"
+                target = refused if id(node) in expected_to_raise else positional
+                target[where] = ast.unparse(node.args[1])
+    assert positional == {}, (
+        f"these calls pass `open_output` a second positional argument, which is now a "
+        f"TypeError: {positional}"
+    )
+    assert list(refused.values()) == ["'w'"], (
+        f"the exemption covers calls written to RAISE, and it now covers {refused}. The one it "
+        f"is for is the `pytest.raises` above; anything else inside a `raises` block is a "
+        f"second claim nothing here checks"
+    )
+
+
 def test_the_binary_refusal_names_the_mode_not_a_comment_syntax(tmp_path):
     """L-50. The message came from `PIN_UNSAFE`, and 25 of the 40 binary suffixes are not in
     that table — `.pkl` `.pt` `.rds` `.feather` and the rest — so they fell to its default and

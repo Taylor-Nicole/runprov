@@ -9,6 +9,45 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Changed — `open_output()` demands the comment marker the format is known to take, and `comment` is keyword-only
+
+**Audit N, writer-7. This changes what an existing call does, and the change is deliberate.**
+
+Until now `PIN_INLINE` was a set of 17 suffixes, so any string at all was accepted as the pin's
+comment marker for them, while `PIN_ALTERNATIVE`'s 7 suffixes demanded the exact marker. The
+asymmetry had no reason behind it and it corrupted artifacts. **Measured on one `.yaml`: eight
+different second arguments — `'w'`, `'DATA '`, `''`, `'note: '`, `'// '`, `'-- '`, `'%'` and
+`';'` — each wrote an in-band pin that left the file unparseable (`ScannerError`), and
+`runprov verify` reported all eight as OK, exit 0.** The pin was readable in every case; the
+artifact was destroyed. That is the Newick class the allowlist inversion exists to prevent,
+arriving through the path advertised as the safe default.
+
+**What changes for a caller.** `PIN_INLINE` is now a mapping of suffix to the marker that suffix
+is known to take (`"# "` for all 17 today). A `comment=` that is not that marker gets the
+**sidecar**, exactly as an unrecognised suffix does, and the artifact is written untouched. Only
+calls that were already producing a corrupt artifact behave differently; `open_output(p)` and
+`open_output(p, comment="# ")` are byte-identical to before, and `verify` still reads every
+record written by every released version identically (84 corpus rows, 7 trees, unchanged).
+
+**And `comment` is keyword-only, because the signature invited the mistake.**
+`open_output(path, comment="# ")` reads like `open(path, mode)`, so `open_output(p, "w")` is now
+a `TypeError` at the call site rather than a corrupt file later. Verified by AST over every
+tracked `.py` file that **no call anywhere in this repository passed a second positional
+argument**; `record_header` follows `comment` and became keyword-only with it, and nothing passed
+that positionally either. `header()` keeps its positional marker, because there the marker is the
+subject of the call — it is the by-hand escape hatch `open_output`'s own docstring points at.
+
+**Refusing the file modes by name was considered and refused**, and `open_output`'s own comment
+had already refused it: *"every round of review found another one nobody had thought of … a guard
+whose default is to corrupt is not a guard."* A mode blocklist catches `'w'` and misses the other
+seven. **R-9 is not engaged**: no field is renamed, no digest convention moves, and the record's
+shape is untouched — what changes is which of two already-documented destinations the pin goes to.
+
+**The note now says which of the two reasons it was.** For a format with no comment line,
+*"cannot hold an in-band pin"* is the whole story; for a `.yaml` asked for `'DATA '` it is false,
+so the note names the marker and adds *".yaml does take one behind `'# '`."*
+
+
 ### Added — `runprov gate`: a policy, checked against the history that was actually recorded
 
 T-34, ADR-0018. `check` is the static half — *could this code fail to record*. This is the other

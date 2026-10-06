@@ -240,6 +240,21 @@ PIN_UNSAFE = types.MappingProxyType({
 #: THE ALLOWLIST: suffixes whose format is known to treat a leading `#` line as a comment,
 #: and whose first line is not otherwise special. Anything not named here gets a SIDECAR.
 #:
+#: A MAPPING AND NOT A SET, because the suffix was never the whole question [Audit N, writer-7].
+#: This was a `frozenset`, so the 17 suffixes here accepted ANY string as a marker while the 7
+#: in `PIN_ALTERNATIVE` demanded the exact one -- an asymmetry with no reason behind it.
+#: Measured on a `.yaml`: `'w'`, `'DATA '`, `''`, `'note: '`, `'// '`, `'-- '`, `'%'` and `';'`
+#: all write an in-band pin that leaves the artifact unparseable (`ScannerError`), which is the
+#: Newick class this allowlist exists to prevent, arriving through the path advertised as the
+#: safe default. `verify` reads every one of those artifacts as **OK, exit 0** -- 8 suffixes x 8
+#: second-arguments is 64 cells with exactly one readable pin in each and NO PIN in none, so the
+#: damage is to the artifact and not to the pin, and nothing reports it.
+#:
+#: Each value is the marker THIS format is known to accept, and a `comment` that is not it goes
+#: to the sidecar -- the safe default the inversion above was built for. Refusing by NAME was
+#: considered and refused: a blocklist of file modes catches `'w'` and misses the other seven,
+#: and the comment twelve lines below says why that shape is wrong in general.
+#:
 #: This is the inversion. The rule used to be "pin in-band unless the suffix is on a list of
 #: known-unsafe formats", and that default corrupts whatever nobody thought of -- which over
 #: three rounds of review was Newick (a pinned tree PARSED and came back with three phantom
@@ -252,10 +267,16 @@ PIN_UNSAFE = types.MappingProxyType({
 #: executable -- "is `#` a comment" is not the same question as "is line 1 free".
 #: `.md` IS here: `#` renders as a heading rather than a comment, which is visible but not
 #: corrupting, and it has been pinned that way from the start.
-PIN_INLINE = frozenset(
-    {".bed", ".bedgraph", ".cfg", ".conf", ".csv", ".gff", ".gff3", ".gtf", ".ini",
-     ".md", ".properties", ".tab", ".toml", ".tsv", ".txt", ".yaml", ".yml"}
-)  # fmt: skip
+#: WRITTEN OUT ROW BY ROW rather than built from the suffixes with one marker, which `dict.
+#: fromkeys` would say more briefly and less truly: the value is a CLAIM ABOUT THAT FORMAT, and
+#: a row for a format whose comment marker is not `#` has somewhere to go. The same shape as
+#: `PIN_ALTERNATIVE` below, for the same reason.
+PIN_INLINE = types.MappingProxyType({
+    ".bed": "# ", ".bedgraph": "# ", ".cfg": "# ", ".conf": "# ", ".csv": "# ",
+    ".gff": "# ", ".gff3": "# ", ".gtf": "# ", ".ini": "# ", ".md": "# ",
+    ".properties": "# ", ".tab": "# ", ".toml": "# ", ".tsv": "# ", ".txt": "# ",
+    ".yaml": "# ", ".yml": "# ",
+})  # fmt: skip
 
 #: EVERY suffix that is BINARY or COMPRESSED -- not a subset of `PIN_UNSAFE`, which is what
 #: this comment used to claim. Measured: 40 entries here against 38 there, and 25 of these
@@ -2325,6 +2346,7 @@ class Run:
     def open_output(
         self,
         path: str | pathlib.Path,
+        *,
         comment: str = "# ",
         record_header: bool = False,
     ) -> typing.IO[str]:
@@ -2443,7 +2465,13 @@ class Run:
         # corrupt is not a guard. The question is now `is this format KNOWN to take a `#`
         # comment?`, so an unrecognised suffix gets the sidecar, which is safe for anything.
         alternative = PIN_ALTERNATIVE.get(suffix)
-        inline = suffix in PIN_INLINE or (alternative is not None and comment == alternative[0])
+        # AND THE MARKER HAS TO BE ONE THE FORMAT IS KNOWN TO TAKE, which is what `PIN_INLINE`
+        # being a set rather than a mapping used to skip [Audit N, writer-7]. `suffix in
+        # PIN_INLINE` let any string through, so `open_output(p, "w")` -- a call that reads
+        # exactly like `open(path, mode)`, which is why `comment` is keyword-only now -- wrote
+        # `wprovenance ...` into a `.yaml` and left it unparseable while `verify` said OK.
+        known = PIN_INLINE.get(suffix)
+        inline = comment == known or (alternative is not None and comment == alternative[0])
         if alternative is not None and inline and alternative[1]:
             diagnostic(
                 f"  PROVENANCE NOTE: pinning {pathlib.Path(path).name} in-band with "
@@ -2494,9 +2522,19 @@ class Run:
             # `git_status_captured: false` say "we could not look" out loud.
             sidecar = self.pin_sidecar(p, comment=comment)
             diagnostic(
-                f"  PROVENANCE NOTE: {p.name} cannot hold an in-band pin, so the provenance "
-                f"was written BESIDE it as {sidecar.name} — a second file you did not ask "
-                f"for, and the one `verify` will name.",
+                f"  PROVENANCE NOTE: {p.name} cannot hold an in-band pin"
+                # AND IT SAYS WHICH OF THE TWO REASONS IT WAS [Audit N, writer-7]. For a format
+                # that has no comment line the sentence above is the whole story; for one that
+                # DOES, and was asked for a marker this package does not know it takes, "cannot
+                # hold an in-band pin" is false and sends the caller to look for the wrong thing.
+                + (f" behind {comment!r}" if known is not None else "")
+                + f", so the provenance was written BESIDE it as {sidecar.name} — a second "
+                f"file you did not ask for, and the one `verify` will name.",
+                *(
+                    [f"    {p.suffix.lower()} does take one behind {known!r}."]
+                    if known is not None
+                    else []
+                ),
                 # The conditional second line is an ARGUMENT, not a `+` of a `\n`-prefixed
                 # string, for the reason `diagnostic`'s docstring gives: a caller's newline
                 # that is not an argument boundary is indistinguishable from a value's.
