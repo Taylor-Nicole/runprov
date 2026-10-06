@@ -30611,7 +30611,13 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
             try:
                 doc.encode("utf-8")
             except UnicodeEncodeError as exc:
-                offenders[f"{path}:{node.lineno}"] = str(exc)
+                #: `getattr`, BECAUSE `ast.Module` HAS NO `lineno` [Audit N, guards-7]. All 32
+                #: swept files have a module docstring, which is the commonest docstring in the
+                #: tree, and for that one the f-string raised `AttributeError` INSIDE this
+                #: `except UnicodeEncodeError` handler — so the guard went red with a type error
+                #: and NO PATH WAS NAMED ANYWHERE in the report. The reader got coverage's
+                #: "position 1677" and no file. The guard's whole value is naming the site.
+                offenders[f"{path}:{getattr(node, 'lineno', 1)}"] = str(exc)
 
     #: THE SWEEP MUST HAVE READ EVERY FILE IT NAMED. Without this, a walk that stopped finding
     #: docstrings would report zero offenders and read exactly like a clean tree.
@@ -30993,8 +30999,24 @@ def test_inside_describe_every_recorded_path_arrives_through_posix(tmp_path, mon
     def unspelled_in(rec: object) -> dict[str, str]:
         """Those leaves that NAME SOMETHING ON DISK and did not come through `_posix`.
 
-        `os.path.lexists`, not `exists`: a recorded `symlink_target` may point at another link,
-        and a dangling one is still a path that was recorded.
+        `os.path.lexists`, NOT `exists`, AND THE REASON IS THE LINK AND NOT ITS TARGET [Audit N,
+        guards-9]. The two differ for a DANGLING LINK — `exists` is False and `lexists` is True —
+        and they never differ for that link's TARGET, where both are False. An earlier wording
+        here had it the other way round. The reason to use `lexists` is that a recorded path may
+        BE a link whose target is gone, and that is still a path that was recorded.
+
+        AND THE SCOPE IS THE TEST'S CWD, WHICH IS A KNOWN LIMIT, NOT A CLOSED ONE. A relative
+        `symlink_target` inside a subdirectory — `../real.tsv` for `sub/link.tsv` — does not
+        `lexists` from the test's cwd, so a regression confined to that shape is outside this
+        half of the guard. The repair proposed for it was to resolve candidates against
+        `dirname(rec["path"])` as a UNION, and that is MEASURED DEAD HERE: `path` is the one
+        field guaranteed to carry the mark, so the base is `<posix>sub` and the join is
+        `<posix>sub/../real.tsv`, which exists nowhere. Measured side by side in this fixture:
+        the bare value False, the union False, and only a mark-STRIPPED base True. Resolving
+        against the record's own `path` without stripping widens nothing, and stripping the mark
+        inside the detector would make the detector depend on the sentinel it is detecting. So
+        the limit is recorded rather than closed, and the AST sibling above — which needs no
+        fixture and holds on every platform — is what covers the spelling of that field today.
         """
         return {
             where: value
@@ -31032,8 +31054,18 @@ def test_inside_describe_every_recorded_path_arrives_through_posix(tmp_path, mon
     #: AND THE PREMISE OF THE WHOLE TEST, ASSERTED RATHER THAN ASSUMED: the link's record
     #: actually carries M-01's field, and it carries it SPELLED. Without this the loop above is
     #: satisfied by `path` alone and the field this guard exists for need not be present.
-    assert mark in records["link.tsv"]["symlink_target"], (
-        f"the subject is missing: {records['link.tsv']}"
+    #: `.get`, NOT A SUBSCRIPT [Audit N, guards-8]. This line subscripted before it asserted,
+    #: so a `describe` that stopped recording the field died here with a bare `KeyError` instead
+    #: of its own *the subject is missing* message — an error rather than an assertion, the same
+    #: shape as the `ast.Module` `lineno` above. The row that filed it said this was the only
+    #: guard holding M-01; that is WRONG and the correction matters, because it is what makes
+    #: this a diagnostics defect rather than a hole: deleting the field fails THREE tests, two of
+    #: which name it with a full explanation — the behavioural symlink test and `_ALSO_PATHS`'s
+    #: static equality, which is held on EVERY leg, Windows included.
+    assert mark in records["link.tsv"].get("symlink_target", ""), (
+        f"the subject is missing: `describe` recorded no `symlink_target` for a real symlink, so "
+        f"the loop above is satisfied by `path` alone and the field this guard exists for need "
+        f"not be present: {records['link.tsv']}"
     )
 
     # AND THE DETECTOR MUST BE ABLE TO REPORT ONE, through the same walk and at depth. A
@@ -36006,17 +36038,70 @@ def test_only_the_writer_of_status_may_default_it(tmp_path, capsys, monkeypatch)
     verdicts = writers[writer]
 
     def verdict_defaults(src, name):
-        """Every `<record>.get("status", <a verdict word>)` — the shape that invents an answer."""
+        """Every read of `status` that supplies a verdict word the record did not carry.
+
+        TWO SPELLINGS, NOT ONE [Audit N, guards-5]. This saw only
+        `<rec>.get("status", <word>)`, so `rec.get("status") or "ok"` defaulted the field
+        invisibly and the docstring's promise — *a sixth reader added next year with a `"ok"`
+        default fails this the day it is written* — was false for the spelling its own SIBLING
+        guard had been widened to catch IN THE SAME AUDIT. The widening was applied to the
+        instance and not to the class.
+
+        AND THE TWO SPELLINGS ARE NOT BEHAVIOURALLY IDENTICAL; `or` IS STRICTLY WORSE.
+        `.get("status", "ok")` returns `""` or `None` when the key is PRESENT and empty or null;
+        `or "ok"` returns `"ok"` for both. A present-but-null status is real data in this
+        project — `export.py` writes `"runprov:status": rec.get("status")` deliberately, and
+        `show.status_of`'s own docstring says a hand-edited history or a line from another tool
+        can carry `null`. So the `or` spelling invents a verdict for a record that explicitly
+        says it has none, which is worse than the shape this already caught.
+
+        THE `branches()` DESCENT IS THE PATH GUARD'S, verbatim in shape: a fallback can hide in
+        an `ast.IfExp`'s arms or an `ast.BoolOp`'s operands, so the WORD is looked for in every
+        arm rather than in the one expression. `value_of(arm) in verdicts` carries the load — the
+        `X or <fallback>` idiom appears at about 97 sites in the package and the key and the word
+        together are what make this specific.
+
+        WHAT IT STILL DOES NOT SEE, RECORDED RATHER THAN CLOSED: the TWO-LINE form,
+        `status = rec.get("status")` on one line and `verdict = status or "ok"` on the next.
+        Neither arm follows a local binding, and `policy.py` and `show.py` are ALREADY split that
+        way — both correctly, neither defaulting — so the shape is live in the tree and a reader
+        who copied it and added `or "ok"` would pass this. Closing it needs flow analysis of a
+        local, which is a different guard; this one closes a spelling.
+        """
+
+        def branches(v: ast.expr) -> list[ast.expr]:
+            """The arms a fallback can hide in — and no other descent."""
+            if isinstance(v, ast.IfExp):
+                return [*branches(v.body), *branches(v.orelse)]
+            if isinstance(v, ast.BoolOp):
+                return [b for x in v.values for b in branches(x)]
+            return [v]
+
+        def a_verdict_word(v: ast.expr) -> bool:
+            return any(value_of(arm, name) in verdicts for arm in branches(v))
+
+        def reads_status(v: ast.expr, args: int) -> bool:
+            return (
+                isinstance(v, ast.Call)
+                and isinstance(v.func, ast.Attribute)
+                and v.func.attr == "get"
+                and len(v.args) == args
+                and isinstance(v.args[0], ast.Constant)
+                and v.args[0].value == "status"
+            )
+
         found = {}
         for node in ast.walk(ast.parse(src, filename=name)):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "get"
-                and len(node.args) == 2
-                and isinstance(node.args[0], ast.Constant)
-                and node.args[0].value == "status"
-                and value_of(node.args[1], name) in verdicts
+            if reads_status(node, 2) and a_verdict_word(node.args[1]):
+                found[f"{name}:{node.lineno}"] = ast.unparse(node)
+            #: THE `or` SPELLING: the first operand reads the field and the last supplies the
+            #: word. `Or` only — `X and "ok"` cannot default anything, since it yields the word
+            #: exactly when the field was already truthy.
+            elif (
+                isinstance(node, ast.BoolOp)
+                and isinstance(node.op, ast.Or)
+                and reads_status(node.values[0], 1)
+                and a_verdict_word(node.values[-1])
             ):
                 found[f"{name}:{node.lineno}"] = ast.unparse(node)
         return found
@@ -36034,13 +36119,24 @@ def test_only_the_writer_of_status_may_default_it(tmp_path, capsys, monkeypatch)
     )
     # NON-VACUITY, THROUGH THE SAME MATCHER: a probe for each verdict word, so narrowing the
     # derivation or losing an argument condition fails here rather than quietly matching nothing.
+    #: AND ONE LINE PER NEW ARM [Audit N, guards-5], exactly as the path guard's probe does. The
+    #: positives come first and the negatives after, because the assertion is positional: the
+    #: `or` spelling, a fallback behind an `ast.IfExp`, and both at once. The negatives are the
+    #: controls that say the arms are specific — a non-verdict default, a read with no default,
+    #: the wrong KEY with the `or` spelling, and `and` instead of `or`, which cannot default
+    #: anything because it yields the word exactly when the field was already truthy.
+    first = sorted(verdicts)[0]
     probe = verdict_defaults(
         "\n".join(f'x = r.get("status", {w!r})' for w in sorted(verdicts))
-        + '\nx = r.get("status")\nx = r.get("status", "?")\nx = r.get("other", "ok")\n',
+        + f'\nx = r.get("status") or {first!r}'
+        + f'\nx = r.get("status", {first!r} if c else None)'
+        + f'\nx = r.get("status") or ({first!r} if c else None)'
+        + '\nx = r.get("status")\nx = r.get("status", "?")\nx = r.get("other", "ok")'
+        + f'\nx = r.get("other") or {first!r}\nx = r.get("status") and {first!r}\n',
         "<probe>",
     )
-    assert sorted(probe) == [f"<probe>:{i}" for i in range(1, len(verdicts) + 1)], (
-        f"the scan cannot see its own subject, one line per verdict word: {probe}"
+    assert sorted(probe) == [f"<probe>:{i}" for i in range(1, len(verdicts) + 4)], (
+        f"the scan cannot see its own subject, one line per verdict word and one per arm: {probe}"
     )
     #: AND THE EXEMPTION'S OWN SUBJECT, ASSERTED: `run.py` is skipped above, so if its projection
     #: ever stops carrying that default the skip is covering nothing and should go.
