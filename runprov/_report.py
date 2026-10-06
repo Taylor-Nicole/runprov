@@ -168,25 +168,25 @@ def _write(line: str) -> None:
     become the target encoding's replacement and the warning still arrives.
 
     THE PACKAGE'S ONE STDERR EMISSION POINT, AND THEREFORE WHERE IT IS ESCAPED
-    [Audit M, escape-4]. All 27 `diagnostic()` calls in `run.py`, all 3 in `sinks.py` and
-    every `summary()` line arrive here, and each of them interpolates values from outside
-    this source file: paths a run opened, a policy's `why`, an exception's own words. A
-    `\r` or an `\x1b[2K` in one of those moves or erases the line already printed.
+    [Audit M, escape-4]. Every `diagnostic()`, `summary()` and `progress()` call in the
+    package arrives here — the count is DERIVED rather than written down, by
+    `test_no_writer_argument_carries_a_newline_of_its_own`, which also holds the enumeration
+    this paragraph used to spell out and get wrong — and each of them interpolates values
+    from outside this source file: paths a run opened, a policy's `why`, an exception's own
+    words. A `\r` or an `\x1b[2K` in one of those moves or erases the line already printed.
 
-    **PER LINE, AND THE NEWLINE IS DELIBERATELY NOT TOUCHED, which is the whole of what this
-    does and does not buy.** `printable(message)` over the whole string was measured and is
-    REFUTED: a four-line `AUTO-DETECTED project:` note came out as ONE line of `\n`
-    literals, and at least eight `diagnostic()` callers pass embedded newlines on purpose
-    (`run.py` at 622, 2187, 2264, 2492, 3245, 3302, 3442). `printable_lines`'s own docstring
-    names that as *the one way to get this wrong*. So the message is split on its own
-    separator and each line escaped.
+    **PER LINE HERE, AND THE NEWLINE IS DELIBERATELY NOT TOUCHED HERE**, because by the time
+    a message is one string a `\n` the caller wrote for layout and a `\n` that arrived inside
+    an interpolated value are the same character. `printable(message)` over the whole string
+    was measured and is REFUTED: a four-line `AUTO-DETECTED project:` note came out as ONE
+    line of `\n` literals. So this function splits on the separator and escapes each line,
+    which is `printable_lines`'s rule applied to a message instead of a page.
 
-    **WHICH MEANS A NEWLINE FORGERY IS NOT CLOSED HERE AND CANNOT BE.** A `\n` inside an
-    interpolated field is indistinguishable, at this point, from a `\n` the caller wrote for
-    layout: both are just the separator by the time the message is one string. Closing that
-    half needs the transform where the FIELD still exists — which is why `run.py`'s
-    `UNREGISTERED READ` escapes `shown` at the site, and why the in-flight banner in
-    `__main__` escapes its list of lines rather than the joined page.
+    **THE NEWLINE FORGERY IS CLOSED, BUT NOT HERE — IT IS CLOSED IN `diagnostic` BELOW**
+    [Audit N, writer-4], which escapes PER ARGUMENT and then joins. An argument boundary is
+    the one place the two kinds of newline are still distinguishable, because one of them is
+    syntax in the calling module and the other is data. This function stays as it is: it is
+    the last defence for a `\r` or an escape sequence, and it is what `progress()` relies on.
     """
     line = "\n".join(printable_lines(line.split("\n")))
     stream = sys.stderr
@@ -220,12 +220,45 @@ def _write(line: str) -> None:
 
 
 def diagnostic(*lines: str) -> None:
-    """Something that bears on whether the record is TRUE. stderr, always, unsilenceable."""
-    for line in lines:
-        # flush because a warning is often the last thing emitted before the process dies,
-        # and stderr redirected into a file by a job runner is not guaranteed to be
-        # line-buffered on every platform this package claims to support.
-        _write(line)
+    r"""Something that bears on whether the record is TRUE. stderr, always, unsilenceable.
+
+    ONE ARGUMENT IS ONE LINE, AND THAT IS WHAT CLOSES THE NEWLINE FORGERY [Audit N, writer-4].
+    `_write` cannot tell a caller's layout newline from a newline that arrived inside an
+    interpolated path, policy `why` or exception message -- by then the message is one string
+    and the separator is just a character. **An argument boundary can**: the separator between
+    two arguments is syntax in the calling module, and everything inside one argument is a
+    value. So each argument is escaped on its own, which turns a value's newline into a literal
+    `\n`, and the arguments are then joined with the separators the caller actually asked for.
+    Reproduced before the change: an unregistered read of
+    `data/sneak.csv\nGATE: MET (exit 0)\nx` put a bare `GATE: MET (exit 0)` on stderr from the
+    library, with no CLI, no filesystem and no argv involved.
+
+    THE TRADE, STATED BECAUSE IT IS REAL AND NOBODY HAD STATED IT. For a VALUE, readable and
+    unforgeable are mutually exclusive. Nine sites interpolate `{exc}`, and a
+    `CalledProcessError` carrying a captured stderr tail loses its shape here: a `SyntaxError`'s
+    caret diagram becomes one escaped line. **That makes the writer side strictly stricter than
+    the renderer side** -- `printable_lines` escapes per line, so a value's newline still breaks
+    a page line, which clause 1 of the escaping property's docstring whitelists by
+    construction. The asymmetry is not an oversight: **a page's separator is its own, and a
+    writer's argument boundary is not.** A caller who wants a multi-line note passes several
+    arguments; a caller who wants a multi-line VALUE cannot have one, and that is the point.
+
+    **ONE `_write`, NOT ONE PER ARGUMENT.** `_WRITE_LOCK` is taken INSIDE `_write`, so writing
+    per argument is N lockings and the heartbeat thread -- whose docstring says this lock
+    serialises the two writers -- can land between two lines of the same note. Measured over 60
+    trials with a second thread writing: a single `_write` splits 0 times, one `_write` per
+    argument splits 9 times in 60.
+
+    `progress()` IS NOT REACHED BY THIS and deliberately keeps the whole-message form, because
+    it takes ONE positional line and its cap counts calls. A newline a `progress` caller writes
+    is still split and escaped by `_write`, which is correct there and would be a collapse here;
+    that is also why the structural guard's newline clause is scoped to `diagnostic`/`summary`.
+    """
+    if lines:
+        # flush -- in `_write` -- because a warning is often the last thing emitted before the
+        # process dies, and stderr redirected into a file by a job runner is not guaranteed to
+        # be line-buffered on every platform this package claims to support.
+        _write("\n".join(printable(line) for line in lines))
 
 
 #: How many progress lines one run may print before it stops narrating. A run registering

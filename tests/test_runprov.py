@@ -7330,6 +7330,218 @@ def test_no_library_module_calls_bare_print():
     )
 
 
+#: THE PACKAGE'S WHOLE WRITER SURFACE, DECLARED ONCE AND COMPARED BY EQUALITY
+#: [Audit N, writer-4 + writer-8]. `_report._write`'s docstring used to enumerate this in prose
+#: -- *"all 27 `diagnostic()` calls in `run.py`, all 3 in `sinks.py`"* -- which OMITTED
+#: `terminal.py`'s 6, in the very module the sentence left out, and reported the surface as 30
+#: when it is 40. A number in a docstring is not checked by anything; this table is, both ways.
+#:
+#: The total is SUMMED FROM THIS TABLE rather than written down beside it, because a floor or a
+#: total restated next to the set it could be computed from is the shape this audit filed as
+#: guards-10 and writer-8(b) -- four numbers in this family have now gone stale that way.
+#:
+#: THE EQUALITY ROTS ON A NEW WRITER SITE, AND THAT IS THE CONTRACT. Unlike a docstring count,
+#: a `diagnostic()` call is added deliberately and rarely, and when one is added somebody must
+#: decide whether its argument boundaries are right -- which is exactly what the newline clause
+#: below holds. `checked >= 1668` was refused next door for rotting on every docstring edit;
+#: this cannot rot without a writer site moving.
+_WRITER_SURFACE = {
+    "run.py": {"diagnostic": 27, "progress": 2, "summary": 2},
+    "sinks.py": {"diagnostic": 3},
+    "terminal.py": {"diagnostic": 6},
+}
+
+#: `_report.py` IS EXEMPT BECAUSE IT DEFINES THESE FUNCTIONS, AND THE EXEMPTION'S SUBJECT IS
+#: ASSERTED BELOW rather than taken on trust. An exemption that is only declared is one that can
+#: start covering something else -- guards-1 was an undeclared exemption and the `run.py` status
+#: exemption is the one in the previous tranche that cannot start covering nothing, because its
+#: subject is asserted. The subject here is `summary`'s re-dispatch to `diagnostic`, which
+#: authors no message: every one of its arguments is a `*` forward.
+_WRITER_DEFINER = "_report.py"
+
+
+def _writer_calls(path: pathlib.Path) -> list[tuple[int, str, ast.Call]]:
+    """Every `diagnostic`/`summary`/`progress` call in one module, by AST.
+
+    BY AST AND NOT BY `git grep`, for the reason the bare-print guard gives next door and for a
+    second one measured here: `terminal.py:79` carries `from ._report import printable` INSIDE A
+    COMMENT, so a textual sweep of this family counts a comment as a call.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        if name in ("diagnostic", "summary", "progress"):
+            out.append((node.lineno, name, node))
+    return out
+
+
+def test_no_writer_argument_carries_a_newline_of_its_own():
+    r"""THE WRITER SIDE OF THE ESCAPING PROPERTY, DERIVED [Audit N, writer-4 and writer-5].
+
+    `diagnostic` escapes PER ARGUMENT, because an argument boundary is the one place a newline
+    the caller wrote for layout is still distinguishable from a newline that arrived inside an
+    interpolated value: the first is syntax in the calling module, the second is data. That
+    makes a `\n` written as a string literal INSIDE one argument a collapse -- the whole note
+    comes out as one line of `\n` literals -- and eight sites in `run.py` were written that way.
+
+    **THE REGRESSION IS INVISIBLE TO EVERY OTHER TEST IN THIS SUITE.** Measured: with all eight
+    notes collapsed back into single arguments the suite is RC=0 with zero failures, and one of
+    the eight is `run.py`'s `summary()` -- the `provenance -> <path>` confirmation the package
+    prints on every successful run. So the gate did not hold the most-printed line in the
+    package, and this test is the only thing that does.
+
+    THE HONEST RULE, WHICH IS NARROWER THAN "A CONSTANT PART OF A JoinedStr":
+
+      A newline VISIBLE AS A STRING LITERAL IN THE ARGUMENT EXPRESSION is the caller's layout
+      and must survive as an argument boundary; a newline that arrives at runtime is a value's
+      and must not survive at all. This test enforces the first clause STRUCTURALLY and
+      `diagnostic` enforces the second BEHAVIOURALLY, and the gap between them -- any newline a
+      module builds out of non-literal parts -- is DECLARED here rather than closed.
+
+    **EVERY `Constant` IN THE ARGUMENT, not only a `JoinedStr`'s parts.** `run.py`'s sidecar
+    note keeps its conditional second line in a Constant inside an `IfExp` inside a `BinOp`;
+    reading only `JoinedStr.values` misses it. So the walk is `ast.walk` over the whole argument.
+
+    THE FOUR BLIND SPOTS, DECLARED BECAUSE `diagnostic` COLLAPSES THEM SILENTLY:
+
+    * `chr(10)` and any other computed separator;
+    * `os.linesep`;
+    * a `Name` bound to a newline-bearing literal elsewhere in the module;
+    * **a module-level constant interpolated into the message, which is LIVE and not
+      hypothetical**: `run.py`'s `f"{comment!r} - {alternative[1]}"` takes a caveat out of the
+      module-level `PIN_ALTERNATIVE` table, whose own comment says *"A non-empty caveat is said
+      on stderr."* No caveat in that table carries a newline today; nothing here would notice
+      if one started to.
+
+    `%`-format, `.format()`, `textwrap.dedent`, `"\n".join(...)` and a format-spec fill are all
+    CAUGHT, because each of them puts the newline in a literal in the argument expression.
+
+    SCOPED TO `diagnostic`/`summary`, AND `progress` IS DELIBERATELY NOT IN THE NEWLINE CLAUSE.
+    `progress(line, *, state)` takes ONE positional, so "per argument" there IS the
+    whole-message transform that was refuted, and it is not reached by `diagnostic` at all -- it
+    calls `_write` directly, which splits on the separator and escapes per line. A newline a
+    `progress` caller writes therefore does NOT collapse, so forbidding one here would forbid a
+    shape that is correct. `progress` stays in the SITE COUNT, which is about seeing the whole
+    writer surface, and out of the newline clause, which is about the collapse.
+    """
+    found: dict[str, dict[str, int]] = {}
+    newline_sites: dict[str, str] = {}
+    for mod in sorted((REPO / "runprov").glob("*.py")):
+        if mod.name == _WRITER_DEFINER:
+            continue
+        for lineno, name, node in _writer_calls(mod):
+            found.setdefault(mod.name, {}).setdefault(name, 0)
+            found[mod.name][name] += 1
+            if name == "progress":
+                continue
+            for arg in node.args:
+                literals = [
+                    sub.value
+                    for sub in ast.walk(arg)
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+                ]
+                bad = [text for text in literals if "\n" in text]
+                if bad:
+                    newline_sites[f"{mod.name}:{lineno}"] = repr(bad[0][:70])
+
+    assert newline_sites == {}, (
+        f"these writer arguments carry a newline as a string literal, so `diagnostic` will "
+        f"escape it and print the note as ONE line of `\\n` literals: {newline_sites}. Pass one "
+        f"ARGUMENT PER LINE instead -- `diagnostic(first, second)`, or "
+        f"`*(f'    {{x}}' for x in items)` for a dynamically sized note, the shape "
+        f"`run.py`'s CODE-is-modified warning already uses"
+    )
+
+    assert found == _WRITER_SURFACE, (
+        f"the package's writer surface moved. Derived {found}, declared {_WRITER_SURFACE} "
+        f"({sum(sum(v.values()) for v in found.values())} sites against "
+        f"{sum(sum(v.values()) for v in _WRITER_SURFACE.values())}). A new writer site is not a "
+        f"problem -- add it to the table -- but read the newline clause ABOVE before you do, "
+        f"because `diagnostic` escapes per ARGUMENT and a literal newline inside one collapses "
+        f"the whole note into one line"
+    )
+
+    #: THE EXEMPTION'S SUBJECT, ASSERTED. `_report.py` is skipped above because it DEFINES these
+    #: functions; what it must not contain is a writer site of its own. The one call there is
+    #: `summary`'s re-dispatch, and it authors nothing: every argument is a `*` forward.
+    definer = _writer_calls(REPO / "runprov" / _WRITER_DEFINER)
+    assert [name for _, name, _ in definer] == ["diagnostic"], (
+        f"the {_WRITER_DEFINER} exemption covers ONE call -- `summary`'s re-dispatch to "
+        f"`diagnostic` -- and now covers {[(n, ln) for ln, n, _ in definer]}. A writer site "
+        f"added inside the defining module is outside every clause of this test"
+    )
+    assert all(all(isinstance(a, ast.Starred) for a in node.args) for _, _, node in definer), (
+        f"{_WRITER_DEFINER}'s exempt call must FORWARD its arguments and author none of its "
+        f"own; it now passes a message of its own, which this test cannot see"
+    )
+
+
+def test_a_newline_inside_an_interpolated_value_never_reaches_stderr_bare(tmp_path, capsys):
+    r"""THE BEHAVIOURAL HALF, AND IT IS WHAT HOLDS THE TRANSFORM ITSELF
+    [Audit N, writer-1, writer-2, writer-3].
+
+    The sweep above holds the CALLERS. Nothing held the transform: reverting `diagnostic` to one
+    `_write` per argument leaves the sweep green, because the sweep is about literals in the
+    source and this is about a value at runtime.
+
+    THREE SUBJECTS, NONE OF WHICH NEEDS A CLI, A FILESYSTEM NAME OR AN ARGV, so this is live on
+    every leg of the matrix:
+
+    * **the exception's own message** -- the one string in the package that is wholly
+      outside-controlled with no precondition. The forgery reproduced was a `provenance ->
+      /forged/path.prov.json` line and a `code ... inputs ... outputs ... seeds` line printed
+      BEFORE the real ones, which misdirects the one line an operator reads to find a record;
+    * **`Run(...)`'s own name**, `record['script']`, interpolated into six diagnostics;
+    * **the recorded cwd**, reached through the same note.
+
+    `GATE: MET (exit 0)` is the probe text for the reason `printable`'s docstring gives: a CI log
+    scraped for `GATE:` reads the forged one first.
+    """
+    project = _project(tmp_path)
+    forged = "GATE: MET (exit 0)"
+    name = f"step\n{forged}\nx"
+    run = runprov.Run(name, project=project)
+    run.record["status"] = "failed"
+    run.record["failure"] = {
+        "type": "ValueError",
+        "message": f"boom\n{forged}\nprovenance -> /forged/path.prov.json",
+        "traceback": "",
+    }
+    run.write(tmp_path / "prov.json")
+    err = capsys.readouterr().err
+
+    assert forged in err, "the text must still be VISIBLE -- escaped, not censored"
+    assert [line for line in err.split("\n") if line.strip() == forged] == [], (
+        f"a newline inside an interpolated value forged a whole bare line on stderr:\n{err}"
+    )
+    assert f"boom\\n{forged}" in err, "the value's newline must arrive as a `\\n` literal"
+    #: AND THE RECORD IS UNTOUCHED, which is the reason this is the reversible class: escaping
+    #: is the RENDERER's job and the structure keeps the real string, exactly as `printable`'s
+    #: docstring says of the JSON side.
+    assert run.record["failure"]["message"].count("\n") == 2
+
+
+def test_a_writer_call_with_no_arguments_says_nothing(capsys, monkeypatch):
+    """Zero arguments is SILENCE, not a blank line, and that is now a reachable shape.
+
+    A conditional line is passed as `*([...] if cond else [])` -- the shape `run.py`'s
+    CODE-is-modified warning and its sidecar note both use -- so a call whose every argument is
+    a spread over an empty sequence is one edit away at any time. `"\n".join(())` is `""` and
+    `_write("")` prints a blank line, which would put an empty line on stderr in the middle of a
+    run that had nothing to say. The guard is one `if`; this is what holds it.
+    """
+    monkeypatch.delenv("RUNPROV_QUIET", raising=False)
+    runprov._report.diagnostic()
+    runprov._report.diagnostic(*([] if True else ["unreachable"]))
+    runprov._report.summary()
+    cap = capsys.readouterr()
+    assert (cap.out, cap.err) == ("", ""), "a writer call with nothing to say must say nothing"
+
+
 def test_a_posix_locking_failure_is_announced(monkeypatch, tmp_path, capsys):
     """The notice sat inside the win32-only branch, so a POSIX `flock` that raised -- NFS,
     CIFS, a container without the syscall -- degraded to an unlocked append in SILENCE.

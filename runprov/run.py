@@ -68,7 +68,7 @@ import uuid
 import weakref
 
 from ._atomic import TEMP_SUFFIX, _destination_mode, _sync_dir, atomic_write_text
-from ._report import diagnostic, printable, progress, progress_enabled, summary
+from ._report import diagnostic, progress, progress_enabled, summary
 from .environment import archive_lockfiles, lockfiles, manager, tool_identity, write_snapshot
 from .hashing import (
     PIN_ANCHOR,
@@ -618,13 +618,13 @@ def _warn_implicit_project(project: Project) -> None:
         return
     _IMPLICIT_WARNED = True
     diagnostic(
-        f"  PROVENANCE WARNING: no configure() has run in this process, so this Run uses an "
-        f"AUTO-DETECTED project:\n"
-        f"    root     {project.root}\n"
-        f"    history  {project.history_destination()}\n"
-        f"    If this project configures runprov from a paths module, THIS SCRIPT DID NOT "
-        f"IMPORT IT, and this run will not join the project's history. Call configure() "
-        f"— even with the defaults — to make the choice explicit and silence this."
+        "  PROVENANCE WARNING: no configure() has run in this process, so this Run uses an "
+        "AUTO-DETECTED project:",
+        f"    root     {project.root}",
+        f"    history  {project.history_destination()}",
+        "    If this project configures runprov from a paths module, THIS SCRIPT DID NOT "
+        "IMPORT IT, and this run will not join the project's history. Call configure() "
+        "— even with the defaults — to make the choice explicit and silence this.",
     )
 
 
@@ -1796,16 +1796,16 @@ class Run:
         if not missed:
             return
         self.record["unregistered_reads"] = missed
-        # PER FIELD, AND THE FIELD IS THE REASON [Audit M, escape-4]. These are paths the run
-        # actually opened, and a newline is legal in one on POSIX; reproduced, an unregistered
-        # read of `data/sneak.csv\nGATE: MET (exit 0)\nx` put a bare `GATE: MET (exit 0)` on
-        # stderr from the WRITER, with no CLI involved. `_report._write` escapes every line of
-        # every diagnostic, but it cannot escape the NEWLINE — by then the message is one
-        # string and the separator is indistinguishable from a caller's own layout — so the
-        # only place that half can be closed is here, where the path is still a value.
-        shown = printable(", ".join(missed[:5])) + (
-            f", and {len(missed) - 5} more" if len(missed) > 5 else ""
-        )
+        # NO `printable` HERE ANY MORE, AND THAT IS THE REPAIR [Audit N, writer-1 + writer-4].
+        # These are paths the run actually opened and a newline is legal in one on POSIX;
+        # reproduced, an unregistered read of `data/sneak.csv\nGATE: MET (exit 0)\nx` put a bare
+        # `GATE: MET (exit 0)` on stderr from the WRITER, with no CLI involved. Audit M closed it
+        # with a `printable` call on this line, and Audit N measured that the call was held by
+        # NOTHING: deleting it left the suite at the baseline count while the companion site in
+        # `__main__` went red. `diagnostic` now escapes PER ARGUMENT, so the forgery is closed
+        # for every writer site at once and a site-level call here would be redundant — and a
+        # site that does not exist cannot regress, which is stronger than a guard over it.
+        shown = ", ".join(missed[:5]) + (f", and {len(missed) - 5} more" if len(missed) > 5 else "")
         diagnostic(
             f"  UNREGISTERED READ: this run opened {len(missed)} data file(s) it did not "
             f"register, so they are NOT in the record and NOT in the pin: {shown}. "
@@ -2193,17 +2193,17 @@ class Run:
             self._warned_cwd_moved = True
             diagnostic(
                 f"  PROVENANCE NOTICE: {self.record['script']}: the working directory has "
-                f"moved since this run started.\n"
-                f"    started in : {self.record['cwd']}\n"
-                f"    now in     : {here}\n"
-                f"    Relative paths are being recorded ABSOLUTE, because a relative one is "
-                f"only meaningful\n"
-                f"    beside the cwd it belongs to and this record holds the other. Those "
-                f"paths are machine-\n"
-                f"    specific, so records from two machines will no longer compare equal. "
-                f"If the cwd moved\n"
-                f"    in ANOTHER THREAD, this is a race and the file registered may not be "
-                f"the one intended."
+                f"moved since this run started.",
+                f"    started in : {self.record['cwd']}",
+                f"    now in     : {here}",
+                "    Relative paths are being recorded ABSOLUTE, because a relative one is "
+                "only meaningful",
+                "    beside the cwd it belongs to and this record holds the other. Those "
+                "paths are machine-",
+                "    specific, so records from two machines will no longer compare equal. "
+                "If the cwd moved",
+                "    in ANOTHER THREAD, this is a race and the file registered may not be "
+                "the one intended.",
             )
         return here / p
 
@@ -2270,14 +2270,14 @@ class Run:
         if late:
             diagnostic(
                 f"  PROVENANCE WARNING: {self.record['script']}: input registered AFTER the "
-                f"pin was rendered — {p}\n"
-                f"    header() has already been written into an artifact, and that pin does "
-                f"NOT list this input. The record says so — `inputs_not_in_pin` — so "
-                f"`runprov show --stale` still checks it against the full input list.\n"
-                f"    `runprov verify` CANNOT: it reads the pin inside the artifact and "
-                f"nothing else, which is exactly what makes it work on a copy someone "
-                f"emailed you, and that pin will read OK for ever no matter what happens to "
-                f"this input. Register every input before header()."
+                f"pin was rendered — {p}",
+                "    header() has already been written into an artifact, and that pin does "
+                "NOT list this input. The record says so — `inputs_not_in_pin` — so "
+                "`runprov show --stale` still checks it against the full input list.",
+                "    `runprov verify` CANNOT: it reads the pin inside the artifact and "
+                "nothing else, which is exactly what makes it work on a copy someone "
+                "emailed you, and that pin will read OK for ever no matter what happens to "
+                "this input. Register every input before header().",
             )
         try:
             entry = describe(p)
@@ -2496,13 +2496,18 @@ class Run:
             diagnostic(
                 f"  PROVENANCE NOTE: {p.name} cannot hold an in-band pin, so the provenance "
                 f"was written BESIDE it as {sidecar.name} — a second file you did not ask "
-                f"for, and the one `verify` will name."
-                + (
-                    "\n    `run.output_json(path, obj)` embeds the pin as a key INSIDE the "
-                    "JSON instead, which keeps it to one file."
+                f"for, and the one `verify` will name.",
+                # The conditional second line is an ARGUMENT, not a `+` of a `\n`-prefixed
+                # string, for the reason `diagnostic`'s docstring gives: a caller's newline
+                # that is not an argument boundary is indistinguishable from a value's.
+                *(
+                    [
+                        "    `run.output_json(path, obj)` embeds the pin as a key INSIDE the "
+                        "JSON instead, which keeps it to one file."
+                    ]
                     if suffix in (".json", ".geojson")
-                    else ""
-                )
+                    else []
+                ),
             )
         # `typing.IO[str]` IS THE PROMISE AND IT STILL HOLDS. `_PinnedWriter` is a file-like
         # that delegates everything it does not define, so a caller cannot tell the
@@ -3251,11 +3256,11 @@ class Run:
         if changed:
             diagnostic(
                 f"  PROVENANCE WARNING: {self.record['script']}: "
-                f"{len(changed)} registered input(s) CHANGED after they were read:\n"
-                + "".join(f"    {c}\n" for c in changed)
-                + "    The digests in this record and in any pin are what the run actually\n"
-                "    read. They no longer describe what is on disk, and a checker comparing\n"
-                "    the two will report a difference that is real but is not the run's."
+                f"{len(changed)} registered input(s) CHANGED after they were read:",
+                *(f"    {c}" for c in changed),
+                "    The digests in this record and in any pin are what the run actually",
+                "    read. They no longer describe what is on disk, and a checker comparing",
+                "    the two will report a difference that is real but is not the run's.",
             )
 
         # REBUILT, not appended to. `outputs` is derived entirely from `_pending`, and a
@@ -3308,9 +3313,9 @@ class Run:
                     # record -- the silent degradation this package exists to refuse.
                     diagnostic(
                         f"  PROVENANCE WARNING: {self.record['script']}: output {q} exists "
-                        f"but could not be hashed ({exc}).\n"
-                        f"    It is recorded as UNHASHABLE with no digest. The run IS "
-                        f"recorded; this artifact cannot be pinned or joined on."
+                        f"but could not be hashed ({exc}).",
+                        "    It is recorded as UNHASHABLE with no digest. The run IS "
+                        "recorded; this artifact cannot be pinned or joined on.",
                     )
                 # Keep the spelling the caller registered: `describe` reports the path it
                 # was handed, and substituting the resolved one would rewrite every
@@ -3448,12 +3453,12 @@ class Run:
         if prior and prior != self.record["run_uid"]:
             diagnostic(
                 f"  PROVENANCE WARNING: {self.record['script']}: this sidecar was already "
-                f"written by ANOTHER RUN in this process —\n"
-                f"    {resolved}\n"
-                f"    It now describes this run and no longer describes the earlier one, "
-                f"whose outputs may sit\n"
-                f"    beside it. Both are still in the history; give each run its own "
-                f"`provenance=` path."
+                f"written by ANOTHER RUN in this process —",
+                f"    {resolved}",
+                "    It now describes this run and no longer describes the earlier one, "
+                "whose outputs may sit",
+                "    beside it. Both are still in the history; give each run its own "
+                "`provenance=` path.",
             )
         self._written = True
         if not self._wrote(p):  # so __exit__ can correct THIS file, kwarg or not
@@ -3494,7 +3499,7 @@ class Run:
             else f"provenance NOT WRITTEN (see the warning above) -> {p}",
             # The HISTORY path, not only the sidecar. Printing the sidecar and never this
             # is what made a split history invisible from the terminal.
-            f"  history -> {self.record['history']['destination']}\n"
+            f"  history -> {self.record['history']['destination']}",
             f"  code {self.record['code']['git_commit_short']}"
             f"{' (CODE DIRTY)' if self.record['code']['git_code_dirty'] else ''}"
             # "we could not look" must not print as the reassuring answer.
