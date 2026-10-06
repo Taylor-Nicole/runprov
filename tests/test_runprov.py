@@ -30556,11 +30556,47 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
 
     roots = [*sorted(pathlib.Path("runprov").glob("*.py")), pathlib.Path("tests/test_runprov.py")]
     roots += [pathlib.Path("ci.py"), *sorted(pathlib.Path("tools").glob("*.py"))]
+    #: AND `examples`, WHICH WAS THE HOLE [Audit N, guards-4]. The sweep read 30 files and the
+    #: repository tracks 32; the two outside it were `examples/summarise.py` and
+    #: `examples/format_compatibility.py`, both shipped in the sdist — `pyproject`'s
+    #: `[tool.hatch.build.targets.sdist] include` lists `examples` beside `tools` and `ci.py`,
+    #: verified in the built tarball — and both in `ci.py`'s own `want` set. A live surrogate in
+    #: either module docstring left this guard and the whole suite at RC=0 while 3.13 refuses to
+    #: COMPILE the file, which is the exact failure this test was written for.
+    #:
+    #: AN EXPLICIT GLOB, AND THE TWO OBVIOUS DERIVATIONS ARE REFUTED BY MEASUREMENT:
+    #:
+    #: * `git ls-files '*.py'` CANNOT RUN WHERE THIS SUITE IS MOST NEEDED. `ci.py build` runs
+    #:   the suite from an unpacked sdist, which is not a git checkout: measured in the built
+    #:   tarball, `fatal: not a git repository`, exit 128. A sweep that derives its own scope
+    #:   from git is empty for the packager, which is the one audience the sdist check exists
+    #:   for.
+    #: * `rglob("*.py")` is worse, not better: 1 796 files in this checkout, 1 764 of them
+    #:   inside `.venv`. The scope would be the dependency tree.
+    #:
+    #: So the roots are the four explicit globs, which is the same idiom and the same reason as
+    #: `len(sources) >= 24` next door, and the floor below is the EXACT count.
+    roots += [*sorted(pathlib.Path("examples").glob("*.py"))]
     roots = [p for p in roots if p.is_file()]
-    assert len(roots) >= 20, f"the sweep found only {len(roots)} source files"
+    assert len(roots) >= 32, (
+        f"the sweep found only {len(roots)} source files; the repository tracks 32 and all 32 "
+        f"ship in the sdist, so a glob has stopped matching: {[str(p) for p in roots]}"
+    )
 
     offenders: dict[str, str] = {}
-    checked = 0
+    #: PER FILE, NOT A TOTAL [Audit N, guards-10]. This was `checked >= 400` measured against
+    #: 1 668 — slack by 1 268, so the sweep could have lost `ci.py`, all four `tools/*.py`, five
+    #: `runprov` modules and 76% of the docstrings and still reported a clean tree. The claim in
+    #: the docstring is *a sweep that stopped reading cannot report a clean tree*, and a total
+    #: that slack is true only of a sweep that stopped reading almost everything.
+    #:
+    #: AND THE EQUALITY IS REFUSED DELIBERATELY. `checked >= 1668` rots on every docstring edit
+    #: in the repository — that is the K-37/L-08 defect and the reason `pyproject`'s coverage
+    #: figures were DELETED rather than corrected. Per file cannot rot: a source file in this
+    #: tree without a single docstring would fail other guards first, so the assertion is about
+    #: the SWEEP and not about the tree. It names the file that went quiet, which a total never
+    #: can.
+    per_file: dict[str, int] = {}
     for path in roots:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -30571,15 +30607,21 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
             doc = ast.get_docstring(node, clean=False)
             if doc is None:
                 continue
-            checked += 1
+            per_file[str(path)] = per_file.get(str(path), 0) + 1
             try:
                 doc.encode("utf-8")
             except UnicodeEncodeError as exc:
                 offenders[f"{path}:{node.lineno}"] = str(exc)
 
-    #: THE SWEEP MUST HAVE READ SOMETHING. Without this, a walk that stopped finding docstrings
-    #: would report zero offenders and read exactly like a clean tree.
-    assert checked >= 400, f"only {checked} docstrings were examined, so this proves nothing"
+    #: THE SWEEP MUST HAVE READ EVERY FILE IT NAMED. Without this, a walk that stopped finding
+    #: docstrings would report zero offenders and read exactly like a clean tree.
+    silent = sorted(str(path) for path in roots if not per_file.get(str(path)))
+    checked = sum(per_file.values())
+    assert not silent, (
+        f"{silent} contributed no docstring to this sweep, so nothing in them was examined and "
+        f"a lone surrogate in any of them would read here as a clean tree. {checked} docstrings "
+        f"were examined across {len(per_file)} of {len(roots)} files"
+    )
     assert not offenders, (
         f"these docstrings hold a character Python 3.13 cannot compile, so the module will not "
         f"IMPORT there and every test in it reports as a collection error: {offenders}. A "
