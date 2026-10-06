@@ -39400,16 +39400,47 @@ def test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on(
         if _FORGED_LINE in both:
             carried.append(name)
 
-    #: ESCAPING IS NOT CENSORING, held as a FLOOR over the set rather than asserted per
-    #: command. The text must still reach the reader — only its power to move the cursor is
-    #: gone — and without this clause the property above is satisfiable by printing LESS.
-    #: It cannot be per-command because some pages legitimately name no forged field at all:
-    #: `resources` prints one measurement and `export` is a payload. A floor is the claim that
-    #: can be made honestly, and the names are in the message when it fails.
-    assert len(carried) >= 12, (
-        f"only these pages showed the forged text at all: {carried}. Escaping is not censoring, "
-        f"and a package that printed LESS would satisfy the property above while telling the "
-        f"reader less than the record holds"
+    #: ESCAPING IS NOT CENSORING — AND IT IS A COUPLING BETWEEN TWO MEASUREMENTS THIS TEST
+    #: ALREADY TAKES, NOT A FLOOR [Audit N, guards-6]. It was `len(carried) >= 12`, which was
+    #: the FIFTH restatement of clause 3 of the docstring and the one Audit M's four-site table
+    #: did not list: a constant standing beside the filename exemption rather than derived from
+    #: it. **And it held under the probe inversion only because the set LOSES `check` and GAINS
+    #: `resources`** — the number was right for the wrong reason, and that coincidence is
+    #: precisely what hid the vacuous `resources` leg for a release.
+    #:
+    #: A SIXTH DECLARED SET WAS REFUTED RATHER THAN SKIPPED. The obvious repair — a set identity
+    #: against the probe-derived exemption — was measured and is RED on `windows-latest / 3.12`:
+    #: `verify <tree>` is in `filename_only` and still CARRIES on a probe-false host, because its
+    #: text arrives through the run's `script`. So the two exemptions are NOT one set seen from
+    #: two ends here, and the only identity that passes both branches needs a hand-written
+    #: three-name set plus a hand-written subtraction — a SEVENTH restatement.
+    #:
+    #: SO THE CLAIM IS MADE AS A COUPLING, which is the only property the floor ever wanted: a
+    #: command that got the forgery into one of its renderers must SHOW it. That is computed
+    #: from `reached` and `carried`, is IDENTICAL on both probe branches, names the offender,
+    #: and — unlike a count — CANNOT BE MET BY A MEMBERSHIP SWAP. A renderer that started
+    #: dropping the text instead of escaping it leaves its command in `reached` and takes it out
+    #: of `carried`, and lands here by name.
+    #:
+    #: THE CONVERSE HOLDS THE BOOKKEEPING: every renderer `reached` names must be one
+    #: `forged_lines` counted. The two are written by one `if extra:` branch in the spy but
+    #: keyed differently — `forged_lines` by the renderer, `reached` by `current[0]` — so this
+    #: is the assertion that `current[0]` is still being advanced per recipe. Without it a spy
+    #: that stopped tracking the command would file every renderer under one stale name and the
+    #: inclusion above would still pass.
+    reached_renderers = {where for names in reached.values() for where in names}
+    assert set(reached) <= set(carried), (
+        f"{sorted(set(reached) - set(carried))} handed the forgery to one of their own renderers "
+        f"and then did not print it. Escaping is not censoring: the text must still reach the "
+        f"reader and only its power to move the cursor may be gone, so a page that printed LESS "
+        f"would satisfy the property above while telling the reader less than the record holds. "
+        f"Reached: { {k: sorted(v) for k, v in sorted(reached.items())} }; carried: {carried}"
+    )
+    assert reached_renderers == set(forged_lines), (
+        f"the spy's two books disagree: `reached` names {sorted(reached_renderers)} and "
+        f"`forged_lines` counted {sorted(forged_lines)}. They are written by one branch and "
+        f"keyed differently, so a disagreement means `current[0]` is no longer advanced per "
+        f"recipe and every floor below is being measured against the wrong command"
     )
 
     #: AND THE ATTACK REACHED A RENDERER, PER COMMAND. This is the vacuity assertion the two
