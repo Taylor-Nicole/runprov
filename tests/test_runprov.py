@@ -7827,6 +7827,14 @@ def _package_import_edges(package: pathlib.Path) -> list[tuple[str, int, str]]:
     over the package's `rglob`. The `level < 2` refusal is kept for what it does hold: a level-2
     import written in a top-level module, which is an `ImportError` at runtime and a red here.
 
+    **AND THE `unaccounted` CLAUSE WAS PRESENTED AS A REPLACEMENT FOR THE DELETED 56-EDGE TOTAL,
+    WHICH IT IS NOT** [Audit Q, assertion-1]. The deletion was right about the instrument -- the
+    total rots on every new import, is green over a deleted `ast.Import` arm, green over a live
+    symlinked subpackage, and names nothing when it does fire -- but what replaced its REACH is
+    not `unaccounted`. `unaccounted` catches *a node produced no name at all*; the total caught
+    *the mapping changed*, including a WRONG non-empty mapping. The clause at the end of this
+    function is the complementary sentence that covers that, and it names the sites.
+
     **THE INPUT SET IS ASSERTED, NOT ONLY THE MATCHING.** Deleting the spelling list from the
     matcher did nothing about the list that had moved one layer out, into the non-recursive sweep:
     a subpackage was invisible on BOTH sides -- edges INTO it resolve to nothing, because the
@@ -7859,12 +7867,58 @@ def _package_import_edges(package: pathlib.Path) -> list[tuple[str, int, str]]:
         f"table silently stops covering it. The `node.level < 2` refusal below is NOT the "
         f"tripwire for this: a level-2 import can only be written in a file this sweep never opens"
     )
+    #: AND NO SYMLINKED DIRECTORY MAY SIT IN THE PACKAGE, WHICH IS A PROJECT RULE AND NOT A
+    #: FACT ABOUT PYTHON [Audit Q, assertion-3]. The `nested` clause above cannot see one:
+    #: measured on 3.10 / 3.11 / 3.12 / 3.13 / 3.14, `Path.rglob("*.py")` DOES NOT DESCEND A
+    #: SYMLINKED DIRECTORY on any of them -- it reported `['real/h.py']` and never the symlinked
+    #: subpackage -- so a symlinked subpackage is invisible to ALL THREE of this resolver's views
+    #: (the `glob`, the `rglob` and the `<package>/<name>.py` oracle) while being fully
+    #: IMPORTABLE. Measured end to end with the plant proved live: a REAL nested subpackage is
+    #: red on 5/5 naming both files; the SYMLINKED one was green on 5/5, graph 56 unchanged, and
+    #: the full suite exactly at its baseline.
+    #:
+    #: ONE LEVEL IS ENOUGH, GIVEN `nested`, AND THE SENTENCE IS WRITTEN DOWN SO THE NEXT READER
+    #: DOES NOT FILE *"what about depth 2?"*: a REAL subdirectory holding any `.py` trips
+    #: `nested`; one holding none cannot be an importable subpackage; and a symlinked `.py`
+    #: FILE is swept by `glob`, so it moves the module count and
+    #: `len(sources) == _PACKAGE_MODULES` fires on it (measured, 25 modules). What is left is
+    #: exactly a symlinked DIRECTORY, which is what this refuses.
+    #:
+    #: IT IS A PROJECT RULE. 0 of the 247 entries this repository tracks is a symlink, measured
+    #: by mode rather than claimed, so refusing one is a statement about how this package is
+    #: laid out -- not a claim that Python forbids it. If a symlinked subpackage is ever wanted,
+    #: this is the line to argue with, and the three views above are what must be taught first.
+    #:
+    #: AND `os.walk(followlinks=True)` IS REFUTED AS A REPLACEMENT FOR THE `rglob`. Measured on
+    #: all five interpreters, over a directory holding ONE `.py` file and ONE self-referential
+    #: link: `rglob` returns that one file, and `os.walk(followlinks=True)` returns 41 -- it
+    #: descends the loop until Linux's ELOOP aborts it at about 40 levels, and `os.walk`
+    #: SILENTLY SWALLOWS that error. So the traversal proposed to close this hole would instead
+    #: report a tree that is not there, with nothing anywhere saying so. The figure is this
+    #: host's; what reproduces is the DIRECTION -- a bounded tree reported as an unbounded one,
+    #: with no error.
+    linked = sorted(
+        str(child.relative_to(package)) for child in package.iterdir() if child.is_symlink()
+    )
+    assert not linked, (
+        f"{linked} are symlinks inside the package. A symlinked DIRECTORY is importable as a "
+        f"subpackage and is invisible to every view this resolver has -- `glob` does not match "
+        f"it, `rglob` does not descend it on any supported interpreter, and the "
+        f"`{package.name}/<name>.py` oracle cannot name it -- so an edge into it reads as NO "
+        f"EDGE AT ALL and the layer table silently stops covering it. This is a PROJECT RULE "
+        f"(0 of 247 tracked entries is a symlink), not a limit of Python: if one is really "
+        f"wanted, teach the sweep, the `rglob` and the oracle in the same commit, and argue "
+        f"with this line rather than deleting it"
+    )
     edges: list[tuple[str, int, str]] = []
     #: EVERY IMPORT NODE THAT MADE NO DOTTED NAME AVAILABLE, ASSERTED BELOW [Audit P, resolver-1].
     #: This is the clause that replaced `assert len(graph) == 56`. The subject is the two node
     #: kinds the language has for an import, so an arm of the resolver that stops producing names
     #: is red by construction -- which the edge total was kept for and was measured not to do.
     unaccounted: dict[str, str] = {}
+    #: EVERY TWO-SEGMENT DOTTED NAME THIS RESOLVER PRODUCES WHOSE HEAD IS THE PACKAGE, asserted
+    #: after the offenders [Audit Q, assertion-1].
+    two_segment: list[tuple[str, int, str, str]] = []
     for mod in sorted(package.glob("*.py")):
         tree = ast.parse(mod.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -7896,6 +7950,8 @@ def _package_import_edges(package: pathlib.Path) -> list[tuple[str, int, str]]:
                 parts = candidate.split(".")
                 if len(parts) != 2 or parts[0] != package.name:
                     continue
+                #: COLLECTED FOR THE CLAUSE BELOW, which must sit AFTER the offenders.
+                two_segment.append((mod.name, node.lineno, candidate, parts[1]))
                 if (package / f"{parts[1]}.py").is_file():
                     edges.append((mod.stem, node.lineno, parts[1]))
     #: EVERY IMPORT BINDS SOMETHING, so an import that made NO dotted name available means this
@@ -7916,6 +7972,55 @@ def _package_import_edges(package: pathlib.Path) -> list[tuple[str, int, str]]:
         f"SPELLING, which is the failure the edge total was kept for and does not catch: this "
         f"package writes two of Python's six spellings, so an arm can be deleted outright and "
         f"leave the derived graph identical. Fix the arm above; do not exempt the node"
+    )
+    #: AND EVERY TWO-SEGMENT NAME THIS RESOLVER PRODUCES MUST NAME SOMETHING [Audit Q,
+    #: assertion-1]. `unaccounted` above says *no import node produced an empty name list*; this
+    #: says *every name it did produce resolves*. Those are COMPLEMENTARY sentences, not one
+    #: sentence twice: a WRONG NON-EMPTY mapping satisfies the first and violates the second,
+    #: which is exactly the failure the deleted `assert len(graph) == 56` was kept for and which
+    #: `unaccounted` does not catch.
+    #:
+    #: THE MUTATION THAT MAKES THAT CONCRETE IS NOT CONTRIVED -- IT IS LIVE IN THIS FILE.
+    #: `alias.asname or alias.name` walks the very same `from . import X as Y` nodes at
+    #: `_printed_renderers`, where it is the CORRECT idiom, because there the question is *what
+    #: local name does this module use*. Here the question is the opposite one -- *what module
+    #: does this name refer to* -- and nothing said so, so a developer unifying or copying the
+    #: two walks writes exactly that edit. Measured: it silently loses 10 of the 56 edges (the
+    #: nine `from . import X as Y` sites in `__main__.py` and the one in `report.py`), the two
+    #: named edges below survive because neither uses an `asname`, and the layer test was GREEN
+    #: on all five interpreters. The deleted total WOULD have fired, at 48 != 56 -- but it could
+    #: not have named a site. This clause is RED on all five and names all 10.
+    #:
+    #: WHY `hasattr` AND NOT `__all__`: keyed to `runprov.__all__` this was RED AT HEAD on
+    #: `from . import __version__`, which `__main__.py:2796` and `environment.py:101` both write
+    #: -- there is no `__version__.py`, and `__version__` is an attribute of the package and not
+    #: in its `__all__`. A guard that cannot pass is worse than one that cannot fail.
+    #:
+    #: AND THE FILESYSTEM HALF IS NOT HELD BY THIS. It asks the SAME `<package>/<name>.py`
+    #: question the oracle does, so it is GREEN over a live symlinked subpackage. What closes
+    #: that is the `linked` assertion above, and nothing else here.
+    #:
+    #: MEASURED AT HEAD: 423 candidate dotted names, 73 of them two-segment with the package as
+    #: head, 0 unresolvable -- on 3.10 / 3.11 / 3.12 / 3.13 / 3.14. A SECOND, independently
+    #: written per-alias filesystem traversal was considered for this and REFUSED: it asks the
+    #: same question (so it is green over the same symlink), its stated 71 == 71 is reachable
+    #: only by replicating this side's per-node dedup -- the natural per-alias traversal yields
+    #: 154 triples -- so the figure implies transcription rather than an independent computation,
+    #: and nothing would assert that the duplication stays duplicated.
+    pkg = importlib.import_module(package.name)
+    unresolvable = sorted(
+        f"{mod_name}:{lineno}: {candidate}"
+        for (mod_name, lineno, candidate, tail) in two_segment
+        if not (package / f"{tail}.py").is_file() and not hasattr(pkg, tail)
+    )
+    assert not unresolvable, (
+        f"{len(unresolvable)} dotted name(s) this resolver produced name neither a module file "
+        f"of `{package.name}` nor an attribute of it: {unresolvable}. Every two-segment name it "
+        f"produces must resolve, so a resolver that maps an import to the WRONG name is red "
+        f"here -- which `unaccounted` above cannot see, because a wrong non-empty mapping is "
+        f"still a non-empty mapping. If a name was spelled from the LOCAL alias rather than the "
+        f"MODULE (`alias.asname or alias.name`), that is the defect: this walk needs the module "
+        f"name. Do not relax this to the names that happen to resolve today"
     )
     return edges
 
