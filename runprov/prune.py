@@ -238,7 +238,15 @@ def apply(p: Plan) -> tuple[int, list[str]]:
             gone += 1
         except OSError as exc:  # guards-ok: one bad file does not stop the rest
             problems.append(f"could not remove {f.name}: {exc}")
-    return gone, problems
+    # ESCAPED HERE, AT THE ONE PLACE THESE LINES LEAVE THIS FUNCTION [Audit Q, decision-1].
+    # `render` below escapes its page through `printable_lines` and this did not, so ONE MODULE
+    # ESCAPED ONE LINE AND NOT THE OTHER, and `__main__._forget` prints these raw. `f.name` is
+    # the channel: a marker filename may legally hold a newline on POSIX, so a refused unlink
+    # forged a bare line reading exactly `GATE: MET (exit 0)` on stderr -- reproduced at HEAD,
+    # rc=1, with no modified file. `{exc}` is NOT the channel: `OSError.__str__` already repr's
+    # the path. And this cannot double-escape: `printable` is per-character and both `\` and
+    # `n` are printable, so it is idempotent over an already-escaped value.
+    return gone, printable_lines(problems)
 
 
 def render(p: Plan, gone: int | None, directory: pathlib.Path) -> str:

@@ -2485,8 +2485,22 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
             if len(matched) != hits[0]
             else f"# {len(matched)} run(s) matching {args.target!r} from {path}"
         )
+        # ESCAPED AT THE EMISSION POINT [Audit Q, decision-1, the second live forgery].
+        # `path` is ONE argv argument and a directory name may legally hold a newline on POSIX,
+        # so `show align --log $'p\nGATE: MET (exit 0)\nq/history.jsonl' --limit 1` forged a
+        # bare `GATE: MET (exit 0)` line on stderr AT EXIT 0 -- reproduced at HEAD with no
+        # plant, no permission trickery and no record edit, which makes it more reachable than
+        # the `prune` one above.
+        #
+        # ONE SITE OF A SURFACE, AND THE SURFACE STAYS OPEN. This is one of the 51
+        # `print(..., file=sys.stderr)` composed lines that `_printed_renderers` excludes BY
+        # DECLARATION, and NO COUNT IS CLAIMED here for how many of the other 50 interpolate a
+        # value from outside. Nothing guards that surface; this is a patch at one site and not
+        # a closure. The composed LINE is escaped rather than the field, because a field-by-
+        # field fix is the list of call sites `printable_lines` exists to retire, and it is
+        # idempotent, so the `!r` already inside `head` is unharmed.
         print(
-            head + (f"; {bad[0]} unreadable line(s) skipped" if bad[0] else ""),
+            printable(head + (f"; {bad[0]} unreadable line(s) skipped" if bad[0] else "")),
             file=sys.stderr,
         )
         return 0
