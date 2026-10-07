@@ -32077,8 +32077,15 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
     live lone surrogate in a FUNCTION docstring was green here while 3.13 and 3.14 refused to
     compile the file. Both halves of that are gone: the node-kind list is deleted in favour of
     what the language means by a docstring, and the floor is deleted with it rather than raised.
-    What remains is the roots floor -- which is about FILES and names the one that went missing --
-    and a walk with no list left in it to narrow.
+    What remains is the roots EQUALITY -- which is about FILES and names the one that went
+    missing -- and a walk with no list left in it to narrow.
+
+    **AND THE ROOTS WERE NOT A SWEEP EITHER, UNTIL THIS COMMIT** [Audit Q, assertion-4]. They
+    were three non-recursive globs plus two literal paths (`tests/test_runprov.py` and `ci.py`),
+    and a `.py` added beside either literal was both unswept AND unable to move the count. They
+    are now recursive within the four trees the sdist ships, plus a non-recursive glob of the
+    repository root, and the count assertion sits AFTER the offender scan -- because count-first
+    never names the surrogate, which is the defect `guards-10` already filed once.
 
     **THIS GUARD'S FIRST CATCH WAS ITS OWN DOCSTRING**, which is the whole argument for it:
     the paragraph above named the surrogate as a live escape while explaining that a
@@ -32087,58 +32094,51 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
     """
     import ast
 
-    roots = [*sorted(pathlib.Path("runprov").glob("*.py")), pathlib.Path("tests/test_runprov.py")]
-    roots += [pathlib.Path("ci.py"), *sorted(pathlib.Path("tools").glob("*.py"))]
-    #: AND `examples`, WHICH WAS THE HOLE [Audit N, guards-4]. The sweep read 30 files and the
-    #: repository tracks 32; the two outside it were `examples/summarise.py` and
-    #: `examples/format_compatibility.py`, both shipped in the sdist — `pyproject`'s
+    #: RECURSIVE WITHIN THE FOUR SDIST TREES, PLUS THE REPOSITORY ROOT [Audit Q, assertion-4].
+    #: This read `glob("*.py")` over three directories plus TWO LITERAL PATHS
+    #: (`tests/test_runprov.py` and `ci.py`), and the comment below called them *"the four
+    #: explicit globs"*, which they were not. The literals are exactly where a new file is both
+    #: unswept AND unable to move `len(roots)`: measured with a planted `tests/test_second.py`
+    #: carrying a `\ud800` ESCAPE in its module docstring, 3.10/3.11/3.12 compile it and 3.13 and
+    #: 3.14 REFUSE -- the failure this guard exists for -- while `len(roots)` was still 32, the
+    #: file was not in `roots`, and both this guard and the whole suite were RC=0.
+    #:
+    #: THE NON-RECURSION IS CLOSED IN ALL FOUR DIRECTORIES, not only in the two that were
+    #: literals. Measured as a drop-in on 3.10 / 3.11 / 3.12 / 3.13 / 3.14: 32 == 32, element for
+    #: element identical to the set the three globs and two literals produced today.
+    #:
+    #: AND THE RECORDED REFUTATION OF `rglob` IS TRUE OF A DIFFERENT EXPRESSION. It read
+    #: *"`rglob("*.py")` is worse, not better: 1 796 files in this checkout, 1 764 of them inside
+    #: `.venv`"*. That is `rglob` FROM THE REPOSITORY ROOT, and it reproduces exactly -- but
+    #: `.venv` is inside NONE of the four trees: measured, 0 of the files these four `rglob`s
+    #: return lie in `.venv`. The root-level source is `glob("*.py")`, which is not recursive, so
+    #: the dependency tree is not reachable from here at all.
+    #:
+    #: THE ONE DERIVATION STILL REFUTED: `git ls-files '*.py'` CANNOT RUN WHERE THIS SUITE IS
+    #: MOST NEEDED. `ci.py build` runs the suite from an unpacked sdist, which is not a git
+    #: checkout: measured in the built tarball, `fatal: not a git repository`, exit 128. A sweep
+    #: that derives its own scope from git is empty for the packager, which is the one audience
+    #: the sdist check exists for.
+    #:
+    #: `examples` WAS THE HOLE BEFORE THE LITERALS WERE [Audit N, guards-4]. The sweep read 30
+    #: files and the repository tracks 32; the two outside it were `examples/summarise.py` and
+    #: `examples/format_compatibility.py`, both shipped in the sdist -- `pyproject`'s
     #: `[tool.hatch.build.targets.sdist] include` lists `examples` beside `tools` and `ci.py`,
-    #: verified in the built tarball — and both in `ci.py`'s own `want` set. A live surrogate in
-    #: either module docstring left this guard and the whole suite at RC=0 while 3.13 refuses to
-    #: COMPILE the file, which is the exact failure this test was written for.
+    #: verified in the built tarball -- and both in `ci.py`'s own `want` set.
     #:
-    #: AN EXPLICIT GLOB, AND THE TWO OBVIOUS DERIVATIONS ARE REFUTED BY MEASUREMENT:
-    #:
-    #: * `git ls-files '*.py'` CANNOT RUN WHERE THIS SUITE IS MOST NEEDED. `ci.py build` runs
-    #:   the suite from an unpacked sdist, which is not a git checkout: measured in the built
-    #:   tarball, `fatal: not a git repository`, exit 128. A sweep that derives its own scope
-    #:   from git is empty for the packager, which is the one audience the sdist check exists
-    #:   for.
-    #: * `rglob("*.py")` is worse, not better: 1 796 files in this checkout, 1 764 of them
-    #:   inside `.venv`. The scope would be the dependency tree.
-    #:
-    #: So the roots are the four explicit globs, which is the same idiom and the same reason as
-    #: `len(sources) == _PACKAGE_MODULES` next door.
-    roots += [*sorted(pathlib.Path("examples").glob("*.py"))]
-    roots = [p for p in roots if p.is_file()]
-    #: AND IT IS AN EQUALITY, BECAUSE THE COMMENT ABOVE SAID SO WHILE THE ASSERTION SAID `>= 32`
-    #: [Audit P, exhaustive-9]. A floor is slack by one the moment a package module is added, and
-    #: nothing said so: 24 + 1 + 1 + 4 + 2 is 32 today, and with a 25th package module the sweep
-    #: reads 33 against a floor of 32 and stays green over a file it may well not have read.
-    #:
-    #: THE PACKAGE HALF READS `_PACKAGE_MODULES` RATHER THAN RESTATING IT, so one bump moves one
-    #: number [Audit O, guards-12]. The other 8 are the four non-package globs and they are
-    #: written out here, once: `tests/test_runprov.py` 1, `ci.py` 1, `tools/*.py` 4,
-    #: `examples/*.py` 2. This is NOT circular -- `_PACKAGE_MODULES` is a hand-written constant
-    #: that a human must re-read when adding a module, and `len(roots)` is read off the disk, so
-    #: the two sides have different sources and the equality has something to say.
-    #:
-    #: ONE LIMIT, MEASURED RATHER THAN LEFT TO BE DISCOVERED: this holds the TOTAL, so it cannot
-    #: say WHICH half moved, and bumping either half silences either cause. Measured: a planted
-    #: `examples/planted.py` makes this red, and bumping `_PACKAGE_MODULES` to 25 makes it green
-    #: again over a file that is not a package module at all. That is why the message below names
-    #: both causes and says which number answers which; the `_PACKAGE_MODULES - 1` census in the
-    #: layer test is what holds the package half on its own.
-    assert len(roots) == _PACKAGE_MODULES + 8, (
-        f"the sweep found {len(roots)} source files and the repository tracks "
-        f"{_PACKAGE_MODULES + 8} -- {_PACKAGE_MODULES} in `runprov/` plus 8 outside it "
-        f"(`tests/test_runprov.py`, `ci.py`, 4 in `tools/`, 2 in `examples/`), all of which "
-        f"ship in the sdist. Either a glob has stopped matching, or a file was added: if a "
-        f"PACKAGE module was added, bump `_PACKAGE_MODULES`, which is the one number for it; if "
-        f"it was added outside the package, the 8 above is what to re-read. Found: "
-        f"{[str(p) for p in roots]}"
+    #: `__pycache__` IS EXCLUDED AND IT REMOVES NOTHING TODAY, measured: 0 of the files these
+    #: four `rglob`s return lie in one, because a cache holds `.pyc` and `*.py` does not match
+    #: those. It is here because the subject is SOURCE, and a stray `.py` written into a cache
+    #: directory is not a module of anything; it is not load-bearing and the next reader should
+    #: not read it as if it were.
+    roots = sorted(
+        found
+        for directory in ("runprov", "tests", "examples", "tools")
+        for found in pathlib.Path(directory).rglob("*.py")
+        if "__pycache__" not in found.parts
     )
-
+    roots += sorted(pathlib.Path(".").glob("*.py"))
+    roots = [p for p in roots if p.is_file()]
     offenders: dict[str, str] = {}
     #: A DOCSTRING IS THE FIRST STATEMENT OF ANY BODY WHEN IT IS A STRING CONSTANT, AND THERE IS
     #: NO LIST OF NODE KINDS HERE ANY MORE [Audit O, guards-3]. The walk used to filter on
@@ -32190,6 +32190,47 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
         f"these docstrings hold a character Python 3.13 cannot compile, so the module will not "
         f"IMPORT there and every test in it reports as a collection error: {offenders}. A "
         f"docstring about an escape must show the text -- double the backslashes"
+    )
+
+    #: AND THE COUNT COMES AFTER THE OFFENDERS, WHICH IS HALF OF THIS ROW AND NOT A DETAIL
+    #: [Audit Q, assertion-4]. Count-first RE-CREATES `guards-10`'s defect, measured: with this
+    #: equality ahead of the scan, a planted surrogate reports `assert 33 == (24 + 8)` and
+    #: *"a file was added ... bump `_PACKAGE_MODULES`"*. The file appears in the census this
+    #: message prints, but the ACCUSATION is the count and the ADVICE IS WRONG -- bumping the
+    #: constant makes the guard green over a module 3.13 and 3.14 cannot compile. Nothing says
+    #: "surrogate" anywhere. The named defect is asserted first now, and this equality is the
+    #: census behind it.
+    #:
+    #: IT IS AN EQUALITY, BECAUSE THE COMMENT ABOVE SAID SO WHILE THE ASSERTION SAID `>= 32`
+    #: [Audit P, exhaustive-9]. A floor is slack by one the moment a package module is added, and
+    #: nothing said so: 24 + 1 + 1 + 4 + 2 is 32 today, and with a 25th package module the sweep
+    #: reads 33 against a floor of 32 and stays green over a file it may well not have read.
+    #:
+    #: THE PACKAGE HALF READS `_PACKAGE_MODULES` RATHER THAN RESTATING IT, so one bump moves one
+    #: number [Audit O, guards-12]. The other 8 are what the four trees and the repository root
+    #: hold outside the package, and they are written out here, once: `tests/*.py` 1, `ci.py` 1,
+    #: `tools/*.py` 4, `examples/*.py` 2. This is NOT circular -- `_PACKAGE_MODULES` is a
+    #: hand-written constant that a human must re-read when adding a module, and `len(roots)` is
+    #: read off the disk, so the two sides have different sources and the equality has something
+    #: to say.
+    #:
+    #: ONE LIMIT, MEASURED RATHER THAN LEFT TO BE DISCOVERED: this holds the TOTAL, so it cannot
+    #: say WHICH half moved, and bumping either half silences either cause. Measured: a planted
+    #: `examples/planted.py` makes this red, and bumping `_PACKAGE_MODULES` to 25 makes it green
+    #: again over a file that is not a package module at all. That is why the message below names
+    #: both causes and says which number answers which; the `_PACKAGE_MODULES - 1` census in the
+    #: layer test is what holds the package half on its own.
+    assert len(roots) == _PACKAGE_MODULES + 8, (
+        f"the sweep found {len(roots)} source files and the repository tracks "
+        f"{_PACKAGE_MODULES + 8} -- {_PACKAGE_MODULES} in `runprov/` plus 8 outside it "
+        f"(1 in `tests/`, `ci.py`, 4 in `tools/`, 2 in `examples/`). Either a sweep has stopped "
+        f"matching, or a file was added: if a PACKAGE module was added, bump "
+        f"`_PACKAGE_MODULES`, which is the one number for it; if it was added outside the "
+        f"package, the 8 above is what to re-read. NOT every root ships in the sdist, and this "
+        f"assertion does not claim they do: the sdist's `include` lists `examples`, `tools` and "
+        f"`ci.py` BY NAME, so a second `.py` at the repository root is swept here and packaged "
+        f"nowhere -- which is the right way round, because an unswept file is the failure and an "
+        f"unpackaged one is not. Found: {[str(p) for p in roots]}"
     )
 
 
