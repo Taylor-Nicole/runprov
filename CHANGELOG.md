@@ -9,6 +9,51 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — `open_output()` compares the marker it will WRITE, so `comment=None` and a `str`-Enum no longer destroy the artifact
+
+**Audit O, product-1 and product-1b. Two defects in one expression, each of them an unparseable
+artifact that `runprov verify` reported as OK, exit 0.** Both are the Newick class, arriving
+through the writer-7 repair that closed the Newick class.
+
+1. **`comment=None` routed the pin IN-BAND for every suffix OUTSIDE the allowlist.**
+   `PIN_INLINE.get(suffix)` is `None` there, so `comment == known` compared `None` against `None`
+   and said yes — inverting the safe default onto exactly the formats nobody had thought of.
+   Measured: a `.nwk` holding `(A,B,C);` came out with a first line of
+   `Noneprovenance — this artifact and what produced it`, **no sidecar**, a 3-taxon tree reading
+   back with 4 taxa, and `runprov verify t.nwk` saying **OK, exit 0**. Reachable from
+   `json.loads(cfg).get("comment")` and from an `argparse` default, both of which `mypy --strict`
+   passes because both are `Any` — so the `comment: str` annotation was not what held this.
+2. **A `str`-Enum marker compared equal and rendered as its own name.**
+   `class Marker(str, Enum): HASH = "# "` is `==` to the declared marker on every interpreter, so
+   it routed in-band — but `header()` interpolates `f"{comment}"`, and that is `'# '` on 3.10 and
+   `'Marker.HASH'` on 3.11, 3.12, 3.13 and 3.14. **Measured on all five.** The `.yaml` became a
+   `ScannerError`, with no sidecar and `verify` OK, exit 0 — and the SAME call wrote different
+   bytes on different interpreters, which is the rule `newline=""` is non-negotiable for in this
+   very method. No annotation and no checker refuses it, because a `str`-Enum **is** a `str`.
+
+**The fix is to compare the RENDERING and to route the rendering onward**, so the value compared
+is the value written. It is not a type blocklist: a legitimate `str` subclass equal to `"# "`
+renders `"# "` and still pins in-band, measured. An `__eq__`-always-True object is closed by the
+same line.
+
+**What changes for a caller.** A caller passing a non-`str` marker — `None`, a `str`-Enum member,
+an object whose `__eq__` says yes — now gets the **sidecar** and an untouched artifact, where
+before it got a corrupt one. `open_output(p)` and `open_output(p, comment="# ")` are byte-identical
+to before. One divergence is NOT closed and is stated rather than hidden: for a `str`-Enum marker,
+3.10 still pins in-band (its rendering really is `"# "`) while 3.11+ writes a sidecar. Both
+outcomes are correct and both artifacts parse; closing the divergence itself would mean refusing a
+marker by type, which this method's own comments refuse for the reason a blocklist always fails.
+
+**Held by a DERIVED guard rather than by the three suffixes that were reported.**
+`test_a_suffix_outside_the_allowlist_takes_the_sidecar_whatever_the_marker_renders_as` walks
+`(PIN_UNSAFE ∪ PIN_ALTERNATIVE) − PIN_INLINE − PIN_BINARY ∪ {".zzz"}` — **25 suffixes × 10
+sentinels = 250 pairs** — because the obvious cheap widening, adding `None` to the existing loop's
+marker tuple, is **green over the live defect and cannot fail**: every suffix that loop reaches is
+IN the table. The derived set is also the only form that exercises `.svg`, `.html`, `.vcf`,
+`.ipynb` and `.fa`, and it is the one that goes red. **Seven released histories unmoved: 84 corpus
+rows over 7 trees and 12 recipes, base-against-base 0 of 84 before anything was believed, then
+base against this fix 0 of 84.**
+
 ### Changed — `open_output()` demands the comment marker the format is known to take, and `comment` is keyword-only
 
 **Audit N, writer-7. This changes what an existing call does, and the change is deliberate.**

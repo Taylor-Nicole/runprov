@@ -2471,7 +2471,32 @@ class Run:
         # exactly like `open(path, mode)`, which is why `comment` is keyword-only now -- wrote
         # `wprovenance ...` into a `.yaml` and left it unparseable while `verify` said OK.
         known = PIN_INLINE.get(suffix)
-        inline = comment == known or (alternative is not None and comment == alternative[0])
+        # AND THE COMPARISON IS AGAINST WHAT WILL BE WRITTEN, not against what was passed
+        # [Audit O, product-1/product-1b]. Two defects in one expression, both of which gave an
+        # unparseable artifact that `runprov verify` reported as OK, exit 0:
+        #
+        #   1. `comment == known` with `known is None` -- a suffix OUTSIDE the allowlist -- made
+        #      `comment=None` compare EQUAL and routed IN-BAND, inverting the safe default onto
+        #      everything nobody had thought of. A `.nwk` came out as
+        #      `Noneprovenance - this artifact and what produced it`, no sidecar, `verify` OK.
+        #      `None` is not an exotic value here: `json.loads(cfg).get("comment")` and an
+        #      `argparse` default both produce it, and `mypy --strict` passes both because both
+        #      are `Any` -- so the `comment: str` annotation is not what was holding this.
+        #   2. `class Marker(str, Enum): HASH = "# "` is `==` to the declared marker on every
+        #      interpreter, so it routed in-band -- but `header()` interpolates `f"{comment}"`,
+        #      which renders `Marker.HASH` on 3.11/3.12/3.13/3.14 and `# ` on 3.10. Measured on
+        #      all five. A `str`-Enum IS a `str`, so no annotation and no checker refuses it, and
+        #      the artifact would be DIFFERENT BYTES on 3.10 than on 3.12 -- which is the same
+        #      rule `newline=""` is non-negotiable for, forty lines below.
+        #
+        # Rendering first and comparing the rendering closes both, plus an `__eq__`-always-True
+        # object, and it is not a blocklist: a legitimate `str` subclass equal to `"# "` renders
+        # `"# "` and still pins in-band. The rendered string is what goes onward, so the value
+        # compared is the value written.
+        marker = f"{comment}"
+        inline = (known is not None and marker == known) or (
+            alternative is not None and marker == alternative[0]
+        )
         if alternative is not None and inline and alternative[1]:
             diagnostic(
                 f"  PROVENANCE NOTE: pinning {pathlib.Path(path).name} in-band with "
@@ -2501,7 +2526,7 @@ class Run:
         #      so); `sha256`, which is recorded beside it, was not.
         if inline:
             # THE ARTIFACT APPEARS ONCE, COMPLETE — see `_PinnedWriter`, and ADR-0006.
-            fh: typing.Any = _PinnedWriter(self, p, comment, delimiter, _posix(path))
+            fh: typing.Any = _PinnedWriter(self, p, marker, delimiter, _posix(path))
             self._open_writers.append(fh)
         else:
             fh = open(p, "w", encoding="utf-8", newline="")
@@ -2520,7 +2545,7 @@ class Run:
             # a format that cannot hold a comment, and the run is fully recorded. It is the
             # UNREQUESTED FILE that has to be visible, which is the same rule that makes
             # `git_status_captured: false` say "we could not look" out loud.
-            sidecar = self.pin_sidecar(p, comment=comment)
+            sidecar = self.pin_sidecar(p, comment=marker)
             diagnostic(
                 f"  PROVENANCE NOTE: {p.name} cannot hold an in-band pin"
                 # AND IT SAYS WHICH OF THE TWO REASONS IT WAS [Audit N, writer-7]. For a format

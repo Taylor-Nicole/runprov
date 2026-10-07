@@ -20,6 +20,7 @@ import contextlib
 import csv
 import dataclasses
 import datetime as dt
+import enum
 import errno
 import gc
 import gzip
@@ -22564,6 +22565,139 @@ def test_every_allowlisted_suffix_demands_the_marker_it_declares(tmp_path, capsy
         "'cannot hold an in-band pin' alone is false for these and sends the caller to look "
         "for the wrong thing"
     )
+
+
+def test_a_suffix_outside_the_allowlist_takes_the_sidecar_whatever_the_marker_renders_as(
+    tmp_path, capsys
+):
+    """THE SAFE DEFAULT, HELD [Audit O, product-1 and product-1b].
+
+    The loop above iterates `PIN_INLINE` only, so it never reaches the branch where the safe
+    default actually lives -- a suffix the table says nothing about -- and that is where two
+    defects sat, each of them an unparseable artifact that `runprov verify` reported as **OK,
+    exit 0**:
+
+      * `known = PIN_INLINE.get(suffix)` is `None` outside the table, so `comment == known`
+        made `comment=None` compare EQUAL and pinned IN-BAND. A `.nwk` came out as
+        `Noneprovenance - this artifact ...` with no sidecar: the Newick class the allowlist
+        inversion exists to prevent, reached through the path advertised as the safe default.
+      * `class Marker(str, Enum): HASH = "# "` is `==` to a declared marker on every
+        interpreter, but `header()` interpolates it, and `f"{Marker.HASH}"` is `'# '` on 3.10
+        and `'Marker.HASH'` on 3.11 through 3.14. So the comparison and the write disagreed,
+        and the SAME call wrote different bytes on different interpreters -- the rule
+        `newline=""` is non-negotiable for in `open_output` itself.
+
+    THE SUFFIXES ARE DERIVED, not listed: everything either table calls unsafe or offers an
+    alternative for, minus the allowlist, minus the binary refusals, plus one suffix no table
+    mentions at all. A list of the three suffixes that were reported is the list-of-sites shape
+    this series keeps filing -- and the obvious cheap widening, adding `None` to the tuple above
+    while that loop still walks `PIN_INLINE`, is GREEN OVER THE LIVE DEFECT and cannot fail,
+    because every suffix it reaches IS in the table. Measured. This set is the only form that
+    exercises `.svg`, `.html`, `.vcf`, `.ipynb` and `.fa`, and it goes red on `.fa`.
+
+    NOT GRAFTED INTO THE LOOP ABOVE, deliberately: `PIN_INLINE[suffix]` raises `KeyError` for
+    an out-of-table suffix, and that loop's closing stderr assertion is only emitted when the
+    suffix declares a marker.
+
+    AND IT IS NOT "REFUSE EVERYTHING": the last two cases are a `str` SUBCLASS equal to a
+    declared marker, which renders as that marker and must still pin in-band -- the property a
+    type blocklist would have broken.
+    """
+
+    class _Marker(str, enum.Enum):
+        """`==` to the marker on every interpreter; renders as itself on four of five."""
+
+        HASH = "# "
+
+    class _AlwaysEqual:
+        """The third shape the rendered comparison closes: equality says yes to anything."""
+
+        def __eq__(self, other: object) -> bool:
+            return True
+
+        def __hash__(self) -> int:
+            return 0
+
+        def __str__(self) -> str:
+            return "ALWAYS"
+
+    #: DERIVED. `.zzz` is in because a suffix no table mentions is the case the default is FOR.
+    outside = sorted(
+        (set(runprov.run.PIN_UNSAFE) | set(runprov.run.PIN_ALTERNATIVE))
+        - set(runprov.run.PIN_INLINE)
+        - set(runprov.run.PIN_BINARY)
+        | {".zzz"}
+    )
+    assert len(outside) >= 25, f"the derivation yielded {len(outside)} suffixes; the premise"
+    assert not set(outside) & set(runprov.run.PIN_INLINE), "these must be OUTSIDE the allowlist"
+
+    #: Ten, and the first five are the point: `None` is what `cfg.get("comment")` and an
+    #: `argparse` default produce, and `mypy --strict` passes both because both are `Any`.
+    #: `'# '` is here because for these suffixes it is NOT a declared marker -- it is the
+    #: original Newick defect spelled with the most plausible value in the world.
+    sentinels: tuple[object, ...] = (
+        None,
+        False,
+        0,
+        _Marker.HASH,
+        _AlwaysEqual(),
+        "# ",
+        "w",
+        "",
+        "// ",
+        "@ ",
+    )
+    #: A sentinel that IS a declared alternative marker would pin in-band legitimately, so the
+    #: control is derived from the table rather than eyeballed.
+    offered = {
+        runprov.run.PIN_ALTERNATIVE[s][0] for s in outside if s in runprov.run.PIN_ALTERNATIVE
+    }
+    assert not offered & {s for s in sentinels if isinstance(s, str)}, (
+        f"a sentinel is one of the markers these formats are OFFERED ({sorted(offered)}), so the "
+        f"guard would be asserting the opposite of the contract for it"
+    )
+
+    project = _project(tmp_path)
+    src = tmp_path / "in.tsv"
+    src.write_text("x\n1\n", encoding="utf-8")
+    run = runprov.Run("a", project=project)
+    run.input(src)
+    body = "col\n1\n"
+
+    checked = 0
+    for i, suffix in enumerate(outside):
+        for j, sentinel in enumerate(sentinels):
+            out = tmp_path / f"outside{i}_{j}{suffix}"
+            with run.open_output(out, comment=sentinel) as fh:  # type: ignore[arg-type]
+                fh.write(body)
+            assert out.read_text(encoding="utf-8") == body, (
+                f"{suffix} is not in the allowlist, so {sentinel!r} must leave the artifact "
+                f"UNTOUCHED whatever it renders as -- it is "
+                f"{out.read_text(encoding='utf-8')[:60]!r}"
+            )
+            assert out.with_name(out.name + ".prov.txt").is_file(), (
+                f"{suffix} with {sentinel!r} must get the SIDECAR, which is the safe default "
+                f"for a format nobody has thought about -- not nothing"
+            )
+            checked += 1
+    assert checked == len(outside) * len(sentinels), "every pair must have been written"
+    capsys.readouterr()
+
+    class _Marked(str):
+        """A legitimate `str` subclass: renders as its own value, so it still pins in-band."""
+
+    for suffix, marker in ((".yaml", "# "), (".fasta", "; ")):
+        allowed = tmp_path / f"allowed{suffix}"
+        with run.open_output(allowed, comment=_Marked(marker)) as fh:
+            fh.write(body)
+        assert allowed.read_text(encoding="utf-8").startswith(f"{marker}provenance"), (
+            f"a `str` subclass equal to {marker!r} renders as {marker!r}, so {suffix} must "
+            f"still take the pin IN-BAND -- comparing the RENDERING is not a type blocklist"
+        )
+        assert not allowed.with_name(allowed.name + ".prov.txt").exists(), (
+            f"{suffix} took the pin in-band, so there must be no second file as well"
+        )
+    capsys.readouterr()
 
 
 def test_open_output_refuses_a_comment_passed_where_a_mode_would_go(tmp_path):
