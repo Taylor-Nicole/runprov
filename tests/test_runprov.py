@@ -7609,6 +7609,70 @@ _IMPORT_LAYERS = {"_report": 0, "__main__": 2}
 _LIBRARY_LAYER = 1
 
 
+def _package_import_edges(package: pathlib.Path) -> list[tuple[str, int, str]]:
+    r"""Every import in `package` that NAMES A MODULE OF `package`, resolved against the DISK.
+
+    **THIS REPLACED A LIST OF IMPORT SPELLINGS, AND THE LIST IS THE DEFECT** [Audit O, guards-2].
+    The sweep used to match three spellings by hand. `from . import terminal` -- used 16 times in
+    this package -- has `node.module is None`, so it resolved to `""` and was dropped; the
+    two-line repair for that left a FIFTH spelling, `from runprov import terminal`, dropped by
+    construction because `node.module` is non-empty and `node.level` is 0. Four laps of
+    enumeration found four spellings and missed two. The generalisation Audit O arrived at, which
+    is worth more than this function:
+
+        Every FLOOR in this family has been defeated by narrowing the subject, and no
+        exhaustiveness assertion has been. The repair is not to extend the list: it is to delete
+        the list and compute the thing itself.
+
+    So there is no list. Every `Import`/`ImportFrom` is turned into the DOTTED NAMES it makes
+    available, and the FILESYSTEM is asked which of those names a module of this package. All six
+    spellings -- `import runprov.x`, `import runprov.x as y`, `from runprov.x import z`,
+    `from runprov import x`, `from .x import z` and `from . import x` -- come out of that one code
+    path, because each of them mentions `runprov.x` somewhere in its dotted form.
+
+    `from .x import z` yields `runprov.x` AND `runprov.x.z`; the second has three segments and no
+    file, so it drops out without a rule about it. `import runprov` and `from runprov import Run`
+    yield `runprov` and `runprov.Run`, neither of which is a module.
+
+    A LEVEL OF 2 OR MORE IS REFUSED RATHER THAN GUESSED, because resolving it needs a parent this
+    flat package does not have. It cannot occur here -- `from .. import x` raises `ImportError:
+    attempted relative import beyond top-level package` -- and if the package ever grows a
+    subpackage the resolver must be taught about it, because an edge this function cannot resolve
+    would otherwise read as NO edge, which is precisely how the old list failed.
+    """
+    edges: list[tuple[str, int, str]] = []
+    for mod in sorted(package.glob("*.py")):
+        tree = ast.parse(mod.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            dotted: list[str] = []
+            if isinstance(node, ast.Import):
+                dotted = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                assert node.level < 2, (
+                    f"{mod.name}:{node.lineno} is `from {'.' * node.level}"
+                    f"{node.module or ''} import ...`, and this resolver cannot turn a level of "
+                    f"{node.level} into a dotted name without a parent package. In a FLAT "
+                    f"package it cannot happen; if one has grown here, teach this function about "
+                    f"it, because an edge it cannot resolve reads as no edge at all"
+                )
+                head = ".".join(
+                    part
+                    for part in ((package.name if node.level else ""), node.module or "")
+                    if part
+                )
+                if head:
+                    dotted = [head] + [f"{head}.{alias.name}" for alias in node.names]
+            else:
+                continue
+            for candidate in dotted:
+                parts = candidate.split(".")
+                if len(parts) != 2 or parts[0] != package.name:
+                    continue
+                if (package / f"{parts[1]}.py").is_file():
+                    edges.append((mod.stem, node.lineno, parts[1]))
+    return edges
+
+
 def test_the_package_imports_only_downwards():
     """`_report`'s claim about ITSELF, held for the package rather than for one module.
 
@@ -7631,45 +7695,59 @@ def test_the_package_imports_only_downwards():
     `_report` may not import `terminal`, the transform cannot live in `terminal` and be reached
     from `_report`, and nobody has to restate it.
 
-    WHAT THIS CANNOT SEE, declared rather than closed: an `importlib.import_module` call built
-    from a string, and a deferred import is treated exactly like a module-level one. The second
-    is deliberate -- `sinks` defers `run` and `show` precisely to break a cycle, so a check that
-    only read module-level imports would bless `_report` deferring `terminal`, which fails just as
-    hard the first time a message is written.
+    **AND THE SPELLING LIST IS GONE, WHICH IS THE REPAIR** [Audit O, guards-2]. It enumerated
+    three spellings, was blind to `from . import X`, and the two-line fix for that would have
+    left `from runprov import X`. `_package_import_edges` resolves every edge to a dotted name
+    and asks the disk which of them is a module here, so all six spellings come from one code
+    path; its docstring carries the reasoning.
+
+    **THE NON-VACUITY CLAUSE IS THE COMPUTED GRAPH, NOT A COUNT ALONE.** Two edges that must
+    exist are asserted by name -- `terminal -> hashing` and `sinks -> chain`, both module-level,
+    both read off the source today -- so a resolver that stopped resolving cannot report a clean
+    graph, and the edge total is asserted beside them so a resolver that stopped reading a
+    SPELLING is red even while those two still resolve. The total was measured at 56 and is
+    identical on all five interpreters this host carries.
+
+    **AND THE `__main__` BOUNDARY IS PROBED DYNAMICALLY AS WELL**, because that boundary has a
+    runtime consequence an AST cannot see: `PolicyError`'s docstring forbids a library module
+    importing the command module *"because a policy parser that dragged `__main__` in would make
+    `import runprov.policy` build an argument parser"*. The probe asserts that consequence
+    directly, so it is TOTAL -- it catches `importlib.import_module` and any spelling nobody has
+    thought of, which no static sweep can.
+
+    **THERE IS NO SUCH PROBE FOR THE `_report` BOUNDARY, AND THE REASON IS MEASURED, NOT
+    OMITTED:** `import runprov._report` ALREADY puts `runprov.terminal` in `sys.modules`, because
+    importing any submodule runs `runprov/__init__.py`, which is the package's re-export surface
+    and reaches every layer by design. A probe there would be red at HEAD over no defect. The
+    static half is what holds that boundary.
+
+    WHAT THE STATIC HALF STILL CANNOT SEE, declared rather than closed: an
+    `importlib.import_module` call built from a string -- which the `__main__` probe above DOES
+    catch, for that one boundary -- and a deferred import is treated exactly like a module-level
+    one. The second is deliberate: `sinks` defers `run` and `show` precisely to break a cycle, so
+    a check that only read module-level imports would bless `_report` deferring `terminal`, which
+    fails just as hard the first time a message is written.
     """
+    package = REPO / "runprov"
+    edges = _package_import_edges(package)
     offenders: dict[str, str] = {}
     seen: dict[str, int] = {}
-    for mod in sorted((REPO / "runprov").glob("*.py")):
+    for mod in sorted(package.glob("*.py")):
         if mod.stem == "__init__":
             continue  # the package's re-export surface, which must reach every layer by design
-        here = _IMPORT_LAYERS.get(mod.stem, _LIBRARY_LAYER)
-        seen[mod.stem] = here
-        tree = ast.parse(mod.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            #: BOTH SPELLINGS, WHICH IS THE WHOLE POINT. A relative `from .terminal import x` and
-            #: an absolute `from runprov.terminal import x` create the same cycle, and only the
-            #: first has a `level`. `import runprov.terminal` is the third spelling of it.
-            targets: list[str] = []
-            if isinstance(node, ast.ImportFrom):
-                parts = (node.module or "").split(".")
-                if node.level >= 1:
-                    targets = [parts[0]]
-                elif parts[0] == "runprov":
-                    targets = [parts[1]] if len(parts) > 1 else []
-            elif isinstance(node, ast.Import):
-                targets = [
-                    alias.name.split(".")[1]
-                    for alias in node.names
-                    if alias.name.split(".")[0] == "runprov" and "." in alias.name
-                ]
-            for target in targets:
-                if not target or target == "__init__":
-                    continue
-                there = _IMPORT_LAYERS.get(target, _LIBRARY_LAYER)
-                if there > here:
-                    offenders[f"{mod.name}:{node.lineno}"] = (
-                        f"imports `{target}` (layer {there}) from layer {here}"
-                    )
+        seen[mod.stem] = _IMPORT_LAYERS.get(mod.stem, _LIBRARY_LAYER)
+    #: `__init__` IS EXCLUDED AS AN IMPORTER for the same reason, and only as an importer: an
+    #: edge INTO it would still be read, and `__init__` is not a layer anything may sit above.
+    graph = {(importer, target) for importer, _, target in edges if importer != "__init__"}
+    for importer, lineno, target in edges:
+        if importer == "__init__":
+            continue
+        here = _IMPORT_LAYERS.get(importer, _LIBRARY_LAYER)
+        there = _IMPORT_LAYERS.get(target, _LIBRARY_LAYER)
+        if there > here:
+            offenders[f"{importer}.py:{lineno}"] = (
+                f"imports `{target}` (layer {there}) from layer {here}"
+            )
 
     #: THE SWEEP MUST HAVE READ THE MODULES THE TABLE NAMES, or a glob that stopped matching
     #: reports a clean graph. `runprov` has 24 modules -- the figure `mypy runprov/` prints on
@@ -7689,6 +7767,41 @@ def test_the_package_imports_only_downwards():
         f"stopped this package importing: {offenders}. `_report` is the bottom layer precisely "
         f"so a transform everything needs can live there, and `__main__` is the top because "
         f"`import runprov.policy` must not build an argument parser"
+    )
+
+    #: AND THE NON-VACUITY CLAUSES COME AFTER THE OFFENDERS, NOT BEFORE [Audit O, guards-10].
+    #: A count asserted first is a count that fires instead of naming the import -- measured
+    #: here, not reasoned: with the total above, all six planted spellings reported `57 == 56`
+    #: and the reader was told an edge had been added rather than that `policy` imports
+    #: `__main__`. That is guards-10's defect, in the guard written to close guards-2.
+    #: THE GRAPH ITSELF, SO A RESOLVER THAT STOPPED RESOLVING CANNOT REPORT A CLEAN GRAPH.
+    assert {("terminal", "hashing"), ("sinks", "chain")} <= graph, (
+        f"two module-level edges this package certainly has are missing from the derived graph, "
+        f"so the resolver has stopped resolving: it found {len(graph)} edges, {sorted(graph)}"
+    )
+    assert len(graph) == 56, (
+        f"the derived import graph has {len(graph)} edges and had 56. If an import was added or "
+        f"removed, re-read the layer table and update this number; if it fell without the "
+        f"package changing, a SPELLING has stopped resolving, which is the defect "
+        f"`_package_import_edges` exists to make impossible: {sorted(graph)}"
+    )
+
+    #: THE `__main__` BOUNDARY'S CONSEQUENCE, PROBED IN A SUBPROCESS. Not a second spelling of
+    #: the static check: this is what `PolicyError`'s docstring actually forbids, and it is total
+    #: over every way of reaching `__main__` including `importlib`. A fresh interpreter, because
+    #: `argparse` is already in `sys.modules` of the one running this file.
+    probe = subprocess.run(
+        [sys.executable, "-c", "import sys, runprov.policy; print('argparse' in sys.modules)"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+        check=True,
+    )
+    assert probe.stdout.strip() == "False", (
+        f"`import runprov.policy` built an argument parser: `argparse` reached `sys.modules`, "
+        f"which is what `PolicyError`'s docstring forbids in words. Something on the import "
+        f"path from `policy` reaches `__main__`. Probe said {probe.stdout.strip()!r}, stderr "
+        f"{probe.stderr[-400:]!r}"
     )
 
 
