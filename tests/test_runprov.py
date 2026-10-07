@@ -918,10 +918,24 @@ def test_rendered_yaml_survives_the_c_loader_and_a_character_above_the_bmp():
     ):
         #: THE RENDERED BYTES, FIRST. A surrogate escape in the file is the defect; the loaders
         #: below are what it does, not what it is.
-        assert "\\ud8" not in text and "\\ude" not in text, (
-            f"[Audit M escape-6] {label} rendered a SURROGATE ESCAPE. That is legal JSON and "
-            f"illegal YAML: libyaml refuses the file and pyyaml returns a string that is not "
-            f"the path. `ensure_ascii=False` is what keeps it out:\n{text}"
+        #: ANY SURROGATE ESCAPE, NOT TWO SUBSTRINGS OF ONE [Audit O, guards-13]. This read
+        #: `"\\ud8" not in text and "\\ude" not in text`, which is the two halves of U+1F9AC's
+        #: pair and nothing else: U+10FFFD escapes to `\\udbff\\udffd` and matched NEITHER.
+        #:
+        #: **AND THIS IS A WRONG DIAGNOSTIC AND NOT A FALSE GREEN, which is why it is worth
+        #: saying where the property actually lives:** the defect is caught unconditionally, on
+        #: every leg, by `assert high in text` on the next line, because a renderer that emits a
+        #: surrogate escape has not emitted the character. Measured end to end with all 11
+        #: `ensure_ascii=False` flipped: U+1F9AC was RC=1 saying *rendered a SURROGATE ESCAPE*
+        #: and U+10FFFD was RC=1 saying *dropped the character instead of rendering it*. So the
+        #: regex buys the reader the right CAUSE and buys the suite nothing. Do not "fix" this as
+        #: a false green; it is held by the line below.
+        surrogate = re.search(r"\\u[dD][89a-fA-F][0-9a-fA-F]{2}", text)
+        assert surrogate is None, (
+            f"[Audit M escape-6] {label} rendered a SURROGATE ESCAPE ({surrogate.group(0)!r} -- "
+            f"any of U+D800..U+DFFF, not only U+1F9AC's halves). That is legal JSON and illegal "
+            f"YAML: libyaml refuses the file and pyyaml returns a string that is not the path. "
+            f"`ensure_ascii=False` is what keeps it out:\n{text}"
         )
         assert high in text, f"{label} dropped the character instead of rendering it: {text}"
 
@@ -7849,16 +7863,28 @@ def test_the_package_imports_only_downwards():
         f"the layer table names a module this sweep did not read: "
         f"{sorted(set(_IMPORT_LAYERS) - set(seen))}"
     )
-    assert len(seen) == _PACKAGE_MODULES - 1, (
-        f"the sweep read {len(seen)} modules besides `__init__` and the package has "
-        f"{_PACKAGE_MODULES - 1}, so a glob has stopped matching or a module was added without a "
-        f"layer: {sorted(seen)}"
-    )
-    assert offenders == {}, (
-        f"these imports go UP the layer table, which is the circular import that has already "
-        f"stopped this package importing: {offenders}. `_report` is the bottom layer precisely "
-        f"so a transform everything needs can live there, and `__main__` is the top because "
-        f"`import runprov.policy` must not build an argument parser"
+    #: THE CENSUS AND THE OFFENDERS ARE REPORTED TOGETHER, NOT ONE BEFORE THE OTHER [Audit O,
+    #: guards-10]. The census was asserted FIRST, so adding `runprov/zz_new.py` with
+    #: `from .__main__ import main` reported `24 == 23` and NEVER NAMED THE IMPORT -- the reader
+    #: was told a module had appeared and not that it violated the layer table. A bare reorder
+    #: would have lost the other half: *a module was added without a layer* is good advice and
+    #: the reason the census is here at all. So both facts go into one report and the reader gets
+    #: whichever of them is true, or both.
+    trouble: dict[str, object] = {}
+    if len(seen) != _PACKAGE_MODULES - 1:
+        trouble["the module census"] = (
+            f"the sweep read {len(seen)} modules besides `__init__` and the package has "
+            f"{_PACKAGE_MODULES - 1}, so a glob has stopped matching or a module was added "
+            f"without a layer: {sorted(seen)}"
+        )
+    if offenders:
+        trouble["imports that go UP the layer table"] = offenders
+    assert not trouble, (
+        f"{trouble}\n\nAn import that goes up the table is the circular import that has already "
+        f"stopped this package importing: `_report` is the bottom layer precisely so a transform "
+        f"everything needs can live there, and `__main__` is the top because `import "
+        f"runprov.policy` must not build an argument parser. A module added to the package needs "
+        f"a decision about which layer it belongs in, and that is what the census asks for"
     )
 
     #: AND THE NON-VACUITY CLAUSES COME AFTER THE OFFENDERS, NOT BEFORE [Audit O, guards-10].
@@ -40268,6 +40294,22 @@ def test_the_transform_is_imported_from_one_place():
     was never the count: **there is one definition and every user imports it from there.** That
     cannot rot, because it is a property of the graph rather than a figure about it.
 
+    **AND ONLY THE SECOND HALF OF THAT WAS EVER CHECKED** [Audit O, guards-11]. A second
+    `printable` DEFINED in `terminal.py` was green here -- the *"two spellings of one property"*
+    defect the module move was made for, in the test written to hold against it. The first half is
+    asserted now: these two names are defined in `_report.py` and nowhere else in the package.
+
+    **A CORRECTION TO THE ROW THAT FILED IT, because the next reader will otherwise trust the
+    wrong half:** the row said the second definition stayed harmless *"until something imports it,
+    and `elsewhere` would catch that import"*. That is true for `from .terminal import printable`
+    and FALSE for `from . import terminal` followed by `terminal.printable(...)`, which `elsewhere`
+    never sees because it reads `ImportFrom` names. That is the same recognition hole as guards-2's
+    -- a sweep that reads imported NAMES is blind to a module imported as an object -- and it is
+    closed here from the other end: there is no second definition for the unseen spelling to
+    reach. The practical exposure was always low, because a second definition that BEHAVES
+    differently is caught by the escaping property; the uncaught case is a second definition
+    nothing uses, which is the one this now forbids outright.
+
     BY AST AND NOT BY `git grep`, which is not a style preference here: `terminal.py` carries
     `from ._report import printable` INSIDE A COMMENT, explaining that the import would be a
     cycle, so a textual sweep counts the explanation as a use. The bare-print guard learned the
@@ -40309,6 +40351,49 @@ def test_the_transform_is_imported_from_one_place():
     assert "__main__.py" in importers and importers["__main__.py"] == set(_CHOKEPOINTS), (
         f"`__main__` prints the pages, so it must import both halves of the transform; the "
         f"sweep found {importers.get('__main__.py')} and matched {sorted(importers)}"
+    )
+
+    #: AND THE FIRST HALF OF THE CLAIM: ONE DEFINITION, IN `_report.py` [Audit O, guards-11].
+    #: A `def` at any depth and a module-level rebind both count, because both make a second
+    #: object reachable under the name this package relies on being one function. An import does
+    #: NOT count -- `from ._report import printable` is 10 modules doing the right thing, and the
+    #: `elsewhere` assertion above is what holds those.
+    #:
+    #: ONE EQUALITY, BOTH DIRECTIONS, AND THAT IS DELIBERATE: a name that stops being defined at
+    #: all fails it, a name defined somewhere else fails it, and a name defined TWICE inside
+    #: `_report.py` fails it too, because the sites are a list and not a set. A first draft of
+    #: this compared a sorted key list against a numerically rebuilt one and could not pass.
+    #:
+    #: TWO LIMITS, BOTH MEASURED RATHER THAN GUESSED. A binding made inside a function body is
+    #: local to that call and is not a second definition of anything, so it is out of scope. And
+    #: the MISSING direction of this equality cannot actually be reached from here: renaming
+    #: `printable_lines` in `_report.py` makes the package fail to import and this file reports a
+    #: COLLECTION ERROR, RC=2, before any assertion runs -- the same limit the layer table
+    #: declares for a module-level defect. What this equality really holds is the direction that
+    #: has no other instrument: a SECOND definition, which nothing else in the suite can see.
+    defined: dict[str, list[str]] = {}
+    for mod in sources:
+        tree = ast.parse(mod.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name in _CHOKEPOINTS:
+                    defined.setdefault(node.name, []).append(mod.name)
+        for node in tree.body:
+            rebound = (
+                node.targets
+                if isinstance(node, ast.Assign)
+                else [node.target]
+                if isinstance(node, ast.AnnAssign)
+                else []
+            )
+            for target in rebound:
+                if isinstance(target, ast.Name) and target.id in _CHOKEPOINTS:
+                    defined.setdefault(target.id, []).append(mod.name)
+    assert defined == {name: ["_report.py"] for name in _CHOKEPOINTS}, (
+        f"the escaping transform must have exactly ONE definition each and it must be in "
+        f"`_report.py`; the package defines them at {defined}. A second definition is the `two "
+        f"spellings of one property` defect the move into `_report` was made to end, and nothing "
+        f"above this line can see it: the importers half only reads what modules IMPORT"
     )
 
 
