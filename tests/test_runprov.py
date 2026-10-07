@@ -7418,9 +7418,71 @@ _OS_WRITE_EXEMPT = "terminal.py"
 #: module's own globals: whatever that module calls these functions, the object is the same
 #: object, and `is` finds it under any spelling -- an import alias, a module-level rebind, or a
 #: name nobody has thought of. Only the name set changed hands; the AST sweep still reads the
-#: call arguments, because the newline clause is about a LITERAL in the source and no runtime
+#: call arguments, because the newline clause is about a LITERAL in the source and no writer
 #: value can answer that.
-_WRITER_OBJECTS = {"diagnostic", "summary", "progress"}
+#:
+#: AND THE SET OF WRITERS IS NOW DERIVED TOO, WHICH IS THE LAST LIST IN THIS FAMILY [Audit P,
+#: exhaustive-7]. `6128b8e` deleted the list of SPELLINGS and kept a hand-written list of three
+#: WRITERS -- `{"diagnostic", "summary", "progress"}` -- next to a property that computes the
+#: same set: a writer is a function `_report.py` defines that reaches `_write`, which is the
+#: emission point everything else in this family is about. Measured as a drop-in: the closure
+#: yields exactly `['diagnostic', 'progress', 'summary']`, element for element, out of the 9
+#: module-level functions in `_report.py`. A fourth writer added there is in this set the day it
+#: is written, under whatever name any module imports it as.
+def _writer_objects() -> frozenset[str]:
+    """`_report.py`'s functions that reach `_write`, by call-graph closure over that module.
+
+    ONE HOP IS NOT ENOUGH, which is why this is a closure and not a scan of each body: a writer
+    that grew a private helper would drop out of a one-hop rule while still emitting. The graph
+    is by NAME inside one module, which is sufficient for the same reason
+    `_reaches_a_chokepoint` gives -- two functions with one name in one module is not a thing
+    Python allows.
+
+    MODULE-LEVEL DEFINITIONS ONLY, because `_writer_names` resolves each of these through
+    `getattr(runprov._report, name)` and a nested function is not an attribute of the module.
+    Measured: `_report.py` has no nested `def` at all today, so this excludes nothing.
+    """
+    tree = ast.parse((REPO / "runprov" / _WRITER_DEFINER).read_text(encoding="utf-8"))
+    bodies = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    calls = {
+        name: {
+            call.func.id
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+        }
+        for name, node in bodies.items()
+    }
+
+    def reaches_write(start: str) -> bool:
+        seen: set[str] = set()
+        todo = [start]
+        while todo:
+            name = todo.pop()
+            if name in seen or name not in calls:
+                continue
+            seen.add(name)
+            if "_write" in calls[name]:
+                return True
+            todo += sorted(calls[name])
+        return False
+
+    found = frozenset(name for name in bodies if reaches_write(name))
+    #: NON-VACUITY, AND IT IS NOT A LIST. A closure that came back empty -- `_write` renamed,
+    #: the emission point moved, this file pointed at the wrong module -- would make every sweep
+    #: below find zero sites, and the 40-site equality would then report *the writer surface
+    #: moved* instead of *this derivation stopped deriving*. One assertion, no names.
+    assert found, (
+        f"no function in {_WRITER_DEFINER} reaches `_write`, so this derivation has found no "
+        f"writers at all and every clause that reads it is now vacuous. Either the emission "
+        f"point was renamed -- teach this closure the new name -- or it moved out of "
+        f"{_WRITER_DEFINER}, in which case `_WRITER_DEFINER` is what is stale. The "
+        f"{len(bodies)} module-level functions there are {sorted(bodies)}"
+    )
+    return found
 
 
 def _writer_names(module_stem: str) -> dict[str, str]:
@@ -7428,10 +7490,21 @@ def _writer_names(module_stem: str) -> dict[str, str]:
 
     `is` rather than `in`, and the reason is defensive rather than stylistic: `value in {...}`
     hashes `value`, and an unhashable callable in a module's globals would make this raise
-    instead of answer. A guard that cannot run is worse than one that is wrong.
+    instead of answer. A guard that cannot run is worse than one that is wrong. Both halves are
+    now measured rather than argued [Audit P, exhaustive-7]: `Unhashable() in {...}` raises
+    `TypeError` while `is` answers `False`, and an `__eq__`-always-True callable is a false
+    positive under `in` and correct under `is`.
+
+    TWO NARROW MISSES, DECLARED AND NOT CHASED [Audit P, exhaustive-7]. A module-level
+    `__getattr__` supplying a writer lazily, and a `functools.wraps` wrapper around one, are both
+    invisible to `vars(module)` identity. Both are CONTAINED rather than open: the 40-site
+    equality in `test_no_writer_argument_carries_a_newline_of_its_own` moves if a site appears or
+    disappears, and the definer-subject assertion holds `_report.py` itself. Neither shape exists
+    in this package and neither is worth a clause that would also have to decide what a wrapper
+    IS.
     """
     module = importlib.import_module(f"runprov.{module_stem}")
-    writers = {getattr(runprov._report, name): name for name in _WRITER_OBJECTS}
+    writers = {getattr(runprov._report, name): name for name in _writer_objects()}
     return {
         local: canonical
         for local, value in vars(module).items()
@@ -7465,7 +7538,7 @@ def _writer_calls(path: pathlib.Path) -> list[tuple[int, str, ast.Call]]:
             name = local.get(func.id)
         else:
             attr = getattr(func, "attr", None)
-            name = attr if attr in _WRITER_OBJECTS else None
+            name = attr if attr in _writer_objects() else None
         if name is not None:
             out.append((node.lineno, name, node))
     return out
@@ -8026,9 +8099,16 @@ def test_no_library_module_writes_to_a_named_standard_stream():
     false-positive-free by measurement: the package has exactly one `.writelines` on a named
     standard stream, `__main__.py:2526`, in a module this sweep already skips.
 
-    MEASURED AND WORTH KEEPING: `watch.py`, `heartbeat.py` and `observe.py` contain zero
-    `diagnostic`, `summary`, `progress` or `print` calls, so the 40 writer sites really are the
-    whole non-CLI surface rather than the part somebody enumerated.
+    MEASURED AND WORTH KEEPING: `watch.py`, `heartbeat.py` and `observe.py` emit nothing, so the
+    40 writer sites really are the whole non-CLI surface rather than the part somebody
+    enumerated. **AND THE CLAUSE THAT HOLDS THAT NO LONGER MATCHES FOUR LITERAL NAMES** [Audit P,
+    exhaustive-8]. It read `("diagnostic", "summary", "progress", "print")` -- the blind spot
+    `6128b8e` deleted two commits earlier, in this same file -- so an aliased writer in a quiet
+    module reported the module as still silent, under a message saying the derived surface's
+    completeness rests on this. It resolves through `_writer_calls` now, which asks each module
+    by OBJECT IDENTITY what it calls these functions. The defect was already CAUGHT, by the
+    40-site equality in the next test over, which reported *the writer surface moved*: so this was
+    a WRONG DIAGNOSTIC and not a false green, and the repair is the diagnostic.
 
     `terminal.py` IS EXEMPT FOR ONE CALL AND THE SUBJECT IS ASSERTED -- which it was NOT when
     that sentence was first written [Audit O, guards-7]. No assertion named `terminal.py`
@@ -8062,19 +8142,34 @@ def test_no_library_module_writes_to_a_named_standard_stream():
     for mod in sorted((REPO / "runprov").glob("*.py")):
         tree = ast.parse(mod.read_text(encoding="utf-8"))
         if mod.name in quiet_modules:
-            said = [
-                name
+            #: RESOLVED THROUGH THE IDENTITY SET THIS FILE ALREADY COMPUTES, NOT THROUGH FOUR
+            #: LITERAL NAMES [Audit P, exhaustive-8]. This clause matched
+            #: `("diagnostic", "summary", "progress", "print")` by spelling -- the exact blind
+            #: spot `6128b8e` deleted two commits earlier, in this same file -- while its own
+            #: message says the completeness of the derived writer surface RESTS ON IT. Planted
+            #: `from ._report import diagnostic as warn` plus a call in a quiet module, this
+            #: clause reported the module as still saying nothing.
+            #:
+            #: IT IS A WRONG DIAGNOSTIC AND NOT A FALSE GREEN, measured: the plant DOES turn the
+            #: 40-site equality in `test_no_writer_argument_carries_a_newline_of_its_own` red,
+            #: because that sweep resolves by identity. So the defect was caught -- by an
+            #: assertion in another test, reporting *the writer surface moved* instead of *this
+            #: module is no longer silent*, which sends the reader to the wrong question. Do not
+            #: file this as an escape; the repair is the diagnostic.
+            #:
+            #: `print` STAYS A LITERAL, and that is deliberate: it is a builtin rather than one of
+            #: `_report`'s writers, so there is no module global to resolve it through, and it has
+            #: its own guard next door -- the bare-print sweep over the library.
+            said = [f"{lineno}: {name}" for lineno, name, _ in _writer_calls(mod)]
+            said += [
+                f"{node.lineno}: print"
                 for node in ast.walk(tree)
                 if isinstance(node, ast.Call)
-                for name in [
-                    node.func.id
-                    if isinstance(node.func, ast.Name)
-                    else getattr(node.func, "attr", "")
-                ]
-                if name in ("diagnostic", "summary", "progress", "print")
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "print"
             ]
             if said:
-                silent[mod.name] = said
+                silent[mod.name] = sorted(said)
         if mod.name in ("_report.py", "__main__.py"):
             continue  # the emission point itself, and the CLI whose rendered log IS its output
         for node in ast.walk(tree):
