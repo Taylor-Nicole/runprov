@@ -7421,13 +7421,22 @@ def test_no_writer_argument_carries_a_newline_of_its_own():
     `%`-format, `.format()`, `textwrap.dedent`, `"\n".join(...)` and a format-spec fill are all
     CAUGHT, because each of them puts the newline in a literal in the argument expression.
 
-    SCOPED TO `diagnostic`/`summary`, AND `progress` IS DELIBERATELY NOT IN THE NEWLINE CLAUSE.
-    `progress(line, *, state)` takes ONE positional, so "per argument" there IS the
-    whole-message transform that was refuted, and it is not reached by `diagnostic` at all -- it
-    calls `_write` directly, which splits on the separator and escapes per line. A newline a
-    `progress` caller writes therefore does NOT collapse, so forbidding one here would forbid a
-    shape that is correct. `progress` stays in the SITE COUNT, which is about seeing the whole
-    writer surface, and out of the newline clause, which is about the collapse.
+    `progress` IS IN THE NEWLINE CLAUSE NOW, and the exclusion it used to have was unsound
+    [Audit O, product-3 / guards-1]. The old reason read: *"`progress(line, *, state)` takes ONE
+    positional, so per argument there IS the whole-message transform that was refuted ... a
+    newline a `progress` caller writes therefore does NOT collapse, so forbidding one here would
+    forbid a shape that is correct."* Every clause of that is about a CALLER's newline, and the
+    exclusion was never asked about a VALUE's -- which `_write` split and escaped per line, so
+    it survived as a real newline and forged a bare line on stderr. `progress` now applies
+    `printable` to its one argument, exactly as `diagnostic` does per argument, so a literal
+    newline inside that argument IS a collapse and belongs under this clause with everything
+    else. **It was already true that no `progress` site passes one**, at both revisions, so the
+    clause is green today and red the day one is written -- measured both ways: planting
+    `"\n    planted"` at `run.py`'s progress site turns this RED and NAMES it, and with the
+    exclusion restored the same planted newline is GREEN. No count is stated, because this
+    clause's subject is `_writer_calls`'s own output and the figure for it has rotted before.
+    `Heartbeat._beat` and `Heartbeat.saw` are NOT swept here and never were -- they are not
+    writer names -- which is why the behavioural half is what covers the heartbeat channel.
     """
     found: dict[str, dict[str, int]] = {}
     newline_sites: dict[str, str] = {}
@@ -7437,8 +7446,6 @@ def test_no_writer_argument_carries_a_newline_of_its_own():
         for lineno, name, node in _writer_calls(mod):
             found.setdefault(mod.name, {}).setdefault(name, 0)
             found[mod.name][name] += 1
-            if name == "progress":
-                continue
             for arg in node.args:
                 literals = [
                     sub.value
@@ -7524,6 +7531,44 @@ def test_a_newline_inside_an_interpolated_value_never_reaches_stderr_bare(tmp_pa
     #: is the RENDERER's job and the structure keeps the real string, exactly as `printable`'s
     #: docstring says of the JSON side.
     assert run.record["failure"]["message"].count("\n") == 2
+
+    #: AND THE FOURTH SUBJECT: `progress`, WHICH WAS LIVE [Audit O, product-3 / guards-1].
+    #: `progress` was excluded from the structural newline clause on the ground that a CALLER's
+    #: newline there does not collapse; the exclusion was never asked about a VALUE's. It
+    #: reached `_write` directly, which splits on the separator and escapes per LINE, so a
+    #: newline that arrived inside an interpolated value survived as a real newline -- and this
+    #: test PASSED while a newline inside an interpolated value reached stderr bare, which is
+    #: precisely what its own name forbids. The reach is a run with `progress="on"` and a
+    #: REGISTERED input whose name carries a newline (legal on POSIX, stored verbatim).
+    #:
+    #: THE SUBJECT OF THE ONE-ARGUMENT CLAIM IS ASSERTED rather than declared: the fix escapes
+    #: `progress`'s single positional, so if `progress` ever grew a second one the leg below
+    #: would silently cover half of the call. The same shape as the `_report` exemption's
+    #: asserted subject in the structural guard above.
+    positional = [
+        param
+        for param in inspect.signature(runprov._report.progress).parameters.values()
+        if param.kind in (param.POSITIONAL_ONLY, param.POSITIONAL_OR_KEYWORD)
+    ]
+    assert [param.name for param in positional] == ["line"], (
+        f"`progress` escapes its ONE positional argument, so the whole message is covered. It "
+        f"now takes {[p.name for p in positional]}, and escaping the first of several would "
+        f"leave the rest forgeable"
+    )
+
+    #: Both channels, because `Heartbeat._beat` IS `lambda line: progress(line, state=...)` and
+    #: a note handed to `saw` comes back out through the same function.
+    state: dict[str, int] = {}
+    runprov._report.progress(f"  [00:00] read sneak.csv\n{forged}\nx", state=state)
+    perr = capsys.readouterr().err
+    assert forged in perr, "the text must still be VISIBLE -- escaped, not censored"
+    assert [line for line in perr.split("\n") if line.strip() == forged] == [], (
+        f"a newline inside a value interpolated into a PROGRESS line forged a whole bare line "
+        f"on stderr:\n{perr}"
+    )
+    assert f"sneak.csv\\n{forged}" in perr, "the value's newline must arrive as a `\\n` literal"
+    #: THE CAP IS UNCHANGED by the escape: `state["shown"]` increments once per call either way.
+    assert state["shown"] == 1, "escaping the argument must not change what the cap counts"
 
 
 def test_a_writer_call_with_no_arguments_says_nothing(capsys, monkeypatch):

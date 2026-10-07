@@ -193,7 +193,10 @@ def _write(line: str) -> None:
     [Audit N, writer-4], which escapes PER ARGUMENT and then joins. An argument boundary is
     the one place the two kinds of newline are still distinguishable, because one of them is
     syntax in the calling module and the other is data. This function stays as it is: it is
-    the last defence for a `\r` or an escape sequence, and it is what `progress()` relies on.
+    the last defence for a `\r` or an escape sequence rather than the only one: `progress()`
+    escapes its own single argument before it arrives here [Audit O, product-3], and a `\r`
+    cannot reach a line of its own in any case, because this ends in
+    `print(line, file=stream)`, which always appends the separator.
     """
     line = "\n".join(printable_lines(line.split("\n")))
     stream = sys.stderr
@@ -256,10 +259,14 @@ def diagnostic(*lines: str) -> None:
     trials with a second thread writing: a single `_write` splits 0 times, one `_write` per
     argument splits 9 times in 60.
 
-    `progress()` IS NOT REACHED BY THIS and deliberately keeps the whole-message form, because
-    it takes ONE positional line and its cap counts calls. A newline a `progress` caller writes
-    is still split and escaped by `_write`, which is correct there and would be a collapse here;
-    that is also why the structural guard's newline clause is scoped to `diagnostic`/`summary`.
+    `progress()` IS NOT REACHED BY THIS AND DOES NOT NEED TO BE, because it takes ONE positional
+    line -- so "per argument" there IS the whole message, and it applies `printable` to it
+    itself. **The exemption this paragraph used to claim was wrong** [Audit O, product-3 /
+    guards-1]: it said a newline a `progress` CALLER writes is correctly split by `_write`, which
+    is true and was never the question. A newline inside an interpolated VALUE was split by the
+    same code, and forged a bare line -- measured with `progress="on"` and a registered input
+    named `sneak.csv\nGATE: MET (exit 0)\nx`. The collapse that made the per-argument shape
+    necessary here cannot happen there, because there is only one argument to collapse.
     """
     if lines:
         # flush -- in `_write` -- because a warning is often the last thing emitted before the
@@ -303,10 +310,31 @@ def progress(line: str, *, state: dict[str, int]) -> None:
     if shown >= PROGRESS_MAX_LINES:
         if shown == PROGRESS_MAX_LINES:
             state["shown"] = shown + 1
+            # NOT ESCAPED, and that is not an oversight: this line interpolates
+            # `PROGRESS_MAX_LINES`, an `int` constant in this module. There is no outside value
+            # in it to escape, and `printable` here would be a call site added to a list rather
+            # than a property held -- the shape this repository has had to widen nine times.
             _write(f"  … further progress lines suppressed after {PROGRESS_MAX_LINES}")
         return
     state["shown"] = shown + 1
-    _write(line)
+    # ESCAPED HERE, PER ARGUMENT, AND THERE IS ONLY ONE [Audit O, product-3 / guards-1].
+    # `_write` splits on `"\n"` and escapes per LINE, so a newline that arrived inside an
+    # interpolated value survived as a real newline and forged a whole bare line on stderr.
+    # Measured at HEAD with `progress="on"` and a REGISTERED input named
+    # `sneak.csv\nGATE: MET (exit 0)\nx`: a bare `GATE: MET (exit 0)` on stderr, from the
+    # library, with no CLI and no argv involved -- while the behavioural guard whose name
+    # forbids exactly that passed. `progress` takes ONE positional line, so "per argument"
+    # here IS the whole message and the transform `diagnostic` had to split by argument is
+    # free: no site in `runprov/` passes a literal newline to `progress`, `Heartbeat._beat` or
+    # `saw`, at either revision, so nothing legible is collapsed. That is DERIVED and not
+    # asserted here -- `test_no_writer_argument_carries_a_newline_of_its_own`'s newline clause
+    # covers `progress` now, and the one tracked file that does pass such a literal is the
+    # behavioural guard, whose whole job is to be the adversary.
+    #
+    # AND IT CLOSES BOTH CHANNELS WITH NO SECOND SITE. `Heartbeat._beat` IS
+    # `lambda line: progress(line, state=...)` at `run.py`, so the heartbeat's own
+    # `still running — last: {note}` arrives here too, carrying the same note.
+    _write(printable(line))
 
 
 def summary(*lines: str) -> None:
