@@ -520,9 +520,11 @@ package-wide `printable(message)` it was first filed as does not work, three way
    > commit changed the answer a third time -- and this was the copy a USER reads, surviving the
    > two sweeps that removed the same sentence from `_report.py` and `terminal.py`. **No number
    > belongs here at all**, which is the part worth keeping:
-   > `test_the_transform_is_imported_from_one_place` asserts the PROPERTY -- one definition, and
-   > every user imports it from there -- and never a count, so the count was never the claim
-   > this entry was making.
+   > `test_the_transform_is_imported_from_one_place` asserts the PROPERTY -- that every user
+   > imports it from `_report` and none from anywhere else -- and never a count, so the count
+   > was never the claim this entry was making. **It does NOT assert the other half of its own
+   > sentence**: a SECOND definition of `printable` elsewhere in the package is green, which is
+   > an open row [Audit O, guards-11] and not something this entry should claim is held.
 2. **It collapses every multi-line diagnostic.** A four-line `AUTO-DETECTED project:` note came
    out as one line of `\n` literals, and at least eight `diagnostic()` callers pass embedded
    newlines on purpose — which is exactly what `printable_lines`'s own docstring names as *the
