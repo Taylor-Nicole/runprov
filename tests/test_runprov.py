@@ -40883,6 +40883,16 @@ _PAGE_BINDERS = (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)
 #: which comes from `prune_mod.apply(p)`. So the honest statement is the narrow one: a page bound
 #: by a `with` is not resolved to its renderer here, it is REFUSED, and the refusal names the
 #: print site rather than the renderer.
+#:
+#: AND THE WORD "LEGITIMATE" IN THE PARAGRAPH ABOVE WAS WRONG ABOUT BOTH SITES [Audit Q,
+#: decision-1]. `_forget`'s `problems` was a LIVE FORGERY -- `prune.apply` interpolated a marker
+#: filename into a failure message and returned it raw, reproduced at HEAD in a temp directory
+#: with rc=1 and a bare `GATE: MET (exit 0)` line on stderr -- and the red on `problems` that
+#: Audit P refused as a false positive was a TRUE POSITIVE. `_show`'s `head` was `__main__`'s
+#: own composed line and still forged a bare line from one argv argument at exit 0. Both are
+#: fixed in production: `prune.apply` escapes through `printable_lines`, and `_show`'s head is
+#: escaped at its emission point -- which is also why `head` is no longer a printed expression
+#: this derivation sees at all, so `bound` carries ONE site today, not two.
 _NOT_PAGE_BINDERS = (ast.For, ast.AsyncFor, ast.comprehension, ast.withitem)
 #: WHAT A TARGET MAY BE WRAPPED IN on the way to its owner. `a, (b, c) = ...` nests.
 _TARGET_CONTAINERS = (ast.Tuple, ast.List, ast.Starred)
@@ -41012,6 +41022,76 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
             else:
                 return expr
 
+    def _has_renderer_call(expr: ast.expr) -> bool:
+        """Does this expression's subtree hold a call this derivation can RESOLVE to a module?
+
+        **SHIPPED AS A STRICT IMPROVEMENT, NOT AS A CLOSURE, AND THE RESIDUE IS DECLARED BELOW**
+        [Audit Q, decision-2 and decision-3]. It closes four measured defeats of `bound` --
+        `str(render(...))`, `render(...) if directory else ""`, `[render(...)]` joined and
+        `render(...).rstrip()`, each a runtime-proved live forgery that was RC=0 green -- and it
+        is what makes `_composed_in_main` below semantic rather than a test of the top node's
+        type.
+
+        **AND ITS POLARITY IS INVERTED IN EXACTLY THE WAY `decision-2` NAMES IN `bound`, ONE
+        LAYER IN.** `bound` recorded a name whose binding value the derivation FAILED TO RESOLVE
+        and called that a demonstration that no renderer produced it. This helper EXCUSES an
+        expression whose calls the derivation FAILED TO RESOLVE. Same inversion, same cause: an
+        unresolvable call is evidence about this derivation, never about the expression.
+
+        **THE FIVE DEFEATING SHAPES, MEASURED, each a runtime-proved live forgery that is GREEN
+        under this helper on three interpreters:**
+
+            renderer = prune_mod.render ; print(f"{renderer(...)}")           # module alias
+            renderer = prune_mod.render ; page = renderer(...) ; print(page)  # two steps
+            functools.partial(prune_mod.render, p, gone) in an f-string
+            getattr(prune_mod, "render")(...) in an f-string
+            reg = {"r": prune_mod.render} ; print(f"{reg['r'](...)}")         # a dict lookup
+
+        Two lines of ordinary refactoring defeat it, and the module-level-alias idiom is already
+        house style -- `_report.py:205` and `:319` both do it.
+
+        **AND NO AST FORM CLOSES IT, WHICH IS WHY THE RESIDUE IS DECLARED RATHER THAN FIXED.**
+        Both exits were measured and both fail:
+
+        * THE SOUND POLARITY CANNOT PASS. Refusing on ANY unresolvable call is RED on **9 of the
+          49** composed expressions at HEAD -- the unresolvable callees are `len` x8,
+          `report.get` x2, `", ".join`, `repr`, `str`, `picked[0].get` -- and RED on
+          `_show:2489`'s own value, whose unresolvable calls are three `len`s. Closing it needs
+          an allowlist of SAFE CALLEES over an unbounded set, which is the member list again.
+        * A PRODUCER-SIDE DERIVATION CANNOT PASS EITHER, and the skeptic that built it refused
+          to claim it: *every function in `runprov/` that interpolates a non-literal and hands
+          the string out* finds `prune.apply` with no `__main__` analysis at all, but **83 of 100
+          producers do not reach a chokepoint** (record values, digests, filenames, PROV
+          identifiers), so it needs an 83-member *"not a page"* table with no second side.
+
+        Both failures have one cause, and `guard-shapes` names it: a write to a log file and a
+        write to a stream installed as stderr can be BYTE-IDENTICAL IN THE AST. *"This string
+        becomes a line a person reads"* is a RUNTIME property. What holds the five shapes above
+        is therefore not here at all: it is
+        `test_prune_does_not_forge_a_line_from_a_marker_filename`, which reads the VALUE ON THE
+        STREAM and to which all five are visible.
+        """
+        return any(isinstance(n, ast.Call) and resolve(n.func) is not None for n in ast.walk(expr))
+
+    def binding(value: ast.expr) -> tuple[str, str] | None:
+        """What a page-binder's VALUE resolves to, THROUGH A CONDITIONAL EXPRESSION.
+
+        [Audit Q, decision-1.] `gone, problems = (None, []) if dry else prune_mod.apply(p)` in
+        `_forget` is how the live forgery stayed invisible: the value is an `IfExp`, not a
+        `Call`, so `problems` resolved to nothing, `bound` excused it, and `prune.apply` was not
+        in the page set for `unescaped` to ask about. Either arm may be the page, so both are
+        asked and the first answer wins.
+
+        **THIS IS A RESOLVER, NOT AN EXCUSE, WHICH IS WHY IT IS NOT THE REFUTED `guards-4`
+        SHAPE.** A per-node-type EXCUSE fails silently when it meets a type nobody listed; a
+        resolver that fails leaves the expression unresolved and RED. And of the six shapes
+        considered for this row it is the only one whose red NAMES THE RENDERER rather than the
+        print site.
+        """
+        if isinstance(value, ast.IfExp):
+            return binding(value.body) or binding(value.orelse)
+        return resolve(value.func) if isinstance(value, ast.Call) else None
+
     def serialises(expr: ast.expr) -> bool:
         return any(
             isinstance(n, ast.Call)
@@ -41029,8 +41109,22 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
         module's page*, which is the shape of the 51 `print(..., file=sys.stderr)` sites and
         the reason Audit M's escape-4 gives for not routing them through one transform. A
         literal, a tuple of arguments to `print`, and a `x or y` fallback are the same thing.
+
+        **AND IT IS NOT A TEST OF THE TOP NODE'S TYPE ANY MORE** [Audit Q, decision-3]. It was,
+        and `print(f"{prune_mod.render(...)}")` -- the most idiomatic emission shape in the file
+        -- was therefore excused: full suite RC=0, 1 230 passed, 5 584 / 2 092, 2 missing / 0
+        partial over a live forgery, byte-identical to baseline on BOTH discriminators.
+        `print(render(...) or "")` likewise. The contrast was ten lines above: `serialises`
+        walks the whole subtree, so the payload exclusion was semantic and this one was not.
+
+        **TIGHTENING IT IS FREE AT HEAD, MEASURED: 0 of the 49 composed expressions contain a
+        resolvable renderer call**, so the declared 51-stderr-f-string exclusion is untouched.
+        It adds no hole of its own -- the shapes that defeat it are the five
+        `_has_renderer_call` declares, and not a sixth.
         """
-        return isinstance(expr, (ast.JoinedStr, ast.Constant, ast.Tuple, ast.BoolOp))
+        return isinstance(
+            expr, (ast.JoinedStr, ast.Constant, ast.Tuple, ast.BoolOp)
+        ) and not _has_renderer_call(expr)
 
     found: dict[tuple[str, str], set[str]] = {}
     #: EVERY `Name` THIS FILE BINDS AND NO TABLE DECIDED ABOUT. Asserted below, so a binding form
@@ -41062,10 +41156,28 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
             for child in ast.iter_child_nodes(node):
                 parent[child] = node
         assigned: dict[str, tuple[str, str]] = {}
-        #: EVERY NAME A PAGE-BINDER BOUND, whether or not its value was a renderer call. This is
-        #: one of the three decisions that excuse an unresolved printed expression below: a name
-        #: this function demonstrably bound from something that is not a renderer call is not a
-        #: page, and saying so is a decision rather than a silence.
+        #: EVERY NAME A PAGE-BINDER BOUND FROM A VALUE HOLDING NO RESOLVABLE RENDERER CALL
+        #: [Audit Q, decision-2]. This sentence read *every name a page-binder bound, whether or
+        #: not its value was a renderer call*, which is what the defect WAS: the set was filled
+        #: before `resolve` was consulted, so it excused names whose value this derivation merely
+        #: failed to read. It is one of the three decisions that excuse an unresolved printed
+        #: expression below -- and its remaining weakness is `_has_renderer_call`'s, declared in
+        #: full at that helper, because *no resolvable call* is weaker than *no renderer*.
+        #:
+        #: AND AFTER THIS COMMIT THIS SET IS EMPTY AND THE EXCUSE IS UNEXERCISED. MEASURED, by
+        #: the applier, on five interpreters: of the 110 printed expressions, `bound` now carries
+        #: ZERO -- `_forget`'s `problems` RESOLVES through `binding`, and `_show`'s `head` is no
+        #: longer a printed expression at all, because its emission point was wrapped in
+        #: `printable` in the production fix. Deleting `inner.id in bound` outright leaves this
+        #: GREEN on 3.10 / 3.11 / 3.12 / 3.13 / 3.14 with the same 23 pages, verified with an AST
+        #: control that no `x in bound` comparison survives. So this is now a DECISION MADE IN
+        #: ADVANCE, like `AsyncFor` and `NamedExpr` in the table above, and not a load-bearing
+        #: excuse: the scope note that called `bound` *"the sharpest thing in this subject"* was
+        #: true of the shape it had before these two commits. It is kept rather than deleted
+        #: because the shape it decides about is ordinary -- a page-binder whose value is not a
+        #: renderer call -- and a red asking a human to re-write a settled answer is a red over
+        #: no defect. **The work `_has_renderer_call` does today is in `_composed_in_main`, over
+        #: 49 expressions, not here.**
         bound: set[str] = set()
         for node in ast.walk(fdef):
             if not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)):
@@ -41083,8 +41195,17 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
                 owner = parent.get(owner)
             if isinstance(owner, _PAGE_BINDERS):
                 value = owner.value
-                bound.add(node.id)
-                where = resolve(value.func) if isinstance(value, ast.Call) else None
+                #: GATED ON THE VALUE, NOT ON THE BINDING [Audit Q, decision-2]. This read
+                #: `bound.add(node.id)` unconditionally -- before and regardless of whether
+                #: `resolve` answered -- so it recorded a name whose binding value the
+                #: derivation FAILED TO RESOLVE while the comment above claims a name
+                #: *demonstrably bound from something that is not a renderer call*. Any page
+                #: laundered through one unresolvable wrapper was excused, measured over four
+                #: shapes at RC=0. `_has_renderer_call`'s own residue is declared at the helper
+                #: and is NOT closed: the gate is a strict improvement, not a closure.
+                if not _has_renderer_call(value):
+                    bound.add(node.id)
+                where = binding(value)
                 if where:
                     assigned[node.id] = where
             elif not isinstance(owner, _NOT_PAGE_BINDERS):
@@ -41163,6 +41284,27 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
     #: demonstrably bound from something that is not a renderer call (`bound`). Anything else
     #: printed and unresolved is RED, including a name bound by a form that has no
     #: `Name(ctx=Store)` at all -- which is exactly what `unaccounted` cannot see.
+    #:
+    #: **AND THE CLAIM AND THE QUANTIFICATION ARE STILL NOT ONE SENTENCE. THEY ARE TWO, AND THEY
+    #: DIFFER ON BOTH ENDS** [Audit Q, decision-2/-3/-4]. The candidate sentence this repair was
+    #: proposed under -- *every printed expression either resolves to a renderer, or demonstrably
+    #: contains no renderer call* -- is false twice over, and both halves were measured:
+    #:
+    #: * THE SUBJECT DIFFERS. `printed` is collected by an ENUMERATION of emission spellings:
+    #:   `print` by literal name, and `.write`/`.writelines` on an `Attribute` whose attr is
+    #:   `stdout` or `stderr`. A page written through an aliased stream, through
+    #:   `sys.__stderr__.write`, through a MODULE-LEVEL `_OUT = sys.stderr`, or through
+    #:   `emit = print` never reaches `printed` at all, so it is never resolved, never excused
+    #:   and never refused. That is `decision-4`, the row stays OPEN, and the fix for the other
+    #:   three decisions does not touch it.
+    #: * THE PREDICATE DIFFERS. *"Demonstrably contains no renderer call"* is not what
+    #:   `_has_renderer_call` decides; it decides *"contains no call THIS DERIVATION CAN
+    #:   RESOLVE"*, which is a statement about the derivation. Five shapes are declared at that
+    #:   helper, each a runtime-proved live forgery that is green under it.
+    #:
+    #: So this assertion is a strict improvement over what it replaced and it is NOT a closure.
+    #: What closes the five shapes is a RUNTIME leg --
+    #: `test_prune_does_not_forge_a_line_from_a_marker_filename` -- and not this file's syntax.
     assert not unresolved, (
         f"these expressions are PRINTED by `__main__` and this derivation cannot say which "
         f"renderer produced them, so a page may be leaving this set unseen: {unresolved}. That "
