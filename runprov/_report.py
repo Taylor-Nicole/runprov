@@ -112,10 +112,13 @@ def printable(text: str) -> str:
     the tree rather than by counting.
 
     HOW MANY MODULES THAT IS IS DELIBERATELY NOT WRITTEN DOWN [Audit N, writer-8]. This sentence
-    said *nine*; it was TEN when it was written, ELEVEN by the time an audit checked it, and it
-    is TEN again now that `run.py`'s redundant site-level call has gone -- stale three times,
-    once inside the very tranche that corrected it. The fourth number in this family to rot, and
-    the rule the repository earned from the first three is to derive it or to stop stating it.
+    said *nine*; it was TEN when it was written and ELEVEN by the time an audit checked it, and
+    a later correction then restated a live count of its own and was itself stale within the
+    tranche that wrote it [Audit O, guards-9]. One fact, spelled a different way each time it
+    was touched, in the paragraph whose subject is that it must be derived or dropped. It IS
+    derived, by `test_the_transform_is_imported_from_one_place`, and nothing here states a figure
+    --
+    `terminal.py` says the same thing about its own two numbers and says it as history.
 
     THE JSON SIDE IS LEFT ALONE, deliberately: `json.dumps` already escapes, and a payload
     carrying pre-escaped text would hand a consumer a string that is not the one in the record.
@@ -244,20 +247,39 @@ def diagnostic(*lines: str) -> None:
     library, with no CLI, no filesystem and no argv involved.
 
     THE TRADE, STATED BECAUSE IT IS REAL AND NOBODY HAD STATED IT. For a VALUE, readable and
-    unforgeable are mutually exclusive. Nine sites interpolate `{exc}`, and a
-    `CalledProcessError` carrying a captured stderr tail loses its shape here: a `SyntaxError`'s
-    caret diagram becomes one escaped line. **That makes the writer side strictly stricter than
-    the renderer side** -- `printable_lines` escapes per line, so a value's newline still breaks
-    a page line, which clause 1 of the escaping property's docstring whitelists by
-    construction. The asymmetry is not an oversight: **a page's separator is its own, and a
-    writer's argument boundary is not.** A caller who wants a multi-line note passes several
-    arguments; a caller who wants a multi-line VALUE cannot have one, and that is the point.
+    unforgeable are mutually exclusive, and **every site that interpolates an exception's
+    `str()` pays it** -- including the ones that report a failure of `RecordSink.append`, which
+    is a PLUGGABLE extension point, so the shape of the message being flattened there belongs to
+    somebody else's code and not to this package. No figure is stated here: this sentence said
+    *nine*, and it was fourteen when it was written and fourteen at every revision since --
+    one more figure about this writer surface that was wrong WHEN WRITTEN rather than rotted
+    [Audit O, product-2 / guards-6]. The surface is derived by
+    `test_no_writer_argument_carries_a_newline_of_its_own`, which is where a count belongs if
+    one is wanted.
+
+    **AND THE TWO EXAMPLES THIS PARAGRAPH USED TO GIVE CANNOT HAPPEN**, which is worse than the
+    count: `str(CalledProcessError)` is ONE line and the captured tail lives in `.stderr`, and
+    `str(SyntaxError)` is ONE line -- the caret diagram comes from `traceback.format_exception`,
+    not from the exception's `str()`. One that does arrive, measured: `yaml.ScannerError` for an
+    unterminated quoted scalar is **8 lines with two real caret diagrams**, and a `.yaml` a run
+    wrote is exactly the kind of file whose parse failure gets reported through here.
+
+    **That makes the writer side strictly stricter than the renderer side** --
+    `printable_lines` escapes per line, so a value's newline still breaks a page line, which
+    clause 1 of the escaping property's docstring whitelists by construction. The asymmetry is
+    not an oversight: **a page's separator is its own, and a writer's argument boundary is
+    not.** A caller who wants a multi-line note passes several arguments; a caller who wants a
+    multi-line VALUE cannot have one, and that is the point.
 
     **ONE `_write`, NOT ONE PER ARGUMENT.** `_WRITE_LOCK` is taken INSIDE `_write`, so writing
     per argument is N lockings and the heartbeat thread -- whose docstring says this lock
-    serialises the two writers -- can land between two lines of the same note. Measured over 60
-    trials with a second thread writing: a single `_write` splits 0 times, one `_write` per
-    argument splits 9 times in 60.
+    serialises the two writers -- can land between two lines of the same note. **The DIRECTION
+    is what reproduces and it is all that is stated here** [Audit O, guards-8]: over 60 trials
+    with a second thread writing, a single `_write` splits ZERO times and one `_write` per
+    argument splits a NON-ZERO number of times. The rate is the instrument's and not the
+    defect's: the same sentence has been measured at 0/60 on a plain `StringIO` and at 60/60 on
+    a stream that sleeps 20 us per write, so any rate written here would be a fact about the
+    harness that produced it.
 
     `progress()` IS NOT REACHED BY THIS AND DOES NOT NEED TO BE, because it takes ONE positional
     line -- so "per argument" there IS the whole message, and it applies `printable` to it

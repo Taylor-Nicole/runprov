@@ -512,8 +512,17 @@ package-wide `printable(message)` it was first filed as does not work, three way
    `_report`, so `_report` importing `terminal` raised `ImportError: cannot import name
    'diagnostic' from partially initialized module 'runprov._report'` and the package did not
    come up at all. So `printable` and `printable_lines` **moved to `_report`**, down the import
-   graph to the module that imports nothing from the package. Nine modules import them from
-   there now; `terminal.py` keeps the comment saying why they left.
+   graph to the module that imports nothing from the package. Every module that needs them
+   imports them from there; `terminal.py` keeps the comment saying why they left.
+
+   > **CORRECTED [Audit O, product-5]: this said *nine modules*.** It was already wrong when
+   > this entry was written, wrong again and differently when an audit measured it, and a later
+   > commit changed the answer a third time -- and this was the copy a USER reads, surviving the
+   > two sweeps that removed the same sentence from `_report.py` and `terminal.py`. **No number
+   > belongs here at all**, which is the part worth keeping:
+   > `test_the_transform_is_imported_from_one_place` asserts the PROPERTY -- one definition, and
+   > every user imports it from there -- and never a count, so the count was never the claim
+   > this entry was making.
 2. **It collapses every multi-line diagnostic.** A four-line `AUTO-DETECTED project:` note came
    out as one line of `\n` literals, and at least eight `diagnostic()` callers pass embedded
    newlines on purpose — which is exactly what `printable_lines`'s own docstring names as *the
