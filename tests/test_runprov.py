@@ -64,6 +64,23 @@ import runprov.prune  # noqa: E402
 import runprov.terminal  # noqa: E402
 import runprov.watch  # noqa: E402
 
+#: HOW MANY MODULES `runprov` HAS. ONE NAMED CONSTANT, FOUR REFERENCES [Audit O, guards-12].
+#:
+#: It used to be four hand-written `24`s and a `23`, in four tests that cannot see each other,
+#: and adding a module turned two of them red and left two green -- in the file whose own central
+#: artefact is *a claim stated once and relied on in N places is N unguarded claims*. The row that
+#: filed it counted three; there are four, and the fourth is below in
+#: `test_no_recorded_path_is_spelled_with_a_bare_str`.
+#:
+#: AND IT IS A HAND-WRITTEN NUMBER ON PURPOSE. "Derive it from a helper" was measured and is WORSE
+#: than the defect: the helper would read the same `glob("*.py")` the assertions already read, so a
+#: module added with no layer entry and no hand-edit anywhere is green in all four. There is no
+#: non-circular source either -- `git ls-files` exits 128 in the sdist that `ci.py build` runs this
+#: suite from, `rglob` finds 1 796 files with 1 764 of them inside `.venv`, and `runprov.__all__`
+#: is 18 against 24. THE CONSTANT IS THE INSTRUMENT: a human has to come here, and the one thing
+#: worth making a human do when a module is added is re-read which layer it belongs in.
+_PACKAGE_MODULES = 24
+
 # ------------------------------------------------- what the platform can be asked to build
 #
 # L-26. `test.yml` runs this suite on windows-latest, and 22 tests here build a fixture
@@ -7832,9 +7849,10 @@ def test_the_package_imports_only_downwards():
         f"the layer table names a module this sweep did not read: "
         f"{sorted(set(_IMPORT_LAYERS) - set(seen))}"
     )
-    assert len(seen) == 23, (
-        f"the sweep read {len(seen)} modules besides `__init__` and the package has 23, so a "
-        f"glob has stopped matching or a module was added without a layer: {sorted(seen)}"
+    assert len(seen) == _PACKAGE_MODULES - 1, (
+        f"the sweep read {len(seen)} modules besides `__init__` and the package has "
+        f"{_PACKAGE_MODULES - 1}, so a glob has stopped matching or a module was added without a "
+        f"layer: {sorted(seen)}"
     )
     assert offenders == {}, (
         f"these imports go UP the layer table, which is the circular import that has already "
@@ -31620,7 +31638,7 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
     #:   inside `.venv`. The scope would be the dependency tree.
     #:
     #: So the roots are the four explicit globs, which is the same idiom and the same reason as
-    #: `len(sources) >= 24` next door, and the floor below is the EXACT count.
+    #: `len(sources) == _PACKAGE_MODULES` next door, and the floor below is the EXACT count.
     roots += [*sorted(pathlib.Path("examples").glob("*.py"))]
     roots = [p for p in roots if p.is_file()]
     assert len(roots) >= 32, (
@@ -31787,7 +31805,10 @@ def test_no_recorded_path_is_spelled_with_a_bare_str():
         mod.name: mod.read_text(encoding="utf-8")
         for mod in sorted(pathlib.Path(runprov.__file__).parent.glob("*.py"))
     }
-    assert len(sources) >= 24, f"the walk found only {sorted(sources)}"
+    assert len(sources) == _PACKAGE_MODULES, (
+        f"the walk read {len(sources)} of the package's {_PACKAGE_MODULES} modules: "
+        f"{sorted(sources)}"
+    )
 
     #: THE SECOND SIDE, DERIVED WITHOUT CONSULTING `_ALSO_PATHS`: the names this package already
     #: spells `_posix`. This is what makes the declaration falsifiable rather than circular —
@@ -37041,7 +37062,10 @@ def test_only_the_writer_of_status_may_default_it(tmp_path, capsys, monkeypatch)
     #: THE WRITER AND ITS VOCABULARY, BOTH DERIVED.
     package = pathlib.Path(runprov.__file__).parent
     sources = {m.name: m.read_text(encoding="utf-8") for m in sorted(package.glob("*.py"))}
-    assert len(sources) >= 24, f"the walk found only {sorted(sources)}"
+    assert len(sources) == _PACKAGE_MODULES, (
+        f"the walk read {len(sources)} of the package's {_PACKAGE_MODULES} modules: "
+        f"{sorted(sources)}"
+    )
 
     def value_of(node, module):
         """A string literal, or a module constant resolved to one. Anything else is not a word."""
@@ -40250,7 +40274,9 @@ def test_the_transform_is_imported_from_one_place():
     same lesson about a comment in the same module.
     """
     sources = sorted((REPO / "runprov").glob("*.py"))
-    assert len(sources) == 24, f"the glob found {len(sources)} modules; the package has 24"
+    assert len(sources) == _PACKAGE_MODULES, (
+        f"the glob found {len(sources)} modules; the package has {_PACKAGE_MODULES}"
+    )
     importers: dict[str, set[str]] = {}
     elsewhere: dict[str, str] = {}
     for mod in sources:
