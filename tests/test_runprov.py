@@ -7363,6 +7363,12 @@ _WRITER_SURFACE = {
 #: authors no message: every one of its arguments is a `*` forward.
 _WRITER_DEFINER = "_report.py"
 
+#: THE ONE MODULE WHOSE `os.write` IS NOT A MESSAGE. Declared as a name rather than written into
+#: the condition, because the stderr-chokepoint guard asserts this module's one call exists
+#: [Audit O, guards-7] -- an exemption keyed to a shape instead of a module was available to
+#: every module in the package.
+_OS_WRITE_EXEMPT = "terminal.py"
+
 
 #: THE WRITERS THEMSELVES, AS OBJECTS. The sweep below used to match three LITERAL NAMES, and
 #: that was a fifth blind spot and the only one that defeated the site-count equality as well
@@ -7873,28 +7879,66 @@ def test_the_package_imports_only_downwards():
     )
 
 
-def test_report_write_is_the_librarys_only_stderr_emission_point():
-    """The other half of `_report`'s claim: it is not only the bottom, it is the ONLY way out.
+def test_no_library_module_writes_to_a_named_standard_stream():
+    """A library module may not write to a stream it NAMES as standard output or standard error.
+
+    **THE NAME OF THIS TEST IS THE REPAIR, AND THE OLD ONE WAS A PROMISE NO AST CHECK CAN KEEP**
+    [Audit O, guards-7]. It used to be called
+    `test_report_write_is_the_librarys_only_stderr_emission_point`, and there is no static check
+    that can hold that: resolving a `.write` receiver to a stream needs the runtime VALUE. Of the
+    15 non-literal `.write`/`.writelines` receivers in this package, 13 are writes to a file on
+    disk and the other two are `_report.py`'s own emission point and `terminal.py:460`'s
+    `self._stream.write` -- **a tee installed as `sys.stderr`, live today** -- and
+    `self._fh.write` (a run log on disk) and `self._stream.write` are THE SAME AST. So the scope
+    of this check is a stream the source NAMES, which is what it can actually decide, and the
+    name now says so. Deleting the false sentence was the other option; making the name true is
+    better.
 
     `_write`'s docstring calls itself *"the package's one stderr emission point, and therefore
     where it is escaped"*, and the per-argument transform in `diagnostic` is worth exactly as much
     as that sentence is true. The bare-print guard next door holds `print`, and says in its own
     docstring that *"a `sys.stdout.write` would slip past it"*. This closes that named hole for
-    the stream writes: `sys.stderr.write`, `sys.stdout.write` and a raw `os.write` to fd 2.
+    the stream writes: `sys.stderr.write`, `sys.stdout.write`, their `writelines` spellings and a
+    raw `os.write` to fd 1 or 2.
+
+    `writelines` IS IN SCOPE NOW and was not, which was a hole in the set rather than in the
+    receiver [Audit O, guards-7]. `sys.stderr.writelines` bypassed this test completely. It is
+    false-positive-free by measurement: the package has exactly one `.writelines` on a named
+    standard stream, `__main__.py:2526`, in a module this sweep already skips.
 
     MEASURED AND WORTH KEEPING: `watch.py`, `heartbeat.py` and `observe.py` contain zero
     `diagnostic`, `summary`, `progress` or `print` calls, so the 40 writer sites really are the
     whole non-CLI surface rather than the part somebody enumerated.
 
-    `terminal.py` IS EXEMPT FOR ONE CALL AND THE SUBJECT IS ASSERTED. Its `os.write` is a
-    short-write loop copying the captured stream BACK to the real terminal -- the artifact being
-    mirrored, not a message about the run -- and the module's `sys.stderr` references are
-    assignments that install a tee, not writes. The exemption is keyed to `os.write` with a
-    non-literal fd, so a `sys.stderr.write` added to `terminal.py` is still an offender.
+    `terminal.py` IS EXEMPT FOR ONE CALL AND THE SUBJECT IS ASSERTED -- which it was NOT when
+    that sentence was first written [Audit O, guards-7]. No assertion named `terminal.py`
+    anywhere; the module appeared in this docstring and in one comment, and the exemption was
+    keyed only to the fd not being a literal, so **any** library module could have taken it by
+    writing `_FD = 2; os.write(_FD, ...)`. It is now keyed to `terminal.py` BY NAME, and the one
+    call it covers is asserted below: exactly one `os.write` in `terminal.py` whose first argument
+    is not a constant, and none anywhere else. Its subject is a short-write loop copying the
+    captured stream BACK to the real terminal -- the artifact being mirrored, not a message about
+    the run -- and the module's `sys.stderr` references are assignments that install a tee, not
+    writes. A `sys.stderr.write` added to `terminal.py` is still an offender.
+
+    **THE BLIND SPOT, DECLARED RATHER THAN CLOSED, BECAUSE IT IS UNDECIDABLE HERE:** a write
+    through a receiver the source does not name as a stream. `stream = sys.stderr` followed by
+    `stream.write(...)` is invisible to this check and cannot be made visible by any widening of
+    it, for the reason the first paragraph gives -- the same AST is a file write 13 times out of
+    15. That shape is covered behaviourally, by the escaping property's oracle over the pages
+    this package prints, and not here.
+
+    **AND THE SCOPE IS DECIDED BY MEASUREMENT RATHER THAN BY TASTE**, so the next reader does not
+    widen it on principle: `warnings.warn` has ZERO uses in this package, `traceback.print_exc`
+    zero, and all four `logging` references are in `terminal.py` INSPECTING handlers, none
+    emitting. Adding them would be three clauses that cannot fail.
     """
     emitters: dict[str, list[str]] = {}
     quiet_modules = {"watch.py", "heartbeat.py", "observe.py"}
     silent: dict[str, list[str]] = {}
+    #: THE ONE MODULE THAT MAY CALL `os.write` WITH AN FD IT COMPUTED, NAMED HERE SO THE
+    #: EXEMPTION HAS A SUBJECT TO ASSERT [Audit O, guards-7].
+    mirror: dict[str, list[int]] = {}
     for mod in sorted((REPO / "runprov").glob("*.py")):
         tree = ast.parse(mod.read_text(encoding="utf-8"))
         if mod.name in quiet_modules:
@@ -7917,15 +7961,26 @@ def test_report_write_is_the_librarys_only_stderr_emission_point():
             if not isinstance(node, ast.Call):
                 continue
             rendered = ast.unparse(node.func)
-            if rendered.endswith(".write") and ("stderr" in rendered or "stdout" in rendered):
+            #: `writelines` BESIDE `write` [Audit O, guards-7]. `sys.stderr.writelines` is the
+            #: same emission by another method name and was outside this test entirely.
+            if rendered.endswith((".write", ".writelines")) and (
+                "stderr" in rendered or "stdout" in rendered
+            ):
                 emitters.setdefault(mod.name, []).append(f"{node.lineno}: {rendered}")
             #: `os.write(2, ...)` IS A WRITE TO STDERR and `os.write(fd, ...)` is not -- that is
             #: `terminal.py`'s mirror loop, whose subject is the captured stream rather than a
-            #: message. Keyed on the fd being a LITERAL, so the exemption cannot widen.
-            if rendered == "os.write" and node.args:
-                first = node.args[0]
-                if isinstance(first, ast.Constant) and first.value in (1, 2):
-                    emitters.setdefault(mod.name, []).append(f"{node.lineno}: os.write(fd 2)")
+            #: message. THE EXEMPTION IS KEYED TO THE MODULE BY NAME [Audit O, guards-7]: keyed
+            #: only on the fd not being a literal, it was available to EVERY library module, and
+            #: `_FD = 2; os.write(_FD, ...)` in `sinks.py` took it. The sites it covers are
+            #: collected rather than skipped, and asserted below.
+            if rendered == "os.write":
+                first = node.args[0] if node.args else None
+                if mod.name == _OS_WRITE_EXEMPT and not isinstance(first, ast.Constant):
+                    mirror.setdefault(mod.name, []).append(node.lineno)
+                else:
+                    emitters.setdefault(mod.name, []).append(
+                        f"{node.lineno}: {ast.unparse(node)[:60]}"
+                    )
 
     assert emitters == {}, (
         f"these library modules write to a standard stream without going through "
@@ -7935,6 +7990,15 @@ def test_report_write_is_the_librarys_only_stderr_emission_point():
     assert silent == {}, (
         f"{sorted(silent)} now say something, and they were measured as saying nothing -- the "
         f"claim that the derived writer surface is COMPLETE rests on that: {silent}"
+    )
+    #: THE EXEMPTION'S SUBJECT, ASSERTED [Audit O, guards-7]. Exactly one call, in the one
+    #: module named for it. An exemption that covers nothing has started covering something
+    #: else, and an exemption that covers two has grown a second subject nobody read.
+    assert list(mirror) == [_OS_WRITE_EXEMPT] and len(mirror[_OS_WRITE_EXEMPT]) == 1, (
+        f"the `os.write` exemption covers ONE call in {_OS_WRITE_EXEMPT} -- the short-write loop "
+        f"mirroring the captured stream back to the real terminal -- and now covers {mirror}. If "
+        f"the mirror loop moved, this is where to re-read what it does; if it is GONE, the "
+        f"exemption is covering nothing and must be deleted rather than left open"
     )
 
 
