@@ -18,9 +18,17 @@ REAL library, and reports four things:
 The point of this file is to answer "does it work with X" honestly, and a check that goes
 green because it did not run is the failure this whole package is about.
 
-NOT PART OF THE TEST SUITE, deliberately. It needs pandas, pyarrow, joblib, scipy, PIL and
-others; `python ci.py test` runs with pytest alone so a distribution packager can build
-without a scientific stack. This is a thing you run against YOUR environment.
+A TEST DOES RUN THIS FILE NOW, and it had to [Audit O, N-01]. Nothing did, and the JSON case
+called `run.write_json`, which was renamed to `run.output_json` on 2026-08-19 -- so the command
+the README's front matter tells a reader to run exited 1, printing
+`RUN FAILED - recorded: AttributeError: 'Run' object has no attribute 'write_json'`, for weeks.
+`test_the_format_matrix_example_runs_clean` asserts the EXIT CODE and the `0 failed` line and
+nothing about which formats ran, because that is the half that does not depend on the machine:
+it needs pandas, pyarrow, joblib, scipy, PIL and others for its full breadth, and `python ci.py
+test` runs with pytest alone so a distribution packager can build without a scientific stack.
+A format whose library is absent SKIPS, and skipping is not failing -- which is exactly why the
+exit code is checkable everywhere. This is still a thing you run against YOUR environment; the
+test only holds that running it works.
 
 ADDING YOUR OWN FORMAT is the intended use. Append to CASES:
 
@@ -156,7 +164,7 @@ CASE(
 CASE(
     "JSON",
     "d.json",
-    write=lambda run, p: run.write_json(p, {"rows": ROWS}),
+    write=lambda run, p: run.output_json(p, {"rows": ROWS}),
     read=lambda p: len(json.loads(_text(p))["rows"]),
 )
 

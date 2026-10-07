@@ -23612,6 +23612,61 @@ def test_the_shipped_example_runs_and_produces_a_verifiable_artifact(tmp_path):
     assert report["ok"] == 1 and report["stale"] == 0
 
 
+def test_the_format_matrix_example_runs_clean(tmp_path):
+    """THE OTHER SHIPPED SCRIPT, AND NOTHING RAN IT [Audit O, N-01].
+
+    `README.md` tells the reader, under *"Does it work with your formats? Run the matrix and
+    see"*, to run `python examples/format_compatibility.py`. **It exited 1.** Its JSON case
+    called `run.write_json`, which this project renamed to `run.output_json` on 2026-08-19
+    (L-21), so the front-page instruction printed
+    `RUN FAILED - recorded: AttributeError: 'Run' object has no attribute 'write_json'` and
+    `17 format(s) round-tripped, 1 failed` -- a method THIS repository's own ledger records
+    renaming, in the one file whose whole purpose is to show that the package works.
+
+    THE ASSERTION IS THE EXIT CODE AND THE `0 failed` LINE, AND DELIBERATELY NOTHING ELSE.
+    The script SKIPS a format whose library is absent and says so, so the number of formats it
+    reaches is a fact about the machine -- 42 are skipped on a bare test environment. Asserting
+    coverage of formats here would make this test red on every machine without a scientific
+    stack, which is the opposite of what `ci.py test` promises a distribution packager. What
+    does not depend on the machine is that the script runs to the end and reports no FAILURE,
+    and a failure is what a rename produces.
+
+    AS A SUBPROCESS, AND THE SHIPPED FILE RATHER THAN A COPY: the README names that path, the
+    script writes everything into its own `tempfile.mkdtemp()` directories, and `__main__` is
+    the entry point a reader uses. `cwd` is a temp directory anyway, so nothing can land in the
+    repository if that ever stops being true.
+    """
+    script = REPO / "examples" / "format_compatibility.py"
+    assert script.is_file(), "the README's front matter names this path"
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(REPO)},
+        cwd=tmp_path,
+    )
+    assert proc.returncode == 0, (
+        f"`python examples/format_compatibility.py` is what README.md tells a reader to run, "
+        f"and it exited {proc.returncode}.\nstdout tail:\n{proc.stdout[-2000:]}\n"
+        f"stderr tail:\n{proc.stderr[-2000:]}"
+    )
+    tally = re.search(r"(\d+) format\(s\) round-tripped, (\d+) failed", proc.stdout)
+    assert tally, f"the script no longer prints its tally; this test reads nothing\n{proc.stdout}"
+    assert tally.group(2) == "0", (
+        f"{tally.group(2)} format(s) FAILED. A failure here is the package not working for a "
+        f"format it claims, or a renamed method in the example itself:\n"
+        f"{chr(10).join(x for x in proc.stdout.splitlines() if 'FAILED' in x)}"
+    )
+    #: AND IT REALLY EXERCISED SOMETHING, so a script that skipped everything cannot pass this
+    #: by reporting `0 round-tripped, 0 failed`. The stdlib-only cases need no optional library
+    #: and `pyyaml` is a test dependency, so a floor here is a fact about the SCRIPT rather than
+    #: about the machine -- the same reason the corpus test asserts its tree is not empty.
+    assert int(tally.group(1)) >= 10, (
+        f"only {tally.group(1)} format(s) round-tripped; the stdlib-only cases alone are more "
+        f"than that, so the script is not reaching them"
+    )
+
+
 def test_the_front_page_block_runs_as_printed(tmp_path):
     """L-71. The README says of the block on its front page: "It is also shipped as
     `examples/summarise.py`, and a test runs it, so it cannot quietly stop working." The
