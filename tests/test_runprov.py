@@ -7999,10 +7999,20 @@ def test_the_package_imports_only_downwards():
             )
 
     #: THE SWEEP MUST HAVE READ THE MODULES THE TABLE NAMES, or a glob that stopped matching
-    #: reports a clean graph. `runprov` has 24 modules -- the figure `mypy runprov/` prints on
-    #: every gate run -- and 23 of them are not `__init__`. An EQUALITY, like the docstring
-    #: sweep's file floor next door: it moves only when a module is added or removed, which is
-    #: exactly when somebody should re-read which layer it belongs in.
+    #: reports a clean graph. The census below is `_PACKAGE_MODULES - 1`, because `__init__` is
+    #: excluded as an importer. An EQUALITY, like the docstring sweep's file count next door: it
+    #: moves only when a module is added or removed, which is exactly when somebody should
+    #: re-read which layer it belongs in.
+    #:
+    #: THIS PARAGRAPH USED TO RESTATE BOTH FIGURES -- *`runprov` has 24 modules, the figure `mypy
+    #: runprov/` prints on every gate run, and 23 of them are not `__init__`* -- TWO LINES ABOVE
+    #: the assertion that reads the constant [Audit P, resolver-4]. It was a FIFTH hand-written
+    #: copy of the count, inside the very test `fdf56df` touched to reduce four restatements to
+    #: one, and it was TRUE: `mypy runprov/` does print that figure today. That is what made it
+    #: worth deleting rather than correcting -- a true sentence that goes stale at the one moment
+    #: it is read, which is when somebody bumps `_PACKAGE_MODULES`. The property is stated here
+    #: and the numbers are read from the constant; the dated `24 == 23` measurement further down
+    #: is a historical record of a defect and stays.
     assert set(_IMPORT_LAYERS) <= set(seen), (
         f"the layer table names a module this sweep did not read: "
         f"{sorted(set(_IMPORT_LAYERS) - set(seen))}"
@@ -8178,6 +8188,31 @@ def test_no_library_module_writes_to_a_named_standard_stream():
             rendered = ast.unparse(node.func)
             #: `writelines` BESIDE `write` [Audit O, guards-7]. `sys.stderr.writelines` is the
             #: same emission by another method name and was outside this test entirely.
+            #:
+            #: AND THIS IS A LIST. SAYING SO, BECAUSE NO DERIVATION REPLACES IT [Audit P,
+            #: exhaustive-10]. `.write` and `.writelines` are two members of a set, and
+            #: `writelines` got here by ADDING a member -- the exact shape five audits have filed.
+            #: `os.writev`, `os.pwrite` and `os.fdopen(2).write` are outside it, with zero
+            #: instances in the package today.
+            #:
+            #: THE OBVIOUS SUBSTITUTE IS REFUTED BY MEASUREMENT, AND IT IS RECORDED HERE SO THE
+            #: NEXT PASS DOES NOT PROPOSE IT AGAIN. Dropping the method names for *any
+            #: `Attribute` call whose receiver mentions `stderr` or `stdout`* reports exactly one
+            #: site at HEAD and it is a FALSE POSITIVE: `project.py:184`'s `r.stdout.strip()`,
+            #: where `r` is a `subprocess.CompletedProcess` and `.stdout` is captured output, not
+            #: a stream. A check that is red at HEAD over no defect teaches its audience to
+            #: ignore it, which is worse than one that misses a member.
+            #:
+            #: KEYING THE `os.` FAMILY ON A LITERAL FD OF 1 OR 2 INSTEAD OF ON THE FUNCTION NAME
+            #: WAS ALSO MEASURED, AND DROPPED FOR THE SAME REASON: at HEAD it reports
+            #: `terminal.py:164`'s `os.dup(1)` and `os.dup(2)`, which DUPLICATE a descriptor and
+            #: write nothing. Of the 25 distinct `os.*` calls in this package, those two are the
+            #: only ones taking a literal 1 or 2, so the variant is all false positive and no
+            #: catch.
+            #:
+            #: WHAT ACTUALLY HOLDS THE RESIDUE is the behavioural half -- the escaping oracle over
+            #: the pages this package prints -- and the undecidable-receiver paragraph above,
+            #: which is why this test's NAME was narrowed rather than its matcher widened.
             if rendered.endswith((".write", ".writelines")) and (
                 "stderr" in rendered or "stdout" in rendered
             ):
@@ -31968,12 +32003,35 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
     #:   inside `.venv`. The scope would be the dependency tree.
     #:
     #: So the roots are the four explicit globs, which is the same idiom and the same reason as
-    #: `len(sources) == _PACKAGE_MODULES` next door, and the floor below is the EXACT count.
+    #: `len(sources) == _PACKAGE_MODULES` next door.
     roots += [*sorted(pathlib.Path("examples").glob("*.py"))]
     roots = [p for p in roots if p.is_file()]
-    assert len(roots) >= 32, (
-        f"the sweep found only {len(roots)} source files; the repository tracks 32 and all 32 "
-        f"ship in the sdist, so a glob has stopped matching: {[str(p) for p in roots]}"
+    #: AND IT IS AN EQUALITY, BECAUSE THE COMMENT ABOVE SAID SO WHILE THE ASSERTION SAID `>= 32`
+    #: [Audit P, exhaustive-9]. A floor is slack by one the moment a package module is added, and
+    #: nothing said so: 24 + 1 + 1 + 4 + 2 is 32 today, and with a 25th package module the sweep
+    #: reads 33 against a floor of 32 and stays green over a file it may well not have read.
+    #:
+    #: THE PACKAGE HALF READS `_PACKAGE_MODULES` RATHER THAN RESTATING IT, so one bump moves one
+    #: number [Audit O, guards-12]. The other 8 are the four non-package globs and they are
+    #: written out here, once: `tests/test_runprov.py` 1, `ci.py` 1, `tools/*.py` 4,
+    #: `examples/*.py` 2. This is NOT circular -- `_PACKAGE_MODULES` is a hand-written constant
+    #: that a human must re-read when adding a module, and `len(roots)` is read off the disk, so
+    #: the two sides have different sources and the equality has something to say.
+    #:
+    #: ONE LIMIT, MEASURED RATHER THAN LEFT TO BE DISCOVERED: this holds the TOTAL, so it cannot
+    #: say WHICH half moved, and bumping either half silences either cause. Measured: a planted
+    #: `examples/planted.py` makes this red, and bumping `_PACKAGE_MODULES` to 25 makes it green
+    #: again over a file that is not a package module at all. That is why the message below names
+    #: both causes and says which number answers which; the `_PACKAGE_MODULES - 1` census in the
+    #: layer test is what holds the package half on its own.
+    assert len(roots) == _PACKAGE_MODULES + 8, (
+        f"the sweep found {len(roots)} source files and the repository tracks "
+        f"{_PACKAGE_MODULES + 8} -- {_PACKAGE_MODULES} in `runprov/` plus 8 outside it "
+        f"(`tests/test_runprov.py`, `ci.py`, 4 in `tools/`, 2 in `examples/`), all of which "
+        f"ship in the sdist. Either a glob has stopped matching, or a file was added: if a "
+        f"PACKAGE module was added, bump `_PACKAGE_MODULES`, which is the one number for it; if "
+        f"it was added outside the package, the 8 above is what to re-read. Found: "
+        f"{[str(p) for p in roots]}"
     )
 
     offenders: dict[str, str] = {}
