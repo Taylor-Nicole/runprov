@@ -7341,11 +7341,14 @@ def test_no_library_module_calls_bare_print():
 #: total restated next to the set it could be computed from is the shape this audit filed as
 #: guards-10 and writer-8(b) -- four numbers in this family have now gone stale that way.
 #:
-#: THE EQUALITY ROTS ON A NEW WRITER SITE, AND THAT IS THE CONTRACT. Unlike a docstring count,
-#: a `diagnostic()` call is added deliberately and rarely, and when one is added somebody must
-#: decide whether its argument boundaries are right -- which is exactly what the newline clause
-#: below holds. `checked >= 1668` was refused next door for rotting on every docstring edit;
-#: this cannot rot without a writer site moving.
+#: THE EQUALITY ROTS ON A NEW WRITER SITE, AND THAT IS THE CONTRACT -- which was FALSE when it
+#: was written and is true now [Audit O, guards-5]. A writer reached under an alias was not a
+#: writer site at all, so a new one could be added without moving this total; the name set is
+#: resolved by runtime identity below, and the sentence holds for any spelling. Unlike a
+#: docstring count, a `diagnostic()` call is added deliberately and rarely, and when one is
+#: added somebody must decide whether its argument boundaries are right -- which is exactly what
+#: the newline clause below holds. `checked >= 1668` was refused next door for rotting on every
+#: docstring edit; this cannot rot without a writer site moving.
 _WRITER_SURFACE = {
     "run.py": {"diagnostic": 27, "progress": 2, "summary": 2},
     "sinks.py": {"diagnostic": 3},
@@ -7361,21 +7364,72 @@ _WRITER_SURFACE = {
 _WRITER_DEFINER = "_report.py"
 
 
+#: THE WRITERS THEMSELVES, AS OBJECTS. The sweep below used to match three LITERAL NAMES, and
+#: that was a fifth blind spot and the only one that defeated the site-count equality as well
+#: [Audit O, guards-5]: `from ._report import diagnostic as warn` is neither a writer site nor a
+#: newline site, so a reachable `warn(f"...\n...")` planted in `sinks.py` left this guard green,
+#: the suite green and the note collapsed byte for byte -- under a comment saying *THE EQUALITY
+#: ROTS ON A NEW WRITER SITE, AND THAT IS THE CONTRACT.*
+#:
+#: THE FILED REPAIR WAS A NO-OP OVER ITS OWN DEFECT and is not what is written here:
+#: `{a.asname or a.name for a in node.names} & {"diagnostic", "summary", "progress"}` keeps the
+#: names that are LITERALLY one of the three -- exactly the unaliased case. The intersection is
+#: backwards, and corrected to map the local name to the canonical one it STILL misses a sixth
+#: spelling, a module-level rebind `warn = diagnostic`.
+#:
+#: SO THE NAME SET IS NOT A SET OF NAMES. It is resolved by RUNTIME IDENTITY out of each
+#: module's own globals: whatever that module calls these functions, the object is the same
+#: object, and `is` finds it under any spelling -- an import alias, a module-level rebind, or a
+#: name nobody has thought of. Only the name set changed hands; the AST sweep still reads the
+#: call arguments, because the newline clause is about a LITERAL in the source and no runtime
+#: value can answer that.
+_WRITER_OBJECTS = {"diagnostic", "summary", "progress"}
+
+
+def _writer_names(module_stem: str) -> dict[str, str]:
+    """The LOCAL names in one module that ARE `_report`'s writers, by identity not by spelling.
+
+    `is` rather than `in`, and the reason is defensive rather than stylistic: `value in {...}`
+    hashes `value`, and an unhashable callable in a module's globals would make this raise
+    instead of answer. A guard that cannot run is worse than one that is wrong.
+    """
+    module = importlib.import_module(f"runprov.{module_stem}")
+    writers = {getattr(runprov._report, name): name for name in _WRITER_OBJECTS}
+    return {
+        local: canonical
+        for local, value in vars(module).items()
+        for writer, canonical in writers.items()
+        if value is writer
+    }
+
+
 def _writer_calls(path: pathlib.Path) -> list[tuple[int, str, ast.Call]]:
-    """Every `diagnostic`/`summary`/`progress` call in one module, by AST.
+    """Every `diagnostic`/`summary`/`progress` call in one module, by AST and by IDENTITY.
 
     BY AST AND NOT BY `git grep`, for the reason the bare-print guard gives next door and for a
     second one measured here: `terminal.py:79` carries `from ._report import printable` INSIDE A
     COMMENT, so a textual sweep of this family counts a comment as a call.
+
+    AND THE NAMES COME FROM `_writer_names`, which asks the imported module what IT calls these
+    functions rather than assuming it calls them what `_report` does. Two spellings were already
+    caught by `getattr(func, "attr", None)` and still are -- `from . import _report` +
+    `_report.diagnostic(...)` and `import runprov._report as r` + `r.diagnostic(...)` -- because
+    there the canonical name is written at the call. What was missed is every spelling where it
+    is not, and identity is total over those.
     """
+    local = _writer_names(path.stem)
     tree = ast.parse(path.read_text(encoding="utf-8"))
     out = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
-        if name in ("diagnostic", "summary", "progress"):
+        if isinstance(func, ast.Name):
+            name = local.get(func.id)
+        else:
+            attr = getattr(func, "attr", None)
+            name = attr if attr in _WRITER_OBJECTS else None
+        if name is not None:
             out.append((node.lineno, name, node))
     return out
 
@@ -7420,6 +7474,20 @@ def test_no_writer_argument_carries_a_newline_of_its_own():
 
     `%`-format, `.format()`, `textwrap.dedent`, `"\n".join(...)` and a format-spec fill are all
     CAUGHT, because each of them puts the newline in a literal in the argument expression.
+
+    **AND THE WRITER NAMES ARE NO LONGER A LIST OF THREE** [Audit O, guards-5]. A fifth blind
+    spot defeated both clauses of this test at once and the site-count equality with them: a
+    writer reached under another name. `from ._report import diagnostic as warn` was neither a
+    writer site nor a newline site, so a reachable `warn(f"...\n...")` in `sinks.py` was green
+    here with the surface still summing to 40, while the note collapsed on stderr byte for byte
+    -- under a comment on the table below saying *THE EQUALITY ROTS ON A NEW WRITER SITE, AND
+    THAT IS THE CONTRACT*. `_writer_names` now asks each imported module, by OBJECT IDENTITY,
+    what it calls these functions, so an alias and a module-level rebind (`warn = diagnostic`)
+    are both writer sites under their own names and both land in this clause. Measured both
+    ways: each spelling planted with a literal newline is RED here and NAMES the line, and each
+    is RC=0 against the previous form with the site count unchanged at 40 -- which is why the
+    demonstration ADDS a call rather than renaming an existing one. Renaming one would move the
+    count, the equality would fire, and the guard would look as though it had worked.
 
     `progress` IS IN THE NEWLINE CLAUSE NOW, and the exclusion it used to have was unsound
     [Audit O, product-3 / guards-1]. The old reason read: *"`progress(line, *, state)` takes ONE
