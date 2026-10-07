@@ -7740,15 +7740,65 @@ def _package_import_edges(package: pathlib.Path) -> list[tuple[str, int, str]]:
     yield `runprov` and `runprov.Run`, neither of which is a module.
 
     A LEVEL OF 2 OR MORE IS REFUSED RATHER THAN GUESSED, because resolving it needs a parent this
-    flat package does not have. It cannot occur here -- `from .. import x` raises `ImportError:
-    attempted relative import beyond top-level package` -- and if the package ever grows a
-    subpackage the resolver must be taught about it, because an edge this function cannot resolve
-    would otherwise read as NO edge, which is precisely how the old list failed.
+    flat package does not have. It cannot occur in a FLAT package -- `from .. import x` raises
+    `ImportError: attempted relative import beyond top-level package`.
+
+    **AND THAT REFUSAL IS NOT THE TRIPWIRE FOR A SUBPACKAGE, WHICH IS WHAT THIS DOCSTRING USED TO
+    OFFER IT AS** [Audit P, resolver-2]. It said *if the package ever grows a subpackage the
+    resolver must be taught about it*, with the `level < 2` assertion as the thing that would ask.
+    It cannot fire: a level-2 import can only be WRITTEN inside a subpackage, and a subpackage's
+    own files are never read here, because the sweep is a non-recursive `glob("*.py")`. So the
+    construct the refusal watches for only ever appears in the files the glob never opens -- a
+    declared gap pointing at an unreachable mechanism, which is worse than an undeclared one
+    because a reader believes a tripwire exists. What covers it is the `nested` assertion below,
+    over the package's `rglob`. The `level < 2` refusal is kept for what it does hold: a level-2
+    import written in a top-level module, which is an `ImportError` at runtime and a red here.
+
+    **THE INPUT SET IS ASSERTED, NOT ONLY THE MATCHING.** Deleting the spelling list from the
+    matcher did nothing about the list that had moved one layer out, into the non-recursive sweep:
+    a subpackage was invisible on BOTH sides -- edges INTO it resolve to nothing, because the
+    oracle is `<package>/<name>.py`, and its own imports are never parsed. Measured end to end
+    with the plant proved live: `_report.py` (layer 0) reaching `runprov/sub/helper.py`, which
+    imports `..terminal` and `..__main__`, left this resolver's graph unchanged, the layer test
+    RC=0 and the full suite at its baseline.
     """
+    #: NOTHING OF THIS KIND MAY LIE OUTSIDE THE SWEPT SET [Audit P, resolver-2]. The sweep is
+    #: `glob("*.py")` and the oracle is `<package>/<name>.py`, so both halves of this resolver are
+    #: flat; a module one directory down is read by neither.
+    #:
+    #: THE HONEST QUALIFICATION, MEASURED: THERE ARE ZERO NESTED `.py` FILES TODAY, so this gap is
+    #: LATENT and not live. No defect exists now -- what existed is a guard that would not have
+    #: seen one. `__pycache__` is excluded because 120 `.pyc` files live there and a `.pyc` is not
+    #: a module this resolver could read; the `rglob` pattern already excludes them, and the
+    #: directory is named here so the next reader does not have to re-derive that.
+    nested = sorted(
+        str(found.relative_to(package))
+        for found in package.rglob("*.py")
+        if found.parent != package and "__pycache__" not in found.parts
+    )
+    assert not nested, (
+        f"{nested} are Python modules of this package that lie BELOW its top directory, and this "
+        f"resolver cannot see a subpackage on either side: the sweep is a non-recursive "
+        f'`glob("*.py")`, so these files\' own imports are never parsed, and the oracle is '
+        f"`{package.name}/<name>.py`, so an edge INTO one of them resolves to nothing -- and an "
+        f"edge this function cannot resolve READS AS NO EDGE AT ALL, which is exactly how the "
+        f"spelling list failed before it. Teach both halves about the subpackage, or the layer "
+        f"table silently stops covering it. The `node.level < 2` refusal below is NOT the "
+        f"tripwire for this: a level-2 import can only be written in a file this sweep never opens"
+    )
     edges: list[tuple[str, int, str]] = []
+    #: EVERY IMPORT NODE THAT MADE NO DOTTED NAME AVAILABLE, ASSERTED BELOW [Audit P, resolver-1].
+    #: This is the clause that replaced `assert len(graph) == 56`. The subject is the two node
+    #: kinds the language has for an import, so an arm of the resolver that stops producing names
+    #: is red by construction -- which the edge total was kept for and was measured not to do.
+    unaccounted: dict[str, str] = {}
     for mod in sorted(package.glob("*.py")):
         tree = ast.parse(mod.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
+            #: THE SUBJECT IS DECIDED BEFORE THE HANDLING, so that removing a handling arm leaves
+            #: the node IN the subject with no names, rather than silently out of it.
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
             dotted: list[str] = []
             if isinstance(node, ast.Import):
                 dotted = [alias.name for alias in node.names]
@@ -7767,14 +7817,33 @@ def _package_import_edges(package: pathlib.Path) -> list[tuple[str, int, str]]:
                 )
                 if head:
                     dotted = [head] + [f"{head}.{alias.name}" for alias in node.names]
-            else:
-                continue
+            if not dotted:
+                unaccounted[f"{mod.name}:{node.lineno}"] = ast.unparse(node)[:70]
             for candidate in dotted:
                 parts = candidate.split(".")
                 if len(parts) != 2 or parts[0] != package.name:
                     continue
                 if (package / f"{parts[1]}.py").is_file():
                     edges.append((mod.stem, node.lineno, parts[1]))
+    #: EVERY IMPORT BINDS SOMETHING, so an import that made NO dotted name available means this
+    #: RESOLVER has stopped resolving a SPELLING -- which is the failure the hand-written edge
+    #: total was kept for and was MEASURED NOT TO CATCH [Audit P, resolver-1]. With `ast.Import`
+    #: handling removed entirely the derived graph was element-for-element identical to HEAD and
+    #: the test was RC=0, because this package uses two of Python's six spellings: `from .X import
+    #: Z` and `from . import X` (16 nodes). `import runprov.X` and `from runprov import X` have
+    #: ZERO instances, so dropping their handling cost nothing a count could see. The total is
+    #: gone and this is what stands in its place; unlike a number it does not rot on a new import.
+    #: THE LIST IS TRUNCATED because the raw report reaches 149 entries -- one per plain `import`
+    #: node in the package -- and a 149-entry dict in a failure message is unreadable.
+    shown = dict(sorted(unaccounted.items())[:8])
+    assert not unaccounted, (
+        f"{len(unaccounted)} import node(s) in this package made NO dotted name available to "
+        f"this resolver, first {len(shown)}: {shown}. Every import binds something, so an import "
+        f"that made no dotted name available means the RESOLVER has stopped resolving a "
+        f"SPELLING, which is the failure the edge total was kept for and does not catch: this "
+        f"package writes two of Python's six spellings, so an arm can be deleted outright and "
+        f"leave the derived graph identical. Fix the arm above; do not exempt the node"
+    )
     return edges
 
 
@@ -7806,12 +7875,14 @@ def test_the_package_imports_only_downwards():
     and asks the disk which of them is a module here, so all six spellings come from one code
     path; its docstring carries the reasoning.
 
-    **THE NON-VACUITY CLAUSE IS THE COMPUTED GRAPH, NOT A COUNT ALONE.** Two edges that must
-    exist are asserted by name -- `terminal -> hashing` and `sinks -> chain`, both module-level,
-    both read off the source today -- so a resolver that stopped resolving cannot report a clean
-    graph, and the edge total is asserted beside them so a resolver that stopped reading a
-    SPELLING is red even while those two still resolve. The total was measured at 56 and is
-    identical on all five interpreters this host carries.
+    **THE NON-VACUITY CLAUSE IS THE COMPUTED GRAPH, AND THE COUNT BESIDE IT IS GONE** [Audit P,
+    resolver-1]. Two edges that must exist are asserted by name -- `terminal -> hashing` and
+    `sinks -> chain`, both module-level, both read off the source today -- so a resolver that
+    stopped resolving cannot report a clean graph. `assert len(graph) == 56` used to sit beside
+    them, kept precisely because those two cannot catch a resolver that drops one spelling while
+    still resolving them; it was measured not to catch that either, and it is replaced by
+    `_package_import_edges`'s own assertion that every import node makes at least one dotted name
+    available.
 
     **AND THE `__main__` BOUNDARY IS PROBED DYNAMICALLY AS WELL**, because that boundary has a
     runtime consequence an AST cannot see: `PolicyError`'s docstring forbids a library module
@@ -7897,12 +7968,17 @@ def test_the_package_imports_only_downwards():
         f"two module-level edges this package certainly has are missing from the derived graph, "
         f"so the resolver has stopped resolving: it found {len(graph)} edges, {sorted(graph)}"
     )
-    assert len(graph) == 56, (
-        f"the derived import graph has {len(graph)} edges and had 56. If an import was added or "
-        f"removed, re-read the layer table and update this number; if it fell without the "
-        f"package changing, a SPELLING has stopped resolving, which is the defect "
-        f"`_package_import_edges` exists to make impossible: {sorted(graph)}"
-    )
+    #: THE HAND-WRITTEN EDGE TOTAL IS GONE [Audit P, resolver-1]. `assert len(graph) == 56` stood
+    #: here, kept deliberately because the two named edges above cannot catch a resolver that
+    #: drops one spelling while still resolving those two. It was measured not to catch that
+    #: either: with `ast.Import` handling removed from `_package_import_edges` the derived graph
+    #: was ELEMENT FOR ELEMENT identical to HEAD and this test was RC=0, because the package
+    #: writes two of the six spellings and `import runprov.X` has zero instances. A total is
+    #: green over any loss the project does not happen to exercise, and it rots on every new
+    #: import -- the K-37/L-08 shape. The property it stood for IS computable, as *every import
+    #: node must make at least one dotted name available*, and that assertion lives in
+    #: `_package_import_edges` where the names are produced. The two named edges above STAY: they
+    #: hold the filesystem oracle, which the new assertion does not.
 
     #: THE `__main__` BOUNDARY'S CONSEQUENCE, PROBED IN A SUBPROCESS. Not a second spelling of
     #: the static check: this is what `PolicyError`'s docstring actually forbids, and it is total
