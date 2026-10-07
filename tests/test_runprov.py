@@ -40448,27 +40448,72 @@ _SERIALISERS = {
 #:
 #: SO THE SHAPE HERE IS NOT A LONGER LIST. It is a decision per owner plus an assertion that
 #: EVERY `Name(ctx=Store)` in the file has an owner this table decided about -- so a binding form
-#: nobody has thought of turns this RED BY CONSTRUCTION rather than leaving a hole. That is the
-#: one shape in this family that has never been defeated: every floor here has been beaten by
-#: narrowing the subject, and no exhaustiveness assertion has been.
+#: nobody has thought of turns this RED BY CONSTRUCTION rather than leaving a hole.
 #:
-#: WHY `Name(ctx=Store)` IS THE WHOLE SUBJECT: it is every name Python binds through an
-#: assignment-like form. `def`, `class`, `import`, `global` and `nonlocal` bind through their own
-#: node types and bind no `Name` at all; `except E as e`, `match`'s patterns and a function's
-#: parameters carry their name as a plain `str` on the owning node; `del x` is `ctx=Del`; and
-#: `d[k] = v` or `o.a = v` put the `Store` on a `Subscript` or an `Attribute`, whose inner `Name`
-#: is a `Load`. None of those can hold a page a renderer returned.
+#: THIS PARAGRAPH USED TO END *that is the one shape in this family that has never been defeated*,
+#: AND THAT IS WITHDRAWN [Audit P, exhaustive-1]. It was defeated, four times, by a clean
+#: full-suite false green. An exhaustiveness assertion is only as total as the PRIMITIVE it
+#: quantifies over, and choosing that primitive is where the whole of the risk now sits: this one
+#: moved the failure from *a member nobody added* to *a primitive nobody questioned*, which is
+#: harder to find precisely because the prose above argues the primitive is total. The assertion
+#: is still strictly better than the enumeration it replaced -- it closed `AnnAssign`, it can
+#: fail, and its derived page set is unchanged -- but it does not close the claim on its own.
+#:
+#: WHAT `Name(ctx=Store)` IS, AND WHAT IT IS NOT [Audit P, exhaustive-3]. It is every name
+#: Python binds through an ASSIGNMENT-LIKE form, and that is strictly narrower than *every name
+#: this file binds*. `def`, `class`, `import`, `global` and `nonlocal` bind through their own node
+#: types and bind no `Name` at all; `except E as e`, `match`'s capture patterns and a function's
+#: parameters carry their name as a plain `str` on the owning node (`ExceptHandler.name`,
+#: `MatchAs.name`, `arg.arg`); `del x` is `ctx=Del`; and `d[k] = v` or `o.a = v` put the `Store` on
+#: a `Subscript` or an `Attribute`, whose inner `Name` is a `Load`. `globals()[...] = page` and
+#: `setattr(o, "page", page)` bind through a call.
+#:
+#: AN EARLIER VERSION OF THIS PARAGRAPH SAID *none of those can hold a page a renderer returned*,
+#: AND THAT WAS FALSE -- it is the premise the whole totality argument rested on. Measured: a
+#: `match` capture, a function parameter and an attribute target each bind a page with
+#: `Store names: []`, so no `Name(ctx=Store)` exists anywhere and the walk below cannot see them;
+#: four such shapes were full-suite FALSE GREENS over a live forgery in `prune.render`. The
+#: binding side is therefore NOT the subject of this derivation's claim, and it is not what closes
+#: it: THE PRINTED-SIDE `unresolved` ASSERTION AT THE END OF `_printed_renderers` IS. That one
+#: quantifies over what this file PRINTS, which is the subject of the claim, so a page bound by a
+#: form with no `Name` at all is still red there. The two assertions are deliberately different
+#: sentences and both are needed: this one says every assignment-like binding has a decision, that
+#: one says every printed expression resolves to something or to a decision.
 #:
 #: THE FOUR THAT CAN HOLD A RENDERER'S PAGE, each having a `.value` that is the thing bound:
 _PAGE_BINDERS = (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)
-#: AND THE FOUR THAT CANNOT, which is a DECISION and not a skip. Each of these binds a name to an
-#: ELEMENT of something rather than to the thing itself, so the renderer that produced the
-#: something is not what the name holds. For a `for` loop that is also why the refuted widening of
+#: AND THE FOUR THAT CANNOT, which is a DECISION and not a skip. For three of them the reason is
+#: that the form binds a name to an ELEMENT of something rather than to the thing itself, so the
+#: renderer that produced the something is not what the name holds. For a `for` loop that is
+#: also why the refuted widening of
 #: this row failed: `__main__.py` iterates a generator of `(lineno, raw)` pairs feeding a per-item
 #: renderer, so for a tuple target the iterable is NOT the page, and treating it as one is a false
 #: positive at HEAD naming `__main__._unreadable`. A `for` loop that prints its target IS already
 #: read as printing its iterable, by the printed-expression arm further down, which is the place
 #: that question can be answered.
+#:
+#: AND FOR `withitem` THE REASON ABOVE IS FACTUALLY FALSE, SO HERE IS THE REAL ONE [Audit P,
+#: exhaustive-2]. `with X as n` does not bind an element of `X`: it binds `X.__enter__()`, which
+#: for every context manager that returns itself IS the thing itself. Verified in this very file:
+#: of the four `withitem` bindings in `__main__.py`, the two `as run:` sites -- the `with`
+#: statements at `:992` and at `:1083`-`:1090` -- hold the object the expression produced, not a
+#: part of it. So this was never a form nobody thought of; it is an entry the table decided about,
+#: exercised today, whose stated REASON was wrong -- and an exhaustiveness assertion cannot help
+#: with a wrong reason, by construction. That is the sharpest limit of this form.
+#:
+#: THE ENTRY STAYS HERE ANYWAY, AND THE DECISION IS NOW CARRIED BY A MEASUREMENT RATHER THAN BY
+#: THAT SENTENCE. Moving `withitem` to `_PAGE_BINDERS` resolved on `context_expr` was measured and
+#: it makes the guard WORSE, not better: a `with`-bound name then enters `bound` below, and
+#: `bound` is the third of the three decisions that EXCUSE an unresolved printed expression -- so
+#: `with contextlib.nullcontext(prune_mod.render(...)) as page:` followed by `print(page)` becomes
+#: an excused name and the forgery is GREEN again (measured: RC=0 on that plant with the page
+#: forged live on stderr). Left here, the same plant is RED on the printed-side `unresolved`
+#: assertion, naming `_forget:1666`. The excuse cannot simply be dropped either: `bound` carries
+#: two legitimate sites at HEAD (`_forget`'s `problems` and `_show`'s `head`) and reading it as
+#: *no resolvable renderer call anywhere in the value's subtree* is RED AT HEAD on `problems`,
+#: which comes from `prune_mod.apply(p)`. So the honest statement is the narrow one: a page bound
+#: by a `with` is not resolved to its renderer here, it is REFUSED, and the refusal names the
+#: print site rather than the renderer.
 _NOT_PAGE_BINDERS = (ast.For, ast.AsyncFor, ast.comprehension, ast.withitem)
 #: WHAT A TARGET MAY BE WRAPPED IN on the way to its owner. `a, (b, c) = ...` nests.
 _TARGET_CONTAINERS = (ast.Tuple, ast.List, ast.Starred)
@@ -40479,12 +40524,23 @@ _TARGET_CONTAINERS = (ast.Tuple, ast.List, ast.Starred)
 #:
 #: * EXERCISED, each red when its entry is deleted: `Assign`, `AnnAssign` (17 bindings in
 #:   `__main__`), `AugAssign` (17), `For` (45), `comprehension` (35), `withitem` (4).
-#: * NOT EXERCISED: `AsyncFor` -- this package contains no `async` construct of any kind -- and
-#:   `NamedExpr`, which occurs 8 times in `runprov/` and not once inside a `__main__` function.
-#:   Deleting either leaves this GREEN, so those two entries are decisions made in ADVANCE. They
-#:   are kept rather than left out on purpose: both answers are the obvious ones -- a walrus binds
-#:   the value of an expression, an `async for` binds an element -- and a red asking a human to
-#:   write a line whose content is already settled is a red over no defect.
+#: * NOT EXERCISED: `AsyncFor` and `NamedExpr`, which occurs 8 times in `runprov/` and not once
+#:   inside a `__main__` function. Deleting either leaves this GREEN, so those two entries are
+#:   decisions made in ADVANCE. They are kept rather than left out on purpose: both answers are the
+#:   obvious ones -- a walrus binds the value of an expression, an `async for` binds an element --
+#:   and a red asking a human to write a line whose content is already settled is a red over no
+#:   defect.
+#:
+#: AND `AsyncFor`'S ENTRY WAS NOT MERELY UNEXERCISED -- IT WAS UNREACHABLE UNTIL THIS COMMIT
+#: [Audit P, exhaustive-5]. Keeper-verified: `issubclass(ast.AsyncFunctionDef, ast.FunctionDef)` is
+#: **False**, and an `async def` body yields **0** `FunctionDef` nodes. The walk below read
+#: `FunctionDef` only, and `async for` can occur ONLY inside an `async def` -- so the day one
+#: arrived the walk would not have looked at it at all and `unaccounted` would have stayed empty.
+#: The entry read to the next reader as *a decision made in advance*, i.e. as covered when it
+#: arrives, and it was not. It is reachable NOW: `_printed_renderers`, `local` and
+#: `_reaches_a_chokepoint` all walk `(FunctionDef, AsyncFunctionDef)`, which is also what
+#: `tests:18646` and the `_CHOKEPOINTS` one-definition sweep above already did -- the file was
+#: inconsistent with itself about this, and that inconsistency is how the hole was found.
 
 
 def _printed_renderers() -> dict[tuple[str, str], set[str]]:
@@ -40539,7 +40595,9 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
                     mods[alias.asname or alias.name] = alias.name
                 else:
                     funcs[alias.asname or alias.name] = (node.module, alias.name)
-    local = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    local = {
+        n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
 
     def resolve(fn: ast.expr) -> tuple[str, str] | None:
         if isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name):
@@ -40573,6 +40631,15 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
             #: exactly one page and REMOVE none, so this peels nothing that was resolving.
             elif isinstance(expr, ast.Subscript):
                 expr = expr.value
+            #: A WALRUS IS THE VALUE IT BINDS, AND A `*` UNPACK IS THE THING UNPACKED [Audit P,
+            #: exhaustive-4]. `print(page := prune_mod.render(...))` and `print(*render())` both
+            #: print what the call returned; without these two lines the binding arm resolved the
+            #: walrus correctly and this arm threw the answer away, which was a full-suite false
+            #: green over a live forgery -- RC=0 with both coverage discriminators at baseline.
+            #: So a RIGHT decision behind an HONEST declaration was still not enough: the
+            #: declaration was never where the risk was.
+            elif isinstance(expr, (ast.NamedExpr, ast.Starred)):
+                expr = expr.value
             else:
                 return expr
 
@@ -40584,17 +40651,53 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
             for n in ast.walk(expr)
         )
 
+    def _composed_in_main(expr: ast.expr) -> bool:
+        """Is this `__main__`'s OWN composed line rather than a module's page?
+
+        THE FIRST OF THE THREE DECISIONS THAT EXCUSE AN UNRESOLVED PRINTED EXPRESSION, and it
+        is the exclusion this function's docstring ALREADY DECLARES: *an f-string built in
+        `__main__` and printed there is NOT in this set: it is `__main__`'s own line and not a
+        module's page*, which is the shape of the 51 `print(..., file=sys.stderr)` sites and
+        the reason Audit M's escape-4 gives for not routing them through one transform. A
+        literal, a tuple of arguments to `print`, and a `x or y` fallback are the same thing.
+        """
+        return isinstance(expr, (ast.JoinedStr, ast.Constant, ast.Tuple, ast.BoolOp))
+
     found: dict[tuple[str, str], set[str]] = {}
     #: EVERY `Name` THIS FILE BINDS AND NO TABLE DECIDED ABOUT. Asserted below, so a binding form
     #: that arrives in a future Python -- or one nobody thought of in this one -- is RED here
     #: instead of silently holding a page nothing checks [Audit O, guards-4].
     unaccounted: dict[str, str] = {}
-    for fdef in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+    #: EVERY PRINTED EXPRESSION THIS DERIVATION COULD NOT RESOLVE AND NO DECISION EXCUSES, WHICH
+    #: IS THE ASSERTION THAT QUANTIFIES OVER THE SUBJECT OF THE CLAIM [Audit P, exhaustive-1].
+    #: `unaccounted` above says every assignment-like binding has a decision; it does NOT say
+    #: every printed page was resolved, and those are different sentences. Measured: 45 printing
+    #: shapes were tried against the previous form and `unaccounted` was empty in ALL 45 -- for
+    #: the 9 it caught and for all 36 it missed alike -- because a `match` capture, a function
+    #: parameter and an attribute target bind a page with no `Name(ctx=Store)` anywhere. Four of
+    #: those were clean full-suite false greens over a live forgery in `prune.render`, the one
+    #: renderer no behavioural leg may ever reach. This dict is the repair: a page that is PRINTED
+    #: and does not resolve is red here whatever bound it, so a page can no longer LEAVE the
+    #: derived set silently -- which is the one direction the floor, the `_SERIALISERS` equality
+    #: and the `unescaped` complement all structurally miss, because each of them only sees what
+    #: is already IN the set.
+    unresolved: dict[str, str] = {}
+    #: BOTH KINDS OF FUNCTION, because `ast.AsyncFunctionDef` is NOT a subclass of
+    #: `ast.FunctionDef` -- so walking one kind made every decision about `async` unreachable
+    #: rather than merely unexercised [Audit P, exhaustive-5].
+    for fdef in [
+        n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]:
         parent: dict[ast.AST, ast.AST] = {}
         for node in ast.walk(fdef):
             for child in ast.iter_child_nodes(node):
                 parent[child] = node
         assigned: dict[str, tuple[str, str]] = {}
+        #: EVERY NAME A PAGE-BINDER BOUND, whether or not its value was a renderer call. This is
+        #: one of the three decisions that excuse an unresolved printed expression below: a name
+        #: this function demonstrably bound from something that is not a renderer call is not a
+        #: page, and saying so is a decision rather than a silence.
+        bound: set[str] = set()
         for node in ast.walk(fdef):
             if not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)):
                 continue
@@ -40611,12 +40714,17 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
                 owner = parent.get(owner)
             if isinstance(owner, _PAGE_BINDERS):
                 value = owner.value
+                bound.add(node.id)
                 where = resolve(value.func) if isinstance(value, ast.Call) else None
                 if where:
                     assigned[node.id] = where
             elif not isinstance(owner, _NOT_PAGE_BINDERS):
                 unaccounted[f"{fdef.name}:{node.lineno}: {node.id}"] = type(owner).__name__
         printed: list[ast.expr] = []
+        #: THE LOOP TARGETS WHOSE ITERABLE WENT INTO `printed`, which is the second of the three
+        #: decisions below: the NAME is an element of a page this derivation has already counted,
+        #: so it is not a second unresolved page.
+        iterated: set[str] = set()
         for node in ast.walk(fdef):
             if isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Name) and node.func.id == "print":
@@ -40628,10 +40736,17 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
                     and node.func.value.attr in ("stdout", "stderr")
                 ):
                     printed += list(node.args)
-            elif isinstance(node, ast.For) and isinstance(node.target, ast.Name):
+            elif isinstance(node, (ast.For, ast.AsyncFor)) and isinstance(node.target, ast.Name):
                 body = ast.dump(ast.Module(body=node.body, type_ignores=[]))
-                if f"id='{node.target.id}'" in body and ("'print'" in body or "stdout" in body):
+                #: AND `stderr` BESIDE `stdout`, WHICH IS WHERE `prune`'S REAL PAGE GOES [Audit P,
+                #: exhaustive-6]. This arm read `'print'` or `stdout` and `prune.render`'s one
+                #: print site is `print(..., file=sys.stderr)` -- so a `for` loop writing the
+                #: page to stderr was not a printed page here at all.
+                if f"id='{node.target.id}'" in body and (
+                    "'print'" in body or "stdout" in body or "stderr" in body
+                ):
                     printed.append(node.iter)
+                    iterated.add(node.target.id)
         for expr in printed:
             if serialises(expr):
                 continue
@@ -40645,6 +40760,14 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
                 where = assigned.get(inner.value.id)
             if where and not (where[0] == "_report" and where[1] in _CHOKEPOINTS):
                 found.setdefault(where, set()).add(fdef.name)
+            elif where is None and not _composed_in_main(inner):
+                excused = isinstance(inner, ast.Name) and (
+                    inner.id in iterated or inner.id in bound
+                )
+                if not excused:
+                    unresolved[f"{fdef.name}:{inner.lineno}"] = (
+                        f"{type(inner).__name__}: {ast.unparse(inner)[:120]}"
+                    )
     #: THE EXHAUSTIVENESS ASSERTION, WHICH IS WHAT MAKES THE TABLE ABOVE SOMETHING OTHER THAN A
     #: LIST [Audit O, guards-4]. It is the only clause in this family that goes red for a form
     #: nobody anticipated. Measured able to fail: delete `ast.AnnAssign` from `_PAGE_BINDERS`
@@ -40656,6 +40779,30 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
         f"must have a `.value`); if it binds an ELEMENT of something, add it to "
         f"`_NOT_PAGE_BINDERS` with the reason. Do not delete this assertion -- it is the only "
         f"thing here that can fail for a binding form nobody has thought of"
+    )
+    #: AND THE ASSERTION OVER THE SUBJECT OF THE CLAIM, WHICH IS THE ONE THE FOUR FALSE GREENS
+    #: NEEDED [Audit P, exhaustive-1]. The claim is *every page `__main__` prints reaches an
+    #: escaping chokepoint*; so what must be accounted for is every expression `__main__` PRINTS,
+    #: not every name it binds. Those were different sentences and the gap between them held four
+    #: measured false greens: `with nullcontext(render()) as page`, `print(page := render())`, a
+    #: function PARAMETER, and `case page:` -- each RC=0 on the full suite with both coverage
+    #: discriminators at baseline, over a `prune.render` whose chokepoint had been removed.
+    #:
+    #: THE THREE DECISIONS ABOVE ARE THE WHOLE EXCUSE LIST, and each is a statement about pages
+    #: rather than about syntax: `__main__`'s own composed line (`_composed_in_main`), an element
+    #: of an iterable this derivation already counted (`iterated`), and a name this function
+    #: demonstrably bound from something that is not a renderer call (`bound`). Anything else
+    #: printed and unresolved is RED, including a name bound by a form that has no
+    #: `Name(ctx=Store)` at all -- which is exactly what `unaccounted` cannot see.
+    assert not unresolved, (
+        f"these expressions are PRINTED by `__main__` and this derivation cannot say which "
+        f"renderer produced them, so a page may be leaving this set unseen: {unresolved}. That "
+        f"is the failure the assertion above structurally cannot catch: a page can be bound by "
+        f"a `match` capture, a parameter, an attribute target or `setattr` with no "
+        f"`Name(ctx=Store)` anywhere in the file. Resolve it -- teach `resolve` or `peel` the "
+        f"shape -- or, if it really is `__main__`'s own composed line, say so by giving it a "
+        f"decision. Do not delete this assertion: it is the only clause here that quantifies "
+        f"over what this module PRINTS, which is the subject of this test's claim"
     )
     return found
 
@@ -40677,7 +40824,9 @@ def _reaches_a_chokepoint(module: str, function: str) -> bool:
     """
     path = _repo_root() / "runprov" / f"{module}.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    bodies = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    bodies = {
+        n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
     #: Who calls whom, by NAME, inside this one module. A name is enough: the question is
     #: whether the transform is on the path, and two functions with one name in one module
     #: is not a thing Python allows.
