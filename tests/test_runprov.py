@@ -31449,6 +31449,17 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
     `"x\\ud800y.tsv"` because a filesystem can hand the package exactly that. Widening this to
     all constants would turn those into offenders, which is a guard that cannot pass.
 
+    **WHAT HOLDS THE SWEEP'S HONESTY, AND IT IS NOT A FLOOR ANY MORE** [Audit O, guards-3]. A
+    per-file floor stood here -- *every swept file must contribute at least one docstring* -- and
+    it was satisfied by the 32 MODULE docstrings alone, 1.9% of the 1 686 in the tree, with an
+    EMPTY module docstring qualifying because `ast.get_docstring` returns `''` and not `None`. So
+    the sweep could stop reading 1 654 of 1 686 docstrings and still report a clean tree, and a
+    live lone surrogate in a FUNCTION docstring was green here while 3.13 and 3.14 refused to
+    compile the file. Both halves of that are gone: the node-kind list is deleted in favour of
+    what the language means by a docstring, and the floor is deleted with it rather than raised.
+    What remains is the roots floor -- which is about FILES and names the one that went missing --
+    and a walk with no list left in it to narrow.
+
     **THIS GUARD'S FIRST CATCH WAS ITS OWN DOCSTRING**, which is the whole argument for it:
     the paragraph above named the surrogate as a live escape while explaining that a
     docstring must show the text. It went red naming this line before it had ever run
@@ -31486,32 +31497,43 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
     )
 
     offenders: dict[str, str] = {}
-    #: PER FILE, NOT A TOTAL [Audit N, guards-10]. This was `checked >= 400` measured against
-    #: 1 668 — slack by 1 268, so the sweep could have lost `ci.py`, all four `tools/*.py`, five
-    #: `runprov` modules and 76% of the docstrings and still reported a clean tree. The claim in
-    #: the docstring is *a sweep that stopped reading cannot report a clean tree*, and a total
-    #: that slack is true only of a sweep that stopped reading almost everything.
+    #: A DOCSTRING IS THE FIRST STATEMENT OF ANY BODY WHEN IT IS A STRING CONSTANT, AND THERE IS
+    #: NO LIST OF NODE KINDS HERE ANY MORE [Audit O, guards-3]. The walk used to filter on
+    #: `(Module, ClassDef, FunctionDef, AsyncFunctionDef)` and ask `ast.get_docstring`, and that
+    #: list is a subject that can be NARROWED: drop `ClassDef` and 65 class docstrings go unread
+    #: behind a green sweep, which is how every floor in this family has been defeated. Audit O's
+    #: generalisation, which is the reason this is shaped the way it is:
     #:
-    #: AND THE EQUALITY IS REFUSED DELIBERATELY. `checked >= 1668` rots on every docstring edit
-    #: in the repository — that is the K-37/L-08 defect and the reason `pyproject`'s coverage
-    #: figures were DELETED rather than corrected. Per file cannot rot: a source file in this
-    #: tree without a single docstring would fail other guards first, so the assertion is about
-    #: the SWEEP and not about the tree. It names the file that went quiet, which a total never
-    #: can.
-    per_file: dict[str, int] = {}
+    #:     Every FLOOR in this family has been defeated by narrowing the subject, and no
+    #:     exhaustiveness assertion has been. The repair is not to extend the list: it is to
+    #:     delete the list and compute the thing itself.
+    #:
+    #: This IS the thing itself -- it is what the language means by a docstring -- so there is no
+    #: kind to forget. Measured as a drop-in: 1 692 docstrings collected either way, byte for
+    #: byte the same set, and ZERO nodes outside those four kinds in the whole swept tree,
+    #: identical on all five interpreters on this host. `isinstance(body, list)` is what keeps
+    #: `Lambda` and `IfExp` out, whose `body` is a single expression rather than a block.
+    #:
+    #: AND THE PER-FILE FLOOR IS DELETED WITH THE LIST, not kept beside it. It read *every file
+    #: must contribute at least one docstring*, and it was satisfied by 32 of 1 686 -- 1.9% --
+    #: so the sweep could stop reading 98% of its subject and still report a clean tree. It was
+    #: a floor on HOW MUCH of the subject was read, which is the thing that has never held. What
+    #: holds this sweep now is the roots floor above, which is about the FILES, plus the fact
+    #: that the walk has no narrowable list left in it. A `checked >= N` total is refused for the
+    #: separate reason it always was: it rots on every docstring edit in the repository, which is
+    #: the K-37/L-08 defect and the reason `pyproject`'s coverage figures were DELETED rather
+    #: than corrected.
     for path in roots:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if not isinstance(
-                node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-            ):
+            body = getattr(node, "body", None)
+            if not (isinstance(body, list) and body and isinstance(body[0], ast.Expr)):
                 continue
-            doc = ast.get_docstring(node, clean=False)
-            if doc is None:
+            const = body[0].value
+            if not (isinstance(const, ast.Constant) and isinstance(const.value, str)):
                 continue
-            per_file[str(path)] = per_file.get(str(path), 0) + 1
             try:
-                doc.encode("utf-8")
+                const.value.encode("utf-8")
             except UnicodeEncodeError as exc:
                 #: `getattr`, BECAUSE `ast.Module` HAS NO `lineno` [Audit N, guards-7]. All 32
                 #: swept files have a module docstring, which is the commonest docstring in the
@@ -31521,15 +31543,6 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
                 #: "position 1677" and no file. The guard's whole value is naming the site.
                 offenders[f"{path}:{getattr(node, 'lineno', 1)}"] = str(exc)
 
-    #: THE SWEEP MUST HAVE READ EVERY FILE IT NAMED. Without this, a walk that stopped finding
-    #: docstrings would report zero offenders and read exactly like a clean tree.
-    silent = sorted(str(path) for path in roots if not per_file.get(str(path)))
-    checked = sum(per_file.values())
-    assert not silent, (
-        f"{silent} contributed no docstring to this sweep, so nothing in them was examined and "
-        f"a lone surrogate in any of them would read here as a clean tree. {checked} docstrings "
-        f"were examined across {len(per_file)} of {len(roots)} files"
-    )
     assert not offenders, (
         f"these docstrings hold a character Python 3.13 cannot compile, so the module will not "
         f"IMPORT there and every test in it reports as a collection error: {offenders}. A "
