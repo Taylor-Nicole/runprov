@@ -40432,6 +40432,61 @@ _SERIALISERS = {
 }
 
 
+#: EVERY FORM PYTHON HAS FOR BINDING A NAME, WITH A DECISION FOR EACH OF THEM, AND AN
+#: EXHAUSTIVENESS ASSERTION INSTEAD OF A FLOOR [Audit O, guards-4].
+#:
+#: The binder below used to read `ast.Assign` and nothing else, and the audit before this one
+#: widened it to `Assign` with a TUPLE target. Both are enumerations of binding forms, and
+#: `AnnAssign` was a LIVE, UNDECLARED false green: with `prune.render`'s chokepoint removed and
+#: its print site written `page: str = prune_mod.render(...)`, the suite was RC=0 with the
+#: coverage floor at baseline over a forgeable page in `prune` -- the one renderer no behavioural
+#: leg may ever reach, because `prune` DELETES, so `CORPUS_NOT_READERS` excludes it by name and
+#: the structural half exists FOR it. The binding forms this package uses today, counted by
+#: nearest non-container owner of a `Name(ctx=Store)` across `runprov/`: `Assign` 1 176,
+#: `AnnAssign` 300, `For` 248, `comprehension` 226, `AugAssign` 80, `withitem` 18, `NamedExpr` 8.
+#: The binder enumerated ONE of those seven, then two.
+#:
+#: SO THE SHAPE HERE IS NOT A LONGER LIST. It is a decision per owner plus an assertion that
+#: EVERY `Name(ctx=Store)` in the file has an owner this table decided about -- so a binding form
+#: nobody has thought of turns this RED BY CONSTRUCTION rather than leaving a hole. That is the
+#: one shape in this family that has never been defeated: every floor here has been beaten by
+#: narrowing the subject, and no exhaustiveness assertion has been.
+#:
+#: WHY `Name(ctx=Store)` IS THE WHOLE SUBJECT: it is every name Python binds through an
+#: assignment-like form. `def`, `class`, `import`, `global` and `nonlocal` bind through their own
+#: node types and bind no `Name` at all; `except E as e`, `match`'s patterns and a function's
+#: parameters carry their name as a plain `str` on the owning node; `del x` is `ctx=Del`; and
+#: `d[k] = v` or `o.a = v` put the `Store` on a `Subscript` or an `Attribute`, whose inner `Name`
+#: is a `Load`. None of those can hold a page a renderer returned.
+#:
+#: THE FOUR THAT CAN HOLD A RENDERER'S PAGE, each having a `.value` that is the thing bound:
+_PAGE_BINDERS = (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)
+#: AND THE FOUR THAT CANNOT, which is a DECISION and not a skip. Each of these binds a name to an
+#: ELEMENT of something rather than to the thing itself, so the renderer that produced the
+#: something is not what the name holds. For a `for` loop that is also why the refuted widening of
+#: this row failed: `__main__.py` iterates a generator of `(lineno, raw)` pairs feeding a per-item
+#: renderer, so for a tuple target the iterable is NOT the page, and treating it as one is a false
+#: positive at HEAD naming `__main__._unreadable`. A `for` loop that prints its target IS already
+#: read as printing its iterable, by the printed-expression arm further down, which is the place
+#: that question can be answered.
+_NOT_PAGE_BINDERS = (ast.For, ast.AsyncFor, ast.comprehension, ast.withitem)
+#: WHAT A TARGET MAY BE WRAPPED IN on the way to its owner. `a, (b, c) = ...` nests.
+_TARGET_CONTAINERS = (ast.Tuple, ast.List, ast.Starred)
+
+#: WHICH OF THOSE EIGHT DECISIONS THIS TREE ACTUALLY EXERCISES, MEASURED BY DELETING EACH ONE AND
+#: WATCHING WHAT THE ASSERTION BELOW DOES -- because two of them are reasoning rather than
+#: measurement and the next reader is entitled to know which:
+#:
+#: * EXERCISED, each red when its entry is deleted: `Assign`, `AnnAssign` (17 bindings in
+#:   `__main__`), `AugAssign` (17), `For` (45), `comprehension` (35), `withitem` (4).
+#: * NOT EXERCISED: `AsyncFor` -- this package contains no `async` construct of any kind -- and
+#:   `NamedExpr`, which occurs 8 times in `runprov/` and not once inside a `__main__` function.
+#:   Deleting either leaves this GREEN, so those two entries are decisions made in ADVANCE. They
+#:   are kept rather than left out on purpose: both answers are the obvious ones -- a walrus binds
+#:   the value of an expression, an `async for` binds an element -- and a red asking a human to
+#:   write a line whose content is already settled is a red over no defect.
+
+
 def _printed_renderers() -> dict[tuple[str, str], set[str]]:
     """Every page `__main__` prints, DERIVED FROM `__main__` BY AST rather than listed.
 
@@ -40447,6 +40502,14 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
     — resolved through the wrappers a caller puts round a page (`"\\n".join(...)`, `+ "\\n"`,
     a comprehension) and through one local assignment, so `result = report.render(...)`
     followed by `for line in result.lines` resolves to `report.render`.
+
+    **HOW A LOCAL NAME IS RESOLVED, AND WHY IT IS NOT A LIST OF ASSIGNMENT SHAPES ANY MORE**
+    [Audit O, guards-4]. The binder read `ast.Assign`, then `Assign` with a tuple target, and
+    `AnnAssign` was a live false green behind both: `page: str = prune_mod.render(...)` bound
+    nothing, so `print(page)` resolved to nothing and `prune.render` was not in this set at all.
+    Every `Name(ctx=Store)` in the file is now walked up to the form that binds it and that form
+    must be one the table above decided about; anything else fails the assertion at the end of
+    this function. The table and the reasoning are at `_PAGE_BINDERS`.
 
     WHAT IS EXCLUDED, AND BOTH EXCLUSIONS ARE DERIVED RATHER THAN NAMED:
 
@@ -40522,33 +40585,37 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
         )
 
     found: dict[tuple[str, str], set[str]] = {}
+    #: EVERY `Name` THIS FILE BINDS AND NO TABLE DECIDED ABOUT. Asserted below, so a binding form
+    #: that arrives in a future Python -- or one nobody thought of in this one -- is RED here
+    #: instead of silently holding a page nothing checks [Audit O, guards-4].
+    unaccounted: dict[str, str] = {}
     for fdef in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        parent: dict[ast.AST, ast.AST] = {}
+        for node in ast.walk(fdef):
+            for child in ast.iter_child_nodes(node):
+                parent[child] = node
         assigned: dict[str, tuple[str, str]] = {}
         for node in ast.walk(fdef):
-            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
-                where = resolve(node.value.func)
+            if not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)):
+                continue
+            #: UP THROUGH THE CONTAINERS TO THE OWNER, which is what makes a tuple-unpacked
+            #: renderer the same as a plainly assigned one [Audit N, guards-1]: every `Name`
+            #: element binds to the SAME `(module, function)`, because the call is one call and
+            #: each name holds a part of its one answer. `header, row =
+            #: resources_mod.snakemake_row(m)` is printed line by line immediately below -- a
+            #: shape ALREADY IN THE TREE that this derivation could not see, so the docstring's
+            #: *a new page fails the file the day it is written* was false for a print shape
+            #: already shipped.
+            owner = parent.get(node)
+            while isinstance(owner, _TARGET_CONTAINERS):
+                owner = parent.get(owner)
+            if isinstance(owner, _PAGE_BINDERS):
+                value = owner.value
+                where = resolve(value.func) if isinstance(value, ast.Call) else None
                 if where:
-                    for target in node.targets:
-                        if isinstance(target, ast.Name):
-                            assigned[target.id] = where
-                        #: A RENDERER BOUND BY TUPLE UNPACKING IS STILL THAT RENDERER'S PAGE
-                        #: [Audit N, guards-1]. Every `Name` element binds to the SAME
-                        #: `(module, function)`, because the call is one call and each name
-                        #: holds a part of its one answer. `__main__:2034` is
-                        #: `header, row = resources_mod.snakemake_row(m)`, printed line by
-                        #: line immediately below — a shape ALREADY IN THE TREE that this
-                        #: derivation could not see, so the docstring's *a new page fails the
-                        #: file the day it is written* was false for a print shape already
-                        #: shipped. Measured: with `prune.render`'s chokepoint removed and its
-                        #: print site rewritten this way, the structural half PASSED and the
-                        #: whole suite was RC=0, while the forgery reproduced from one argv
-                        #: argument — and `prune` is the one renderer no behavioural leg may
-                        #: ever reach, because `prune` deletes, which is what this half of
-                        #: the family exists for.
-                        elif isinstance(target, (ast.Tuple, ast.List)):
-                            for element in target.elts:
-                                if isinstance(element, ast.Name):
-                                    assigned[element.id] = where
+                    assigned[node.id] = where
+            elif not isinstance(owner, _NOT_PAGE_BINDERS):
+                unaccounted[f"{fdef.name}:{node.lineno}: {node.id}"] = type(owner).__name__
         printed: list[ast.expr] = []
         for node in ast.walk(fdef):
             if isinstance(node, ast.Call):
@@ -40578,6 +40645,18 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
                 where = assigned.get(inner.value.id)
             if where and not (where[0] == "_report" and where[1] in _CHOKEPOINTS):
                 found.setdefault(where, set()).add(fdef.name)
+    #: THE EXHAUSTIVENESS ASSERTION, WHICH IS WHAT MAKES THE TABLE ABOVE SOMETHING OTHER THAN A
+    #: LIST [Audit O, guards-4]. It is the only clause in this family that goes red for a form
+    #: nobody anticipated. Measured able to fail: delete `ast.AnnAssign` from `_PAGE_BINDERS`
+    #: without adding it to `_NOT_PAGE_BINDERS` and this names 17 bindings in `__main__.py`.
+    assert not unaccounted, (
+        f"these names are bound by a form neither `_PAGE_BINDERS` nor `_NOT_PAGE_BINDERS` has a "
+        f"decision about, so this derivation cannot say whether they hold a page: {unaccounted}. "
+        f"Decide: if the form binds the VALUE of an expression, add it to `_PAGE_BINDERS` (it "
+        f"must have a `.value`); if it binds an ELEMENT of something, add it to "
+        f"`_NOT_PAGE_BINDERS` with the reason. Do not delete this assertion -- it is the only "
+        f"thing here that can fail for a binding form nobody has thought of"
+    )
     return found
 
 
