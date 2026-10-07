@@ -23110,6 +23110,139 @@ def test_a_suffix_outside_the_allowlist_takes_the_sidecar_whatever_the_marker_re
     capsys.readouterr()
 
 
+def test_the_value_open_output_compares_is_the_value_it_writes(tmp_path, capsys):
+    r"""`open_output(p, comment=x)` and `open_output(p, comment=f"{x}")` must do the same thing.
+
+    **THIS IS `product-1b`'S GUARD, AND IT DID NOT EXIST** [Audit O, product-1b; Audit P,
+    resolver-3]. The `str`-Enum defect is FIXED in `run.py` -- `marker = f"{comment}"`, compare
+    the rendering -- and the derived sentinel axis in
+    `test_a_suffix_outside_the_allowlist_takes_the_sidecar_whatever_the_marker_renders_as`
+    cannot reach it: that loop iterates suffixes OUTSIDE the allowlist, where `known is None`
+    and no rendering of anything can equal a declared marker, so `_Marker.HASH` there is inert.
+    The defect's real case is an ALLOWLISTED suffix, which that loop structurally never visits.
+    A sample whose subject is the population is a shape that cannot fail.
+
+    **AND THE ROUTING IS DELIBERATELY NOT ASSERTED, because no assertion about it can be green
+    on all five interpreters.** `f"{member}"` for `class Marker(str, Enum): HASH = "# "` is the
+    member's VALUE `'# '` on 3.10 and `'Marker.HASH'` on 3.11 through 3.14 -- so *this pins
+    in-band* is true on 3.10 and false on 3.11+, and *this takes the sidecar* is the reverse.
+    Either spelling turns one matrix leg red over no defect, which is a check that cannot pass.
+    The obvious widening of the test above is exactly that shape and it was measured red.
+
+    **WHAT IS INTERPRETER-INDEPENDENT IS THE EQUIVALENCE.** `run.py`'s comment says *the value
+    compared is the value written*; that sentence is a PROPERTY, and this is it. Whatever
+    `f"{x}"` renders to on this interpreter, passing `x` and passing that rendering must produce
+    the same artifact bytes and the same answer about a sidecar. The property holds on every
+    interpreter without naming one, and it is red on every interpreter over the reverted code --
+    on 3.10 through the `None` case and on 3.11+ through the `str`-Enum on the allowlisted
+    suffixes, which is the half nothing else reaches.
+
+    BOTH AXES ARE DERIVED FROM `run.py`'S OWN TABLES. The suffixes are the whole allowlist --
+    where the `str`-Enum case lives -- plus the same out-of-table derivation the test above
+    uses, so the `None` case is in too and a suffix added to either table is covered the day it
+    is added. The sentinels are the three shapes the rendered comparison closed, plus the
+    plausible real values.
+
+    STDERR IS NOT COMPARED, and that is not an omission: the `PROVENANCE NOTE` for a
+    `PIN_ALTERNATIVE` suffix interpolates `{comment!r}`, which is `None` for one leg and
+    `'None'` for the other BY DESIGN -- the note tells a person which value they passed. The
+    artifact and the sidecar are what a consumer reads, and those are what must not move.
+    """
+    #: THE ALLOWLIST ITSELF, which is where the defect's real case lives, plus everything the
+    #: other tables call unsafe or offer an alternative for, minus the binary refusals.
+    inside = sorted(runprov.run.PIN_INLINE)
+    outside = sorted(
+        (set(runprov.run.PIN_UNSAFE) | set(runprov.run.PIN_ALTERNATIVE))
+        - set(runprov.run.PIN_INLINE)
+        - set(runprov.run.PIN_BINARY)
+        | {".zzz"}
+    )
+    suffixes = inside + outside
+    assert len(inside) >= 15 and len(outside) >= 25, (
+        f"the premise: {len(inside)} allowlisted and {len(outside)} out-of-table suffixes"
+    )
+
+    class _Marker(str, enum.Enum):
+        """The defect's own shape: `==` to `'# '` everywhere, rendered differently on 3.11+."""
+
+        HASH = "# "
+
+    class _AlwaysEqual:
+        def __eq__(self, other: object) -> bool:
+            return True
+
+        def __hash__(self) -> int:
+            return 0
+
+        def __str__(self) -> str:
+            return "ALWAYS"
+
+    sentinels: tuple[object, ...] = (
+        None,
+        False,
+        0,
+        _Marker.HASH,
+        _AlwaysEqual(),
+        "# ",
+        "",
+        "; ",
+    )
+    #: THE INSTRUMENT IS LIVE, AND ON 3.11+ IT SAYS SO. If `f"{_Marker.HASH}"` ever rendered the
+    #: member's value on every interpreter the `str`-Enum half of this test would be testing
+    #: nothing; this records which half of the divergence this interpreter is on, so a future
+    #: green is readable rather than merely green.
+    rendered = f"{_Marker.HASH}"
+    assert rendered in ("# ", "_Marker.HASH"), (
+        f"a `str`-Enum member renders as {rendered!r} here, which is neither its value nor its "
+        f"name -- the divergence this test is built around has changed shape"
+    )
+
+    project = _project(tmp_path)
+    src = tmp_path / "in.tsv"
+    src.write_text("x\n1\n", encoding="utf-8")
+    run = runprov.Run("a", project=project)
+    run.input(src)
+    body = "col\n1\n"
+
+    #: THE TWO LEGS GO IN TWO DIRECTORIES UNDER ONE NAME, because the in-band pin is
+    #: path-independent -- measured -- so differing bytes mean the ROUTING differed and not the
+    #: filename.
+    divergent: dict[str, str] = {}
+    pairs = 0
+    for suffix in suffixes:
+        for index, sentinel in enumerate(sentinels):
+            written: list[tuple[str, bool]] = []
+            for leg, value in (("raw", sentinel), ("rendered", f"{sentinel}")):
+                out = tmp_path / leg / f"pair{index}{suffix}"
+                with run.open_output(out, comment=value) as fh:  # type: ignore[arg-type]
+                    fh.write(body)
+                written.append(
+                    (
+                        out.read_text(encoding="utf-8"),
+                        out.with_name(out.name + ".prov.txt").is_file(),
+                    )
+                )
+            pairs += 1
+            if written[0] != written[1]:
+                divergent[f"{suffix} with {sentinel!r}"] = (
+                    f"passing the value wrote {written[0][0][:40]!r} (sidecar "
+                    f"{written[0][1]}) and passing its rendering {f'{sentinel}'!r} wrote "
+                    f"{written[1][0][:40]!r} (sidecar {written[1][1]})"
+                )
+    capsys.readouterr()
+    assert pairs == len(suffixes) * len(sentinels), "every pair must have been written"
+    assert not divergent, (
+        f"[Audit O product-1b] `open_output` compared a value it did not write, for "
+        f"{len(divergent)} of {pairs} pairs: {dict(sorted(divergent.items())[:6])}. `run.py`'s "
+        f"own comment says *the rendered string is what goes onward, so the value compared is "
+        f"the value written* -- this is that sentence as a property. A `str`-Enum, `None` and an "
+        f"`__eq__`-always-True object each compared EQUAL to a declared marker while rendering "
+        f"as something else, and the artifact that came out was unparseable and verified OK. "
+        f"Render first and compare the rendering; do not add a type to a blocklist, which would "
+        f"also refuse a legitimate `str` subclass"
+    )
+
+
 def test_open_output_refuses_a_comment_passed_where_a_mode_would_go(tmp_path):
     """`comment` IS KEYWORD-ONLY, because the signature invited the mistake
     [Audit N, writer-7]. `open_output(path, comment="# ")` reads exactly like
