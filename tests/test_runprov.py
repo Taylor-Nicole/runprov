@@ -33519,6 +33519,13 @@ CORPUS_RECIPES: dict[str, list[str]] = {
 #: reading one, so they would write into the fixture rather than interrogate it; `prune`
 #: deletes in-flight markers, and a test that mutates the corpus is a test that changes its
 #: own subject between runs.
+#:
+#: AND THAT REASON IS ABOUT THE CORPUS, NOT ABOUT `prune` [Audit Q, decision-1]. It was read for
+#: six audits as *no behavioural leg may ever reach `prune`*, and a live forgery in
+#: `prune.apply` sat behind that reading with every structural check silent. A leg that stubs
+#: `plan` touches no filesystem and deletes nothing:
+#: `test_prune_does_not_forge_a_line_from_a_marker_filename` is that leg, it is
+#: platform-neutral, and it is what holds the five shapes the AST derivation cannot see.
 CORPUS_NOT_READERS = {"exec", "capture", "prune"}
 
 
@@ -41234,9 +41241,17 @@ def test_every_page_main_prints_reaches_an_escaping_chokepoint():
 
     **THE LIMIT, STATED.** This asserts a page can REACH the transform, not that every line
     went through it. The behavioural half is the property test below, which runs the commands
-    against a forged tree and counts lines. This half is what covers the renderers no fixture
-    may point at: `prune` DELETES, so `CORPUS_NOT_READERS` excludes it by name and a
-    behavioural leg for it would mutate its own subject.
+    against a forged tree and counts lines.
+
+    **AND THE CLAUSE THAT USED TO END THIS PARAGRAPH IS WITHDRAWN** [Audit Q, decision-1]. It
+    read *this half is what covers the renderers no fixture may point at: `prune` DELETES, so
+    `CORPUS_NOT_READERS` excludes it by name and a behavioural leg for it would mutate its own
+    subject.* The premise is true only of a leg pointed at a real directory. Stub `plan` and
+    nothing touches the filesystem at all --
+    `test_prune_does_not_forge_a_line_from_a_marker_filename` does exactly that, it is
+    platform-neutral where the three `_can_name_a_file_with_a_newline` legs are not, and it
+    caught the live forgery in `prune.apply` that THIS half was silent about. So the reasoning
+    that made this the only possible check was the reason the defect stayed invisible.
     """
     printed = _printed_renderers()
     #: THE FLOOR IS SLACK AND SAYS SO, WHICH IS THE WHOLE OF WHAT IT CLAIMS [Audit N,
@@ -41628,6 +41643,84 @@ def test_no_page_this_package_prints_carries_a_character_a_terminal_acts_on(
         f"the newline forgery reached a chokepoint in only these renderers: "
         f"{sorted(forged_lines)}. Fifteen is what this fixture measured where every channel "
         f"exists, {floor} is owed on this host, and fewer means a leg has gone quiet."
+    )
+
+
+def test_prune_does_not_forge_a_line_from_a_marker_filename(tmp_path, capsys, monkeypatch):
+    r"""[Audit Q, decision-1] `prune.apply`'s failure line, held by the VALUE ON THE STREAM.
+
+    **THIS IS THE LEG THAT HOLDS WHAT THE AST DERIVATION CANNOT.** The structural half next
+    door -- `test_every_page_main_prints_reaches_an_escaping_chokepoint` -- resolves printed
+    expressions to renderers by syntax, and five ordinary refactorings defeat it while still
+    putting the forged bytes on stderr: a module-level alias, a two-step alias,
+    `functools.partial`, `getattr(mod, "render")` and a dict lookup. They are declared at
+    `_has_renderer_call` and they are all INVISIBLE TO THIS TEST, because this one does not
+    read the syntax at all: it runs the command and counts the lines. *"This string becomes a
+    line a person reads"* is a runtime property, and no AST-only derivation can hold it.
+
+    **AND THE REASON THIS LEG WAS THOUGHT IMPOSSIBLE WAS TOO STRONG.** `CORPUS_NOT_READERS`
+    excludes `prune` because *"prune deletes in-flight markers, and a test that mutates the
+    corpus is a test that changes its own subject between runs"*, and the structural half's own
+    docstring says *"`prune` DELETES, so a behavioural leg for it would mutate its own
+    subject"*. Both are true of a leg pointed at a real directory and neither is true here:
+    `plan` is stubbed, so the forged path is CONSTRUCTED AND NEVER CREATED, the directory is
+    never made, `unlink` is replaced before it can run, and **nothing touches the filesystem at
+    all.** The already-shipped `test_prune_exits_1_when_a_marker_would_not_go` had been
+    monkeypatching `unlink` to raise and deleting nothing since before this row was filed.
+
+    **WHICH MAKES IT PLATFORM-NEUTRAL, AND THAT IS STRICTLY BETTER THAN THE THREE EXISTING
+    LEGS.** The forgery channel here is a FILENAME, which is the channel `verify` and `check`
+    are attacked through -- and those two are gated behind `_can_name_a_file_with_a_newline`,
+    so on Windows they are dropped from `owed` and the floor above falls by two. A name that is
+    never written to a filesystem needs no filesystem to accept it, so this leg keeps its whole
+    force on every leg of the matrix.
+
+    Measured on 3.10 / 3.11 / 3.12 / 3.13 / 3.14, with the import proved and the arrival
+    control live: with `prune.apply` returning its messages raw, `rc=1` and one bare forged
+    line; with `printable_lines` applied, `rc=1` and zero. The negative control -- the same
+    leg with the ordinary name `dead.json` -- is green BOTH ways, so this is not trivially red.
+    """
+    #: A NAME, NOT A FILE. Legal on POSIX, never created here, and the point of the row: one
+    #: newline inside one interpolated field forges a whole line on the page.
+    forged = "a\nGATE: MET (exit 0)\nb.json"
+    doomed = tmp_path / ".incomplete" / forged
+    monkeypatch.setattr(
+        runprov.prune,
+        "plan",
+        lambda directory, **kw: runprov.prune.Plan([doomed], 0, 0, 0, 0, 0, 0),
+    )
+    monkeypatch.setattr(
+        pathlib.Path,
+        "unlink",
+        lambda self, *a, **k: (_ for _ in ()).throw(PermissionError(13, "denied")),
+    )
+    code = cli.main(["prune", "--log", str(tmp_path / "runs.jsonl")])
+    err = capsys.readouterr().err
+
+    #: THE ARRIVAL CONTROL, FIRST, because every assertion below is vacuous without it and a
+    #: behavioural leg whose fixture never reaches the code under test passes forever. It is
+    #: deliberately a prefix that survives BOTH outcomes -- escaped or raw -- so it cannot
+    #: double as the property and steal its diagnostic.
+    assert code == 1 and "could not remove a" in err, (
+        f"this leg no longer reaches `prune.apply`'s failure line, so it proves nothing about "
+        f"escaping: exit {code}, stderr {err!r}. `plan` must hand back a `remove` entry and "
+        f"`unlink` must raise."
+    )
+    #: THE NAMED DEFECT, BEFORE ANY TOTAL. A bare line reading exactly this is what a CI log
+    #: scraped for `GATE:` reads first, and it is the line this whole family exists to stop.
+    bare = [n for n, line in enumerate(err.splitlines(), 1) if line == "GATE: MET (exit 0)"]
+    assert not bare, (
+        f"stderr line(s) {bare} read exactly `GATE: MET (exit 0)` and nothing on the page put "
+        f"them there -- they came out of a marker FILENAME interpolated into "
+        f"`prune.apply`'s failure message. Apply `printable_lines` where those messages leave "
+        f"`apply`; escaping them one f-string at a time is the list of call sites this "
+        f"package has had to widen nine times. Page: {err!r}"
+    )
+    #: AND THE VALUE IS STILL THERE, ESCAPED, which is the other half: a transform that
+    #: DELETED the newline would satisfy the clause above and lose the user's filename.
+    assert "could not remove a\\nGATE: MET (exit 0)\\nb.json" in err, (
+        f"the forged name must survive on the page in its escaped spelling -- the user needs "
+        f"to know WHICH file would not go. Page: {err!r}"
     )
 
 
