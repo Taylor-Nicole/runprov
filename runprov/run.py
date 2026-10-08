@@ -2489,10 +2489,36 @@ class Run:
         #      the artifact would be DIFFERENT BYTES on 3.10 than on 3.12 -- which is the same
         #      rule `newline=""` is non-negotiable for, forty lines below.
         #
-        # Rendering first and comparing the rendering closes both, plus an `__eq__`-always-True
-        # object, and it is not a blocklist: a legitimate `str` subclass equal to `"# "` renders
-        # `"# "` and still pins in-band. The rendered string is what goes onward, so the value
-        # compared is the value written.
+        # Rendering first and comparing the rendering closes THE COMPARISON HALF, plus an
+        # `__eq__`-always-True object, and it is not a blocklist: a legitimate `str` subclass
+        # equal to `"# "` renders `"# "` and still pins in-band. The rendered string is what goes
+        # onward, so the value compared is the value written.
+        #
+        # AND IT CLOSES THAT HALF ONLY -- THIS COMMENT SAID *closes both* AND THAT WAS WRONG
+        # [Audit Q, assertion-5]. Case 2 above has two halves: the comparison used a value that
+        # was not the one written (closed here), and the value RENDERS DIFFERENTLY ON DIFFERENT
+        # INTERPRETERS (not closed, and not closeable here). A `str`-Enum marker still produces,
+        # on 3.10 against 3.11+, a different artifact, a different recorded `sha256`
+        # (`1ff4abda02f06e1a` against `6ec84fc3052b7304`), a different recorded OUTPUT SET (3
+        # entries against 4, the sidecar appearing) and different sidecar and header bytes --
+        # because `f"{member}"` is the member's VALUE on 3.10 and `'Marker.HASH'` on 3.11
+        # through 3.14. Rendering first makes the comparison honest; it does not make the
+        # rendering the same.
+        #
+        # NO SINGLE-INTERPRETER ASSERTION CAN HOLD THE RESIDUE, AND THE MATRIX CANNOT SEE IT
+        # EITHER. The equivalence test
+        # (`test_the_value_open_output_compares_is_the_value_it_writes`) is deliberately an
+        # EQUIVALENCE -- passing a value and passing its rendering must agree -- and that is
+        # green on every leg precisely because BOTH legs run on ONE interpreter. Comparing the
+        # two interpreters needs two of them in one assertion, which no leg of the matrix is.
+        # Spelling the routing out instead (*this pins in-band*) is RED on exactly one leg over
+        # no defect, which is a check that cannot pass.
+        #
+        # SO THE RESIDUE IS A DECLARED, UN-HELD CLAIM: two machines running the same code on
+        # 3.10 and on 3.12 record different digests for the same artifact. It is NOT a wrong
+        # record -- every record is correct on the interpreter that wrote it, nothing is forged
+        # -- and it is NOT a false green, because no guard claims it. It is a cross-interpreter
+        # irreproducibility, latent until somebody passes a `str`-Enum.
         marker = f"{comment}"
         inline = (known is not None and marker == known) or (
             alternative is not None and marker == alternative[0]

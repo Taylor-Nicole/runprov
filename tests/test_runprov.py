@@ -7495,13 +7495,48 @@ def _writer_names(module_stem: str) -> dict[str, str]:
     `TypeError` while `is` answers `False`, and an `__eq__`-always-True callable is a false
     positive under `in` and correct under `is`.
 
-    TWO NARROW MISSES, DECLARED AND NOT CHASED [Audit P, exhaustive-7]. A module-level
-    `__getattr__` supplying a writer lazily, and a `functools.wraps` wrapper around one, are both
-    invisible to `vars(module)` identity. Both are CONTAINED rather than open: the 40-site
-    equality in `test_no_writer_argument_carries_a_newline_of_its_own` moves if a site appears or
-    disappears, and the definer-subject assertion holds `_report.py` itself. Neither shape exists
-    in this package and neither is worth a clause that would also have to decide what a wrapper
-    IS.
+    **THE CONTAINMENT CLAIM IS STRUCK, AND IT WAS FALSE** [Audit Q, assertion-2]. This paragraph
+    said a module-level `__getattr__` and a `functools.wraps` wrapper were *"CONTAINED rather
+    than open: the 40-site equality in `test_no_writer_argument_carries_a_newline_of_its_own`
+    moves if a site appears or disappears"*. Measured: `functools.partial(diagnostic)` is a clean
+    full-suite FALSE GREEN on all three discriminators -- RC=0, 1 230 passed, 9 skipped, 2
+    missing / 0 partial, with the site count UNCHANGED AT 40 -- because a partial ADDS NO CALL
+    SITE. The collapsed note reached stderr byte for byte and the plant was proved live at
+    runtime (`sinks._warn.func is _report.diagnostic`). So the equality the containment rested on
+    does not move, and nothing else did either: the +3 planted statements were 100% covered, so
+    coverage did not catch it.
+
+    **THE CLASS, IN ITS PLACE, AND IT IS ONE SENTENCE: a module-level binding that HOLDS the
+    writer with no syntactic call to it.** `functools.partial`, a module-level alias, a
+    `__getattr__` that supplies one lazily and `globals()["_write"]` are all that one shape; a
+    `functools.wraps` DECORATOR is not, because it leaves a call site behind and is caught
+    (measured: 41 sites and RED, with the newline clause naming the line).
+
+    **AND NO TOTAL FORM EXISTS. BOTH CANDIDATES WERE BUILT AND BOTH ARE REFUSED, so narrowing
+    this claim is the TERMINAL state here and not a retreat:**
+
+    * THE RUNTIME FORM CANNOT PASS. Walking `gc.get_referents` catches all eight shapes and
+      flags every module-level callable in any module that holds a writer, because a function's
+      referents include its `__globals__`. Audit Q's skeptic measured 23 at HEAD; a straight
+      count of module-level callables in the three modules `_WRITER_SURFACE` names is 61 on this
+      host. The scopes differ and the direction does not: it is nowhere near zero, so it cannot
+      pass.
+    * THE LIST-FREE AST FORM IS RED AT HEAD with 6 false positives, all names that merely
+      COLLIDE with a writer's name, and fixing that needs scope analysis. Refused by the auditor
+      that wrote it.
+
+    **THE OPTIONAL THREE-ATTRIBUTE CLAUSE IS REFUTED AND IS DELIBERATELY NOT HERE.** Checking
+    `__wrapped__`/`func`/`__self__` catches 3 of the 8 shapes and is VACUOUSLY GREEN at HEAD, so
+    it would read as cover for a class it does not cover.
+
+    **`@staticmethod` IS UNREACHABLE BY CONSTRUCTION, NOT A GAP** -- keeper-verified and
+    re-measured here: `_report.py` has 9 top-level functions, 0 classes and 0 nested defs, so
+    there is no class body for one to live in. One of the six closure misses deserves declaring
+    and the rest are noise.
+
+    REALISM, CORRECTED: a no-argument `functools.partial(diagnostic)` is implausible as something
+    somebody would write. `functools.partial(progress, state=...)` is entirely plausible and
+    escapes identically, which is what makes this a declared residue rather than a curiosity.
     """
     module = importlib.import_module(f"runprov.{module_stem}")
     writers = {getattr(runprov._report, name): name for name in _writer_objects()}
@@ -23382,6 +23417,42 @@ def test_the_value_open_output_compares_is_the_value_it_writes(tmp_path, capsys)
     `PIN_ALTERNATIVE` suffix interpolates `{comment!r}`, which is `None` for one leg and
     `'None'` for the other BY DESIGN -- the note tells a person which value they passed. The
     artifact and the sidecar are what a consumer reads, and those are what must not move.
+
+    **THIS TEST IS A TAUTOLOGY AT HEAD AND A REAL GUARD, AND THE SECOND HALF IS THE DECIDING
+    MEASUREMENT** [Audit Q, assertion-5]. `comment` has exactly one non-stderr use in
+    `open_output` -- `marker = f"{comment}"` on the first line -- so at HEAD the two legs are
+    rendered identically before anything looks at them, and the property is trivially true for
+    ANY sentinel. That is what makes the axis question below answerable rather than alarming. But
+    over a COMPLETE revert of the render-first fix it is RED, so it is not a no-op.
+
+    MEASURED HERE, on 3.12, over a revert verified by an AST CONTROL -- no `marker` `Name` node
+    surviving anywhere in `open_output`, because a TEXTUAL control is useless where the prose
+    uses the word 41 times:
+
+      * **41 of the 336 pairs diverge.**
+      * **Two of the eight sentinels carry the whole catch:** `_Marker.HASH` 17 pairs (the 17
+        allowlisted suffixes) and the `__eq__`-always-True object 24. `None`, `False`, `0`,
+        `'# '`, `''` and `'; '` carry ZERO between them -- they are decoration.
+      * An UNLISTED sentinel whose `__str__` is `'# '` but which is not `==` to it catches 17,
+        and they are THE SAME 17 `_Marker.HASH` already catches. So it duplicates the catch
+        rather than extending it.
+
+    **SO THE AXIS COULD BE REDUCED, NOT EXTENDED, and the earlier clearance argument is withdrawn
+    even though its conclusion survives.** It read *"72 of 72 SAME at HEAD, so the
+    missing-sentinel class is EMPTY"*, which proves only the tautology established one paragraph
+    above: at HEAD every sentinel is SAME, so a survey of exotic sentinels at HEAD cannot
+    distinguish a harmless axis from an inert one. The measurement that CAN is the one over the
+    revert, and it says the axis is larger than it needs to be.
+
+    **AUDIT Q RECORDED 84 of 336 AND 3 of 8 FOR THIS, AND NEITHER REPRODUCED HERE.** What
+    reproduced exactly is the unlisted sentinel's 17; what reproduces in direction is that the
+    test is RED over the revert and that most of the axis contributes nothing. The rate is the
+    instrument's number and the direction is the finding, so the figures above are dated to this
+    host and this revert rather than offered as the fact.
+
+    **BOTH CANDIDATE GUARDS FOR THE CROSS-INTERPRETER RESIDUE ARE REFUTED, and the residue is
+    declared in `run.py` where the code is**, not here: `f"{x}" != str(x)` is red on 3.10 ALONE
+    over no defect, and an `Enum` blocklist is the type blocklist `run.py` rejects in writing.
     """
     #: THE ALLOWLIST ITSELF, which is where the defect's real case lives, plus everything the
     #: other tables call unsafe or offer an alternative for, minus the binary refusals.
@@ -41105,6 +41176,47 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
     An f-string built in `__main__` and printed there is NOT in this set: it is `__main__`'s
     own line and not a module's page. The 51 `print(..., file=sys.stderr)` sites are that
     shape, and Audit M's escape-4 states why they are not routed through one transform.
+
+    **AND THAT EXCLUSION IS A LIVE FORGING SURFACE THAT NOTHING GUARDS** [Audit Q, decision-1,
+    the second live forgery]. One of those composed stderr lines -- `_show`'s `head` -- forged a
+    bare `GATE: MET (exit 0)` line from ONE argv argument at EXIT 0, reproduced at HEAD with no
+    plant and no permission trickery, and it is now escaped at its emission point. NO COUNT IS
+    CLAIMED for how many of the other 50 interpolate a value from outside. `_acted_on` whitelists
+    `\\n` by construction and the line-count oracle watches only chokepoints, so neither reaches
+    them. That is an OPEN row, not a closed one.
+
+    **AND WHAT REACHES `printed` AT ALL IS AN ENUMERATION -- THE HOLE IS FOUR SHAPES WIDE AND IS
+    DECLARED HERE AS A CLASS** [Audit Q, decision-4]. The collector below matches `print` by
+    LITERAL NAME and `.write`/`.writelines` on an `Attribute` whose attr is `stdout` or `stderr`.
+    A page emitted any other way is never examined, never resolved, never excused and never
+    refused -- so it is outside the `unresolved` assertion's SUBJECT, which is why that assertion
+    and this test's claim are two sentences and not one. Each of these four was proved a live
+    forgery at runtime and each is GREEN under every fix considered for this row:
+
+      out = sys.stderr; out.write(render(...) + "\\n")   # a function-local alias
+      sys.__stderr__.write(render(...) + "\\n")          # a FOURTH literal spelling, not an alias
+      _OUT = sys.stderr   (at MODULE level)              # a hole INSIDE the proposed fix, which
+                                                         # walks `ast.walk(fdef)` only
+      emit = print; emit(render(...))                    # the print-by-literal-name half
+
+    **THE PROPOSED FIX IS NOT SHIPPED, AND THAT IS THE POINT OF THE ROW.** Widening the collector
+    to a `Name` receiver aliased to `sys.stderr` inside the function is not vacuous -- it has a
+    reachable positive and goes red over its own plant with no false positive -- but it closes
+    1 OF 4, and declaring two escapes where there are at least four is the *"worse than an
+    undeclared gap"* shape this series has now filed three times. The class above is declared
+    instead; the row stays OPEN.
+
+    **"LATENT" IS STRUCK AS THE ONLY FRAMING.** All 14 `.write`/`.writelines` receivers in
+    `__main__` are the literal `sys.stdout` today, so no forgery exists here now -- but the alias
+    idiom is ALREADY SHIPPED TWICE in `_report.py`, at `:205` in `_write` and at `:318` in
+    `progress_enabled`, both `stream = sys.stderr`. It is house style, one module away.
+
+    **TWO CANDIDATES WERE DISTINGUISHED RATHER THAN LISTED:** `contextlib.redirect_stdout` and a
+    rebound `sys.stdout` create NO NEW EMISSION SITE, so they are not members of this class.
+    And the emission surface is otherwise fully covered, measured: 83 `print` + 13
+    `sys.stdout.write` + 1 `sys.stdout.writelines` = 97 of 97 call sites in `__main__`, with no
+    `logging`, `click`, `parser.error`, `atexit`, `__del__` or traceback-hook emitter anywhere in
+    it.
     """
     main = _repo_root() / "runprov" / "__main__.py"
     tree = ast.parse(main.read_text(encoding="utf-8"))
@@ -41404,6 +41516,41 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
                     unresolved[f"{fdef.name}:{inner.lineno}"] = (
                         f"{type(inner).__name__}: {ast.unparse(inner)[:120]}"
                     )
+    #: AND THE THREE EMISSION SPELLINGS MUST STILL EXIST, OR THE ENUMERATION ABOVE HAS STARTED
+    #: COVERING NOTHING [Audit Q, decision-4]. The collector is keyed to `print` by literal name
+    #: and to `.write`/`.writelines` on `sys.stdout`/`sys.stderr`; that is an exemption-shaped
+    #: claim about WHAT THIS MODULE'S EMISSIONS LOOK LIKE, and an exemption whose subject is never
+    #: asserted silently starts covering nothing or everything. Measured today: 83 `print`, 13
+    #: `sys.std*.write`, 1 `sys.std*.writelines` -- 97 of the 97 emission call sites in
+    #: `__main__`, with all 14 `.write`/`.writelines` receivers being the literal `sys.stdout`.
+    #: This asserts PRESENCE, not the counts: a count here would rot on every new line printed,
+    #: which is the K-37/L-08 defect, while presence going to zero is the only thing that makes
+    #: the derivation vacuous. It is asserted BEFORE the two clauses below on purpose -- if an
+    #: arm of the collector has gone blind, the right red is *this instrument stopped reading*
+    #: and not *this page is unresolved*.
+    spellings = {"print": 0, "sys.std*.write": 0, "sys.std*.writelines": 0}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id == "print":
+            spellings["print"] += 1
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("write", "writelines")
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr in ("stdout", "stderr")
+        ):
+            spellings[f"sys.std*.{node.func.attr}"] += 1
+    absent = sorted(name for name, n in spellings.items() if not n)
+    assert not absent, (
+        f"{absent} no longer occurs anywhere in `__main__.py`, so the arm of this derivation's "
+        f"emission collector that matches it is now dead and the pages it used to see are "
+        f"invisible -- which looks exactly like a module with fewer pages. Counted: "
+        f"{spellings}. Either the spelling really went away, in which case DELETE that arm and "
+        f"this entry together rather than leaving an exemption over nothing, or the emission "
+        f"moved to a spelling this collector does not match -- which is `decision-4`'s open row "
+        f"and the four shapes declared in the docstring above"
+    )
     #: THE EXHAUSTIVENESS ASSERTION, WHICH IS WHAT MAKES THE TABLE ABOVE SOMETHING OTHER THAN A
     #: LIST [Audit O, guards-4]. It is the only clause in this family that goes red for a form
     #: nobody anticipated. Measured able to fail: delete `ast.AnnAssign` from `_PAGE_BINDERS`
