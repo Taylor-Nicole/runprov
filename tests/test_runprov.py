@@ -42314,8 +42314,18 @@ def test_no_command_forges_a_line_from_a_newline_bearing_argument(tmp_path, monk
             attempts.append((f"pos*{len(slot['pos'])}", [""] * len(slot["pos"])))
         for option in slot["opt"]:
             attempts.append((option, [option, "", *([""] * len(slot["pos"]))]))
-        for label, template in attempts:
-            here = tmp_path / f"{command}-{label.strip('-') or 'pos'}"
+        for index, (label, template) in enumerate(attempts):
+            #: THE LABEL IS A DIAGNOSTIC SPELLING, NOT A FILENAME, and naming the attempt's
+            #: directory after it made this leg UNABLE TO RUN on Windows. `pos*2` is the label for
+            #: "this subcommand's two positionals", and `*` is legal in a POSIX name and illegal in
+            #: a Windows path, so `mkdir` raised `OSError: [WinError 123]` and the whole leg errored
+            #: on `windows-latest` while all five POSIX jobs were green [MATRIX RED AT a846bad, the
+            #: commit that introduced this test]. It did not fail there and it did not become a
+            #: floor there -- it ASSERTED NOTHING there, which is the worse outcome of the two the
+            #: docstring below contemplates. So the name is derived from the attempt's INDEX, which
+            #: cannot carry a character any filesystem refuses, and the label still reaches every
+            #: diagnostic in this leg unchanged.
+            here = tmp_path / f"{command}-{index}"
             here.mkdir(parents=True, exist_ok=True)
             #: A REGULAR FILE, so every path below it is unopenable AND uncreatable on every
             #: platform. That is what makes the forged NAME never reach the filesystem.
