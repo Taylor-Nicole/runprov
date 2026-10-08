@@ -43066,3 +43066,106 @@ def test_exec_says_it_cannot_write_the_sidecar_instead_of_raising(tmp_path, monk
         "`_exec` and `_export` both answer an unwritable destination with `cannot write`; only "
         f"{source.count('cannot write')} site(s) say it now"
     )
+
+
+def _matrix_legs(workflow: dict) -> list[dict[str, str]]:
+    """Every job GitHub expands the `test` matrix into, `include` semantics and all.
+
+    `include` IS NOT "APPEND". An entry whose list-valued keys match an existing combination
+    ADDS PROPERTIES TO IT; one that matches nothing adds a new combination. Here `ubuntu-latest`
+    x `3.13` already exists, so the entry carrying `coverage_floor: off` modifies that leg rather
+    than making a seventh — and a test that read `include` as three more jobs would compute 9 and
+    call the README wrong. The expansion is 4 ubuntu legs plus macOS plus Windows, which is 6.
+    """
+    matrix = workflow["jobs"]["test"]["strategy"]["matrix"]
+    axes = {k: v for k, v in matrix.items() if k != "include" and isinstance(v, list)}
+    combos = [dict(zip(axes, values, strict=True)) for values in itertools.product(*axes.values())]
+    for extra in matrix.get("include") or []:
+        shared = {k: str(v) for k, v in extra.items() if k in axes}
+        for combo in combos:
+            if all(str(combo.get(k)) == v for k, v in shared.items()):
+                combo.update({k: str(v) for k, v in extra.items()})
+                break
+        else:
+            combos.append({k: str(v) for k, v in extra.items()})
+    return [{k: str(v) for k, v in c.items()} for c in combos]
+
+
+def test_the_ci_sections_legs_are_the_legs_the_workflow_ACTUALLY_DECLARES():
+    """The README's CI table must name every matrix leg and no others.
+
+    WHY THIS EXISTS, and it is a correction rather than a precaution. On 2026-10-08 that section
+    said *"the hosted matrix on **today's** tree | **not run**"* and *"Since 2026-08-13 every
+    hosted run has failed … Making the repository public … is the one action that closes this"* —
+    while the repository WAS public, `test.yml` triggered on every push, and all eight jobs were
+    green. **The paragraph describing a blockage survived the event it predicted**, and the
+    shipped README told a reader the matrix had not run. It also still carried a three-row leg
+    table (ubuntu/macOS/windows at 769/768/722) from a suite a third the size.
+
+    WHAT THE EXISTING GUARDS COULD NOT SEE.
+    `test_the_commits_the_ci_section_names_are_real_and_in_this_history` checks the SHAs are real
+    ancestors — and its own docstring says *"what this cannot check … whether those runs were
+    green, and how many runs there have been"*. So the shas were honest while the sentences around
+    them were not, which is the gap this closes from the local side.
+
+    AND GREENNESS IS STILL NOT CHECKED HERE, deliberately: it lives on GitHub, and a test needing
+    the network would be skipped in exactly the environments this section exists to be honest
+    about. What IS a local fact is **which legs exist**, and the table claiming a leg the matrix
+    does not run — or missing one it does — is the drift that actually happened.
+
+    AN EQUALITY, NOT A FLOOR [Audit P]. A floor is satisfied by a table that names one leg, which
+    is how the stale three-row table survived; this fails in both directions, so adding a Python
+    version to the matrix without touching the README is red, and so is removing one.
+    """
+    wf = _repo_root() / ".github/workflows/test.yml"
+    if not wf.is_file():  # pragma: no cover - workflows are not in the sdist
+        pytest.skip("test.yml not present")
+    yaml = pytest.importorskip("yaml")
+    section = _readme().split("## What has actually been run", 1)[1].split("\n## ", 1)[0]
+    workflow = yaml.safe_load(wf.read_text(encoding="utf-8"))
+    legs = _matrix_legs(workflow)
+
+    #: THE OS NAMES AS A READER WRITES THEM. Not a per-leg list: the runner label is
+    #: `<platform>-latest` and the prose says the platform, so the mapping is the suffix rule.
+    expected = {f"{leg['os'].removesuffix('-latest')} {leg['python']}".lower() for leg in legs}
+    #: THE PER-LEG TABLE ONLY, FOUND BY ITS OWN HEADER, and that scoping is a correction. Reading
+    #: the whole section let the STATE table satisfy this: deleting the macOS row from the per-leg
+    #: table left `| macOS 3.12 | **green at ...** |` above it, `claimed` was unchanged, and the
+    #: demonstration came back GREEN over a table with a leg missing. The two tables make different
+    #: claims -- greenness per platform, counts per leg -- and the state table groups all four
+    #: ubuntu legs into one row, so only this one is per-leg and only this one can be held to the
+    #: matrix. Anchored on the header rather than a line number.
+    table = section.split("| leg | passed | skipped |", 1)
+    assert len(table) == 2, (
+        "the CI section has no `| leg | passed | skipped |` table; this guard reads that header "
+        "to find the per-leg claims and cannot be satisfied by the state table above it"
+    )
+    body = table[1].split("\n\n", 1)[0]
+    rows = re.findall(r"^\|\s*\**([A-Za-z]+)\s+(3\.\d+)\**\s*\|", body, re.M)
+    claimed = {f"{os_.lower()} {py}" for os_, py in rows}
+    assert claimed == expected, (
+        f"the CI section's leg table and `test.yml`'s matrix disagree. Claimed and not run: "
+        f"{sorted(claimed - expected)}. Run and not claimed: {sorted(expected - claimed)}. "
+        f"The matrix expands to {len(legs)} test leg(s)"
+    )
+
+    #: AND THE JOB TOTAL, which is the legs plus every job that is not the matrix.
+    jobs = workflow["jobs"]
+    total = len(legs) + len([name for name in jobs if name != "test"])
+    #: ENGLISH NUMBER WORDS ARE A CLOSED SET, not a project list — the section writes "eight"
+    #: rather than "8" because it is prose. Either spelling satisfies this.
+    words = "zero one two three four five six seven eight nine ten eleven twelve".split()
+    spelled = words[total] if total < len(words) else str(total)
+    assert re.search(rf"\b({total}|{spelled})\b", section, re.I), (
+        f"`test.yml` defines {total} job(s) — {len(legs)} test leg(s) plus "
+        f"{sorted(n for n in jobs if n != 'test')} — and the CI section says neither "
+        f"{total!r} nor {spelled!r}"
+    )
+
+    #: NOT VACUOUS: the section must name legs at all, or the equality above is `set() == set()`.
+    #: DISTINCT rows, because the state table above the per-leg table names macOS and Windows a
+    #: second time, so the raw match count is 8 against 6 legs and asserting on it is a test of
+    #: this section's layout rather than of its content.
+    assert len(claimed) == len(legs) > 1, (
+        f"the section names {len(claimed)} distinct leg(s) for {len(legs)} in the matrix"
+    )

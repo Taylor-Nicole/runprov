@@ -3029,28 +3029,62 @@ once for exactly that reason.
 
 | | state |
 |---|---|
-| CPython 3.10–3.13 on Linux, self-hosted, **all three gates** | **green at `2e84187`** (2026-09-01) — `ci.py lint`, `ci.py test` on all four interpreters, `ci.py build` |
-| macOS 3.12 | **run once and green** — 2026-08-12, run `31592997325`, commit `faa47a54` |
-| Windows 3.12 | **run once and green** — same run; it skipped 9 of 288 collected there |
-| the hosted matrix on **today's** tree | **not run.** The last fully green matrix was `faa47a54` |
+| the hosted matrix, **all eight jobs** | **green at `5d18b55`** — `lint`, `build`, and six test legs |
+| CPython 3.10, 3.11, 3.12, 3.13 on Linux | **green at `5d18b55`** |
+| macOS 3.12 | **green at `5d18b55`** |
+| Windows 3.12 | **green at `5d18b55`** — the leg that exercises the `msvcrt` locking fallback |
 
-**The matrix has run, and the honest gap is that it has not run recently.** As of
-**2026-09-01**: 227 workflow runs — **38 successful**, 184 failed, 5 cancelled. The last fully
-green hosted run was `31592997325` at `faa47a54`, where every leg passed: lint, build, and all
-six test legs including macOS and Windows, the latter exercising the `msvcrt` locking fallback
-that exists for it.
+**The hosted matrix now runs on every push**, because `test.yml` triggers on `push` and
+`pull_request` and the repository is public. So the table above is about today's tree rather
+than about a tree from weeks ago, which is what this section previously had to admit.
 
-Since **2026-08-13** every hosted run has failed, and almost all died before a runner started:
-GitHub bills Actions minutes for private repositories and this account's billing is failing.
-So the hosted matrix has not seen `show`, `exec`, `verify`, `prune`, the transformation-log
-sink, the exit-code contract, or the CPython 3.13 `resolve()` fix. **Making the repository
-public removes the billing constraint for standard runners, and is the one action that closes
-this.**
+Per leg at `5d18b55`, read off the run rather than restated:
 
-The self-hosted Linux runner is what answers for today's tree in the meantime, and since
-`932a0f3` it runs the **whole** gate — `ci.py lint`, `ci.py test` on all four interpreters,
-and `ci.py build`. It is Linux only and says so in its own run summary: a green tick there is
-evidence about Linux and about nothing else.
+| leg | passed | skipped |
+|---|---|---|
+| ubuntu 3.10 | 1242 | 4 |
+| ubuntu 3.11 | 1242 | 4 |
+| ubuntu 3.12 | 1241 | 5 |
+| ubuntu 3.13 | 1241 | 5 |
+| macOS 3.12 | 1240 | 6 |
+| **windows 3.12** | **1189** | **55** |
+
+**And the honest gap has moved rather than closed: most runs of this workflow have failed.**
+Over its whole life — queried without a window, 447 runs — **133 succeeded**, 298 failed and 16
+were cancelled. Nearly all of the failures are from the billing period quoted in the note below,
+before the repository was public; that is a statement about the account, not the code, and it is
+stated here because a green badge over a mostly-red history is the kind of thing this package
+exists to refuse.
+
+> **CORRECTED 2026-10-08, at `5d18b55`.** This section read: *"the hosted matrix on **today's**
+> tree | **not run.** The last fully green matrix was `faa47a54`"*, and *"Since **2026-08-13**
+> every hosted run has failed … **Making the repository public removes the billing constraint
+> for standard runners, and is the one action that closes this.**"* The repository was made
+> public, which closed it, and the paragraph describing the blockage survived the event it
+> predicted — so a reader was told the matrix had not run while it was running on every push and
+> green on all eight jobs. The superseded figures are kept here on purpose: 227 runs with 38
+> successful **as of 2026-09-01**, last green `31592997325` at `faa47a54`, and
+> *"it skipped 9 of 288 collected"* on Windows against **55 of 1244** now.
+>
+> **The guard this earns, and it is written:**
+> `test_the_ci_sections_legs_are_the_legs_the_workflow_ACTUALLY_DECLARES` holds the per-leg table
+> to `test.yml`'s matrix as an EQUALITY — expanding `include` the way GitHub does, so the four
+> ubuntu legs plus macOS plus Windows are six and the job total is eight. It fails in both
+> directions: dropping the macOS row names `macos 3.12` as run-and-not-claimed, and adding `3.14`
+> to the matrix names `ubuntu 3.14`. Both measured.
+>
+> **What it still does not check, and this is a limit rather than an omission:** whether those runs
+> were GREEN, and the run tally. Both live on GitHub, and a test that needed the network would be
+> skipped in exactly the environments this section exists to be honest about — the same reason
+> `test_the_commits_the_ci_section_names_are_real_and_in_this_history` checks that the commits
+> cited are real ancestors and says it cannot check their colour. **The staleness lived in that
+> gap**, and the three figures above that still live there — green, 447, 133 — carry the commit
+> and the date they were read at, which is all a local check can offer.
+
+The self-hosted Linux runner (`selfhosted.yml`) still exists and still runs the whole gate —
+`ci.py lint`, `ci.py test` on all four interpreters, and `ci.py build` — but it is no longer what
+answers for today's tree; the hosted matrix is. A green tick there is evidence about Linux and
+about nothing else, which is why it is not a row in the table above.
 
 Its first dispatch found something worth keeping: `lint` and `build` passed and all four test
 legs failed, because `actions/checkout` clones at depth 1 and the suite asks git whether the
@@ -3086,15 +3120,12 @@ Windows machine with Developer Mode enabled, and `chmod(0o000)` denies nothing t
 platform check both skipped tests that would have run and ran tests that could not fail.
 Asking the machine answers for the machine in front of you.
 
-**Measured on run `33575026376`, 2026-09-02:**
+**The per-leg figures are in "What has actually been run" above, at `5d18b55`**, and are
+deliberately not repeated here: two copies of one measurement is how this section was wrong
+before. It read *"Measured on run `33575026376`, 2026-09-02"* with ubuntu 769/5, macOS 768/6 and
+windows **722/50** — figures from a suite a third the size of today's.
 
-| leg | passed | skipped |
-|---|---|---|
-| ubuntu 3.12 | 769 | 5 |
-| macOS 3.12 | 768 | 6 |
-| **windows 3.12** | **722** | **50** |
-
-The Windows leg skips ten times what any other does, and it is the only leg that does not
+The Windows leg skips roughly ten times what any other does, and it is the only leg that does not
 assert the coverage floor — skipped tests leave their lines unmeasured, so 100% is
 unreachable there by construction rather than by regression. No other leg may lower it.
 

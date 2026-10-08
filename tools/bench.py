@@ -350,7 +350,23 @@ def bench(
     (mutant / target).write_text(after, encoding="utf-8")
 
     #: CONTROL 5: in the parse, and not only in the prose.
-    if not executable_difference(source, after):
+    #:
+    #: AND A TARGET THIS CANNOT PARSE IS A VOID RUN, NOT A VERDICT. Controls 5 and 6 both rest on
+    #: Python -- an AST diff and coverage -- so this is a PYTHON-SOURCE instrument and it has to
+    #: say so. Pointing `--edit` at `README.md` raised a bare `SyntaxError` on the first non-Python
+    #: character and exited 1, which is the SURVIVED code: the same shape as the missing-target
+    #: defect fixed above, and the second time in this file that an instrument failure wore a
+    #: verdict's exit code. A Markdown or YAML guard must be demonstrated by hand, in a copied
+    #: tree, and the message says that rather than leaving the reader to guess.
+    try:
+        differs = executable_difference(source, after)
+    except SyntaxError as exc:
+        raise Void(
+            f"{target} is not parseable as Python ({exc.msg} at line {exc.lineno}), and controls 5 "
+            f"and 6 both need a Python AST and coverage. This harness benches PYTHON sources only; "
+            f"demonstrate a Markdown, YAML or TOML guard by hand in a copied tree"
+        ) from exc
+    if not differs:
         raise Void(
             f"the mutation changed nothing in {target} that the parser can see -- either it is "
             f"a no-op, or it landed inside a DOCSTRING. Both have reported `1 passed` in this "
