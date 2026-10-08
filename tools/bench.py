@@ -261,7 +261,12 @@ def _run_selection(
     THE STATUS IS READ FROM THE PROCESS, never from the tail of a pipeline. `cmd | grep` returns
     grep's code, and that exact shape hid a `ruff format --check` failure in this project twice.
     """
-    args = [py, "-m", "pytest", "tests", "-k", kexpr, "-p", "no:randomly", "-q"]
+    #: NO `-q` HERE, BECAUSE `pyproject.toml` ALREADY SETS IT. `addopts = "-q"` plus our own `-q`
+    #: is `-qq`, which suppresses the `N passed` summary line -- the exact line this function parses
+    #: for the test count. Measured: every run reported `0 collected` beside a GREEN baseline, which
+    #: is a number that lies in the most reassuring possible way. A flag the project already sets is
+    #: not a free flag to repeat.
+    args = [py, "-m", "pytest", "tests", "-k", kexpr, "-p", "no:randomly"]
     if cov is not None:
         args += [f"--cov={source}", f"--cov-report=json:{cov}", "--cov-fail-under=0"]
     env = dict(os.environ, PYTHONPATH=str(tree))
