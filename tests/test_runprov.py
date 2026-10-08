@@ -93,9 +93,9 @@ _PACKAGE_MODULES = 24
 #: inside the repository satisfies it with 128 files that are not sources at all. The equality
 #: has something to say in both directions, which is why both sides read this now.
 #:
-#: 1 in `tests/`, `ci.py`, 5 in `tools/`, 2 in `examples/`. Re-read it when a file is added
+#: 1 in `tests/`, `ci.py`, 6 in `tools/`, 2 in `examples/`. Re-read it when a file is added
 #: outside `runprov/`; `_PACKAGE_MODULES` is the one number for a file added inside it.
-_NON_PACKAGE_SOURCES = 9
+_NON_PACKAGE_SOURCES = 10
 
 # ------------------------------------------------- what the platform can be asked to build
 #
@@ -32305,13 +32305,13 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
     #:
     #: IT IS AN EQUALITY, BECAUSE THE COMMENT ABOVE SAID SO WHILE THE ASSERTION SAID `>= 32`
     #: [Audit P, exhaustive-9]. A floor is slack by one the moment a package module is added, and
-    #: nothing said so: 24 + 1 + 1 + 5 + 2 is 33 today, and with a 25th package module a floor
+    #: nothing said so: 24 + 1 + 1 + 6 + 2 is 34 today, and with a 25th package module a floor
     #: of 32 reads 33 and stays green over a file it may well not have read.
     #:
     #: THE PACKAGE HALF READS `_PACKAGE_MODULES` RATHER THAN RESTATING IT, so one bump moves one
     #: number [Audit O, guards-12]. The other 8 are what the four trees and the repository root
     #: hold outside the package, and they are written out here, once: `tests/*.py` 1, `ci.py` 1,
-    #: `tools/*.py` 5, `examples/*.py` 2, held in `_NON_PACKAGE_SOURCES` so this side and the
+    #: `tools/*.py` 6, `examples/*.py` 2, held in `_NON_PACKAGE_SOURCES` so this side and the
     #: `open_output` sweep read ONE number. This is NOT circular -- `_PACKAGE_MODULES` is a
     #: hand-written constant that a human must re-read when adding a module, and `len(roots)` is
     #: read off the disk, so the two sides have different sources and the equality has something
@@ -32327,7 +32327,7 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
         f"the sweep found {len(roots)} source files and the repository tracks "
         f"{_PACKAGE_MODULES + _NON_PACKAGE_SOURCES} -- {_PACKAGE_MODULES} in `runprov/` plus "
         f"{_NON_PACKAGE_SOURCES} outside it "
-        f"(1 in `tests/`, `ci.py`, 5 in `tools/`, 2 in `examples/`). Either a sweep has stopped "
+        f"(1 in `tests/`, `ci.py`, 6 in `tools/`, 2 in `examples/`). Either a sweep has stopped "
         f"matching, or a file was added: if a PACKAGE module was added, bump "
         f"`_PACKAGE_MODULES`, which is the one number for it; if it was added outside the "
         f"package, the 8 above is what to re-read. NOT every root ships in the sdist, and this "
@@ -43168,4 +43168,69 @@ def test_the_ci_sections_legs_are_the_legs_the_workflow_ACTUALLY_DECLARES():
     #: this section's layout rather than of its content.
     assert len(claimed) == len(legs) > 1, (
         f"the section names {len(claimed)} distinct leg(s) for {len(legs)} in the matrix"
+    )
+
+
+def test_every_readme_binding_resolves_and_still_holds():
+    """`tools/claims.py`'s registry, gated — the half of it that CAN pass today.
+
+    TWO FAILURES, AND THEY NEED DIFFERENT REPAIRS, which is why the report separates them and so
+    does this. A binding naming a constant that no longer exists is a RENAME to follow and the
+    run is VOID; a binding whose number no longer matches is a DRIFT and the document is wrong.
+    A check that collapsed them would send a reader to edit prose over a renamed attribute.
+
+    WHY THIS IS GATED WHILE THE REPORT IS NOT. These six pass today, so a drift is red on the next
+    push. The report's other half — 139 README lines accounted for by nothing — would be red on
+    arrival, and `ci.py`'s own words for that are *"a gate that is red the day it arrives is a
+    gate people learn to scroll past"*. Report, then ratchet, then gate.
+
+    AND THE REGISTRY MUST NOT HOLD THE VALUE. It holds a (sentence, attribute) pair and reads the
+    attribute live; a registry caching the number would agree with itself forever. The assertion
+    below reads both sides, which is the only arrangement that can fail.
+
+    MEASURED, on the first run of the report: it exited 2 naming `runprov.run` as having no
+    `PIN_STARTS_WITHIN` — the constant is in `verify.py`, and `DIRTY_FILES_SHOWN` was in `run.py`
+    rather than `__main__.py`. Two of six module paths were wrong, and the VOID path is what said
+    so instead of reporting a drift that was not one.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_claims_under_test", _repo_root() / "tools" / "claims.py"
+    )
+    claims = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(claims)
+
+    rows = claims.bound_claims((_repo_root() / "README.md").read_text(encoding="utf-8"))
+    #: NOT VACUOUS: an empty registry would make every assertion below true.
+    assert len(rows) >= 6, f"the registry binds {len(rows)} claim(s); it bound 6 when written"
+    drifted = [(what, said, live, why) for what, said, live, why in rows if why != "ok"]
+    assert not drifted, "README figures no longer match the constants they describe: " + "; ".join(
+        f"{what} says {said} and the code says {live} ({why})" for what, said, live, why in drifted
+    )
+
+    #: AND EVERY BOUND SENTENCE IS STILL IN THE DOCUMENT. `bound_claims` reports a missing one as
+    #: VACUOUS rather than raising, because a binding to a number the README no longer states is a
+    #: decoration — `ci.py`'s `scale_drift` says the same thing for the same reason, and its
+    #: docstring names it: *"the thing that must never happen quietly is this check becoming
+    #: vacuous"*.
+    vacuous = [what for what, said, _live, _why in rows if said is None]
+    assert not vacuous, f"these bindings quote sentences the README no longer contains: {vacuous}"
+
+
+def test_the_claims_report_is_not_in_the_default_gate_and_ci_declares_it():
+    """`ci.py claims` exists, runs the report, and is not one of the default steps.
+
+    THE DENOMINATOR IS THE DELIVERABLE AND IT IS NOT A GATE. Before `tools/claims.py` the bound
+    README figures were `_SCALE_FIGURES`' two, and nobody knew what they were two OF — a numerator
+    over an unknown, which `guard-shapes` calls a floor. The report names the unknown: 605 numeric
+    literals, 139 lines accounted for by nothing.
+    """
+    ci = _ci_module()
+    assert "claims" in ci.STEPS
+    source = inspect.getsource(ci.STEPS["claims"])
+    assert "claims.py" in source, source
+    assert (_repo_root() / "tools" / "claims.py").is_file()
+    default = re.search(r"sys\.argv\[1:\] or \[([^\]]*)\]", inspect.getsource(ci))
+    assert default, "`ci.py`'s default step list is not spelled the way this test reads it"
+    assert "claims" not in default.group(1), (
+        f"a report that is red on arrival must not be a default step; they are {default.group(1)}"
     )

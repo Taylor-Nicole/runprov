@@ -13,6 +13,7 @@
     python ci.py surface    rewrite docs/public-surface.txt from what the package exposes
     python ci.py torture    damage a real record and read it back (tools/torture.py)
     python ci.py bench      prove tools/bench.py can still tell its verdicts apart
+    python ci.py claims     which README numbers are bound to a producer, and which are not
     python ci.py release-check   the version copies, the tag and the citation's year
                             (run by `build`; set RUNPROV_RELEASE_TAG=vX.Y.Z to rehearse
                             what a tag push would check)
@@ -752,6 +753,21 @@ def bench() -> None:
     run(PY, str(ROOT / "tools" / "bench.py"), "selfcheck", "--python", PY)
 
 
+def claims() -> None:
+    """Which README numbers are bound to something that measures them. NOT the gate over them.
+
+    THE BOUND ONES ARE GATED IN THE SUITE, not here, because they can pass today and a drift
+    should be red on the next push rather than when somebody remembers to run a report. What
+    lives here is the part that CANNOT be a gate yet: the count of numbers accounted for by
+    nothing, which is 139 lines and would be red on arrival -- the exact failure `scale_drift`'s
+    neighbour describes, *"a gate that is red the day it arrives is a gate people learn to scroll
+    past"*.
+
+    So the order is REPORT, then ratchet, then gate, and this is the report.
+    """
+    run(PY, str(ROOT / "tools" / "claims.py"))
+
+
 def corpus() -> None:
     """Self-check the cross-version record corpus. NOT the gate over it — that is in the suite.
 
@@ -773,6 +789,8 @@ STEPS = {
     "torture": torture,
     #: NOT in the default gate: twelve tree copies and twelve pytest runs. See `bench`.
     "bench": bench,
+    #: NOT in the default gate: a REPORT over a surface that is not closed. See `claims`.
+    "claims": claims,
     "corpus": corpus,
     "release-check": release_check,
     #: NOT in the default `lint test build`: it needs the network and `gh`. Run before a tag.

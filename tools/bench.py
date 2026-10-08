@@ -174,6 +174,33 @@ def changed_lines(before: str, after: str) -> set[int]:
     return out
 
 
+def owning_statements(source: str, lines: set[int]) -> set[int]:
+    """Each changed line mapped to the FIRST line of the statement that contains it.
+
+    BECAUSE COVERAGE NUMBERS A MULTI-LINE STATEMENT BY ITS FIRST LINE, and control 6 compares
+    changed lines against coverage's statement set. A mutation on a CONTINUATION line -- inside a
+    multi-line tuple, a wrapped call, a bracketed literal -- is therefore absent from that set,
+    and the control refused a perfectly valid experiment with *"none of the changed lines is a
+    STATEMENT ... the mutation is comment or prose only"*. Measured: editing one entry of a
+    six-line `_BOUND` tuple in `tools/claims.py`, which runs at import.
+
+    That was a FALSE VOID -- the stricter of the two mistakes, but still a refusal to measure
+    something measurable. The innermost enclosing statement wins, so a line inside a nested
+    expression resolves to the statement coverage actually reports on.
+    """
+    owner: dict[int, tuple[int, int]] = {}
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.stmt):
+            continue
+        end = getattr(node, "end_lineno", None) or node.lineno
+        span = end - node.lineno
+        for line in range(node.lineno, end + 1):
+            held = owner.get(line)
+            if held is None or span < held[1]:
+                owner[line] = (node.lineno, span)
+    return {owner[line][0] for line in lines if line in owner}
+
+
 def classify(returncode: int, page: str = "") -> str:
     """What a pytest return code means. Control 7.
 
@@ -400,11 +427,11 @@ def bench(
     #: CONTROL 6, evaluated AFTER the run because it needs the run's coverage, and asserted
     #: before the verdict is printed because a verdict over an unexecuted line is not a verdict.
     ran, statements = _executed_lines(cov, target)
-    changed_statements = touched & statements
+    changed_statements = owning_statements(after, touched) & statements
     if not changed_statements:
         raise Void(
-            f"none of the {len(touched)} changed line(s) is a STATEMENT in {target} -- the "
-            f"mutation is comment or prose only, so nothing about it can run"
+            f"none of the {len(touched)} changed line(s) resolves to a STATEMENT in {target} "
+            f"-- the mutation is comment, prose or a bare literal, so nothing about it can run"
         )
     if not (changed_statements & ran):
         raise Void(
@@ -506,7 +533,7 @@ _SELFCHECK = [
         "runprov/__main__.py",
         "after-systemexit",
         "VOID",
-        "is a STATEMENT",
+        "resolves to a STATEMENT",
     ),
     (
         "VOID control 6b -- a TRACKED statement the selection never runs",
