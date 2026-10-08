@@ -688,6 +688,28 @@ same commit, and neither is worth a legible space. The docstring now records the
 reason, and the coupling; the code is unchanged.
 
 
+### Tooling — `build` 1.6.0 → 1.6.1, by hand across all four pin sites
+
+**Applied by hand rather than by merging Dependabot's pull request**, which is this project's
+settled practice and the reason is unchanged since 0.2.0: Dependabot edits `pyproject.toml` alone,
+and the version is pinned in **four** places — the `dev` extra plus a `pip install` line in each
+of `test.yml`, `publish.yml` and `selfhosted.yml`. Dependabot does not read workflow `run:` lines.
+
+**Two guards said so, which is why the half-done bump could not be merged quietly.** Its pull
+request went red on six of eight legs:
+`test_every_pinned_tool_in_a_workflow_matches_the_dev_extra` reported *"a workflow installs a
+version pyproject does not name"* and named all three files, and
+`test_every_pinned_tool_version_agrees_across_pyproject_and_the_workflows` added the reason —
+*"so the gate CI runs is not the gate you run"*.
+
+**Bumping only the workflows would have been the same defect mirrored.** `pyproject.toml` on `main`
+still said 1.6.0, so the four have to move together or `main` goes red in the other direction.
+
+Verified before the pins moved, because `publish.yml`'s copy of this pin builds the artifact that
+is uploaded to PyPI and a PyPI file can never be replaced: `build==1.6.1` installed, then
+`ci.py build` — `release-check`, the build, `twine check --strict` and the wheel installed into a
+clean venv where it must record a run — **rc=0**. Nothing new was reported.
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise
