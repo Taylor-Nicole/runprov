@@ -81,6 +81,22 @@ import runprov.watch  # noqa: E402
 #: worth making a human do when a module is added is re-read which layer it belongs in.
 _PACKAGE_MODULES = 24
 
+#: THE SOURCES OUTSIDE THE PACKAGE, AND IT IS ONE NUMBER WITH TWO READERS. Both the
+#: `open_output` sweep and the roots equality need "how many `.py` files this repository has",
+#: and they used to carry it separately -- a `>= 32` floor in one and `_PACKAGE_MODULES + 8` in
+#: the other. Adding `tools/bench.py` showed what that costs: the EQUALITY went red and said
+#: exactly which number to re-read, while the FLOOR stayed green at 33 >= 32 and went on
+#: printing *"the repository tracks 32"*, which was no longer true.
+#:
+#: A FLOOR IS THE WRONG SHAPE HERE and 2026-10-08 measured it twice over. It is defeated by
+#: ADDING files, so it cannot notice a source set that has SHRUNK -- and an audit tree copy
+#: inside the repository satisfies it with 128 files that are not sources at all. The equality
+#: has something to say in both directions, which is why both sides read this now.
+#:
+#: 1 in `tests/`, `ci.py`, 4 in `tools/`, 2 in `examples/`. Re-read it when a file is added
+#: outside `runprov/`; `_PACKAGE_MODULES` is the one number for a file added inside it.
+_NON_PACKAGE_SOURCES = 8
+
 # ------------------------------------------------- what the platform can be asked to build
 #
 # L-26. `test.yml` runs this suite on windows-latest, and 22 tests here build a fixture
@@ -23573,14 +23589,29 @@ def test_open_output_refuses_a_comment_passed_where_a_mode_would_go(tmp_path):
         run.open_output(tmp_path / "out.tsv", "w")  # type: ignore[misc]
     assert not (tmp_path / "out.tsv").exists(), "refused before anything is opened"
 
+    #: EXCLUDED RELATIVE TO `REPO`, NEVER BY ABSOLUTE PATH COMPONENT, AND THAT DISTINCTION IS THE
+    #: WHOLE OF IT. `.audit-scratch/` is where this project's audit workflow puts TREE COPIES, and
+    #: a copy inside the repository put 128 stray `.py` files in this sweep on 2026-10-08 and
+    #: turned this test red at a green HEAD -- so the directory is named here. But matching it
+    #: against `path.parts` of an ABSOLUTE path asks a different question: *is this file anywhere
+    #: beneath any directory so named*, which is TRUE OF EVERY FILE once the repository itself is
+    #: checked out under one. Measured: in a tree at `.audit-scratch/counts/grow/` the sweep found
+    #: ZERO sources and this assertion fired saying so -- and `tools/bench.py` builds its trees in
+    #: exactly that place, so the absolute form would have made this test red on every bench run.
+    #: The question is *is it beneath this directory OF THIS REPOSITORY*, and only a relative path
+    #: can ask it. The same correction applies to `.venv` and `.kilo`.
     sources = [
         path
         for path in sorted((REPO).rglob("*.py"))
-        if ".venv" not in path.parts
-        and ".kilo" not in path.parts
-        and "__pycache__" not in str(path)
+        if not {".venv", ".kilo", ".audit-scratch", "__pycache__"}
+        & set(path.relative_to(REPO).parts)
     ]
-    assert len(sources) >= 32, f"the sweep found {len(sources)} sources; the repository tracks 32"
+    assert len(sources) == _PACKAGE_MODULES + _NON_PACKAGE_SOURCES, (
+        f"the sweep found {len(sources)} sources and the repository tracks "
+        f"{_PACKAGE_MODULES + _NON_PACKAGE_SOURCES} -- {_PACKAGE_MODULES} in `runprov/` plus "
+        f"{_NON_PACKAGE_SOURCES} outside it. An EQUALITY and not a floor: a floor here read "
+        f"33 >= 32 green while saying `tracks 32`, and it cannot notice sources that have gone"
+    )
     positional: dict[str, str] = {}
     refused: dict[str, str] = {}
     for path in sources:
@@ -32274,13 +32305,14 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
     #:
     #: IT IS AN EQUALITY, BECAUSE THE COMMENT ABOVE SAID SO WHILE THE ASSERTION SAID `>= 32`
     #: [Audit P, exhaustive-9]. A floor is slack by one the moment a package module is added, and
-    #: nothing said so: 24 + 1 + 1 + 4 + 2 is 32 today, and with a 25th package module the sweep
-    #: reads 33 against a floor of 32 and stays green over a file it may well not have read.
+    #: nothing said so: 24 + 1 + 1 + 4 + 2 is 32 today, and with a 25th package module a floor
+    #: of 32 reads 33 and stays green over a file it may well not have read.
     #:
     #: THE PACKAGE HALF READS `_PACKAGE_MODULES` RATHER THAN RESTATING IT, so one bump moves one
     #: number [Audit O, guards-12]. The other 8 are what the four trees and the repository root
     #: hold outside the package, and they are written out here, once: `tests/*.py` 1, `ci.py` 1,
-    #: `tools/*.py` 4, `examples/*.py` 2. This is NOT circular -- `_PACKAGE_MODULES` is a
+    #: `tools/*.py` 4, `examples/*.py` 2, held in `_NON_PACKAGE_SOURCES` so this side and the
+    #: `open_output` sweep read ONE number. This is NOT circular -- `_PACKAGE_MODULES` is a
     #: hand-written constant that a human must re-read when adding a module, and `len(roots)` is
     #: read off the disk, so the two sides have different sources and the equality has something
     #: to say.
@@ -32291,9 +32323,10 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
     #: again over a file that is not a package module at all. That is why the message below names
     #: both causes and says which number answers which; the `_PACKAGE_MODULES - 1` census in the
     #: layer test is what holds the package half on its own.
-    assert len(roots) == _PACKAGE_MODULES + 8, (
+    assert len(roots) == _PACKAGE_MODULES + _NON_PACKAGE_SOURCES, (
         f"the sweep found {len(roots)} source files and the repository tracks "
-        f"{_PACKAGE_MODULES + 8} -- {_PACKAGE_MODULES} in `runprov/` plus 8 outside it "
+        f"{_PACKAGE_MODULES + _NON_PACKAGE_SOURCES} -- {_PACKAGE_MODULES} in `runprov/` plus "
+        f"{_NON_PACKAGE_SOURCES} outside it "
         f"(1 in `tests/`, `ci.py`, 4 in `tools/`, 2 in `examples/`). Either a sweep has stopped "
         f"matching, or a file was added: if a PACKAGE module was added, bump "
         f"`_PACKAGE_MODULES`, which is the one number for it; if it was added outside the "
