@@ -93,9 +93,9 @@ _PACKAGE_MODULES = 24
 #: inside the repository satisfies it with 128 files that are not sources at all. The equality
 #: has something to say in both directions, which is why both sides read this now.
 #:
-#: 1 in `tests/`, `ci.py`, 6 in `tools/`, 2 in `examples/`. Re-read it when a file is added
+#: 2 in `tests/`, `ci.py`, 6 in `tools/`, 2 in `examples/`. Re-read it when a file is added
 #: outside `runprov/`; `_PACKAGE_MODULES` is the one number for a file added inside it.
-_NON_PACKAGE_SOURCES = 10
+_NON_PACKAGE_SOURCES = 11
 
 # ------------------------------------------------- what the platform can be asked to build
 #
@@ -32305,14 +32305,14 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
     #:
     #: IT IS AN EQUALITY, BECAUSE THE COMMENT ABOVE SAID SO WHILE THE ASSERTION SAID `>= 32`
     #: [Audit P, exhaustive-9]. A floor is slack by one the moment a package module is added, and
-    #: nothing said so: 24 + 1 + 1 + 6 + 2 is 34 today, and with a 25th package module a floor
+    #: nothing said so: 24 + 2 + 1 + 6 + 2 is 35 today, and with a 25th package module a floor
     #: of 32 reads 33 and stays green over a file it may well not have read.
     #:
     #: THE PACKAGE HALF READS `_PACKAGE_MODULES` RATHER THAN RESTATING IT, so one bump moves one
-    #: number [Audit O, guards-12]. The other 8 are what the four trees and the repository root
-    #: hold outside the package, and they are written out here, once: `tests/*.py` 1, `ci.py` 1,
-    #: `tools/*.py` 6, `examples/*.py` 2, held in `_NON_PACKAGE_SOURCES` so this side and the
-    #: `open_output` sweep read ONE number. This is NOT circular -- `_PACKAGE_MODULES` is a
+    #: number [Audit O, guards-12]. The rest are what the four trees and the repository root hold
+    #: OUTSIDE the package -- `tests/*.py` 2, `ci.py` 1, `tools/*.py` 6, `examples/*.py` 2 -- and
+    #: they live in `_NON_PACKAGE_SOURCES` so that this side and the `open_output` sweep read ONE
+    #: number between them. This is NOT circular -- `_PACKAGE_MODULES` is a
     #: hand-written constant that a human must re-read when adding a module, and `len(roots)` is
     #: read off the disk, so the two sides have different sources and the equality has something
     #: to say.
@@ -32327,7 +32327,7 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
         f"the sweep found {len(roots)} source files and the repository tracks "
         f"{_PACKAGE_MODULES + _NON_PACKAGE_SOURCES} -- {_PACKAGE_MODULES} in `runprov/` plus "
         f"{_NON_PACKAGE_SOURCES} outside it "
-        f"(1 in `tests/`, `ci.py`, 6 in `tools/`, 2 in `examples/`). Either a sweep has stopped "
+        f"(2 in `tests/`, `ci.py`, 6 in `tools/`, 2 in `examples/`). Either a sweep has stopped "
         f"matching, or a file was added: if a PACKAGE module was added, bump "
         f"`_PACKAGE_MODULES`, which is the one number for it; if it was added outside the "
         f"package, the 8 above is what to re-read. NOT every root ships in the sdist, and this "
@@ -43234,3 +43234,152 @@ def test_the_claims_report_is_not_in_the_default_gate_and_ci_declares_it():
     assert "claims" not in default.group(1), (
         f"a report that is red on arrival must not be a default step; they are {default.group(1)}"
     )
+
+
+def test_every_collected_test_carries_exactly_one_tier(request):
+    """`tests/conftest.py` tiers the suite, and this holds the tiering to the tests that RAN.
+
+    THE TWO SIDES HAVE DIFFERENT SOURCES, which is the only arrangement that can fail. The
+    conftest derives a tier from each test's call graph; this reads what **pytest actually
+    collected and what markers were actually applied**. A test generated in a loop or built by a
+    factory is collected by pytest and is invisible to an AST walk over module-level `def`s — the
+    conftest applies NO marker to it on purpose, and this is what notices. Re-deriving the tier
+    here instead would only prove the conftest agrees with itself.
+
+    AN UNMARKED TEST MUST BE A RED, NEVER A QUIET `unit`. `unit` is the COMPLEMENT of the other
+    three predicates, so the four are total over what the derivation can see; what is not total is
+    the derivation's knowledge of the population. A tier that silently absorbed what it could not
+    classify would be the floor shape this repository keeps finding — it would say how much was
+    tiered and could not say what was missed.
+
+    AND EXACTLY ONE, NOT AT LEAST ONE. Two tiers on one test means the precedence in `_DRIVES`
+    stopped being exclusive, and `-m unit` and `-m subprocess` would both return it — so the
+    counts would sum past the suite and `-m "not subprocess"` would still run it.
+    """
+    tiers = {"unit", "api", "cli", "subprocess"}
+    wrong: dict[str, list[str]] = {}
+    for item in request.session.items:
+        got = sorted(tiers & {mark.name for mark in item.iter_markers()})
+        if len(got) != 1:
+            wrong.setdefault("none" if not got else "+".join(got), []).append(item.name)
+    assert not wrong, "every collected test must carry exactly one tier marker; " + "; ".join(
+        f"{how}: {len(names)} test(s), e.g. {names[:3]}" for how, names in sorted(wrong.items())
+    )
+
+    #: THE MARKERS MUST BE REGISTERED, and this reads the TOML as TEXT because `tomllib` is 3.11+
+    #: and this suite runs on 3.10 in the matrix. An unregistered marker is a warning today and an
+    #: error under `--strict-markers`, and a `-m` typo should fail rather than run nothing.
+    pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
+    block = pyproject.split("markers = [", 1)
+    assert len(block) == 2, "pyproject.toml no longer registers any pytest markers"
+    declared = set(re.findall(r'"(\w+):', block[1].split("]", 1)[0]))
+    applied = {mark.name for item in request.session.items for mark in item.iter_markers()}
+    #: ONLY THE ONES THIS FILE'S TIERING APPLIES. `parametrize` and `skipif` are pytest's own.
+    assert (applied & (tiers | {"repo"})) <= declared, (
+        f"these markers are applied but not registered in `pyproject.toml`: "
+        f"{sorted((applied & (tiers | {'repo'})) - declared)}"
+    )
+
+    #: NON-VACUOUS, AND ONLY ANSWERABLE ON A FULL RUN. Under `-k` or `-m`, `session.items` is the
+    #: SELECTED set, so the population clause below would pass over one test. Stated rather than
+    #: skipped silently: the clauses above still hold for whatever ran, and `ci.py test` runs all.
+    if request.config.getoption("keyword") or request.config.getoption("markexpr"):
+        pytest.skip("a filtered run; the population clause needs the whole suite")
+    #: COUNTED WITHOUT `collections`, which this module does not import -- one more import for
+    #: one tally is a change to the file's head that a reader has to account for.
+    counts: dict[str, int] = {}
+    for item in request.session.items:
+        for tier in tiers & {mark.name for mark in item.iter_markers()}:
+            counts[tier] = counts.get(tier, 0) + 1
+    assert len(request.session.items) > 1000, (
+        f"{len(request.session.items)} items collected; this suite had 1 250 when the tiering "
+        f"was written, so either the selection is filtered after all or the suite has shrunk"
+    )
+    assert len(counts) == len(tiers), (
+        f"a tier is EMPTY, which means its predicate has stopped matching anything: {counts}"
+    )
+    assert sum(counts.values()) == len(request.session.items), (
+        f"the tiers sum to {sum(counts.values())} over {len(request.session.items)} items"
+    )
+
+
+def test_the_tiering_hook_gives_every_test_function_exactly_one_tier():
+    """The tiering MECHANISM, driven directly, so it does not need a full run to be answerable.
+
+    WHY THIS EXISTS AND WHY IT IS SEPARATE. `test_every_collected_test_carries_exactly_one_tier`
+    reads `request.session.items`, which under `-k` or `-m` is the SELECTED set — so under a
+    one-test selection it inspects one item, and a hook that had stopped applying tiers at all
+    would still satisfy it if that one test happened to land in the `unit` complement.
+
+    MEASURED, and it is why this test is here. Two mutations of `tests/conftest.py` — turning the
+    exclusive `break` into `continue`, and dropping the `add_marker` call outright — both came
+    back **SURVIVED** against the population test under `-k`. The population test is not wrong;
+    it is a check whose strength is the population, and the harness said so plainly. So the
+    MECHANISM is held here, over every test function in the module, under any selection.
+
+    THE STUB IS THE POINT. `pytest` is not asked to collect anything: the hook is called with
+    items built from the real test functions this module defines, so the population is derived
+    from the file and the selection cannot shrink it.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_conftest_under_test", _repo_root() / "tests" / "conftest.py"
+    )
+    conftest = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(conftest)
+
+    source = pathlib.Path(__file__).read_text(encoding="utf-8")
+    functions = [
+        node.name
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
+    ]
+    assert len(functions) > 1000, (
+        f"only {len(functions)} test functions found; this sweep is reading the wrong thing"
+    )
+
+    class _Named:
+        """`__name__` AS AN INSTANCE ATTRIBUTE, and the first version got this wrong.
+
+        `type("_F", (), {"__name__": name})` builds a CLASS, and `cls.__name__` resolves through
+        the metaclass descriptor rather than the namespace dict -- so every stub reported `_F`,
+        every lookup missed, and the hook applied nothing to any of 1 148. The test failed saying
+        so, which is the good case, but a stub that lies about its own name would have been a
+        silent SURVIVED had the assertion been any weaker.
+        """
+
+        def __init__(self, name: str) -> None:
+            self.__name__ = name
+
+    class _Stub:
+        """Item-shaped: what the hook reads, and a record of what it applied."""
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.function = _Named(name)
+            self.module = _Named(__file__)
+            self.module.__file__ = __file__
+            self.marks: list[str] = []
+
+        def add_marker(self, mark: object) -> None:
+            self.marks.append(mark.name)
+
+    stubs = [_Stub(name) for name in functions]
+    conftest.pytest_collection_modifyitems(stubs)
+
+    tiers = {"unit", "api", "cli", "subprocess"}
+    wrong = {s.name: s.marks for s in stubs if len(set(s.marks) & tiers) != 1}
+    assert not wrong, (
+        f"{len(wrong)} test function(s) did not get exactly one tier from the hook, e.g. "
+        f"{dict(list(wrong.items())[:3])}"
+    )
+
+    #: AND EVERY TIER IS NON-EMPTY, so a predicate that has stopped matching anything is a red
+    #: rather than a quietly larger `unit`. `unit` is the COMPLEMENT, so it absorbs every failure
+    #: of the other three silently -- which is the one direction this cannot be allowed to drift.
+    got: dict[str, int] = {}
+    for stub in stubs:
+        for tier in set(stub.marks) & tiers:
+            got[tier] = got.get(tier, 0) + 1
+    assert set(got) == tiers, f"a tier matched nothing: {got}"
+    #: AND `repo` IS APPLIED, which no tier assertion above can see because it is orthogonal.
+    assert sum("repo" in s.marks for s in stubs) > 1, "the `repo` marker is never applied"
