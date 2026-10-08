@@ -912,17 +912,20 @@ def _export(args: argparse.Namespace) -> int:
         try:
             rec = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
-            print(f"  runprov export: cannot read {path}: {exc}", file=sys.stderr)
+            print(f"  runprov export: cannot read {printable(str(path))}: {exc}", file=sys.stderr)
             return CANNOT_CHECK
         if not isinstance(rec, dict):
-            print(f"  runprov export: {path} is not a runprov sidecar", file=sys.stderr)
+            print(
+                f"  runprov export: {printable(str(path))} is not a runprov sidecar",
+                file=sys.stderr,
+            )
             return CANNOT_CHECK
         records, name = [rec], f"{rec.get('script', 'run')} — one run"
     else:
         log = pathlib.Path(args.log) if args.log else active().resolved_run_log()
         if not log.is_file():
             print(
-                f"  runprov export: no run history at {log}\n"
+                f"  runprov export: no run history at {printable(str(log))}\n"
                 f"    Export one run instead by naming its sidecar: "
                 f"`runprov export out/step.prov.json`.",
                 file=sys.stderr,
@@ -944,9 +947,9 @@ def _export(args: argparse.Namespace) -> int:
         out.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(out, text)
     except OSError as exc:
-        print(f"  runprov export: cannot write {out}: {exc}", file=sys.stderr)
+        print(f"  runprov export: cannot write {printable(str(out))}: {exc}", file=sys.stderr)
         return CANNOT_CHECK
-    print(f"# {len(records)} run(s) -> {out} ({args.format})", file=sys.stderr)
+    print(f"# {len(records)} run(s) -> {printable(str(out))} ({args.format})", file=sys.stderr)
     return 0
 
 
@@ -977,7 +980,7 @@ def _capture(args: argparse.Namespace) -> int:
     """
     script = pathlib.Path(args.script)
     if not script.is_file():
-        print(f"  runprov capture: no such script: {script}", file=sys.stderr)
+        print(f"  runprov capture: no such script: {printable(str(script))}", file=sys.stderr)
         return CANNOT_CHECK
     proj = active()
     name = args.name or script.stem
@@ -1157,10 +1160,10 @@ def _exec(args: argparse.Namespace) -> int:
     except UsageError as exc:
         # A MESSAGE, not a traceback. The run is still recorded as failed by `__exit__` --
         # the mistake happened inside the block -- so the history says what was attempted.
-        print(f"  runprov exec: {exc}", file=sys.stderr)
+        print(f"  runprov exec: {printable(str(exc))}", file=sys.stderr)
         return 2
     except CommandFailedError as exc:
-        print(f"  runprov exec: recorded a FAILED run — {exc}", file=sys.stderr)
+        print(f"  runprov exec: recorded a FAILED run — {printable(str(exc))}", file=sys.stderr)
         return returncode if returncode else 1
     except Terminated as exc:
         # A NUMBER, NOT A TRACEBACK, for the commonest way a cluster job actually ends.
@@ -1212,7 +1215,8 @@ def _log_unreadable(args: argparse.Namespace, path: pathlib.Path) -> int:
         sys.stdout.write(_render_unreadable(number, raw) + "\n")
     if found:
         print(
-            f"# {found} unreadable line(s) in {path}. This command reads and never writes:\n"
+            f"# {found} unreadable line(s) in {printable(str(path))}. "
+            f"This command reads and never writes:\n"
             f"#   the record is append-only, and a line that will not parse costs exactly\n"
             f"#   itself — every other record in this file is intact and still readable.\n"
             f"#   To rebuild the YAML view from the record of truth:\n"
@@ -1220,7 +1224,7 @@ def _log_unreadable(args: argparse.Namespace, path: pathlib.Path) -> int:
             file=sys.stderr,
         )
     else:
-        print(f"# every line in {path} parses.", file=sys.stderr)
+        print(f"# every line in {printable(str(path))} parses.", file=sys.stderr)
     return 0
 
 
@@ -1388,7 +1392,7 @@ def _log(args: argparse.Namespace, path: pathlib.Path) -> int:
     # meets it, and a person reading the JSON in a terminal still gets the same summary line
     # they get from every other rendering.
     print(
-        f"# {shown} of {total} run(s) from {path}"
+        f"# {shown} of {total} run(s) from {printable(str(path))}"
         # J-14. THE DENOMINATOR IS NAMED ONLY WHEN IT DIFFERS FROM WHAT WAS SHOWN, so an
         # ordinary page prints the clause it has printed since 0.6.0 and a truncated one stops
         # leaving a reader to assume the failures were among the records in front of them.
@@ -1703,7 +1707,7 @@ def _impact(args: argparse.Namespace) -> int:
                     impact_mod.payload(None, cannot_check=f"no run history at {log}"), indent=2
                 )
             )
-        print(f"impact: no run history at {log}", file=sys.stderr)
+        print(f"impact: no run history at {printable(str(log))}", file=sys.stderr)
         return 2
 
     target = str(args.target)
@@ -1712,7 +1716,9 @@ def _impact(args: argparse.Namespace) -> int:
     else:
         path = pathlib.Path(target)
         if not path.is_file():
-            print(f"impact: {target} is not a file and not a digest", file=sys.stderr)
+            print(
+                f"impact: {printable(str(target))} is not a file and not a digest", file=sys.stderr
+            )
             return 2
         # HASHED NOW, because the question is about the bytes that are there — "if I change
         # this file" means the file as it stands, and a digest read out of the history would
@@ -1833,7 +1839,7 @@ def _diff(args: argparse.Namespace) -> int:
                     diff_mod.payload(None, cannot_check=f"no run history at {log}"), indent=2
                 )
             )
-        print(f"diff: no run history at {log}", file=sys.stderr)
+        print(f"diff: no run history at {printable(str(log))}", file=sys.stderr)
         return 2
 
     # ONE ADDRESS MEANS THE LAST TWO RUNS OF IT, which is the question actually asked: "what
@@ -1865,7 +1871,7 @@ def _diff(args: argparse.Namespace) -> int:
                     )
                 )
             print(
-                f"diff: {args.a!r} matches {len(matches)} run(s) in {log}; "
+                f"diff: {args.a!r} matches {len(matches)} run(s) in {printable(str(log))}; "
                 "name two runs explicitly to compare across scripts",
                 file=sys.stderr,
             )
@@ -1897,7 +1903,7 @@ def _diff(args: argparse.Namespace) -> int:
                             indent=2,
                         )
                     )
-                print(f"diff: nothing matches {target!r} in {log}", file=sys.stderr)
+                print(f"diff: nothing matches {target!r} in {printable(str(log))}", file=sys.stderr)
                 # J-25, AND IT IS NOT A PREFERENCE BETWEEN CONVENTIONS. **L-81, ratified
                 # 2026-09-01 and quoted at the top of this file, puts "a named target or filter
                 # that matched nothing" in the 1 family** — and `show <target>` and
@@ -1933,7 +1939,7 @@ def _diff(args: argparse.Namespace) -> int:
                 )
             print(
                 f"diff: {args.a!r} and {args.b!r} both resolve to the same run "
-                f"({str(picked[0].get('run_uid'))[:12]}); there is nothing to compare",
+                f"({printable(str(picked[0].get('run_uid')))[:12]}); there is nothing to compare",
                 file=sys.stderr,
             )
             return 2
@@ -1974,7 +1980,7 @@ def _resources(args: argparse.Namespace) -> int:
                     indent=2,
                 )
             )
-        print(f"resources: no run history at {log}", file=sys.stderr)
+        print(f"resources: no run history at {printable(str(log))}", file=sys.stderr)
         return 2
 
     found = None
@@ -2010,7 +2016,10 @@ def _resources(args: argparse.Namespace) -> int:
                     indent=2,
                 )
             )
-        print(f"resources: no run{which} in {log} recorded a resources block", file=sys.stderr)
+        print(
+            f"resources: no run{which} in {printable(str(log))} recorded a resources block",
+            file=sys.stderr,
+        )
         return 2
 
     m = resources_mod.from_record(found["resources"])
@@ -2089,7 +2098,7 @@ def _report(args: argparse.Namespace) -> int:
     """
     artifact = pathlib.Path(args.artifact)
     if not artifact.is_file():
-        print(f"report: {artifact} is not a file", file=sys.stderr)
+        print(f"report: {printable(str(artifact))} is not a file", file=sys.stderr)
         return 2
     project = active()
     log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
@@ -2111,7 +2120,8 @@ def _report(args: argparse.Namespace) -> int:
         # also move is a behaviour change on a documented path and is Taylor's call, not an
         # applier's — recorded in the ledger as open.
         print(
-            f"report: no run history at {log} — reporting from the artifact's pin alone",
+            f"report: no run history at {printable(str(log))} — "
+            f"reporting from the artifact's pin alone",
             file=sys.stderr,
         )
     result = report_mod.render(artifact, pathlib.Path(project.root), log)
@@ -2330,7 +2340,7 @@ def _check(args: argparse.Namespace) -> int:
         # [ADR-0017 R-15]. THE DIRECTORY NAMED IS NOT THERE, so this package has not answered
         # — it could not start. Silence on stdout is the signal that says so, and it is the
         # only thing separating this from the exit 2 below, which IS an answer.
-        print(f"check: {root} is not a directory", file=sys.stderr)
+        print(f"check: {printable(str(root))} is not a directory", file=sys.stderr)
         return 2
     report = check_mod.scan(root)
     if args.format == "json":
@@ -2442,7 +2452,7 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
             if args.format == "json":
                 print(json.dumps(show_mod.payload_runs(path, args.target, [], bad[0]), indent=2))
             print(
-                f"nothing in {path} matches {args.target!r}.\n"
+                f"nothing in {printable(str(path))} matches {args.target!r}.\n"
                 f"  A target is a script name, a run_uid prefix, a run_id or an artifact "
                 f"path.\n  `python -m runprov show` with no target lists every script this "
                 f"project has run.",
@@ -2551,7 +2561,7 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
         tally = "; " + ", ".join(f"{n} {k}" for k, n in sorted(counts.items()))
     print(
         f"# {view['runs']} run(s), {len(view['scripts'])} script(s), "
-        f"{len(view['artifacts'])} artifact(s) from {path}{tally}"
+        f"{len(view['artifacts'])} artifact(s) from {printable(str(path))}{tally}"
         + (f"; {bad[0]} unreadable line(s) skipped" if bad[0] else ""),
         file=sys.stderr,
     )
@@ -2570,7 +2580,7 @@ def _show(args: argparse.Namespace, path: pathlib.Path) -> int:
             shown = ", ".join(failing[:5]) + (
                 f", and {len(failing) - 5} more" if len(failing) > 5 else ""
             )
-            print(f"# FAILING ({len(failing)}): {shown}", file=sys.stderr)
+            print(f"# FAILING ({len(failing)}): {printable(shown)}", file=sys.stderr)
             return 1
     return 0
 
@@ -2650,7 +2660,7 @@ def _verify(args: argparse.Namespace) -> int:
     # project reported `NOTHING CHECKED: no pins found` and said nothing about why.
     for name in report.get("directories_unreadable") or []:
         print(
-            f"# COULD NOT READ {name} — anything pinned inside it was NOT checked",
+            f"# COULD NOT READ {printable(str(name))} — anything pinned inside it was NOT checked",
             file=sys.stderr,
         )
 
@@ -2658,7 +2668,7 @@ def _verify(args: argparse.Namespace) -> int:
         # NOT zero. A gate that goes green having checked nothing is worse than no gate,
         # because someone will trust it -- the same rule as `git_status_captured: false`.
         print(
-            f"# NOTHING CHECKED: {inability}.\n"
+            f"# NOTHING CHECKED: {printable(str(inability))}.\n"
             f"#   This is 'we could not look', not 'nothing is wrong'. A pin is written by "
             f"`run.header()`\n"
             f"#   or `run.open_output()`; an artifact produced without one cannot be "
@@ -2671,7 +2681,7 @@ def _verify(args: argparse.Namespace) -> int:
     # what it looked at reads as "everything is fine" when it means "I did not look there".
     skipped = report["directories_skipped"]
     print(
-        f"# {pinned} pinned artifact(s) of {seen} file(s) under {root}"
+        f"# {pinned} pinned artifact(s) of {seen} file(s) under {printable(str(root))}"
         + (
             f" ({skipped} build/vcs/venv director{'y' if skipped == 1 else 'ies'} not walked)"
             if skipped
@@ -2735,7 +2745,7 @@ def _verify(args: argparse.Namespace) -> int:
         # named artifact is missing is this module's own "AND IT WILL NOT PASS HAVING CHECKED
         # NOTHING" broken for the subset of the request it could not look at.
         print(
-            f"# NOT CHECKED: {inability}.\n"
+            f"# NOT CHECKED: {printable(str(inability))}.\n"
             f"#   You named {'it' if len(report['paths_absent']) == 1 else 'them'} and "
             f"{'it is' if len(report['paths_absent']) == 1 else 'they are'} not there, so "
             f"nothing was verified about\n"
@@ -2759,7 +2769,7 @@ def _verify(args: argparse.Namespace) -> int:
         # `ok` includes the NONE REGISTERED pin -- a run stating it read nothing is a
         # checkable claim that checks out, which is why this tests `ok` and not the entries.
         print(
-            f"# NOTHING CHECKED: {inability}.\n"
+            f"# NOTHING CHECKED: {printable(str(inability))}.\n"
             f"#   Every pin was UNVERIFIABLE -- see the reasons above. This is 'we could "
             f"not look', not\n"
             f"#   'nothing is wrong', and a gate that goes green on it is worse than no "
@@ -3065,7 +3075,7 @@ def main(argv: list[str] | None = None) -> int:
         if elsewhere:
             found = (
                 "  A MARKER BESIDE THIS PATH SAYS OTHERWISE: the run that left it recorded to\n"
-                + "".join(f"    {d}\n" for d in elsewhere)
+                + "".join(f"    {printable(str(d))}\n" for d in elsewhere)
                 + "  If that names a file, pass it to --log. If it names a sink, the records\n"
                 "  are not on this filesystem and there is nothing here for --log to read."
             )
@@ -3079,7 +3089,7 @@ def main(argv: list[str] | None = None) -> int:
                 "  wrong file to look in."
             )
         print(
-            f"no run history at {path}\n"
+            f"no run history at {printable(str(path))}\n"
             f"  It is created by the first recorded run — `with Run(..., provenance=...)`.\n"
             + found,
             file=sys.stderr,
@@ -3161,7 +3171,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         sys.stdout.write(_render_lineage(g, names) + "\n")
     print(
-        f"# {total} record(s) from {path}" + (f"; {bad} unreadable line(s) skipped" if bad else ""),
+        f"# {total} record(s) from {printable(str(path))}"
+        + (f"; {bad} unreadable line(s) skipped" if bad else ""),
         file=sys.stderr,
     )
     return 0

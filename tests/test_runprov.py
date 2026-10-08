@@ -41329,7 +41329,22 @@ def _printed_renderers() -> dict[tuple[str, str], set[str]]:
         `test_prune_does_not_forge_a_line_from_a_marker_filename`, which reads the VALUE ON THE
         STREAM and to which all five are visible.
         """
-        return any(isinstance(n, ast.Call) and resolve(n.func) is not None for n in ast.walk(expr))
+        #: A CHOKEPOINT CALL IS NOT A PAGE, AND THIS CLAUSE ALREADY EXISTED 150 LINES BELOW.
+        #: Without it, ESCAPING one of `__main__`'s own composed stderr lines made this
+        #: derivation REFUSE it: `printable` resolves, so `_has_renderer_call` said True,
+        #: `_composed_in_main` stopped excusing the line and it landed in `unresolved`.
+        #: Measured on the 32-site sweep: RED naming all 32, with the census otherwise
+        #: unchanged -- the guard punished the repair, which is the opposite of its purpose.
+        #: The helper is named for RENDERERS and matched any resolvable call; the `found`
+        #: loop below already distinguishes the two with this exact test, keyed to
+        #: `_CHOKEPOINTS`, whose members have their own second side in the one-definition
+        #: sweep above. So this is the same decision spelled once more, not a new one.
+        return any(
+            isinstance(n, ast.Call)
+            and (where := resolve(n.func)) is not None
+            and not (where[0] == "_report" and where[1] in _CHOKEPOINTS)
+            for n in ast.walk(expr)
+        )
 
     def binding(value: ast.expr) -> tuple[str, str] | None:
         """What a page-binder's VALUE resolves to, THROUGH A CONDITIONAL EXPRESSION.
