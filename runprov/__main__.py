@@ -1079,7 +1079,31 @@ def _exec(args: argparse.Namespace) -> int:
         if args.provenance
         else pathlib.Path(project.root) / "provenance" / f"{name}.prov.json"
     )
-    provenance.parent.mkdir(parents=True, exist_ok=True)
+    #: A MESSAGE, NOT A TRACEBACK -- the sentence this module says three times below, applied to
+    #: the one line that did not. `exec --provenance <path under a regular file>` and
+    #: `exec --name <...>` both reach this `mkdir`, and it raised a RAW `FileExistsError` [Errno 17]
+    #: when the parent IS a regular file or `NotADirectoryError` [Errno 20] when a component is --
+    #: reproduced with an ORDINARY name and no newline anywhere, so it is not the escaping class.
+    #: Filed by the `__main__` stderr sweep, 2026-10-08, and fixed here.
+    #:
+    #: AND THE SHAPE IS NOT NEW: `_export` already does exactly this 135 lines up, with the same
+    #: `mkdir` inside a `try` and the same `cannot write` wording, returning `CANNOT_CHECK`. This
+    #: was the one caller that set up its destination OUTSIDE the block that handles the run, so
+    #: the handlers below -- which exist to turn `UsageError`, `CommandFailedError` and
+    #: `Terminated` into a line and a number -- could never see it. Nothing was added; an idiom
+    #: already in this file reached the one site that had been missed.
+    #:
+    #: `{exc}` IS NOT ESCAPED, AND THAT IS MEASURED RATHER THAN ASSUMED: `OSError.__str__` REPRS
+    #: its filename -- `[Errno 20] Not a directory: '/a/b'` -- so a newline in the path arrives as
+    #: a literal backslash-n. `provenance` is interpolated raw and so IS escaped.
+    try:
+        provenance.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(
+            f"  runprov exec: cannot write {printable(str(provenance))}: {exc}",
+            file=sys.stderr,
+        )
+        return CANNOT_CHECK
 
     returncode = 1
     try:

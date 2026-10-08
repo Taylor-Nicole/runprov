@@ -43008,3 +43008,61 @@ def test_ci_declares_the_bench_step_and_points_it_at_the_harnesss_own_controls()
     assert default, "`ci.py`'s default step list is not spelled the way this test reads it"
     steps = default.group(1)
     assert "bench" not in steps, f"`bench` must not be a default step; they are {steps}"
+
+
+def test_exec_says_it_cannot_write_the_sidecar_instead_of_raising(tmp_path, monkeypatch, capsys):
+    """`exec` sets up its sidecar's directory OUTSIDE the block that handles the run.
+
+    THE DEFECT, filed by the `__main__` stderr sweep on 2026-10-08 and fixed in the same pass.
+    `provenance.parent.mkdir(parents=True, exist_ok=True)` sat above `_exec`'s `try`, so the three
+    handlers that exist to turn `UsageError`, `CommandFailedError` and `Terminated` into A LINE AND
+    A NUMBER could never see it. Pointing `--provenance` at a path under a REGULAR FILE printed a
+    raw Python traceback and exited 1, in the module whose own comments say *"A MESSAGE, not a
+    traceback"* three times.
+
+    TWO SPELLINGS FROM ONE LINE, and both are asserted because each is a different `errno` and a
+    fix for one need not be a fix for the other: `FileExistsError` [Errno 17] when the parent IS a
+    regular file, `NotADirectoryError` [Errno 20] when a path COMPONENT is one.
+
+    NOT THE ESCAPING CLASS, which is why this is its own test and not a case in the sweep's
+    runtime leg: it reproduces with an ORDINARY name and no newline anywhere. `--name` reaches the
+    same line by the other door, so it is asserted too.
+
+    AND THE SHAPE WAS ALREADY IN THIS FILE -- `_export` does the same `mkdir` inside a `try` with
+    the same `cannot write` wording and returns `CANNOT_CHECK`. The last assertion holds the two
+    together, so a future change that moves one is told about the other rather than discovering it.
+    """
+    monkeypatch.chdir(tmp_path)
+    runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a regular file", encoding="utf-8")
+
+    #: THE PARENT IS THE REGULAR FILE -> EEXIST; A COMPONENT IS -> ENOTDIR.
+    for destination in (blocker / "p.prov.json", blocker / "under" / "p.prov.json"):
+        code = cli.main(["exec", "--provenance", str(destination), "--", "anything"])
+        page = capsys.readouterr()
+        assert code == cli.CANNOT_CHECK, f"{destination} exited {code}, not could-not-check"
+        assert "Traceback (most recent call last)" not in page.err, (
+            f"a TRACEBACK, which this module refuses everywhere else:\n{page.err}"
+        )
+        assert "runprov exec: cannot write" in page.err, page.err
+        #: THE DESTINATION IS NAMED. A message that does not say which path failed sends the
+        #: reader to guess, and `exec` is usually run from inside a job script nobody is watching.
+        assert str(destination) in page.err or "blocker" in page.err, page.err
+
+    #: `--name` REACHES THE SAME LINE, by composing the sidecar under the project root instead.
+    monkeypatch.setattr(runprov.project, "_ACTIVE", None)
+    runprov.configure(root=blocker, run_log=tmp_path / "h.jsonl")
+    code = cli.main(["exec", "--name", "n", "--", "anything"])
+    page = capsys.readouterr()
+    assert code == cli.CANNOT_CHECK
+    assert "Traceback (most recent call last)" not in page.err, page.err
+    assert "runprov exec: cannot write" in page.err, page.err
+
+    #: ONE WORDING, TWO CALLERS. `_export` is where this shape already existed; if either stops
+    #: saying `cannot write` the other is the place to look, and nothing else said so.
+    source = inspect.getsource(cli)
+    assert source.count("cannot write") >= 2, (
+        "`_exec` and `_export` both answer an unwritable destination with `cannot write`; only "
+        f"{source.count('cannot write')} site(s) say it now"
+    )
