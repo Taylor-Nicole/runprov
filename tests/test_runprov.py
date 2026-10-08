@@ -42174,6 +42174,247 @@ def test_prune_does_not_forge_a_line_from_a_marker_filename(tmp_path, capsys, mo
     )
 
 
+def _argument_slots() -> dict[str, dict[str, list[str]]]:
+    """Every subcommand argparse declares, and every value-taking slot each one declares.
+
+    BY AST, for the reason `_cli_subcommands` already gives one screen up: the parser is built
+    inside `main()`, there is no factory to call, and `_SubParsersAction.choices` is private API
+    that has changed shape between versions. The two walks read the same `add_parser` calls, and
+    the caller below asserts they agree -- which is what makes a collector that stopped reading
+    `add_argument` red as *this instrument stopped reading* rather than green.
+
+    A `store_true`/`store_false` flag is skipped because it takes no value, so there is nothing
+    to drive into it. Everything else is a slot, including the ones that take an `int` or a
+    `choices` list: argparse refuses those itself and the caller classifies that refusal.
+    """
+    tree = ast.parse((_repo_root() / "runprov" / "__main__.py").read_text(encoding="utf-8"))
+    var2cmd: dict[str, str] = {}
+    slots: dict[str, dict[str, list[str]]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            call = node.value
+            if (
+                isinstance(call.func, ast.Attribute)
+                and call.func.attr == "add_parser"
+                and call.args
+                and isinstance(call.args[0], ast.Constant)
+            ):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        var2cmd[target.id] = call.args[0].value
+                        slots.setdefault(call.args[0].value, {"pos": [], "opt": []})
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and isinstance(node.func.value, ast.Name)
+        ):
+            continue
+        cmd = var2cmd.get(node.func.value.id)
+        if cmd is None or not node.args or not isinstance(node.args[0], ast.Constant):
+            continue
+        names = [a.value for a in node.args if isinstance(a, ast.Constant)]
+        action = {k.arg: k.value for k in node.keywords}.get("action")
+        if isinstance(action, ast.Constant) and str(action.value).startswith("store_"):
+            continue
+        slots[cmd]["opt" if names[0].startswith("-") else "pos"].append(names[-1])
+    return slots
+
+
+def test_no_command_forges_a_line_from_a_newline_bearing_argument(tmp_path, monkeypatch):
+    r"""`__main__`'s OWN composed stderr lines, held by the VALUE ON THE STREAM.
+
+    **THE SURFACE THIS CLOSES, AND IT WAS THE LARGEST KNOWN ONE IN THE PACKAGE.** Audits L and
+    M swept the RENDERERS and put `printable_lines` at each chokepoint. `__main__`'s one-off
+    diagnostics go through no renderer, so the sweep never reached them: Audit Q patched two of
+    them, each found by accident, and left the rest with *no count claimed*. Derived here: of
+    the 95 emissions in `__main__.py` that compose a line around a non-literal, 45 are
+    `__main__`'s own composed stderr lines and 32 of those interpolate an outside-controlled
+    value. 31 of the 32 were reproduced as live forgeries at `49ac301` with no modified file.
+
+    **AND WHAT HOLDS THEM IS NOT THIS FILE'S SYNTAX.** They are escaped ONE CALL SITE AT A TIME,
+    which is the shape `printable_lines`' own docstring calls *the thing this repository has had
+    to widen nine times* -- and no chokepoint is available, because these templates carry their
+    own newlines, so escaping the composed string would collapse each page into one long line.
+    So the property is enforced where it lives: this leg RUNS the command and COUNTS THE LINES.
+    `test_prune_does_not_forge_a_line_from_a_marker_filename` is the same shape one module over,
+    and the reason is the same one `guard-shapes` gives: *"this string becomes a line a person
+    reads"* is a RUNTIME property, and no AST-only derivation can hold it.
+
+    **THE CLAIM AND THE QUANTIFICATION, ONE SENTENCE EACH, SO THEY CAN BE COMPARED** [Audit P's
+    rule, violated by its own repairs four times out of five]:
+
+      CLAIM: no subcommand puts a bare forged line on a stream it writes, when a
+             newline-bearing path is driven into an argument slot it declares.
+      QUANT: for every subcommand argparse declares, and every value-taking slot it declares.
+
+    They are the same sentence. **The residue is therefore exactly the channels that are NOT an
+    argv path** -- a record field, an exception's `str()`, a policy `why` -- and those are held
+    at their 32 emission points, which were reproduced and escaped individually, not here.
+
+    **PLATFORM-NEUTRAL FOR ALL BUT ONE COMMAND, AND THE EXCEPTION IS DERIVED, NOT LISTED.** The
+    forged value is always rooted under a REGULAR FILE, so nothing under it can be created on
+    any platform. What the ATTACK needs is therefore no filesystem at all -- unlike the three
+    legs gated behind `_can_name_a_file_with_a_newline` -- for every command whose arriving
+    channel writes nothing. Measured at `1ad4d42` on POSIX: 14 of the 15 are such commands;
+    `exec` is not, because it names its sidecar after the command it was handed. The
+    quantification below narrows to the derived set on a host that cannot hold the name, and
+    asserts that the narrowing is EMPTY on a host that can.
+
+    **THIS PARAGRAPH STATES THE DIRECTION AND DATES THE RATES.** A first draft of it claimed
+    15 of 15, which was an instrument artefact: the standalone prototype did not reset
+    `project._ACTIVE`, so `exec`'s sidecar was written into the FIRST attempt's directory and
+    the per-attempt check for a created name looked in the wrong place. The number moved from
+    15 to 14 the moment the reset was added.
+
+    **WHAT IS NOT ASSERTED, AND WHY.** `exec --provenance` and `exec --name` reach
+    `__main__.py:1079`, `provenance.parent.mkdir(parents=True, exist_ok=True)`, which raises a
+    RAW `FileExistsError` traceback when a path component is a regular file. Reproduced at
+    `1ad4d42` with an ordinary name and no newline anywhere, so it is a different defect in a
+    different class -- a traceback where this module says *"A MESSAGE, not a traceback"*
+    everywhere else -- and it is recorded here rather than widened into. A raise is collected
+    and reported in the diagnostics below; it is not the subject.
+
+    Measured over the revert of the 32 escapes: **21 bare forged lines across 12 of the 15
+    subcommands, arrival still 15 of 15**, so the vacuity control does not steal the named
+    clause's diagnostic. With the escapes: **0 bare lines, and the escaped spelling present for
+    15 of 15 against 9 of 15 before** -- so the last clause is a real second half and not a
+    restatement.
+    """
+    sentinel = "GATE: MET (exit 0)"
+    slots = _argument_slots()
+
+    #: THE EXEMPTION'S SUBJECT, ASSERTED FIRST AND BY PRESENCE RATHER THAN BY COUNT [Audit Q,
+    #: decision-4]. Two independent AST walks read the same `add_parser` calls; if this one ever
+    #: stops seeing a subcommand, or sees a subcommand with no slot at all, everything below it
+    #: becomes a loop over nothing and passes forever. This is the clause that reds as *this
+    #: instrument stopped reading*, and it is before the main clauses for that reason.
+    assert set(slots) == set(_cli_subcommands()), (
+        f"the two parser walks disagree: this one found {sorted(slots)} and "
+        f"`_cli_subcommands` found {sorted(set(_cli_subcommands()))}. They read the same "
+        f"`add_parser` calls, so a disagreement means one of them has stopped reading and "
+        f"every clause below is quantifying over the wrong set"
+    )
+    empty = sorted(c for c, s in slots.items() if not s["pos"] and not s["opt"])
+    assert not empty, (
+        f"{empty} declare no value-taking argument slot, so this leg drives nothing into them "
+        f"and asserts nothing about them. Either the subcommand really takes no value -- say so "
+        f"here -- or `_argument_slots` has stopped reading `add_argument`"
+    )
+
+    bare: dict[str, list[tuple[str, int]]] = {}
+    arrived: dict[str, list[str]] = {}
+    unwritten: set[str] = set()
+    escaped_survived: set[str] = set()
+    raises: list[tuple[str, str, str]] = []
+    for command, slot in sorted(slots.items()):
+        attempts: list[tuple[str, list[str]]] = []
+        if slot["pos"]:
+            attempts.append((f"pos*{len(slot['pos'])}", [""] * len(slot["pos"])))
+        for option in slot["opt"]:
+            attempts.append((option, [option, "", *([""] * len(slot["pos"]))]))
+        for label, template in attempts:
+            here = tmp_path / f"{command}-{label.strip('-') or 'pos'}"
+            here.mkdir(parents=True, exist_ok=True)
+            #: A REGULAR FILE, so every path below it is unopenable AND uncreatable on every
+            #: platform. That is what makes the forged NAME never reach the filesystem.
+            (here / "blocker").write_text("a regular file", encoding="utf-8")
+            forged = str(here / "blocker" / f"n1\n{sentinel}\nn2")
+            monkeypatch.chdir(here)
+            monkeypatch.setattr(runprov.project, "_ACTIVE", None)
+            out, err = io.StringIO(), io.StringIO()
+            argv = [command, *(forged if a == "" else a for a in template)]
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                try:
+                    cli.main(argv)
+                except SystemExit:
+                    pass
+                except BaseException as exc:  # recorded below, and not the subject
+                    raises.append((command, label, type(exc).__name__))
+            page = f"{err.getvalue()}\n{out.getvalue()}"
+            #: ARGPARSE'S OWN REFUSAL IS NOT A LEG. An `int` slot, a `choices` slot and a
+            #: positional this attempt did not supply all land here, and counting them as
+            #: arrivals would make the control below green over nothing.
+            if any(
+                refusal in page
+                for refusal in ("unrecognized arguments", "invalid choice", "expected one argument")
+            ):
+                continue
+            bare.setdefault(command, []).extend(
+                (label, n) for n, line in enumerate(page.split("\n"), 1) if line == sentinel
+            )
+            if forged in page or forged.replace("\n", "\\n") in page:
+                arrived.setdefault(command, []).append(label)
+                if not any("\n" in p.name for p in here.rglob("*")):
+                    unwritten.add(command)
+            if forged.replace("\n", "\\n") in page:
+                escaped_survived.add(command)
+    bare = {command: hits for command, hits in bare.items() if hits}
+
+    #: THE VACUITY CONTROL, PER COMMAND, BEFORE THE PROPERTY. A behavioural leg whose fixture
+    #: never reaches the code under test passes forever, and `guard-shapes` rates that shape
+    #: worse than a missing member. It is deliberately satisfied by EITHER spelling -- raw or
+    #: escaped -- so it survives the revert and cannot double as the property below.
+    #:
+    #: **AND THE SUBJECT IS NARROWED FOR ONE HOST CLASS, DERIVED RATHER THAN LISTED.** A first
+    #: draft asserted that every arriving channel CREATES NOTHING, and it CANNOT PASS: `exec`
+    #: names its sidecar after the command it was given, so all four of its arriving slots write
+    #: `provenance/<the forged name>.prov.json` -- measured, with `--name` and `--provenance` not
+    #: arriving at all. On a host whose filesystem refuses a control character in a name, that
+    #: command cannot be attacked through this door at all, so the quantification is over
+    #: `unwritten` there: the commands that arrived through a slot which created nothing. That is
+    #: computed from what each attempt ACTUALLY created, so no command is named here.
+    #:
+    #: **THE EXEMPTION IS EMPTY WHERE THE CHANNEL EXISTS** [Audit M, escape-5's shape], which is
+    #: the clause that stops the narrowing from quietly starting to cover a real regression: on a
+    #: host that CAN hold the name the expected set is every subcommand, with nothing excused.
+    #: Measured at `1ad4d42` on POSIX: 15 of 15 arrived, 14 of 15 through a slot creating
+    #: nothing. On Windows this clause is a FLOOR over `unwritten` and not an exhaustiveness
+    #: assertion, and that is said here because a docstring is not a contract until something
+    #: checks it -- the two clauses below keep their whole force over whatever did arrive.
+    holds_a_newline = _can_name_a_file_with_a_newline(tmp_path)
+    expected = set(slots) if holds_a_newline else unwritten
+    assert holds_a_newline == (expected == set(slots)), (
+        f"the narrowing and the probe disagree: the filesystem "
+        f"{'can' if holds_a_newline else 'cannot'} "
+        f"hold a control character in a name, and the expected set is "
+        f"{'' if expected == set(slots) else 'not '}every subcommand. Where the channel exists "
+        f"nothing may be excused: expected {sorted(expected)} of {sorted(slots)}"
+    )
+    never = sorted(expected - set(arrived))
+    assert not never, (
+        f"{never} never put the forged value on either stream through any slot they declare, "
+        f"so this leg asserts nothing about them. Measured at `1ad4d42` on POSIX: 15 of 15 "
+        f"arrived, 14 of 15 through a slot that created nothing. Arrived: "
+        f"{dict(sorted((k, sorted(v)) for k, v in arrived.items()))}; raises: {raises}"
+    )
+
+    #: THE NAMED DEFECT, AND IT NAMES THE COMMAND AND THE SLOT. A bare line reading exactly this
+    #: is what a CI log scraped for `GATE:` reads first.
+    assert not bare, (
+        f"these commands put a line reading exactly `{sentinel}` on a stream, and nothing on "
+        f"the page put it there -- it came out of a newline-bearing PATH interpolated into one "
+        f"of `__main__`'s own composed diagnostics: "
+        f"{dict(sorted(bare.items()))}. Wrap the interpolated value in "
+        f"`printable` at the emission point (imported at `__main__.py:78`); escaping the "
+        f"composed STRING is not available here, because these templates carry their own "
+        f"newlines and `printable` of the whole page collapses it into one line"
+    )
+    #: AND THE VALUE IS STILL THERE, ESCAPED, PER COMMAND -- the other half, because a transform
+    #: that DELETED the newline satisfies the clause above and loses the user's path. Measured
+    #: over the revert at 9 of 15, so this is a second measurement and not a restatement.
+    #: OVER WHAT ARRIVED, not over every subcommand, for the reason the narrowing above gives:
+    #: a command this host cannot attack has no page to carry anything.
+    lost = sorted(set(arrived) - escaped_survived)
+    assert not lost, (
+        f"{lost} no longer show the forged path in its escaped spelling anywhere on their page. "
+        f"Escaping is not censoring: the reader needs to know WHICH path, and only its power to "
+        f"move the cursor may be gone. Arrived: "
+        f"{ {k: sorted(v) for k, v in sorted(arrived.items())} }"
+    )
+
+
 def test_emit_policy_answers_about_the_file_and_opens_no_history(tmp_path, capsys):
     """[ADR-0018 R-14] [ADR-0018 R-11] T-34. The third half of Taylor's ruling.
 
