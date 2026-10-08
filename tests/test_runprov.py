@@ -93,9 +93,9 @@ _PACKAGE_MODULES = 24
 #: inside the repository satisfies it with 128 files that are not sources at all. The equality
 #: has something to say in both directions, which is why both sides read this now.
 #:
-#: 1 in `tests/`, `ci.py`, 4 in `tools/`, 2 in `examples/`. Re-read it when a file is added
+#: 1 in `tests/`, `ci.py`, 5 in `tools/`, 2 in `examples/`. Re-read it when a file is added
 #: outside `runprov/`; `_PACKAGE_MODULES` is the one number for a file added inside it.
-_NON_PACKAGE_SOURCES = 8
+_NON_PACKAGE_SOURCES = 9
 
 # ------------------------------------------------- what the platform can be asked to build
 #
@@ -32305,13 +32305,13 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
     #:
     #: IT IS AN EQUALITY, BECAUSE THE COMMENT ABOVE SAID SO WHILE THE ASSERTION SAID `>= 32`
     #: [Audit P, exhaustive-9]. A floor is slack by one the moment a package module is added, and
-    #: nothing said so: 24 + 1 + 1 + 4 + 2 is 32 today, and with a 25th package module a floor
+    #: nothing said so: 24 + 1 + 1 + 5 + 2 is 33 today, and with a 25th package module a floor
     #: of 32 reads 33 and stays green over a file it may well not have read.
     #:
     #: THE PACKAGE HALF READS `_PACKAGE_MODULES` RATHER THAN RESTATING IT, so one bump moves one
     #: number [Audit O, guards-12]. The other 8 are what the four trees and the repository root
     #: hold outside the package, and they are written out here, once: `tests/*.py` 1, `ci.py` 1,
-    #: `tools/*.py` 4, `examples/*.py` 2, held in `_NON_PACKAGE_SOURCES` so this side and the
+    #: `tools/*.py` 5, `examples/*.py` 2, held in `_NON_PACKAGE_SOURCES` so this side and the
     #: `open_output` sweep read ONE number. This is NOT circular -- `_PACKAGE_MODULES` is a
     #: hand-written constant that a human must re-read when adding a module, and `len(roots)` is
     #: read off the disk, so the two sides have different sources and the equality has something
@@ -32327,7 +32327,7 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
         f"the sweep found {len(roots)} source files and the repository tracks "
         f"{_PACKAGE_MODULES + _NON_PACKAGE_SOURCES} -- {_PACKAGE_MODULES} in `runprov/` plus "
         f"{_NON_PACKAGE_SOURCES} outside it "
-        f"(1 in `tests/`, `ci.py`, 4 in `tools/`, 2 in `examples/`). Either a sweep has stopped "
+        f"(1 in `tests/`, `ci.py`, 5 in `tools/`, 2 in `examples/`). Either a sweep has stopped "
         f"matching, or a file was added: if a PACKAGE module was added, bump "
         f"`_PACKAGE_MODULES`, which is the one number for it; if it was added outside the "
         f"package, the 8 above is what to re-read. NOT every root ships in the sdist, and this "
@@ -42867,3 +42867,144 @@ def test_every_chain_requirement_has_a_test():
         f"{sorted(required - cited, key=lambda s: (len(s), s))}. Requirements the tests cite "
         f"that the ADR no longer states: {sorted(cited - required, key=lambda s: (len(s), s))}"
     )
+
+
+def _bench_module():
+    """`tools/bench.py`, loaded the way `_ci_module` loads `ci.py`.
+
+    By spec rather than `from tools import bench`, so this holds the FILE at its path: the step
+    in `ci.py` shells out to that path, and a test importing a package module could keep passing
+    while the path `ci.py` names had moved.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_bench_under_test", _repo_root() / "tools" / "bench.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_bench_harness_reads_a_return_code_as_only_the_codes_that_mean_something():
+    """`tools/bench.py` classifies pytest's exit code, and `5` is the one that matters.
+
+    THE FAILURE THIS HOLDS. A harness that reads any non-zero code as "the guard caught it"
+    reports a mutation killed by a suite that NEVER RAN -- `5` is "no tests collected", which a
+    `-k` typo produces, and `4` is a usage error, which an interpreter without `pytest-cov`
+    produces. Both have happened here: `4` while this file was being written, when a resolved
+    virtualenv symlink silently handed pytest to the base interpreter.
+
+    AND A FALSE PASS IS WORSE THAN A FALSE FAILURE, because a pass closes the question. So the
+    assertions below are not only that `0` and `1` map correctly -- they are that `4` and `5` map
+    to NEITHER verdict, which is the half a `returncode != 0` harness gets wrong.
+    """
+    bench = _bench_module()
+    assert bench.classify(0) == bench.SURVIVED
+    assert bench.classify(1) == bench.CAUGHT
+
+    with pytest.raises(bench.Void, match="collected NOTHING"):
+        bench.classify(5)
+    #: THE PAGE TRAVELS WITH THE REFUSAL. A bare "pytest exited 4" sent this file's author looking
+    #: at the wrong tree; pytest's own usage error says exactly what is wrong.
+    with pytest.raises(bench.Void, match="unrecognized arguments"):
+        bench.classify(4, "ERROR: unrecognized arguments: --cov=runprov")
+    for code in (2, 3, 4):
+        with pytest.raises(bench.Void, match="ERROR and not a result"):
+            bench.classify(code)
+
+
+def test_the_bench_harness_calls_a_prose_only_edit_no_mutation_at_all():
+    """A docstring edit is not a mutation, and a string that is NOT a docstring still is.
+
+    THE MEASURED FAILURE. A plant harness in this repository inserted six import spellings INSIDE
+    A DOCSTRING; all six were present in an AST dump, all six read RC=0 against the guard they
+    were meant to break, and that nearly refuted a true row. So `executable_difference` compares
+    the two trees with every docstring replaced by a fixed marker.
+
+    AND THE SECOND HALF IS WHAT KEEPS IT FROM OVER-REACHING: an ordinary string literal carries
+    behaviour -- a message, a format, a marker -- so changing one IS a mutation. A version of
+    this that blanked every `Constant` would call the `__main__` stderr sweep's 32 message edits
+    "prose" and refuse to measure any of them.
+    """
+    bench = _bench_module()
+    base = 'def f():\n    """Say what f does."""\n    return "a message"\n'
+    prose = 'def f():\n    """Say what f does, at greater length."""\n    return "a message"\n'
+    behaviour = 'def f():\n    """Say what f does."""\n    return "a different message"\n'
+    code = 'def f():\n    """Say what f does."""\n    return "a message".upper()\n'
+
+    assert not bench.executable_difference(base, prose), "a docstring edit is prose"
+    assert bench.executable_difference(base, behaviour), "a MESSAGE is behaviour, not prose"
+    assert bench.executable_difference(base, code)
+    assert not bench.executable_difference(base, base), "a no-op is not a mutation"
+
+    #: THE MODULE DOCSTRING TOO, because that is where the measured plant landed.
+    assert not bench.executable_difference('"""One."""\nx = 1\n', '"""Two."""\nx = 1\n')
+    assert bench.executable_difference('"""One."""\nx = 1\n', '"""One."""\nx = 2\n')
+
+
+def test_the_bench_harness_numbers_the_lines_it_changed_in_the_mutant():
+    """`changed_lines` is the left-hand side of the executed-statement control.
+
+    NUMBERED IN THE MUTANT, because that is the file coverage reports on. An insertion shifts
+    every line below it, so numbering in the ORIGINAL would point the control at the wrong lines
+    and it would read a statement the mutation never touched.
+    """
+    bench = _bench_module()
+    assert bench.changed_lines("a\nb\nc\n", "a\nb\nc\n") == set()
+    assert bench.changed_lines("a\nb\nc\n", "a\nB\nc\n") == {2}
+    #: AN INSERTION, and the number is the NEW line's.
+    assert bench.changed_lines("a\nc\n", "a\nb\nc\n") == {2}
+    #: A DELETION changes no line IN the mutant, which is why the control also asks whether any
+    #: changed line is a statement at all rather than resting on this set being non-empty.
+    assert bench.changed_lines("a\nb\nc\n", "a\nc\n") == set()
+
+
+def test_the_bench_harness_refuses_a_work_root_inside_this_repository(tmp_path):
+    """Control 1, and it refuses BEFORE creating anything.
+
+    WHY IT IS FIRST. The suite enumerates its own sources with `REPO.rglob("*.py")`, so a `.py`
+    tree inside the repository joins that sweep: on 2026-10-08 four copies at
+    `runprov/.audit-scratch/` put 128 stray sources in scope and turned an unrelated test red at
+    a green HEAD. A bench run whose trees sit there measures a repository that is not this one.
+
+    AND A CONTROL THAT CREATES THE HAZARD IT REFUSES IS NOT A CONTROL. The first version ran
+    after `main()` had already called `work.mkdir()`, so refusing the root still left the
+    directory behind; the assertion below is that nothing is created.
+    """
+    bench = _bench_module()
+    root = _repo_root()
+    for inside in (root, root / ".bench", root / "tools" / "deeper"):
+        with pytest.raises(bench.Void, match="inside the repository"):
+            bench._refuse_a_work_root_inside_the_repo(inside)
+    assert not (root / ".bench").exists(), "the refusal must not create what it refuses"
+    #: AND IT MUST NOT REFUSE AN HONEST ROOT, or the harness cannot be run at all.
+    bench._refuse_a_work_root_inside_the_repo(tmp_path)
+
+
+def test_ci_declares_the_bench_step_and_points_it_at_the_harnesss_own_controls():
+    """`ci.py bench` runs `tools/bench.py selfcheck`, and the step is declared.
+
+    THE INSTRUMENT NEEDS A CONTROL, which is why this step exists at all: `bench.py` decides
+    whether a guard noticed a deliberate break, and if it stops being able to produce one of its
+    verdicts every answer it gives afterwards still LOOKS like an answer. Its six cases assert
+    the REASON each fired and not merely the verdict -- two of them passed for the wrong reason
+    while printing `ok` the first time they were written.
+
+    NOT IN THE DEFAULT GATE, and that is asserted rather than described: twelve tree copies and
+    twelve pytest runs do not belong on every push.
+    """
+    ci = _ci_module()
+    assert "bench" in ci.STEPS, "the step must be reachable as `python ci.py bench`"
+    source = inspect.getsource(ci.STEPS["bench"])
+    assert "tools" in source and "bench.py" in source and "selfcheck" in source, (
+        "the step must shell out to the harness's own selfcheck; it reads:\n" + source
+    )
+    assert (_repo_root() / "tools" / "bench.py").is_file(), "and that file must be there"
+
+    #: NOT IN THE DEFAULT GATE, READ OFF `__main__`'S OWN DEFAULT RATHER THAN RESTATED. An earlier
+    #: draft also asserted `"bench" not in ("lint", "test", "build")`, which is a comparison of
+    #: three literals this file wrote: a shape that CANNOT FAIL, and this project refuses those
+    #: because they teach a reader that a green here means something it does not.
+    default = re.search(r"sys\.argv\[1:\] or \[([^\]]*)\]", inspect.getsource(ci))
+    assert default, "`ci.py`'s default step list is not spelled the way this test reads it"
+    steps = default.group(1)
+    assert "bench" not in steps, f"`bench` must not be a default step; they are {steps}"

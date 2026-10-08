@@ -12,6 +12,7 @@
     python ci.py setup      install the dev extras and the pre-commit hooks
     python ci.py surface    rewrite docs/public-surface.txt from what the package exposes
     python ci.py torture    damage a real record and read it back (tools/torture.py)
+    python ci.py bench      prove tools/bench.py can still tell its verdicts apart
     python ci.py release-check   the version copies, the tag and the citation's year
                             (run by `build`; set RUNPROV_RELEASE_TAG=vX.Y.Z to rehearse
                             what a tag push would check)
@@ -732,6 +733,25 @@ def torture() -> None:
     run(PY, str(ROOT / "tools" / "torture.py"))
 
 
+def bench() -> None:
+    """Prove `tools/bench.py` can still tell CAUGHT from SURVIVED from VOID. NOT the gate.
+
+    THE HARNESS IS AN INSTRUMENT AND AN INSTRUMENT NEEDS A CONTROL, which is the same reason
+    `corpus` below asks whether the FIXTURE is honest rather than whether the package agrees
+    with it. `bench.py` decides whether a guard noticed a deliberate break; if it can no longer
+    produce one of its three verdicts, every answer it gives afterwards still LOOKS like an
+    answer. So its own six cases run here -- one CAUGHT, one SURVIVED and four VOID, each
+    asserted on the REASON it fired and not merely on the verdict, because two of them passed
+    for the wrong reason while printing `ok` the first time they were written.
+
+    NOT IN THE DEFAULT GATE. It copies this tree twelve times and runs pytest twelve times.
+    `RUNPROV_BENCH_ROOT` points the copies at a fast disk; unset, each run gets a temporary
+    directory. It must never point inside this repository -- `bench.py`'s control 1 refuses
+    that, and the reason is in its docstring.
+    """
+    run(PY, str(ROOT / "tools" / "bench.py"), "selfcheck", "--python", PY)
+
+
 def corpus() -> None:
     """Self-check the cross-version record corpus. NOT the gate over it — that is in the suite.
 
@@ -751,6 +771,8 @@ STEPS = {
     "setup": setup,
     "surface": surface,
     "torture": torture,
+    #: NOT in the default gate: twelve tree copies and twelve pytest runs. See `bench`.
+    "bench": bench,
     "corpus": corpus,
     "release-check": release_check,
     #: NOT in the default `lint test build`: it needs the network and `gh`. Run before a tag.
