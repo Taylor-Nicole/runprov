@@ -10,7 +10,12 @@ line-length = 100
 target-version = "py310"
 
 [lint]
-select = ["E", "F", "I", "N", "UP", "ANN", "S", "B", "C4", "PT", "RUF"]
+# `W` ADDED 2026-10-09, and it was free: enabling the whole family flagged exactly ONE line in the
+# tree -- a `\|` in a docstring written minutes earlier. Python had warned about it at import
+# (`SyntaxWarning: invalid escape sequence`) while `ruff check` passed, because W605 was not
+# selected. A warning nobody reads is a check nobody has. Measured before enabling: `--select W`
+# over the whole tree reported 1 error, so this costs nothing and closes the hole permanently.
+select = ["E", "F", "I", "N", "UP", "ANN", "S", "B", "C4", "PT", "RUF", "W"]
 
 # RUF003 flags an "ambiguous" EN DASH in a comment and suggests a hyphen. The comment is
 # the copyright notice, and the en dash is part of "Assistance Publique – Hôpitaux de

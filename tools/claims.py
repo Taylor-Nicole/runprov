@@ -783,6 +783,96 @@ def elsewhere_lines(text: str) -> dict[int, str]:
     return out
 
 
+#: A BRANCH THAT FIRES NOWHERE, each with its reason. Swept 2026-10-09 after an `exit-code`
+#: alternative turned out to be **incapable** of matching anything -- `\b` before a backtick,
+#: where a word boundary needs a word character. It was written and tested by nothing.
+#:
+#: THE SWEEP FOUND NO SECOND INCAPABLE BRANCH: every branch across `_KINDS`, `_BOUND` and
+#: `_DERIVED`, tried line by line over 3 958 non-fenced lines in six documents. What it did find
+#: is four branches that CAN match and currently match nothing here, and those are declared below
+#: rather than deleted -- a heading beginning with a digit is a thing markdown does, and the day
+#: one arrives the branch should already be there.
+#:
+#: WHY DECLARING THEM IS THE GUARD. `unexercised_branches` returns any branch firing nowhere that
+#: is NOT named here, so an incapable branch -- which by construction fires nowhere -- is red on
+#: arrival. That is the preventative half of the original finding.
+_FIRES_NOWHERE_TODAY = {
+    r"^#{1,6} \d": "no heading in these documents begins with a digit after the hashes",
+    r"^\s*[-*] \*\*\d+\.": "no bullet here opens with a bold `1.`",
+    r"SPDX": "SPDX identifiers are in source headers, not in the audited prose",
+    r"another project": "the phrasing used here is `a project consuming runprov`",
+}
+
+
+def pattern_branches(pattern: str) -> list[str]:
+    """Split a pattern on its TOP-LEVEL `|`, so each branch can be tried on its own.
+
+    Depth-aware, because `(?:a|b)` is one branch and `a|b` is two; an escaped pipe is a literal.
+    """
+    out: list[str] = []
+    depth = 0
+    current = ""
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "\\":
+            current += pattern[index : index + 2]
+            index += 2
+            continue
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        if char == "|" and depth == 0:
+            out.append(current)
+            current = ""
+        else:
+            current += char
+        index += 1
+    out.append(current)
+    return [branch for branch in out if branch.strip()]
+
+
+def unexercised_branches() -> list[str]:
+    """Branches of the detection patterns that match no line, and are not declared above.
+
+    THE SAME UNIT `classify` USES -- one line at a time, fenced blocks skipped. The first version
+    of this sweep joined the documents into one blob without `MULTILINE`, so every `^`-anchored
+    branch read as dead: four false findings at once, from the instrument rather than the subject.
+    """
+    lines: list[str] = []
+    for text in documents().values():
+        fenced = False
+        for line in text.split("\n"):
+            if line.lstrip().startswith("```"):
+                fenced = not fenced
+                continue
+            if not fenced:
+                lines.append(line)
+    #: NOT VACUOUS: no lines would make every branch read as dead, which is the failure above.
+    if len(lines) < 100:
+        raise RuntimeError(
+            f"only {len(lines)} line(s) read; the sweep is not reading the documents"
+        )
+
+    out: list[str] = []
+    for name, pattern, _reason in _KINDS:
+        branches = pattern_branches(pattern)
+        if len(branches) < 2:
+            continue
+        for branch in branches:
+            if branch in _FIRES_NOWHERE_TODAY:
+                continue
+            try:
+                rx = re.compile(branch, re.I)
+            except re.error:
+                out.append(f"_KINDS[{name}]: {branch!r} is not a valid pattern on its own")
+                continue
+            if not any(rx.search(line) for line in lines):
+                out.append(f"_KINDS[{name}]: {branch!r} matches nothing and is not declared")
+    return out
+
+
 def _digest(payload: object) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 

@@ -23278,19 +23278,41 @@ def test_every_command_the_documentation_tells_you_to_run_actually_EXISTS():
 
     DERIVED FROM BOTH SIDES. The commands come from the documents by pattern and the answers come
     from `ci.py`'s own `STEPS` table and the filesystem, so a step added or renamed tomorrow is
-    covered without editing this test. Only the two spellings a reader can actually type are
-    read — `ci.py <step>` and `tools/<script>.py` — because a `runprov <subcommand>` is already
-    held by `CORPUS_RECIPES`, and a bare grep for one matches prose like *"runprov directly"*.
+    covered without editing this test, and so is a renamed TEST — the citations are resolved
+    against this file's own `def test_` lines. A `runprov <subcommand>` is deliberately not read:
+    it is already held by `CORPUS_RECIPES`, and a bare grep for one matches prose like
+    *"runprov directly"*.
+
+    THREE PRIMITIVES, COUNTED SEPARATELY, because one total over a mixed population is a floor and
+    this test shipped with exactly that — `>= 5` across two patterns, so breaking either left the
+    other carrying the count. Found by mutating a pattern to an impossible spelling, not by review.
     """
     root = _repo_root()
     ci = _ci_module()
     docs = sorted(root.glob("*.md")) + sorted((root / "docs").rglob("*.md"))
     assert len(docs) >= 5, f"only {len(docs)} document(s) found; this test is reading nothing"
 
-    seen = {"ci.py": 0, "tools/": 0}
+    #: TEST NAMES ARE THE SAME SHAPE, swept 2026-10-09 and added because of it: a document citing
+    #: `test_...` names something that must resolve, exactly as `ci.py <step>` does, and a renamed
+    #: test leaves the CHANGELOG and README pointing at nothing. The sweep found 30 citations and
+    #: **0 missing** — a clean result worth keeping, because nothing held it and the next rename
+    #: would have been silent.
+    defined = set(re.findall(r"^def (test_\w+)", pathlib.Path(__file__).read_text("utf-8"), re.M))
+    assert len(defined) > 500, f"only {len(defined)} test(s) found; this half is reading nothing"
+
+    seen = {"ci.py": 0, "tools/": 0, "test name": 0}
     missing: list[str] = []
     for path in docs:
         text = path.read_text(encoding="utf-8")
+        for name in sorted(set(re.findall(r"\btest_[A-Za-z0-9_]{8,}", text))):
+            seen["test name"] += 1
+            #: RESOLVED AS A PREFIX TOO, because a long name wraps across a line in prose and the
+            #: citation is then a prefix of the real one. The first version of this sweep reported
+            #: three missing tests, all of them its own doing: two had uppercase tails its
+            #: character class excluded and one was wrapped. A sweep's first finding is about the
+            #: sweep.
+            if name not in defined and not any(real.startswith(name) for real in defined):
+                missing.append(f"{path.name} cites `{name}`, and no test has that name")
         for step in re.findall(r"\bci\.py ([a-z][a-z-]*)", text):
             seen["ci.py"] += 1
             if step not in ci.STEPS:
@@ -31213,6 +31235,55 @@ def test_every_resource_requirement_has_a_test():
         "ADR-0013 and its tests disagree. Requirements the ADR states that no test names: "
         f"{sorted(required - cited, key=lambda s: (len(s), s))}. Requirements the tests cite "
         f"that the ADR no longer states: {sorted(cited - required, key=lambda s: (len(s), s))}"
+    )
+
+
+def test_every_decision_record_declares_a_status_this_project_recognises():
+    """An ADR that has stopped being true is worse than none, because it reads as the DESIGN.
+
+    THIS PROJECT HAS ALREADY BEEN BITTEN, and the record says so in its own words: ADR-0017's
+    status line reads *"this line read `proposed — a feature that is not built` through the release
+    that shipped it"*, and explains that the guard which should have caught it — one that reads a
+    module's top docstring for an ADR number — *"had nothing to check"*, because no module named
+    that ADR until after the release. **A guard that is uninformed looks exactly like one that is
+    satisfied.** This is the floor underneath it: whatever else is true, every record must say
+    where it stands, in a vocabulary something can read.
+
+    FORMAT-AGNOSTIC ON PURPOSE, and that is a finding rather than laziness. The corpus states its
+    status three different ways — `- **Status:** Accepted`, `**Status:** Accepted — …`, and inline
+    as `Date: … · Status: accepted · Ledger: …`. A sweep written for one of them reported thirteen
+    records as having no status at all, twice, in two different wrong ways. **Three formats is a
+    fact about this corpus and any guard over it must read all three**, which is why this looks for
+    the field anywhere rather than at the start of a line.
+
+    WHAT THIS DELIBERATELY DOES NOT CHECK. Whether an `accepted` record still describes the build.
+    That needs the record to declare what it GOVERNS, and only 2 of 21 carry an `Applies to:`
+    field — filed, not fixed, because writing the other nineteen is a judgement per record and not
+    a sweep. With that field, every target it names could be resolved; without it, nothing can.
+    """
+    adrs = sorted(
+        path for path in (_repo_root() / "docs" / "adr").glob("*.md") if path.name != "README.md"
+    )
+    #: NOT VACUOUS: an empty glob would make the loop below assert nothing at all.
+    assert len(adrs) >= 15, f"only {len(adrs)} decision record(s) found; this is reading nothing"
+
+    recognised = {"accepted", "proposed", "superseded", "rejected", "withdrawn", "amended"}
+    unreadable, unknown = [], []
+    for path in adrs:
+        head = "\n".join(path.read_text(encoding="utf-8").split("\n")[:8])
+        found = re.search(r"Status:?\*{0,2}\s*:?\s*\**\s*([A-Za-z]+)", head)
+        if not found:
+            unreadable.append(path.name)
+        elif found.group(1).lower() not in recognised:
+            unknown.append(f"{path.name} says {found.group(1)!r}")
+
+    assert not unreadable, (
+        f"these decision records declare no readable status in their first eight lines, so nothing "
+        f"can tell whether they describe the build or a design that was abandoned: {unreadable}"
+    )
+    assert not unknown, (
+        f"these records use a status word nothing here recognises, and a vocabulary nobody shares "
+        f"is the same as no status: {unknown}. The recognised set is {sorted(recognised)}"
     )
 
 

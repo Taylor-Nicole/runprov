@@ -1272,6 +1272,50 @@ derived document list deliberately is **not**: a new page should move the POPULA
 not make the gate refuse to compare.
 
 
+### Added — three guards from an audit pass whose findings were swept for other instances
+
+A second audit pass, run under a new standing rule: **every finding is restated as a shape, swept
+for its other instances with a denominator, turned into a guard over the derived population, and
+written into the specification.** The sweeps and their results:
+
+| finding's shape | swept over | result |
+|---|---|---|
+| a regex branch incapable of matching anything | every branch of 3 registries, 3 958 non-fenced lines | **0 further** — 4 capable-but-unexercised, now declared |
+| prose naming something that must resolve | 30 `test_` citations across 32 documents | **0 missing** — and nothing held it |
+| a decision record that stopped describing the build | 21 records | all have a status; **2 of 21 declare what they govern** |
+| an escape sequence Python warns about and lint does not | every `.py` in the tree | **1** — introduced minutes earlier |
+
+**`unexercised_branches()`** — a branch of any `_KINDS` pattern that matches nothing must be
+declared in `_FIRES_NOWHERE_TODAY` with its reason. An *incapable* branch fires nowhere by
+construction, so this is red on arrival: it is the preventative half of the `exit-code` finding,
+where ``\b`[012]` `` could never have matched and nothing noticed.
+
+**Cited test names** join `ci.py <step>` and `tools/<script>.py` in
+`test_every_command_the_documentation_tells_you_to_run_actually_EXISTS` — the same shape, so the
+same guard, now counting three primitives separately. A citation is resolved as a prefix too,
+because a long name wraps across a line in prose.
+
+**`test_every_decision_record_declares_a_status_this_project_recognises`** — the floor under
+ADR rot, which this project has already suffered: ADR-0017's own status line records that it read
+*"proposed — a feature that is not built"* **through the release that shipped it**, and that the
+guard which should have caught it *"had nothing to check"*. Format-agnostic because the corpus
+states its status three different ways, and a sweep written for one of them reported thirteen
+records as statusless — twice, in two different wrong ways.
+
+### Changed — `W` joins the lint selection, measured first
+
+`ruff check` passed on a file Python itself warned about at import — `SyntaxWarning: invalid escape
+sequence` — because `W605` was never selected. **A warning nobody reads is a check nobody has.**
+Enabling the whole `W` family flagged exactly **one** line in the tree, so it cost nothing.
+
+### Filed, not fixed — 19 of 21 decision records do not declare what they govern
+
+Only `0001` and `0002` carry an `Applies to:` field naming the files they decide about, and for
+those two every target resolves. Without the field there is nothing to resolve, so no guard can ask
+whether an `accepted` record still describes the build. Writing the other nineteen is a judgement
+per record rather than a sweep, which is why it is recorded here rather than done in this commit.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise
