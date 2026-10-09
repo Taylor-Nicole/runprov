@@ -2808,7 +2808,7 @@ because the text handle settles it before the pin is considered at all.
 | `.svg` `.xml` `.html` `.htm` `.xhtml` | XML has no comment syntax — measured: the file is written, then `ET.parse` fails at line 1, column 1 | sidecar |
 | `.json` `.jsonl` `.geojson` `.ipynb` | JSON has no comment syntax — measured: `json.loads` fails at char 0 | sidecar |
 | `.tex` | TeX comments with `%`; `#` is a macro parameter character | sidecar |
-| `.bam` `.cram` `.parquet` `.h5` `.npy` `.xlsx` `.gz` `.zst` `.zip` `.png` `.pdf` | binary or compressed; `open_output` is text mode | **raises** |
+| `.bam` `.cram` `.parquet` `.h5` `.hdf5` `.npy` `.npz` `.xlsx` `.gz` `.bgz` `.bz2` `.zst` `.zip` `.png` `.pdf` | binary or compressed; `open_output` is text mode | **raises** |
 
 The text formats are the trap in that table: `open_output` writes them happily and the
 result does not look damaged until something parses it. `#` really is a comment in a

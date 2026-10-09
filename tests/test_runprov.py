@@ -23197,6 +23197,74 @@ def test_the_readme_documents_the_in_band_allowlist_exactly():
     )
 
 
+def _pin_unsafe_table() -> list[str]:
+    """The README's `PIN_UNSAFE` table, as data rows. Derived from its own header, not a line no."""
+    readme = (_repo_root() / "README.md").read_text(encoding="utf-8").splitlines()
+    start = next(
+        (n for n, line in enumerate(readme) if line.startswith("| suffix | why ")),
+        None,
+    )
+    assert start is not None, "the README no longer has a `| suffix | why ...` table to read"
+    rows = []
+    for line in readme[start + 2 :]:  # +2 skips the header and the `|---|` rule
+        if not line.startswith("|"):
+            break
+        rows.append(line)
+    return rows
+
+
+def test_the_readme_pin_unsafe_table_is_the_constant_and_says_which_rows_RAISE():
+    """L-60's rule reaching a second table, which is the scope pattern it was filed for.
+
+    `test_the_readme_documents_the_in_band_allowlist_exactly` binds the format table's in-band row
+    to `PIN_INLINE`. **The `PIN_UNSAFE` table beside it was bound to nothing**, and it had drifted:
+    it listed **34 of the 38** suffixes, missing `.bgz` `.bz2` `.hdf5` `.npz` — all four from the
+    binary row, so the document under-reported what `open_output` refuses while the heading above
+    it over-reported it by a different error entirely.
+
+    TWO ASSERTIONS, BECAUSE A SUFFIX CAN BE PRESENT AND IN THE WRONG PLACE. The first is the set of
+    suffixes, which catches an omission. The second is the DISPOSITION — which rows say `raises` —
+    and that catches the worse case: a suffix documented as getting a sidecar while
+    `open_output` raises on it, or the reverse. A reader checks the column, not the row count.
+
+    `raises` IS `PIN_UNSAFE & PIN_BINARY` AND NOT `PIN_BINARY`, which is the subtlety worth
+    writing down. `PIN_BINARY` holds 40; this table is `PIN_UNSAFE`, the map of REASONS, and a
+    binary suffix needs no reason recorded because the text handle settles it first. So the table
+    can only be held to the refusals it actually documents. The 40 is bound separately, by
+    `tools/claims.py`, against the heading that states it.
+
+    DERIVED FROM THE TABLE'S OWN HEADER rather than from a line number, because `ruff format` and
+    every README edit move lines, and a guard anchored to 2801 is a guard that stops reading.
+    """
+    rows = _pin_unsafe_table()
+    assert len(rows) >= 8, f"only {len(rows)} data row(s); the table had nine when this was written"
+
+    documented: set[str] = set()
+    raises: set[str] = set()
+    for row in rows:
+        suffixes = set(re.findall(r"`(\.[a-z0-9]+)`", row))
+        documented |= suffixes
+        #: THE LAST COLUMN, not the whole row: a REASON mentioning the word would otherwise
+        #: promote a sidecar row, and every reason in this table is prose a human wrote.
+        if "raises" in row.rsplit("|", 2)[-2]:
+            raises |= suffixes
+    #: NOT VACUOUS: an unparsed table would make both comparisons below true of the empty set.
+    assert documented, "no suffixes parsed out of the table; this test is reading nothing"
+
+    assert documented == set(runprov.run.PIN_UNSAFE), (
+        f"the README table and `PIN_UNSAFE` disagree — only in the code: "
+        f"{sorted(set(runprov.run.PIN_UNSAFE) - documented)}, only in the README: "
+        f"{sorted(documented - set(runprov.run.PIN_UNSAFE))}"
+    )
+
+    expected = set(runprov.run.PIN_UNSAFE) & set(runprov.run.PIN_BINARY)
+    assert raises == expected, (
+        f"the table's `raises` column no longer matches which of these `open_output` refuses — "
+        f"refused but documented as a sidecar: {sorted(expected - raises)}, documented as raising "
+        f"but not in `PIN_BINARY`: {sorted(raises - expected)}"
+    )
+
+
 def test_every_allowlisted_suffix_demands_the_marker_it_declares(tmp_path, capsys):
     """THE ALLOWLIST IS A MARKER PER SUFFIX, NOT A SET OF SUFFIXES [Audit N, writer-7].
 
@@ -34281,7 +34349,7 @@ def test_every_byte_asserted_fixture_is_protected_from_line_ending_translation()
 #: cannot leave a dead entry behind. Same split as `tests/conftest.py`'s tiers and
 #: `tools/claims.py`'s bindings: the registry holds the PAIR, never the value.
 _HOOKS_THAT_REWRITE_FILES = {
-    "ruff": "`args: [--fix]` edits the file in place",
+    "ruff-check": "`args: [--fix]` edits the file in place",
     "ruff-format": "a formatter writes the file it formats",
     "end-of-file-fixer": "appends a newline to any file lacking one -- the hook that did this",
     "trailing-whitespace": "strips trailing whitespace from every line it finds it on",

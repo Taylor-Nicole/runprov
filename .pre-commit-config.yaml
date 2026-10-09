@@ -27,7 +27,13 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.10
     hooks:
-      - id: ruff
+      # `ruff-check`, NOT `ruff`. Upstream renamed it and kept `ruff` as a documented
+      # `# Legacy alias` whose `entry` and `types_or` are byte-identical, so this rename
+      # changes no behaviour -- and `pre-commit` printed `ruff (legacy alias)` on every run,
+      # which is a deprecation notice nothing was reading. An id that upstream later drops
+      # fails for every contributor at once, and no test here can see it: a hook id is only
+      # validated by RUNNING pre-commit, which no CI job does.
+      - id: ruff-check
         args: [--fix]
         exclude: ^tests/(corpus|fixtures)/
       - id: ruff-format

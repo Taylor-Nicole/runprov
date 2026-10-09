@@ -886,6 +886,51 @@ test docstrings — a stale number inside the description of the tool that exist
 numbers. Replaced with the baseline's name, not an updated figure.
 
 
+### Fixed — the README's `PIN_UNSAFE` table listed 34 of 38 suffixes, and nothing was holding it to the constant
+
+The four it omitted were `.bgz` `.bz2` `.hdf5` `.npz`, **all from the binary row** — so the table
+under-reported what `open_output` refuses, in the same section whose heading over-reported it by a
+different error. Two drifts in one section, in opposite directions, neither visible to a reader
+who trusted either.
+
+**THE GUARD:** `test_the_readme_pin_unsafe_table_is_the_constant_and_says_which_rows_RAISE`.
+`test_the_readme_documents_the_in_band_allowlist_exactly` already bound the format table's in-band
+row to `PIN_INLINE`; this is that rule reaching the second table, which is the scope pattern the
+first one was filed for.
+
+**Two assertions, because a suffix can be present and in the wrong place.** The set of suffixes
+catches an omission; the **disposition** — which rows say `raises` — catches the worse case, a
+suffix documented as getting a sidecar while `open_output` raises on it. A reader checks the
+column, not the row count. The `raises` test reads the LAST COLUMN rather than the whole row, so a
+reason mentioning the word cannot promote a sidecar row.
+
+**`raises` is `PIN_UNSAFE & PIN_BINARY`, not `PIN_BINARY`**, and that subtlety is in the docstring:
+`PIN_BINARY` holds 40, this table is the map of *reasons*, and a binary suffix needs no reason
+recorded because the text handle settles it first. So the table is held to the refusals it
+documents, and the 40 is bound separately by `tools/claims.py` against the heading that states it.
+
+Red four ways in copied trees: a suffix dropped, a suffix invented (`.rtf`), a refused suffix
+documented as a sidecar, and the table's own header renamed — which fails with *"the README no
+longer has a `| suffix | why ...` table to read"* rather than passing over an empty set. The table
+is located by that header and not by a line number, because every README edit moves lines.
+
+### Changed — `.pre-commit-config.yaml` runs `ruff-check`, not the deprecated `ruff` alias
+
+`pre-commit` printed **`ruff (legacy alias)`** on every run — a deprecation notice nothing was
+reading. Upstream renamed the hook and kept `ruff` as a documented `# Legacy alias` whose `entry`
+and `types_or` are byte-identical, so this changes no behaviour; that was read out of
+`ruff-pre-commit`'s own `.pre-commit-hooks.yaml` at the pinned rev rather than assumed. An id that
+upstream later drops fails for every contributor at once.
+
+**No test can see a bad hook id, and that limit is worth stating.** A hook id is validated only by
+*running* `pre-commit`, which no CI job does. What the suite does hold is the agreement between the
+config and the guard's registry: `test_every_byte_asserted_directory_is_excluded_from_every_hook_
+that_rewrites_files` compares them as an **equality**, so reverting the config to `ruff` fails with
+*"unclassified in this file: ['ruff']; named here but no longer in the config: ['ruff-check']"* —
+in both directions. Verified by running all eight hooks: green, the tree untouched, and the
+`(legacy alias)` line gone.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise
