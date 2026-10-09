@@ -208,6 +208,65 @@ def superseded_lines(text: str) -> set[int]:
     return out
 
 
+def _test_functions() -> int:
+    """`^def test` in the suite's one module -- the same walk `tests/conftest.py` does."""
+    return len(
+        re.findall(r"^def test", (ROOT / "tests" / "test_runprov.py").read_text("utf-8"), re.M)
+    )
+
+
+def _tmp_path_uses() -> int:
+    """The README gives this derivation itself: `grep -oE '\btmp_path\b' ... | wc -l`."""
+    return len(re.findall(r"\btmp_path\b", (ROOT / "tests" / "test_runprov.py").read_text("utf-8")))
+
+
+def _format_cases() -> int:
+    """`len(CASES)` in the format matrix, LOADED rather than counted by pattern.
+
+    Counting `^CASE(` gives **57** and the module builds **60**: three calls are indented, one
+    inside a loop and one inside a docstring. A pattern count would have bound the sentence to a
+    number the program never produces -- a binding that is wrong in the same way the claim was.
+
+    SAFE TO LOAD, and that is measured rather than hoped: every optional library the matrix uses
+    (`h5py`, `anndata`, `zarr`, `pyarrow`, `torch`, `openpyxl`, `pyreadr`, `onnx`, `safetensors`)
+    is ABSENT from the gate's virtualenv and the module still imports and builds its 60 cases,
+    because `requires=` defers every one of them. So this cannot fail on a matrix leg for want of
+    a library.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_formats_for_claims", ROOT / "examples" / "format_compatibility.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return len(module.CASES)
+
+
+#: (pattern capturing ONE number, what it is, how to derive it, fractional tolerance).
+#:
+#: A SECOND REGISTRY, BECAUSE THESE ARE DERIVATIONS AND NOT CONSTANTS. `_BOUND` reads a module
+#: attribute; these count something about the repository, which no attribute holds. The split is
+#: the honest one: the registry still holds the PAIR -- a sentence and how to compute it -- and
+#: still never holds the value.
+#:
+#: THE TOLERANCE IS THE DOCUMENT'S OWN CONVENTION, not a convenience. The README says these
+#: figures convey SCALE and states the rule beside them; `ci.py`'s `SCALE_TOLERANCE` is the same
+#: 10% with the same argument -- *a number 5% out still conveys it; one 17% out does not*. An
+#: EXACT binding on "about 1,200 tests" would be red on the next test added, and a guard that is
+#: red on correct work is one that gets deleted.
+_DERIVED: tuple[tuple[str, str, object, float], ...] = (
+    (r"\*\*about ([\d,]+) tests\*\*", "tests/test_runprov.py `^def test`", _test_functions, 0.10),
+    (r"\*\*about ([\d,]+)\*\* uses of `tmp_path`", "`tmp_path` occurrences", _tmp_path_uses, 0.10),
+    #: EXACT, because this one is a table of cases and not a scale figure: `len(CASES)` is a
+    #: number the program states about itself, so "about" would be an evasion.
+    (
+        r"\*\*(\d+) formats, \d+ failures",
+        "examples/format_compatibility.py `CASES`",
+        _format_cases,
+        0.0,
+    ),
+)
+
+
 def _live(module: str, attribute: str) -> int:
     """The current value of a bound constant, or raise so the run is VOID rather than green.
 
@@ -246,8 +305,12 @@ def bound_lines(text: str) -> tuple[dict[int, str], list[str]]:
     lines = text.split("\n")
     credited: dict[int, str] = {}
     unattributed: list[str] = []
-    for pattern, module, attribute, _divisor in _BOUND:
-        what = f"{module.removeprefix('runprov.')}.{attribute}"
+    pairs = [
+        (pattern, f"{module.removeprefix('runprov.')}.{attribute}")
+        for pattern, module, attribute, _d in _BOUND
+    ]
+    pairs += [(pattern, what) for pattern, what, _how, _tol in _DERIVED]
+    for pattern, what in pairs:
         for n, line in enumerate(lines, 1):
             if not re.search(pattern, line):
                 continue
@@ -282,6 +345,22 @@ def bound_claims(text: str) -> list[tuple[str, int | None, int, str]]:
         stated = int(found.group(1).replace(",", "").replace("\u202f", "").replace(" ", ""))
         expected = live // divisor
         out.append((what, stated, expected, "ok" if stated == expected else "DRIFTED"))
+
+    for pattern, what, how, tolerance in _DERIVED:
+        live = how()
+        found = re.search(pattern, text)
+        if not found:
+            out.append((what, None, live, "VACUOUS — the sentence quoting it is gone"))
+            continue
+        stated = int(found.group(1).replace(",", "").replace("\u202f", "").replace(" ", ""))
+        #: THE SLACK IS AGAINST THE LIVE VALUE, not the stated one: the question a reader asks is
+        #: "how far is the document from the truth", and dividing by the document's own figure
+        #: would let a drifting number widen its own window.
+        allowed = live * tolerance
+        ok = abs(stated - live) <= allowed
+        how_far = "" if not live else f", {abs(stated - live) / live:.1%} out"
+        verdict = "ok" if ok else f"DRIFTED beyond {tolerance:.0%}{how_far}"
+        out.append((what, stated, live, verdict))
     return out
 
 
@@ -420,6 +499,10 @@ def bindings_digest() -> str:
     return _digest(
         {
             "bound": [list(entry) for entry in _BOUND],
+            #: THE CALLABLE IS NOT DIGESTED, only the pair and the tolerance. A derivation's body
+            #: changing is a code change, and the VALUE it returns is what the gate compares --
+            #: digesting the function would make every refactor of it read as a rule change.
+            "derived": [[pattern, what, tol] for pattern, what, _how, tol in _DERIVED],
             "elsewhere": sorted(scale_patterns().items()),
         }
     )

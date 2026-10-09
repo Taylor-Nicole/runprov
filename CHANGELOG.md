@@ -977,6 +977,62 @@ records it as such, and the three failure directions were demonstrated in copied
 — a fall attributed to WORK — is demonstrated by the next entry, which earns one.
 
 
+### Added — three README figures bound to derivations over this repository [WORK: 115 → 113]
+
+**And the baseline proves it was work rather than asserting it.** The `detection` digest is
+byte-identical to the previous entry's (`a9b8aa3f…`) while `bindings` moved
+(`67c15e6c…` → `b893d676…`), so the fall cannot have come from a loosened rule. The gate said so
+itself before the baseline was regenerated — *"The BINDINGS moved and the detection rule did not,
+so this fall is WORK: claims were bound"* — which is the fourth attribution message, demonstrated
+for real here because the mutant written for it in the previous commit was badly chosen.
+
+A **second registry**, `_DERIVED`, because these are derivations and not constants: `_BOUND` reads
+a module attribute, and no attribute holds *how many tests there are*. The split keeps the rule
+intact — the registry holds the **pair**, a sentence and how to compute it, and still never holds
+the value.
+
+| the sentence | derived from | tolerance |
+|---|---|---|
+| *"about 1,200 tests"* | `^def test` in the suite's one module (**1 153**) | 10% |
+| *"about 4,300 uses of `tmp_path`"` | the README's own `grep -oE` (**4 386**) | 10% |
+| *"60 formats, 0 failures"* | `len(CASES)` in the format matrix (**60**) | exact |
+
+**The tolerance is the document's own convention, not a convenience.** The README states it beside
+these figures and `ci.py`'s `SCALE_TOLERANCE` is the same 10% with the same argument — *a number 5%
+out still conveys the scale; one 17% out does not*. An exact binding on *"about 1,200 tests"* would
+be red on the next test added, and a guard that is red on correct work is one that gets deleted.
+The slack is measured against the **live** value, never the stated one: dividing by the document's
+own figure would let a drifting number widen its own window.
+
+**`len(CASES)` is LOADED, not pattern-counted.** `^CASE(` gives **57** and the module builds
+**60** — three calls are indented, one in a loop and one inside a docstring. A pattern count would
+have bound the sentence to a number the program never produces: wrong in the same way the claim
+was. Safe to load, and measured rather than hoped — every optional library the matrix uses
+(`h5py`, `anndata`, `zarr`, `pyarrow`, `torch`, `openpyxl`, `pyreadr`, `onnx`, `safetensors`) is
+**absent** from the gate's virtualenv and the module still builds its 60 cases, because
+`requires=` defers all of them.
+
+**One of the three adds a check without moving the denominator, and the tool says so.** Line 1370
+carries *"60 formats, **0** failures"* — two numbers, and the second is a measured run result that
+nothing can re-derive. The one-number safeguard therefore refuses to credit the line, which stays
+unaccounted while the 60 is now compared live on every run. **The count is not the only measure of
+progress**, and a tool that silently credited the whole line would have traded a real check for a
+smaller number.
+
+Red four ways: beyond tolerance (*"says 2000 and the code says 1153, DRIFTED beyond 10%, 73.5%
+out"*), **within** tolerance (passes — the slack is real, not decoration), the sentence removed
+(`VACUOUS`), and the exact binding off by one (*"says 59 and the code says 60, DRIFTED beyond 0%"*).
+
+**A note on how these three were chosen: by hand, because the automated search does not work.**
+A sweep over all 142 module-level constants looking for their values in unaccounted lines returned
+**113 hits, essentially all coincidence** — small integers appear everywhere in prose, and with no
+scoping the base rate swamps the signal. Worse, its most plausible hit proposed binding *"60
+formats"* to `verify.FIELD_SHOWN`, which is 60 and has nothing whatever to do with formats, and
+**that binding would have passed.** Which is the argument this file already made in its own
+docstring: nothing in a sentence's text says which constant it is about; a human decides, and the
+registry is where that decision is written down so the next reader can disagree with it.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise

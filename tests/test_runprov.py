@@ -43364,6 +43364,11 @@ def test_the_ci_sections_legs_are_the_legs_the_workflow_ACTUALLY_DECLARES():
 def test_every_readme_binding_resolves_and_still_holds():
     """`tools/claims.py`'s registry, gated — the half of it that CAN pass today.
 
+    TWO REGISTRIES, ONE ASSERTION. `_BOUND` reads a module attribute; `_DERIVED` counts something
+    about this repository, with the README's own 10% tolerance where the sentence says *about*.
+    Both must resolve and both must hold, and the row count is derived from both so adding an
+    entry never needs this line edited.
+
     TWO FAILURES, AND THEY NEED DIFFERENT REPAIRS, which is why the report separates them and so
     does this. A binding naming a constant that no longer exists is a RENAME to follow and the
     run is VOID; a binding whose number no longer matches is a DRIFT and the document is wrong.
@@ -43396,9 +43401,8 @@ def test_every_readme_binding_resolves_and_still_holds():
     #: DERIVED, so adding a binding never needs this line edited: every registry entry must
     #: produce a row, and the registry itself must not be empty. A bare `>= 6` went stale the
     #: moment four suffix-map bindings were added, which is the shape this file keeps finding.
-    assert len(rows) == len(claims._BOUND) >= 6, (
-        f"{len(rows)} row(s) from {len(claims._BOUND)} registry entries"
-    )
+    entries = len(claims._BOUND) + len(claims._DERIVED)
+    assert len(rows) == entries >= 6, f"{len(rows)} row(s) from {entries} registry entries"
     drifted = [(what, said, live, why) for what, said, live, why in rows if why != "ok"]
     assert not drifted, "README figures no longer match the constants they describe: " + "; ".join(
         f"{what} says {said} and the code says {live} ({why})" for what, said, live, why in drifted
