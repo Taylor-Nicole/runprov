@@ -710,6 +710,57 @@ is uploaded to PyPI and a PyPI file can never be replaced: `build==1.6.1` instal
 `ci.py build` — `release-check`, the build, `twine check --strict` and the wheel installed into a
 clean venv where it must record a run — **rc=0**. Nothing new was reported.
 
+### Tooling — `ruff` 0.16.6 → 0.16.10, by hand, across a DIFFERENT four pin sites
+
+**"Four sites" is not a constant; it is per tool.** `build` lives in the `dev` extra plus a
+`pip install` line in each of `test.yml`, `publish.yml` and `selfhosted.yml`. `ruff` lives in the
+`dev` extra, `test.yml`, `selfhosted.yml` — `publish.yml` does not lint — and in
+`.pre-commit-config.yaml` as `rev: v0.16.10`, **spelled with a `v` the others lack and therefore
+invisible to a `name==version` search**. Both counts are four and neither set is the other.
+
+**A formatter is a moving specification, so this bump was verified before the pins moved rather
+than after.** `test.yml` carries the reason in a comment: the lint gate once went red *without a
+commit*, on ruff 0.16.2, for a construct 0.15.15 had accepted, on a push that touched neither.
+`.ruff.toml` selects eleven rule families (`E F I N UP ANN S B C4 PT RUF`), so a patch release has
+room to add a rule.
+
+Measured at 0.16.10, in a throwaway virtualenv **beside** the repository so the gate stayed
+runnable at 0.16.6 if the new version had anything to say:
+
+| check | result |
+|---|---|
+| `ruff check .` | All checks passed |
+| `ruff format --check --diff .` | 78 files already formatted |
+| `ci.py lint` (ruff ×2, `mypy` 2.3.1, attribution-check) | rc=0, 552 commits |
+
+**Nothing new was reported, so no code changed** — the pins moved alone. The 78 is the whole tree:
+it read 75 before `tools/bench.py`, `tools/claims.py` and `tests/conftest.py` were added this week,
+and that arithmetic is the evidence the probe swept everything rather than a subdirectory.
+
+**One thing no test can see, checked by hand: that the `rev:` tag exists.**
+`test_the_pre_commit_ruff_matches_the_one_the_gate_enforces` compares two *strings*, so it is
+equally satisfied by a tag that was never published — and a `rev:` naming a nonexistent tag breaks
+`pre-commit` for every contributor while the suite stays green. `git ls-remote --tags
+astral-sh/ruff-pre-commit` reports `refs/tags/v0.16.10`.
+
+**Three guards, demonstrated in copied trees rather than asserted:**
+
+| tree | result |
+|---|---|
+| all four at 0.16.10 | 3 passed |
+| `test.yml` behind | 2 failed — *"test.yml pins ruff==0.16.6, dev extra says 0.16.10"* |
+| `.pre-commit-config.yaml` behind | 1 failed — *"pre-commit runs ruff 0.16.6 while the gate enforces 0.16.10"* |
+| `pyproject.toml` behind | 3 failed — naming **both** workflows and the hook |
+
+Dependabot's pull request proposed 0.16.10 from a branch still named `ruff-0.16.9`: it re-targeted
+the branch in place, so the branch name is not the version and only the diff says what is offered.
+
+Also removed a drifting literal this bump would have falsified: the docstring of
+`test_every_pinned_tool_version_agrees_across_pyproject_and_the_workflows` explained its own blind
+spot by quoting `rev: v0.16.6`, the then-current value. It now names the *spelling* instead of the
+version, which is what the sentence was always about.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise
