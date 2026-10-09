@@ -823,7 +823,7 @@ says which, and `cannot_check` carries one sentence naming what the gate could n
 when there was nothing. A rule row also carries `reasons` — **violations only** — and `blocked`
 beside it, for the inabilities, so that `len(reasons)` is a number a consumer can compare with
 `violated` and *the run recorded no outputs, so there is nothing to ask* is never rendered as an
-accusation. 
+accusation.
 
 **Every field of `runprov.gate.v1`, so that nothing it carries is documented only in prose.** The
 answer: `schema`, `outcome`, `exit_code`, `cannot_check`, `policy_path` and `history` (both

@@ -34215,6 +34215,39 @@ def test_the_corpus_keeps_up_with_the_releases_by_itself():
     )
 
 
+def _text_attr_under_tests() -> dict[str, str] | None:
+    """What GIT says about `text` for every file under `tests/`, or None if git cannot answer.
+
+    SHARED BY TWO TESTS DELIBERATELY. One asks whether the byte-asserted directories are safe
+    from git's own LF->CRLF translation on checkout; the other asks whether they are safe from
+    the pre-commit hooks that rewrite files on commit. **They are one rule in two directions**,
+    and two copies of this derivation would be free to disagree about which files it covers --
+    which is the failure both tests exist to prevent, one level up.
+
+    Paths are POSIX-spelled because that is how `pre-commit` matches an `exclude` regex, and git
+    accepts forward slashes on every platform. Spelling them with `os.sep` would have made the
+    second test pass everywhere and fail on Windows only.
+    """
+    roots = [d for d in (REPO / "tests").iterdir() if d.is_dir() and d.name != "__pycache__"]
+    assert roots, "no fixture directories found; this is reading nothing"
+    files = [p for d in roots for p in d.rglob("*") if p.is_file() and "__pycache__" not in p.parts]
+    assert len(files) > 20, f"only {len(files)} fixture files seen; expected the corpus and more"
+
+    asked = subprocess.run(
+        ["git", "check-attr", "text", "--", *[p.relative_to(REPO).as_posix() for p in files]],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+    )
+    if asked.returncode:  # pragma: no cover - no git here (an unpacked sdist)
+        return None
+    return {
+        line.rsplit(": text: ", 1)[0]: line.rsplit(": text: ", 1)[1]
+        for line in asked.stdout.splitlines()
+        if line
+    }
+
+
 def test_every_byte_asserted_fixture_is_protected_from_line_ending_translation():
     """Git's default on Windows is `core.autocrlf=true`, which rewrites LF to CRLF ON CHECKOUT.
 
@@ -34230,32 +34263,121 @@ def test_every_byte_asserted_fixture_is_protected_from_line_ending_translation()
 
     So this derives the directories from disk rather than naming them, and asks git itself.
     """
-    protected = [d for d in (REPO / "tests").iterdir() if d.is_dir() and d.name != "__pycache__"]
-    assert protected, "no fixture directories found; this test is reading nothing"
-
-    files = [
-        p for d in protected for p in d.rglob("*") if p.is_file() and "__pycache__" not in p.parts
-    ]
-    assert len(files) > 20, f"only {len(files)} fixture files seen; expected the corpus and more"
-
-    asked = subprocess.run(
-        ["git", "check-attr", "text", "--", *[str(p.relative_to(REPO)) for p in files]],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-    )
-    if asked.returncode:  # pragma: no cover - no git here (an unpacked sdist)
+    attrs = _text_attr_under_tests()
+    if attrs is None:  # pragma: no cover - no git here (an unpacked sdist)
         pytest.skip("git is not available to answer")
 
-    unprotected = [
-        line.rsplit(": text: ", 1)[0]
-        for line in asked.stdout.splitlines()
-        if line and not line.endswith(": text: unset")
-    ]
+    unprotected = [path for path, value in attrs.items() if value != "unset"]
     assert not unprotected, (
         "these fixture files can be rewritten LF->CRLF by a Windows checkout, which changes "
         "bytes whose digests are asserted:\n  " + "\n  ".join(unprotected[:10]) + "\n"
         "Add the directory to .gitattributes with `-text`."
+    )
+
+
+#: WHETHER EACH PRE-COMMIT HOOK REWRITES A FILE -- the human judgement in the check below, and
+#: the only list in it. The POPULATION is derived from `.pre-commit-config.yaml` itself and held
+#: to these keys by an EQUALITY, so a ninth hook cannot arrive unclassified and a removed one
+#: cannot leave a dead entry behind. Same split as `tests/conftest.py`'s tiers and
+#: `tools/claims.py`'s bindings: the registry holds the PAIR, never the value.
+_HOOKS_THAT_REWRITE_FILES = {
+    "ruff": "`args: [--fix]` edits the file in place",
+    "ruff-format": "a formatter writes the file it formats",
+    "end-of-file-fixer": "appends a newline to any file lacking one -- the hook that did this",
+    "trailing-whitespace": "strips trailing whitespace from every line it finds it on",
+}
+_HOOKS_THAT_ONLY_READ = {
+    "check-yaml": "parses and reports; writes nothing",
+    "check-toml": "parses and reports; writes nothing",
+    "check-added-large-files": "refuses a large file without changing it",
+    "check-merge-conflict": "greps for conflict markers",
+}
+
+
+def test_every_byte_asserted_directory_is_excluded_from_every_hook_that_rewrites_files():
+    """THE SAME RULE AS ABOVE, IN THE DIRECTION NOBODY GUARDED. `.gitattributes` stops git
+    rewriting these bytes on CHECKOUT. Nothing stopped a hook rewriting them on COMMIT.
+
+    Found 2026-10-09 by running `pre-commit run --all-files` rather than by reading the config.
+    `end-of-file-fixer` appended a newline to **21 files**: every `tests/corpus/**/prov/*.prov.json`
+    record, which are the only files of the corpus's 149 without one -- because that is how every
+    released wheel wrote the sidecar, confirmed against today's package, whose record still ends
+    `}`. So the corpus was FAITHFUL and the hook would have made it assert a byte no version ever
+    wrote; `tools/corpus.py` has the sentence for it -- *a corpus that had to be edited to be moved
+    would be measuring the editor*.
+
+    AND IT WAS SILENT, which is why a comment would not have been enough. With all 21 records
+    rewritten the suite reported **1 247 passed, 5 skipped** -- identical to the baseline, same five
+    named skips. No assertion anywhere reads those bytes. The exposure is not hypothetical either:
+    `ci.py setup` runs `pre_commit install`, `CONTRIBUTING.md` tells every contributor to run it,
+    nothing in CI or this suite runs the hooks, and the corpus is regenerated BY HAND at a release
+    -- exactly when those files are staged. The next captured version would have carried a newline
+    the wheel never wrote and read as a record-format change in the package, which is the one thing
+    the corpus exists to detect.
+
+    WHAT IS DERIVED AND WHAT IS DECIDED. The hooks are read from the config and the protected
+    directories are asked of GIT, so neither is a list here. The decision is the eight-line
+    registry above saying which hooks WRITE, and it is held to the config by an equality rather
+    than a subset: an unclassified hook is one nobody asked the question about, and an entry for a
+    hook the config no longer runs is a rule declared and not in effect.
+
+    WHAT THIS ONE CANNOT DO, AND WHICH TEST DOES IT. Its subject is derived from
+    `.gitattributes`, so **moving `.gitattributes` moves the subject**: delete the
+    `tests/corpus/** -text` line and the corpus stops being byte-asserted, `asserted` shrinks to
+    the fixtures, and this assertion goes quietly green. Demonstrated, not assumed. The test above
+    is what refuses that -- it quantifies over *every file under `tests/`* rather than over the
+    protected ones, and in the same tree it fails naming `tests/corpus/MANIFEST.json` and the rest.
+    **Neither is total alone; the pair is**, and that is the only reason this one is allowed to ask
+    git instead of naming the directories.
+
+    THE RUFF HOOKS ARE INCLUDED THOUGH NO `.py` LIVES UNDER EITHER DIRECTORY TODAY, and that is
+    the point: the requirement follows the rule, not today's file list. A digest-asserted `.py`
+    fixture must not be reformatted either, and the exclusion has to be here BEFORE that file
+    arrives -- the scope pattern this project has now hit nine times is always a rule that was
+    right and a list that did not grow.
+    """
+    root = _repo_root()
+    config = root / ".pre-commit-config.yaml"
+    if not config.is_file():  # pragma: no cover - a bare tree
+        pytest.skip(".pre-commit-config.yaml not present")
+
+    import yaml
+
+    cfg = yaml.safe_load(config.read_text(encoding="utf-8"))
+    hooks = {hook["id"]: hook for repo in cfg["repos"] for hook in repo["hooks"]}
+    assert hooks, "the config declares no hooks, so this test is reading nothing"
+
+    classified = set(_HOOKS_THAT_REWRITE_FILES) | set(_HOOKS_THAT_ONLY_READ)
+    assert set(hooks) == classified, (
+        f"unclassified in this file: {sorted(set(hooks) - classified)}; named here but no longer "
+        f"in the config: {sorted(classified - set(hooks))}. Say of each hook whether it REWRITES "
+        f"files, with the reason"
+    )
+
+    attrs = _text_attr_under_tests()
+    if attrs is None:  # pragma: no cover - no git here (an unpacked sdist)
+        pytest.skip("git is not available to answer")
+    asserted = sorted(path for path, value in attrs.items() if value == "unset")
+    assert asserted, "git reports no `-text` file under tests/, so there is nothing to protect"
+
+    writers = sorted(set(hooks) & set(_HOOKS_THAT_REWRITE_FILES))
+    assert writers, "no file-rewriting hook is configured, so this check would pass on anything"
+
+    #: `pre-commit` skips a file when the TOP-LEVEL `exclude` matches it or the hook's own does,
+    #: so both are read. An absent pattern excludes nothing -- and `re.search("", path)` matches
+    #: everything, so an empty one must not reach the regex.
+    shared = cfg.get("exclude")
+    reachable: dict[str, list[str]] = {}
+    for hook_id in writers:
+        patterns = [pat for pat in (shared, hooks[hook_id].get("exclude")) if pat]
+        missed = [path for path in asserted if not any(re.search(p, path) for p in patterns)]
+        if missed:
+            reachable[hook_id] = missed[:3]
+    assert not reachable, (
+        "these hooks can rewrite files whose BYTES are asserted: "
+        + "; ".join(f"{hook} -> {paths}" for hook, paths in sorted(reachable.items()))
+        + ". Each is listed in _HOOKS_THAT_REWRITE_FILES for the reason given there. Add an "
+        "`exclude:` covering every directory `.gitattributes` marks `-text`"
     )
 
 

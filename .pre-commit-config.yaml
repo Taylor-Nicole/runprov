@@ -6,17 +6,39 @@ repos:
   # than a version skew: the hook REWRITES code to satisfy an old ruff, then CI rejects it
   # with the new one, so the tool that exists to catch a failure early creates one. There is
   # a test asserting these two agree.
+# EVERY HOOK BELOW THAT REWRITES A FILE EXCLUDES THE BYTE-ASSERTED DIRECTORIES, and that is the
+# same rule `.gitattributes` already states from the other direction. `tests/corpus/**` and
+# `tests/fixtures/**` carry `-text` there because their BYTES are the subject: artifacts carry
+# pins `verify` re-derives, and the environment snapshot's FILENAME is the digest of its body.
+#
+# `.gitattributes` stops GIT rewriting them on checkout. It does not stop a HOOK rewriting them on
+# commit, and `end-of-file-fixer` did: 21 of the corpus's `*.prov.json` records are the only files
+# there without a trailing newline, because that is how every released wheel wrote the sidecar, and
+# the hook appended one to all 21. The whole suite stayed green -- 1 247 passed either way -- so
+# nothing would have said so. Found 2026-10-09 by RUNNING the hooks, not by reading this file.
+#
+# The ruff hooks are excluded too, although no `.py` lives under either directory today. The reason
+# is the rule rather than the file list: a digest-asserted `.py` fixture must not be reformatted
+# either, and that is the day the exclusion has to already be here.
+#
+# `test_every_byte_asserted_directory_is_excluded_from_every_hook_that_rewrites_files` asks GIT
+# which directories are protected and holds this file to the answer, so a third one is covered on
+# the day it arrives rather than the day someone remembers.
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.10
     hooks:
       - id: ruff
         args: [--fix]
+        exclude: ^tests/(corpus|fixtures)/
       - id: ruff-format
+        exclude: ^tests/(corpus|fixtures)/
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:
       - id: end-of-file-fixer
+        exclude: ^tests/(corpus|fixtures)/
       - id: trailing-whitespace
+        exclude: ^tests/(corpus|fixtures)/
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
