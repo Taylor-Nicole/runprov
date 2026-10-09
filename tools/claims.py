@@ -233,6 +233,160 @@ def superseded_lines(text: str) -> set[int]:
     return out
 
 
+#: WHY A FIGURE CAN NEVER BE RE-MEASURED. Each category is a general reason; each entry names the
+#: specific subject. Both are required, because a category alone is an excuse with a label on it.
+_WHY_HISTORICAL = {
+    "fixed": "it measured a defect since repaired, so the condition cannot be recreated",
+    "other-tree": "it was measured on a file or repository that is not this one",
+    "this-host": "it is a timing, memory or platform fact of one machine at one moment",
+    "third-party": "it needs a library or tool this project deliberately does not install",
+    "interpreter": "it is a property of one CPython version, and four are supported",
+    "illustration": "it is a hypothetical figure chosen to make a point, and measures nothing",
+    "ci-history": "it is a point-in-time query of the hosted CI, which moves on every push",
+}
+
+#: (pattern matching the sentence, category, what was measured and where).
+#:
+#: THIS IS A WORK LIST, NOT AN EXEMPTION LIST, and the distinction is in the arithmetic: these
+#: lines are counted SEPARATELY and are never added to the accounted-for total. `unaccounted` is
+#: the residue nobody has looked at; `historical` is the residue somebody examined and found
+#: permanently unverifiable. Both are ratcheted. Moving a line from the first to the second is a
+#: judgement recorded, not a check gained, and the report says so.
+#:
+#: WHAT IS DELIBERATELY ABSENT. A figure that COULD be checked does not belong here however
+#: inconvenient it is to check. *"it reports an edit to line 3 as line 4 breaking"*,
+#: *"`ambiguous` is 0 by construction"* and *"digests `True` as the integer 1"* are behavioural
+#: claims about live code: they stay in `unaccounted` until somebody writes the test, which is the
+#: whole point of keeping the two numbers apart.
+_HISTORICAL: tuple[tuple[str, str, str], ...] = (
+    # --- it measured a defect that has since been repaired
+    (
+        r"runs over identical inputs both report \d+ artifacts CHANGED",
+        "fixed",
+        "the uuid was in the pin then and is not now",
+    ),
+    (
+        r"caught \d+ concurrent appends producing \d+ lines before",
+        "fixed",
+        "taken before the `msvcrt` branch existed",
+    ),
+    # --- another file or repository
+    (
+        r"It holds \*\*[\d,]+ entries\*\*",
+        "other-tree",
+        "`transformation_log.yml`, which the README pins by sha256 and does not ship",
+    ),
+    (r"appended \d+ further records \*\*without their", "other-tree", "the same predecessor log"),
+    (r"recovery gets \*\*\d+ of [\d,]+\*\* entries back", "other-tree", "the same predecessor log"),
+    (r"and [\d,]+ carry `params`", "other-tree", "an untracked `runs.jsonl`"),
+    (
+        r"\*\*[\d,]+ records\*\*\. That file is appended to daily",
+        "other-tree",
+        "an untracked `runs.jsonl`, and the sentence says so itself",
+    ),
+    (r"That matters: every one of the [\d,]+", "other-tree", "the same untracked history"),
+    (r"would cost \*\*[\d.]+%\*\* of an", "other-tree", "one project's sidecar"),
+    (r"\([\d,]+ input/output entries\)", "other-tree", "the same sidecar"),
+    (
+        r"reported that ~ ?[\d  ,]+ of its records said",
+        "other-tree",
+        "a downstream project's history",
+    ),
+    (
+        r"on disk that is \*\*\d+ files, \d+ of \d+ steps covered",
+        "other-tree",
+        "one pipeline's environment snapshots",
+    ),
+    (
+        r"median [\d,]+ bytes, max [\d,]+",
+        "other-tree",
+        "an untracked history, and the sentence says it is appended to daily",
+    ),
+    (r'"\d+ runs" meant \d+ \*completed\* runs', "other-tree", "the predecessor system"),
+    # --- this host, at that moment
+    (r"on call-bound code: \*\*`census` [\d.]+\u00d7", "this-host", "observation overhead"),
+    (r"A run of [\d  ]+ calls pays \d+ ms", "this-host", "observation overhead"),
+    (r"at once report \*\*\d+ MiB, not \d+\*\*", "this-host", "peak RSS of a process tree"),
+    (r"desktop session at [\d  ]+ MiB", "this-host", "one desktop's memory"),
+    (r"\*\*\+[\d.]+ ms\*\* for a realistic run", "this-host", "unregistered-read overhead"),
+    (r"it includes the interpreter's own ~\d+ MB", "this-host", "one interpreter's footprint"),
+    (r"with the history: \d+\u2013\d+ MB against a \d+ MB file", "this-host", "`show` memory"),
+    (r"as \*\*[\d.]+ s\*\*\. It is [\d.]+ s", "this-host", "`show` wall-clock"),
+    (r"\*\*\d+ MB\*\*; consuming them one at a time costs", "this-host", "`diff` memory"),
+    (r"re-reading \d+ MB costs seconds", "this-host", "`--stale` memory"),
+    (
+        r"\*\*[\d.]+ s → [\d.]+ s\*\*\. The four added fields cost",
+        "this-host",
+        "write time on one machine",
+    ),
+    (
+        r"on Linux ext4, \d+ processes \u00d7 \d+ appends",
+        "this-host",
+        "a lock-free append race, Linux-only by construction",
+    ),
+    (r"produced \d+/\d+ intact records, because Linux", "this-host", "the same Linux-only race"),
+    # --- a library or tool this project does not install
+    (
+        r"emits \*\*[\d.]+\*\*\. Measured against this wheel",
+        "third-party",
+        "`hatchling`, which is a build-time requirement and is not in the venv",
+    ),
+    (r"emits [\d.]+ just the same, which was measured", "third-party", "the same build backend"),
+    (r"Snakemake [\d.]+ records", "third-party", "`snakemake`, not a dependency"),
+    (r"differs at exactly one byte, offset \d+", "third-party", "`pyreadr`"),
+    (r"carries a random \d+-byte sync marker", "third-party", "`fastavro`"),
+    (r"read a \d+-taxon tree back with \d+ terminals", "third-party", "`biopython`"),
+    (r"sees \*\*\d+ rows and not \d+\*\*", "third-party", "`pandas`"),
+    (r"then reports \d+ rows for a \d+-row file", "third-party", "`pandas`"),
+    # --- one CPython version
+    (
+        r"produces \*\*[\d  ]+ Python calls, [\d  ]+ of them inside",
+        "interpreter",
+        "`csv.py`'s internals, which differ by version",
+    ),
+    (r"the project root gives \*\*\d+\*\*, all yours", "interpreter", "the same call sweep"),
+    (
+        r"a registered input: \*\*\d+ opens observed",
+        "interpreter",
+        "import machinery, which differs by version",
+    ),
+    # --- a hypothetical, measuring nothing
+    (r"a sweep that parsed \d+ files is a clean bill", "illustration", "a made-up sweep size"),
+    (r"send you into a [\d,]+-line history", "illustration", "a made-up history size"),
+    (r"every byte of a \d+ GB BAM", "illustration", "a made-up file size"),
+    (r"Change line \d+ of `runs\.jsonl`", "illustration", "a worked example's line number"),
+    (r"an artifact changed on \d+ March", "illustration", "a worked example's date"),
+    # --- the hosted CI's own history
+    (r"queried without a window, \d+ runs", "ci-history", "a run-count query"),
+    (
+        r"windows \*\*\d+/\d+\*\* — figures from a suite",
+        "ci-history",
+        "a per-leg tally the sentence itself calls superseded",
+    ),
+)
+
+
+def historical_lines(text: str) -> tuple[dict[int, str], list[str]]:
+    """Which README lines are permanently unverifiable, and which entries no longer apply.
+
+    A DEAD ENTRY IS REPORTED, never ignored: an exemption whose sentence has gone is an excuse
+    outliving its subject, and this file has already shipped one decoration that checked nothing.
+    """
+    lines = text.split("\n")
+    found: dict[int, str] = {}
+    stale: list[str] = []
+    for pattern, category, subject in _HISTORICAL:
+        hits = [n for n, line in enumerate(lines, 1) if re.search(pattern, line)]
+        if not hits:
+            stale.append(f"{category}/{subject}: no line matches {pattern!r}")
+            continue
+        if len(hits) > 1:
+            stale.append(f"{category}/{subject}: {len(hits)} lines match {pattern!r}, expected one")
+            continue
+        found[hits[0]] = f"{category} — {subject}"
+    return found, stale
+
+
 def _test_functions() -> int:
     """`^def test` in the suite's one module -- the same walk `tests/conftest.py` does."""
     return len(
@@ -394,6 +548,7 @@ def classify(
     bound: dict[int, str] | None = None,
     superseded: set[int] | None = None,
     elsewhere: dict[int, str] | None = None,
+    historical: dict[int, str] | None = None,
 ) -> dict[str, list[str]]:
     """Every numeric literal in prose, bucketed. `unaccounted` is the one that matters.
 
@@ -404,9 +559,11 @@ def classify(
     bound = {} if bound is None else bound
     superseded = set() if superseded is None else superseded
     elsewhere = {} if elsewhere is None else elsewhere
+    historical = {} if historical is None else historical
     buckets: dict[str, list[str]] = {"bound": [], "superseded": [], "elsewhere": []}
     buckets.update({name: [] for name, _, _ in _KINDS})
     buckets["code-literal"] = []
+    buckets["historical"] = []
     buckets["unaccounted"] = []
     fenced = False
     for n, line in enumerate(text.split("\n"), 1):
@@ -436,6 +593,10 @@ def classify(
             #: recording the weaker reason would mislabel it.
             if not NUMBER.search(_CODE_SPAN.sub(" ", line)):
                 buckets["code-literal"].append(f"{n}: {line.strip()[:96]}")
+            #: LAST OF ALL, because it is the weakest verdict this file produces: a human looked
+            #: and recorded why nothing can check it. It is not accounted for; it is explained.
+            elif n in historical:
+                buckets["historical"].append(f"{n}: {historical[n]}")
             else:
                 buckets["unaccounted"].append(f"{n}: {line.strip()[:96]}")
     return buckets
@@ -537,12 +698,16 @@ def bindings_digest() -> str:
             #: digesting the function would make every refactor of it read as a rule change.
             "derived": [[pattern, what, tol] for pattern, what, _how, tol in _DERIVED],
             "elsewhere": sorted(scale_patterns().items()),
+            #: THE HISTORICAL REGISTRY BELONGS HERE AND NOT IN `detection`, because adding an
+            #: entry is a judgement somebody recorded about one sentence -- the same kind of act
+            #: as binding one -- while `detection` is what counts as a claim at all.
+            "historical": [[pattern, cat] for pattern, cat, _subject in _HISTORICAL],
         }
     )
 
 
-def counts(text: str) -> tuple[int, int]:
-    """(population, unaccounted) under the current rule. One call, so report and test agree.
+def counts(text: str) -> tuple[int, int, int]:
+    """(population, unaccounted, historical). One call, so the report and the test agree.
 
     THE POPULATION IS RATCHETED TOO, and that is not belt-and-braces. The unaccounted figure is a
     NUMERATOR, and a numerator alone is the floor shape this repository keeps finding: tightening
@@ -552,8 +717,13 @@ def counts(text: str) -> tuple[int, int]:
     visible instead of letting it read as work.
     """
     credited, _unattributed = bound_lines(text)
-    buckets = classify(text, credited, superseded_lines(text), elsewhere_lines(text))
-    return sum(len(v) for v in buckets.values()), len(buckets["unaccounted"])
+    known, _stale = historical_lines(text)
+    buckets = classify(text, credited, superseded_lines(text), elsewhere_lines(text), known)
+    return (
+        sum(len(v) for v in buckets.values()),
+        len(buckets["unaccounted"]),
+        len(buckets["historical"]),
+    )
 
 
 def unaccounted_count(text: str) -> int:
@@ -561,7 +731,7 @@ def unaccounted_count(text: str) -> int:
     return counts(text)[1]
 
 
-def read_baseline() -> tuple[str, str, int, int] | None:
+def read_baseline() -> tuple[str, str, int, int, int] | None:
     """The committed digests and counts, or None if the file cannot be read.
 
     None covers an absent file AND one written before the digest was split, because both mean the
@@ -574,28 +744,31 @@ def read_baseline() -> tuple[str, str, int, int] | None:
         for line in BASELINE.read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     )
-    if not {"detection", "bindings", "population", "unaccounted"} <= set(fields):
+    wanted = {"detection", "bindings", "population", "unaccounted", "historical"}
+    if not wanted <= set(fields):
         return None
     return (
         fields["detection"].strip(),
         fields["bindings"].strip(),
         int(fields["population"]),
         int(fields["unaccounted"]),
+        int(fields["historical"]),
     )
 
 
-def write_baseline() -> tuple[int, int]:
-    """Rewrite the committed baseline from the live counts. Returns (population, unaccounted)."""
-    population, count = counts(README.read_text(encoding="utf-8"))
+def write_baseline() -> tuple[int, int, int]:
+    """Rewrite the committed baseline from the live counts."""
+    population, count, known = counts(README.read_text(encoding="utf-8"))
     BASELINE.parent.mkdir(parents=True, exist_ok=True)
     BASELINE.write_text(
         f"{_BASELINE_HEADER}detection {detection_digest()}\n"
         f"bindings {bindings_digest()}\n"
         f"population {population}\n"
-        f"unaccounted {count}\n",
+        f"unaccounted {count}\n"
+        f"historical {known}\n",
         encoding="utf-8",
     )
-    return population, count
+    return population, count, known
 
 
 def report() -> int:
@@ -610,8 +783,11 @@ def report() -> int:
     credited, unattributed = bound_lines(text)
     for note in unattributed:
         print(f"  NOT ATTRIBUTED TO A LINE — stays unaccounted: {note}")
+    known, stale = historical_lines(text)
+    for note in stale:
+        print(f"  DEAD HISTORICAL ENTRY — an excuse outliving its subject: {note}")
 
-    buckets = classify(text, credited, superseded_lines(text), elsewhere_lines(text))
+    buckets = classify(text, credited, superseded_lines(text), elsewhere_lines(text), known)
     print("\n=== CLASSIFIED — a judgement recorded, never verification ===")
     bound_note = "the rows above, compared live and so removed from the denominator"
     print(f"  {len(buckets['bound']):>4}  bound        {bound_note}")
@@ -623,8 +799,20 @@ def report() -> int:
     )
     for name, _pattern, reason in _KINDS:
         print(f"  {len(buckets[name]):>4}  {name:<12} {reason}")
+    historical = buckets["historical"]
+    print(
+        f"\n=== HISTORICAL — {len(historical)} line(s) examined and found permanently "
+        f"unverifiable. A WORK LIST, NOT A CLEARANCE ==="
+    )
+    for category, why in _WHY_HISTORICAL.items():
+        rows = [h for h in historical if f"{category} —" in h]
+        if rows:
+            print(f"  {len(rows):>4}  {category:<13} {why}")
+    for line in historical:
+        print(f"    {line}")
+
     unaccounted = buckets["unaccounted"]
-    print(f"\n=== UNACCOUNTED — {len(unaccounted)} line(s). THIS IS THE DENOMINATOR ===")
+    print(f"\n=== UNACCOUNTED — {len(unaccounted)} line(s). NOBODY HAS LOOKED AT THESE ===")
     for line in unaccounted:
         print(f"  {line}")
 
@@ -634,8 +822,10 @@ def report() -> int:
         print("FINDING, not a backlog item, which is why this exits 1 rather than reporting it.")
         return 1
     print(
-        f"\nevery bound claim holds; {len(unaccounted)} line(s) are accounted for by nothing. "
-        f"This exits 0: it reports, it does not gate."
+        f"\nevery bound claim holds. The residue is {len(unaccounted) + len(historical)} line(s): "
+        f"{len(unaccounted)} nobody has examined and {len(historical)} examined and permanently "
+        f"unverifiable. Recording a reason is NOT a check gained, so the two are counted apart "
+        f"and the sum is what has to fall. This exits 0: it reports, it does not gate."
     )
     #: THE DENOMINATOR MOVES WHEN THE DETECTION RULE MOVES, and saying so is the difference
     #: between a ratchet and a lie with a number on it. A sibling project's first ratchet fell
@@ -650,7 +840,7 @@ def report() -> int:
     if committed is None:
         print(f"no baseline committed yet — `python ci.py claims-baseline` writes {BASELINE.name}")
     else:
-        detection, bindings, recorded_population, recorded = committed
+        detection, bindings, recorded_population, recorded, recorded_known = committed
         moved = [
             name
             for name, was, now in (
@@ -671,8 +861,8 @@ def report() -> int:
             )
         else:
             print(
-                f"baseline {BASELINE.name}: {recorded} of {recorded_population}, and nothing in "
-                f"the rule has moved"
+                f"baseline {BASELINE.name}: residue {recorded + recorded_known} of "
+                f"{recorded_population}, and nothing in the rule has moved"
             )
     return 0
 
@@ -680,10 +870,11 @@ def report() -> int:
 if __name__ == "__main__":
     try:
         if "--baseline" in sys.argv[1:]:
-            pop, written = write_baseline()
+            pop, written, known = write_baseline()
             print(
-                f"wrote {BASELINE.name}: {written} unaccounted of {pop} line(s) carrying a "
-                f"number, detection {detection_digest()}, bindings {bindings_digest()}"
+                f"wrote {BASELINE.name}: residue {written + known} of {pop} line(s) carrying a "
+                f"number — {written} unexamined, {known} historical — detection "
+                f"{detection_digest()}, bindings {bindings_digest()}"
             )
             raise SystemExit(0)
         raise SystemExit(report())

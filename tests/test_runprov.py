@@ -43500,6 +43500,14 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
     never tightens is not a ratchet. So a FALL is as red as a rise, and the message says which:
     down means regenerate the baseline, up means a claim arrived that nothing accounts for.
 
+    TWO RESIDUES, AND THE SUM IS THE HEADLINE. `unaccounted` is what nobody has examined;
+    `historical` is what somebody examined and found permanently unverifiable — a bug since
+    repaired, another tree, this host, a library not installed. **Recording a reason is not a check
+    gained**, so the two are counted apart and their SUM is asserted as well: moving a line from
+    one to the other lowers a number and raises another by the same one, and a reader watching
+    only the first would read bookkeeping as progress. Only a binding, a test, or a deleted
+    sentence moves the sum.
+
     TWO DIGESTS, BECAUSE ONE COULD NOT ATTRIBUTE — and attribution is the point. The count is a
     property of the DETECTION RULE as much as of the document: tightening `_KINDS` lowers it with
     no work done at all, and a sibling project's first baseline fell 696 -> 335 with about half of
@@ -43544,7 +43552,7 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
         f"{claims.BASELINE.name} is missing, so nothing holds the count. Write it with "
         f"`python ci.py claims-baseline`"
     )
-    detection, bindings, recorded_population, recorded = committed
+    detection, bindings, recorded_population, recorded, recorded_known = committed
 
     #: THE DETECTION RULE IS THE ONE THAT MUST REFUSE TO COMPARE. Tightening a `_KINDS` pattern
     #: lowers the count with no work done at all, so a baseline taken under a different detection
@@ -43556,7 +43564,31 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
         f"Re-measure with `python ci.py claims-baseline` and record the move as RULE"
     )
 
-    population, live = claims.counts((_repo_root() / "README.md").read_text(encoding="utf-8"))
+    readme = (_repo_root() / "README.md").read_text(encoding="utf-8")
+    population, live, known = claims.counts(readme)
+
+    #: A DEAD HISTORICAL ENTRY IS AN EXCUSE OUTLIVING ITS SUBJECT. An exemption whose sentence has
+    #: gone from the README explains nothing and still lowers a number; this file has already
+    #: shipped one decoration that checked nothing, and `scale_drift` exists because of another.
+    _found, stale = claims.historical_lines(readme)
+    assert not stale, (
+        "these entries in `_HISTORICAL` no longer match any README line, so each is an exemption "
+        "with no subject: " + "; ".join(stale)
+    )
+
+    #: AND AN ENTRY MUST BE EXPLAINING SOMETHING. One that lands on a line already bound, already
+    #: classified or already superseded reads as work while doing none — the registry would grow
+    #: and the number would fall for nothing. Checked by asking what the line would be WITHOUT it.
+    credited, _ = claims.bound_lines(readme)
+    without = claims.classify(
+        readme, credited, claims.superseded_lines(readme), claims.elsewhere_lines(readme)
+    )
+    otherwise_unaccounted = {int(row.split(":", 1)[0]) for row in without["unaccounted"]}
+    idle = sorted(n for n in _found if n not in otherwise_unaccounted)
+    assert not idle, (
+        f"these `_HISTORICAL` entries explain lines that something else already accounts for, so "
+        f"they lower the residue without examining anything: {idle}"
+    )
 
     #: THE POPULATION IS HELD TOO, because the unaccounted figure is a NUMERATOR and a numerator
     #: alone is the floor shape this repository keeps finding. Tightening `NUMBER` drops lines out
@@ -43570,6 +43602,21 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
     )
     #: NOT VACUOUS: a rule that matched nothing would make the comparison below trivially true,
     #: and a baseline of 0 would agree with it forever.
+    assert known == recorded_known, (
+        f"{known} README line(s) are recorded as permanently unverifiable and the baseline says "
+        f"{recorded_known}. A rise here is a judgement somebody recorded — regenerate with "
+        f"`python ci.py claims-baseline` — and a fall means one became checkable, which is the "
+        f"direction this list exists to move in"
+    )
+
+    #: THE HEADLINE IS THE SUM, because recording a reason is not a check gained. Moving a line
+    #: from `unaccounted` to `historical` lowers one number and raises the other by the same one,
+    #: and a reader who watched only the first would read bookkeeping as progress.
+    assert live + known == recorded + recorded_known, (
+        f"the residue is {live + known} line(s) and the baseline says {recorded + recorded_known}. "
+        f"Only a binding, a test or a deleted sentence moves this number"
+    )
+
     assert live > 0 and recorded > 0 and population > live, (
         f"live {live} of {population}, baseline {recorded}: a zero, or a population no larger "
         f"than the numerator, means the rule has stopped classifying anything — which reads "

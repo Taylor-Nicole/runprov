@@ -1130,6 +1130,48 @@ is still missing is the historical registry, so the residue becomes a work list 
 than an anonymous number.
 
 
+### Added — the historical registry: the residue is 82 either way, but 45 of it now says WHY
+
+**The residue did not fall and that is the point.** 82 lines, now **37 nobody has examined** and
+**45 examined and found permanently unverifiable**. Recording a reason is **not a check gained**, so
+the two are counted apart, both are ratcheted, and **the sum is asserted as well** — moving a line
+from one to the other lowers a number and raises another by the same one, and a reader watching
+only the first would read bookkeeping as progress. Only a binding, a test or a deleted sentence
+moves the sum.
+
+Each entry carries a category *and* a specific subject, because a category alone is an excuse with
+a label on it:
+
+| category | why it can never be re-measured | n |
+|---|---|---|
+| `other-tree` | measured on a file or repository that is not this one | 14 |
+| `this-host` | a timing, memory or platform fact of one machine at one moment | 13 |
+| `third-party` | needs a library or tool this project deliberately does not install | 8 |
+| `illustration` | a hypothetical figure chosen to make a point, measuring nothing | 5 |
+| `interpreter` | a property of one CPython version, and four are supported | 3 |
+| `fixed` | measured a defect since repaired, so the condition cannot be recreated | 2 |
+| `ci-history` | a point-in-time query of the hosted CI, which moves on every push | 2 |
+
+**What is deliberately absent, and this is the load-bearing part.** A figure that *could* be checked
+does not belong here however inconvenient it is to check. *"it reports an edit to line 3 as line 4
+breaking"*, *"`ambiguous` is 0 by construction"* and *"digests `True` as the integer 1"* are
+behavioural claims about live code: they stay in `unaccounted` until somebody writes the test. **A
+registry that absorbed those would be the exemption list this one exists not to be.**
+
+**Three guards, each demonstrated red in a copied tree:**
+
+* **a dead entry** — an exemption whose README sentence has gone *"is an excuse with no subject"*;
+  this file has already shipped one decoration that checked nothing.
+* **an idle entry** — one landing on a line something else already accounts for *"lower[s] the
+  residue without examining anything"*. Checked by asking what the line would be **without** the
+  registry; the mutant aimed an entry at the bound `PIN_BINARY` heading and it named line 2733.
+* **a removed entry** — `historical` 45 → 44 is red even though the **sum** is unchanged, because
+  each number is held separately.
+
+Every pattern must match **exactly one** line: zero is a dead entry and two is an entry that cannot
+say which sentence it explains.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise

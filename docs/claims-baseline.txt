@@ -24,6 +24,7 @@
 # failure message says which -- down means regenerate this file, up means a claim arrived that
 # nothing accounts for.
 detection 47541d243306b1a4
-bindings b260c31f1d74d57d
+bindings 0d4fc9da91c802eb
 population 267
-unaccounted 82
+unaccounted 37
+historical 45
