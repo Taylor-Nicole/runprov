@@ -64,6 +64,10 @@ ignore = ["RUF003"]
 # a program that is not `PY`: it asks `git` for the history, and `git` comes from PATH for
 # the same reason project.py takes it from PATH -- an absolute path would be this machine's.
 "ci.py" = ["S603", "S607"]
+# `claims.py` asks `git ls-files` which markdown SHIPS, because a bare glob of the root picked up
+# an untracked `LICENSING.md` and would have audited a page no reader receives. Same argument as
+# above for the partial path: `git` comes from PATH, and an absolute one would be this machine's.
+"claims.py" = ["S603", "S607"]
 
 # `examples/` is teaching code that a reader copies, and it is linted as such. What is
 # switched off and why:

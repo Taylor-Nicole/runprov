@@ -57,6 +57,7 @@ import importlib.util
 import json
 import pathlib
 import re
+import subprocess
 import sys
 from collections import abc
 
@@ -85,6 +86,10 @@ _CODE_SPAN = re.compile(r"`[^`]*`")
 _BOUND: tuple[tuple[str, str, str, int], ...] = (
     (r"Steps are capped at ([\d  ]+?) per run", "runprov.run", "Run.MAX_STEPS", 1),
     (r"turns itself off after ([\d  ]+?) calls", "runprov.observe", "MAX_CALLS", 1),
+    #: THE SAME CONSTANT, IN THE PAGE THAT SHIPS. `README-pypi.md` says it in its own words,
+    #: and was bound by nothing: a change to `MAX_CALLS` would have redded the gate on `README.md`
+    #: and shipped the wrong number to PyPI, where a file can never be replaced.
+    (r"stops itself after ([\d\u2009 ]+?) calls", "runprov.observe", "MAX_CALLS", 1),
     (r"begin within the first (\d+) lines", "runprov.verify", "PIN_STARTS_WITHIN", 1),
     (r"a warning naming up to (\d+) files", "runprov.run", "DIRTY_FILES_SHOWN", 1),
     (r"Capped at (\d+) lines a run", "runprov._report", "PROGRESS_MAX_LINES", 1),
@@ -124,7 +129,14 @@ _KINDS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "ordinal",
-        r"^\*\*\d+\.\s|^\d+\.\s|^#{1,6} \d|^\s*[-*] \*\*\d+\.",
+        #: `\bstep \d+\b` ADDED 2026-10-09, when the surface grew to every shipped page.
+        #: `GETTING-STARTED.md` is built out of `## Step 1` .. `## Step 8` and refers back to them
+        #: in prose, and `^#{1,6} \d` needs the digit immediately after the hashes -- so eleven
+        #: positions read as measurements. Narrow on purpose: it requires `step` then a space then
+        #: digits, so *"Steps are capped at 1 000 per run"* and *"32 of 55 steps covered"* are
+        #: untouched. A heading pattern like `^#{1,6} \w+ \d` would have exempted any heading
+        #: ending in a number, which is where the real claims live.
+        r"^\*\*\d+\.\s|^\d+\.\s|^#{1,6} \d|^\s*[-*] \*\*\d+\.|\bstep \d+\b",
         "a numbered heading or list item -- the number is the position, not a measurement",
     ),
     (
@@ -210,6 +222,80 @@ _CODE_LITERAL_REASON = (
 _SUPERSEDED_REASON = (
     "quoted inside a correction note that withdrew it -- kept on purpose, must NOT resolve"
 )
+
+
+#: WHICH DOCUMENTS ARE NOT AUDITED, each with its reason, because an unexplained exclusion is how
+#: a gap hides. Everything else matching `*.md` at the repository root IS audited -- derived from
+#: the filesystem rather than listed, so a new document arrives covered.
+#:
+#: WHY THIS STOPPED BEING `README.md` ALONE. The claim surface covered one document and this
+#: project ships seven. `README-pypi.md` is *frozen into the wheel at upload and is the only page
+#: most people who find this project will read*, and it stated `observe.MAX_CALLS` in its own
+#: words -- a constant bound in `README.md` and unbound there, so a change to it would have redded
+#: the gate on one page and shipped the wrong number on the other, to a file PyPI can never
+#: replace. The scope pattern again: a rule that was right, reaching one of the places it applies.
+_NOT_AUDITED = {
+    "CHANGELOG.md": (
+        "a log of the past -- every figure in it is historical by construction, and its correction "
+        "notes quote superseded ones on purpose"
+    ),
+    "CODE_OF_CONDUCT.md": "adopted text (the Contributor Covenant), not this project's claims",
+}
+
+
+def _shipped_markdown() -> list[str]:
+    """Root-level markdown that SHIPS, which is not the same as what is on this disk.
+
+    ASKS GIT FIRST, AND THAT IS A CORRECTION. A bare `ROOT.glob("*.md")` picked up `LICENSING.md`
+    -- a file that is **not tracked and not in the sdist** -- so the claim surface would have
+    audited a page no reader ever receives, and would adopt any stray `.md` left in the root. The
+    subject is *what ships*.
+
+    FALLS BACK TO THE GLOB WITHOUT APOLOGY, because the fallback is only reached in an unpacked
+    sdist, where there is no `.git` AND the tree contains nothing but shipped files. Each method is
+    correct exactly where the other is unavailable.
+    """
+    asked = subprocess.run(
+        ["git", "ls-files", "*.md"], cwd=ROOT, capture_output=True, text=True, check=False
+    )
+    if asked.returncode == 0 and asked.stdout.strip():
+        return [name for name in asked.stdout.split() if "/" not in name]
+    return [path.name for path in ROOT.glob("*.md")]  # pragma: no cover - an unpacked sdist
+
+
+def documents() -> dict[str, str]:
+    """Every audited document, name -> text. Derived, so a new page is covered on arrival."""
+    found = {
+        name: (ROOT / name).read_text(encoding="utf-8")
+        for name in sorted(_shipped_markdown())
+        if name not in _NOT_AUDITED and (ROOT / name).is_file()
+    }
+    #: NOT VACUOUS: a one-document survey is the state this layer was built to end, and an empty
+    #: one would make every count below zero and every assertion true.
+    if len(found) < 2:
+        raise RuntimeError(f"only {sorted(found)} audited; the document derivation has stopped")
+    return found
+
+
+def survey() -> tuple[dict[str, list[str]], list[str]]:
+    """Classify every audited document at once. Keys are `name:line`, so a row names its page.
+
+    COMPOSED, NOT REWRITTEN. Each per-document function keeps its own contract and this walks the
+    documents, which is why the detection rule and the registries did not have to change shape to
+    cover seven pages instead of one.
+    """
+    buckets: dict[str, list[str]] = {}
+    notes: list[str] = []
+    for name, text in documents().items():
+        credited, unattributed = bound_lines(text)
+        notes += [f"{name}: {note}" for note in unattributed]
+        known, _stale = historical_lines(text)
+        #: `_SCALE_FIGURES` NAMES README FIGURES SPECIFICALLY, so it is asked of that page only.
+        elsewhere = elsewhere_lines(text) if name == "README.md" else {}
+        one = classify(text, credited, superseded_lines(text), elsewhere, known)
+        for bucket, rows in one.items():
+            buckets.setdefault(bucket, []).extend(f"{name}:{row}" for row in rows)
+    return buckets, notes
 
 
 def superseded_lines(text: str) -> set[int]:
@@ -378,13 +464,26 @@ def historical_lines(text: str) -> tuple[dict[int, str], list[str]]:
     for pattern, category, subject in _HISTORICAL:
         hits = [n for n, line in enumerate(lines, 1) if re.search(pattern, line)]
         if not hits:
-            stale.append(f"{category}/{subject}: no line matches {pattern!r}")
+            #: NOT reported as stale here: a pattern matching nothing in THIS document may match in
+            #: another, and only the whole survey can tell. `dead_historical_entries` decides.
             continue
-        if len(hits) > 1:
-            stale.append(f"{category}/{subject}: {len(hits)} lines match {pattern!r}, expected one")
-            continue
-        found[hits[0]] = f"{category} — {subject}"
+        #: SEVERAL MATCHES ARE NOW ALLOWED, and that is a deliberate relaxation. The one-match rule
+        #: was right while the subject was a single page; several pages repeat the same sentence --
+        #: *"three children holding ~150 MiB"* is in `README.md` and `README-pypi.md` both -- and
+        #: one reason explains every copy. What is still refused is an entry explaining NOTHING.
+        for n in hits:
+            found[n] = f"{category} — {subject}"
     return found, stale
+
+
+def dead_historical_entries() -> list[str]:
+    """Entries matching no line in ANY audited document — an excuse outliving its subject."""
+    texts = documents().values()
+    return [
+        f"{category}/{subject}: no line in any audited document matches {pattern!r}"
+        for pattern, category, subject in _HISTORICAL
+        if not any(re.search(pattern, text) for text in texts)
+    ]
 
 
 def _test_functions() -> int:
@@ -543,6 +642,28 @@ def bound_claims(text: str) -> list[tuple[str, int | None, int, str]]:
     return out
 
 
+def registry_verdicts() -> list[tuple[str, str, str]]:
+    """Every registry entry's verdict ACROSS the audited documents: (what, verdict, where).
+
+    THE VERDICT CANNOT BE TAKEN PER DOCUMENT, and the refactor that widened the surface proved it
+    by exiting 1: an entry bound to a sentence that exists only in `README-pypi.md` reads as
+    VACUOUS against `README.md`. An entry is vacuous when **no audited page** states its sentence;
+    it has drifted when a page states it and the live value disagrees. Those are different repairs
+    -- a rename to follow versus a document to correct -- so they stay separate here too.
+    """
+    pages = documents()
+    out: list[tuple[str, str, str]] = []
+    for name, text in pages.items():
+        for what, stated, live, verdict in bound_claims(text):
+            if stated is not None:
+                out.append((what, verdict, f"{name} says {stated:,}, live {live:,}"))
+    stated_anywhere = {what for what, _v, _w in out}
+    for what, _stated, live, _verdict in bound_claims(next(iter(pages.values()))):
+        if what not in stated_anywhere:
+            out.append((what, "VACUOUS — no audited page states it", f"live {live:,}"))
+    return out
+
+
 def classify(
     text: str,
     bound: dict[int, str] | None = None,
@@ -684,6 +805,13 @@ def detection_digest() -> str:
             "superseded": _SUPERSEDED_DECLARES.pattern,
             "kinds": [[name, pattern] for name, pattern, _reason in _KINDS],
             "code_span": _CODE_SPAN.pattern,
+            #: THE EXCLUSIONS ARE A RULE DECISION and belong here: excusing a document lowers the
+            #: count with no work done, exactly like loosening a pattern.
+            #:
+            #: THE DERIVED DOCUMENT LIST DELIBERATELY DOES NOT. A new `.md` arriving should red the
+            #: POPULATION assertion -- *"the denominator moved"*, which names what happened -- not
+            #: make the gate refuse to compare, which says only that something did.
+            "not_audited": sorted(_NOT_AUDITED),
         }
     )
 
@@ -706,7 +834,7 @@ def bindings_digest() -> str:
     )
 
 
-def counts(text: str) -> tuple[int, int, int]:
+def counts() -> tuple[int, int, int]:
     """(population, unaccounted, historical). One call, so the report and the test agree.
 
     THE POPULATION IS RATCHETED TOO, and that is not belt-and-braces. The unaccounted figure is a
@@ -716,9 +844,7 @@ def counts(text: str) -> tuple[int, int, int]:
     twenty-nine were lines that stopped carrying a number at all. Recording both makes that
     visible instead of letting it read as work.
     """
-    credited, _unattributed = bound_lines(text)
-    known, _stale = historical_lines(text)
-    buckets = classify(text, credited, superseded_lines(text), elsewhere_lines(text), known)
+    buckets, _notes = survey()
     return (
         sum(len(v) for v in buckets.values()),
         len(buckets["unaccounted"]),
@@ -726,9 +852,9 @@ def counts(text: str) -> tuple[int, int, int]:
     )
 
 
-def unaccounted_count(text: str) -> int:
+def unaccounted_count() -> int:
     """The denominator alone, for callers that do not need the population."""
-    return counts(text)[1]
+    return counts()[1]
 
 
 def read_baseline() -> tuple[str, str, int, int, int] | None:
@@ -758,7 +884,7 @@ def read_baseline() -> tuple[str, str, int, int, int] | None:
 
 def write_baseline() -> tuple[int, int, int]:
     """Rewrite the committed baseline from the live counts."""
-    population, count, known = counts(README.read_text(encoding="utf-8"))
+    population, count, known = counts()
     BASELINE.parent.mkdir(parents=True, exist_ok=True)
     BASELINE.write_text(
         f"{_BASELINE_HEADER}detection {detection_digest()}\n"
@@ -772,22 +898,19 @@ def write_baseline() -> tuple[int, int, int]:
 
 
 def report() -> int:
-    text = README.read_text(encoding="utf-8")
-    rows = bound_claims(text)
-    print("=== BOUND — compared against the live value, so these can fail ===")
-    for what, stated, live, verdict in rows:
-        said = "—" if stated is None else f"{stated:,}"
-        print(f"  {verdict:<44} {what:<28} README {said:>9}  live {live:,}")
+    pages = documents()
+    print(f"=== {len(pages)} SHIPPED DOCUMENT(S) AUDITED: {', '.join(sorted(pages))} ===")
+    print("\n=== BOUND — compared against the live value, so these can fail ===")
+    rows = registry_verdicts()
+    for what, verdict, where in rows:
+        print(f"  {verdict:<34} {what:<42} {where}")
     print("  ci.py `_SCALE_FIGURES` binds 2 more (statements, branches) and IS gated by `test`")
 
-    credited, unattributed = bound_lines(text)
+    buckets, unattributed = survey()
     for note in unattributed:
         print(f"  NOT ATTRIBUTED TO A LINE — stays unaccounted: {note}")
-    known, stale = historical_lines(text)
-    for note in stale:
+    for note in dead_historical_entries():
         print(f"  DEAD HISTORICAL ENTRY — an excuse outliving its subject: {note}")
-
-    buckets = classify(text, credited, superseded_lines(text), elsewhere_lines(text), known)
     print("\n=== CLASSIFIED — a judgement recorded, never verification ===")
     bound_note = "the rows above, compared live and so removed from the denominator"
     print(f"  {len(buckets['bound']):>4}  bound        {bound_note}")
@@ -805,9 +928,14 @@ def report() -> int:
         f"unverifiable. A WORK LIST, NOT A CLEARANCE ==="
     )
     for category, why in _WHY_HISTORICAL.items():
-        rows = [h for h in historical if f"{category} —" in h]
-        if rows:
-            print(f"  {len(rows):>4}  {category:<13} {why}")
+        #: NOT `rows`. It was, and it SHADOWED the registry verdicts computed above, so the exit
+        #: code below filtered strings by `r[1]` -- the second CHARACTER of a line, not a tuple
+        #: field. No error, just nonsense: the tool reported *"2 bound claim(s) no longer hold"*
+        #: when every binding held, and the 2 was the size of the last category printed. A
+        #: confident wrong exit code, found only by asking WHICH two.
+        in_category = [h for h in historical if f"{category} —" in h]
+        if in_category:
+            print(f"  {len(in_category):>4}  {category:<13} {why}")
     for line in historical:
         print(f"    {line}")
 
@@ -816,7 +944,7 @@ def report() -> int:
     for line in unaccounted:
         print(f"  {line}")
 
-    bad = [r for r in rows if r[3] != "ok"]
+    bad = [(what, verdict, where) for what, verdict, where in rows if verdict != "ok"]
     if bad:
         print(f"\n{len(bad)} bound claim(s) no longer hold. A bound claim that drifts is a")
         print("FINDING, not a backlog item, which is why this exits 1 rather than reporting it.")

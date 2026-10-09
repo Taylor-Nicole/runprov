@@ -1222,6 +1222,56 @@ paired with the wrong DOI, and the pairing `CITATION.cff` carries made unreadabl
 the non-vacuity assertion rather than passing over an empty map.
 
 
+### Fixed — the claim surface audited `README.md` while this project ships six documents
+
+**The sharp instance.** `README-pypi.md` states `observe.MAX_CALLS` in its own words — *"the
+observer stops itself after 50 000 calls"* — and nothing bound it. Change that constant and
+`README.md` reds the gate while **the PyPI page ships the wrong number**, in a file PyPI can never
+replace, and which the suite itself calls *"frozen into the wheel at upload and the ONLY page most
+people who find this project will read"*. The scope pattern again: a rule that was right, reaching
+one of the places it applies.
+
+Demonstrated closed — `MAX_CALLS` → 25 000 now fails naming **both** pages; a number added to
+`SECURITY.md` is caught; a newly tracked `ROADMAP.md` is caught.
+
+| | before | after |
+|---|---|---|
+| documents audited | 1 | **6** |
+| lines carrying a number | 267 | **403** |
+| unexamined / historical | 37 / 45 | **85 / 46** |
+
+**The residue rose because the subject grew, not because anything regressed** — which is exactly
+what the `population` field was added for, and the detection digest moved so the gate refused the
+old baseline rather than quietly accepting a new number. `README.md` itself held at **37
+throughout**, which is how the refactor is known not to have disturbed what was already audited.
+
+**Three defects found while building it:**
+
+* **The derivation audited a file that does not ship.** `ROOT.glob("*.md")` picked up an
+  untracked draft at the repository root, absent from the sdist — so the surface would have
+  audited a page no reader receives, and adopted any stray `.md` left there. (Naming that draft
+  here is what `test_the_internal_drafts_are_not_packaged_and_not_linked` refused, correctly: a
+  shipped document must not cite a file the reader does not have, and this entry tried to.) It asks `git ls-files` now and falls back
+  to the glob only where there is no `.git`: an unpacked sdist, whose tree contains nothing but
+  shipped files, so each method is right exactly where the other is unavailable.
+* **A shadowed variable gave the tool a confident wrong exit code.** `rows` was reused inside the
+  historical-printing loop, so the exit check filtered **strings** by `r[1]` — the second
+  *character* of a line, not a tuple field. No error: it reported *"2 bound claim(s) no longer
+  hold"* while every binding held, and the 2 was the size of the last category printed. Found only
+  by asking **which two**; the filter now unpacks, so a shape change cannot be silent again.
+* **`ordinal` missed `## Step N`.** Its pattern needs a digit immediately after the hashes, so
+  `GETTING-STARTED.md`'s eight step headings and its back-references read as measurements — 21 of
+  its numbers, now 9. Widened narrowly (`\bstep \d+\b`), so *"Steps are capped at 1 000 per run"*
+  and *"32 of 55 steps covered"* are untouched.
+
+`CHANGELOG.md` and `CODE_OF_CONDUCT.md` are excluded **with their reasons** — a log of the past
+whose figures are historical by construction and whose correction notes quote superseded ones on
+purpose, and adopted text that is not this project's claims. Those exclusions are in the detection
+digest, because excusing a document lowers the count exactly as loosening a pattern does. The
+derived document list deliberately is **not**: a new page should move the POPULATION and say so,
+not make the gate refuse to compare.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise

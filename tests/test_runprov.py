@@ -43560,25 +43560,30 @@ def test_every_readme_binding_resolves_and_still_holds():
     claims = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(claims)
 
-    rows = claims.bound_claims((_repo_root() / "README.md").read_text(encoding="utf-8"))
+    rows = claims.registry_verdicts()
     #: NOT VACUOUS: an empty registry would make every assertion below true.
     #: DERIVED, so adding a binding never needs this line edited: every registry entry must
     #: produce a row, and the registry itself must not be empty. A bare `>= 6` went stale the
     #: moment four suffix-map bindings were added, which is the shape this file keeps finding.
     entries = len(claims._BOUND) + len(claims._DERIVED)
-    assert len(rows) == entries >= 6, f"{len(rows)} row(s) from {entries} registry entries"
-    drifted = [(what, said, live, why) for what, said, live, why in rows if why != "ok"]
-    assert not drifted, "README figures no longer match the constants they describe: " + "; ".join(
-        f"{what} says {said} and the code says {live} ({why})" for what, said, live, why in drifted
+    #: AT LEAST ONE ROW PER ENTRY, not exactly one: the same constant is stated on more than one
+    #: page — `observe.MAX_CALLS` is in `README.md` and in `README-pypi.md`, in different words —
+    #: and each statement is compared where it stands. `>=` because a second page saying the same
+    #: thing is a second check, not a duplicate to suppress.
+    assert len(rows) >= entries >= 6, f"{len(rows)} row(s) from {entries} registry entries"
+    drifted = [(what, verdict, where) for what, verdict, where in rows if verdict != "ok"]
+    assert not drifted, (
+        "a shipped document's figure no longer matches the constant it describes: "
+        + "; ".join(f"{what} — {verdict} ({where})" for what, verdict, where in drifted)
     )
 
-    #: AND EVERY BOUND SENTENCE IS STILL IN THE DOCUMENT. `bound_claims` reports a missing one as
-    #: VACUOUS rather than raising, because a binding to a number the README no longer states is a
-    #: decoration — `ci.py`'s `scale_drift` says the same thing for the same reason, and its
-    #: docstring names it: *"the thing that must never happen quietly is this check becoming
-    #: vacuous"*.
-    vacuous = [what for what, said, _live, _why in rows if said is None]
-    assert not vacuous, f"these bindings quote sentences the README no longer contains: {vacuous}"
+    #: AND EVERY BOUND SENTENCE IS STILL STATED SOMEWHERE. `registry_verdicts` marks an entry
+    #: VACUOUS only when NO audited page states it, because a pattern written for one page is
+    #: silent on the others by design. A binding to a sentence nobody states any more is a
+    #: decoration — `ci.py`'s `scale_drift` says the same thing for the same reason: *"the thing
+    #: that must never happen quietly is this check becoming vacuous"*.
+    vacuous = [what for what, verdict, _where in rows if verdict.startswith("VACUOUS")]
+    assert not vacuous, f"these bindings quote sentences no audited page contains: {vacuous}"
 
 
 def test_the_claims_report_is_not_in_the_default_gate_and_ci_declares_it():
@@ -43679,27 +43684,31 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
         f"Re-measure with `python ci.py claims-baseline` and record the move as RULE"
     )
 
-    readme = (_repo_root() / "README.md").read_text(encoding="utf-8")
-    population, live, known = claims.counts(readme)
+    population, live, known = claims.counts()
 
     #: A DEAD HISTORICAL ENTRY IS AN EXCUSE OUTLIVING ITS SUBJECT. An exemption whose sentence has
     #: gone from the README explains nothing and still lowers a number; this file has already
     #: shipped one decoration that checked nothing, and `scale_drift` exists because of another.
-    _found, stale = claims.historical_lines(readme)
+    stale = claims.dead_historical_entries()
     assert not stale, (
-        "these entries in `_HISTORICAL` no longer match any README line, so each is an exemption "
-        "with no subject: " + "; ".join(stale)
+        "these entries in `_HISTORICAL` match no line in ANY audited document, so each is an "
+        "exemption with no subject: " + "; ".join(stale)
     )
 
     #: AND AN ENTRY MUST BE EXPLAINING SOMETHING. One that lands on a line already bound, already
     #: classified or already superseded reads as work while doing none — the registry would grow
     #: and the number would fall for nothing. Checked by asking what the line would be WITHOUT it.
-    credited, _ = claims.bound_lines(readme)
-    without = claims.classify(
-        readme, credited, claims.superseded_lines(readme), claims.elsewhere_lines(readme)
-    )
-    otherwise_unaccounted = {int(row.split(":", 1)[0]) for row in without["unaccounted"]}
-    idle = sorted(n for n in _found if n not in otherwise_unaccounted)
+    #: AND AN ENTRY MUST BE EXPLAINING SOMETHING, asked per document by removing the registry and
+    #: seeing what the line would have been. One landing on a line already bound, classified or
+    #: superseded reads as work while doing none.
+    idle: list[str] = []
+    for name, text in claims.documents().items():
+        credited, _ = claims.bound_lines(text)
+        elsewhere = claims.elsewhere_lines(text) if name == "README.md" else {}
+        without = claims.classify(text, credited, claims.superseded_lines(text), elsewhere)
+        otherwise = {int(row.split(":", 1)[0]) for row in without["unaccounted"]}
+        known_here, _ = claims.historical_lines(text)
+        idle += [f"{name}:{n}" for n in sorted(known_here) if n not in otherwise]
     assert not idle, (
         f"these `_HISTORICAL` entries explain lines that something else already accounts for, so "
         f"they lower the residue without examining anything: {idle}"
@@ -43711,14 +43720,15 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
     #: on the way in — 113 -> 84 came with 284 -> 267, so seven of those twenty-nine lines simply
     #: stopped carrying a number. Without this assertion that reads exactly like work.
     assert population == recorded_population, (
-        f"{population} README line(s) carry a number and the baseline says {recorded_population}. "
+        f"{population} line(s) across the audited documents carry a number and the baseline says "
+        f"{recorded_population}. "
         f"The DENOMINATOR moved, so a change in the figure below is not comparable even if the "
         f"digests match. Regenerate with `python ci.py claims-baseline` and say what moved"
     )
     #: NOT VACUOUS: a rule that matched nothing would make the comparison below trivially true,
     #: and a baseline of 0 would agree with it forever.
     assert known == recorded_known, (
-        f"{known} README line(s) are recorded as permanently unverifiable and the baseline says "
+        f"{known} line(s) are recorded as permanently unverifiable and the baseline says "
         f"{recorded_known}. A rise here is a judgement somebody recorded — regenerate with "
         f"`python ci.py claims-baseline` — and a fall means one became checkable, which is the "
         f"direction this list exists to move in"
@@ -43757,7 +43767,8 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
             "hides."
         )
     assert live == recorded, (
-        f"the README now has {live} line(s) accounted for by nothing and the committed baseline "
+        f"the audited documents now have {live} line(s) accounted for by nothing and the "
+        f"committed baseline "
         f"says {recorded}. {why}"
     )
 
