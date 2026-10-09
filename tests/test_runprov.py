@@ -23262,6 +23262,62 @@ def test_log_limit_is_a_view_and_never_writes_to_the_history(tmp_path, capsys):
     assert history.read_text(encoding="utf-8").count("\n") == 1000, "records went missing"
 
 
+def test_every_command_the_documentation_tells_you_to_run_actually_EXISTS():
+    """An instruction that does not run is worse than none, and this project has shipped one.
+
+    `docs/public-surface.txt` told a reader to run `python -c "import tests.surface"`, which is
+    not a thing — `ci.py surface`'s docstring records it: *an instruction that does not run is
+    worse than none, because the reader tries it before disbelieving it*. That was fixed where it
+    was found and **nothing stops the next one**.
+
+    WHY THIS IS A RELEASE CONCERN rather than tidiness. `CONTRIBUTING.md` carries *"Cutting a
+    release, in order"*, which is the sequence a human follows on tag day — four version bumps,
+    `ci.py`, `ci.py matrix-check`, the tag. A renamed step leaves that sequence naming a command
+    that does nothing, and the step it would silently skip is the only one that looks at Windows
+    before a tag. The cost of discovering it then is a published version that cannot be replaced.
+
+    DERIVED FROM BOTH SIDES. The commands come from the documents by pattern and the answers come
+    from `ci.py`'s own `STEPS` table and the filesystem, so a step added or renamed tomorrow is
+    covered without editing this test. Only the two spellings a reader can actually type are
+    read — `ci.py <step>` and `tools/<script>.py` — because a `runprov <subcommand>` is already
+    held by `CORPUS_RECIPES`, and a bare grep for one matches prose like *"runprov directly"*.
+    """
+    root = _repo_root()
+    ci = _ci_module()
+    docs = sorted(root.glob("*.md")) + sorted((root / "docs").rglob("*.md"))
+    assert len(docs) >= 5, f"only {len(docs)} document(s) found; this test is reading nothing"
+
+    seen = {"ci.py": 0, "tools/": 0}
+    missing: list[str] = []
+    for path in docs:
+        text = path.read_text(encoding="utf-8")
+        for step in re.findall(r"\bci\.py ([a-z][a-z-]*)", text):
+            seen["ci.py"] += 1
+            if step not in ci.STEPS:
+                missing.append(
+                    f"{path.name} says `ci.py {step}`, and the steps are {sorted(ci.STEPS)}"
+                )
+        for script in re.findall(r"\btools/([a-z_]+\.py)", text):
+            seen["tools/"] += 1
+            if not (root / "tools" / script).is_file():
+                missing.append(f"{path.name} says `tools/{script}`, which does not exist")
+
+    #: COUNTED PER PATTERN, AND THAT IS A CORRECTION. The first version of this kept one total and
+    #: asserted `>= 5` — a floor over a MIXED population, so breaking the `ci.py` pattern left the
+    #: `tools/` matches carrying the count and the test passed. **Demonstrated**: a mutant that
+    #: spelled the pattern `ci\.pyZZ` went green. An exhaustiveness assertion is only as total as
+    #: the primitive it quantifies over, which is the shape this repository keeps finding — and it
+    #: was in the guard written to catch instructions that do not run.
+    blind = sorted(kind for kind, count in seen.items() if count == 0)
+    assert not blind, (
+        f"these patterns matched nothing across {len(docs)} document(s), so this test is not "
+        f"reading that half of its subject: {blind}"
+    )
+    assert not missing, "the documentation names commands that do not exist:\n  " + "\n  ".join(
+        missing
+    )
+
+
 def test_the_readme_pin_unsafe_table_is_the_constant_and_says_which_rows_RAISE():
     """L-60's rule reaching a second table, which is the scope pattern it was filed for.
 

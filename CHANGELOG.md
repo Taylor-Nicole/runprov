@@ -1172,6 +1172,34 @@ Every pattern must match **exactly one** line: zero is a dead entry and two is a
 say which sentence it explains.
 
 
+### Added — every command the documentation tells you to run must exist
+
+**This project has shipped an instruction that did not run.** `docs/public-surface.txt` told a
+reader to `python -c "import tests.surface"`, which is not a thing; `ci.py surface`'s docstring
+records the lesson — *an instruction that does not run is worse than none, because the reader tries
+it before disbelieving it* — and nothing stopped the next one.
+
+**It is a release concern, not tidiness.** `CONTRIBUTING.md` carries *"Cutting a release, in
+order"*, the sequence a human follows on tag day. A renamed step leaves that sequence naming a
+command that does nothing, and the step it would silently skip — `ci.py matrix-check` — is the only
+one that looks at **Windows** before a tag. Discovering that afterwards means a published version
+that can never be replaced. Demonstrated: renaming `matrix-check` to `check-matrix` fails naming
+`CONTRIBUTING.md` and listing the steps that do exist.
+
+Derived from both sides — the commands come from the documents by pattern, the answers from
+`ci.py`'s own `STEPS` and the filesystem — so a step added or renamed tomorrow is covered without
+editing the test. Only the two spellings a reader can type are read: `ci.py <step>` and
+`tools/<script>.py`. A `runprov <subcommand>` is already held by `CORPUS_RECIPES`, and a bare grep
+for one matches prose like *"runprov directly"*.
+
+**AND THE FIRST VERSION OF THIS GUARD HAD THE FLOOR SHAPE IT WAS WRITTEN TO CATCH.** It kept one
+total of commands seen and asserted `>= 5` — a floor over a **mixed** population, so breaking the
+`ci.py` pattern left the `tools/` matches carrying the count and the test passed. Found by mutating
+the pattern to `ci\.pyZZ` and watching it go green. Counted per pattern now, with **both** required
+to be non-zero: *an exhaustiveness assertion is only as total as the primitive it quantifies over.*
+Both blind-pattern mutants are red.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise
