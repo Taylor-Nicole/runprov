@@ -43495,7 +43495,7 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
         f"{claims.BASELINE.name} is missing, so nothing holds the count. Write it with "
         f"`python ci.py claims-baseline`"
     )
-    detection, bindings, recorded = committed
+    detection, bindings, recorded_population, recorded = committed
 
     #: THE DETECTION RULE IS THE ONE THAT MUST REFUSE TO COMPARE. Tightening a `_KINDS` pattern
     #: lowers the count with no work done at all, so a baseline taken under a different detection
@@ -43507,12 +43507,24 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
         f"Re-measure with `python ci.py claims-baseline` and record the move as RULE"
     )
 
-    live = claims.unaccounted_count((_repo_root() / "README.md").read_text(encoding="utf-8"))
+    population, live = claims.counts((_repo_root() / "README.md").read_text(encoding="utf-8"))
+
+    #: THE POPULATION IS HELD TOO, because the unaccounted figure is a NUMERATOR and a numerator
+    #: alone is the floor shape this repository keeps finding. Tightening `NUMBER` drops lines out
+    #: of the population entirely: the numerator falls while nothing was accounted for. Measured
+    #: on the way in — 113 -> 84 came with 284 -> 267, so seven of those twenty-nine lines simply
+    #: stopped carrying a number. Without this assertion that reads exactly like work.
+    assert population == recorded_population, (
+        f"{population} README line(s) carry a number and the baseline says {recorded_population}. "
+        f"The DENOMINATOR moved, so a change in the figure below is not comparable even if the "
+        f"digests match. Regenerate with `python ci.py claims-baseline` and say what moved"
+    )
     #: NOT VACUOUS: a rule that matched nothing would make the comparison below trivially true,
     #: and a baseline of 0 would agree with it forever.
-    assert live > 0 and recorded > 0, (
-        f"live {live} and baseline {recorded}: a zero here means the detection rule has stopped "
-        f"finding anything, which reads exactly like a document with no unbound claims in it"
+    assert live > 0 and recorded > 0 and population > live, (
+        f"live {live} of {population}, baseline {recorded}: a zero, or a population no larger "
+        f"than the numerator, means the rule has stopped classifying anything — which reads "
+        f"exactly like a document with no unbound claims in it"
     )
     #: AND THE BINDINGS DIGEST ATTRIBUTES THE MOVE, which is the whole reason it is separate.
     #: A fall while the bindings moved is work; a fall while nothing moved is the document losing

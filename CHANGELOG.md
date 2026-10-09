@@ -1033,6 +1033,52 @@ docstring: nothing in a sentence's text says which constant it is about; a human
 registry is where that decision is written down so the next reader can disagree with it.
 
 
+### Fixed — three detection defects, and the POPULATION is ratcheted too [RULE: 113 → 84 of 267]
+
+**`UTF-8` was a measurement (−7, and −17 from the population).** `NUMBER`'s lookbehind forbade a
+digit after a word character or a dot, but not after a **hyphen** — so `UTF-8`, `PEP-639`,
+`pre-PEP-639`, `kill -9` and `exit-2` all read as measurement-shaped literals. A digit after a
+hyphen is a name's own character; a digit after a space still counts, so *"a 3-taxon tree"* remains
+measured and `UTF-8` is not.
+
+**An alternative that could never fire (−3).** The widened `exit-code` kind added
+`` \b`[012]` (?:against|family)\b `` — and a word boundary needs a word character on one side,
+which a backtick is not, so that alternative was **incapable of matching anything at all**. It was
+written in the same commit that widened the kind and nothing tested it. Three lines stayed in the
+denominator behind it. `when` joined the outcome list in the same pass.
+
+**A `code-literal` kind (−19).** A line whose every number sits inside inline `` `code` `` makes no
+numeric claim in prose: `configure(heartbeat=0)`, `os.kill(pid, 0)`, `SystemExit(0)`,
+`df.shape[0]`, `kill -9`, `records_fetched: 41920`, `fetch-depth: 0`. All nineteen were read
+individually before the kind was accepted — **an over-absorbing kind is worse than the gap it
+closes** — and it is applied **last, after every pattern kind**, so a more specific reason always
+wins: *"the one that matters is `1` against `2`"* is now an exit-code line, not a code literal.
+
+### Added — the baseline records the POPULATION, not just the numerator
+
+**The unaccounted figure is a numerator, and a numerator alone is the floor shape this repository
+keeps finding.** Tightening `NUMBER` drops lines out of the population entirely: the numerator
+falls while *nothing was accounted for*. Measured on the way in — **113 → 84 came with 284 → 267**,
+so **seven of those twenty-nine lines simply stopped carrying a number.** Without the population
+beside it that reads exactly like work.
+
+| | before | after |
+|---|---|---|
+| lines carrying a number | 284 | **267** |
+| of which accounted for by nothing | 113 | **84** |
+| share unaccounted | 39.8% | **31.5%** |
+
+Both are now equalities in the gate, and the two failure routes were demonstrated separately: a
+population move **without** a rule change fails with *"the DENOMINATOR moved, so a change in the
+figure below is not comparable even if the digests match"*; a population move **because** the rule
+changed is refused earlier, by the detection digest. The non-vacuity assertion now also requires
+`population > live`, because a population no larger than its own numerator means the rule has
+stopped classifying anything.
+
+**Every line of this is RULE: 113 → 84 with no claim bound**, and the baseline proves it — the
+`bindings` digest is byte-identical to the previous entry's while `detection` moved.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise

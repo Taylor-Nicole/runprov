@@ -66,7 +66,15 @@ BASELINE = ROOT / "docs" / "claims-baseline.txt"
 
 #: A MEASUREMENT-SHAPED LITERAL. Digits, with the thin spaces and commas this document uses as
 #: group separators, optionally a decimal part or a per-cent sign.
-NUMBER = re.compile(r"(?<![\w.])\d[\d  ,]*(?:\.\d+)?%?(?![\w])")
+#:
+#: THE HYPHEN IN THE LOOKBEHIND IS NOT COSMETIC. Without it `UTF-8` is a measurement, and so are
+#: `PEP-639`, `pre-PEP-639`, `kill -9` and `exit-2` -- seven lines sat in the denominator for
+#: carrying a digit that is part of a NAME. A digit after a hyphen is a name's own character;
+#: a digit after a space still counts, so *"a 3-taxon tree"* is measured and `UTF-8` is not.
+NUMBER = re.compile(r"(?<![\w.\-])\d[\d  ,]*(?:\.\d+)?%?(?![\w])")
+
+#: INLINE CODE, stripped to ask whether a line makes a numeric claim IN PROSE -- see `classify`.
+_CODE_SPAN = re.compile(r"`[^`]*`")
 
 #: (pattern over the README capturing ONE number, module, attribute path, divisor).
 #:
@@ -149,8 +157,12 @@ _KINDS: tuple[tuple[str, str, str], ...] = (
         "exit-code",
         r"\bexit(s|ed)? [012]\b|\bexit codes?\b|\bexit status\b|`--exit-code`"
         r"|\b[012] (intact|broken|could not|clean|usable|OK)\b"
-        r"|\b[012] (?:means|a rule|a name|on any|the walk|no history|otherwise)\b"
-        r"|\b`[012]` (?:against|family)\b",
+        r"|\b[012] (?:means|a rule|a name|on any|the walk|no history|otherwise|when)\b"
+        #: NO `\b` BEFORE THE BACKTICK. A word boundary needs a word character on one side, and
+        #: a backtick is not one -- so `\b`[012]`` could never match anything at all. It was
+        #: written in the same commit that widened this kind and tested nothing: three lines
+        #: stayed in the denominator behind an alternative that was incapable of firing.
+        r"|`[012]` (?:against|family)",
         "a documented exit code -- a behavioural contract, held by the suite rather than a value",
     ),
     (
@@ -182,6 +194,12 @@ _SUPERSEDED_DECLARES = re.compile(
 )
 
 #: Stateful rather than per-line, so it cannot be an entry in `_KINDS`; the reason lives here.
+#: Stateful like `superseded`, so it cannot be a `_KINDS` entry; the reason lives here.
+_CODE_LITERAL_REASON = (
+    "every number on the line is inside inline `code` -- an argument, a literal or an example, "
+    "so the line makes no numeric claim in prose"
+)
+
 _SUPERSEDED_REASON = (
     "quoted inside a correction note that withdrew it -- kept on purpose, must NOT resolve"
 )
@@ -381,6 +399,7 @@ def classify(
     elsewhere = {} if elsewhere is None else elsewhere
     buckets: dict[str, list[str]] = {"bound": [], "superseded": [], "elsewhere": []}
     buckets.update({name: [] for name, _, _ in _KINDS})
+    buckets["code-literal"] = []
     buckets["unaccounted"] = []
     fenced = False
     for n, line in enumerate(text.split("\n"), 1):
@@ -405,7 +424,13 @@ def classify(
                 buckets[name].append(f"{n}: {line.strip()[:96]}")
                 break
         else:
-            buckets["unaccounted"].append(f"{n}: {line.strip()[:96]}")
+            #: LAST, AFTER EVERY PATTERN KIND, so a more specific reason always wins: *"the one
+            #: that matters is `1` against `2`"* is an exit-code line, not a code literal, and
+            #: recording the weaker reason would mislabel it.
+            if not NUMBER.search(_CODE_SPAN.sub(" ", line)):
+                buckets["code-literal"].append(f"{n}: {line.strip()[:96]}")
+            else:
+                buckets["unaccounted"].append(f"{n}: {line.strip()[:96]}")
     return buckets
 
 
@@ -490,6 +515,7 @@ def detection_digest() -> str:
             "number": NUMBER.pattern,
             "superseded": _SUPERSEDED_DECLARES.pattern,
             "kinds": [[name, pattern] for name, pattern, _reason in _KINDS],
+            "code_span": _CODE_SPAN.pattern,
         }
     )
 
@@ -508,15 +534,28 @@ def bindings_digest() -> str:
     )
 
 
-def unaccounted_count(text: str) -> int:
-    """The denominator, under the current rule. One call, so the test and the report agree."""
+def counts(text: str) -> tuple[int, int]:
+    """(population, unaccounted) under the current rule. One call, so report and test agree.
+
+    THE POPULATION IS RATCHETED TOO, and that is not belt-and-braces. The unaccounted figure is a
+    NUMERATOR, and a numerator alone is the floor shape this repository keeps finding: tightening
+    `NUMBER` drops lines out of the population entirely, which lowers the numerator while nothing
+    was accounted for. Measured on the way in -- 113 -> 84 came with 284 -> 267, so seven of the
+    twenty-nine were lines that stopped carrying a number at all. Recording both makes that
+    visible instead of letting it read as work.
+    """
     credited, _unattributed = bound_lines(text)
     buckets = classify(text, credited, superseded_lines(text), elsewhere_lines(text))
-    return len(buckets["unaccounted"])
+    return sum(len(v) for v in buckets.values()), len(buckets["unaccounted"])
 
 
-def read_baseline() -> tuple[str, str, int] | None:
-    """The committed (detection digest, bindings digest, count), or None if it cannot be read.
+def unaccounted_count(text: str) -> int:
+    """The denominator alone, for callers that do not need the population."""
+    return counts(text)[1]
+
+
+def read_baseline() -> tuple[str, str, int, int] | None:
+    """The committed digests and counts, or None if the file cannot be read.
 
     None covers an absent file AND one written before the digest was split, because both mean the
     same thing to a caller: there is nothing here that can be compared, so re-measure.
@@ -528,22 +567,28 @@ def read_baseline() -> tuple[str, str, int] | None:
         for line in BASELINE.read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     )
-    if not {"detection", "bindings", "unaccounted"} <= set(fields):
+    if not {"detection", "bindings", "population", "unaccounted"} <= set(fields):
         return None
-    return fields["detection"].strip(), fields["bindings"].strip(), int(fields["unaccounted"])
+    return (
+        fields["detection"].strip(),
+        fields["bindings"].strip(),
+        int(fields["population"]),
+        int(fields["unaccounted"]),
+    )
 
 
-def write_baseline() -> int:
-    """Rewrite the committed baseline from the live count. Returns the count."""
-    count = unaccounted_count(README.read_text(encoding="utf-8"))
+def write_baseline() -> tuple[int, int]:
+    """Rewrite the committed baseline from the live counts. Returns (population, unaccounted)."""
+    population, count = counts(README.read_text(encoding="utf-8"))
     BASELINE.parent.mkdir(parents=True, exist_ok=True)
     BASELINE.write_text(
         f"{_BASELINE_HEADER}detection {detection_digest()}\n"
         f"bindings {bindings_digest()}\n"
+        f"population {population}\n"
         f"unaccounted {count}\n",
         encoding="utf-8",
     )
-    return count
+    return population, count
 
 
 def report() -> int:
@@ -564,6 +609,7 @@ def report() -> int:
     bound_note = "the rows above, compared live and so removed from the denominator"
     print(f"  {len(buckets['bound']):>4}  bound        {bound_note}")
     print(f"  {len(buckets['superseded']):>4}  superseded   {_SUPERSEDED_REASON}")
+    print(f"  {len(buckets['code-literal']):>4}  code-literal {_CODE_LITERAL_REASON}")
     print(
         f"  {len(buckets['elsewhere']):>4}  elsewhere    bound and gated by `ci.py`, which owns "
         f"the coverage data this tool cannot read"
@@ -597,7 +643,7 @@ def report() -> int:
     if committed is None:
         print(f"no baseline committed yet — `python ci.py claims-baseline` writes {BASELINE.name}")
     else:
-        detection, bindings, recorded = committed
+        detection, bindings, recorded_population, recorded = committed
         moved = [
             name
             for name, was, now in (
@@ -617,17 +663,20 @@ def report() -> int:
                 f"did not, so a fall from {recorded} to {len(unaccounted)} is WORK"
             )
         else:
-            print(f"baseline {BASELINE.name}: {recorded}, and nothing in the rule has moved")
+            print(
+                f"baseline {BASELINE.name}: {recorded} of {recorded_population}, and nothing in "
+                f"the rule has moved"
+            )
     return 0
 
 
 if __name__ == "__main__":
     try:
         if "--baseline" in sys.argv[1:]:
-            written = write_baseline()
+            pop, written = write_baseline()
             print(
-                f"wrote {BASELINE.name}: {written} unaccounted, "
-                f"detection {detection_digest()}, bindings {bindings_digest()}"
+                f"wrote {BASELINE.name}: {written} unaccounted of {pop} line(s) carrying a "
+                f"number, detection {detection_digest()}, bindings {bindings_digest()}"
             )
             raise SystemExit(0)
         raise SystemExit(report())
