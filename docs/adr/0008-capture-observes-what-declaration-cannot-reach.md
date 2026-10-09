@@ -1,6 +1,10 @@
 # 8. `capture` observes what declaration cannot reach
 
-Date: 2026-09-04 · Status: accepted · Ledger: T-19 · Decided by the author, not the applier
+- **Status:** accepted
+- **Date:** 2026-09-04
+- **Ledger:** T-19
+- **Decided by:** the author, not the applier
+- **Applies to:** `runprov/watch.py` (the audit hook), `runprov/__main__.py` (`capture`, `exec`)
 
 ## Context
 

@@ -1,6 +1,10 @@
 # 13. What a run consumed, measured rather than declared
 
-Date: 2026-09-16 · Status: **accepted**, implemented as `runprov/resources.py` in 0.4.0 · Ledger: T-29 · Raised by: Taylor
+- **Status:** **accepted**, implemented as `runprov/resources.py` in 0.4.0
+- **Date:** 2026-09-16
+- **Ledger:** T-29
+- **Raised by:** Taylor
+- **Applies to:** `runprov/resources.py`, `runprov/run.py`, `runprov/diff.py`, `runprov/policy.py`, `runprov/__main__.py` (`resources`)
 
 ## Context
 

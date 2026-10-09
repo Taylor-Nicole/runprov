@@ -1,6 +1,6 @@
 # 20. An environment rendered from a record is a floor
 
-**Status:** Proposed — T-36. Specification for a feature that is not built.
+- **Status:** Proposed — T-36. Specification for a feature that is not built.
 
 ## Context
 

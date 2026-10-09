@@ -1,6 +1,10 @@
 # 9. Export is a derived view, in two vocabularies and two scopes
 
-Date: 2026-09-04 · Status: accepted · Ledger: T-20 · Decided by the author, not the applier
+- **Status:** accepted
+- **Date:** 2026-09-04
+- **Ledger:** T-20
+- **Decided by:** the author, not the applier
+- **Applies to:** `runprov/export.py`
 
 ## Context
 

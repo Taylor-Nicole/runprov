@@ -1,6 +1,10 @@
 # 7. The gate ships with the tool, and passes the exit code through
 
-Date: 2026-09-04 · Status: accepted · Ledger: T-18 · Decided by the author, not the applier
+- **Status:** accepted
+- **Date:** 2026-09-04
+- **Ledger:** T-18
+- **Decided by:** the author, not the applier
+- **Applies to:** `runprov/__main__.py` (`gate`, and the exit-code contract every subcommand shares)
 
 ## Context
 

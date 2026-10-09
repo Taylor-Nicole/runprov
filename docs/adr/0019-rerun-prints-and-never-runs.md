@@ -1,6 +1,6 @@
 # 19. `rerun` prints, and never runs
 
-**Status:** Proposed — T-35. Specification for a feature that is not built. Depends on ADR-0017.
+- **Status:** Proposed — T-35. Specification for a feature that is not built. Depends on ADR-0017.
 
 ## Context
 

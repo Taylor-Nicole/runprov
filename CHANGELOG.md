@@ -1316,6 +1316,82 @@ whether an `accepted` record still describes the build. Writing the other ninete
 per record rather than a sweep, which is why it is recorded here rather than done in this commit.
 
 
+### Added — every accepted decision record declares what it GOVERNS, and the targets resolve
+
+**This project has shipped a record that stopped being true.** ADR-0017's own status line says it
+read *"proposed — a feature that is not built"* **through the release that shipped it**, and that
+the guard which should have caught it *"had nothing to check"* because no module named the ADR.
+Status alone is a floor. What makes the question answerable is a record declaring **what it
+governs** — then every target can be resolved, which the guard rules call the strongest check a
+decision record allows.
+
+**Fifteen `Applies to:` fields written**, 2 → 17 of 21. A judgement per record, not a derivation:
+each was based on the modules whose **own docstrings name that ADR**, so the document's claim
+matches the code's claim rather than being invented beside it. Where a title named a mechanism the
+docstrings did not — `0004`'s `Run.input` after the pin is rendered, `0008`'s audit hook in
+`watch.py` — the decision text was read and the target verified.
+
+**The four that declare nothing are exactly the four `proposed` records**, and the status is what
+licenses the exemption: a specification for a feature that is not built governs nothing, and a
+field naming files that do not exist yet would be dangling by construction. The exemption is read
+from the document, not from a list in the test — so promoting a record to `accepted` without
+declaring its targets fails, demonstrated.
+
+**THE PROPERTY THAT CANNOT BE FAKED is the two-way agreement**: a module's top docstring naming
+`ADR-NNNN` is the code's claim about which decision it implements, the record's field is the
+document's, and **both sides are derived**, so neither can be satisfied by editing the other. It
+holds today with **0 gaps** across every module that names an ADR.
+
+Red four ways, each with the mutation proved applied first: the field removed from an accepted
+record; a target named that was never written (*"governs `runprov/rerun.py`, which does not
+exist"*); a module naming an ADR the record does not list (*"runprov/export.py names ADR-0009,
+which does not list it"*); and a `proposed` record promoted to `accepted` without declaring
+anything.
+
+Read **format-agnostically**, which is a finding rather than laziness: the corpus writes these
+fields three ways — a `- **bullet**`, a `**bold:** line`, and inline after a `·` — and a line-start
+anchor missed the two bullet records five separate times while this was being written.
+
+
+### Changed — every decision record now has ONE header shape, and a guard keeps it
+
+Three shapes had grown up side by side, each new record copying whichever neighbour was open: a
+`- **bullet**` list, a `**bold:**` line, and everything packed inline after a `·`. **The cost was
+not aesthetic.** A line-start anchor missed two of them **five separate times** while guards were
+being written for this corpus, every failure in the direction of a false verdict — thirteen records
+read as having no status at all, twice, for two different reasons.
+
+Canonical: `- **Field:** value`, one field per line. Chosen because a wrapped value is then an
+unambiguous list continuation, and a new field can be added without touching the others. Twenty
+records rewritten; the fields in use are `Status` (21), `Applies to` (17), `Date` (15), `Ledger`
+(13), `Decided by` (6) and `Raised by` (2) — the last promoted from a trailing *"Decided by the
+author, not the applier"* annotation that the inline shape had no room for.
+
+**Nothing was discarded, and the converter refused rather than guessed:** it aborts if a record's
+status cannot be parsed, if any field value fails to survive the rewrite, or if a single byte of
+the body after the header block changes.
+
+### Fixed — a field had been inserted INTO the middle of a wrapped status sentence
+
+ADR-0018's status spans two lines, and the `Applies to:` field added in the previous commit went
+between them. The record read *"… **not yet released** (`[Unreleased]`). Depends on"*, then the
+target list, then *"ADR-0017 for its machine-readable form…"*. **Both tolerant guards were
+satisfied** — they found a status and a target set, because they were written to read either field
+anywhere on any line, which they had to be while three shapes existed.
+
+Found by reading the normaliser's output instead of its exit code.
+
+**THE GUARD:** `test_every_decision_record_uses_the_one_header_shape` — every metadata line must be
+a canonical bullet, no field may appear outside the list, and **no bare line may follow a bullet
+without a blank line or an indent**, because that is a value that has wrapped out of the list and
+whatever reads the field above it will read half a sentence.
+
+**That third assertion was missing from the first version of this guard while its docstring claimed
+it.** Three of four mutants went red — the inline shape, the bold shape — and the one rebuilding
+the exact ADR-0018 arrangement **passed**. The orphan rule exists because the demonstration was
+run, not because the design was reviewed.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise

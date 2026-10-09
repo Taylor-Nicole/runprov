@@ -1,6 +1,10 @@
 # 5. A record is written whole or not at all
 
-Date: 2026-09-01 · Status: accepted · Ledger: T-04 · Decided by the author, not the applier
+- **Status:** accepted
+- **Date:** 2026-09-01
+- **Ledger:** T-04
+- **Decided by:** the author, not the applier
+- **Applies to:** `runprov/_atomic.py`, `runprov/hashing.py`, `runprov/run.py`, `runprov/verify.py`
 
 ## Context
 

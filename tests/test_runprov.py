@@ -31287,6 +31287,168 @@ def test_every_decision_record_declares_a_status_this_project_recognises():
     )
 
 
+def test_every_accepted_decision_record_declares_what_it_GOVERNS_and_the_targets_resolve():
+    """The strongest check a decision record allows: it reads the document's claim about ITSELF.
+
+    A record that has stopped being true is worse than none, because it reads as the current
+    design — and this project has shipped exactly that: ADR-0017's status line records that it read
+    *"proposed — a feature that is not built"* **through the release that shipped it**, and that the
+    guard which should have caught it *"had nothing to check"*. Status alone is a floor. What makes
+    the question answerable is a record declaring **what it governs**, because then every target
+    can be resolved.
+
+    FIFTEEN FIELDS WERE WRITTEN TO MAKE THIS POSSIBLE, and they are a judgement per record rather
+    than a derivation: `0001` and `0002` already declared, and the other fifteen accepted records
+    were based on the modules whose own docstrings name the ADR — so the declaration matches the
+    code's claim instead of being invented beside it.
+
+    THREE PROPERTIES, AND THE THIRD IS THE ONE THAT CANNOT BE FAKED:
+
+    1. every **accepted** record declares the field;
+    2. every path it names exists;
+    3. **every module whose docstring names ADR-N appears in ADR-N's field** — two-way agreement,
+       derived on both sides, so neither can be satisfied by editing one of them.
+
+    `proposed` IS EXEMPT FROM (1), AND THE STATUS IS WHAT LICENSES IT. A specification for a
+    feature that is not built governs nothing, and a field naming files that do not exist yet would
+    be dangling by construction. Exactly the four proposed records are exempt; the exemption is
+    read from the document rather than from a list here, so a record that moves to `accepted` must
+    declare its targets in the same commit.
+
+    READ FORMAT-AGNOSTICALLY, which is a finding and not laziness: the corpus writes these fields
+    three ways — a `- **bullet**`, a `**bold:** line`, and inline after a `·`. A line-start anchor
+    missed the two bullet records five separate times while this was being written.
+    """
+    adrs = sorted(
+        path for path in (_repo_root() / "docs" / "adr").glob("*.md") if path.name != "README.md"
+    )
+    assert len(adrs) >= 15, f"only {len(adrs)} record(s) found; this test is reading nothing"
+
+    field = re.compile(r"Applies to:?\*{0,2}\s*:?\s*([^\n]+)")
+    status = re.compile(r"Status:?\*{0,2}\s*:?\s*\**\s*([A-Za-z]+)")
+    declared: dict[str, set[str]] = {}
+    undeclared, dangling = [], []
+    for path in adrs:
+        text = path.read_text(encoding="utf-8")
+        where = status.search("\n".join(text.split("\n")[:8]))
+        assert where, f"{path.name} declares no readable status"
+        found = field.search(text)
+        if found is None:
+            if where.group(1).lower() == "accepted":
+                undeclared.append(path.name)
+            continue
+        declared[path.name[:4]] = set(re.findall(r"`([A-Za-z0-9_./-]+\.py)`", found.group(1)))
+        for ref in re.findall(r"`([A-Za-z0-9_./-]+\.(?:py|yml|yaml|toml|md|cff))`", found.group(1)):
+            if not (_repo_root() / ref).exists():
+                dangling.append(f"{path.name} governs `{ref}`, which does not exist")
+
+    assert not undeclared, (
+        f"these ACCEPTED records do not say what they govern, so nothing can ask whether they "
+        f"still describe the build: {undeclared}. A `proposed` record is exempt: it governs "
+        f"nothing yet"
+    )
+    assert not dangling, f"a record names a target that is gone: {dangling}"
+    #: NOT VACUOUS: no declarations would make both assertions above trivially true.
+    assert len(declared) >= 15, f"only {len(declared)} record(s) declare a target set"
+
+    #: (3) THE TWO-WAY CHECK. A module's top docstring naming `ADR-NNNN` is the code's own claim
+    #: about which decision it implements; the record's field is the document's. They must agree,
+    #: and because each side is derived, neither can be satisfied by editing the other.
+    disagree = []
+    for module in sorted((_repo_root() / "runprov").glob("*.py")):
+        text = module.read_text(encoding="utf-8")
+        for number in sorted(set(re.findall(r"ADR-(\d{4})", text))):
+            targets = declared.get(number)
+            if targets is None:
+                continue  # the record declares nothing, which (1) already licensed
+            if f"runprov/{module.name}" not in targets:
+                disagree.append(f"runprov/{module.name} names ADR-{number}, which does not list it")
+    assert not disagree, (
+        "the code and the decision records disagree about what each decision governs: "
+        + "; ".join(disagree)
+    )
+
+
+#: THE CANONICAL ADR HEADER. One field per line, bolded key, as a markdown bullet. Normalised
+#: 2026-10-09 from THREE shapes that had grown up side by side — a `- **bullet**`, a `**bold:**`
+#: line, and everything packed inline after a `·`. The cost of three shapes was not aesthetic: a
+#: line-start anchor missed two of them FIVE separate times while guards were being written for
+#: this corpus, every failure in the direction of a false verdict.
+_ADR_FIELD = r"^- \*\*([A-Z][A-Za-z ]{2,14}):\*\* (.+)$"
+
+
+def test_every_decision_record_uses_the_one_header_shape():
+    """Three header formats cost five false findings; one shape is the fix, and this keeps it.
+
+    WHY A GUARD AND NOT JUST A TIDY-UP. The three shapes did not arrive by decision — they
+    accumulated, each new record copying whichever neighbour was open. Normalising without a guard
+    buys one afternoon: the twenty-second record would copy whatever its author remembered. What
+    makes the normalisation durable is that a non-conforming header now fails here, so the shape is
+    enforced rather than hoped for.
+
+    AND IT IS THE REASON THE OTHER TWO ADR GUARDS CAN STOP BEING FORMAT-AGNOSTIC. They were written
+    to read `Status:` and `Applies to:` anywhere on any line, because they had to. That tolerance
+    is what let a field be inserted INTO THE MIDDLE of a wrapped status sentence without anything
+    noticing — which happened, in the commit before this one: ADR-0018's status read *"… Depends
+    on"*, then an `Applies to:` line, then *"ADR-0017 for its machine-readable form"*. A tolerant
+    reader saw a status and a target set and was satisfied. This asserts the shape, so the
+    arrangement that hid it cannot recur.
+
+    A VALUE MAY WRAP, and a wrapped value is why the bullet list was chosen over the other two: a
+    markdown list continuation is unambiguous where a bare second line is not. So the assertion is
+    over the metadata LINES — every line in the header that looks like a field must be a canonical
+    bullet, and no field may appear outside the list.
+    """
+    adrs = sorted(
+        path for path in (_repo_root() / "docs" / "adr").glob("*.md") if path.name != "README.md"
+    )
+    assert len(adrs) >= 15, f"only {len(adrs)} record(s) found; this test is reading nothing"
+
+    canonical = re.compile(_ADR_FIELD)
+    loose = re.compile(r"\*\*([A-Z][A-Za-z ]{2,14}):\*\*|(?:^|·\s*)([A-Z][A-Za-z ]{2,14}):\s")
+    wrong, outside, orphans, seen = [], [], [], 0
+    for path in adrs:
+        lines = path.read_text(encoding="utf-8").split("\n")
+        end = next(i for i, line in enumerate(lines) if line.startswith("## "))
+        after_bullet = False
+        for line in lines[1:end]:
+            if not line.strip():
+                after_bullet = False
+                continue
+            if line.lstrip().startswith("- **"):
+                after_bullet = True
+                if canonical.match(line):
+                    seen += 1
+                else:
+                    wrong.append(f"{path.name[:4]}: {line[:72]}")
+                continue
+            #: AN ORPHANED CONTINUATION, and this is the assertion the first version of this test
+            #: LACKED while its docstring claimed it. A bare line directly after a metadata bullet
+            #: is a value that wrapped out of the list -- which is exactly how a field came to sit
+            #: in the MIDDLE of ADR-0018's status sentence with nothing noticing. A paragraph is
+            #: legitimate here; one that follows a bullet with no blank line between them is not.
+            if after_bullet and not line.startswith("  "):
+                orphans.append(f"{path.name[:4]}: {line[:72]}")
+            after_bullet = False
+            if loose.search(line) and not line.lstrip().startswith(">"):
+                outside.append(f"{path.name[:4]}: {line[:72]}")
+
+    #: NOT VACUOUS: a header block nobody parsed would make both assertions below trivially true.
+    assert seen >= 40, f"only {seen} metadata line(s) read across {len(adrs)} records"
+    assert not wrong, (
+        "these metadata lines are not the canonical `- **Field:** value`: " + "; ".join(wrong)
+    )
+    assert not outside, (
+        "these records state a field OUTSIDE the bullet list, which is one of the three shapes "
+        "this corpus was normalised away from: " + "; ".join(outside)
+    )
+    assert not orphans, (
+        "these lines follow a metadata bullet with no blank line and no indent, so a value has "
+        "wrapped out of the list and whatever reads the field above it will read half a sentence: "
+        + "; ".join(orphans)
+    )
+
+
 def test_every_adr_is_listed_in_the_adr_index():
     """`docs/adr/README.md` is an INDEX, and its three relative links are the only route to
     the decisions this project has recorded. A fourth ADR added without a row is a decision

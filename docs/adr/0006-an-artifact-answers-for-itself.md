@@ -1,6 +1,10 @@
 # 6. An artifact answers for itself
 
-Date: 2026-09-04 · Status: accepted · Ledger: T-17 · Decided by the author, not the applier
+- **Status:** accepted
+- **Date:** 2026-09-04
+- **Ledger:** T-17
+- **Decided by:** the author, not the applier
+- **Applies to:** `runprov/run.py` (`Run.open_output`, `Run.header`)
 
 ## Context
 

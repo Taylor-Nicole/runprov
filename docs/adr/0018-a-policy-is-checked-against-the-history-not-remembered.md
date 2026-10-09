@@ -1,10 +1,7 @@
 # 18. A policy is checked against the history, not remembered
 
-**Status:** Accepted — T-34, built 2026-10-02, **not yet released** (`[Unreleased]`). Depends on
-ADR-0017 for its machine-readable form. Amended the same day by Taylor's rulings: R-11 the policy
-format, R-12 the recommended interpreter, R-7 turned from a prose sentence into a table so the
-rule set can be derived from it, and R-9 clarified — *the source* means source code, not the
-filesystem, which is what put `inputs_verify` in scope.
+- **Status:** Accepted — T-34, built 2026-10-02, **not yet released** (`[Unreleased]`). Depends on ADR-0017 for its machine-readable form. Amended the same day by Taylor's rulings: R-11 the policy format, R-12 the recommended interpreter, R-7 turned from a prose sentence into a table so the rule set can be derived from it, and R-9 clarified — *the source* means source code, not the filesystem, which is what put `inputs_verify` in scope.
+- **Applies to:** `runprov/policy.py`, `runprov/show.py`, `runprov/__main__.py` (`gate`)
 
 **THIS LINE WAS MOVED IN THE LAST BUILD COMMIT AND NOT AFTER IT**, which is the one thing ADR-0017
 got wrong: it read *a feature that is not built* through the release that shipped it. The guard

@@ -1,6 +1,9 @@
 # 14. A difference and an incomparability are not the same answer
 
-Date: 2026-09-16 · Status: **accepted**, implemented as `runprov/diff.py` · Ledger: T-30
+- **Status:** **accepted**, implemented as `runprov/diff.py`
+- **Date:** 2026-09-16
+- **Ledger:** T-30
+- **Applies to:** `runprov/diff.py`, `runprov/policy.py`, `runprov/__main__.py` (`diff`)
 
 ## Context
 

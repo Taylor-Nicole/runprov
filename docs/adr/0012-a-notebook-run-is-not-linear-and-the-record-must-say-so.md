@@ -1,6 +1,8 @@
 # 12. A notebook run is not linear, and the record must say so
 
-Date: 2026-09-16 · Status: **proposed** · Ledger: T-28
+- **Status:** **proposed**
+- **Date:** 2026-09-16
+- **Ledger:** T-28
 
 ## Context
 

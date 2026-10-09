@@ -1,6 +1,10 @@
 # 4. An input cannot be registered after the pin is written, and a pin states what it covers
 
-Date: 2026-09-01 · Status: accepted · Ledger: A-16 · Decided by the author, not the applier
+- **Status:** accepted
+- **Date:** 2026-09-01
+- **Ledger:** A-16
+- **Decided by:** the author, not the applier
+- **Applies to:** `runprov/run.py` (`Run.input`, and the pin rendered by `Run.header`)
 
 ## Context
 

@@ -1,10 +1,8 @@
 # 0002 — Warning when a read bypasses registration
 
-- **Status:** **Accepted**, 2026-08-19, and implemented in 0.1.0 as `runprov/watch.py`.
-  Was Proposed; Taylor's decision to include it is recorded under *Decision* below.
+- **Status:** **Accepted**, 2026-08-19, and implemented in 0.1.0 as `runprov/watch.py`. Was Proposed; Taylor's decision to include it is recorded under *Decision* below.
 - **Date:** 2026-08-19
-- **Raised by:** Taylor, asking whether `runprov` can warn when it is installed in a project but
-  a script is not actually recording.
+- **Raised by:** Taylor, asking whether `runprov` can warn when it is installed in a project but a script is not actually recording.
 - **Applies to:** would touch `runprov/run.py`, `runprov/__main__.py`; a new module
 
 ## Context

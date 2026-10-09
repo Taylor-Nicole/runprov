@@ -1,6 +1,9 @@
 # 10. A record states what it was able to observe
 
-Date: 2026-09-11, amended 2026-09-14 and 2026-09-15 · Status: **accepted** (stage one shipped `25fc886`; stage two specified below) · Ledger: T-25, T-26
+- **Status:** **accepted** (stage one shipped `25fc886`; stage two specified below)
+- **Date:** 2026-09-11, amended 2026-09-14 and 2026-09-15
+- **Ledger:** T-25, T-26
+- **Applies to:** `runprov/_report.py`, `runprov/diff.py`, `runprov/hashing.py`, `runprov/observe.py`, `runprov/policy.py`, `runprov/project.py`, `runprov/report.py`, `runprov/run.py`
 
 ## Context
 

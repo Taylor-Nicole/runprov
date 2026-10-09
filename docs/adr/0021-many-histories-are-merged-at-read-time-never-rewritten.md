@@ -1,6 +1,6 @@
 # 21. Many histories are merged at read time, and never rewritten
 
-**Status:** Proposed — T-37. Specification for a feature that is not built.
+- **Status:** Proposed — T-37. Specification for a feature that is not built.
 
 ## Context
 
