@@ -1200,6 +1200,28 @@ to be non-zero: *an exhaustiveness assertion is only as total as the primitive i
 Both blind-pattern mutants are red.
 
 
+### Added — the README's DOI example is held to the version `CITATION.cff` declares
+
+**A post-release step with no guard.** After a tag: capture the corpus, record the new DOI in
+`CITATION.cff` **and in the README's version example**, open a fresh `[Unreleased]`. The corpus half
+has a guard with a one-release grace; the DOI half had none — so the README would go on citing the
+previous release's version DOI, silently, **in the file that goes to PyPI**, beside a sentence
+telling a reader to cite it.
+
+Both sides derived, so no figure is written down twice: `CITATION.cff` is parsed as YAML and the
+pairing is already in it — each identifier's description names its version *permanently* — and the
+README is read for the two DOIs it states. The test names no version and no DOI.
+
+**What it does at the next release is the point:** the moment `CITATION.cff` is bumped to 0.8.0 with
+its new identifier, this fails until the README's example follows. Both edits belong in the same
+post-release commit, and now one cannot land without the other.
+
+Red four ways: the release happened and the README is stale (*"the example is for 0.7.0 and
+CITATION.cff declares 0.8.0"*), the concept DOI disagrees between the two files, the right version
+paired with the wrong DOI, and the pairing `CITATION.cff` carries made unreadable — which fails on
+the non-vacuity assertion rather than passing over an empty map.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise

@@ -23318,6 +23318,65 @@ def test_every_command_the_documentation_tells_you_to_run_actually_EXISTS():
     )
 
 
+def test_the_readme_doi_example_names_the_VERSION_citation_cff_declares():
+    """Recording the new DOI in both files is a post-release step, and nothing guarded the pair.
+
+    THE STEP THAT GETS MISSED. After a tag: capture the corpus, record the DOI in `CITATION.cff`
+    **and in the README's version example**, then open a fresh `[Unreleased]`. The corpus half has
+    a guard with a one-release grace. The DOI half had none, so the README would go on citing the
+    previous release's version DOI — silently, in the file that goes to PyPI, beside a sentence
+    telling a reader to cite it.
+
+    BOTH SIDES DERIVED, so no figure is written down twice. `CITATION.cff` is parsed as YAML, and
+    the pairing is already in it: each identifier's description names its version *permanently*.
+    The README is read for the two DOIs it states. Nothing here names a version or a DOI.
+
+    WHAT IT WILL DO AT THE NEXT RELEASE, which is the point: the moment `CITATION.cff` is bumped to
+    the new version with its new identifier, this fails until the README's example follows. Both
+    edits belong in the same post-release commit, and now one cannot land without the other.
+    """
+    import yaml
+
+    root = _repo_root()
+    cff = yaml.safe_load((root / "CITATION.cff").read_text(encoding="utf-8"))
+    readme = (root / "README.md").read_text(encoding="utf-8")
+
+    #: THE PAIRING THE FILE ALREADY CARRIES: `Version DOI — version 0.7.0, permanently.`
+    per_version = {
+        found.group(1): entry["value"]
+        for entry in cff.get("identifiers", [])
+        if (found := re.search(r"version (\d+\.\d+\.\d+)", entry.get("description", "")))
+    }
+    #: NOT VACUOUS: an unparsed or renamed identifier block would make every lookup below vacuous.
+    assert len(per_version) >= 2, (
+        f"CITATION.cff yielded {len(per_version)} version DOI(s); its identifier descriptions are "
+        f"what pairs a DOI with a version, and this test is reading nothing"
+    )
+
+    concept = re.search(r"\*\*The DOI is \[`(10\.5281/zenodo\.\d+)`\]", readme)
+    assert concept, "the README no longer states a concept DOI in the shape this test reads"
+    assert concept.group(1) == cff["doi"], (
+        f"the README calls {concept.group(1)} the concept DOI and CITATION.cff's `doi:` is "
+        f"{cff['doi']}; one of them is wrong and a citation is what carries it"
+    )
+
+    example = re.search(
+        r"frozen to each version \(`(10\.5281/zenodo\.\d+)` for (\d+\.\d+\.\d+)\)", readme
+    )
+    assert example, "the README no longer states a version-DOI example in the shape this test reads"
+    doi, version = example.group(1), example.group(2)
+
+    assert version == cff["version"], (
+        f"the README's version-DOI example is for {version} and CITATION.cff declares "
+        f"{cff['version']}. After a release the DOI goes into CITATION.cff and the README's "
+        f"example has to follow; this is that reminder"
+    )
+    assert per_version.get(version) == doi, (
+        f"the README says {doi} is the version DOI for {version}, and CITATION.cff pairs "
+        f"{version} with {per_version.get(version)!r}"
+    )
+
+
 def test_the_readme_pin_unsafe_table_is_the_constant_and_says_which_rows_RAISE():
     """L-60's rule reaching a second table, which is the scope pattern it was filed for.
 
