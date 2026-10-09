@@ -23213,6 +23213,55 @@ def _pin_unsafe_table() -> list[str]:
     return rows
 
 
+def test_log_limit_is_a_view_and_never_writes_to_the_history(tmp_path, capsys):
+    """The README says `--limit` *"is a view, never a trim"* and **nothing checked it**.
+
+    FOUND WHILE AUDITING THE CLAIM SURFACE, not while reading this file. `tools/claims.py`
+    reported the sentence *"Asking for the last five shows five and leaves the other 99,995
+    exactly where they were — verified by sha256 before and after"* as accounted for by nothing,
+    and the search for what might account for it turned up no test at all. The figure looked like
+    a one-off measurement needing a retained artifact; it is not. **It is a behavioural claim, and
+    the remedy for a behavioural claim is a test** — the 99,995 is then arithmetic illustrating it.
+
+    THE ASSERTION IS THE BYTES, not the record count, because a reader's fear is specific: a
+    command that reads a hundred thousand records and prints five might have rewritten the file to
+    the five it kept. `sha256` before and after is the only thing that answers that, and it is
+    what the README says it did.
+    """
+    history = tmp_path / "history.jsonl"
+    with history.open("w", encoding="utf-8") as fh:
+        for n in range(1000):
+            fh.write(
+                json.dumps(
+                    {
+                        "schema": runprov.HISTORY_SCHEMA,
+                        "script": f"s{n}",
+                        "run_id": str(n),
+                        "started_utc": "2026-01-01T00:00:00Z",
+                        "status": "ok",
+                    }
+                )
+                + "\n"
+            )
+    before = hashlib.sha256(history.read_bytes()).hexdigest()
+    #: NOT VACUOUS: an empty or unreadable history would make every assertion below true.
+    assert history.read_text(encoding="utf-8").count("\n") == 1000, "the fixture is not 1 000 runs"
+
+    code = runprov.__main__.main(["log", "--log", str(history), "--limit", "5"])
+    assert code == 0, f"`log --limit 5` exited {code}"
+    shown = capsys.readouterr()
+    assert "5 of 1000" in shown.out + shown.err, (
+        f"the command did not report showing 5 of 1 000: {(shown.out + shown.err)[:200]!r}"
+    )
+
+    assert hashlib.sha256(history.read_bytes()).hexdigest() == before, (
+        "`log --limit` CHANGED the history file. It is documented as a view, and a reader's "
+        "specific fear is that a command which prints five of a hundred thousand records has "
+        "trimmed the file to the five it kept"
+    )
+    assert history.read_text(encoding="utf-8").count("\n") == 1000, "records went missing"
+
+
 def test_the_readme_pin_unsafe_table_is_the_constant_and_says_which_rows_RAISE():
     """L-60's rule reaching a second table, which is the scope pattern it was filed for.
 

@@ -98,6 +98,13 @@ _BOUND: tuple[tuple[str, str, str, int], ...] = (
     (r"\*\*(\d+) suffixes RAISE\*\*", "runprov.run", "PIN_BINARY", 1),
     (r"\*\*(\d+) suffixes take the pin IN-BAND\*\*", "runprov.run", "PIN_INLINE", 1),
     (r"records a reason for the \*\*(\d+)\*\* that were", "runprov.run", "PIN_UNSAFE", 1),
+    #: FOUND BY READING THE CODE, NOT BY SEARCHING FOR THE VALUE. A sweep of all 142 module
+    #: constants for their values in unaccounted lines returned 113 hits, essentially all
+    #: coincidence; a scoped version requiring the constant's NAME to share a word with the
+    #: sentence found one and MISSED this -- `UNREADABLE_SHOWN` names neither "bounded" nor
+    #: "characters". No heuristic finds these. A person reads the sentence and then the code.
+    (r"bounded at (\d+) characters", "runprov.__main__", "UNREADABLE_SHOWN", 1),
+    (r"fewer suffixes than the (\d+) above", "runprov.run", "PIN_BINARY", 1),
 )
 
 #: EACH KIND CARRIES ITS REASON, because an unexplained exemption is how a gap hides. These say

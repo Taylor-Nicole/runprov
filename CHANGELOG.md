@@ -1079,6 +1079,57 @@ stopped classifying anything.
 `bindings` digest is byte-identical to the previous entry's while `detection` moved.
 
 
+### Added — `log --limit` is asserted to be a view, which nothing had ever checked
+
+The README says *"`--limit` is a view, never a trim … asking for the last five shows five and
+leaves the other 99,995 exactly where they were — verified by sha256 before and after"*, and **no
+test existed**. Found while auditing the claim surface rather than while reading the suite:
+`tools/claims.py` reported the sentence as accounted for by nothing, and the search for what might
+account for it turned up nothing at all.
+
+`test_log_limit_is_a_view_and_never_writes_to_the_history` builds a thousand-run history, takes its
+sha256, runs `log --limit 5`, and asserts the **bytes** are identical afterwards. The bytes rather
+than the record count, because a reader's fear is specific: a command that reads a hundred thousand
+records and prints five might have rewritten the file to the five it kept.
+
+### Added — two more README figures bound [WORK: 84 → 82]
+
+`bounded at 200 characters` → `__main__.UNREADABLE_SHOWN`, and `fewer suffixes than the 40 above`
+→ `run.PIN_BINARY`. `detection` is unchanged while `bindings` moved, so the gate attributed the
+fall itself before the baseline was regenerated.
+
+**Both were found by reading the code, and that is the point.** A sweep of all **142** module-level
+constants for their values in unaccounted lines returned **113 hits, essentially all coincidence** —
+small integers are everywhere in prose. A scoped version requiring the constant's *name* to share a
+word with the sentence returned **one** hit, and **missed `UNREADABLE_SHOWN` entirely**, because
+that name contains neither *bounded* nor *characters*. No heuristic finds these; a person reads the
+sentence and then the code.
+
+### The measured-once residue is not a backlog of unharnessed measurements
+
+Measured before building anything, because the obvious remedy — a harness that re-measures each
+figure and retains the result — turns out to have almost nothing to hold:
+
+| candidate | verdict |
+|---|---|
+| *"two identical runs both report 80 artifacts CHANGED"* | measured a **bug since fixed**; the condition cannot be recreated |
+| *"a sweep that parsed 647 files is a clean bill"* | a **hypothetical illustration**, not a measurement |
+| *"`hatchling` emits 2.5"* | needs the build backend, which is deliberately **not installed**, so it needs network and these gates are offline |
+| *"leaves the other 99,995 exactly where they were"* | a **behavioural claim** — the remedy is a test, which is the entry above |
+| *"a desktop session at 8 138 MiB"*, *"392 MB"*, *"3.1 s → 4.9 s"* | this host, at that moment |
+| *"295 entries"*, *"2,453 records"*, *"17,149 entries"* | another tree, or a file appended to daily |
+
+So the category splits three ways and only one of them wants a harness: **unguarded behavioural
+claims want a test**, **permanently historical observations want a registry entry saying why they
+can never be re-measured**, and only a genuinely re-runnable deterministic measurement wants a
+retained artifact — of which the residue holds approximately one.
+
+**The preventative mechanism is therefore the ratchet that already exists**, whose default is
+`unaccounted`: a new figure that binds to nothing stays visible and reds the gate on arrival. What
+is still missing is the historical registry, so the residue becomes a work list with reasons rather
+than an anonymous number.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise
