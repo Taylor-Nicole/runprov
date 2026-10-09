@@ -104,6 +104,85 @@ than provenance that changes loudly.
 decision, because that is what stops someone "simplifying" a safeguard whose reason is not
 visible. Keep that up.
 
+## How this project knows things, and what enforces each rule
+
+The rules above are about the product. These are about how a change is *believed* — and every one
+of them exists because it was broken here first. **Each names the guard that enforces it, because a
+rule with nothing behind it is a hope**, and the ones with nothing behind it yet say so.
+
+**Delete the list, do not extend it — wherever the subject is enumerable by the language.** A check
+written against the instance someone just found passes, and the next review finds the member nobody
+thought of. Walk every instance of the primitive, give every form a decision, and assert nothing was
+left over. The import graph, `argparse`'s own tables, the suffix maps and the filesystem are all
+enumerable. **A sentence's meaning is not**, which is why the claim registries in `tools/claims.py`
+exist — and why they hold the *pair*, a sentence and how to compute it, and never the value.
+
+**A floor says how much of the subject was read; an exhaustiveness assertion says the subject was
+accounted for.** Prefer the second. `test_every_collected_test_carries_exactly_one_tier` is the
+shape: every item pytest collected must carry exactly one tier, so a test the derivation cannot see
+is red rather than quietly absorbed.
+
+**And an exhaustiveness assertion is only as total as the primitive it quantifies over.** Write the
+claim in one sentence and the quantification in one sentence, and check they are the same sentence.
+A guard asserting *"every pattern matched something"* over a mixed population passed while half its
+detection was broken — one total over two primitives is a floor wearing an equality's clothes.
+`test_every_command_the_documentation_tells_you_to_run_actually_EXISTS` now counts each primitive
+separately for that reason.
+
+**Stop stating a number: derive it, or state the property.** Do not correct a stale figure to a
+newer one — state the class, the direction or the property, which is what the reader needed anyway.
+Where a number genuinely must appear, bind it: `tools/claims.py` compares the README's figures to
+the constants they describe on every run, and `docs/claims-baseline.txt` holds what is still
+unbound so it cannot grow quietly.
+
+**A docstring is not a contract until something checks it.** A check whose prose says the subject is
+asserted, while no assertion names the subject, is the same defect one layer up — and that has
+happened here inside a test written to retire exactly that shape. If the docstring claims a case,
+there must be a mutant that proves it.
+
+**A demonstration is the specification.** No guard is believed until it has been shown red, in a
+copied tree, for the reason it names — `tools/bench.py` exists to make that a command rather than a
+good intention, and `ci.py bench` checks the harness can still tell CAUGHT from SURVIVED from VOID.
+
+**When a demonstration passes, check the demonstration happened.** A mutant that was never applied
+reads exactly like a guard that works. Assert the anchor matched before replacing it, anchor by
+position rather than by quoted text where the text holds anything exotic, and diff the mutant before
+running the test.
+
+**Classify by return code, and only the codes that mean something.** For `pytest`: `0` passed,
+`1` a test failed, `5` nothing collected, and **anything else is an error, not a result**. An
+instrument failure must never wear a verdict's exit code.
+
+**A guard that is uninformed looks exactly like one that is satisfied.** ADR-0017 read *a feature
+that is not built* through the release that shipped it, because the guard meant to catch that reads a
+module's docstring for the ADR number and no module named it yet. Prefer a check whose subject
+cannot be absent: `test_every_accepted_decision_record_declares_what_it_GOVERNS_and_the_targets_resolve`
+holds the code and the record to each other, with both sides derived.
+
+**An instruction that does not run is worse than none**, because the reader tries it before
+disbelieving it. Every `ci.py` step, `tools/` script and test name cited in a shipped document must
+resolve — guarded, derived from `ci.py`'s own step table and the filesystem.
+
+**A warning nobody reads is a check nobody has.** `ruff check` passed on a file Python itself warned
+about at import, because the rule was not selected. If a tool can be made to fail on it, make it.
+
+**The subject is what ships, not what is on disk.** A bare glob of the repository root audited a file
+absent from the sdist. Ask `git ls-files`, and fall back to the glob only where there is no `git` —
+an unpacked sdist, which contains nothing else.
+
+**Measured, not assumed — and isolate the host before blaming the claim.** A documented timing was
+five times worse here and the difference was the drive this checkout lives on. Re-measure on the
+thing the claim describes.
+
+### Rules with nothing behind them yet
+
+Stated here so the gap is visible rather than implied:
+
+- **A decision record should say what it governs** — enforced for `accepted` records, but nothing
+  checks that an `accepted` record's *reasoning* still holds. That needs a human.
+- **A claim in prose should be bound** — the count of unbound ones is ratcheted, not driven to zero;
+  `docs/claims-baseline.txt` carries the residue and what would close each part of it.
+
 ## Run the CI locally, before you push
 
 ```bash

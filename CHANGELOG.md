@@ -1392,6 +1392,83 @@ the exact ADR-0018 arrangement **passed**. The orphan rule exists because the de
 run, not because the design was reviewed.
 
 
+### Added — `CONTRIBUTING.md` states how this project knows things, and names what enforces each rule
+
+The five product principles were already written down. The **verification** rules were not: they
+lived in docstrings, in an audit ledger outside this repository, and in habit. Now they are stated
+— *delete the list where the subject is enumerable; a floor says how much was read while an
+exhaustiveness assertion says the subject was accounted for; stop stating a number, derive it or
+state the property; a docstring is not a contract until something checks it; a demonstration is the
+specification; classify by return code; a guard that is uninformed looks exactly like one that is
+satisfied; an instruction that does not run is worse than none; a warning nobody reads is a check
+nobody has; the subject is what ships, not what is on disk* — **each naming the guard that enforces
+it, because a rule with nothing behind it is a hope.**
+
+A closing section lists the rules with **nothing behind them yet**, so the gap is visible rather
+than implied. And the section adds no unbound claims of its own: the `pytest` exit codes it quotes
+are marked up as the literals they are, which the `code-literal` kind already covers.
+
+### Changed — the claim residue, decomposed [RULE −7, WORK −1, and 22 explained]
+
+| | before | after |
+|---|---|---|
+| nobody has examined | 85 | **55** |
+| examined, permanently unverifiable | 46 | **68** |
+| **residue** | 131 | **123** |
+
+**`WHY.md` is now at zero unexamined.** Its argument is a comparison against the system this
+package replaced and against other tools, so its figures are evidence about *them*: nineteen
+entries name the predecessor's call sites and transformation log, another institution's artifact
+corpus, two competing tools' dependency counts and released versions, and this machine's parse
+times — including one the document already labels *"the same file, smaller, on a different
+machine"*.
+
+**RULE (−7).** Two kinds were narrower than their own stated reasons. `version` says *a version of
+this or another tool* but required a tool NAME adjacent, so this package's own release series —
+*"until 0.1.0 nothing said so"*, *"added after 0.6.0"* — read as measurements; `0.N.0` is the whole
+release history and matches no measurement in any audited document. And `ordinal` gained
+`property N` beside `step N`, the same positional shape.
+
+**WORK (−1).** `WHY.md` says *"the quickstart uses two of the 18 exported names"* and adds that a
+test asserts the set against `runprov.__all__` — while the **count** beside it was bound by
+nothing. A claim stated once and relied on in two places is two unguarded claims.
+
+### Fixed — a guard that could be turned red by ordinary prose
+
+`test_every_statement_of_the_repair_script_count_agrees` holds every statement of the
+predecessor's repair-script count to one value — a fact this repository cites as its reason to
+exist and cannot verify, so it is at least not allowed to contradict itself. It captured **any**
+word before the phrase, so a sentence reading *"and the repair scripts written for it"* registered
+`the` as a second value and turned the guard red over nothing.
+
+**A pattern that matches legitimate content is a check that cannot pass, and that is worse than one
+that cannot fail: it teaches its audience to ignore it.** The subject is a count, so only a count
+is a statement of it now. The three values this guard exists for — `eleven`, `nine`, `eight` — are
+all inside the bound set. Demonstrated: prose using the phrase passes, and a genuine `eight`
+against `nine` still fails naming both.
+
+### Fixed — two defects in the guards that hold the registry, both found by using them
+
+**The idle-entry check quantified over the wrong thing.** Its claim is *an entry must be explaining
+something*; it asserted *every line an entry matches must be otherwise unaccounted*. Different
+sentences. Widening a pattern to cover both documents made it also match a table row that `example`
+already owns — redundant there, not idle anywhere, and `example` wins on precedence so no credit is
+taken. It now quantifies per entry, which is what the claim says. Write the claim in one sentence
+and the quantification in one sentence, and check they are the same sentence.
+
+**And the dead-entry check used a different unit from the thing it checks.** It searched whole
+documents while `historical_lines` matches line by line, so an anchored pattern — `^| **…` for a
+table row — could never match there and would be reported dead for ever while working perfectly
+where it is applied. No entry is anchored today, which is the only reason it had not fired; the
+inconsistency was the defect. Both checks are now demonstrated separately: one entry matching
+nothing anywhere, one matching only a line something else owns.
+
+**And three existing entries were widened rather than duplicated**, because the same claim appears
+in two documents in different words — *"both report 80 artifacts CHANGED"* and *"both reported
+**80**"*. One reason now covers every copy, which is the rule this repository applies to lists
+applied to its own registry.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise

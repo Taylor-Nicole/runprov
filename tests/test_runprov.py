@@ -19448,7 +19448,20 @@ def test_every_statement_of_the_repair_script_count_agrees():
     So the list is now DERIVED: every Markdown file and every Python file in the repository,
     minus what is not ours to police. A file added tomorrow is inside the rule without
     anybody remembering to add it."""
-    pat = re.compile(r"(\w+)\s+(?:`fix_transformation_log_\*\.py`\s+)?(?:repair|heal) scripts")
+    #: ONLY A COUNT COUNTS. This captured any `\w+` before the phrase, so ordinary prose — *"and
+    #: the repair scripts written for it"* — registered `the` as a second value for one fact and
+    #: turned the guard red over nothing. A pattern that matches legitimate content is a check
+    #: that cannot pass, which is worse than one that cannot fail: it teaches its audience to
+    #: ignore it. The subject here is a COUNT, so a word that is not one is not a statement of it.
+    #: The cardinals are bounded by the fact itself — a handful of scripts in a sibling project —
+    #: and the three values this guard exists for, `eleven`, `nine` and `eight`, are all inside.
+    cardinals = (
+        r"\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen"
+    )
+    pat = re.compile(
+        rf"\b({cardinals})\s+(?:`fix_transformation_log_\*\.py`\s+)?(?:repair|heal) scripts",
+        re.I,
+    )
     root = _repo_root()
     skip = {".git", ".venv", "__pycache__", ".mypy_cache", ".pytest_cache", "dist", "build"}
     files = sorted(
@@ -43934,14 +43947,29 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
     #: AND AN ENTRY MUST BE EXPLAINING SOMETHING, asked per document by removing the registry and
     #: seeing what the line would have been. One landing on a line already bound, classified or
     #: superseded reads as work while doing none.
-    idle: list[str] = []
+    #: PER ENTRY, NOT PER LINE, and the difference is a claim/quantification mismatch this guard
+    #: shipped with. The claim is *an entry must be explaining something*; the first version
+    #: asserted *every line an entry matches must be otherwise unaccounted*, which is a different
+    #: sentence. A pattern that also matches a table row already covered by `example` is redundant
+    #: there, not idle everywhere — and `example` wins on precedence, so no credit is taken. What
+    #: is actually worth refusing is an entry that explains nothing ANYWHERE.
+    otherwise: dict[str, set[int]] = {}
     for name, text in claims.documents().items():
         credited, _ = claims.bound_lines(text)
         elsewhere = claims.elsewhere_lines(text) if name == "README.md" else {}
         without = claims.classify(text, credited, claims.superseded_lines(text), elsewhere)
-        otherwise = {int(row.split(":", 1)[0]) for row in without["unaccounted"]}
-        known_here, _ = claims.historical_lines(text)
-        idle += [f"{name}:{n}" for n in sorted(known_here) if n not in otherwise]
+        otherwise[name] = {int(row.split(":", 1)[0]) for row in without["unaccounted"]}
+
+    idle: list[str] = []
+    for pattern, category, subject in claims._HISTORICAL:
+        explains = any(
+            n in otherwise[name]
+            for name, text in claims.documents().items()
+            for n, line in enumerate(text.split("\n"), 1)
+            if re.search(pattern, line)
+        )
+        if not explains:
+            idle.append(f"{category}/{subject}")
     assert not idle, (
         f"these `_HISTORICAL` entries explain lines that something else already accounts for, so "
         f"they lower the residue without examining anything: {idle}"

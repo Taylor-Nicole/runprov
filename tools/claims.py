@@ -110,6 +110,10 @@ _BOUND: tuple[tuple[str, str, str, int], ...] = (
     #: "characters". No heuristic finds these. A person reads the sentence and then the code.
     (r"bounded at (\d+) characters", "runprov.__main__", "UNREADABLE_SHOWN", 1),
     (r"fewer suffixes than the (\d+) above", "runprov.run", "PIN_BINARY", 1),
+    #: `WHY.md` says *"the quickstart uses two of the 18 exported names"* and adds that a test
+    #: asserts the set against `runprov.__all__`. The COUNT was stated beside it and bound by
+    #: nothing: a claim stated once and relied on in two places is two unguarded claims.
+    (r"two of the (\d+) exported names", "runprov", "__all__", 1),
 )
 
 #: EACH KIND CARRIES ITS REASON, because an unexplained exemption is how a gap hides. These say
@@ -136,7 +140,7 @@ _KINDS: tuple[tuple[str, str, str], ...] = (
         #: digits, so *"Steps are capped at 1 000 per run"* and *"32 of 55 steps covered"* are
         #: untouched. A heading pattern like `^#{1,6} \w+ \d` would have exempted any heading
         #: ending in a number, which is where the real claims live.
-        r"^\*\*\d+\.\s|^\d+\.\s|^#{1,6} \d|^\s*[-*] \*\*\d+\.|\bstep \d+\b",
+        r"^\*\*\d+\.\s|^\d+\.\s|^#{1,6} \d|^\s*[-*] \*\*\d+\.|\b(?:step|property) \d+\b",
         "a numbered heading or list item -- the number is the position, not a measurement",
     ),
     (
@@ -147,7 +151,13 @@ _KINDS: tuple[tuple[str, str, str], ...] = (
     (
         "version",
         r"\b\d+\.\d+(\.\d+)?\b.*\b(Python|CPython|Poetry|pkginfo|Biopython|metadata|uv|conda)\b"
-        r"|\b(Python|CPython|Poetry|pkginfo|Biopython|metadata|uv|conda)\b.*\b\d+\.\d+",
+        r"|\b(Python|CPython|Poetry|pkginfo|Biopython|metadata|uv|conda)\b.*\b\d+\.\d+"
+        #: THIS PACKAGE'S OWN RELEASE SERIES needs no tool name beside it: *"until 0.1.0
+        #: nothing said so"*, *"added after 0.6.0"*. The kind's reason already covers it --
+        #: *a version of this or another tool* -- and only the pattern lagged, requiring a
+        #: tool NAME adjacent. `0.N.0` is this project's whole release history and matches
+        #: no measurement in any audited document.
+        r"|\b0\.\d+\.0\b",
         "a version of this or another tool -- pinned by `pyproject.toml`, not measured here",
     ),
     (
@@ -347,12 +357,12 @@ _WHY_HISTORICAL = {
 _HISTORICAL: tuple[tuple[str, str, str], ...] = (
     # --- it measured a defect that has since been repaired
     (
-        r"runs over identical inputs both report \d+ artifacts CHANGED",
+        r"runs over identical inputs both report(?:ed)? \*{0,2}\d+",
         "fixed",
         "the uuid was in the pin then and is not now",
     ),
     (
-        r"caught \d+ concurrent appends producing \d+ lines before",
+        r"caught \d+ concurrent appends producing \d+ lines",
         "fixed",
         "taken before the `msvcrt` branch existed",
     ),
@@ -388,7 +398,7 @@ _HISTORICAL: tuple[tuple[str, str, str], ...] = (
         "other-tree",
         "an untracked history, and the sentence says it is appended to daily",
     ),
-    (r'"\d+ runs" meant \d+ \*completed\* runs', "other-tree", "the predecessor system"),
+    (r'"\d+ runs" (?:meant|means) \d+ \*completed\* runs', "other-tree", "the predecessor system"),
     # --- this host, at that moment
     (r"on call-bound code: \*\*`census` [\d.]+\u00d7", "this-host", "observation overhead"),
     (r"A run of [\d  ]+ calls pays \d+ ms", "this-host", "observation overhead"),
@@ -449,6 +459,49 @@ _HISTORICAL: tuple[tuple[str, str, str], ...] = (
         "ci-history",
         "a per-leg tally the sentence itself calls superseded",
     ),
+    # --- WHY.md, swept 2026-10-09: nineteen figures, every one measured on something that is
+    # --- not this repository, or on one machine at one moment. The document's whole argument is
+    # --- a comparison against the predecessor system and against other tools, so its numbers
+    # --- are evidence about THEM; none of it can be re-derived here, and none of it should be.
+    (r"imported by \*\*\d+ files\*\*", "other-tree", "the predecessor system's call sites"),
+    (
+        r"at line [\d,]+ \(and `safe_load` at",
+        "other-tree",
+        "the predecessor's transformation log, and what was written to mend it",
+    ),
+    (
+        r"before it existed, \d+ artifacts oscillated",
+        "fixed",
+        "taken before the build-stamp strip existed",
+    ),
+    (r"and \d+ lines over [\d,]+\*\*", "other-tree", "the predecessor history's line sizes"),
+    (
+        r"with locking disabled entirely, \d+ processes",
+        "this-host",
+        "a lock-free append race, Linux-only by construction",
+    ),
+    (r"[\d,]+ runs render to [\d.]+ MB", "other-tree", "the predecessor history's size"),
+    (r"[\d.]+ s, from a source file that does not parse", "this-host", "one machine's parse time"),
+    (
+        r"runs, [\d.]+ MB, [\d.]+ s — the same file, smaller",
+        "this-host",
+        "the same file on a different machine, which the sentence says itself",
+    ),
+    (r"unchanged at ~[\d.]+ kB; the parse time is hardware", "this-host", "per-run record size"),
+    (
+        r"by \d+%, \d+% and \d+%",
+        "other-tree",
+        "another project's figures when an audit measured them",
+    ),
+    (r"noWorkflow's ~\d+ \(including", "third-party", "another tool's dependency count"),
+    (r'calls them \*"Berkeley DB', "third-party", "what `file` reports for another tool's stores"),
+    (r"repair, verified at \*\*\d+ \u00d7 \d+", "this-host", "the torture harness on this machine"),
+    (r"every start/record line present, \d+ unpaired", "this-host", "the same harness run"),
+    (r"maintained too\*\* \([\d.]+, ", "third-party", "another tool's released version"),
+    (r"So of [\d,]+ data artifacts", "other-tree", "another institution's artifact corpus"),
+    (r"\d+% of that corpus, and \*\*a group whose", "other-tree", "the same corpus"),
+    (r"\*\*\d+ base runtime dependencies\*\*", "third-party", "another tool's dependency count"),
+    (r"among them — against \d+\.", "third-party", "the same comparison"),
 )
 
 
@@ -478,11 +531,15 @@ def historical_lines(text: str) -> tuple[dict[int, str], list[str]]:
 
 def dead_historical_entries() -> list[str]:
     """Entries matching no line in ANY audited document — an excuse outliving its subject."""
-    texts = documents().values()
+    #: PER LINE, THE SAME UNIT `historical_lines` USES. This searched whole documents, so an
+    #: anchored pattern -- `^| **...` for a table row -- could never match here and would be
+    #: reported dead for ever while matching perfectly well where it is applied. No entry is
+    #: anchored today, which is the only reason it has not fired; the inconsistency is the defect.
+    lines = [line for text in documents().values() for line in text.split("\n")]
     return [
         f"{category}/{subject}: no line in any audited document matches {pattern!r}"
         for pattern, category, subject in _HISTORICAL
-        if not any(re.search(pattern, text) for text in texts)
+        if not any(re.search(pattern, line) for line in lines)
     ]
 
 
