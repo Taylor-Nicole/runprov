@@ -2730,7 +2730,19 @@ is ever parsed. Parsed with `csv`, so a field containing the delimiter survives 
 The field is **absent** rather than empty when you did not ask, so *no header recorded* stays
 distinguishable from *a header of no columns*.
 
-## The pin is not a comment everywhere, so `open_output` refuses 15 formats and gives 23 a sidecar
+## The pin is not a comment everywhere, so `open_output` refuses 40 binary suffixes and sidecars what it cannot comment
+
+> **CORRECTED 2026-10-09.** This heading read *"refuses 15 formats and gives 23 a sidecar"*,
+> and the two bullets below said the same. **15 was the number before the refusal set moved.**
+> It counted the binary suffixes listed in `PIN_UNSAFE`; the refusal is keyed off `PIN_BINARY`,
+> which holds **40** — `run.py` says so in a comment explaining that *25 of the 40 binary
+> suffixes are not in that table*. And *"gives 23 a sidecar"* was wrong in kind as well as
+> reach: the sidecar is the **default for any suffix outside the allowlist**, not a closed set
+> of 23. **`tools/claims.py` did not catch this, and that is the second finding**: its
+> `example` rule treated a leading `#` as a shell comment, so every `##` heading was exempted as
+> an illustration — including this one. A heading is the most-read line of a section. The rule is
+> fixed, and the figures here are now read from `PIN_BINARY`, `PIN_UNSAFE` and `PIN_INLINE` on
+> every run.
 
 `#` is a comment in a TSV, a CSV, a GFF3 and a Makefile. It is not one in a FASTQ, and in a
 Newick tree it is worse than not-a-comment: the file still **parses**, and the pin's own
@@ -2751,12 +2763,19 @@ So `open_output()` stopped leaving "`#` is not a comment everywhere" as a caveat
 cannot see the consequence of. **What it does depends on the format, and the split is not
 even:**
 
-- **15 suffixes RAISE** — every binary or compressed one. Not because of the pin at all:
-  `open_output` returns a TEXT handle, so a caller cannot write a PNG or a parquet through
-  it whatever the provenance. The message says so and names `output()` + `pin_sidecar()`.
-- **23 suffixes are WRITTEN UNTOUCHED, with the pin beside them** in `<artifact>.prov.txt` —
-  FASTA, FASTQ, JSON, JSONL, Newick, SAM, VCF, SVG, XML and the rest. Nothing is refused
-  here; the artifact is exactly the bytes you wrote.
+- **40 suffixes RAISE** — every binary or compressed one, which is `PIN_BINARY`. Not because
+  of the pin at all: `open_output` returns a TEXT handle, so a caller cannot write a PNG or a
+  parquet through it whatever the provenance. The message says so and names `output()` +
+  `pin_sidecar()`.
+- **17 suffixes take the pin IN-BAND** — `PIN_INLINE`, the allowlist, rendered in full in the
+  format table further up.
+- **Everything else is WRITTEN UNTOUCHED, with the pin beside it** in `<artifact>.prov.txt` —
+  FASTA, FASTQ, JSON, JSONL, Newick, SAM, VCF, SVG, XML and the rest. Nothing is refused here;
+  the artifact is exactly the bytes you wrote. **This is a default, not a list**: the question
+  asked is *is this format known to take a `#`*, so a suffix nobody has thought of gets the
+  sidecar, which is safe for anything. `PIN_UNSAFE` records a reason for the **38** that were
+  thought of, and that number is a measure of what has been documented rather than of what is
+  covered.
 
 **And it says so when it happens**, because that second file is one you did not ask for:
 
@@ -2775,7 +2794,9 @@ format that cannot hold a comment, and the run is fully recorded. What has to be
 the extra FILE.
 
 `runprov.run.PIN_UNSAFE` is the table (a MODULE constant, not an attribute of a `Run`), with
-the reason each format cannot take an in-band `#`:
+the reason each format cannot take an in-band `#`. **It is not the refusal set**, which is why its
+`raises` row names fewer suffixes than the 40 above: a binary suffix needs no reason recorded,
+because the text handle settles it before the pin is considered at all.
 
 | suffix | why `#` fails | `open_output` |
 |---|---|---|

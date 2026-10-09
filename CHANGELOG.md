@@ -806,6 +806,86 @@ digest-asserted `.py` fixture must not be reformatted either, and the exclusion 
 before that file arrives rather than after.
 
 
+### Fixed — `open_output` refuses **40** binary suffixes, not 15, and the README said 15 in a heading the claim report had exempted
+
+**The second shipped false claim this tool has found.** `README.md`'s heading read *"refuses 15
+formats and gives 23 a sidecar"*, and two bullets below it said the same. 15 was right about a
+design the code had left: it counted the binary suffixes inside `PIN_UNSAFE`, and the refusal is
+keyed off **`PIN_BINARY`**, which holds **40**. `run.py` documents the move in a comment — *"25 of
+the 40 binary suffixes are not in that table"* — and 15 + 25 = 40.
+
+*"Gives 23 a sidecar"* was wrong in kind as well. 23 is a real figure (`PIN_UNSAFE` minus the
+binary ones) but the sidecar is the **default for any suffix outside the allowlist**, not a closed
+set: the question asked is *is this format known to take a `#`*. The heading now says what the
+code does, and `PIN_BINARY` 40, `PIN_INLINE` 17 and `PIN_UNSAFE` 38 are all read live on every run.
+
+**And `tools/claims.py` had exempted that heading as an illustration.** Its `example` rule treated
+a leading `#` as a shell comment, so **every `##` Markdown heading** was classified *not a claim* —
+including the one carrying a false claim. A heading is the most-read line of a section. The
+alternative was never needed: fenced blocks are skipped entirely and an indented transcript is
+caught by the four-space alternative. Measured before removing it: exactly two lines matched `#`
+and nothing else, both headings.
+
+### Added — the claim-count RATCHET, with the rule's digest beside the number
+
+`docs/claims-baseline.txt`, written by `python ci.py claims-baseline` and held by
+`test_the_unaccounted_claim_count_is_exactly_the_committed_baseline`, **in the default gate**. The
+report's LIST stays out of the gate because it is red on arrival; its COUNT is green the day it is
+written. Report, then ratchet, then gate — all three now exist.
+
+**An equality, not a ceiling.** `<=` lets the committed number rot upward while real work goes
+unrecorded, and a ratchet that never tightens is not a ratchet. A fall is as red as a rise and the
+message says which: down means regenerate, up means a claim arrived that nothing accounts for.
+
+**THE DIGEST IS WHY THIS IS NOT A LIE WITH A NUMBER ON IT.** The count is a property of the
+detection rule as much as of the document, so the baseline stores a sha256 of `NUMBER`, the
+`_KINDS` patterns, `_SUPERSEDED_DECLARES` and the `_BOUND` registry — not the kinds' prose reasons,
+which change no verdict. On a rule change the test **refuses to compare** rather than banking a
+fall nobody earned. Demonstrated: tightening one `_KINDS` pattern moves the digest to
+`a579f782…` and the test says the committed 126 *"is NOT comparable with today's count"*.
+
+Red five ways in copied trees: a number added to the README (**up**), an unaccounted line removed
+(**down**), the rule tightened (**not comparable**), the baseline deleted (**nothing holds the
+count**), and a baseline of 0 (**the rule has stopped finding anything**, which reads exactly like
+a clean document). The test also asserts the step its own messages name actually exists, and that
+it is **not** a default step — a step that rewrites the baseline inside the gate would make every
+rise green by overwriting the number meant to refuse it.
+
+### Fixed — the claim report counted its own strongest verdict as its weakest
+
+`classify()` knew only about `_KINDS`, so a line whose number is BOUND fell through to
+`unaccounted` — **five of the six did**. The denominator was wrong in the one direction that
+matters: *binding a claim did not reduce it*, so a ratchet built on it would have been insensitive
+to exactly the work it exists to encourage. A line is credited only if it carries **one** number,
+checked rather than assumed, because a line holding a bound number beside an unbound one would be
+credited whole and `resolved` is the weak verdict.
+
+A `superseded` kind joins it: figures quoted inside a correction note that withdrew them, which
+**must not** resolve. Eleven lines were unaccounted purely for sitting in one, seven written before
+this tool existed — so making a claim honest *raised* the count of claims nothing accounts for, a
+ratchet pushing the wrong way. The block must declare itself (`CORRECTED`, `superseded`, *"An
+earlier version"*, …); an undeclared blockquote stays unaccounted, because a blockquote is also how
+this document writes an aside and an aside can make a live claim.
+
+**The movement, decomposed, because a baseline whose denominator moved silently is worthless:**
+
+| | unaccounted | |
+|---|---|---|
+| the figure reported on 2026-10-08 | **139** | |
+| bound lines credited | 134 | −5 **rule** |
+| `superseded` kind added | 127 | −7 **rule** |
+| the false heading corrected | 129 | +2 **work** |
+| four suffix-map bindings | **126** | −3 **work** |
+
+So **−12 of the 13 was the rule moving and −1 was work.** The baseline is committed at 126 under
+rule `a8c1ec0d…`, and the first thing it records is that most of its own improvement was not
+earned.
+
+Two drifting literals went with it: `ci.py claims()`'s docstring said *"139 lines"* and so did two
+test docstrings — a stale number inside the description of the tool that exists to find stale
+numbers. Replaced with the baseline's name, not an updated figure.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise

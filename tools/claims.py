@@ -51,13 +51,17 @@ DECLARES` binds the CI section's leg table to the workflow matrix.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import json
 import pathlib
 import re
 import sys
+from collections import abc
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
+BASELINE = ROOT / "docs" / "claims-baseline.txt"
 
 #: A MEASUREMENT-SHAPED LITERAL. Digits, with the thin spaces and commas this document uses as
 #: group separators, optionally a decimal part or a per-cent sign.
@@ -76,14 +80,30 @@ _BOUND: tuple[tuple[str, str, str, int], ...] = (
     (r"a warning naming up to (\d+) files", "runprov.run", "DIRTY_FILES_SHOWN", 1),
     (r"Capped at (\d+) lines a run", "runprov._report", "PROGRESS_MAX_LINES", 1),
     (r"looked for in the \*\*first (\d+) KiB\*\*", "runprov.verify", "SCAN_BYTES", 1024),
+    #: THE SUFFIX MAPS, bound by their LENGTH because that is what the sentence claims. Added
+    #: 2026-10-09 after this tool reported the heading *"refuses 15 formats and gives 23 a
+    #: sidecar"* as bound to nothing: 15 counted the binary suffixes inside `PIN_UNSAFE` and the
+    #: refusal had moved to `PIN_BINARY`, which holds 40. A number that was right about a design
+    #: the code had left -- the second shipped false claim this file has found in the README.
+    (r"refuses (\d+) binary suffixes", "runprov.run", "PIN_BINARY", 1),
+    (r"\*\*(\d+) suffixes RAISE\*\*", "runprov.run", "PIN_BINARY", 1),
+    (r"\*\*(\d+) suffixes take the pin IN-BAND\*\*", "runprov.run", "PIN_INLINE", 1),
+    (r"records a reason for the \*\*(\d+)\*\* that were", "runprov.run", "PIN_UNSAFE", 1),
 )
 
 #: EACH KIND CARRIES ITS REASON, because an unexplained exemption is how a gap hides. These say
 #: *not a live claim about this tree*, and each is a judgement a reader may reject.
 _KINDS: tuple[tuple[str, str, str], ...] = (
     (
+        #: `#` WAS HERE AND IT EXEMPTED EVERY MARKDOWN HEADING, which is how this tool missed a
+        #: false claim it was built to catch: *"refuses 15 formats and gives 23 a sidecar"* sat in
+        #: an `##` heading and was reported as an ILLUSTRATION. A heading is the most-read line of
+        #: a section and makes claims like any other. The alternative was meant for a shell
+        #: comment in a transcript, and it was never needed: fenced blocks are skipped entirely
+        #: and an indented transcript is caught by the four-space alternative. Measured before
+        #: removing it -- exactly two lines matched `#` and nothing else, both of them headings.
         "example",
-        r"^\s*(?:\$|>>>|#|\||    )",
+        r"^\s*(?:\$|>>>|\||    )",
         "inside a transcript, a table rule or an indented block -- an illustration, not a claim",
     ),
     (
@@ -122,14 +142,103 @@ _KINDS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+#: HOW A CORRECTION NOTE DECLARES ITSELF. A blockquote matching any of these is quoting figures
+#: it has already withdrawn, and those figures MUST NOT resolve -- the project's practice is to
+#: quote the superseded number rather than delete it, so a reader who cited it can find out.
+#:
+#: WITHOUT THIS KIND THE DENOMINATOR PUNISHES THE PRACTICE. Eleven lines were unaccounted purely
+#: for being inside a correction note, seven of them written before this tool existed, and every
+#: future correction would have added more -- so making a claim honest would have *raised* the
+#: count of claims nothing accounts for. That is a ratchet pushing the wrong way.
+#:
+#: THE BLOCK MUST SAY SO ITSELF, which is why this is not "any blockquote": an undeclared `>`
+#: block carrying a number stays UNACCOUNTED, because a blockquote is also how this document
+#: writes an aside, and an aside can make a live claim.
+_SUPERSEDED_DECLARES = re.compile(
+    r"CORRECTED|superseded|An earlier version|used to say|"
+    r"This (?:heading|section|paragraph|line|table) read",
+    re.I,
+)
+
+#: Stateful rather than per-line, so it cannot be an entry in `_KINDS`; the reason lives here.
+_SUPERSEDED_REASON = (
+    "quoted inside a correction note that withdrew it -- kept on purpose, must NOT resolve"
+)
+
+
+def superseded_lines(text: str) -> set[int]:
+    """Line numbers inside a blockquote that declares itself a correction.
+
+    Scoped to the BLOCK: a run of `>` lines is one note, and one declaration anywhere in it
+    covers the whole note, because the superseded figures are usually a line or two below the
+    sentence that withdraws them.
+    """
+    out: set[int] = set()
+    block: list[int] = []
+    declared = False
+    for n, line in enumerate([*text.split("\n"), ""], 1):
+        if line.lstrip().startswith(">"):
+            block.append(n)
+            declared = declared or bool(_SUPERSEDED_DECLARES.search(line))
+            continue
+        if declared:
+            out.update(block)
+        block, declared = [], False
+    return out
+
+
 def _live(module: str, attribute: str) -> int:
-    """The current value of a bound constant, or raise so the run is VOID rather than green."""
+    """The current value of a bound constant, or raise so the run is VOID rather than green.
+
+    A SIZED CONSTANT IS BOUND BY ITS LENGTH, because *"refuses 40 binary suffixes"* is a claim
+    about `len(PIN_BINARY)` and there is no integer constant beside it. Adding one would write
+    the value down twice, which is the defect this whole file exists to find -- so the length
+    is read from the collection itself and the collection stays the single definition.
+    """
     target = importlib.import_module(module)
     for part in attribute.split("."):
         target = getattr(target, part)
-    if not isinstance(target, int):
-        raise TypeError(f"{module}.{attribute} is {type(target).__name__}, not an int")
-    return target
+    if isinstance(target, int) and not isinstance(target, bool):
+        return target
+    if isinstance(target, abc.Sized):
+        return len(target)
+    raise TypeError(
+        f"{module}.{attribute} is {type(target).__name__}, which is neither an int nor sized"
+    )
+
+
+def bound_lines(text: str) -> tuple[dict[int, str], list[str]]:
+    """Which README lines carry a BOUND number, plus the ones this attribution could not make.
+
+    WHY THIS EXISTS, AND IT IS A CORRECTION. `classify` knew only about `_KINDS`, so a line
+    whose number is bound by the strongest mechanism here fell through to `unaccounted` --
+    **five of the six did**. The denominator was therefore wrong in the one direction that
+    matters: *binding a claim did not reduce it*, so a ratchet built on it would have been
+    insensitive to exactly the work it exists to encourage.
+
+    A LINE IS CREDITED ONLY IF IT CARRIES ONE NUMBER. The unit everywhere in this file is the
+    line, and a line holding a bound number beside an unbound one would be credited whole --
+    `resolved` is the weak verdict, and over-crediting it is how a gap hides. Such a line stays
+    UNACCOUNTED and is named in the second return value instead of being silently absorbed.
+    Today all six carry exactly one number; that is checked here rather than assumed.
+    """
+    lines = text.split("\n")
+    credited: dict[int, str] = {}
+    unattributed: list[str] = []
+    for pattern, module, attribute, _divisor in _BOUND:
+        what = f"{module.removeprefix('runprov.')}.{attribute}"
+        for n, line in enumerate(lines, 1):
+            if not re.search(pattern, line):
+                continue
+            if len(NUMBER.findall(line)) == 1:
+                credited[n] = what
+            else:
+                unattributed.append(f"{what}: line {n} carries more than one number")
+            break
+        else:
+            if re.search(pattern, text):  # pragma: no cover - no binding spans a line today
+                unattributed.append(f"{what}: matches the document but no single line")
+    return credited, unattributed
 
 
 def bound_claims(text: str) -> list[tuple[str, int | None, int, str]]:
@@ -155,9 +264,19 @@ def bound_claims(text: str) -> list[tuple[str, int | None, int, str]]:
     return out
 
 
-def classify(text: str) -> dict[str, list[str]]:
-    """Every numeric literal in prose, bucketed. `unaccounted` is the one that matters."""
-    buckets: dict[str, list[str]] = {name: [] for name, _, _ in _KINDS}
+def classify(
+    text: str, bound: dict[int, str] | None = None, superseded: set[int] | None = None
+) -> dict[str, list[str]]:
+    """Every numeric literal in prose, bucketed. `unaccounted` is the one that matters.
+
+    BOUND WINS OVER EVERY `_KINDS` PATTERN, because it is the only verdict here that can fail.
+    One of the six also matches an exemption pattern, and without this precedence it would have
+    been reported as a weak `example` while actually being compared against the live value.
+    """
+    bound = {} if bound is None else bound
+    superseded = set() if superseded is None else superseded
+    buckets: dict[str, list[str]] = {"bound": [], "superseded": []}
+    buckets.update({name: [] for name, _, _ in _KINDS})
     buckets["unaccounted"] = []
     fenced = False
     for n, line in enumerate(text.split("\n"), 1):
@@ -166,6 +285,12 @@ def classify(text: str) -> dict[str, list[str]]:
             continue
         if fenced or not NUMBER.search(line):
             continue
+        if n in bound:
+            buckets["bound"].append(f"{n}: {bound[n]}")
+            continue
+        if n in superseded:
+            buckets["superseded"].append(f"{n}: {line.strip()[:96]}")
+            continue
         for name, pattern, _reason in _KINDS:
             if re.search(pattern, line, re.I):
                 buckets[name].append(f"{n}: {line.strip()[:96]}")
@@ -173,6 +298,75 @@ def classify(text: str) -> dict[str, list[str]]:
         else:
             buckets["unaccounted"].append(f"{n}: {line.strip()[:96]}")
     return buckets
+
+
+#: THE HEADER LIVES HERE, NOT IN THE FILE BEING REWRITTEN. `ci.py surface` learned this the hard
+#: way: it read its own explanation back out of the file it regenerates, so deleting the file made
+#: the regenerate command raise `FileNotFoundError` and took the explanation with it.
+_BASELINE_HEADER = """# HOW MANY README LINES CARRY A NUMBER THAT NOTHING ACCOUNTS FOR.
+#
+# Generated by `python ci.py claims-baseline`. Enforced by
+# `test_the_unaccounted_claim_count_is_exactly_the_committed_baseline`, which is in the DEFAULT
+# gate -- unlike the report, because this number is green the day it arrives and the report is not.
+#
+# THE RULE DIGEST IS THE POINT OF THIS FILE. A ratchet whose denominator moves silently is a lie
+# with a number on it: a sibling project's first baseline fell 696 -> 335 and only about half was
+# work, the rest was the literal-detection rule tightening. So the count is stored WITH a digest of
+# the rule that produced it, and the test refuses to compare across a change rather than reporting
+# a fall that nobody earned. Move the rule and the test tells you to re-measure; it does not quietly
+# accept the new number.
+#
+# The digest covers `NUMBER`, the `_KINDS` name/pattern pairs, `_SUPERSEDED_DECLARES` and the
+# `_BOUND` registry. It does NOT cover the kinds' REASONS: those are documentation for a reader,
+# and rewording one changes no verdict.
+#
+# AN EQUALITY, NOT A CEILING. `<=` would let the file rot upward while real work went unrecorded,
+# and a ratchet that never tightens is not a ratchet. Going DOWN is as red as going up, and the
+# failure message says which -- down means regenerate this file, up means a claim arrived that
+# nothing accounts for.
+"""
+
+
+def rule_digest() -> str:
+    """A digest of the DETECTION RULE, so a baseline cannot be compared across a change to it."""
+    payload = json.dumps(
+        {
+            "number": NUMBER.pattern,
+            "superseded": _SUPERSEDED_DECLARES.pattern,
+            "kinds": [[name, pattern] for name, pattern, _reason in _KINDS],
+            "bound": [list(entry) for entry in _BOUND],
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def unaccounted_count(text: str) -> int:
+    """The denominator, under the current rule. One call, so the test and the report agree."""
+    credited, _unattributed = bound_lines(text)
+    return len(classify(text, credited, superseded_lines(text))["unaccounted"])
+
+
+def read_baseline() -> tuple[str, int] | None:
+    """The committed (rule digest, count), or None if the file is absent."""
+    if not BASELINE.is_file():
+        return None
+    fields = dict(
+        line.split(None, 1)
+        for line in BASELINE.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    )
+    return fields["rule"].strip(), int(fields["unaccounted"])
+
+
+def write_baseline() -> int:
+    """Rewrite the committed baseline from the live count. Returns the count."""
+    count = unaccounted_count(README.read_text(encoding="utf-8"))
+    BASELINE.parent.mkdir(parents=True, exist_ok=True)
+    BASELINE.write_text(
+        f"{_BASELINE_HEADER}rule {rule_digest()}\nunaccounted {count}\n", encoding="utf-8"
+    )
+    return count
 
 
 def report() -> int:
@@ -184,8 +378,15 @@ def report() -> int:
         print(f"  {verdict:<44} {what:<28} README {said:>9}  live {live:,}")
     print("  ci.py `_SCALE_FIGURES` binds 2 more (statements, branches) and IS gated by `test`")
 
-    buckets = classify(text)
+    credited, unattributed = bound_lines(text)
+    for note in unattributed:
+        print(f"  NOT ATTRIBUTED TO A LINE — stays unaccounted: {note}")
+
+    buckets = classify(text, credited, superseded_lines(text))
     print("\n=== CLASSIFIED — a judgement recorded, never verification ===")
+    bound_note = "the rows above, compared live and so removed from the denominator"
+    print(f"  {len(buckets['bound']):>4}  bound        {bound_note}")
+    print(f"  {len(buckets['superseded']):>4}  superseded   {_SUPERSEDED_REASON}")
     for name, _pattern, reason in _KINDS:
         print(f"  {len(buckets[name]):>4}  {name:<12} {reason}")
     unaccounted = buckets["unaccounted"]
@@ -211,11 +412,25 @@ def report() -> int:
         "That figure is THIS rule's count. Tightening `_KINDS` or `NUMBER` moves it without any "
         "work being done, so a baseline taken from it must name the rule it was taken under."
     )
+    committed = read_baseline()
+    if committed is None:
+        print(f"no baseline committed yet — `python ci.py claims-baseline` writes {BASELINE.name}")
+    elif committed[0] != rule_digest():
+        print(
+            f"the committed baseline was taken under rule {committed[0]} and this is "
+            f"{rule_digest()}: its {committed[1]} is not comparable with the figure above"
+        )
+    else:
+        print(f"baseline {BASELINE.name}: {committed[1]} under the same rule {committed[0]}")
     return 0
 
 
 if __name__ == "__main__":
     try:
+        if "--baseline" in sys.argv[1:]:
+            written = write_baseline()
+            print(f"wrote {BASELINE.name}: {written} unaccounted, rule {rule_digest()}")
+            raise SystemExit(0)
         raise SystemExit(report())
     except (AttributeError, ModuleNotFoundError, TypeError) as exc:
         print(

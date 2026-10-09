@@ -43301,10 +43301,12 @@ def test_every_readme_binding_resolves_and_still_holds():
     run is VOID; a binding whose number no longer matches is a DRIFT and the document is wrong.
     A check that collapsed them would send a reader to edit prose over a renamed attribute.
 
-    WHY THIS IS GATED WHILE THE REPORT IS NOT. These six pass today, so a drift is red on the next
-    push. The report's other half — 139 README lines accounted for by nothing — would be red on
-    arrival, and `ci.py`'s own words for that are *"a gate that is red the day it arrives is a
-    gate people learn to scroll past"*. Report, then ratchet, then gate.
+    WHY THIS IS GATED WHILE THE REPORT IS NOT. These pass today, so a drift is red on the next
+    push. The report's other half — the LIST of README lines accounted for by nothing — would be
+    red on arrival, and `ci.py`'s own words for that are *"a gate that is red the day it arrives
+    is a gate people learn to scroll past"*. Its COUNT is gated, by
+    `test_the_unaccounted_claim_count_is_exactly_the_committed_baseline`. No figure is quoted here
+    on purpose: this docstring said 139 and the ratchet was built at 126.
 
     AND THE REGISTRY MUST NOT HOLD THE VALUE. It holds a (sentence, attribute) pair and reads the
     attribute live; a registry caching the number would agree with itself forever. The assertion
@@ -43323,7 +43325,12 @@ def test_every_readme_binding_resolves_and_still_holds():
 
     rows = claims.bound_claims((_repo_root() / "README.md").read_text(encoding="utf-8"))
     #: NOT VACUOUS: an empty registry would make every assertion below true.
-    assert len(rows) >= 6, f"the registry binds {len(rows)} claim(s); it bound 6 when written"
+    #: DERIVED, so adding a binding never needs this line edited: every registry entry must
+    #: produce a row, and the registry itself must not be empty. A bare `>= 6` went stale the
+    #: moment four suffix-map bindings were added, which is the shape this file keeps finding.
+    assert len(rows) == len(claims._BOUND) >= 6, (
+        f"{len(rows)} row(s) from {len(claims._BOUND)} registry entries"
+    )
     drifted = [(what, said, live, why) for what, said, live, why in rows if why != "ok"]
     assert not drifted, "README figures no longer match the constants they describe: " + "; ".join(
         f"{what} says {said} and the code says {live} ({why})" for what, said, live, why in drifted
@@ -43341,10 +43348,11 @@ def test_every_readme_binding_resolves_and_still_holds():
 def test_the_claims_report_is_not_in_the_default_gate_and_ci_declares_it():
     """`ci.py claims` exists, runs the report, and is not one of the default steps.
 
-    THE DENOMINATOR IS THE DELIVERABLE AND IT IS NOT A GATE. Before `tools/claims.py` the bound
-    README figures were `_SCALE_FIGURES`' two, and nobody knew what they were two OF — a numerator
-    over an unknown, which `guard-shapes` calls a floor. The report names the unknown: 605 numeric
-    literals, 139 lines accounted for by nothing.
+    THE DENOMINATOR IS THE DELIVERABLE AND THE LIST IS NOT A GATE. Before `tools/claims.py` the
+    bound README figures were `_SCALE_FIGURES`' two, and nobody knew what they were two OF — a
+    numerator over an unknown, which `guard-shapes` calls a floor. The report names the unknown;
+    the count of it is held by `docs/claims-baseline.txt`, which IS gated. The number is not
+    repeated here, because this docstring held a stale copy of it once already.
     """
     ci = _ci_module()
     assert "claims" in ci.STEPS
@@ -43355,6 +43363,89 @@ def test_the_claims_report_is_not_in_the_default_gate_and_ci_declares_it():
     assert default, "`ci.py`'s default step list is not spelled the way this test reads it"
     assert "claims" not in default.group(1), (
         f"a report that is red on arrival must not be a default step; they are {default.group(1)}"
+    )
+
+
+def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
+    """THE RATCHET, and it is in the default gate while the report above is not.
+
+    `tools/claims.py` reports which README numbers are accounted for by nothing. The LIST cannot
+    be a gate -- it is red on arrival, and `ci.py` has the sentence for that: *"a gate that is red
+    the day it arrives is a gate people learn to scroll past"*. The COUNT can be, because it is
+    green the day it is written. Report, then ratchet, then gate.
+
+    AN EQUALITY, NOT A CEILING, and the direction decides the remedy rather than the verdict. `<=`
+    would let the committed number rot upward while real work went unrecorded, and a ratchet that
+    never tightens is not a ratchet. So a FALL is as red as a rise, and the message says which:
+    down means regenerate the baseline, up means a claim arrived that nothing accounts for.
+
+    THE RULE DIGEST IS WHY THIS IS NOT A LIE WITH A NUMBER ON IT. The count is a property of the
+    DETECTION RULE as much as of the document: tightening `_KINDS` lowers it with no work done at
+    all. A sibling project's first baseline fell 696 -> 335 and about half of that was the rule
+    moving. So the baseline stores a digest of `NUMBER`, the `_KINDS` patterns,
+    `_SUPERSEDED_DECLARES` and the `_BOUND` registry, and this refuses to COMPARE across a change
+    instead of reporting a fall nobody earned. Measured on the way in: this count moved 139 -> 126
+    while the work accounted for only one of those twelve lines.
+
+    AND IT READS THE COUNT FROM THE TOOL, not from a re-implementation here. Re-deriving it would
+    only prove this test agrees with itself; the two sides are the committed file and the live
+    document, which is the only arrangement that can fail.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_claims_ratchet", _repo_root() / "tools" / "claims.py"
+    )
+    claims = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(claims)
+
+    #: EVERY MESSAGE BELOW NAMES `python ci.py claims-baseline`, so this asserts the step exists
+    #: and is not a default one. `ci.py surface`'s docstring is the precedent: that file told a
+    #: reader to run `python -c "import tests.surface"`, which was not a thing, and *an
+    #: instruction that does not run is worse than none, because the reader tries it before
+    #: disbelieving it*. A remedy named by a red test is read at the worst possible moment.
+    ci = _ci_module()
+    assert "claims-baseline" in ci.STEPS, (
+        "the failures below tell a reader to run `python ci.py claims-baseline`, and that step "
+        f"does not exist. The steps are {sorted(ci.STEPS)}"
+    )
+    default = re.search(r"sys\.argv\[1:\] or \[([^\]]*)\]", inspect.getsource(ci))
+    assert default and "claims-baseline" not in default.group(1), (
+        "a step that REWRITES the baseline must never run in the default gate: it would make "
+        "every rise green by overwriting the number that was supposed to refuse it"
+    )
+
+    committed = claims.read_baseline()
+    assert committed is not None, (
+        f"{claims.BASELINE.name} is missing, so nothing holds the count. Write it with "
+        f"`python ci.py claims-baseline`"
+    )
+    recorded_rule, recorded = committed
+
+    assert recorded_rule == claims.rule_digest(), (
+        f"the baseline was taken under detection rule {recorded_rule} and the rule is now "
+        f"{claims.rule_digest()}, so its {recorded} is NOT comparable with today's count. "
+        f"Tightening a `_KINDS` pattern lowers the number with no work done. Re-measure with "
+        f"`python ci.py claims-baseline` and say in the commit message which part was work"
+    )
+
+    live = claims.unaccounted_count((_repo_root() / "README.md").read_text(encoding="utf-8"))
+    #: NOT VACUOUS: a rule that matched nothing would make the comparison below trivially true,
+    #: and a baseline of 0 would agree with it forever.
+    assert live > 0 and recorded > 0, (
+        f"live {live} and baseline {recorded}: a zero here means the detection rule has stopped "
+        f"finding anything, which reads exactly like a document with no unbound claims in it"
+    )
+    assert live == recorded, (
+        f"the README now has {live} line(s) accounted for by nothing and the committed baseline "
+        f"says {recorded}. "
+        + (
+            "It went DOWN, which is the point — regenerate with `python ci.py claims-baseline` "
+            "so the ratchet tightens, and say in the commit message whether that was work or a "
+            "loosened rule."
+            if live < recorded
+            else "It went UP: a number arrived in README.md that nothing measures. Bind it in "
+            "`_BOUND`, or give it a kind in `_KINDS` WITH its reason — an unexplained exemption "
+            "is how a gap hides."
+        )
     )
 
 

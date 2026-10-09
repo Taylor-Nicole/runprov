@@ -758,14 +758,30 @@ def claims() -> None:
 
     THE BOUND ONES ARE GATED IN THE SUITE, not here, because they can pass today and a drift
     should be red on the next push rather than when somebody remembers to run a report. What
-    lives here is the part that CANNOT be a gate yet: the count of numbers accounted for by
-    nothing, which is 139 lines and would be red on arrival -- the exact failure `scale_drift`'s
-    neighbour describes, *"a gate that is red the day it arrives is a gate people learn to scroll
-    past"*.
+    lives here is the part that CANNOT be a gate: the LIST of lines accounted for by nothing,
+    which would be red on arrival -- the exact failure `scale_drift`'s neighbour describes,
+    *"a gate that is red the day it arrives is a gate people learn to scroll past"*.
 
-    So the order is REPORT, then ratchet, then gate, and this is the report.
+    THE COUNT, HOWEVER, IS GATED -- see `claims_baseline` below. Report, then ratchet, then gate,
+    and all three now exist: the report is here, the ratchet is `docs/claims-baseline.txt`, and
+    the gate is in the suite where it runs on every leg of the matrix.
+
+    NO NUMBER IN THIS DOCSTRING. It said "139 lines" and that was already wrong by the time the
+    ratchet was built, in the description of the tool that exists to find exactly that.
     """
     run(PY, str(ROOT / "tools" / "claims.py"))
+
+
+def claims_baseline() -> None:
+    """Rewrite `docs/claims-baseline.txt` from the live count. NOT a gate — it IS the baseline.
+
+    RUN THIS WHEN THE NUMBER HAS GONE DOWN, and read the diff before committing it. Going down
+    is the whole point and it is still a red in the suite, deliberately: the test cannot tell
+    work from a loosened rule, so a human says which in the commit message. The file records the
+    rule's digest beside the count, so the one thing that cannot happen is a silent comparison
+    across a changed rule.
+    """
+    run(PY, str(ROOT / "tools" / "claims.py"), "--baseline")
 
 
 def corpus() -> None:
@@ -791,6 +807,8 @@ STEPS = {
     "bench": bench,
     #: NOT in the default gate: a REPORT over a surface that is not closed. See `claims`.
     "claims": claims,
+    #: NOT in the default gate: it WRITES the baseline the gate reads. See `claims_baseline`.
+    "claims-baseline": claims_baseline,
     "corpus": corpus,
     "release-check": release_check,
     #: NOT in the default `lint test build`: it needs the network and `gh`. Run before a tag.
