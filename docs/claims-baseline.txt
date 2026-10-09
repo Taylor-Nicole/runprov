@@ -11,13 +11,18 @@
 # a fall that nobody earned. Move the rule and the test tells you to re-measure; it does not quietly
 # accept the new number.
 #
-# The digest covers `NUMBER`, the `_KINDS` name/pattern pairs, `_SUPERSEDED_DECLARES` and the
-# `_BOUND` registry. It does NOT cover the kinds' REASONS: those are documentation for a reader,
-# and rewording one changes no verdict.
+# TWO DIGESTS, BECAUSE ONE COULD NOT ATTRIBUTE. `detection` covers what counts as a claim --
+# `NUMBER`, the `_KINDS` name/pattern pairs, `_SUPERSEDED_DECLARES` -- and a change to it moves the
+# count with NO WORK DONE, so the gate refuses to compare. `bindings` covers `_BOUND` and `ci.py`'s
+# `_SCALE_FIGURES`, and a change there lowers the count because somebody bound a claim, which IS
+# the work. One digest fired "not comparable" on both, so honest work tripped the alarm meant for a
+# fall nobody earned -- and an alarm that fires on good news is one people learn to silence.
+# Neither covers the kinds' REASONS: documentation for a reader, changing no verdict.
 #
 # AN EQUALITY, NOT A CEILING. `<=` would let the file rot upward while real work went unrecorded,
 # and a ratchet that never tightens is not a ratchet. Going DOWN is as red as going up, and the
 # failure message says which -- down means regenerate this file, up means a claim arrived that
 # nothing accounts for.
-rule a8c1ec0d5232ee1c
-unaccounted 126
+detection a9b8aa3fb23a4a4c
+bindings 67c15e6c9cbac546
+unaccounted 115

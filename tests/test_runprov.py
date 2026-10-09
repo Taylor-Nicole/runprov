@@ -43447,13 +43447,18 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
     never tightens is not a ratchet. So a FALL is as red as a rise, and the message says which:
     down means regenerate the baseline, up means a claim arrived that nothing accounts for.
 
-    THE RULE DIGEST IS WHY THIS IS NOT A LIE WITH A NUMBER ON IT. The count is a property of the
-    DETECTION RULE as much as of the document: tightening `_KINDS` lowers it with no work done at
-    all. A sibling project's first baseline fell 696 -> 335 and about half of that was the rule
-    moving. So the baseline stores a digest of `NUMBER`, the `_KINDS` patterns,
-    `_SUPERSEDED_DECLARES` and the `_BOUND` registry, and this refuses to COMPARE across a change
-    instead of reporting a fall nobody earned. Measured on the way in: this count moved 139 -> 126
-    while the work accounted for only one of those twelve lines.
+    TWO DIGESTS, BECAUSE ONE COULD NOT ATTRIBUTE — and attribution is the point. The count is a
+    property of the DETECTION RULE as much as of the document: tightening `_KINDS` lowers it with
+    no work done at all, and a sibling project's first baseline fell 696 -> 335 with about half of
+    that being the rule moving. But *adding a binding* also lowers it, and that IS the work. A
+    single digest fired *"not comparable"* on both, so honest work tripped the alarm meant for a
+    fall nobody earned — and an alarm that fires on good news is one people learn to silence.
+
+    So `detection` (`NUMBER`, the `_KINDS` patterns, `_SUPERSEDED_DECLARES`) makes this REFUSE to
+    compare, and `bindings` (`_BOUND` plus `ci.py`'s `_SCALE_FIGURES`) only changes which sentence
+    the failure prints. Measured on the way in: 139 -> 126 was twelve lines of rule and one of
+    work, and 126 -> 115 was eleven more lines of rule — a widened `exit-code` kind, a
+    `file-descriptor` kind, and crediting the two figures `ci.py` already gates.
 
     AND IT READS THE COUNT FROM THE TOOL, not from a re-implementation here. Re-deriving it would
     only prove this test agrees with itself; the two sides are the committed file and the live
@@ -43486,13 +43491,16 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
         f"{claims.BASELINE.name} is missing, so nothing holds the count. Write it with "
         f"`python ci.py claims-baseline`"
     )
-    recorded_rule, recorded = committed
+    detection, bindings, recorded = committed
 
-    assert recorded_rule == claims.rule_digest(), (
-        f"the baseline was taken under detection rule {recorded_rule} and the rule is now "
-        f"{claims.rule_digest()}, so its {recorded} is NOT comparable with today's count. "
-        f"Tightening a `_KINDS` pattern lowers the number with no work done. Re-measure with "
-        f"`python ci.py claims-baseline` and say in the commit message which part was work"
+    #: THE DETECTION RULE IS THE ONE THAT MUST REFUSE TO COMPARE. Tightening a `_KINDS` pattern
+    #: lowers the count with no work done at all, so a baseline taken under a different detection
+    #: rule is not a baseline, it is a different measurement wearing the same name.
+    assert detection == claims.detection_digest(), (
+        f"the baseline was taken under detection rule {detection} and it is now "
+        f"{claims.detection_digest()}, so its {recorded} is NOT comparable with today's count. "
+        f"A `_KINDS` or `NUMBER` change moves the number without any claim being bound. "
+        f"Re-measure with `python ci.py claims-baseline` and record the move as RULE"
     )
 
     live = claims.unaccounted_count((_repo_root() / "README.md").read_text(encoding="utf-8"))
@@ -43502,18 +43510,28 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
         f"live {live} and baseline {recorded}: a zero here means the detection rule has stopped "
         f"finding anything, which reads exactly like a document with no unbound claims in it"
     )
+    #: AND THE BINDINGS DIGEST ATTRIBUTES THE MOVE, which is the whole reason it is separate.
+    #: A fall while the bindings moved is work; a fall while nothing moved is the document losing
+    #: a sentence. The test cannot tell a reader which it wants to be — it can tell them which it
+    #: IS, and that is the sentence a commit message is supposed to contain.
+    bound_moved = bindings != claims.bindings_digest()
+    if live < recorded:
+        why = (
+            "The BINDINGS moved and the detection rule did not, so this fall is WORK: claims were "
+            "bound. Regenerate with `python ci.py claims-baseline` and record it as WORK."
+            if bound_moved
+            else "Nothing in the rule or the bindings moved, so the README itself lost a number. "
+            "Regenerate with `python ci.py claims-baseline` and say which sentence went."
+        )
+    else:
+        why = (
+            "It went UP: a number arrived in README.md that nothing measures. Bind it in `_BOUND`, "
+            "or give it a kind in `_KINDS` WITH its reason — an unexplained exemption is how a gap "
+            "hides."
+        )
     assert live == recorded, (
         f"the README now has {live} line(s) accounted for by nothing and the committed baseline "
-        f"says {recorded}. "
-        + (
-            "It went DOWN, which is the point — regenerate with `python ci.py claims-baseline` "
-            "so the ratchet tightens, and say in the commit message whether that was work or a "
-            "loosened rule."
-            if live < recorded
-            else "It went UP: a number arrived in README.md that nothing measures. Bind it in "
-            "`_BOUND`, or give it a kind in `_KINDS` WITH its reason — an unexplained exemption "
-            "is how a gap hides."
-        )
+        f"says {recorded}. {why}"
     )
 
 

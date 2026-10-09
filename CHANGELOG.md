@@ -931,6 +931,52 @@ in both directions. Verified by running all eight hooks: green, the tree untouch
 `(legacy alias)` line gone.
 
 
+### Changed — the claim baseline carries TWO digests, so a move attributes itself [RULE: 126 → 115]
+
+**One digest could not tell work from the rule, and that is what the ratchet is for.** Both kinds
+of change move the count and they mean opposite things: tightening a `_KINDS` pattern lowers it
+with **no work done at all**, while adding a binding lowers it *because somebody bound a claim*.
+The single digest fired *"not comparable"* on both — so honest work tripped the alarm meant for a
+fall nobody earned, and **an alarm that fires on good news is one people learn to silence.**
+
+Now `detection` (`NUMBER`, the `_KINDS` patterns, `_SUPERSEDED_DECLARES`) makes the gate **refuse
+to compare**, and `bindings` (`_BOUND` plus `ci.py`'s `_SCALE_FIGURES`) only changes which sentence
+the failure prints. The failure now states the attribution instead of asking for it:
+
+| what moved | what the gate says |
+|---|---|
+| the detection rule | *"NOT comparable with today's count … record the move as RULE"* |
+| the bindings, count down | *"this fall is WORK: claims were bound"* |
+| nothing, count down | *"the README itself lost a number"* |
+| nothing, count up | *"a number arrived that nothing measures"* |
+
+### Fixed — three kinds of line were counted as claims nothing accounts for [RULE: −11]
+
+* **`exit-code` was far too narrow (−7).** `\bexit code\b` cannot match *"Three exit codes"*, and
+  the outcome-word list named four of the dozen phrasings this document uses — so eight lines
+  saying nothing but *which exit status means what* sat in the denominator. Widened to the plural,
+  `exit status`, `--exit-code`, and the real outcome phrasings.
+* **A `file-descriptor` kind (−3).** `0`, `1` and `2` as POSIX descriptor numbers are identifiers,
+  not measurements. Placed **last**, so it can only take lines from `unaccounted` and never from a
+  kind above it.
+* **`ci.py`'s `_SCALE_FIGURES` lines were uncredited (−1).** Two README figures are bound and
+  gated already, by `scale_drift` against the coverage JSON. The claim report did not know that
+  registry existed — **the same defect as `classify()` not knowing about `_BOUND`, in the second
+  registry.** They are reported as `elsewhere` rather than `bound`, because this tool has no
+  coverage data and so cannot verify them; what it can do is stop calling a line *accounted for by
+  nothing* when something holds it. The patterns are **imported from `ci.py`**, never copied.
+
+**What was deliberately NOT widened.** A bare `[012] in the` would have absorbed one more line —
+1762, whose `exits` sits on the **previous** line, a wrapped sentence under a line-based tool. That
+line stays in the denominator rather than buying it with a phrase that would exempt any
+`1 in the …` anywhere in the document. **An over-absorbing kind is worse than the gap it closes,
+because the gap is visible and the exemption is not.**
+
+**Every line of this entry is RULE, none of it work: 126 → 115 with no claim bound.** The baseline
+records it as such, and the three failure directions were demonstrated in copied trees. The fourth
+— a fall attributed to WORK — is demonstrated by the next entry, which earns one.
+
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `runprov report --format json`, and `report` gained a structure to serialise

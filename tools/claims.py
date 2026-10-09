@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.util
 import json
 import pathlib
 import re
@@ -135,9 +136,29 @@ _KINDS: tuple[tuple[str, str, str], ...] = (
         "measured on a tree that is not this one, so nothing here can resolve it",
     ),
     (
+        #: WIDENED 2026-10-09 after the ratchet made the residue readable. `\bexit code\b` could
+        #: not match *"Three exit codes"*, and the `[012] (intact|...)` list named four outcome
+        #: words out of the dozen this document actually uses -- so eight lines that say nothing
+        #: but *which exit status means what* were counted as claims nothing accounts for.
+        #:
+        #: WHAT IS DELIBERATELY NOT HERE: a bare `[012] in the`. It would have absorbed line 1762,
+        #: whose `exits` sits on the PREVIOUS line -- a wrapped sentence, and the unit here is the
+        #: line. One real line is left in the denominator rather than widened to a phrase that
+        #: would exempt any `1 in the ...` anywhere in the document. An over-absorbing kind is
+        #: worse than the gap it closes, because the gap is visible and the exemption is not.
         "exit-code",
-        r"\bexit(s|ed)? [012]\b|\bexit code\b|\b[012] (intact|broken|could not|clean|usable|OK)\b",
+        r"\bexit(s|ed)? [012]\b|\bexit codes?\b|\bexit status\b|`--exit-code`"
+        r"|\b[012] (intact|broken|could not|clean|usable|OK)\b"
+        r"|\b[012] (?:means|a rule|a name|on any|the walk|no history|otherwise)\b"
+        r"|\b`[012]` (?:against|family)\b",
         "a documented exit code -- a behavioural contract, held by the suite rather than a value",
+    ),
+    (
+        #: PLACED LAST ON PURPOSE, so it can only take lines from `unaccounted` and never from a
+        #: kind above it. A line naming both an exit status and a descriptor is an exit-code line.
+        "file-descriptor",
+        r"file descriptors?\b|\bfds? 1\b|descriptors 1 and 2",
+        "a file descriptor NUMBER -- 0, 1 and 2 are POSIX identifiers, not measurements",
     ),
 )
 
@@ -265,7 +286,10 @@ def bound_claims(text: str) -> list[tuple[str, int | None, int, str]]:
 
 
 def classify(
-    text: str, bound: dict[int, str] | None = None, superseded: set[int] | None = None
+    text: str,
+    bound: dict[int, str] | None = None,
+    superseded: set[int] | None = None,
+    elsewhere: dict[int, str] | None = None,
 ) -> dict[str, list[str]]:
     """Every numeric literal in prose, bucketed. `unaccounted` is the one that matters.
 
@@ -275,7 +299,8 @@ def classify(
     """
     bound = {} if bound is None else bound
     superseded = set() if superseded is None else superseded
-    buckets: dict[str, list[str]] = {"bound": [], "superseded": []}
+    elsewhere = {} if elsewhere is None else elsewhere
+    buckets: dict[str, list[str]] = {"bound": [], "superseded": [], "elsewhere": []}
     buckets.update({name: [] for name, _, _ in _KINDS})
     buckets["unaccounted"] = []
     fenced = False
@@ -290,6 +315,11 @@ def classify(
             continue
         if n in superseded:
             buckets["superseded"].append(f"{n}: {line.strip()[:96]}")
+            continue
+        #: AFTER `superseded` DELIBERATELY: a correction note quoting *"about 5,500 statements"*
+        #: must stay withdrawn rather than be credited to the registry that holds the live one.
+        if n in elsewhere:
+            buckets["elsewhere"].append(f"{n}: {elsewhere[n]}")
             continue
         for name, pattern, _reason in _KINDS:
             if re.search(pattern, line, re.I):
@@ -316,9 +346,13 @@ _BASELINE_HEADER = """# HOW MANY README LINES CARRY A NUMBER THAT NOTHING ACCOUN
 # a fall that nobody earned. Move the rule and the test tells you to re-measure; it does not quietly
 # accept the new number.
 #
-# The digest covers `NUMBER`, the `_KINDS` name/pattern pairs, `_SUPERSEDED_DECLARES` and the
-# `_BOUND` registry. It does NOT cover the kinds' REASONS: those are documentation for a reader,
-# and rewording one changes no verdict.
+# TWO DIGESTS, BECAUSE ONE COULD NOT ATTRIBUTE. `detection` covers what counts as a claim --
+# `NUMBER`, the `_KINDS` name/pattern pairs, `_SUPERSEDED_DECLARES` -- and a change to it moves the
+# count with NO WORK DONE, so the gate refuses to compare. `bindings` covers `_BOUND` and `ci.py`'s
+# `_SCALE_FIGURES`, and a change there lowers the count because somebody bound a claim, which IS
+# the work. One digest fired "not comparable" on both, so honest work tripped the alarm meant for a
+# fall nobody earned -- and an alarm that fires on good news is one people learn to silence.
+# Neither covers the kinds' REASONS: documentation for a reader, changing no verdict.
 #
 # AN EQUALITY, NOT A CEILING. `<=` would let the file rot upward while real work went unrecorded,
 # and a ratchet that never tightens is not a ratchet. Going DOWN is as red as going up, and the
@@ -327,28 +361,83 @@ _BASELINE_HEADER = """# HOW MANY README LINES CARRY A NUMBER THAT NOTHING ACCOUN
 """
 
 
-def rule_digest() -> str:
-    """A digest of the DETECTION RULE, so a baseline cannot be compared across a change to it."""
-    payload = json.dumps(
+def scale_patterns() -> dict[str, str]:
+    """`ci.py`'s `_SCALE_FIGURES` patterns, READ rather than copied.
+
+    Two README figures are bound and gated already -- by `ci.py`'s `scale_drift`, against the
+    coverage JSON, inside `ci.py test`. This tool has no coverage data, so it cannot VERIFY them;
+    what it can do is stop calling a line *accounted for by nothing* when something holds it. That
+    is the same correction as crediting `_BOUND`'s own lines, in the second registry.
+
+    IMPORTED, NOT RESTATED. A copy of those two patterns here would be a second definition of one
+    claim, which is the defect this file exists to find.
+    """
+    spec = importlib.util.spec_from_file_location("_ci_for_claims", ROOT / "ci.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return {label: pattern for label, (pattern, _key) in module._SCALE_FIGURES.items()}
+
+
+def elsewhere_lines(text: str) -> dict[int, str]:
+    """README lines whose number is bound by `ci.py` rather than by this file's registry."""
+    out: dict[int, str] = {}
+    lines = text.split("\n")
+    for label, pattern in scale_patterns().items():
+        for n, line in enumerate(lines, 1):
+            if re.search(pattern, line):
+                out[n] = f"ci.py `_SCALE_FIGURES` [{label}]"
+                break
+    return out
+
+
+def _digest(payload: object) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def detection_digest() -> str:
+    """A digest of what COUNTS as a claim: `NUMBER`, the `_KINDS` patterns, the correction rule.
+
+    SPLIT FROM `bindings_digest` BECAUSE ONE DIGEST COULD NOT ATTRIBUTE. Both kinds of change
+    move the count, and they mean opposite things: tightening a `_KINDS` pattern lowers it with
+    **no work done at all**, while adding a binding lowers it because somebody bound a claim. A
+    single digest fired *"not comparable"* on both, so honest work tripped the alarm meant for a
+    fall nobody earned -- and an alarm that fires on good news is one people learn to silence.
+
+    The reasons are deliberately NOT in here: they are documentation for a reader and change no
+    verdict.
+    """
+    return _digest(
         {
             "number": NUMBER.pattern,
             "superseded": _SUPERSEDED_DECLARES.pattern,
             "kinds": [[name, pattern] for name, pattern, _reason in _KINDS],
-            "bound": [list(entry) for entry in _BOUND],
-        },
-        sort_keys=True,
+        }
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def bindings_digest() -> str:
+    """A digest of what is BOUND -- this file's registry and `ci.py`'s, which is work, not rule."""
+    return _digest(
+        {
+            "bound": [list(entry) for entry in _BOUND],
+            "elsewhere": sorted(scale_patterns().items()),
+        }
+    )
 
 
 def unaccounted_count(text: str) -> int:
     """The denominator, under the current rule. One call, so the test and the report agree."""
     credited, _unattributed = bound_lines(text)
-    return len(classify(text, credited, superseded_lines(text))["unaccounted"])
+    buckets = classify(text, credited, superseded_lines(text), elsewhere_lines(text))
+    return len(buckets["unaccounted"])
 
 
-def read_baseline() -> tuple[str, int] | None:
-    """The committed (rule digest, count), or None if the file is absent."""
+def read_baseline() -> tuple[str, str, int] | None:
+    """The committed (detection digest, bindings digest, count), or None if it cannot be read.
+
+    None covers an absent file AND one written before the digest was split, because both mean the
+    same thing to a caller: there is nothing here that can be compared, so re-measure.
+    """
     if not BASELINE.is_file():
         return None
     fields = dict(
@@ -356,7 +445,9 @@ def read_baseline() -> tuple[str, int] | None:
         for line in BASELINE.read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     )
-    return fields["rule"].strip(), int(fields["unaccounted"])
+    if not {"detection", "bindings", "unaccounted"} <= set(fields):
+        return None
+    return fields["detection"].strip(), fields["bindings"].strip(), int(fields["unaccounted"])
 
 
 def write_baseline() -> int:
@@ -364,7 +455,10 @@ def write_baseline() -> int:
     count = unaccounted_count(README.read_text(encoding="utf-8"))
     BASELINE.parent.mkdir(parents=True, exist_ok=True)
     BASELINE.write_text(
-        f"{_BASELINE_HEADER}rule {rule_digest()}\nunaccounted {count}\n", encoding="utf-8"
+        f"{_BASELINE_HEADER}detection {detection_digest()}\n"
+        f"bindings {bindings_digest()}\n"
+        f"unaccounted {count}\n",
+        encoding="utf-8",
     )
     return count
 
@@ -382,11 +476,15 @@ def report() -> int:
     for note in unattributed:
         print(f"  NOT ATTRIBUTED TO A LINE — stays unaccounted: {note}")
 
-    buckets = classify(text, credited, superseded_lines(text))
+    buckets = classify(text, credited, superseded_lines(text), elsewhere_lines(text))
     print("\n=== CLASSIFIED — a judgement recorded, never verification ===")
     bound_note = "the rows above, compared live and so removed from the denominator"
     print(f"  {len(buckets['bound']):>4}  bound        {bound_note}")
     print(f"  {len(buckets['superseded']):>4}  superseded   {_SUPERSEDED_REASON}")
+    print(
+        f"  {len(buckets['elsewhere']):>4}  elsewhere    bound and gated by `ci.py`, which owns "
+        f"the coverage data this tool cannot read"
+    )
     for name, _pattern, reason in _KINDS:
         print(f"  {len(buckets[name]):>4}  {name:<12} {reason}")
     unaccounted = buckets["unaccounted"]
@@ -415,13 +513,28 @@ def report() -> int:
     committed = read_baseline()
     if committed is None:
         print(f"no baseline committed yet — `python ci.py claims-baseline` writes {BASELINE.name}")
-    elif committed[0] != rule_digest():
-        print(
-            f"the committed baseline was taken under rule {committed[0]} and this is "
-            f"{rule_digest()}: its {committed[1]} is not comparable with the figure above"
-        )
     else:
-        print(f"baseline {BASELINE.name}: {committed[1]} under the same rule {committed[0]}")
+        detection, bindings, recorded = committed
+        moved = [
+            name
+            for name, was, now in (
+                ("detection", detection, detection_digest()),
+                ("bindings", bindings, bindings_digest()),
+            )
+            if was != now
+        ]
+        if "detection" in moved:
+            print(
+                f"the baseline's DETECTION rule was {detection} and is now {detection_digest()}: "
+                f"its {recorded} is not comparable with the figure above"
+            )
+        elif moved:
+            print(
+                f"the bindings moved ({bindings} -> {bindings_digest()}) and the detection rule "
+                f"did not, so a fall from {recorded} to {len(unaccounted)} is WORK"
+            )
+        else:
+            print(f"baseline {BASELINE.name}: {recorded}, and nothing in the rule has moved")
     return 0
 
 
@@ -429,7 +542,10 @@ if __name__ == "__main__":
     try:
         if "--baseline" in sys.argv[1:]:
             written = write_baseline()
-            print(f"wrote {BASELINE.name}: {written} unaccounted, rule {rule_digest()}")
+            print(
+                f"wrote {BASELINE.name}: {written} unaccounted, "
+                f"detection {detection_digest()}, bindings {bindings_digest()}"
+            )
             raise SystemExit(0)
         raise SystemExit(report())
     except (AttributeError, ModuleNotFoundError, TypeError) as exc:
