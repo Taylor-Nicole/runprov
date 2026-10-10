@@ -9,6 +9,55 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — two gaps a mutation run found in `_atomic.py`, both in things the module's own prose promises
+
+**The council's highest-value unmade measurement, run 2026-10-10 with mutmut 2.5.1.**
+`runprov/_atomic.py` — 41 statements, **21 mutants, 16 killed, 5 survived**. Two of the five are
+real, and both are places where a docstring states a contract that nothing checked.
+
+**The score itself is not reported as a fact about this suite.** mutmut 3 generated **73** mutants
+for the same file where mutmut 2 generated **21** — same code, different operators — so a
+percentage here is as much a property of the tool as of the tests. The survivor list is the
+finding.
+
+* **The debris agreement was two facts and only one was guarded.** `_atomic.py` says above
+  `TEMP_SUFFIX`: *"`verify` skips it, and it reads that name FROM HERE rather than repeating the
+  string: the writer and the reader agreeing about debris is one fact, and one fact in two files
+  is this repository's most-repaired defect."* True of the **string**; not of the **shape**.
+  `verify.collect` matches `name.endswith(TEMP_SUFFIX)` and `__main__` tells the user debris is
+  `(*TEMP_SUFFIX)`, so both readers assume a **terminal** suffix — and the mutant that moves it
+  off the end survived. Debris would then stop being counted as debris and start being reported
+  as an artifact nobody wrote. New:
+  `test_every_temporary_file_THIS_PACKAGE_WRITES_is_counted_as_debris_by_verify`, which patches
+  `os.replace` to a no-op so the real writers leave a real half-written file — the on-disk state
+  a crash produces — and hands it to the real `verify.collect`. **It spells out no name shape**; a
+  test that rebuilt the name would pass on the mutant. It covers **both** writers, because
+  `run.py:712` builds the shape independently of `_atomic.py:136`, and asserts those two are
+  **all** of them, so a third arrives red.
+* **`raises … unchanged` was untested where `open` itself fails.** `_atomic` promises *"raises
+  whatever `open` and `os.replace` raise, unchanged and at the same moments, so every caller's
+  existing `except OSError` still catches exactly what it caught before."* With
+  `missing_ok=False` the cleanup raises `FileNotFoundError` over the real error whenever the temp
+  file was never created, and the mutant survived: the only existing test that makes `os.open`
+  fail refuses **directories** — the `_sync_dir` path, not this one. **It is a wrong diagnosis
+  rather than a crash**, which is why it matters: a caller catching `OSError` catches both and
+  the user is told *"no such file"* about a path they never named. New:
+  `test_a_write_whose_TEMP_FILE_CANNOT_BE_CREATED_raises_the_ORIGINAL_error`, asserting the errno
+  **and** the message, because `FileNotFoundError` IS an `OSError` and `pytest.raises(OSError)`
+  passes on the mutant.
+
+**Both demonstrated against the real mutants, with a void control either side, and each is caught
+by exactly one of the two tests.** That separation took a repair: the first draft of the
+error-fidelity test keyed its `os.open` refusal to `endswith(TEMP_SUFFIX)`, so the name-shape
+mutant made it report *"DID NOT RAISE"* — a correct red for the wrong reason. Its predicate is
+now independent of the shape.
+
+The other three survivors are filed rather than fixed: the mode literal passed to `os.open` for a
+file with no existing destination is asserted nowhere; the length of the random component is not
+load-bearing; and the literal `.runprov-tmp` appears in six prose places bound to nothing, which
+is the claim surface's class one layer in — it audits shipped markdown and cannot see a literal
+quoted in a `.py` comment.
+
 ### Fixed — four hand-written requirement-coverage tests become one whose population is derived
 
 **2026-10-09 council, test-2.** No behaviour change. This was a **latent** false green with a

@@ -32480,6 +32480,133 @@ def test_a_directory_sync_that_is_REFUSED_does_not_fail_a_write_that_succeeded(
     assert seen, "the directory sync was never attempted, so its refusal proves nothing"
 
 
+def test_a_write_whose_TEMP_FILE_CANNOT_BE_CREATED_raises_the_ORIGINAL_error(tmp_path, monkeypatch):
+    """`_atomic` promises *"raises whatever `open` and `os.replace` raise, UNCHANGED and at the
+    same moments, so every caller's existing `except OSError` still catches exactly what it
+    caught before"*. Nothing checked the hardest case.
+
+    FOUND BY MUTATION, 2026-10-10 — mutmut 2.5.1, `runprov/_atomic.py` mutant 20, **SURVIVED**:
+    `tmp.unlink(missing_ok=True)` -> `missing_ok=False` in the `except BaseException` cleanup.
+    When `os.open` fails on the TEMPORARY FILE the temp file does not exist, so the cleanup
+    itself raises `FileNotFoundError` and **replaces the error the caller was promised**. The
+    whole suite stayed green, because the one test that makes `os.open` fail
+    (`test_a_directory_that_cannot_be_OPENED_does_not_fail_a_write_that_succeeded`) refuses only
+    DIRECTORIES — the `_sync_dir` path, not this one.
+
+    THIS IS A WRONG DIAGNOSIS RATHER THAN A CRASH, which is why it matters here. A caller
+    catching `OSError` catches both, so nothing falls over; the user is simply told *"no such
+    file"*, about a path they never named, when the truth was *"permission denied"*.
+
+    THE ERRNO AND THE MESSAGE ARE BOTH ASSERTED, because `FileNotFoundError` IS an `OSError` and
+    `pytest.raises(OSError)` alone passes on the mutant. The leg that distinguishes them is the
+    only leg worth having.
+    """
+    real_open = runprov._atomic.os.open
+    dest = tmp_path / "s.prov.json"
+
+    def refuse_the_temp_file(path, *a, **k):
+        #: ANY PATH THAT IS NOT THE DESTINATION AND IS NOT A DIRECTORY -- deliberately NOT
+        #: `endswith(TEMP_SUFFIX)`. A predicate keyed to the suffix makes this test fail for a
+        #: second, unrelated reason the moment the temp NAME SHAPE changes, which is exactly
+        #: what the debris test next door is about: measured, the shape mutation made this one
+        #: report "DID NOT RAISE" instead of its own defect. Two tests, two reasons.
+        here = pathlib.Path(path)
+        if not here.is_dir() and here.name != dest.name:
+            raise PermissionError(13, "refused by the test")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(runprov._atomic.os, "open", refuse_the_temp_file)
+    with pytest.raises(PermissionError) as caught:
+        runprov._atomic.atomic_write_text(dest, "one\n")
+    assert caught.value.errno == 13, f"the errno must survive the cleanup: {caught.value!r}"
+    assert "refused by the test" in str(caught.value), str(caught.value)
+    #: AND THE CLEANUP STILL HAPPENED: no temp file, and the destination was never created.
+    assert sorted(q.name for q in tmp_path.iterdir()) == [], sorted(tmp_path.iterdir())
+
+
+def test_every_temporary_file_THIS_PACKAGE_WRITES_is_counted_as_debris_by_verify(
+    tmp_path, monkeypatch
+):
+    """The debris agreement is TWO facts and only one of them was guarded.
+
+    `_atomic.py` says, above `TEMP_SUFFIX`: *"`verify` skips it, and it reads that name FROM HERE
+    rather than repeating the string: the writer and the reader agreeing about debris is one
+    fact, and one fact in two files is this repository's most-repaired defect."* True of the
+    STRING. **Not true of the SHAPE.**
+
+    FOUND BY MUTATION, 2026-10-10 — mutmut 2.5.1, `runprov/_atomic.py` mutant 8, **SURVIVED**:
+    the temp name wrapped so that it no longer ENDS with the suffix. `verify.collect` matches
+    `name.endswith(TEMP_SUFFIX)` (`verify.py:791`), and `__main__` tells the user debris is
+    `(*TEMP_SUFFIX)` — so both readers assume a TERMINAL suffix, and nothing asserted it. Move it
+    and debris stops being counted as debris and starts being reported as an artifact nobody
+    wrote, which is the confident-wrong-record class this package exists to prevent.
+
+    REAL WRITER, REAL READER, NO RESTATEMENT. The temp files below are produced by the package's
+    own two writers — `os.replace` is patched to a no-op so the file they were part-way through
+    writing SURVIVES, which is exactly the on-disk state a crash leaves — and then handed to the
+    real `verify.collect`. Nothing here spells the name shape out; a test that rebuilt the name
+    would pass on the mutant.
+
+    AND THE POPULATION IS DERIVED. Two writers construct such a name today, and the assertion
+    below is that those two are ALL of them: a third writer, or one that stops using the shared
+    constant, turns this red rather than going uncovered. That is the half the original comment
+    thought it had.
+    """
+    import runprov.verify as verify
+
+    #: WRITER ONE -- the helper itself.
+    one = tmp_path / "one"
+    one.mkdir()
+    monkeypatch.setattr(runprov._atomic.os, "replace", lambda *a, **k: None)
+    runprov._atomic.atomic_write_text(one / "a.prov.json", '{"x": 1}')
+    left_by_helper = list(one.iterdir())
+    assert len(left_by_helper) == 1, f"the no-op replace must leave the temp file: {left_by_helper}"
+    monkeypatch.undo()
+
+    #: WRITER TWO -- `_PinnedWriter`, which builds its own name in `run.py` rather than calling
+    #: the helper, and is therefore a SECOND copy of the shape.
+    two = tmp_path / "two"
+    two.mkdir()
+    runprov.configure(root=two, run_log=two / "runs.jsonl")
+    (two / "in.tsv").write_text("a\n", encoding="utf-8")
+    monkeypatch.setattr(runprov.run.os, "replace", lambda *a, **k: None)
+    with runprov.Run("s", provenance=two / "p.json") as run:
+        run.input(two / "in.tsv")
+        with run.open_output(two / "out.tsv") as fh:
+            fh.write("b\n")
+    monkeypatch.undo()
+    left_by_writer = [q for q in two.iterdir() if runprov._atomic.TEMP_SUFFIX in q.name]
+    assert left_by_writer, f"`_PinnedWriter` left no temp file to check: {list(two.iterdir())}"
+
+    #: THE READER'S OWN VERDICT, on both.
+    for where, left in (("the atomic helper", left_by_helper), ("_PinnedWriter", left_by_writer)):
+        got = verify.collect([q.parent for q in left])
+        assert got.write_debris >= len(left), (
+            f"{where} wrote {[q.name for q in left]} and `verify.collect` counted "
+            f"{got.write_debris} debris. A temporary file the reader does not recognise "
+            f"is reported as an artifact nobody wrote."
+        )
+        for q in left:
+            assert q not in got.files, (
+                f"{where}'s temporary file {q.name} was collected as a FILE TO EXAMINE. "
+                f"`verify` would read a pin out of a half-written record."
+            )
+
+    #: EXHAUSTIVE OVER THE WRITERS, so a third one cannot arrive uncovered. Derived from the
+    #: sources: a constructor is a line that builds a name FROM the shared constant.
+    package = pathlib.Path(runprov.__file__).parent
+    constructors = {}
+    for source in sorted(package.glob("*.py")):
+        for number, line in enumerate(source.read_text(encoding="utf-8").split("\n"), 1):
+            if "with_name(f" in line and "TEMP_SUFFIX" in line:
+                constructors[f"{source.name}:{number}"] = line.strip()
+    assert sorted(constructors) == ["_atomic.py:136", "run.py:712"], (
+        f"the set of places that CONSTRUCT a temporary name has changed: {constructors}. "
+        f"Each one is a separate copy of the shape `verify.collect` matches on, so each needs a "
+        f"leg above. Two writers and one reader is already one fact in three files."
+    )
+
+
 def test_every_provenance_write_in_the_package_goes_through_the_atomic_helper():
     """DERIVED, NOT LISTED. The six sites were found by measurement, and a hand-typed list of
     six filenames is the defect this repository has repaired eight times: it is right on the
