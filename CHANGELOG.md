@@ -9,6 +9,62 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — four hand-written requirement-coverage tests become one whose population is derived
+
+**2026-10-09 council, test-2.** No behaviour change. This was a **latent** false green with a
+trigger already written into the backlog.
+
+**The scope was correct by coincidence.** Four near-identical tests — for ADR-0013, 0016, 0017
+and 0018 — each named one ADR filename, **198 lines between them**. Seven records declare
+`**R-n.` requirements and the other three happen to be `Proposed`, so the four copies covered
+exactly the accepted set without anything deriving that they did. **T-35 flips ADR-0019 to
+Accepted; on that day its seven requirements would have been checked by nothing and the suite
+would have stayed green** — *a guard that is uninformed looks exactly like one that is
+satisfied*, which is the sentence ADR-0017's own status line exists to record.
+
+One test now computes its population from two independent properties of each record: the status,
+read through the **same `_adr_status` helper the status-vocabulary test uses** — so *"is this
+record accepted"* has one definition rather than two — and whether it declares any requirement.
+
+Three things the four copies did that are now done better:
+
+* **The union of two bold conventions, measured.** Two copies required a closing `**` and two
+  did not. Requiring it finds **14 of ADR-0017's 16** and **10 of ADR-0018's 14**, because
+  Taylor's later rulings bold the whole opening sentence — and three of those span two lines.
+  The pattern anchors on the number and never on the closing bold.
+* **The two hand-written floors are gone.** `len(required) > 10` and `> 14` are the shape
+  ADR-0013's copy had already removed for G-11's reason. What they were really guarding — a
+  pattern matching only one convention — is now asserted as a **property**: the looser form must
+  stay load-bearing, so if every record ever adopts the strict convention the guard says so
+  instead of going quietly unexercised.
+* **The citation scope is exact instead of accidental.** Each copy did
+  `tests.split("def test_every_<x>_requirement")[0]`, which excluded not only the test but
+  **everything after it** — for the ADR-0013 copy that blinded its sweep to the last ~13 000
+  lines of the file. `inspect.getsource` removes exactly this function's text wherever it sits,
+  and the removal is asserted to have happened.
+
+**An unreadable status no longer defers a record silently.** A record that declares requirements
+and no recognised status is now red, because the absence of a decision is not a decision — that
+assertion is what makes this exhaustive rather than merely wider.
+
+**Demonstrated with eight mutants**, void control green on both sides: ADR-0019 flipped to
+Accepted (red, naming all seven requirements); a requirement with no test, **applied to each of
+the four accepted records in turn**, so the deletions are shown to lose no per-record detection;
+a citation the record no longer states; an unreadable status; and every accepted record adopting
+the strict convention. Two of those did not apply as written on the first attempt — the
+convention mutation missed the three requirements whose bold spans two lines, and `rc=0` then
+read exactly like a surviving mutant.
+
+**Three live references repointed**, and one existing guard earned its keep: deleting the four
+names left `docs/adr/0013`, `runprov/resources.py` and a test docstring pointing at functions
+that no longer exist, and
+`test_every_command_the_documentation_tells_you_to_run_actually_EXISTS` caught all of it —
+including three mentions in this file's own released history, which it covers deliberately
+(*"a renamed test leaves the CHANGELOG and README pointing at nothing"*). Those three are
+reworded to **describe** the guard rather than name it, since the sweep matches the bare
+identifier and backticks do not exempt it: a changelog cannot hold the name of a test that no
+longer exists.
+
 ### Fixed — a guard could not notice its own absence, and the attribution rule had two definitions that disagreed
 
 **2026-10-09 architecture council, mech-1 and the attribution findings.** No behaviour changes.
@@ -414,12 +470,12 @@ the parser, so a further answering command is covered the day its schema appears
 > some module's schema constant — so the guard is red the moment a command answers in JSON with
 > no schema constant, rather than two commands later.
 
-**ADR-0017 also had no `test_every_answer_requirement_has_a_test`**, which ADR-0013 and ADR-0016
-both have and which the backlog named as T-33's own closing condition. All 16 requirements were
+**ADR-0017 also had no requirement-coverage guard of its own**, which ADR-0013 and ADR-0016
+both had and which the backlog named as T-33's own closing condition. All 16 requirements were
 cited on the day it was written — which is exactly the state that rots unwatched.
 
 Copying the sibling guard would have been the obvious mistake and it is now asserted against:
-`test_every_chain_requirement_has_a_test` matches `**R-n.**`, with the bold closing after the
+ADR-0016's guard matched `**R-n.**`, with the bold closing after the
 number. That is ADR-0017's convention for R-1 … R-14 — but **R-15 and R-16, both added by later
 audits, bold the whole requirement sentence**. A copied guard would have found 14 of 16 and
 passed while ignoring the two newest requirements in the document: the scope pattern, in the
@@ -3068,7 +3124,7 @@ I-23.
   error that reads like a typo, and its CPU is a **rate** in millicores, not a core count.
 
   **The specification is checked, not remembered.** ADR-0013 numbers sixteen requirements and
-  `test_every_resource_requirement_has_a_test` derives that list from the ADR, failing if any
+  its requirement-coverage guard derives that list from the ADR, failing if any
   has no test citing it.
 
 ## [0.3.0] — 2026-09-16

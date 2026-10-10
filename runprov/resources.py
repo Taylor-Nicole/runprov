@@ -19,7 +19,8 @@ high-water mark of the LARGEST SINGLE CHILD. Measured: three children holding ~1
 concurrently report 162 MiB, not 450. A figure from here is a FLOOR, and the block says so.
 
 Every requirement below is numbered in ADR-0013 and checked by
-`test_every_resource_requirement_has_a_test`, which derives the list from the ADR.
+`test_every_requirement_of_every_ACCEPTED_decision_record_is_cited_by_a_test`,
+which derives both the list and the set of records it covers.
 Its `--format json` answer is ADR-0017, T-33: one builder, two renderings.
 """
 

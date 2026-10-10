@@ -31339,48 +31339,49 @@ def test_an_artifact_cannot_write_its_own_commentary_into_verifys_output(tmp_pat
     assert runprov.verify.FIELD_SHOWN < 400
 
 
-def test_every_resource_requirement_has_a_test():
-    """ADR-0013's specification is checked, not remembered.
+#: THE ADR STATUS VOCABULARY, AND HOW TO READ IT, IN ONE PLACE. Two tests need to ask whether a
+#: record is accepted, and a second spelling of that question is how the refused-trailer rule came
+#: to be wrong in two places at once -- see `_REFUSED_TRAILERS` in `ci.py`. One definition.
+_ADR_STATUSES = frozenset(
+    {"accepted", "proposed", "superseded", "rejected", "withdrawn", "amended"}
+)
 
-    Taylor asked that the build keep corresponding to the specification. The only way that
-    survives a month is mechanically: the requirement list is DERIVED from the ADR, and every
-    `R-n` in it must be named by at least one test in this file. Add a requirement without a
-    test and this goes red; delete one from the ADR and the test that cites it is left
-    pointing at nothing, which the second half catches.
+#: THREE FORMATS, AND THAT IS A FACT ABOUT THIS CORPUS rather than laziness. It states status as
+#: `- **Status:** Accepted`, as `**Status:** Accepted — …`, and inline as
+#: `Date: … · Status: accepted · Ledger: …`. A sweep written for one of them reported thirteen
+#: records as having no status at all, twice, in two different wrong ways.
+_ADR_STATUS = re.compile(r"Status:?\*{0,2}\s*:?\s*\**\s*([A-Za-z]+)")
 
-    It is the `docs/adr` index guard one level in — that one checked filenames and let a
-    status drift, so this checks the thing the document is ABOUT rather than that it exists.
+#: A REQUIREMENT, AND THE PATTERN IS THE UNION OF TWO CONVENTIONS. `**R-1.**` bolds the number
+#: only; `**R-11. The whole opening sentence**` bolds through the sentence, which Taylor's rulings
+#: introduced in ADR-0017 and ADR-0018. So this anchors on the number and its period at the start
+#: of a line and NEVER on the closing bold. Measured 2026-10-10: requiring the closing bold finds
+#: 14 of ADR-0017's 16 and 10 of ADR-0018's 14, so the looser form is not hypothetical -- it is
+#: load-bearing for six requirements, and the test below asserts that it stays exercised.
+_ADR_REQUIREMENT = re.compile(r"^\*\*(R-\d+[a-z]?)\.", re.M)
 
-    THE NON-VACUITY FLOOR IS GONE, and nothing replaced the number (Audit G, G-11). It read
-    `len(required) >= 15` against an ADR that has since grown to 16, so it carried a
-    requirement of slack and would carry one more with every requirement added. A floor is a
-    hand-written scope, and a hand-written scope is where this codebase keeps finding the
-    defect; `== 16` only moves the trap, because the obvious edit when R-17 turns it red is to
-    bump the number. `required == cited` needs no number at all: the two directions it folds
-    together were already asserted separately here, so this loses no detection — and the
-    floor was never what caught a deletion.
+#: A CITATION, BRACKETED, AND THE BRACKETS ARE A REPAIR. A bare `R-4` matched `R-4.4` in an
+#: unrelated test about filename sorting, which silently satisfied a requirement that had no test
+#: -- a guard with a false positive, worse than no guard because it reports green.
+_ADR_CITATION = re.compile(r"\[ADR-(\d{4}) (R-\d+[a-z]?)\]")
+
+
+def _adr_files() -> list[pathlib.Path]:
+    """Every decision record, index excluded. Derived, so a new record is covered on arrival."""
+    return sorted(
+        path for path in (_repo_root() / "docs" / "adr").glob("*.md") if path.name != "README.md"
+    )
+
+
+def _adr_status(path: pathlib.Path) -> str | None:
+    """The record's declared status word, lowercased, or None if its first eight lines declare none.
+
+    EIGHT LINES, because the status belongs in the header and a `Status:` further down is prose
+    about some other record's status -- which is a sentence this corpus actually contains.
     """
-    adr = _repo_root() / "docs" / "adr" / "0013-what-a-run-consumed-measured-not-declared.md"
-    if not adr.is_file():  # pragma: no cover - docs ship in the sdist, a bare tree may not
-        pytest.skip("ADR-0013 not present")
-    required = set(re.findall(r"^\*\*(R-\d+[a-z]?)\.\*\*", adr.read_text(encoding="utf-8"), re.M))
-    tests = pathlib.Path(__file__).read_text(encoding="utf-8")
-    # Cited from a test's own text, not from this file as a whole: the ADR itself is not
-    # allowed to satisfy the requirement by mentioning its own number.
-    # BRACKETED, and the first version was not. A bare `R-4` matched `R-4.4` in an unrelated
-    # test about filename sorting, which silently satisfied a requirement that had no test —
-    # a guard with a false positive, which is worse than no guard because it reports green.
-    cited = set(
-        re.findall(
-            r"\[ADR-0013 (R-\d+[a-z]?)\]",
-            tests.split("def test_every_resource_requirement")[0],
-        )
-    )
-    assert required == cited, (
-        "ADR-0013 and its tests disagree. Requirements the ADR states that no test names: "
-        f"{sorted(required - cited, key=lambda s: (len(s), s))}. Requirements the tests cite "
-        f"that the ADR no longer states: {sorted(cited - required, key=lambda s: (len(s), s))}"
-    )
+    head = "\n".join(path.read_text(encoding="utf-8").split("\n")[:8])
+    found = _ADR_STATUS.search(head)
+    return found.group(1).lower() if found else None
 
 
 def test_every_decision_record_declares_a_status_this_project_recognises():
@@ -31406,21 +31407,18 @@ def test_every_decision_record_declares_a_status_this_project_recognises():
     field — filed, not fixed, because writing the other nineteen is a judgement per record and not
     a sweep. With that field, every target it names could be resolved; without it, nothing can.
     """
-    adrs = sorted(
-        path for path in (_repo_root() / "docs" / "adr").glob("*.md") if path.name != "README.md"
-    )
+    adrs = _adr_files()
     #: NOT VACUOUS: an empty glob would make the loop below assert nothing at all.
     assert len(adrs) >= 15, f"only {len(adrs)} decision record(s) found; this is reading nothing"
 
-    recognised = {"accepted", "proposed", "superseded", "rejected", "withdrawn", "amended"}
+    recognised = _ADR_STATUSES
     unreadable, unknown = [], []
     for path in adrs:
-        head = "\n".join(path.read_text(encoding="utf-8").split("\n")[:8])
-        found = re.search(r"Status:?\*{0,2}\s*:?\s*\**\s*([A-Za-z]+)", head)
-        if not found:
+        word = _adr_status(path)
+        if word is None:
             unreadable.append(path.name)
-        elif found.group(1).lower() not in recognised:
-            unknown.append(f"{path.name} says {found.group(1)!r}")
+        elif word not in recognised:
+            unknown.append(f"{path.name} says {word!r}")
 
     assert not unreadable, (
         f"these decision records declare no readable status in their first eight lines, so nothing "
@@ -31429,6 +31427,126 @@ def test_every_decision_record_declares_a_status_this_project_recognises():
     assert not unknown, (
         f"these records use a status word nothing here recognises, and a vocabulary nobody shares "
         f"is the same as no status: {unknown}. The recognised set is {sorted(recognised)}"
+    )
+
+
+def test_every_requirement_of_every_ACCEPTED_decision_record_is_cited_by_a_test():
+    """ONE TEST WHERE THERE WERE FOUR, AND THE POPULATION IS DERIVED INSTEAD OF TYPED.
+
+    WHAT THIS REPLACES. Four near-identical tests — `..._resource_...` (ADR-0013),
+    `..._chain_...` (0016), `..._answer_...` (0017) and `..._gate_...` (0018) — each naming ONE
+    ADR filename, 198 lines between them. Their scope was correct on 2026-10-10 **by
+    coincidence**: seven records declare requirements and the other three happen to be
+    `Proposed`, so the four copies covered exactly the accepted set without anything deriving
+    that they did.
+
+    **IT WAS A LATENT FALSE GREEN WITH A SCHEDULED TRIGGER.** The backlog's T-35 flips ADR-0019
+    to Accepted. On that day its **seven** requirements would have been checked by nothing, and
+    the suite would have stayed green — *a guard that is uninformed looks exactly like one that
+    is satisfied*, which is the sentence ADR-0017's own status line was written to record. The
+    trigger was in the backlog before the hole was found.
+
+    THE POPULATION IS NOW COMPUTED FROM TWO INDEPENDENT PROPERTIES of each record: its declared
+    status, read through `_adr_status` — the same helper the status-vocabulary test uses, so
+    "is this record accepted" has one definition — and whether it declares any `**R-n.`. Flip a
+    status and the record enters or leaves scope on its own.
+
+    AND EVERY REQUIREMENT-DECLARING RECORD MUST GET A DECISION. A record whose status cannot be
+    read is NOT quietly deferred: an unreadable status is the absence of a decision, and
+    deferring on it is how the four copies were able to look complete. That assertion is what
+    makes this an exhaustiveness check rather than a wider floor.
+
+    CITATIONS EXCLUDE THIS TEST'S OWN SOURCE, PRECISELY. The four copies each did
+    `tests.split("def test_every_<x>_requirement")[0]`, which excluded not just the test but
+    **everything after it** — for the ADR-0013 copy that blinded its sweep to the last ~13 000
+    lines of this file. The direction was safe (a missed citation reads as a missing test, which
+    is red) but the scope was an accident of where the `def` sat. `inspect.getsource` removes
+    exactly this function's text, wherever it is, and the removal is asserted to have happened.
+
+    WHAT REPLACES THE TWO HAND-WRITTEN FLOORS. Two of the four carried `len(required) > 10` and
+    `> 14`, which are the shape ADR-0013's copy had already removed for G-11's reason: a floor
+    is a hand-written scope and the obvious fix when it reddens is to bump the number. They
+    existed to catch one real thing — a pattern matching only the closing-bold convention. That
+    is now asserted as a PROPERTY: the looser form must still be load-bearing, so if every
+    record ever adopts the strict convention this says so instead of going quietly unexercised.
+    """
+    adrs = _adr_files()
+    assert len(adrs) >= 15, f"only {len(adrs)} decision record(s) found; this is reading nothing"
+
+    #: EVERY RECORD THAT DECLARES REQUIREMENTS, PARTITIONED BY ITS OWN DECLARED STATUS.
+    declaring: dict[str, tuple[str | None, set[str]]] = {}
+    for path in adrs:
+        required = set(_ADR_REQUIREMENT.findall(path.read_text(encoding="utf-8")))
+        if required:
+            declaring[path.name] = (_adr_status(path), required)
+    assert declaring, (
+        "no decision record declares a single `**R-n.` requirement, so this check has no "
+        "subject. Either the corpus changed shape or `_ADR_REQUIREMENT` has stopped matching."
+    )
+
+    #: NO RECORD IS DEFERRED BY AN UNREADABLE STATUS. This is the assertion that turns a floor
+    #: into an exhaustiveness check: every requirement-declaring record is either in scope or
+    #: out of it FOR A STATED REASON, and "its status could not be read" is not a reason.
+    undecided = sorted(
+        f"{name} (status {status!r}, {len(req)} requirement(s))"
+        for name, (status, req) in declaring.items()
+        if status is None or status not in _ADR_STATUSES
+    )
+    assert not undecided, (
+        f"these records declare requirements and no status this project recognises, so nothing "
+        f"can say whether their requirements must be tested: {undecided}. An unreadable status "
+        f"must never put a record quietly out of scope."
+    )
+
+    in_scope = {name: req for name, (status, req) in declaring.items() if status == "accepted"}
+    assert in_scope, (
+        f"no ACCEPTED record declares a requirement, so the comparison below runs over nothing. "
+        f"The records that declare requirements are {sorted(declaring)}."
+    )
+
+    #: THE LOOSER CONVENTION MUST STILL BE LOAD-BEARING -- what the two floors were really for.
+    strict = re.compile(r"^\*\*(R-\d+[a-z]?)\.\*\*", re.M)
+    only_loose = {}
+    for name, req in in_scope.items():
+        body = (_repo_root() / "docs" / "adr" / name).read_text(encoding="utf-8")
+        only_loose[name] = sorted(req - set(strict.findall(body)))
+    assert any(only_loose.values()), (
+        "every accepted record now bolds only the requirement number, so the whole-sentence-bold "
+        "half of `_ADR_REQUIREMENT` matches nothing and is no longer exercised. Either a record "
+        "changed convention or the pattern has quietly narrowed; say which beside the pattern."
+    )
+
+    #: CITATIONS, FROM THIS FILE WITH THIS FUNCTION'S OWN TEXT REMOVED.
+    tests = pathlib.Path(__file__).read_text(encoding="utf-8")
+    own = inspect.getsource(
+        test_every_requirement_of_every_ACCEPTED_decision_record_is_cited_by_a_test
+    )
+    assert own in tests, (
+        "this function's source was not found in its own file, so the exclusion below removed "
+        "nothing and this test's docstring could satisfy the requirements it is checking"
+    )
+    elsewhere = tests.replace(own, "")
+    cited: dict[str, set[str]] = {}
+    for number, requirement in _ADR_CITATION.findall(elsewhere):
+        cited.setdefault(number, set()).add(requirement)
+    assert cited, (
+        "no test in this file carries a bracketed `[ADR-nnnn R-n]` citation, so either the "
+        "citation convention changed or `_ADR_CITATION` has stopped matching"
+    )
+
+    disagree = {}
+    for name, required in sorted(in_scope.items()):
+        number = name.split("-", 1)[0]
+        names = cited.get(number, set())
+        missing = sorted(required - names, key=lambda s: (len(s), s))
+        stale = sorted(names - required, key=lambda s: (len(s), s))
+        if missing or stale:
+            disagree[name] = {"no test names": missing, "ADR no longer states": stale}
+    assert not disagree, (
+        f"accepted decision record(s) and their tests disagree: {disagree}. A requirement with "
+        f"no test is a specification nothing checks; a citation the record no longer states is a "
+        f"test pointing at nothing. Records out of scope today, and why: "
+        f"{ {n: s for n, (s, _) in declaring.items() if s != 'accepted'} }"
     )
 
 
@@ -38017,7 +38135,8 @@ def test_r31s_shape_list_is_the_one_the_gate_actually_runs():
 
     DERIVED FROM BOTH SIDES, never a written list. The requirement's shapes are read out of the
     ADR sentence and the gate's out of the decorator's own AST, so this cannot be satisfied by
-    editing a third copy — the failure that `test_every_chain_requirement_has_a_test` was
+    editing a third copy — the failure that
+    `test_every_requirement_of_every_ACCEPTED_decision_record_is_cited_by_a_test` was
     rewritten to avoid in G-11, applied to the one other place this project states a set in
     prose and again in code.
     """
@@ -43540,115 +43659,6 @@ def test_the_rule_registry_refuses_two_rules_under_one_name():
         runprov.policy.rules()["clean_tree"] = None  # type: ignore[index]
 
 
-def test_every_gate_requirement_has_a_test():
-    r"""ADR-0018's specification is checked, not remembered — ADR-0013's mechanism, fourth use.
-
-    **WRITTEN ONE COMMIT BEFORE THE LAST BUILD COMMIT — and the correction is the lesson, not
-    the sentence it replaces [L-16].** This said *written in the last build commit, which is the
-    whole lesson of T-33*, and it is false by exactly one commit: this test landed in `b51ad31`
-    and R-13 and R-14 arrived in `4550a83` after it, so the set equality below was written
-    against twelve requirements and now reads fourteen. **The claim a test makes about its own
-    history is the one claim nothing can check**, which is why the fix is to say what the dates
-    say rather than to reach for a stronger sentence.
-
-    The substance stands: ADR-0017 named this guard as its row's closing condition and shipped in
-    0.7.0 without it, and the backlog note that recorded the omission is the reason this one
-    exists while the feature is being finished rather than after an audit asks for it. **A
-    closing condition belongs IN the last build commit** — which is one commit later than this,
-    and that is the gap the row found.
-
-    **THE CONVENTION WAS CHECKED BEFORE THE REGEX WAS COPIED.** ADR-0017's guard records that
-    copying ITS sibling would have found 14 of 16, because R-15 and R-16 bold the whole sentence
-    while R-1 … R-14 bold only the number. ADR-0018 has both shapes too — R-11 and R-12 were added
-    by Taylor's rulings and bold their whole opening — so the pattern anchors on the number and the
-    period at the start of a line and never on the closing bold. Measured when this was written:
-    twelve requirements, and a closing-bold pattern finds ten.
-
-    SET EQUALITY, NOT A FLOOR, for the reason G-11 gives: `>= 12` cannot see a requirement deleted
-    from the ADR, and a bare `== 12` turns red on a future R-13 whose obvious fix is to bump the
-    number. Equality catches a dropped requirement, a mistyped citation, and a test citing
-    something the ADR no longer says, in both directions and with no number to maintain.
-
-    CITATIONS ARE READ FROM BEFORE THIS `def`, like all three siblings, so this docstring's own
-    mentions of R-11 and R-12 cannot satisfy the requirements it is checking.
-    """
-    adr = (
-        _repo_root()
-        / "docs"
-        / "adr"
-        / "0018-a-policy-is-checked-against-the-history-not-remembered.md"
-    )
-    if not adr.is_file():  # pragma: no cover - docs ship in the sdist, a bare tree may not
-        pytest.skip("ADR-0018 not present")
-    text = adr.read_text(encoding="utf-8")
-    required = set(re.findall(r"^\*\*(R-\d+)\.", text, re.M))
-    assert len(required) > 10, (
-        "ADR-0018 declares R-1 through R-10 with the bold closing after the number and R-11 and "
-        "R-12 with their whole opening bold. A pattern that finds ten is matching only the first "
-        f"convention and is blind to the two requirements Taylor added: {sorted(required)}"
-    )
-    tests = pathlib.Path(__file__).read_text(encoding="utf-8")
-    cited = set(
-        re.findall(r"\[ADR-0018 (R-\d+)\]", tests.split("def test_every_gate_requirement")[0])
-    )
-    assert required == cited, (
-        "ADR-0018 and its tests disagree. Requirements the ADR states that no test names: "
-        f"{sorted(required - cited, key=lambda s: (len(s), s))}. Requirements the tests cite "
-        f"that the ADR no longer states: {sorted(cited - required, key=lambda s: (len(s), s))}"
-    )
-
-
-def test_every_answer_requirement_has_a_test():
-    r"""ADR-0017's specification is checked, not remembered — ADR-0013's mechanism, third use.
-
-    **T-33 SHIPPED IN 0.7.0 WITHOUT THIS GUARD, and the backlog had named it as the row's own
-    closing condition.** ADR-0016 and ADR-0013 each have one; the ADR whose feature reaches every
-    command in the package did not. Coverage was complete on the day it was written — all 16
-    requirements cited — which is exactly the state that rots silently.
-
-    **THE SIBLING'S REGEX WOULD HAVE FOUND 14 OF 16, and copying it was the obvious mistake.**
-    `test_every_chain_requirement_has_a_test` matches `^\*\*(R-\d+)\.\*\*` — bold closing
-    right after the number — which is ADR-0016's convention and ADR-0017's for R-1 … R-14. R-15
-    and R-16, both added by later audits, bold the WHOLE requirement sentence: `**R-15. A payload
-    is emitted whenever …**`. So a copied guard would have passed while silently ignoring the two
-    newest requirements in the document — the scope pattern, in the guard written to stop it, for
-    the tenth time in this project. Measured before this test was written: 14 against 16.
-
-    The pattern here therefore requires the number and the period at the start of a line and NOT
-    the closing bold, which matches both conventions this ADR uses. A prose reference cannot
-    satisfy it: `**R-12 names this structure**` has no period after the number.
-
-    SET EQUALITY, NOT A FLOOR, for the reason G-11 gives on the chain guard: `>= 16` cannot see a
-    requirement deleted from the ADR, and `== 16` turns red on a future R-17 whose obvious fix is
-    to bump the number. Equality catches a dropped requirement, a mistyped citation, and a test
-    citing something the ADR no longer says — in both directions and with no number to maintain.
-
-    CITATIONS ARE READ FROM BEFORE THIS `def`, like both siblings, so this docstring's own
-    mentions of R-15 and R-16 cannot satisfy the requirements it is checking.
-    """
-    adr = (
-        _repo_root() / "docs" / "adr" / "0017-one-answer-two-renderings-and-the-table-is-derived.md"
-    )
-    if not adr.is_file():  # pragma: no cover - docs ship in the sdist, a bare tree may not
-        pytest.skip("ADR-0017 not present")
-    text = adr.read_text(encoding="utf-8")
-    required = set(re.findall(r"^\*\*(R-\d+)\.", text, re.M))
-    assert len(required) > 14, (
-        "ADR-0017 declares R-1 through R-14 with the bold closing after the number and R-15 "
-        "onward with the whole sentence bold. A pattern that finds 14 is matching only the "
-        f"first convention and is blind to the newest requirements: {sorted(required)}"
-    )
-    tests = pathlib.Path(__file__).read_text(encoding="utf-8")
-    cited = set(
-        re.findall(r"\[ADR-0017 (R-\d+)\]", tests.split("def test_every_answer_requirement")[0])
-    )
-    assert required == cited, (
-        "ADR-0017 and its tests disagree. Requirements the ADR states that no test names: "
-        f"{sorted(required - cited, key=lambda s: (len(s), s))}. Requirements the tests cite "
-        f"that the ADR no longer states: {sorted(cited - required, key=lambda s: (len(s), s))}"
-    )
-
-
 def test_every_module_that_answers_in_json_cites_adr_0017_where_the_index_guard_looks():
     """[T-33]. The convention `test_every_adr_is_listed_in_the_adr_index` depends on, enforced.
 
@@ -43712,51 +43722,6 @@ def test_every_module_that_answers_in_json_cites_adr_0017_where_the_index_guard_
         "these modules define a `--format json` payload schema and their TOP docstring does not "
         "name ADR-0017, so `test_every_adr_is_listed_in_the_adr_index` cannot tell that the "
         f"decision is built — which is how it stayed `Proposed` through 0.7.0: {missing}"
-    )
-
-
-def test_every_chain_requirement_has_a_test():
-    """ADR-0016's specification is checked, not remembered — the ADR-0013 mechanism, reused.
-
-    QUALIFIED BY THE ADR NUMBER, and the first version was not. It matched a bare `[R-n]`
-    anywhere before its own `def`, and ADR-0013's guard uses the identical convention several
-    thousand lines earlier — so `[R-1]` through `[R-15]` were ALREADY present and satisfied
-    fifteen of these requirements for free. Measured in Audit E: all 53 citations stripped from
-    the chain block and the guard still passed.
-
-    AND THIS TEST WAS ITSELF DELETED ONCE, on 2026-09-18, when the block it guards was
-    rewritten wholesale — taking seven requirements' tests with it while the suite stayed green,
-    because the only thing that would have noticed was the thing being removed. A guard that
-    lives inside what it guards is a guard that leaves with it. The outer ring is
-    `test_every_adr_is_listed_in_the_adr_index`, which fails if an ADR cited by shipped code is
-    still marked proposed — but it cannot see a missing requirement test, so what actually
-    caught this was counting the citations by hand. That is not a mechanism, and the honest
-    statement is that this guard protects the requirements and nothing yet protects this guard.
-
-    AND ITS OWN FLOOR HAD GONE STALE (Audit G, G-11). It read `len(required) >= 24` while
-    ADR-0016 reached 32 requirements, so the whole decision table, its acceptance gate and
-    R-32 — all of R-25 through R-32 — could be deleted from the specification with this guard
-    green. Measured: eight requirement definitions removed, `1 passed`. `not missing` did not
-    notice, because a requirement that is gone from the ADR is not a requirement without a
-    test; it is a test citing nothing, which is the direction this never checked.
-
-    THE REPLACEMENT CARRIES NO NUMBER. `== 32` was refused: a future R-33 turns it red and the
-    obvious edit is to bump it, which is the maintenance trap rather than the guard. Set
-    equality catches a deleted requirement AND a mistyped citation, in both directions, and it
-    is the same shape ADR-0013's sibling guard now uses — the class rather than the instance.
-    """
-    adr = _repo_root() / "docs" / "adr" / "0016-a-history-shows-whether-it-has-been-edited.md"
-    if not adr.is_file():  # pragma: no cover - docs ship in the sdist, a bare tree may not
-        pytest.skip("ADR-0016 not present")
-    required = set(re.findall(r"^\*\*(R-\d+)\.\*\*", adr.read_text(encoding="utf-8"), re.M))
-    tests = pathlib.Path(__file__).read_text(encoding="utf-8")
-    cited = set(
-        re.findall(r"\[ADR-0016 (R-\d+)\]", tests.split("def test_every_chain_requirement")[0])
-    )
-    assert required == cited, (
-        "ADR-0016 and its tests disagree. Requirements the ADR states that no test names: "
-        f"{sorted(required - cited, key=lambda s: (len(s), s))}. Requirements the tests cite "
-        f"that the ADR no longer states: {sorted(cited - required, key=lambda s: (len(s), s))}"
     )
 
 

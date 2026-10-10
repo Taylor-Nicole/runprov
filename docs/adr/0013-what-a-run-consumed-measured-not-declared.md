@@ -176,9 +176,12 @@ target, and there will be a third.
 ## Specification
 
 Numbered so it can be checked rather than remembered. **Every `R-n` below must be named by at
-least one test**, and `test_every_resource_requirement_has_a_test` derives this list from this
-file and fails if one is not — so a requirement added here without a test breaks the build, and
-a requirement deleted from the code stops being claimed here. A specification nobody checks is
+least one test**, and `test_every_requirement_of_every_ACCEPTED_decision_record_is_cited_by_a_test` derives
+this list from this file and fails if one is not — so a requirement added here without a test
+breaks the build, and a requirement deleted from the code stops being claimed here. That guard
+replaced four per-record copies on 2026-10-10 and now derives WHICH records it covers from their
+own declared status, so this record's requirements are checked because it says `accepted` rather
+than because its filename was typed into a test. A specification nobody checks is
 the document this package exists to replace.
 
 ### What is recorded
