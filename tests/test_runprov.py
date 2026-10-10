@@ -5347,9 +5347,7 @@ def test_every_pinned_tool_version_agrees_across_pyproject_and_the_workflows():
     declared = dict(re.findall(r'"([A-Za-z0-9_.-]+)==([^"]+)"', block.group(1)))
     assert declared, "no pinned tools found in the dev extra"
 
-    workflows = _repo_root() / ".github" / "workflows"
-    if not workflows.is_dir():  # pragma: no cover - absent in an unpacked sdist
-        pytest.skip("no .github/workflows here")
+    workflows = _workflows_dir()
 
     disagree, seen = [], 0
     for wf in sorted(workflows.glob("*.yml")):
@@ -6263,9 +6261,7 @@ def test_every_leg_that_cannot_reach_the_floor_says_so():
     out stops covering what it names the day a third workflow appears.
     """
     yaml = pytest.importorskip("yaml")
-    root = _repo_root() / ".github" / "workflows"
-    if not root.is_dir():  # pragma: no cover - absent in an unpacked sdist
-        pytest.skip("no .github/workflows here")
+    root = _workflows_dir()
 
     exempt_needed = {"3.13", "windows-latest"}
     checked = 0
@@ -18789,6 +18785,55 @@ def _repo_root():
     return pathlib.Path(__file__).resolve().parent.parent
 
 
+def _is_the_repository() -> bool:
+    """True in a git checkout of this project, False in an unpacked sdist.
+
+    THE DISCRIMINATOR EVERY `.github/` CHECK NEEDS, and it is the whole difference between a
+    legitimate skip and a silent hole. `.github/` is deliberately NOT in the sdist
+    (`pyproject.toml` says why: it is CI configuration for THIS repository, which a downstream
+    rebuild does not run and cannot use). So a check that reads a workflow MUST skip for the
+    packager rebuilding from the tarball -- and MUST NOT skip here, where an absent workflow
+    means the matrix is gone.
+
+    EIGHT SITES SPELLED THIS `if not <path>.is_file(): pytest.skip(...)`, which conflates the
+    two cases: the skip was right in the sdist and was covering a real absence here. One
+    definition, so the next site cannot spell it a ninth way.
+
+    `.git` IS A FILE IN A WORKTREE and a directory in a clone, so this asks `.exists()` rather
+    than `.is_dir()`.
+    """
+    return (_repo_root() / ".git").exists()
+
+
+def _workflow(name: str) -> pathlib.Path:
+    """The named workflow, SKIPPED only in an sdist and ASSERTED to exist here.
+
+    See `test_every_workflow_is_accounted_for_and_every_referenced_workflow_EXISTS` for the
+    measurement that made this necessary: deleting the matrix workflow left the whole suite
+    green, because every claim about CI was a content grep over whichever files were present.
+    """
+    if not _is_the_repository():  # pragma: no cover - an unpacked sdist
+        pytest.skip(f"{name}: .github/ is deliberately not in the sdist")
+    path = _repo_root() / ".github" / "workflows" / name
+    assert path.is_file(), (
+        f"{name} IS MISSING from this checkout. Every assertion about it is vacuous without "
+        f"it, and `ci.py matrix-check` reads it BY NAME before a tag."
+    )
+    return path
+
+
+def _workflows_dir() -> pathlib.Path:
+    """The workflows directory, skipped only in an sdist and asserted to exist here."""
+    if not _is_the_repository():  # pragma: no cover - an unpacked sdist
+        pytest.skip(".github/ is deliberately not in the sdist")
+    path = _repo_root() / ".github" / "workflows"
+    assert path.is_dir(), (
+        ".github/workflows IS MISSING from this checkout, so this repository has no CI at all "
+        "and every claim below about what CI enforces is vacuous."
+    )
+    return path
+
+
 def _release_tree(
     tmp_path, *, version="0.1.0", citation_version=None, heading="Unreleased", date_released=False
 ):
@@ -18954,9 +18999,7 @@ def test_only_the_two_legs_that_cannot_reach_the_floor_turn_it_off():
     billing-blocked since 2026-08-13, and the first self-hosted run found it: three green
     legs and 3.13 at 99.77%."""
     yaml = pytest.importorskip("yaml")
-    wf = _repo_root() / ".github/workflows/test.yml"
-    if not wf.is_file():  # pragma: no cover - not shipped in the sdist
-        pytest.skip("test.yml not present")
+    wf = _workflow("test.yml")
     matrix = yaml.safe_load(wf.read_text(encoding="utf-8"))["jobs"]["test"]["strategy"]["matrix"]
     off = [leg for leg in matrix["include"] if leg.get("coverage_floor") == "off"]
     assert sorted((leg["os"], leg["python"]) for leg in off) == [
@@ -19065,6 +19108,101 @@ def _yaml():
     return pytest.importorskip("yaml")
 
 
+#: WHAT EACH WORKFLOW IS FOR. The registry is the point rather than the prose: a workflow added
+#: without an entry here is red, and an entry whose file is gone is red. Both sides are computed
+#: -- the left from `git ls-files`, the right from this table -- so neither restates the other.
+_WORKFLOWS = {
+    "test.yml": (
+        "the hosted matrix. `ci.py matrix-check` reads it BY NAME before a tag, and it is this "
+        "project's ONLY Windows signal -- `publish.yml`'s own test job is ubuntu-only."
+    ),
+    "publish.yml": (
+        "uploads to PyPI on a tag through trusted publishing, gated on `needs: [build, test]`."
+    ),
+    "dco.yml": "checks the sign-off on a pull request; named in `CONTRIBUTING.md`.",
+    "selfhosted.yml": (
+        "runs the suite on this project's own runner. FILED, NOT DECIDED: the 2026-10-09 "
+        "council recommends deleting it on a memory-removed-per-cost argument. This entry "
+        "records that it is still here deliberately rather than by neglect."
+    ),
+}
+
+
+def test_every_workflow_is_accounted_for_and_every_referenced_workflow_EXISTS():
+    """MECH-1 — the finding this suite could not see about itself.
+
+    MEASURED 2026-10-10, in a copied tree: `git rm --cached .github/workflows/test.yml` plus
+    `rm` the file, then the full suite. **1254 passed, 7 skipped, rc=0. NOTHING NOTICED.**
+    Every claim this suite made about CI was a content grep over whichever workflow files
+    happened to be present, so deleting the matrix left those greps satisfied by the
+    survivors. The repository was green while holding NO cross-platform CI, and
+    `ci.py matrix-check` -- documented as *"the only thing that looks at Windows before the
+    tag"* -- would have had nothing to read.
+
+    A GUARD CANNOT NOTICE ITS OWN ABSENCE. The sentence those checks wanted was *"CI enforces
+    this"*. The sentence they asserted was *"some workflow file contains this string"*.
+    Different sentences, and the second is satisfied by a repository with no matrix at all.
+
+    WHAT THIS QUANTIFIES OVER, stated so it can be compared with the claim. Side one: the set
+    of workflow files `git ls-files` reports must EQUAL the set of keys in `_WORKFLOWS`. Side
+    two: every `.github/workflows/<name>` path mentioned in any tracked text file must resolve
+    to a file that exists. It does NOT cover a bare `test.yml` mentioned without its path --
+    that form is ambiguous with prose, and side one already holds all four names.
+
+    AND IT CANNOT PASS VACUOUSLY, which is the failure this project has caught five times: an
+    empty tracked-file list or a reference scan that matched nothing would otherwise be
+    indistinguishable from a clean result, so both are asserted non-empty.
+    """
+    if not _is_the_repository():  # pragma: no cover - an unpacked sdist
+        pytest.skip(".github/ is deliberately not in the sdist")
+    root = _repo_root()
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True
+    ).stdout.split()
+    assert tracked, "`git ls-files` returned nothing, so this check has no subject"
+
+    #: SIDE ONE -- the files that exist against the purposes declared for them.
+    present = {name.rsplit("/", 1)[1] for name in tracked if name.startswith(".github/workflows/")}
+    assert present, "no workflow is tracked at all, so this repository has no CI"
+    undeclared = sorted(present - set(_WORKFLOWS))
+    vanished = sorted(set(_WORKFLOWS) - present)
+    assert not undeclared, (
+        f"workflow(s) with no entry in `_WORKFLOWS`, so nothing says what they are for or "
+        f"whether anything may depend on them: {undeclared}"
+    )
+    assert not vanished, (
+        f"`_WORKFLOWS` declares workflow(s) that are GONE from this checkout: {vanished}. "
+        f"If that was deliberate, delete the entry and the checks that read the file; if it "
+        f"was not, this is the mech-1 defect happening."
+    )
+
+    #: SIDE TWO -- every path-form reference resolves. A document naming a workflow that does
+    #: not exist sends a reader to look for CI that is not there.
+    referenced, scanned = {}, 0
+    for name in tracked:
+        path = root / name
+        if name.startswith(".github/workflows/") or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):  # pragma: no cover - no binary tracked text today
+            continue
+        scanned += 1
+        for hit in re.findall(r"\.github/workflows/([A-Za-z0-9_.-]+\.ya?ml)", text):
+            referenced.setdefault(hit, []).append(name)
+    assert scanned > 1, f"the reference scan read {scanned} file(s); it has stopped working"
+    assert referenced, (
+        "no tracked file mentions a `.github/workflows/<name>` path, so either the regex has "
+        "stopped matching or the documentation stopped naming the workflows it depends on"
+    )
+    dangling = {
+        wf: sorted(set(where))
+        for wf, where in referenced.items()
+        if not (root / ".github" / "workflows" / wf).is_file()
+    }
+    assert not dangling, f"file(s) name a workflow that does not exist: {dangling}"
+
+
 def _workflow_files() -> list[pathlib.Path]:
     """Every workflow GitHub Actions would run, which is `*.yml` AND `*.yaml`.
 
@@ -19073,9 +19211,7 @@ def _workflow_files() -> list[pathlib.Path]:
     turning the coverage floor off passes as `.yaml` and FAILS as `.yml`, which is the
     difference between a rule and a spelling convention.
     """
-    wf_dir = _repo_root() / ".github/workflows"
-    if not wf_dir.is_dir():  # pragma: no cover - not shipped in the sdist
-        pytest.skip("workflows not present")
+    wf_dir = _workflows_dir()
     return sorted(wf_dir.glob("*.yml")) + sorted(wf_dir.glob("*.yaml"))
 
 
@@ -19187,9 +19323,7 @@ def test_the_self_hosted_workflow_says_what_it_cannot_prove():
     coverage than it had would be worse than no run. The same argument as
     `git_status_captured: false`."""
     yaml = pytest.importorskip("yaml")
-    wf = _repo_root() / ".github/workflows/selfhosted.yml"
-    if not wf.is_file():  # pragma: no cover - not shipped in the sdist
-        pytest.skip("selfhosted.yml not present")
+    wf = _workflow("selfhosted.yml")
     text = wf.read_text(encoding="utf-8")
     doc = yaml.safe_load(text)
 
@@ -19252,9 +19386,7 @@ def test_the_publish_workflow_declares_least_privilege(tmp_path):
     they never needed. A job-level block REPLACES the top-level one, which is why `publish`
     has to repeat `contents: read` beside the id-token it needs for trusted publishing."""
     yaml = pytest.importorskip("yaml")
-    wf = _repo_root() / ".github/workflows/publish.yml"
-    if not wf.is_file():  # pragma: no cover - not shipped in the sdist
-        pytest.skip("publish.yml not present")
+    wf = _workflow("publish.yml")
     d = yaml.safe_load(wf.read_text(encoding="utf-8"))
     assert d["permissions"] == {"contents": "read"}
     assert d["jobs"]["publish"]["permissions"] == {"id-token": "write", "contents": "read"}
@@ -31859,9 +31991,7 @@ def test_the_ci_section_claims_no_more_than_the_self_hosted_workflow_runs():
 
     Derived from the workflow rather than trusted: whatever `ci.py` steps that file actually
     runs are what the README may claim for it."""
-    wf = _repo_root() / ".github/workflows/selfhosted.yml"
-    if not wf.is_file():  # pragma: no cover - workflows are not in the sdist
-        pytest.skip("selfhosted.yml not present")
+    wf = _workflow("selfhosted.yml")
     section = _readme().split("## What has actually been run", 1)[1].split("\n## ", 1)[0]
     assert "self-hosted" in section, "the runner that answers for today's tree is unmentioned"
 
@@ -34758,6 +34888,166 @@ def test_every_byte_asserted_fixture_is_protected_from_line_ending_translation()
 #: to these keys by an EQUALITY, so a ninth hook cannot arrive unclassified and a removed one
 #: cannot leave a dead entry behind. Same split as `tests/conftest.py`'s tiers and
 #: `tools/claims.py`'s bindings: the registry holds the PAIR, never the value.
+def test_each_refused_trailer_family_is_matched_on_its_KEY_and_not_on_a_display_name():
+    """`ci.py`'s refusal rule, tested for the first time on 2026-10-10.
+
+    IT HAD NEVER BEEN TESTED, and its own docstring was the reason that was invisible: *"a pure
+    function so the decision is testable without a repository"*. A docstring that gives
+    testability as the design rationale is not a test, and `grep -c attribution` over this file
+    returned one hit, about something else. The rule this guards is the one whose violation has
+    already cost a 272-commit rewrite and a force-push of a public repository.
+
+    THE TWO CASES THAT MUST NOT MATCH ARE THE POINT. A bare `claude` in a subject line is a true
+    statement about the `.claude/` directory and must survive; a display name is not the subject,
+    because `Claude Opus 5` and `Claude Opus 5 (1M context)` were two spellings of one thing and
+    matching the name would have missed 61 of the 230 removed.
+    """
+    ci = _ci_module()
+    coauthor, session = (family for family, _, _ in ci._REFUSED_TRAILERS)
+
+    #: THE TRUE STATEMENTS THAT MUST SURVIVE, ASSERTED FIRST. A widened pattern is the
+    #: realistic failure here, and checking the refusals first diagnoses it as "this message
+    #: matched two families" instead of as "a legitimate sentence was refused". Order the
+    #: assertions so the likely defect names itself.
+    must_pass = (
+        "Stop tracking the .claude/ directory\n",
+        "Document why anthropic's models are not a dependency here\n",
+        "Co-authored-by: A Real Person <person@example.org>\n",
+        "The word claude-session appears in prose, not as a trailer key\n",
+        "A subject\n\nBody mentioning Co-Authored-By in passing, mid-sentence.\n",
+    )
+    for message in must_pass:
+        assert ci._refused_trailers_in(message) == [], f"{message!r} is legitimate and was refused"
+
+    must_refuse = {
+        "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>": coauthor,
+        "Co-authored-by: Claude Opus 5 (1M context) <x@anthropic.com>": coauthor,
+        "co-AUTHORED-by:   claude": coauthor,
+        "  Co-authored-by: someone <a@anthropic.com>": coauthor,
+        "Claude-Session: https://claude.ai/code/session_01UJ": session,
+        "claude-session:x": session,
+    }
+    for trailer, family in must_refuse.items():
+        got = ci._refused_trailers_in(f"A subject line\n\n{trailer}\n")
+        assert got == [family], f"{trailer!r} must be refused as {family!r}, got {got}"
+
+    #: BOTH AT ONCE, so a message carrying two families reports two rather than stopping at one.
+    both = ci._refused_trailers_in("s\n\nCo-authored-by: claude\nClaude-Session: u\n")
+    assert both == [coauthor, session], both
+
+    #: NOT VACUOUS: a table that lost its entries would make every loop above pass over nothing.
+    assert len(ci._REFUSED_TRAILERS) == 2, (
+        f"two families are declared and tested here; `_REFUSED_TRAILERS` holds "
+        f"{len(ci._REFUSED_TRAILERS)}. A family added without a case above is untested."
+    )
+    assert ci._attribution_offenders("abc123def\x00s\n\nClaude-Session: u\n\x00\x00\n") == [
+        ("abc123def", session)
+    ], "the history scan must report the FAMILY, not only the sha"
+
+
+def test_the_commit_msg_hook_DELEGATES_to_ci_py_and_restates_no_pattern_of_its_own():
+    """ONE RULE, ONE DEFINITION — the defect this closes, found 2026-10-09.
+
+    The rule lived twice: `ci.py`'s `_REFUSED_TRAILERS` and a hand-written `sh` regex in
+    `.git/hooks/commit-msg`. **The halves guarded different things.** The hook refused
+    `Claude-Session:` and `ci.py` DID NOT, so each covered what the other missed and the union
+    existed only on the one machine where both were present. `.git/hooks` is not tracked, so a
+    fresh clone got the half that misses a whole family — and `grep -rn commit-msg` over tracked
+    files returned NOTHING, so the clone had no sign the other half had ever existed.
+
+    WHAT THIS ASSERTS, so the claim and the quantification are the same sentence: the committed
+    config declares a `commit-msg`-stage hook whose entry INVOKES `ci.py check-commit-msg`, that
+    `commit-msg` is in `default_install_hook_types` so installing is one documented command, and
+    that the config contains no trailer pattern of its own — because a second pattern anywhere is
+    the defect returning, whatever it currently says.
+    """
+    yaml = pytest.importorskip("yaml")
+    cfg_path = _repo_root() / ".pre-commit-config.yaml"
+    if not cfg_path.is_file():  # pragma: no cover - not shipped? it is, see pyproject
+        pytest.skip(".pre-commit-config.yaml not present")
+    raw = cfg_path.read_text(encoding="utf-8")
+    cfg = yaml.safe_load(raw)
+
+    assert "commit-msg" in cfg.get("default_install_hook_types", []), (
+        "`pre-commit install` installs only the pre-commit type by default, so without this a "
+        "declared commit-msg hook is installed by no command and looks exactly like one that "
+        "is working"
+    )
+    staged = [
+        hook
+        for repo in cfg["repos"]
+        for hook in repo["hooks"]
+        if "commit-msg" in (hook.get("stages") or [])
+    ]
+    assert len(staged) == 1, f"expected exactly one commit-msg hook, found {len(staged)}"
+    hook = staged[0]
+    assert hook["id"] in _HOOKS_THAT_ONLY_READ, (
+        f"{hook['id']} must be classified in one of the hook registries, so that the "
+        f"byte-asserted-directory rule can decide whether it needs an exclude"
+    )
+    entry = hook["entry"]
+    assert "ci.py" in entry and "check-commit-msg" in entry, (
+        f"the hook must CALL the one definition rather than restate it; entry is {entry!r}"
+    )
+    assert hook.get("pass_filenames") is not False, (
+        "at the commit-msg stage pre-commit passes the message file, and that path is the whole "
+        "input: with pass_filenames false the step gets nothing and refuses every commit"
+    )
+
+    #: NO SECOND DEFINITION. Any of the refused keys appearing in a regex-ish context here would
+    #: be a copy of the rule, which is what drifted last time.
+    ci = _ci_module()
+    for family, pattern, _ in ci._REFUSED_TRAILERS:
+        assert pattern.pattern not in raw, (
+            f"the {family} pattern is spelled out in the pre-commit config as well as in "
+            f"ci.py. Two definitions of one rule is the defect this test exists for."
+        )
+
+
+def test_ci_py_check_commit_msg_refuses_each_family_and_accepts_a_clean_message(tmp_path):
+    """THE HOOK'S BEHAVIOUR, exercised rather than read.
+
+    The test above asserts the config DELEGATES. This one runs the delegated command, because a
+    hook that is wired up correctly and exits 0 on everything is the shape that looks installed
+    and guards nothing. Classified by return code: 0 is accepted, non-zero is refused, and the
+    message must NAME the family so the person committing knows which rule they met.
+    """
+    ci_py = _repo_root() / "ci.py"
+    if not ci_py.is_file():  # pragma: no cover - ci.py ships, see pyproject's include list
+        pytest.skip("ci.py not present")
+    ci = _ci_module()
+
+    clean = tmp_path / "clean.txt"
+    clean.write_text("A subject line\n\nA body about the .claude/ directory.\n", encoding="utf-8")
+    done = subprocess.run(
+        [sys.executable, str(ci_py), "check-commit-msg", str(clean)],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, f"a clean message was refused: {done.stdout}{done.stderr}"
+
+    for family, pattern, _ in ci._REFUSED_TRAILERS:
+        key = pattern.pattern.split(r"\s*")[1].replace("\\", "")
+        #: THE DERIVATION CHECKS ITSELF. The key is read out of the pattern rather than typed
+        #: again here -- a second spelling is the defect this whole pair of tests is about --
+        #: but a derivation that quietly returns rubbish would build a message that is refused
+        #: for the wrong reason, or not at all, and the loop would still pass.
+        assert re.fullmatch(r"[A-Za-z][A-Za-z-]+", key), (
+            f"the key derivation broke: got {key!r} out of {pattern.pattern!r}, so the message "
+            f"built below would not be testing the trailer"
+        )
+        bad = tmp_path / "bad.txt"
+        bad.write_text(f"A subject line\n\n{key}: claude\n", encoding="utf-8")
+        done = subprocess.run(
+            [sys.executable, str(ci_py), "check-commit-msg", str(bad)],
+            capture_output=True,
+            text=True,
+        )
+        said = done.stdout + done.stderr
+        assert done.returncode != 0, f"{family} was NOT refused by the hook's own command: {said}"
+        assert family in said, f"the refusal must name the family; it said {said!r}"
+
+
 _HOOKS_THAT_REWRITE_FILES = {
     "ruff-check": "`args: [--fix]` edits the file in place",
     "ruff-format": "a formatter writes the file it formats",
@@ -34769,6 +35059,7 @@ _HOOKS_THAT_ONLY_READ = {
     "check-toml": "parses and reports; writes nothing",
     "check-added-large-files": "refuses a large file without changing it",
     "check-merge-conflict": "greps for conflict markers",
+    "no-assistant-trailers": "reads the commit message and refuses it; writes nothing",
 }
 
 
@@ -43717,9 +44008,7 @@ def test_the_ci_sections_legs_are_the_legs_the_workflow_ACTUALLY_DECLARES():
     is how the stale three-row table survived; this fails in both directions, so adding a Python
     version to the matrix without touching the README is red, and so is removing one.
     """
-    wf = _repo_root() / ".github/workflows/test.yml"
-    if not wf.is_file():  # pragma: no cover - workflows are not in the sdist
-        pytest.skip("test.yml not present")
+    wf = _workflow("test.yml")
     yaml = pytest.importorskip("yaml")
     section = _readme().split("## What has actually been run", 1)[1].split("\n## ", 1)[0]
     workflow = yaml.safe_load(wf.read_text(encoding="utf-8"))

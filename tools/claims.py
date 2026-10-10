@@ -1135,10 +1135,35 @@ def report() -> int:
                 f"did not, so a fall from {recorded} to {len(unaccounted)} is WORK"
             )
         else:
-            print(
-                f"baseline {BASELINE.name}: residue {recorded + recorded_known} of "
-                f"{recorded_population}, and nothing in the rule has moved"
-            )
+            #: THE LIVE FIGURES BESIDE THE RECORDED ONES, and that is a repair. This printed
+            #: `residue {recorded + recorded_known} of {recorded_population}` -- THREE values
+            #: read back out of the baseline file, in a sentence that reads as a measurement.
+            #: So it could not see the denominator move, and on 2026-10-10 it reported
+            #: "nothing in the rule has moved" while the population had gone 405 -> 406. Only
+            #: the gate caught it. A report that quotes the file it is comparing against is
+            #: not a comparison, and this one cleared a change it had not examined.
+            live_population, live_unaccounted, live_known = counts()
+            drift = [
+                f"{label} {was} -> {now}"
+                for label, was, now in (
+                    ("population", recorded_population, live_population),
+                    ("unaccounted", recorded, live_unaccounted),
+                    ("historical", recorded_known, live_known),
+                )
+                if was != now
+            ]
+            if drift:
+                print(
+                    f"the rule has not moved, but the COUNTS have: {'; '.join(drift)}. "
+                    f"Regenerate with `python ci.py claims-baseline` and say what moved -- a "
+                    f"population change with a flat residue means a line arrived or left, not "
+                    f"that anything was accounted for."
+                )
+            else:
+                print(
+                    f"baseline {BASELINE.name}: residue {live_unaccounted + live_known} of "
+                    f"{live_population}, measured now and equal to what is recorded"
+                )
     return 0
 
 

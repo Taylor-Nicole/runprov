@@ -1,5 +1,15 @@
-# Same checks as CI, run locally. `pre-commit install` once, then a failing push is
+# Same checks as CI, run locally. `python ci.py setup` once, then a failing push is
 # something you find in a second rather than in a queue.
+
+# BOTH HOOK TYPES, AND THE SECOND ONE IS A REPAIR. `pre-commit install` installs only the
+# `pre-commit` type by default, so a `commit-msg` hook declared below would sit here doing
+# nothing -- installed by no command, and looking exactly like a hook that was working. That is
+# how the assistant-trailer rule came to have two definitions: the `commit-msg` guard had to be
+# hand-written into `.git/hooks`, which is untracked, so a fresh clone got neither it nor any
+# sign it had ever existed. Declared here so that `pre-commit install` does the right thing for
+# anyone who runs it directly, and `ci.py setup` passes `--install-hooks` for the same reason.
+default_install_hook_types: [pre-commit, commit-msg]
+
 repos:
   # PINNED TO THE VERSION THE GATE ENFORCES, and it has to stay that way. This said v0.6.9
   # against a gate on 0.16.2 -- ten minor versions apart -- and with `--fix` that is worse
@@ -52,3 +62,26 @@ repos:
       # tool that ships someone's parquet by accident would be a poor advertisement.
         args: [--maxkb=200]
       - id: check-merge-conflict
+  # THE RULE LIVES IN `ci.py`, AND THIS IS A CALLER. It used to be a hand-written `sh` regex in
+  # an untracked `.git/hooks/commit-msg`, and the two copies drifted into guarding DIFFERENT
+  # THINGS: the hook refused `Claude-Session:` and `ci.py` did not, so each half covered what the
+  # other missed and the union existed only on one machine. Delegating means a family added to
+  # `ci.py`'s `_REFUSED_TRAILERS` is enforced here the same day, with nothing to keep in step.
+  #
+  # AT COMMIT TIME, which is the only time that helps. `ci.py lint` reads the whole history and
+  # is the authority, but by then the commit exists and may already be on a branch with a pull
+  # request -- where GitHub freezes `refs/pull/*/head` and the trailer is permanent whatever
+  # `main` says afterwards. Removing 230 of them once cost a 272-commit rewrite and a force-push
+  # of a public repository, and three of those snapshots can still never be deleted.
+  - repo: local
+    hooks:
+      - id: no-assistant-trailers
+        name: refuse assistant attribution trailers
+        entry: python ci.py check-commit-msg
+        language: system
+        stages: [commit-msg]
+        # `pass_filenames` must stay TRUE: at this stage pre-commit passes the one message file,
+        # and that path is the whole input. With it false the step would receive nothing and
+        # refuse every commit -- a check that cannot pass, which is worse than one that cannot
+        # fail because it gets switched off.
+        pass_filenames: true

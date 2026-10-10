@@ -9,6 +9,97 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — a guard could not notice its own absence, and the attribution rule had two definitions that disagreed
+
+**2026-10-09 architecture council, mech-1 and the attribution findings.** No behaviour changes.
+Both were guards that looked satisfied while guarding nothing.
+
+**MEASURED FIRST, because the finding is a measurement.** In a copied tree:
+`git rm --cached .github/workflows/test.yml` plus `rm` the file, then the full suite →
+**1254 passed, 7 skipped, rc=0. Nothing noticed.** The repository was green while holding no
+cross-platform CI at all, and `ci.py matrix-check` — documented as *"the only thing that looks
+at Windows before the tag"* — would have had nothing to read. Every claim the suite made about
+CI was a content grep over whichever workflow files happened to be present, so deleting the
+matrix left those greps satisfied by the survivors. **The sentence those checks wanted was "CI
+enforces this"; the sentence they asserted was "some workflow file contains this string".**
+
+* **Eight sites spelled `if not <path>.is_file(): pytest.skip(...)`**, which conflates two cases:
+  the skip is correct in an unpacked sdist, where `.github/` is deliberately absent, and was
+  covering a real absence in a checkout. One helper now makes that distinction once —
+  `_is_the_repository()` — and the eight sites assert in a checkout and skip only in a tarball.
+* **New: `test_every_workflow_is_accounted_for_and_every_referenced_workflow_EXISTS`.** Both
+  sides are computed, so neither restates the other: the files come from `git ls-files`, the
+  purposes from a `_WORKFLOWS` registry, and the references from scanning every tracked text
+  file for a `.github/workflows/<name>` path. An added workflow with no entry is red, a declared
+  workflow that is gone is red, and a document naming a workflow that does not exist is red.
+  Demonstrated with three verified mutants and a void control on both sides. **The same deletion
+  experiment now exits 1 with three tests failing by name.**
+* **`ci.py matrix-check` names the real defect first.** Without a local `test.yml` it used to
+  reach GitHub, get an empty run list, and advise *"push the commit and let the matrix finish"* —
+  advice that can never succeed, about a workflow that does not exist.
+
+### Fixed — one rule, one definition: the refused-trailer rule now covers both families everywhere
+
+**The rule lived twice and the halves guarded different things.** `ci.py` refused
+`Co-Authored-By:` naming an assistant. An untracked, hand-written `sh` regex in
+`.git/hooks/commit-msg` refused that **and `Claude-Session:`**. So each half covered what the
+other missed, and the union existed only on the one machine where both were present.
+
+Three defects, all closed together, because closing them separately leaves a window where the
+test asserts a rule the hook no longer shares:
+
+1. **`Claude-Session:` was guarded only by the untracked copy.** `grep` for it across `ci.py`,
+   the suite, `tools/` and `CONTRIBUTING.md` returned **nothing**. Both families now come from
+   one table, `_REFUSED_TRAILERS`, each entry carrying its own reason.
+2. **The decision function had no tests** — while its docstring gave testability as the design
+   rationale: *"a pure function so the decision is testable without a repository"*. **A docstring
+   that names testability as the reason is not a test.** Now exercised over both families, both
+   key spellings, and the cases that must SURVIVE: a subject line about the `.claude/` directory
+   is a true statement, and a real person as co-author is legitimate.
+3. **Nothing installed the hook.** `grep -rn commit-msg` over tracked files was empty, so a fresh
+   clone got neither the hook nor any sign one had existed. It is now a `commit-msg`-stage
+   `pre-commit` hook that **calls `ci.py check-commit-msg` rather than restating the pattern**,
+   `default_install_hook_types` includes `commit-msg` so `pre-commit install` installs it, and
+   `ci.py setup` passes `--install-hooks`.
+
+`attribution_check`'s docstring already argued correctly that the check must exist in CI because
+`.git/hooks` is not versioned — **and it had been implemented for one family out of two.** A
+rationale that good is what stops anyone re-reading the code beneath it.
+
+Verified with six mutants: dropping a family, restating the pattern in the config instead of
+delegating, making the refusal always pass, widening the pattern so a bare `claude` matches,
+`pass_filenames: false`, and dropping `commit-msg` from the install types. Five went red on the
+first attempt; the widened-pattern mutant took **three** tries — twice it had not applied, and
+the second of those reported `rc=1` from a `SyntaxError`, which reads exactly like a catch.
+
+### Fixed — `ci.py claims` quoted the baseline file in a sentence that reads as a measurement
+
+`tools/claims.py` printed *"baseline claims-baseline.txt: residue 123 of 405, and nothing in the
+rule has moved"* using **three values read back out of the baseline file**. So the report could
+not see its own denominator move: on 2026-10-10 it cleared a tree whose population had gone
+**405 → 406**, and only `test_the_unaccounted_claim_count_is_exactly_the_committed_baseline`
+caught it. **A report that quotes the file it is comparing against is not a comparison** — and
+this one cleared a change it had never examined. It now measures live, prints the recorded and
+measured figures together, and names which of the three moved.
+
+### Changed — the claim baseline's population, 405 → 406, and what moved
+
+**Decomposed, because a ratchet whose denominator moves silently is a lie with a number on it.**
+Both digests are unchanged — `detection 56cf5a2ef4679db6`, `bindings 1d6bb490ea3f7932` — and the
+residue is **flat at 123** (55 unexamined, 68 historical). The whole movement is **one line
+arriving**: the correction note added to `CONTRIBUTING.md` above, which carries the date
+`2026-10-10` and is classified `dated` by the existing rule. **No work was done and none was
+undone:** a figure that carries its own date is the honest form, so the line is accounted for on
+arrival rather than being added to the residue.
+
+### Fixed — CONTRIBUTING said `python ci.py` is "exactly what CI runs", and `ci.py` says otherwise
+
+It is the **Linux subset**: one platform and one interpreter against the matrix's eight jobs.
+`matrix_check`'s own docstring states this correctly — *"the gate is green and CI is green are
+different claims"* — so two files in this repository contradicted each other, and the one a
+contributor reads first was the wrong one. The Windows leg was once red for thirteen commits
+with the local gate green each time.
+
 ### Fixed — three instrument files stated figures and a cost ordering that measurement does not support
 
 **2026-10-09 architecture council, findings F3 and F2/test-3/test-4.** Nothing here changes

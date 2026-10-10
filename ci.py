@@ -85,29 +85,93 @@ def lint() -> None:
     attribution_check()
 
 
-#: A commit message line that names an assistant as CO-AUTHOR. Matched on the trailer's
-#: MEANING -- a `Co-Authored-By:` key whose value names the assistant -- rather than on a
-#: display name: `Claude Opus 5` and `Claude Opus 5 (1M context)` were two spellings of the
-#: same thing, and matching the name would have missed 61 of the 230 removed on 2026-09-15.
-#: A bare `claude` is deliberately NOT enough; this history contains a commit whose SUBJECT
-#: is about the `.claude/` directory, and it is a true statement that must survive.
-_ATTRIBUTION = re.compile(r"^\s*Co-authored-by\s*:.*(claude|anthropic)", re.I | re.M)
+#: EVERY TRAILER FAMILY THIS HISTORY REFUSES, AND THIS TABLE IS THE ONLY DEFINITION OF THEM.
+#:
+#: IT HOLDS TWO FAMILIES BECAUSE IT USED TO HOLD ONE, AND THAT WAS THE DEFECT. The rule lived
+#: in two places -- here, and a hand-written `sh` pattern in `.git/hooks/commit-msg` -- and the
+#: two halves did not agree: the hook refused `Claude-Session:` and THIS FILE DID NOT. So each
+#: half guarded what the other missed, and the union existed only on the one machine where both
+#: were present. A fresh clone got the half that misses a whole family, which is exactly the
+#: case the docstring below correctly argues this check exists for. Found 2026-10-09.
+#:
+#: MATCHED ON THE TRAILER'S MEANING, not on a display name. `Claude Opus 5` and `Claude Opus 5
+#: (1M context)` were two spellings of the same thing, and matching the name would have missed
+#: 61 of the 230 removed on 2026-09-15. A bare `claude` is deliberately NOT enough: this history
+#: contains a commit whose SUBJECT is about the `.claude/` directory, and that is a true
+#: statement which must survive.
+_REFUSED_TRAILERS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    (
+        "Co-Authored-By naming an assistant",
+        re.compile(r"^\s*Co-authored-by\s*:.*(claude|anthropic)", re.I | re.M),
+        "GitHub parses the trailer and counts the named account as a contributor. Removing 230 "
+        "of them on 2026-09-15 cost a rewrite of 272 commits, a force-push of a public "
+        "repository and 253 regenerated SHA citations -- and three closed pull requests STILL "
+        "hold frozen `refs/pull/*/head` snapshots that GitHub refuses every write to and no API "
+        "can delete. A trailer that reaches a branch with a pull request is PERMANENT.",
+    ),
+    (
+        "Claude-Session",
+        re.compile(r"^\s*Claude-Session\s*:", re.I | re.M),
+        "Dropped 2026-09-15, reversing a request from four days earlier: all 42 carried the same "
+        "URL, which resolves only for its author, so as provenance for any other reader they "
+        "were a dead link. Disclosure of assistant use belongs in prose a person reads, not in "
+        "a machine trailer. No value is matched -- the KEY is the whole offence.",
+    ),
+)
 
 
-def _attribution_offenders(log: str) -> list[str]:
-    """The SHAs in `git log --format=%H%x00%B%x00%x00` output whose message carries one.
+def _refused_trailers_in(message: str) -> list[str]:
+    """Every family in `_REFUSED_TRAILERS` that this ONE message carries, named.
 
     A pure function so the decision is testable without a repository, which is the same
-    reason `_coverage_args` is one.
+    reason `_coverage_args` is one -- and, until 2026-10-10, nothing tested it. A docstring
+    that gives testability as the design rationale is not a test.
     """
-    bad = []
+    return [family for family, pattern, _ in _REFUSED_TRAILERS if pattern.search(message)]
+
+
+def _attribution_offenders(log: str) -> list[tuple[str, str]]:
+    """`(sha, family)` for each commit in `git log --format=%H%x00%B%x00%x00` that carries one.
+
+    RETURNS THE FAMILY, not just the SHA, because with two families a bare SHA list makes the
+    reader grep the message to find out which rule they broke.
+    """
+    bad: list[tuple[str, str]] = []
     for chunk in log.split("\0\0\n"):
         if not chunk.strip():
             continue
         sha, _, body = chunk.partition("\0")
-        if _ATTRIBUTION.search(body):
-            bad.append(sha.strip()[:9])
+        bad.extend((sha.strip()[:9], family) for family in _refused_trailers_in(body))
     return bad
+
+
+def check_commit_msg(paths: list[str]) -> None:
+    """Refuse ONE commit message. This is what the `commit-msg` hook calls.
+
+    WHY THE HOOK CALLS THIS INSTEAD OF RESTATING THE PATTERN. It used to restate it, in `sh`,
+    in an untracked file -- and the two copies drifted into guarding different things. A hook
+    that DELEGATES cannot drift from the rule, and a family added to `_REFUSED_TRAILERS` is
+    enforced locally the same day it is enforced in CI.
+
+    AT COMMIT TIME, AND THAT IS THE POINT. `attribution_check` reads the whole history and is
+    the authority, but by the time it runs the commit exists and may already have been pushed
+    to a branch with a pull request -- where the trailer is permanent whatever `main` says
+    afterwards. A guard at merge time would be too late; this one is not.
+
+    IT TAKES THE PATH AS AN ARGUMENT, which no other step does, because `pre-commit` passes the
+    message file as argv. See the `__main__` block for why that is handled separately.
+    """
+    if len(paths) != 1:
+        raise SystemExit(f"check-commit-msg takes exactly one message file, got {paths}")
+    message = Path(paths[0]).read_text(encoding="utf-8", errors="replace")
+    hits = _refused_trailers_in(message)
+    if hits:
+        lines = "\n".join(
+            f"  REFUSED: {family}\n    {why}"
+            for family, _, why in _REFUSED_TRAILERS
+            if family in hits
+        )
+        raise SystemExit(f"commit-msg refused this message.\n{lines}")
 
 
 def attribution_check() -> None:
@@ -116,6 +180,12 @@ def attribution_check() -> None:
     WHY THIS EXISTS IN CI AND NOT ONLY IN A HOOK. `.git/hooks` is not versioned, so a fresh
     clone has no hook and the first commit from it is unguarded. This runs wherever `lint`
     runs, which is every push.
+
+    AND THAT ARGUMENT WAS RIGHT WHILE THE IMPLEMENTATION HONOURED HALF OF IT. Until 2026-10-10
+    this check covered `Co-Authored-By:` only, while the untracked hook also refused
+    `Claude-Session:` -- so the family this check missed was guarded nowhere a clone could see.
+    Both now come from `_REFUSED_TRAILERS`, and the hook calls `check_commit_msg` rather than
+    restating anything. A rationale this good is what stops anyone re-reading the code under it.
 
     WHY IT MATTERS MORE THAN IT LOOKS. GitHub parses `Co-Authored-By:` and counts the named
     account as a contributor. Removing 230 of them on 2026-09-15 cost a rewrite of 272
@@ -144,11 +214,16 @@ def attribution_check() -> None:
         )
     bad = _attribution_offenders(proc.stdout)
     if bad:
+        listed = ", ".join(f"{sha} ({family})" for sha, family in bad[:10])
         raise SystemExit(
-            f"attribution-check: {len(bad)} commit(s) name an assistant as co-author: "
-            f"{', '.join(bad[:10])}{' …' if len(bad) > 10 else ''}"
+            f"attribution-check: {len(bad)} commit(s) carry a refused trailer: "
+            f"{listed}{' …' if len(bad) > 10 else ''}"
         )
-    print(f"attribution-check ok — {seen} commits, none naming an assistant as co-author")
+    families = len(_REFUSED_TRAILERS)
+    print(
+        f"attribution-check ok — {seen} commits, none carrying any of "
+        f"{families} refused trailer families"
+    )
 
 
 def _coverage_args() -> list[str]:
@@ -334,6 +409,16 @@ def matrix_check() -> None:
     `success` while a leg was skipped, and `skipped` is not `passed` — the distinction that
     makes `0` mean *checked and fine* everywhere else in this package.
     """
+    #: THE NAMED DEFECT BEFORE THE CENSUS. Without this, a tree with no `test.yml` reaches
+    #: GitHub, gets an empty run list, and is told to "push the commit and let the matrix
+    #: finish" -- advice that can never succeed, about a workflow that does not exist.
+    #: Measured 2026-10-10: deleting this file left the whole suite green, so the state is
+    #: reachable. The suite now refuses it too; this is the message a human would hit first.
+    if not (ROOT / ".github" / "workflows" / "test.yml").is_file():
+        raise SystemExit(
+            "there is no `.github/workflows/test.yml` in this tree, so there is no matrix to "
+            "check and no Windows signal at all. This step cannot clear a tag without it."
+        )
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
     ).stdout.strip()
@@ -625,7 +710,12 @@ def build() -> None:
 
 def setup() -> None:
     run(PY, "-m", "pip", "install", "-e", ".[dev]")
-    run(PY, "-m", "pre_commit", "install")
+    #: BOTH HOOK TYPES. `pre-commit install` alone installs only `pre-commit`, so the
+    #: `commit-msg` stage hook that refuses assistant trailers was never installed by this
+    #: command -- it had to be written into `.git/hooks` by hand, which is how the rule ended
+    #: up with two definitions that disagreed. `default_install_hook_types` in the config says
+    #: the same thing for anyone who runs `pre-commit install` directly.
+    run(PY, "-m", "pre_commit", "install", "--install-hooks")
     print("\nhooks installed. `python ci.py` runs everything CI runs.")
 
 
@@ -813,10 +903,20 @@ STEPS = {
     "release-check": release_check,
     #: NOT in the default `lint test build`: it needs the network and `gh`. Run before a tag.
     "matrix-check": matrix_check,
+    #: NOT in the default gate: it judges ONE message, and the `commit-msg` hook is what calls
+    #: it. Listed so it is discoverable and so the documented-command guard can resolve it.
+    "check-commit-msg": lambda: check_commit_msg(sys.argv[2:]),
 }
 
 if __name__ == "__main__":
     wanted = sys.argv[1:] or ["lint", "test", "build"]
+    #: ONE STEP TAKES AN ARGUMENT, and it is handled before the loop rather than inside it.
+    #: `pre-commit` invokes `ci.py check-commit-msg <message file>`, so a PATH arrives in argv --
+    #: which no other step can tolerate, because the loop reads argv as a list of step names and
+    #: would reject the path as an unknown step. Handled here so that contract is unchanged.
+    if wanted[0] == "check-commit-msg":
+        check_commit_msg(wanted[1:])
+        raise SystemExit(0)
     for name in wanted:
         if name not in STEPS:
             raise SystemExit(f"unknown step {name!r}; choose from {', '.join(STEPS)}")

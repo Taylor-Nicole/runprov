@@ -186,13 +186,49 @@ Stated here so the gap is visible rather than implied:
 ## Run the CI locally, before you push
 
 ```bash
-python ci.py setup     # dev extras + the pre-commit hooks, once
-python ci.py           # lint, test, build — exactly what CI runs
+python ci.py setup     # dev extras + both pre-commit hook types, once
+python ci.py           # lint, test, build — the Linux subset of what CI runs
 ```
 
 **The workflow calls `ci.py`.** It does not restate the commands, because a copy of a
 command list is wrong within a month and then "it passes locally" stops meaning anything.
 There is one definition, and you can run it.
+
+**"The Linux subset", not "exactly what CI runs", and the difference has cost two days.** This
+line said *exactly* until 2026-10-10. It is not: `ci.py` runs one platform and one interpreter,
+while `test.yml` runs eight jobs including Windows, where this package hashes bytes AS WRITTEN
+and a fixture using `Path.write_text` with no `newline=""` produces CRLF. The Windows leg was
+red for thirteen commits with the local gate green each time. `ci.py`'s own `matrix_check`
+docstring states this correctly — *"the gate is green and CI is green are different claims"* —
+so the two were contradicting each other in the same repository. **Before a tag, run `python
+ci.py matrix-check`,** which reads the hosted matrix's jobs by name.
+
+### The one thing `ci.py setup` installs that you cannot see working
+
+`python ci.py setup` installs **two** hook types, and the second is a `commit-msg` hook that
+refuses assistant-attribution trailers — `Co-Authored-By:` naming an assistant, and
+`Claude-Session:`.
+
+**Why at commit time rather than at review time.** GitHub parses `Co-Authored-By:` and counts
+the named account as a contributor, so removing them means rewriting history — and the cost of
+doing that is already measured above, under *"The history will not be retro-signed"*. The figures
+are not repeated here: they are one measurement, and a measurement restated in two places is two
+claims that can disagree.
+
+What that section does not say, because it is about signing rather than about this hook, is the
+part that decides WHERE the guard belongs. Some of those frozen `refs/pull/*/head` snapshots can
+never be removed — GitHub refuses every write to them and no API deletes them — so **a trailer
+that reaches a branch with a pull request is permanent, whatever `main` says afterwards.** A
+guard at merge time would be too late. This one is not.
+
+**There is one definition of the rule**, `_REFUSED_TRAILERS` in `ci.py`. The hook calls
+`python ci.py check-commit-msg <file>`; it does not restate the pattern. It used to, in `sh`, in
+an untracked `.git/hooks/commit-msg` — and the two copies drifted into guarding *different
+families*, so each covered what the other missed and the union existed only on one machine.
+
+**And `ci.py lint` is the authority, not the hook.** `.git/hooks` is not versioned, so a fresh
+clone's first commit is unguarded until you run `setup`; the history check runs on every push and
+covers every family. If you never run `setup`, nothing is lost except the early warning.
 
 Individually: `python ci.py lint` (ruff format --check, ruff check, mypy), `python ci.py
 test` (pytest with the coverage gate), `python ci.py build` (build, twine check --strict,
