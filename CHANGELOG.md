@@ -9,6 +9,51 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — three instrument files stated figures and a cost ordering that measurement does not support
+
+**2026-10-09 architecture council, findings F3 and F2/test-3/test-4.** Nothing here changes
+behaviour; all three were false claims inside the files that enforce this project's rules, which
+is the one place a reader goes when deciding whether a rule still applies.
+
+1. **`tools/torture.py` opened by asserting, in the present tense, a state ADR-0005 had
+   falsified** — *"there is no `os.replace`, no `mkstemp`, no `O_EXCL` anywhere in `runprov/`"*.
+   `runprov/_atomic.py` holds all three, every provenance write routes through it, and `ci.py`
+   already recorded that `torture` exited 1 until exactly that landed. **The sentence survived the fix it
+   produced.** Rewritten to quote itself as history with ADR-0005's date, and to name
+   `test_every_provenance_write_in_the_package_goes_through_the_atomic_helper` as what holds the
+   census instead of repeating it — a second census here would be a second definition.
+   *Swept for the shape:* **9 present-tense absence claims across 5 instrument files; this was
+   the only false one.** Two others are the same shape and both verified true today
+   (`claims.py:609`, `ci.py:235`); six are claims about data formats or runtime diagnostics.
+
+2. **`tests/conftest.py` carried six stale figures**, each written once and relied on since:
+   `1 148` test functions (**live 1 159**, and stated three times), `1 250` collected items
+   (**live 1 261**), `564` items in `-m unit` (**live 573**), `82` repo tests (**live 95 items**),
+   `43 000` lines, and a `2.23 s` collection breakdown. **De-numbered rather than corrected** —
+   the item counts are one `--collect-only` command and cannot go stale, so a figure in a
+   docstring is a second definition of a derivable value.
+
+3. **The tier cost ordering was wrong, and this comment had now been wrong twice in opposite
+   directions.** Version one called the child-process tier "what makes it slow"; version two
+   corrected that to `api` and called `subprocess` *"the cheap 2% of the suite"*. **Measured back
+   to back in one batch, 2026-10-10: `subprocess` is the MOST expensive tier per item** — 68 items
+   at ~359 ms/item against `unit`'s 573 at ~79 ms/item — and it takes **13.9% of wall time off
+   5.4% of the items**, so "the cheap 2%" is wrong on both readings. An independent batch the same
+   week put it at 463 ms/item and 18.8% of wall time: **the ordering reproduced, no magnitude
+   did.** Version two was right that `api` is the largest single block of time and wrong to infer
+   from that which tier is expensive.
+
+4. **`pyproject.toml`'s `subprocess` marker description shipped both halves of that error to
+   users** — `"(67 items, and NOT the slow tier -- api is)"`, printed by `pytest --markers`. The
+   count had grown and the ranking was inverted. Numbers and cost ranking removed from the marker
+   strings, with the reason recorded beside them.
+
+**The lesson recorded in the files themselves:** the old instruction was *"do not quote a single
+tier's seconds; quote the ratio"*. **The ratio was not reproducible either** — `-m unit` against
+the whole suite came back ~4x in one batch and ~2x in another, because this host runs other work
+and the whole-suite leg ran last, beside two unrelated test runs. Orderings reproduce here;
+ratios do not.
+
 ### Fixed — `open_output()` compares the marker it will WRITE, so `comment=None` and a `str`-Enum no longer destroy the artifact
 
 **Audit O, product-1 and product-1b. Two defects in one expression, each of them an unparseable

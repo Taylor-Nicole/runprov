@@ -10,14 +10,32 @@ by someone who knew what the reader wanted. This feeds the readers records that 
 bad sector produced, which is the state a provenance package actually meets in the field --
 the whole reason it writes anything down is that the machine it ran on is not there any more.
 
-  PART A -- TORN WRITES. Every artifact write in the package is a plain `Path.write_text`:
-  there is no `os.replace`, no `mkstemp`, no `O_EXCL` anywhere in `runprov/`. The history
-  sink is careful (`sinks.py` appends under an exclusive lock and fsyncs); the provenance
-  sidecar, the YAML twin, the in-flight marker and the environment snapshot are not. A
-  process that dies inside one of those calls leaves a PREFIX on disk. Part A produces
-  exactly that prefix -- deterministically, at a named write site, rather than by racing a
-  `SIGKILL` and hoping -- and then asks two questions: is the file all-or-nothing, and do
-  the readers survive it.
+  PART A -- TORN WRITES, AND IT IS A REGRESSION TEST NOW RATHER THAN A SEARCH.
+
+  THIS PARAGRAPH USED TO SAY, in the present tense: "Every artifact write in the package is a
+  plain `Path.write_text`: there is no `os.replace`, no `mkstemp`, no `O_EXCL` anywhere in
+  `runprov/`." That was true when Part A was written, and ADR-0005 (2026-09-01, T-04)
+  falsified it -- `runprov/_atomic.py` holds all three -- while `ci.py` records that `torture`
+  exited 1 until exactly that landed. **The sentence survived the fix
+  it produced**, which is this file's own subject one layer up: an instrument whose stated
+  rationale describes a tree that has since moved.
+
+  WHAT HOLDS THE CENSUS IS NOT THIS DOCSTRING. It is
+  `test_every_provenance_write_in_the_package_goes_through_the_atomic_helper`, which derives
+  the site list rather than typing it, matches `write_text` AND `write_bytes` after a seventh
+  site was found spelling it the second way, exempts only `sinks.py` (appends under an
+  exclusive lock and is already fsynced) and `_atomic.py` (is the helper), asserts both
+  exemption subjects still exist, and asserts the helper still calls `os.replace`. Repeating
+  a census here would be a second definition of that property, stale the day the next site
+  lands -- so this file names the guard and states none of its numbers.
+
+  SO WHAT PART A IS FOR NOW. It still produces a PREFIX deterministically, at a named write
+  site, rather than by racing a `SIGKILL` and hoping, and it asks the two questions the
+  helper's existence does not answer by itself. Is the file all-or-nothing, as `_atomic`
+  claims? And do the readers survive one that is not -- because a prefix still arrives from
+  an OLDER runprov, from a filesystem that reordered the rename, or from something that is
+  not runprov at all. `_atomic` being called everywhere is a claim about the WRITERS; Part A
+  is the only thing here that holds the READERS to it.
 
   PART B -- CORRUPTED RECORDS. 100% statement and branch coverage says the TESTS reached
   every branch. It says nothing about which INPUTS reach them. Part B mutates the bytes of

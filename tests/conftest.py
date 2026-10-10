@@ -11,22 +11,24 @@
     python -m pytest -m "not subprocess"    everything that stays in this process
     python -m pytest -m repo            the checks whose SUBJECT is this repository's own files
 
-WHY DERIVED AND NOT DECLARED. There are 1 148 test functions in one file. Writing
-`@pytest.mark.unit` on each is **a list of 1 148**, and this repository's rule is *delete the
-list, do not extend it* -- a hand-applied marker drifts the first time a test grows a subprocess
-call, and nothing would say so. So the tier is computed from the test's own call graph every time
-the suite is collected, which means it cannot be stale: change what a test does and its tier
-changes with it.
+WHY DERIVED AND NOT DECLARED. The suite is one file holding over a thousand test functions.
+Writing `@pytest.mark.unit` on each is **a list as long as the suite**, and this repository's
+rule is *delete the list, do not extend it* -- a hand-applied marker drifts the first time a
+test grows a subprocess call, and nothing would say so. So the tier is computed from the test's
+own call graph every time the suite is collected, which means it cannot be stale: change what a
+test does and its tier changes with it.
 
 WHAT IS A DECISION AND WHAT IS DERIVED, because the distinction is the whole design. The four
 PREDICATES below are a human judgement -- four lines saying what "drives the CLI" means. The
-POPULATION is derived: 1 148 tests, none of them named here. That is the same split
+POPULATION is derived: every test pytest collects, none of them named here. That is the same split
 `tools/claims.py` makes for the README's numbers, and the reason is the same: a tier's MEANING is
 not enumerable by the language, while its members are.
 
 THE CLOSURE IS THE PART THAT MATTERS. A test that shells out through a helper calls no
-`subprocess` itself, and reading only the test body misclassifies it. Measured over this suite's
-1 148 test functions, body-only against transitive:
+`subprocess` itself, and reading only the test body misclassifies it. **Measured once, on
+2026-09-24, and quoted here as the evidence for the design rather than as a live figure** --
+the suite has grown since and nothing recomputes the body-only column, which would need a
+second implementation of the thing this file exists to do. Body-only against transitive:
 
     body only         unit=669  api=373  cli=83  subprocess=23
     with the closure  unit=513  api=503  cli=68  subprocess=64
@@ -36,9 +38,10 @@ INTO `subprocess`** (21 from `unit`, 15 from `cli`, 5 from `api`). So a body-onl
 have run 41 child-process tests under `-m "not subprocess"` -- the selection would have been a
 lie, quietly, in the direction that costs time rather than the one that fails loudly.
 
-(Those are FUNCTION counts. `pytest` collects 1 250 ITEMS from them because `parametrize` expands,
-so `-m unit` reports 563 rather than 513. Both numbers are right at their own granularity and the
-guard checks the item one, since that is what runs.)
+(Those are FUNCTION counts, and `pytest` collects more ITEMS than that because `parametrize`
+expands. Both granularities are right at their own level; the guard checks the item one, since
+that is what runs. No count is written here -- `--collect-only -q` is one command and cannot be
+stale, and a figure in this docstring would be a second definition of it.)
 
 EXACTLY ONE TIER, AND `unit` IS A COMPLEMENT RATHER THAN A DEFAULT. `unit` means *none of the
 other three predicates matched*, so the four are total by construction. What is NOT total is this
@@ -48,23 +51,42 @@ in a loop, built by a factory -- gets NO marker, and
 red, never a quiet `unit`: a tier that silently absorbs what it could not classify is the floor
 shape this project keeps finding.
 
-WHAT THE TIERING BUYS, measured back to back in ONE batch because this host's load swings the
-absolute numbers by a factor of two or three -- only the ratio within a batch means anything:
+WHAT THE TIERING BUYS, AND WHY NO NUMBER FOR IT IS WRITTEN HERE. The ITEM counts are one
+command -- `pytest -m <tier> --collect-only -q` -- and they reproduce exactly. The TIMES do not.
 
-    -m unit             564 items     64 s
-    -m subprocess        67 items     28 s
-    -m "not subprocess" 1184 items    274 s
-    the whole suite     1251 items    354 s
+This paragraph used to carry a table of seconds and the claim that `-m unit` is **"about five and
+a half times faster"** than the full suite, under the instruction *"do not quote a single tier's
+seconds; quote the ratio"*. **That instruction was not enough.** Re-measured 2026-10-10 back to
+back in one batch, the ratio came back about FOUR; an independent batch the same week came back
+about TWO. On this host the ratio moves as much as the absolutes do, because the machine runs
+other people's work and whichever leg lands under a neighbour's build is the leg that looks
+expensive -- in that batch the whole-suite leg ran last, beside two other test runs, which is
+exactly the comparator the ratio divides by.
 
-So `-m unit` is **about five and a half times faster** than the full suite and covers 45% of it.
-And the per-tier figures do NOT sum to the whole: measured separately on a quieter host, `api`
-came back at 69 s against the 210 s the same tests implied inside the batch. Do not quote a
-single tier's seconds; quote the ratio, and re-measure the batch.
+So the only things stated here are what reproduced across BOTH batches, and they are ORDERINGS
+rather than magnitudes:
 
-`repo` IS ORTHOGONAL, not a fifth tier. 82 tests read this repository's own sources, docs or
-workflows, and they sit across all four tiers (57 unit, 14 subprocess, 9 cli, 2 api). They are the
-ones that answer *"does the documentation still describe the code"*, and wanting to run exactly
-those is a different question from wanting the fast ones.
+    cheapest per item   `unit`
+    then                `api` and `cli`, close together
+    then                `repo`
+    most expensive      `subprocess` -- by a wide margin, several times `unit`
+
+`-m unit` is substantially faster than the whole suite and covers a little under half its items.
+If you need an actual number, measure it in one batch on a quiet host, use it, and do not write
+the answer back into this file.
+
+`repo` IS ORTHOGONAL, not a fifth tier. The tests whose SUBJECT is this repository's own
+sources, docs or workflows sit across all four tiers. They are the ones that answer *"does the
+documentation still describe the code"*, and wanting to run exactly those is a different
+question from wanting the fast ones.
+
+AND ITS SCOPE IS THE FOUR HELPERS BELOW, WHICH IS NARROWER THAN ITS NAME. `_READS_THE_REPO`
+matches tests that reach the repository through one of four named helpers. A test that reaches
+it another way -- `pathlib.Path(runprov.__file__).parent`, which several do -- has the same
+subject and gets no marker. Nothing selects on `-m repo` in `ci.py` or any workflow, so this
+costs navigation rather than a false green; it is filed as the open finding it is, and the
+repair is to derive the predicate from reaching the package tree rather than to add a fifth
+helper name to the list.
 
 A BARE `pytest` MUST STILL WORK, for a Debian, conda-forge or Nix packager rebuilding from the
 sdist -- the same reason `pyproject.toml` keeps coverage flags out of `addopts`. Every marker
@@ -88,11 +110,17 @@ _DRIVES: tuple[tuple[str, frozenset[str]], ...] = (
     #: exactly one tier. A test that launches a child AND calls `cli.main` is a `subprocess` test:
     #: the child is the outermost thing it drives, so that is what it is a test OF.
     #:
-    #: NOT ORDERED BY COST, AND THAT IS MEASURED. The first version of this comment said the
-    #: child-process tier is "what makes it slow". It is not: back to back in one batch,
-    #: `-m subprocess` is 67 items in 28 s while the whole suite is 1 251 in 354 s, and the time
-    #: lives in `api`'s 539 items doing real file I/O. Calling `subprocess` the slow tier would
-    #: have sent a reader to skip the cheap 2% of the suite.
+    #: NOT ORDERED BY COST, AND THIS COMMENT'S COST CLAIM HAS NOW BEEN WRONG TWICE, IN OPPOSITE
+    #: DIRECTIONS. Version one said the child-process tier is "what makes it slow". Version two
+    #: corrected that to `api` holding the time, and called `subprocess` "the cheap 2% of the
+    #: suite". Measured 2026-10-10, and again in an independent batch the same week: BOTH are
+    #: wrong. `subprocess` is the MOST expensive tier PER ITEM, by several times, and it takes a
+    #: double-digit share of the suite's wall time off about five percent of its items -- so it
+    #: is not "the cheap 2%" on either reading. What version two had right is that `api` is the
+    #: largest single BLOCK of time, because it holds the most items doing real file I/O; what it
+    #: got wrong was inferring from that which tier is EXPENSIVE. A share of the total and a cost
+    #: per item are different questions, and version one was closer on the second of them. No
+    #: figure is quoted here; the tiering docstring above says why.
     ("subprocess", frozenset({"subprocess.run", "subprocess.Popen", "subprocess.check_output"})),
     ("cli", frozenset({"cli.main"})),
     ("api", frozenset({"runprov.Run", "runprov.configure", "cli.Run"})),
@@ -125,11 +153,13 @@ def _called(node: ast.AST) -> set[str]:
 def _reachable(path: str) -> dict[str, frozenset[str]]:
     """For each top-level function in one test module, everything it can reach IN THAT MODULE.
 
-    CACHED PER FILE because the suite's one module is 43 000 lines and collection must not pay
-    for it 1 251 times. Measured after the fixed point replaced a per-name recursive walk:
-    2.23 s once, of which **ast.parse is 1.33 s**, the callee sweep 0.69 s and the closure
-    itself 0.21 s. So the cost is reading the file rather than resolving it, and the recursive
-    version's extra 1.8 s was pure waste. Paid once per `pytest` run, `-k one_test` included.
+    CACHED PER FILE because the suite is one very large module and collection must not pay for
+    it once per collected item. Measured when the fixed point replaced a per-name recursive
+    walk: **the great majority of the cost is `ast.parse`**, with the callee sweep and the
+    closure itself minor beside it -- so the cost is READING the file rather than resolving it,
+    and the recursive version's extra time was pure waste. The absolute seconds are not quoted
+    because this host's load swings them by a factor of two or three; re-measure in one batch
+    if the question comes up again. Paid once per `pytest` run, `-k one_test` included.
 
     THE CLOSURE IS OVER FUNCTIONS DEFINED HERE ONLY -- it does not follow into the package, which
     is deliberate: the question is what the TEST drives, and `runprov`'s own internals calling

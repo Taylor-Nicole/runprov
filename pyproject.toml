@@ -175,14 +175,19 @@ addopts = "-q"
 # for. The gate is not weakened: `ci.py test` passes the same flags, and CI calls ci.py.
 testpaths = ["tests"]
 # TIERS, APPLIED BY `tests/conftest.py` AND DERIVED FROM EACH TEST'S OWN CALL GRAPH -- never
-# written on a test, because 1 148 hand-applied markers is a list that drifts the first time a
-# test grows a subprocess call. Registered here so `--strict-markers` is satisfied and a typo in
-# `-m` is an error rather than an empty run.
+# written on a test, because one hand-applied marker per test is a list as long as the suite,
+# and it drifts the first time a test grows a subprocess call. Registered here so
+# `--strict-markers` is satisfied and a typo in `-m` is an error rather than an empty run.
+#
+# NO COUNTS AND NO COST RANKING IN THESE STRINGS. `pytest --markers` prints them to users, so a
+# figure here is a published claim with nothing deriving it -- and the one that was here got
+# both halves wrong: it said `subprocess` was 67 items (it had grown) and that `api` is the slow
+# tier. Per item, `subprocess` is the MOST expensive of the four. See `tests/conftest.py`.
 markers = [
   "unit: in-process, drives nothing but this package's internals",
   "api: drives `Run` or `configure` against real files",
   "cli: drives `cli.main` in process",
-  "subprocess: launches a child process (67 items, and NOT the slow tier -- `api` is)",
+  "subprocess: launches a child process",
   "repo: the test's SUBJECT is this repository's own sources, docs or workflows (orthogonal)",
 ]
 
