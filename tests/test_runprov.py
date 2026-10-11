@@ -7914,7 +7914,347 @@ def test_the_sidecar_still_records_every_registration(tmp_path):
     assert len(run.record["inputs"]) == 3
 
 
+def test_close_torn_line_adds_exactly_one_newline_and_only_when_one_is_missing(tmp_path):
+    """ADR-0005 R-7's repair, as a function rather than as two copies of itself.
+
+    IT WAS WRITTEN TWICE — once in `JsonlSink`, once in `YamlLogSink`, whose copy's own comment
+    read *"Same torn-line repair as `JsonlSink`, for the same reason"*. **Eleven surviving
+    mutants sat on the duplicated lines**, and the mutation ids could not even be attributed to
+    a site, because the two blocks were textually identical: a test exercising one copy left the
+    other unmeasured and nothing could say which.
+
+    EXACTLY ONE BYTE, AND ONLY WHEN MISSING, are two separate claims. A repair that always
+    appends a newline turns every well-formed history into one with a blank line between every
+    record; a repair that appends two does the same. Both read as "the torn line was closed".
+
+    AND IT IS TOTAL: an empty file has no final line to close, and `seek(-1)` on one RAISES —
+    which inside the lock would abandon the append and, through `run.py`'s catch-all, the whole
+    record. The callers no longer ask first, so the function must not need them to.
+    """
+    closed = tmp_path / "torn.jsonl"
+    closed.write_bytes(b'{"a": 1}\n')
+    with open(closed, "ab+") as fh:
+        runprov.sinks._close_torn_line(fh)
+    assert closed.read_bytes() == b'{"a": 1}\n', (
+        "a file already ending in a newline must not gain another: a blank line between every "
+        "record is the same corruption from the other side"
+    )
+
+    torn = tmp_path / "open.jsonl"
+    torn.write_bytes(b'{"a": 1}')
+    with open(torn, "ab+") as fh:
+        runprov.sinks._close_torn_line(fh)
+    assert torn.read_bytes() == b'{"a": 1}\n', (
+        f"an unterminated final line must gain EXACTLY one newline, so the next append lands on "
+        f"its own line: {torn.read_bytes()!r}"
+    )
+
+    empty = tmp_path / "empty.jsonl"
+    empty.write_bytes(b"")
+    with open(empty, "ab+") as fh:
+        runprov.sinks._close_torn_line(fh)
+    assert empty.read_bytes() == b"", (
+        "an empty file has no final line to close. `seek(-1)` on one raises, and inside the lock "
+        "that abandons the append and -- through `run.py`'s catch-all -- the whole record"
+    )
+
+
+def test_EVERY_file_sink_CREATES_the_directories_leading_to_it(tmp_path):
+    """`mkdir(parents=True, ...)`, and the `parents` half had no test.
+
+    MEASURED: `parents=False` survived at both sink sites. It only requires the IMMEDIATE parent
+    to exist, and every existing test puts its history directly under `tmp_path` or one level
+    below it — so the two spellings agree everywhere the suite looks. The destination that
+    separates them is two or more levels below something that exists, which is exactly what
+    `configure(run_log="results/2026/runs.jsonl")` asks for on a fresh checkout.
+
+    `exist_ok` WAS ALREADY COVERED, which is the half that makes this worth saying: one argument
+    of one call was guarded and the other was not, and only a mutant per argument could tell them
+    apart.
+
+    THE POPULATION IS DERIVED, as in the torn-line guard beside this one: every class in
+    `sinks.py` whose `append` opens a file. A third file-backed sink is covered on the day it is
+    added.
+    """
+    source = (_repo_root() / "runprov" / "sinks.py").read_text(encoding="utf-8")
+    file_backed = [
+        node.name
+        for node in ast.parse(source).body
+        if isinstance(node, ast.ClassDef)
+        for item in node.body
+        if isinstance(item, ast.FunctionDef)
+        and item.name == "append"
+        and any(
+            isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == "open"
+            for c in ast.walk(item)
+        )
+    ]
+    assert file_backed, "no file-backed sink found, so this test asserts nothing"
+
+    for name in file_backed:
+        #: TWO MISSING LEVELS, NOT ONE. With one, `parents=False` still succeeds -- the parent
+        #: of the missing directory exists -- and the case would pass against the mutation it is
+        #: written to catch.
+        destination = tmp_path / name / "deep" / "deeper" / "history.log"
+        assert not destination.parent.exists(), "the fixture must start with the levels absent"
+        getattr(runprov.sinks, name)(destination).append(
+            {"schema": "probe.v1", "run_id": f"nested-{name}"}
+        )
+        assert destination.is_file(), (
+            f"{name} did not create the directories leading to "
+            f"{destination.relative_to(tmp_path)}. "
+            f"These sinks swallow every exception and emit a diagnostic, so the failure is a "
+            f"warning on stderr and a record that was never written -- the quietest way this "
+            f"package can lose a run."
+        )
+        assert f"nested-{name}".encode() in destination.read_bytes(), (
+            f"{name} created the file but not the record, so the assertion above passed on an "
+            f"empty file"
+        )
+
+
+def test_EVERY_sink_that_appends_to_a_file_closes_a_torn_line_first(tmp_path):
+    """The population is derived from `sinks.py` itself — every class whose `append` opens a
+    file — so a third file-backed sink added tomorrow is covered on the day it is added rather
+    than when someone remembers to extend a list.
+
+    BOTH HALVES ARE ASSERTED, and the behavioural one is why. A structural check that the call
+    appears would pass if the call were made at the wrong moment; a behavioural check alone
+    cannot say a NEW sink was forgotten.
+
+    AND THE NEW RECORD MUST BE SHOWN TO HAVE LANDED. `YamlLogSink.append` catches every
+    exception and emits a diagnostic, so an append that failed outright leaves the file holding
+    only the fragment — which satisfies *"the fragment is still on its own line"* perfectly. A
+    case that passes when nothing was written is the vacuous leg this project refuses.
+    """
+    source = (_repo_root() / "runprov" / "sinks.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    file_backed, repairs = {}, {}
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for item in node.body:
+            if not (isinstance(item, ast.FunctionDef) and item.name == "append"):
+                continue
+            calls = {
+                c.func.id
+                for c in ast.walk(item)
+                if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+            }
+            if "open" in calls:
+                file_backed[node.name] = True
+                repairs[node.name] = "_close_torn_line" in calls
+
+    assert file_backed, (
+        "no sink in `sinks.py` was found to open a file, so every assertion below is vacuous -- "
+        "the walk is not reaching the class bodies"
+    )
+    missing = sorted(name for name, ok in repairs.items() if not ok)
+    assert not missing, (
+        f"{missing} append to a file without closing a torn line first. A process killed "
+        f"mid-append leaves a fragment, and `O_APPEND` glues the next record onto it so BOTH "
+        f"are unreadable -- and the reader counts that as ONE lost line, understating the loss "
+        f"by the record it did not know it had destroyed."
+    )
+
+    #: AND EACH ONE DOES IT, not merely names the function.
+    for name in sorted(file_backed):
+        sink_class = getattr(runprov.sinks, name)
+        path = tmp_path / f"{name}.log"
+        fragment = b"TORN-FRAGMENT-NO-NEWLINE"
+        path.write_bytes(fragment)
+        sink_class(path).append({"schema": "probe.v1", "run_id": f"r-{name}"})
+        body = path.read_bytes()
+        lines = body.split(b"\n")
+        assert lines[0] == fragment, (
+            f"{name} glued its record onto the torn fragment: the first line is {lines[0]!r}. "
+            f"Both records are now unreadable and the reader will count one loss, not two."
+        )
+        assert len(body) > len(fragment) + 1 and f"r-{name}".encode() in body, (
+            f"{name} wrote nothing after the fragment, so the case above passed vacuously -- "
+            f"this sink swallows exceptions and emits a diagnostic, so a failed append looks "
+            f"exactly like a repaired fragment. File: {body!r}"
+        )
+
+
+class _FakeMsvcrt:
+    """Windows file locking, rehearsed on this host [sinks.py mutation triage 2026-10-11].
+
+    A PLATFORM NAME IS NOT THE PROPERTY. `_exclusive`'s `msvcrt` branch needs
+    `sys.platform == "win32"` and an importable `msvcrt`, and both are injectable here — the
+    module's own comment already records that the POSIX side was *"verified by stubbing fcntl to
+    raise"*. Three surviving mutants lived in that branch and were reachable all along; the
+    matrix does not run mutation analysis, so "needs the matrix" would have left them forever.
+
+    THE CONSTANTS ARE SENTINELS, NOT 1 AND 0. Real `msvcrt.LK_LOCK` is `1` and `LK_UNLCK` is
+    `0`, and the byte count passed beside them is also `1` — so a test using the real values
+    cannot tell `locking(fd, LK_LOCK, 1)` from `locking(fd, 1, LK_LOCK)`, nor a mutant that
+    swapped the constant for the count. Distinct strings make every position discriminating.
+    """
+
+    LK_LOCK = "<LK_LOCK>"
+    LK_UNLCK = "<LK_UNLCK>"
+
+    def __init__(self, fail_on_lock=False):
+        self.calls: list[tuple] = []
+        self._fail_on_lock = fail_on_lock
+        self._fh = None
+
+    def watch(self, fh):
+        """Remember the handle and hand it straight back, so the POSITION each call is made at
+        can be recorded without this stub standing in for the file.
+
+        IT RETURNS THE HANDLE, NOT ITSELF. The first version returned `self`, so `_exclusive`
+        received the stub where it expected a file and died on `fileno()` -- a stub that
+        accepts a role it cannot play.
+        """
+        self._fh = fh
+        return fh
+
+    def locking(self, fd, mode, nbytes):
+        #: THE POSITION IS PART OF THE CALL. `msvcrt` locks a byte range starting at the CURRENT
+        #: offset, so `seek(0)` before each call is what makes the lock and the unlock cover the
+        #: same byte -- and the docstring below said so while nothing checked it, which is the
+        #: shape this project refuses. Two surviving mutants moved exactly those seeks.
+        self.calls.append((mode, nbytes, self._fh.tell() if self._fh is not None else None))
+        if self._fail_on_lock and mode == self.LK_LOCK:
+            raise OSError("fake: the lock could not be taken")
+
+
+def _force_msvcrt(monkeypatch, fake):
+    """Make `_exclusive` take the win32 path: no POSIX lock, and an importable `msvcrt`."""
+    import fcntl
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(fcntl, "flock", lambda *a, **k: (_ for _ in ()).throw(OSError("no flock")))
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+
+
+def test_the_windows_lock_takes_and_releases_exactly_one_byte(tmp_path, monkeypatch):
+    """`msvcrt.locking(fd, LK_LOCK, 1)` and `msvcrt.locking(fd, LK_UNLCK, 1)`.
+
+    THE BYTE COUNT IS THE SUBJECT. `msvcrt` locks a byte RANGE from the current position, so
+    locking 2 bytes of a 1-byte region fails and locking a different count than was unlocked
+    leaves a region held for the life of the process — on the file this package appends every
+    run's record to. Two surviving mutants changed exactly that count, in both directions.
+
+    AND `seek(0)` BEFORE EACH, because the range is relative to the position: appending moves
+    the cursor to the end, so a lock taken without the seek covers a different byte than the
+    unlock releases.
+    """
+    fake = _FakeMsvcrt()
+    _force_msvcrt(monkeypatch, fake)
+    path = tmp_path / "h.jsonl"
+    path.write_bytes(b"")
+    with open(path, "ab+") as fh, runprov.sinks._exclusive(fake.watch(fh)) as holds_lock:
+        assert holds_lock is True, (
+            "the msvcrt branch took the lock, so the caller must be told one is HELD -- "
+            "ADR-0016 R-22: chaining under the unlocked fallback reports a correct file as "
+            "tampered"
+        )
+        assert fake.calls == [(fake.LK_LOCK, 1, 0)], (
+            f"after locking: {fake.calls}. The third element is the file POSITION the call was "
+            f"made at: the range is relative to it, so a lock taken anywhere but 0 covers a "
+            f"different byte than the unlock releases."
+        )
+    assert fake.calls == [(fake.LK_LOCK, 1, 0), (fake.LK_UNLCK, 1, 0)], (
+        f"the lock must be taken and released over the SAME single byte, at the SAME position: "
+        f"{fake.calls}. A differing count or offset leaves a region of the run history locked "
+        f"for the life of the process -- and appending moves the cursor to the end, so the "
+        f"`seek(0)` before each call is what makes the two agree."
+    )
+
+
+def test_a_FAILED_windows_lock_is_announced_and_never_unlocked(tmp_path, monkeypatch, capsys):
+    """When the lock could not be taken, two things must follow: the user is told, and nothing
+    is unlocked.
+
+    THE UNLOCK CONDITION IS `locked == "msvcrt" AND sys.platform == "win32"`, and a surviving
+    mutant made it `or`. On Windows where the lock FAILED, `or` is satisfied by the platform
+    alone — so the `finally` calls `msvcrt.locking(..., LK_UNLCK, 1)` on a byte that was never
+    locked. That raises inside a `finally`, which replaces whatever the body was doing with an
+    `OSError` from the cleanup: the append is abandoned and, through `run.py`'s catch-all, the
+    record with it.
+
+    AND THE NOTICE IS THE OTHER HALF. Its own comment records that it used to sit inside the
+    win32-only branch, so a POSIX `flock` failure — NFS, CIFS, a container without the syscall,
+    which are the lock's entire justification — degraded silently.
+    """
+    fake = _FakeMsvcrt(fail_on_lock=True)
+    _force_msvcrt(monkeypatch, fake)
+    path = tmp_path / "h.jsonl"
+    path.write_bytes(b"")
+    with open(path, "ab+") as fh, runprov.sinks._exclusive(fake.watch(fh)) as holds_lock:
+        assert holds_lock is False, (
+            "no lock was taken, and the caller must be told so: chaining under an unlocked "
+            "append lets two writers claim the same predecessor"
+        )
+
+    assert fake.calls == [(fake.LK_LOCK, 1, 0)], (
+        f"the lock was attempted and failed, so NOTHING may be unlocked: {fake.calls}. An "
+        f"unlock of a byte that was never locked raises inside the `finally` and takes the "
+        f"append -- and the whole record -- with it."
+    )
+    page = capsys.readouterr()
+    assert "no file locking available" in page.err + page.out, (
+        f"a degraded append must say so. The one case that most deserved announcing -- a lock "
+        f"the platform could not give -- was once the one case that could not: {page.err!r}"
+    )
+
+
 # ===================================================== X3 — the sink guard, made real
+def test_RecordSink_is_runtime_checkable_which_is_the_only_thing_that_decorator_buys(tmp_path):
+    """`@typing.runtime_checkable` on a public protocol is an affordance for CALLERS, and
+    nothing in this package uses it — so removing it broke nothing and the mutant survived.
+
+    THE DECORATOR'S OWN DOCSTRING CLAIMED OTHERWISE. It said `runtime_checkable` was what made
+    `configure()` fail early, which stopped being true when that guard was rewritten to bind the
+    real signature. **Two statements about one mechanism, disagreeing** — the README has the
+    correct account and the docstring had the stale one, and a reader reaches for the docstring.
+    Corrected there; held here.
+
+    WHAT IS ASSERTED IS THE README'S OWN EXAMPLE, so the two cannot drift apart: *"`isinstance`
+    against a protocol checks attribute presence, so `isinstance([], RecordSink)` is `True`"*.
+    That sentence is only true of a runtime-checkable protocol — without the decorator the call
+    raises `TypeError` — so it is exactly the claim that binds the decorator in place.
+
+    AND THE SECOND LEG IS WHY THE FIRST IS NOT A COMPLAINT: a bare list satisfying the
+    `isinstance` check is fine, because `configure()` does not use it. The rejection comes from
+    the signature binding, which `test_a_sink_whose_append_takes_the_wrong_arguments_is_refused`
+    holds.
+    """
+    assert isinstance([], runprov.RecordSink) is True, (
+        "the README states this exact example to explain why `isinstance` cannot validate a "
+        "sink. Without `@typing.runtime_checkable` the call raises TypeError instead, and the "
+        "public protocol stops being usable by a caller writing their own sink."
+    )
+    assert isinstance(runprov.sinks.MemorySink(), runprov.RecordSink) is True, (
+        "a real sink must satisfy its own public protocol, or the affordance is useless"
+    )
+
+    class NoAppend:
+        pass
+
+    assert isinstance(NoAppend(), runprov.RecordSink) is False, (
+        "and the check must still DISCRIMINATE -- without this leg a `runtime_checkable` that "
+        "answered True for everything would satisfy the assertions above"
+    )
+
+    #: AND THE README'S ACCOUNT IS THE ONE IN THE DOCSTRING NOW. The stale sentence named
+    #: `configure()` as the beneficiary; the live guard binds a signature and never asks
+    #: `isinstance`. A docstring that explains a mechanism the code abandoned is worse than
+    #: none, because it reads as the current design.
+    doc = runprov.RecordSink.__doc__ or ""
+    assert "isinstance" in doc and "configure()" in doc, (
+        f"the protocol's docstring must say what the decorator is really for and what validates "
+        f"a sink instead, since those were once the same sentence and are not: {doc!r}"
+    )
+    assert "fails at `configure()`" not in doc, (
+        "the stale claim is back: `runtime_checkable` is NOT what makes `configure()` fail "
+        "early, and saying so sends a reader to the wrong mechanism"
+    )
+
+
 def test_a_sink_whose_append_takes_the_wrong_arguments_is_refused(tmp_path):
     """`runtime_checkable` checks attribute PRESENCE, not signature -- so the guard whose
     docstring promised failure "at configuration, not at the end of a two-hour run"

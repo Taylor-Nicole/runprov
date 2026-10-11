@@ -66,9 +66,16 @@ if typing.TYPE_CHECKING:  # pragma: no cover
 class RecordSink(typing.Protocol):
     """Somewhere a run record can be appended.
 
-    `runtime_checkable` so a misconfigured project fails at `configure()` with a clear
-    message rather than at the end of a long run, when the record is about to be written
-    and the work is already done.
+    `runtime_checkable` FOR CALLERS, and not for anything this package does. The sentence here
+    used to say it was what made `configure()` fail early, and that stopped being true when the
+    guard was rewritten: `isinstance` against a protocol checks attribute PRESENCE, so
+    `isinstance([], RecordSink)` is `True` and the check could never have validated a sink.
+    `configure()` binds the real signature against a specimen record instead. The README has
+    said so for some time; this docstring did not, and a reader reaches for the docstring.
+
+    The decorator stays because the protocol is PUBLIC -- `runprov.RecordSink` -- and a caller
+    writing their own sink may reasonably ask `isinstance(mine, RecordSink)`. That affordance is
+    the only thing it provides, and it is what the test named below holds it to.
     """
 
     def append(self, record: dict[str, typing.Any]) -> None:
@@ -113,11 +120,7 @@ class JsonlSink:
                     # the new record lands intact on the next, and the count is true again.
                     # Inside the lock, because a concurrent writer must not see the file
                     # between the check and the fix.
-                    fh.seek(0, os.SEEK_END)
-                    if fh.tell():
-                        fh.seek(-1, os.SEEK_END)
-                        if fh.read(1) != b"\n":
-                            fh.write(b"\n")
+                    _close_torn_line(fh)
                     # AND THE CHAIN IS READ AFTER THAT REPAIR, ADR-0016 R-7. A fragment closed
                     # by the newline above IS the predecessor this line follows; chaining to
                     # what was there before the repair would re-anchor the chain past a torn
@@ -226,12 +229,7 @@ class YamlLogSink:
                             ).encode("utf-8")
                         )
                     else:
-                        # Same torn-line repair as `JsonlSink`, for the same reason: a
-                        # process killed mid-append leaves a fragment, and O_APPEND would
-                        # concatenate the next entry onto it and lose both.
-                        fh.seek(-1, os.SEEK_END)
-                        if fh.read(1) != b"\n":
-                            fh.write(b"\n")
+                        _close_torn_line(fh)
                     fh.write(_yaml_entry(record).encode("utf-8"))
                     fh.flush()
                     os.fsync(fh.fileno())
@@ -272,6 +270,48 @@ class MemorySink:
 
 
 import contextlib  # noqa: E402 - kept next to its only user for readability
+
+
+def _close_torn_line(fh: typing.BinaryIO) -> None:
+    """Terminate an unterminated final line, so the next append cannot be concatenated onto it.
+
+    THE RECORD THAT GOVERNS THIS IS ADR-0016 R-7, which requires the repair to run BEFORE the
+    predecessor is read -- an ordering the CALL SITES hold, not this function. The decision about
+    whole-file writes, *"a record is written whole or not at all"*, explicitly EXEMPTS this
+    module (*"`sinks.py` ... was already correct"*): it is about truncate-then-fill, and this is
+    an append. **A citation is a claim about scope**, and the first draft of this docstring cited
+    that record by number -- whose own governs-list refused it, which the suite said so plainly
+    that the mistake cost one run. It is named by its title here for the same reason.
+
+    A process SIGKILLed mid-append leaves a line with no terminator -- measured,
+    5 of 12 trials. `O_APPEND` then puts the NEXT write at that fragment's end, so the new
+    record is glued onto it and BOTH become unreadable. The torn one was lost anyway; the next
+    one is collateral, and it is the one that had nothing wrong with it. Worse, a reader counts
+    the result as ONE unreadable line, understating the loss by exactly the record it did not
+    know it had destroyed. One newline closes it: the fragment becomes its own unreadable line,
+    the new record lands intact on the next, and the count is true again.
+
+    MUST BE CALLED INSIDE THE LOCK, because a concurrent writer must not see the file between
+    the check and the fix.
+
+    ONE DEFINITION, WHICH IT WAS NOT. This repair was written twice -- once in `JsonlSink` and
+    once in `YamlSink`, whose copy's own comment read *"Same torn-line repair as `JsonlSink`,
+    for the same reason"*. The duplication was acknowledged in prose rather than removed, and
+    eleven surviving mutants sat on the duplicated lines: a test exercising one copy leaves the
+    other unmeasured, and the mutation ids could not even be attributed to a site because the
+    two blocks are textually identical. A rule that guards the property this package exists to
+    protect had two implementations, which is how it drifts by a whole case.
+
+    TOTAL, so a caller need not ask first: an empty file has no final line to close, and
+    `seek(-1)` on one raises. The callers' own `tell()` remains where it decides something
+    else -- `YamlSink` writes its banner when the file is new.
+    """
+    fh.seek(0, os.SEEK_END)
+    if not fh.tell():
+        return
+    fh.seek(-1, os.SEEK_END)
+    if fh.read(1) != b"\n":
+        fh.write(b"\n")
 
 
 @contextlib.contextmanager

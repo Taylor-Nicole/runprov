@@ -113,6 +113,67 @@ of labels: every verdict on every arm, derived from each case's own target and e
 first version of that test checked three named labels, and could not have noticed that the text arm
 had a CAUGHT and a VOID and no SURVIVED — which is what it had.
 
+### Changed — ADR-0005's torn-line repair now has one definition instead of two
+
+**It was written twice**, in `JsonlSink.append` and `YamlLogSink.append`, and the second copy's own
+comment read *"Same torn-line repair as `JsonlSink`, for the same reason"* — the duplication was
+acknowledged in prose rather than removed. It guards the property this package exists to protect: a
+process killed mid-append leaves an unterminated line, `O_APPEND` glues the next record onto it, and
+**both** become unreadable while a reader counts the result as ONE lost line.
+
+`_close_torn_line` is now that rule, once, and it is total — an empty file has no final line to
+close and `seek(-1)` on one raises, which inside the lock would abandon the append and, through
+`run.py`'s catch-all, the whole record. Behaviour is unchanged; the callers keep their own emptiness
+test where it decides something else, because `YamlLogSink` writes its banner when the file is new.
+
+**Eleven of this module's surviving mutants sat on the duplicated lines**, and they could not even
+be attributed to a site, because the two blocks were textually identical. Extracting the rule
+resolved seven of them by construction.
+
+### Fixed — a sink destination two directories deep was never tested
+
+`mkdir(parents=True, exist_ok=True)`: the `exist_ok` half was covered and the `parents` half was
+not. `parents=False` needs only the immediate parent, so it agrees with `parents=True` everywhere
+the suite looked — every existing test puts its history one level below the temporary directory. The
+destination that separates them is two or more levels below something that exists, which is what
+`configure(run_log="results/2026/runs.jsonl")` asks for on a fresh checkout. These sinks swallow
+every exception and emit a diagnostic, so the failure was a warning on stderr and a record that was
+never written: the quietest way this package can lose a run.
+
+### Tested — Windows file locking, rehearsed on a Linux host
+
+Three surviving mutants lived in the `msvcrt` branch: the lock and unlock byte counts, and the
+condition guarding the unlock. **None of them needed the matrix.** The branch needs
+`sys.platform == "win32"` and an importable `msvcrt`, and both are injectable — the module's own
+comment already recorded that the POSIX side was *"verified by stubbing fcntl to raise"*. The matrix
+does not run mutation analysis, so deferring them would have left them unmeasured indefinitely.
+
+**The byte count and the position are both asserted, and the second was missing.** `msvcrt` locks a
+range from the current offset, and appending moves the cursor to the end — so `seek(0)` before each
+call is what makes the lock and the unlock cover the same byte. The first version of this test said
+that in its docstring and checked only the mode and the count.
+
+**The unlock condition is a latent defect worth naming:** `locked == "msvcrt" and sys.platform ==
+"win32"` as `or` is satisfied on Windows by the platform alone, so a lock that FAILED is followed by
+an unlock of a byte that was never locked — raising inside a `finally`, which replaces the body's
+outcome and abandons the append.
+
+The stub's constants are sentinel strings rather than the real `1` and `0`, because
+`locking(fd, LK_LOCK, 1)` and `locking(fd, 1, LK_LOCK)` are indistinguishable when every value is 1.
+
+### Fixed — `RecordSink`'s docstring explained a mechanism the code had abandoned
+
+It said `runtime_checkable` was what made `configure()` fail early with a clear message. That
+stopped being true when the guard was rewritten to bind the real signature against a specimen
+record — and the README has said so explicitly for some time: *"that is not what validates a sink
+and it could not be"*. **Two statements about one mechanism, disagreeing, and a reader reaches for
+the docstring.**
+
+The decorator stays, because the protocol is public and a caller writing their own sink may
+reasonably ask `isinstance(mine, RecordSink)`. That affordance is the only thing it provides, and it
+is now held in place by the README's own example — `isinstance([], RecordSink)` is `True` — which is
+also why that check can never validate a sink.
+
 ### Fixed — `watch.unregistered` promised to be total and three of its four paths raised
 
 **One rule, four implementations, drifting by a whole exception type.** `Path.resolve()` raises
