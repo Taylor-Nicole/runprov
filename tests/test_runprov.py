@@ -4580,6 +4580,441 @@ def test_a_run_still_notices_a_real_missed_read_while_another_is_open(
     assert "secret.tsv" in capsys.readouterr().err
 
 
+#: `watch._NOT_DATA` AND `watch._NOT_DATA_DIRS`, WRITTEN OUT. The guards below assert the live
+#: sets equal these and then build one case PER ELEMENT of the hand-written copy, so a suffix
+#: deleted from the package is a red here and not a silently smaller sweep. Three repairs in
+#: `observe.py` survived their own mutants because the test read the constant it was testing.
+_WATCH_NOT_DATA = frozenset(
+    {".py", ".pyc", ".pyi", ".pyd", ".so", ".dylib", ".dll", ".pth", ".egg-link", ".dist-info"}
+)
+_WATCH_NOT_DATA_DIRS = frozenset(
+    {
+        "__pycache__",
+        "site-packages",
+        "dist-packages",
+        ".git",
+        ".venv",
+        "venv",
+        ".tox",
+        ".mypy_cache",
+    }
+)
+
+#: THE BOUND, WRITTEN OUT. The existing claim test asserts `100 <= WATCH_MAX_PATHS <= 100_000`,
+#: which is a FLOOR: it is satisfied by 2 001 and by 99 999 alike, so a mutant moving the value
+#: inside the range survives it. A floor says how much of the subject was read; it is defeated by
+#: narrowing the subject. The exact value needs a second side a human must re-read.
+_WATCH_MAX_PATHS = 2000
+
+
+class _StubRun:
+    """What the audit hook is handed: the four fields it touches and nothing else.
+
+    A REAL `Run` WOULD HIDE THE FINDING. The hook's own comment says it is "handed whatever
+    object is attached", and the bookkeeping it does per run is the subject here — not what a
+    `Run` does with it afterwards.
+    """
+
+    def __init__(self):
+        self._opened: set[str] = set()
+        self._opened_write: set[str] = set()
+        self._opened_dropped = 0
+
+
+def test_every_NOT_DATA_suffix_is_excluded_and_a_data_suffix_is_not(tmp_path):
+    """`watch._NOT_DATA` lists ten suffixes that are code or bookkeeping rather than the user's
+    data, and **nine of its ten elements had no test**: the existing filter test passes one
+    `.py` file, so every other suffix could be deleted from the set and nothing would notice.
+    A sample whose subject is the population cannot test the population.
+
+    EACH FILE EXISTS, IS INSIDE THE ROOT AND IS UNREGISTERED, deliberately — so the suffix is
+    the ONLY reason it can be excluded. A non-existent file would be dropped by the `is_file`
+    check instead, and the case would pass with the suffix check deleted.
+
+    AND THE CONTROL IS A DATA SUFFIX, because a filter that excludes everything would satisfy
+    every assertion above.
+    """
+    assert runprov.watch._NOT_DATA == _WATCH_NOT_DATA, (
+        f"the package's not-data suffixes have moved. This test builds one case per element of "
+        f"its own copy, so a change here must be made in both places on purpose: "
+        f"{sorted(runprov.watch._NOT_DATA ^ _WATCH_NOT_DATA)} differ"
+    )
+    opened = []
+    for i, suffix in enumerate(sorted(_WATCH_NOT_DATA)):
+        f = tmp_path / f"f{i}{suffix}"
+        f.write_text("x", encoding="utf-8")
+        opened.append(str(f))
+    data = tmp_path / "real.tsv"
+    data.write_text("x", encoding="utf-8")
+
+    got = runprov.watch.unregistered([*opened, str(data)], registered=[], root=tmp_path)
+    assert got == ["real.tsv"], (
+        f"every suffix in `_NOT_DATA` must be excluded and a data file must not be. Reported "
+        f"{got}; the files offered were {[pathlib.Path(o).name for o in opened]} plus real.tsv"
+    )
+
+
+def test_every_NOT_DATA_DIR_puts_its_contents_out_of_scope(tmp_path):
+    """`watch._NOT_DATA_DIRS` names eight directories whose contents are never the user's data,
+    and **seven of its eight elements had no test** — the existing filter test uses
+    `site-packages` and nothing else.
+
+    EVERY FILE PLANTED HERE IS A `.tsv`, so the suffix check cannot be what excludes it and the
+    directory name is the only candidate reason. The control is the same file under a directory
+    the package has no opinion about.
+    """
+    assert runprov.watch._NOT_DATA_DIRS == _WATCH_NOT_DATA_DIRS, (
+        f"the package's not-data directories have moved: "
+        f"{sorted(runprov.watch._NOT_DATA_DIRS ^ _WATCH_NOT_DATA_DIRS)} differ"
+    )
+    opened = []
+    for name in sorted(_WATCH_NOT_DATA_DIRS):
+        d = tmp_path / name
+        d.mkdir()
+        f = d / "data.tsv"
+        f.write_text("x", encoding="utf-8")
+        opened.append(str(f))
+    mine = tmp_path / "mine"
+    mine.mkdir()
+    (mine / "data.tsv").write_text("x", encoding="utf-8")
+
+    got = runprov.watch.unregistered(
+        [*opened, str(mine / "data.tsv")], registered=[], root=tmp_path
+    )
+    assert got == ["mine/data.tsv"], (
+        f"a `.tsv` under every name in `_NOT_DATA_DIRS` must be out of scope, and the same file "
+        f"under an ordinary directory must not be. Reported {got}"
+    )
+
+
+def test_the_unregistered_filter_KEEPS_SCANNING_past_every_kind_of_path_it_skips(tmp_path):
+    """Six `continue`s in `unregistered` are the only thing between *skip this path* and *stop
+    scanning*, and the filter is handed every path a run opened — so `break` costs every finding
+    after the first skip. That is the shape of A-01, where one unresolvable path abandoned the
+    whole check and the record then lied by omission.
+
+    THE SKIPPED PATH IS OFFERED FIRST IN EVERY CASE, which is what makes `continue` and `break`
+    distinguishable: with the skip last, both spellings give the same answer and the case passes
+    forever. One `continue` away from a successor is a `continue` nothing tests.
+
+    ONE CASE PER REASON THE LOOP CAN SKIP, taken from the loop itself rather than from a list
+    someone remembered: a not-data suffix, an already-registered path, a path that is not a
+    file, a not-data directory, an excluded path, and a path the `except` arm catches.
+    """
+    good = tmp_path / "good.tsv"
+    good.write_text("x", encoding="utf-8")
+    reg = tmp_path / "already.tsv"
+    reg.write_text("x", encoding="utf-8")
+    adir = tmp_path / "adir"
+    adir.mkdir()
+    (tmp_path / ".git").mkdir()
+    vendored = tmp_path / ".git" / "x.tsv"
+    vendored.write_text("x", encoding="utf-8")
+    excluded = tmp_path / "snapshots"
+    excluded.mkdir()
+    (excluded / "s.tsv").write_text("x", encoding="utf-8")
+    outside = tmp_path.parent / "outside-the-root.tsv"
+    outside.write_text("x", encoding="utf-8")
+    code = tmp_path / "mod.py"
+    code.write_text("x", encoding="utf-8")
+
+    cases = {
+        "a not-data suffix": (str(code), [], []),
+        "an already-registered path": (str(reg), [str(reg)], []),
+        "a path that is not a file": (str(adir), [], []),
+        "a not-data directory": (str(vendored), [], []),
+        "an excluded path": (str(excluded / "s.tsv"), [], [excluded]),
+        "a path the except arm catches": (str(outside), [], []),
+    }
+    for reason, (skipped, registered, exclude) in cases.items():
+        got = runprov.watch.unregistered(
+            [skipped, str(good)], registered=registered, root=tmp_path, exclude=exclude
+        )
+        assert got == ["good.tsv"], (
+            f"a path skipped for {reason} must not end the scan: good.tsv came AFTER it and was "
+            f"reported as {got}. A `break` here loses every finding after the first skip, which "
+            f"is A-01 -- a record that lies by omission and reads exactly like a clean one."
+        )
+
+
+def test_own_KEEPS_GOING_past_a_None_and_an_unresolvable_exclusion_still_applies(
+    tmp_path, monkeypatch
+):
+    """Two more `continue`s, in two loops that are not the filter's.
+
+    `own()` IS HANDED `None` BY ITS OWN CALLERS -- its signature is
+    `*paths: str | pathlib.Path | None` -- and a `break` there means every path after the first
+    `None` is never claimed, so the package's own records start being reported as the user's
+    unregistered reads. `_OURS` is process-global, so it is swapped for a fresh set here rather
+    than added to.
+
+    AND AN UNRESOLVABLE EXCLUSION MUST NOT COST THE OTHER EXCLUSIONS. The existing symlink-loop
+    case asserts a *different file* is still found, which a `break` in that loop does not affect
+    -- the exclusions it drops were not going to exclude that file. The assertion that bites is
+    that the SECOND exclusion still excludes.
+    """
+    monkeypatch.setattr(runprov.watch, "_OURS", set())
+    ours = tmp_path / "record.json"
+    ours.write_text("{}", encoding="utf-8")
+    runprov.watch.own(None, str(ours))
+    assert runprov.watch.unregistered([str(ours)], registered=[], root=tmp_path) == [], (
+        "a `None` before a real path must not stop `own` claiming it: the package's own record "
+        "would then be reported to the user as a read they failed to register"
+    )
+
+    first = tmp_path / "unresolvable\x00name"
+    second = tmp_path / "snap"
+    second.mkdir()
+    (second / "s.tsv").write_text("x", encoding="utf-8")
+    good = tmp_path / "keep.tsv"
+    good.write_text("x", encoding="utf-8")
+    got = runprov.watch.unregistered(
+        [str(second / "s.tsv"), str(good)],
+        registered=[],
+        root=tmp_path,
+        exclude=[first, second],
+    )
+    assert got == ["keep.tsv"], (
+        f"an exclusion that cannot be resolved must not cost the exclusions after it: `snap` was "
+        f"second in the list and its file was reported anyway. Got {got}"
+    )
+
+
+def test_a_saturated_run_does_not_stop_the_hook_recording_for_the_NEXT_run(tmp_path, monkeypatch):
+    """The `continue` in the hook's `for run in self._active:` loop. Nested and sequential runs
+    share one process-wide hook, so `break` means that once ANY attached run is saturated every
+    run after it in the list stops being told about opens at all -- neither `_opened` nor
+    `_opened_write`.
+
+    THE SATURATED RUN IS FIRST, deliberately: with it second the two spellings agree.
+
+    `_opened_write` IS ASSERTED AS WELL AS `_opened`, because the mutation skips the whole body
+    for the later run and the write classification is what `capture` uses to tell an input from
+    an output -- calling one the other inverts the lineage.
+    """
+    monkeypatch.setattr(runprov.watch, "WATCH_MAX_PATHS", 2)
+    watcher = runprov.watch._Watcher()
+    full, fresh = _StubRun(), _StubRun()
+    full._opened.update({"a", "b"})
+    watcher._active.extend([full, fresh])
+
+    watcher._hook("open", (str(tmp_path / "new.tsv"), "w"))
+
+    name = str(tmp_path / "new.tsv")
+    assert name in fresh._opened, (
+        f"the second attached run was never told about the open, because the first was "
+        f"saturated. Its `_opened` is {fresh._opened!r}"
+    )
+    assert name in fresh._opened_write, (
+        f"and it was not told the open was a WRITE, which is what separates an input from an "
+        f"output: {fresh._opened_write!r}"
+    )
+    assert full._opened_dropped == 1, (
+        f"the saturated run must still count the path it dropped: {full._opened_dropped}"
+    )
+
+
+#: THE FOUR ARGUMENT POSITIONS `unregistered` RESOLVES A PATH FROM. Hand-written, and checked
+#: below against the number of `resolve()` calls the function actually makes, so a fifth site
+#: added tomorrow reds this rather than being silently untested.
+_UNREGISTERED_RESOLVE_SITES = ("opened", "registered", "root", "exclude")
+
+
+@pytest.mark.parametrize("where", _UNREGISTERED_RESOLVE_SITES)
+def test_unregistered_is_TOTAL_at_every_path_it_resolves(tmp_path, where):
+    """`watch.unregistered`'s docstring promises *"Pure and total: ... no failure here can affect
+    a caller"*, and three of its four `resolve()` sites broke that promise.
+
+    MEASURED 2026-10-11. `resolve()` raises `ValueError` for a path carrying a null byte. A-01
+    had added `RuntimeError` beside `OSError` at every site, and the comment states that rule as
+    universal — *"at EVERY `resolve()` in this function"* — but `ValueError` was never made
+    universal with it: the `opened` loop had caught it all along and the other three never did.
+    **One rule, four implementations, drifting by a whole exception type.** The repair is one
+    tuple with four references, because that is the only shape that cannot drift again.
+
+    SEVERITY, STATED HONESTLY: no route to this was found through the public API —
+    `run.input` refuses a null-byte path with `FileNotFoundError` first. So this is a
+    consistency defect against a documented contract, not a live user-facing one. It is worth
+    the repair because the contract is unconditional and the function's own design rationale is
+    that it can be called directly, which is exactly what this test does.
+
+    AND AN ESCAPED EXCEPTION HERE IS NOT A LOCAL FAILURE. It lands in `run.py`'s catch-all and
+    abandons the whole unregistered-read check for the run, so the record omits the field —
+    byte-identical to what a clean run writes. That is A-01, and it is why totality is asserted
+    per site rather than once.
+    """
+    real = tmp_path / "secret.tsv"
+    real.write_text("x\n", encoding="utf-8")
+    bad = "a\x00b"
+
+    args = {"opened": [str(real)], "registered": [], "root": tmp_path, "exclude": []}
+    if where == "root":
+        args["root"] = pathlib.Path(bad)
+    elif where == "opened":
+        args["opened"] = [bad, str(real)]
+    elif where == "exclude":
+        args["exclude"] = [pathlib.Path(bad)]
+    else:
+        args["registered"] = [bad]
+
+    #: CAUGHT, NOT LEFT TO ESCAPE, so the failure is NAMED rather than a traceback. Measured
+    #: while controlling this test: narrowing the tuple back made `unregistered` raise, pytest
+    #: reported a bare `ValueError`, and the sentence explaining what the project loses when
+    #: that happens never appeared. Detection is not reportability — a guard that goes red
+    #: without saying why costs a real investigation.
+    try:
+        got = runprov.watch.unregistered(
+            args["opened"], args["registered"], args["root"], exclude=args["exclude"]
+        )
+    except Exception as exc:  # the whole point is that NOTHING may escape this function
+        pytest.fail(
+            f"a path that cannot be resolved in {where!r} raised {type(exc).__name__}: {exc}. "
+            f"`unregistered` promises *pure and total ... no failure here can affect a caller*, "
+            f"and an escape here does not fail locally -- it lands in `run.py`'s catch-all and "
+            f"abandons the whole unregistered-read check, so the record omits the field and "
+            f"reads exactly like a clean run's. That is A-01."
+        )
+    assert isinstance(got, list), f"the filter must return a list, got {type(got).__name__}"
+    if where != "root":
+        assert got == ["secret.tsv"], (
+            f"and the unresolvable path in {where!r} must not cost the finding about a different "
+            f"file, which is A-01 exactly. Got {got}"
+        )
+    else:
+        assert got == [], (
+            f"with a root that cannot be resolved there is no relative name to report, so the "
+            f"honest answer is nothing — but it must be RETURNED rather than raised. Got {got}"
+        )
+
+
+#: WHAT EVERY `resolve()` GUARD IN THE PACKAGE CATCHES TODAY, as a baseline that may only
+#: SHRINK. Five spellings of one question, and the measurement that produced them is below.
+_RESOLVE_GUARD_BASELINE = {
+    ("_UNRESOLVABLE",): 5,
+    ("OSError", "RuntimeError"): 4,
+    ("OSError", "ValueError"): 2,
+    ("OSError",): 1,
+    ("OSError", "RuntimeError", "ValueError"): 1,
+}
+#: And the modules that disagree WITH THEMSELVES. `watch.py` was here until 2026-10-11.
+_RESOLVE_GUARD_INCONSISTENT = {"prune.py"}
+
+
+def _resolve_guards():
+    """Every `try` in the package wrapping a `resolve()`, and what each handler catches."""
+    rows = []
+    for path in sorted((_repo_root() / "runprov").glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Try):
+                continue
+            if not any(
+                isinstance(c, ast.Call)
+                and isinstance(c.func, ast.Attribute)
+                and c.func.attr == "resolve"
+                for c in ast.walk(node)
+            ):
+                continue
+            for handler in node.handlers:
+                if isinstance(handler.type, ast.Tuple):
+                    names = [getattr(e, "id", "?") for e in handler.type.elts]
+                elif handler.type is not None:
+                    names = [getattr(handler.type, "id", "?")]
+                else:
+                    names = ["<bare>"]
+                rows.append((path.name, tuple(sorted(names))))
+    return rows
+
+
+def test_the_package_does_not_grow_a_SIXTH_spelling_of_what_resolve_can_raise():
+    """*What can `Path.resolve()` raise* is ONE question, and this package answers it in five
+    different ways across thirteen guards in six modules. A ratchet, not an equality: the work
+    of unifying them is not done, and a baseline is how a large divergence is adopted without
+    pretending otherwise.
+
+    THE MEASUREMENT, 2026-10-11. `resolve()` raises `OSError` for the ordinary cases,
+    `RuntimeError` for a symlink loop on CPython 3.10-3.12 — which is **not** an `OSError` — and
+    `ValueError` for a path carrying a null byte. A-01 made `RuntimeError` universal inside
+    `watch.unregistered` and the comment states that rule as universal; `ValueError` was never
+    made universal with it, so **three of that function's four sites raised** and broke its
+    documented *"pure and total"* promise. The module's own comment already called that the
+    FIFTH instance of this exception family. This is the sixth.
+
+    WHY A RATCHET AND NOT A FIX. Unifying thirteen handlers across six modules is a change to
+    six modules' failure behaviour, and it does not belong inside a mutation triage of one of
+    them — an unreviewed change to how the package handles errors must not ride along in a diff
+    about `watch.py`'s tests. What this guard buys is that the next divergence is not free.
+
+    AND A MODULE MUST NOT DISAGREE WITH ITSELF, which is the cheapest half and the one with no
+    judgement in it: two handlers for the same question in one file were written the same week
+    by the same hand. `watch.py` was in this set until the sweep that produced this test.
+    """
+    rows = _resolve_guards()
+    assert len(rows) >= 10, (
+        f"only {len(rows)} resolve guard(s) found; this sweep saw 13 when it was written, so a "
+        f"much smaller number means the walk stopped finding them and a clean result below "
+        f"would mean nothing"
+    )
+
+    counts: dict[tuple[str, ...], int] = {}
+    for _module, names in rows:
+        counts[names] = counts.get(names, 0) + 1
+    unknown = {names: n for names, n in counts.items() if names not in _RESOLVE_GUARD_BASELINE}
+    assert not unknown, (
+        f"a new spelling of what `resolve()` can raise: {unknown}. The package already answers "
+        f"this one question five ways; a sixth is not free. Use an existing tuple, or -- better "
+        f"-- a named constant the way `watch._UNRESOLVABLE` is, so the rule has one definition."
+    )
+    grew = {
+        names: (n, _RESOLVE_GUARD_BASELINE[names])
+        for names, n in counts.items()
+        if n > _RESOLVE_GUARD_BASELINE[names]
+    }
+    assert not grew, (
+        f"a divergent spelling spread to more sites (now, baseline): {grew}. This baseline may "
+        f"only fall. If these were unified onto one constant, lower the baseline and say so."
+    )
+
+    inconsistent = {
+        module for module in {m for m, _n in rows} if len({n for m, n in rows if m == module}) > 1
+    }
+    assert inconsistent == _RESOLVE_GUARD_INCONSISTENT, (
+        f"the modules that disagree with themselves about what `resolve()` raises are "
+        f"{sorted(inconsistent)}; the baseline records {sorted(_RESOLVE_GUARD_INCONSISTENT)}. "
+        f"One file answering one question two ways is the shape that cost A-01 and its five "
+        f"successors. If one was fixed, remove it from the baseline in the same commit."
+    )
+
+
+def test_every_resolve_site_in_unregistered_has_a_totality_case():
+    """The test above is parametrised over a hand-written list of argument positions, and a list
+    is only as total as the thing that checks it. **The second side is the function's own AST**:
+    one `resolve()` call per position.
+
+    THIS IS THE SHAPE THAT KEPT FAILING IN THIS PROJECT — a guard enumerating four spellings
+    while the language offered six. Here the population is small and knowable, so the honest
+    repair is not to delete the list but to make something else compute its size.
+    """
+    source = (_repo_root() / "runprov" / "watch.py").read_text(encoding="utf-8")
+    fn = next(
+        f
+        for f in ast.walk(ast.parse(source))
+        if isinstance(f, ast.FunctionDef) and f.name == "unregistered"
+    )
+    resolves = sum(
+        1
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "resolve"
+    )
+    assert resolves == len(_UNREGISTERED_RESOLVE_SITES), (
+        f"`unregistered` resolves a path at {resolves} site(s) and "
+        f"{len(_UNREGISTERED_RESOLVE_SITES)} are covered by a totality case "
+        f"({_UNREGISTERED_RESOLVE_SITES}). A site with no case is where the next escaped "
+        f"exception will come from -- that is the whole history of A-01."
+    )
+
+
 @requires_symlinks
 @pytest.mark.parametrize("where", ["opened", "exclude", "registered"])
 def test_one_symlink_loop_does_not_erase_the_whole_unregistered_read_check(tmp_path, where):
@@ -4818,7 +5253,18 @@ def test_the_watcher_remembers_a_bounded_number_of_paths(tmp_path, monkeypatch):
     than this has a provenance problem the first names already describe. Asserted with a real
     run rather than by poking the set, and the bound gets its own sanity range so shrinking it
     to 1 cannot satisfy this test."""
+    #: THE RANGE IS A FLOOR AND A FLOOR IS DEFEATED BY NARROWING THE SUBJECT: `2001` and `99999`
+    #: satisfy it exactly as `2000` does, so a mutant moving the value inside the range survives
+    #: this test and the cap becomes whatever anyone last typed. The range still earns its place
+    #: -- it says the value is a plausible bound rather than `1` -- so both are kept, and the
+    #: exact value has a second side a human must re-read when changing it.
     assert 100 <= runprov.watch.WATCH_MAX_PATHS <= 100_000
+    assert runprov.watch.WATCH_MAX_PATHS == _WATCH_MAX_PATHS, (
+        f"the cap is {runprov.watch.WATCH_MAX_PATHS} and this suite's copy says "
+        f"{_WATCH_MAX_PATHS}. The value is quoted in the module's own measurement comment and "
+        f"reached by ordinary work, so moving it is a decision rather than a tuning knob: "
+        f"change both, on purpose."
+    )
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(runprov.watch, "WATCH_MAX_PATHS", 5)
     runprov.configure(root=tmp_path, run_log=tmp_path / "h.jsonl")

@@ -798,6 +798,22 @@ def bench(
     print(f"\nVERDICT: {verdict}  (pytest rc={rc1}, {counted})")
     if verdict == CAUGHT:
         print("failed: " + (", ".join(failed1) or "(rc=1 with no FAILED line -- read the page)"))
+        #: AND IT PRINTS THE ASSERTION, because the sentence below instructs the reader to read
+        #: it and this file did not show it. Measured while building controls for `watch.py`:
+        #: four controls went CAUGHT and the driver checking that each fired ITS OWN named
+        #: assertion could not tell, because the only lines printed on a CAUGHT were the node id
+        #: and the instruction to read something that was not on screen. An instrument that tells
+        #: you to check a thing it does not show you is how "rc=1" gets taken for "the assertion
+        #: I meant fired" -- which is the exact failure the sentence warns about.
+        shown = [line for line in page1.split("\n") if line.startswith("E ")]
+        for line in shown[:12]:
+            print(f"  {line}")
+        if len(shown) > 12:
+            print(f"  ... {len(shown) - 12} more assertion line(s); the full page is above")
+        if not shown:
+            print(
+                f"  (no `E ` line in the page -- the failure is not an assertion)\n{page1[-500:]}"
+            )
         print(
             "READ WHICH ASSERTION FIRED. `rc=1` is not `the assertion I meant fired`: a census "
             "clause once fired ahead of the named defect and every plant reported the wrong fact."

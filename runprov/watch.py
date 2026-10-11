@@ -82,6 +82,22 @@ _NOT_DATA_DIRS = frozenset(
 #: letting a run that opens a million files accumulate a million strings.
 WATCH_MAX_PATHS = 2000
 
+#: WHAT "WE CANNOT RESOLVE THIS PATH" LOOKS LIKE, AS ONE TUPLE WITH FOUR REFERENCES. `resolve()`
+#: raises `OSError` for the ordinary cases, `RuntimeError("Symlink loop from ...")` on CPython
+#: 3.10-3.12 -- which is NOT an OSError -- and `ValueError` for a path carrying a null byte.
+#:
+#: ONE RULE, FOUR IMPLEMENTATIONS, AND THEY DISAGREED BY A WHOLE EXCEPTION TYPE. A-01 added
+#: `RuntimeError` beside `OSError` at every site and the comment in `unregistered` states that
+#: rule as universal -- *"at EVERY `resolve()` in this function"*. `ValueError` was never made
+#: universal with it: the `opened` loop had caught it since before A-01 and the other three never
+#: did. Measured 2026-10-11, calling the function directly as its own docstring invites: three of
+#: the four sites RAISED on a null-byte path, breaking the "pure and total ... no failure here can
+#: affect a caller" promise two lines above them. No route to it was found through the public API
+#: -- `run.input` refuses such a path with `FileNotFoundError` first -- so this is a consistency
+#: defect against a documented contract rather than a live user-facing one. The repair is a
+#: single tuple because a rule with four copies drifts by a whole case, which is what it did.
+_UNRESOLVABLE = (OSError, ValueError, RuntimeError)
+
 
 class _Watcher:
     """The single process-wide hook, and the set of runs currently listening.
@@ -228,7 +244,7 @@ def own(*paths: str | pathlib.Path | None) -> None:
             continue
         try:
             _OURS.add(str(pathlib.Path(path).resolve()))
-        except (OSError, RuntimeError):  # guards-ok: see `unregistered`
+        except _UNRESOLVABLE:  # the same tuple, for the same reason; see its definition
             _OURS.add(str(path))
 
 
@@ -262,7 +278,7 @@ def unregistered(
     for r in registered:
         try:
             reg.add(str(pathlib.Path(r).resolve()))
-        except (OSError, RuntimeError):  # pragma: no cover - a path we cannot resolve
+        except _UNRESOLVABLE:
             reg.add(str(r))
     # THE COMPREHENSION WAS THE WORST OF THE FOUR, because it was not guarded at all. An
     # unresolvable exclusion is one we cannot match against; dropping it costs at most a
@@ -271,14 +287,14 @@ def unregistered(
     for e in exclude:
         try:
             skip.append(pathlib.Path(e).resolve())
-        except (OSError, RuntimeError):
+        except _UNRESOLVABLE:
             continue
     # RESOLVED, because every path below is resolved before comparison and `relative_to` is
     # literal: an unresolved root containing a symlink (pytest's tmp_path on some systems,
     # `/tmp` on macOS) matches nothing and silently reports no findings at all.
     try:
         root = pathlib.Path(root).resolve()
-    except (OSError, RuntimeError):  # pragma: no cover - a root we cannot resolve
+    except _UNRESOLVABLE:
         root = pathlib.Path(root)
 
     out: set[str] = set()
@@ -297,7 +313,7 @@ def unregistered(
             if any(rp == s or s in rp.parents for s in skip):
                 continue
             rel = rp.relative_to(root)  # raises if outside the project
-        except (OSError, ValueError, RuntimeError):
+        except _UNRESOLVABLE:
             # outside the root, unresolvable, a symlink loop, or gone by now: not our
             # business, and never a reason to abandon the other paths in this run.
             continue

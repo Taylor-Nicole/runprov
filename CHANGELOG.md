@@ -113,6 +113,61 @@ of labels: every verdict on every arm, derived from each case's own target and e
 first version of that test checked three named labels, and could not have noticed that the text arm
 had a CAUGHT and a VOID and no SURVIVED — which is what it had.
 
+### Fixed — `watch.unregistered` promised to be total and three of its four paths raised
+
+**One rule, four implementations, drifting by a whole exception type.** `Path.resolve()` raises
+`ValueError` for a path carrying a null byte. A-01 made `RuntimeError` universal in this function
+and its comment states that rule as universal — *"at EVERY `resolve()` in this function"* — but
+`ValueError` was never made universal with it: the `opened` loop had caught it all along and the
+other three sites never did. Measured by calling the function directly, as its own docstring
+invites: **three of the four raised**, against a promise two lines above them that *no failure
+here can affect a caller*.
+
+**An escape here is not a local failure.** It lands in `run.py`'s catch-all and abandons the whole
+unregistered-read check for the run, so the record omits the field — byte-identical to what a
+clean run writes. That is A-01, whose own comment called it the fifth instance of this exception
+family. This is the sixth.
+
+**Severity, stated rather than implied: no route to it was found through the public API** —
+`run.input` refuses such a path with `FileNotFoundError` first. So this is a consistency defect
+against a documented contract, not a live user-facing one. It is repaired because the contract is
+unconditional and because `watch.unregistered` is pure and directly callable by design, and as
+**one tuple with four references** rather than three widened handlers, since a rule with four
+copies drifts by a whole case — which is what it did.
+
+**Swept: 13 `resolve()`-guarding handlers across 6 modules use 5 different tuples for one
+question**, and one module disagrees with itself. Unifying them is a change to six modules'
+failure behaviour and is not folded in here; a ratchet now refuses a sixth spelling, refuses a
+divergent spelling spreading to more sites, and refuses a new module that disagrees with itself.
+
+### Tested — `watch.py`'s 26 surviving mutants: two sets tested one element each
+
+**26 survivors → 18 caught, 5 covered, 3 provably equivalent.** Sixteen of them were one shape:
+`_NOT_DATA` lists ten suffixes that are code rather than data and `_NOT_DATA_DIRS` names eight
+directories that are never the user's, and the existing filter test exercised **one element of
+each**. A sample whose subject is the population cannot test the population.
+
+Each case is now built per element of a hand-written copy of the set, and every planted file
+**exists, is inside the root and is unregistered** — so the suffix or the directory name is the
+only reason it can be excluded. A non-existent file would be dropped by the `is_file` check
+instead and the case would pass with the check under test deleted.
+
+**Nine `continue`s separate *skip this path* from *stop scanning*,** and the filter is handed every
+path a run opened — so `break` costs every finding after the first skip, which is A-01's shape
+again. The skipped path is offered FIRST in every case, because with it last both spellings give
+the same answer. Five mutant ids could not be mapped to one site each, so all nine were measured
+rather than guessing which five; all nine are caught.
+
+**And the cap got a second side.** `WATCH_MAX_PATHS` had a range assertion — `100 <= x <= 100_000`
+— which is a floor satisfied by 2 001 as readily as by 2 000, so a mutant moving the value inside
+the range survived it. The range is kept (it says the bound is plausible rather than 1) and an
+exact second side added beside it.
+
+Three survivors are **provably equivalent** and recorded as such: `_installed` is read only in a
+boolean context; `mode`'s default wrap changes no answer; and over the **57 mode strings `open()`
+actually accepts**, the `"wax+"` wrap's only new trigger character is `X`, which none of them
+contains.
+
 ### Fixed — a guard that was green on the whole local gate and red on NTFS
 
 **`str()` of a relative path, compared to a `/`-spelled literal.** The Windows leg failed eight
