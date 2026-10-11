@@ -17570,6 +17570,361 @@ def test_a_mid_run_checkpoint_does_not_end_the_census(tmp_path):
     assert run._observer.active == "off", "and `_finish` stops it, for every shape of run"
 
 
+#: `check.OPENERS` AND `check.VENDORED`, WRITTEN BY HAND, and the reason is the one
+#: `_PACKAGE_MODULES` gives: where a value's only other source is the code under test, the
+#: hand-written constant IS the instrument. Iterating `check.OPENERS` to build the fixtures below
+#: would make a mangled member generate a source file CALLING the mangled name, which the mangled
+#: checker then recognises — the test adapting to the defect. Measured on `observe.py`'s ceilings
+#: the day before: three repairs survived their own mutants that way.
+#:
+#: WHAT THE SURVIVORS WERE. A mutation run over `check.py` left **12 of `OPENERS`' 13 members**
+#: alive — every one except `open` — and **5 of `VENDORED`'s 7**. Mangle `read_csv` and
+#: `runprov check` prints *"no entry point opens files without recording them"* over a script
+#: whose first line is `pd.read_csv(...)`: a clean bill of health from the static checker about
+#: the most common opener in its stated audience's code.
+_CHECK_OPENERS = frozenset(
+    {
+        "open",
+        "read_csv",
+        "read_table",
+        "read_parquet",
+        "read_excel",
+        "read_json",
+        "read_fwf",
+        "to_csv",
+        "to_parquet",
+        "to_excel",
+        "savetxt",
+        "loadtxt",
+        "genfromtxt",
+    }
+)
+_CHECK_VENDORED = (
+    "site-packages",
+    "dist-packages",
+    ".venv",
+    "node_modules",
+    ".git",
+    "build",
+    "dist",
+)
+
+
+def test_the_check_PAGE_names_every_file_it_found_and_how_to_fix_them(tmp_path):
+    """[ADR-0011]. `render`'s docstring says it is *"separate from printing so the wording itself
+    is testable"* — and **twelve mutants in it survived**, including the one that wraps
+    the remediation line naming `run.input` and `run.open_output` — a string the suite mentions
+    **zero** times. The remediation line is the only part of the page that tells a user
+    what to do, and nothing asserted it was there at all.
+
+    THE GAP IS THE LINE EXISTING, NOT ITS WORDING, and that distinction is why this test is
+    shaped the way it is. mutmut WRAPS a string rather than replacing it, so `"XX…XX"` still
+    contains the original and **a correct substring assertion cannot kill those mutants** — nor
+    should it, because pinning the sentence word for word would assert phrasing as a contract.
+    So: ten of those mutants stay alive, deliberately, and the real hole — a page that lists no
+    files and offers no remedy — is closed.
+
+    TWO OF THE TWELVE ARE NOT PROSE, and that is the line worth drawing. `render` emits the paths
+    themselves as `f"    {p}"`, and the wrap turns a listed path into `XX    /x/entry.pyXX`. One
+    path per line, carrying nothing else, is a STRUCTURAL contract — it is what lets a reader pipe
+    the list through `awk` — so asserting it is not pinning wording, and it kills both. The ten
+    that remain are whole sentences whose only checkable property (the count, the remedy's two
+    function names) is already asserted above; pinning those word for word is the brittle
+    assertion this project refuses, so they are recorded as deliberately alive, not as a gap.
+
+    WHAT A PAGE MUST CARRY, and each clause is a separate failure: the count and the scope, every
+    flagged file BY NAME (a count alone cannot be checked against anything), every unparseable
+    file by name, and the remedy. `render` returns lines, so the assertions are per line.
+    """
+    opener = "def main():\n    open('d.tsv').read()\n" + _ENTRY
+    root = _source_tree(
+        tmp_path / "page",
+        {"one.py": opener, "two.py": opener, "broken.py": "def (\n"},
+    )
+    report = runprov.check.scan(root, own=tmp_path / "nowhere")
+    page = runprov.check.render(report, root)
+    joined = "\n".join(page)
+
+    assert str(report.examined) in page[0] and str(report.entry_points) in page[0], (
+        f"the first line states what was looked at — the count and the scope — because a "
+        f"finding with no denominator cannot be judged: {page[0]!r}"
+    )
+    for name in ("one.py", "two.py"):
+        assert any(name in line for line in page), (
+            f"{name} was flagged and the page does not name it: a count of findings a reader "
+            f"cannot check against anything is the uncheckable preview this project refuses "
+            f"elsewhere.\n{joined}"
+        )
+    assert any("broken.py" in line for line in page), (
+        f"an unparseable file was NOT checked, and folding that into silence is the failure "
+        f"`scan`'s own comment names:\n{joined}"
+    )
+
+    #: ONE PATH PER LINE, CARRYING NOTHING ELSE — derived over the report's own two lists rather
+    #: than the names above, so a third list added to the page is covered the day it is added.
+    #: The names above are the non-vacuity tripwire: they fail if the report flagged nothing at
+    #: all, which is the state in which every assertion here would otherwise pass.
+    assert report.flagged and report.unparseable, (
+        f"both lists must be non-empty or the layout assertion below is vacuous: "
+        f"flagged={report.flagged!r} unparseable={report.unparseable!r}"
+    )
+    for listed in (*report.flagged, *report.unparseable):
+        alone = [line for line in page if line.strip() == str(listed)]
+        assert len(alone) == 1, (
+            f"{listed} must occupy exactly one line of its own: a reader pipes this list "
+            f"through `cut`/`awk`, so a path sharing its line with commentary — or listed "
+            f"twice — breaks a use the page is for. Found {len(alone)}.\n{joined}"
+        )
+    assert any("run.input" in line and "run.open_output" in line for line in page), (
+        f"the page must say HOW to fix what it found — this line was asserted by nothing, and "
+        f"it is the only part of the output that tells a user what to do:\n{joined}"
+    )
+    assert not any("no entry point opens files" in line for line in page), (
+        f"the all-clear sentence must not appear on a page that is reporting findings:\n{joined}"
+    )
+
+    #: AND THE CLEAN PAGE SAYS WHAT IT LOOKED AT BEFORE SAYING IT FOUND NOTHING. `render`'s own
+    #: comment: *"no entry point records nothing" and "no entry point was examined" are the same
+    #: sentence without the count above.*
+    clean = _source_tree(tmp_path / "clean", {"fine.py": "def main():\n    return 1\n" + _ENTRY})
+    quiet = runprov.check.render(runprov.check.scan(clean, own=tmp_path / "nowhere"), clean)
+    assert "no entry point opens files without recording them" in quiet[-1], quiet
+    assert str(1) in quiet[0], f"the all-clear is only meaningful above a count: {quiet!r}"
+
+
+def test_check_KEEPS_SCANNING_past_a_file_it_skips(tmp_path):
+    """[ADR-0011]. Two `continue`s in `check.py` are the only thing between *skip this file* and
+    *stop scanning* — one in `sources` for a path inside this package, one in `scan` for an entry
+    point that already records. Turning either into a `break` abandons the rest of the tree, and
+    **both mutants survived** because every fixture put the skipped file LAST in sorted order,
+    where `continue` and `break` are indistinguishable.
+
+    FOURTH TIME THIS SHAPE HAS APPEARED — `export.py`'s `_files`, `prune.py`'s three arms,
+    `observe.py`, and now here. The rule it keeps teaching: **for a skip, the skipped element
+    must be FOLLOWED by one that matters.** `check.py` walks `sorted(rglob("*.py"))`, so the
+    filenames decide, and these are named so each skip has a successor.
+
+    AND THE CONSEQUENCE IS A FALSE CLEARANCE, which is why it matters here more than in the other
+    three: a `break` makes the static checker report *no entry point opens files without
+    recording them* over a tree it stopped reading.
+    """
+    opener = "def main():\n    open('d.tsv').read()\n" + _ENTRY
+    #: Sorted: a_recorded.py, b_unrecorded.py — the RECORDING one first, so `scan`'s skip has a
+    #: successor that must still be flagged.
+    #: A ROOT OF ITS OWN, because the second half of this test builds a different tree and
+    #: `_source_tree` writes into whatever it is given: sharing `tmp_path` left the first tree's
+    #: files in place and the second scan saw all four. A fixture that accumulates is a fixture
+    #: answering a question nobody asked.
+    root = _source_tree(
+        tmp_path / "skipping_in_scan",
+        {
+            "a_recorded.py": "import runprov\n" + opener,
+            "b_unrecorded.py": opener,
+        },
+    )
+    report = runprov.check.scan(root, own=tmp_path / "nowhere")
+    assert [p.name for p in report.flagged] == ["b_unrecorded.py"], (
+        f"the recording entry point is skipped and the scan must CONTINUE to the next file; "
+        f"flagged {[p.name for p in report.flagged]}"
+    )
+    assert report.entry_points == 2, report
+
+    #: AND THE SAME FOR `sources`, whose skip is *this file belongs to runprov itself*. `own`
+    #: points at a real subdirectory here, so the skip is actually taken — and the file that
+    #: must survive it sorts AFTER.
+    root = _source_tree(
+        tmp_path / "skipping_in_sources",
+        {
+            "pkg/a_internal.py": opener,
+            "zz_mine.py": opener,
+        },
+    )
+    mine = root / "pkg"
+    report = runprov.check.scan(root, own=mine)
+    assert [p.name for p in report.flagged] == ["zz_mine.py"], (
+        f"a file inside the package is skipped and the walk must CONTINUE; flagged "
+        f"{[p.name for p in report.flagged]} with own={mine}"
+    )
+    assert report.examined == 1, (
+        f"exactly one file is the subject — `pkg/a_internal.py` is runprov's own — and "
+        f"{report.examined} were examined"
+    )
+
+
+#: EVERY IMPORT SPELLING AND THE NAMES IT MUST MAKE AVAILABLE. Written as pairs so neither side
+#: is computed from the other: the left is source a user could write, the right is what
+#: `imported_names` has to extract from it for the reach graph to join.
+_IMPORT_SPELLINGS = (
+    ("import runprov", {"runprov"}),
+    ("import runprov.check", {"runprov", "check"}),
+    ("import runprov.check as rc", {"runprov", "check"}),
+    ("from runprov import check", {"runprov", "check"}),
+    ("from runprov.check import scan", {"runprov", "check", "scan"}),
+    ("from . import provenance", {"provenance"}),
+    ("from .wrapper import record", {"wrapper", "record"}),
+    ("import a.b.c", {"a", "c"}),
+)
+
+
+def test_imported_names_EXTRACTS_THE_DOTTED_PARTS_every_spelling_makes_available(tmp_path):
+    """[ADR-0011]. `imported_names` is where the reach graph is built, and four mutants that
+    mangled its `"."` separators survived — `split(".")` became `split("XX.XX")`, which returns
+    the whole dotted name as one element.
+
+    WHAT THAT COSTS is the finding `test_check_follows_a_wrapper_module_to_runprov` exists for:
+    a platform adopts runprov by wrapping it, so its stages `import provenance` and never
+    `runprov`. Break the extraction and the graph stops joining — **28 recording entry points
+    reported as unrecorded**, which the module's own docstring measured on a real repository.
+    The docstring also says the function is *deliberately over-inclusive*, because a dropped edge
+    reports a recording script as unrecorded; a mangled separator drops edges wholesale.
+
+    PAIRS, SO NEITHER SIDE IS DERIVED FROM THE OTHER. The spellings are source a user writes and
+    the expected names are what a human says must come out — not `imported_names`' own output,
+    which would make this a restatement.
+
+    SUBSET, NOT EQUALITY, and deliberately: the function is documented as over-inclusive, so it
+    may offer MORE names than a spelling strictly implies. What must never happen is a name
+    going missing, because that is the direction that drops an edge.
+    """
+    for source, required in _IMPORT_SPELLINGS:
+        got = runprov.check.imported_names(ast.parse(source))
+        missing = sorted(required - got)
+        assert not missing, (
+            f"`{source}` must make {sorted(required)} available and {missing} is missing; got "
+            f"{sorted(got)}. A dropped name drops an edge from the reach graph, and a dropped "
+            f"edge reports a recording script as unrecorded."
+        )
+
+
+def test_check_REPORTS_a_source_file_it_cannot_decode_rather_than_crashing(tmp_path):
+    """[ADR-0011]. `scan` reads every file with `errors="replace"`, and a mutant that mangled
+    that handler survived: an invalid handler raises `LookupError` **only when a decode error
+    actually occurs**, so it is invisible until someone has a non-UTF-8 source file — and
+    `LookupError` is not in the `(SyntaxError, ValueError, OSError)` the loop catches, so `check`
+    would crash rather than report.
+
+    AND THE REPORTING IS THE CONTRACT, not merely not-crashing. `scan`'s own comment: *"REPORTED,
+    NEVER SKIPPED. A file that could not be read was not checked, and folding 'not checked' into
+    'clean' is the whole failure this guards against."* A latin-1 `.py` is ordinary in a long-lived
+    scientific codebase, and it must appear in `unparseable` — a file in neither list is the
+    silent degradation this module exists to refuse.
+    """
+    root = tmp_path / "tree"
+    root.mkdir()
+    #: 0xFF IS NOT VALID UTF-8 ANYWHERE, so this decodes only with a replacing handler. Written
+    #: as bytes rather than with an encoding= argument, because the point is the bytes on disk.
+    (root / "latin.py").write_bytes(b"# comment with a latin-1 byte: \xff\nx = 1\n")
+    (root / "fine.py").write_text("x = 1\n", encoding="utf-8")
+
+    report = runprov.check.scan(root, own=tmp_path / "nowhere")
+    assert report.examined == 2, (
+        f"a file whose bytes need replacing is still READ — that is what `errors='replace'` is "
+        f"for — and {report.examined} were examined: {report}"
+    )
+    assert report.unparseable == [], (
+        f"these bytes replace cleanly and the file parses, so it is not unparseable: {report}"
+    )
+
+    #: AND A FILE THAT GENUINELY WILL NOT PARSE IS REPORTED, so the list above is not empty for
+    #: want of a subject — the two cases are different and both must be visible.
+    (root / "broken.py").write_text("def (\n", encoding="utf-8")
+    report = runprov.check.scan(root, own=tmp_path / "nowhere")
+    assert [p.name for p in report.unparseable] == ["broken.py"], report
+    assert (
+        report.ok is False
+        and "could not be parsed" in " ".join(runprov.check.render(report, root)).lower()
+    ), runprov.check.render(report, root)
+
+
+def test_every_OPENER_check_claims_to_recognise_actually_flags_an_entry_point(tmp_path):
+    """[ADR-0011]. `OPENERS` is the list that decides whether an entry point *opens* anything, and
+    **12 of its 13 members were asserted by nothing**. The one that was is `open`.
+
+    THE CONSEQUENCE IS A FALSE CLEARANCE, which is the worst failure available to a guard: with
+    `read_csv` mangled, `check` reports *no entry point opens files without recording them* over a
+    script that reads a CSV and records nothing. A static checker that answers *clean* about the
+    case it exists for is worse than no checker, because its answer is quoted.
+
+    ONE ENTRY POINT PER OPENER, AND BOTH CALL SHAPES. `called_name` reads an `ast.Name` for
+    `open(p)` and an `ast.Attribute` for `pd.read_csv(p)`, so each member is exercised through the
+    shape it is actually written in — a bare name for `open`, an attribute for the rest, which is
+    how every one of them appears in real code.
+
+    DERIVED OVER THE HAND-WRITTEN SET, never over `check.OPENERS` — see `_CHECK_OPENERS` for why
+    that distinction is the whole test. The two sides are compared first, so a member added to the
+    module without being added here fails rather than going uncovered.
+    """
+    assert frozenset(runprov.check.OPENERS) == _CHECK_OPENERS, (
+        f"`check.OPENERS` is {sorted(runprov.check.OPENERS)} and this suite was written against "
+        f"{sorted(_CHECK_OPENERS)}. A new opener belongs in both: the module decides what is "
+        f"recognised, and this list is what a human must re-read to notice that it changed."
+    )
+
+    files, expected = {}, []
+    for name in sorted(_CHECK_OPENERS):
+        #: `open` IS A BARE NAME and the rest are attributes, which is how they are written.
+        call = 'open("d.tsv")' if name == "open" else f'lib.{name}("d.tsv")'
+        files[f"uses_{name}.py"] = f"def main():\n    {call}\n" + _ENTRY
+        expected.append(f"uses_{name}.py")
+
+    #: AND A CONTROL IN THE SAME SWEEP: an entry point that opens nothing must NOT be flagged, or
+    #: this test passes over a checker that flags everything.
+    files["opens_nothing.py"] = "def main():\n    return 1\n" + _ENTRY
+
+    root = _source_tree(tmp_path, files)
+    report = runprov.check.scan(root, own=tmp_path / "nowhere")
+    assert sorted(p.name for p in report.flagged) == sorted(expected), (
+        f"these openers were not recognised: "
+        f"{sorted(set(expected) - {p.name for p in report.flagged})}; and these were flagged "
+        f"without opening anything: "
+        f"{sorted({p.name for p in report.flagged} - set(expected))}"
+    )
+    assert report.entry_points == len(_CHECK_OPENERS) + 1, report
+
+
+def test_every_VENDORED_directory_check_names_puts_its_sources_OUT_of_scope(tmp_path):
+    """[ADR-0011]. `VENDORED` decides whose code is not the subject, and **5 of its 7 members had
+    no test**. A hole there is a false POSITIVE rather than a false clearance — `check` flagging
+    `site-packages` for opening files, which is its job — and the module's own comment records
+    the measurement: the first prototype reported 59 of 175 files, almost all inside an installed
+    package.
+
+    DERIVED OVER THE HAND-WRITTEN TUPLE, for the reason `_CHECK_VENDORED` gives: reading the
+    module's own tuple would create a directory named after whatever the tuple currently says, so
+    a mangled member would exclude a directory named after the mangling.
+
+    AND AN IN-SCOPE CONTROL IN THE SAME SWEEP, because a checker that flags nothing at all passes
+    every assertion about what it does not flag.
+    """
+    assert tuple(runprov.check.VENDORED) == _CHECK_VENDORED, (
+        f"`check.VENDORED` is {list(runprov.check.VENDORED)} against {list(_CHECK_VENDORED)} "
+        f"here; a directory added there belongs here too."
+    )
+
+    #: THE DECLARED RELATIONSHIP WITH `observe.VENDORED`, which was written down and held by
+    #: nothing. `check.py` says: *"Shared intent with `observe.VENDORED`, kept separate because
+    #: this one also excludes build output, which a running process never has."* That sentence is
+    #: a claim about two constants, and a directory added to either silently falsifies it.
+    build_output = {".git", "build", "dist"}
+    assert set(runprov.observe.VENDORED) | build_output == set(_CHECK_VENDORED), (
+        f"`check.VENDORED` and `observe.VENDORED` no longer differ by exactly build output: "
+        f"check has {sorted(set(runprov.check.VENDORED) - set(runprov.observe.VENDORED))} extra "
+        f"and observe has {sorted(set(runprov.observe.VENDORED) - set(runprov.check.VENDORED))}. "
+        f"`check.py`'s comment says the difference IS build output; one of the two moved."
+    )
+
+    opener = "def main():\n    open('d.tsv').read()\n" + _ENTRY
+    files = {f"{name}/vendored_entry.py": opener for name in _CHECK_VENDORED}
+    files["mine/entry.py"] = opener
+    root = _source_tree(tmp_path, files)
+    report = runprov.check.scan(root, own=tmp_path / "nowhere")
+    assert [str(p.relative_to(root)) for p in report.flagged] == ["mine/entry.py"], (
+        f"only the project's own entry point is the subject; flagged "
+        f"{[str(p.relative_to(root)) for p in report.flagged]} over vendored names "
+        f"{list(_CHECK_VENDORED)}"
+    )
+
+
 def test_check_flags_an_entry_point_that_opens_files_and_records_nothing(tmp_path):
     """T-27, the case `watch.py` can never see: no import means no code runs."""
     root = _source_tree(
@@ -46054,6 +46409,80 @@ def test_the_bench_harness_refuses_a_work_root_inside_this_repository(tmp_path):
     assert not (root / ".bench").exists(), "the refusal must not create what it refuses"
     #: AND IT MUST NOT REFUSE AN HONEST ROOT, or the harness cannot be run at all.
     bench._refuse_a_work_root_inside_the_repo(tmp_path)
+
+
+def test_the_bench_harnesss_PREMISE_about_addopts_is_still_true():
+    """`tools/bench.py` parses pytest's `N passed` summary line for its test count, and its
+    comment states the premise that lets it: *"NO `-q` HERE, BECAUSE `pyproject.toml` ALREADY
+    SETS IT"*. **A premise stated in a comment is not a contract until something checks it** —
+    and this one has now been violated twice, by the same hand, three days apart.
+
+    MEASURED, BOTH TIMES. `addopts = "-q"` plus a second `-q` is `-qq`, which suppresses the
+    summary line: the harness reported `0 collected` beside a GREEN baseline, a number that lies
+    in the most reassuring possible way. Then on 2026-10-11 the audit repo's verdicts driver added
+    `-q` to a collection probe, turning the `::` node ids into `tests/test_runprov.py: 61`, and
+    **refused a selector that collects 61 tests** — a REFUSAL caused by a flag, which reads
+    exactly like a selector that matches nothing.
+
+    SO BOTH HALVES ARE ASSERTED, and they are different claims. That a `-q` IS set is what makes
+    the harness right not to add one; that `-qq` is NOT set is the state that breaks its parse.
+    A guard for only the second would go green on a config with no `-q` at all, where the comment
+    has quietly stopped being true.
+
+    SCOPE, STATED BECAUSE IT IS NARROWER THAN THE RULE. Whether a *third* `-q` is harmful depends
+    on whether its caller parses stdout, which is not decidable from the source — `ci.py`'s
+    sdist run passes `-q` into a tree whose own `addopts` adds another, and is unaffected because
+    it reads only the return code. So this names the one tool that parses a count, and asserts
+    that tool still exists rather than keying on a line number.
+    """
+    bench = _repo_root() / "tools/bench.py"
+    assert bench.is_file(), (
+        "the harness this test is about is GONE; the premise below is then about nothing, which "
+        "is how an exemption silently starts covering everything"
+    )
+    pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
+    addopts = re.search(r'^addopts\s*=\s*"([^"]*)"', pyproject, re.MULTILINE)
+    assert addopts, (
+        "no `addopts` in pyproject.toml: `tools/bench.py` says one is set and adds no `-q` of "
+        "its own, so its parse now depends on pytest's default verbosity -- restate the "
+        "harness's comment or restore the setting"
+    )
+    flags = addopts[1].split()
+    #: THE NAMED DEFECT BEFORE THE CENSUS, and this ordering was earned by a control. With the
+    #: premise asserted first, `addopts = "-qq"` fails `"-q" in flags` -- list membership, not
+    #: substring -- so the red accused the comment of being false and said nothing about `-qq`,
+    #: sending a reader to the opposite repair. The specific accusation goes first.
+    louder = [f for f in flags if f.startswith("-q") and f != "-q"]
+    assert not louder, (
+        f"addopts is {addopts[1]!r}: {louder} is quieter than `-q`, which suppresses the "
+        f"`N passed` summary line that `tools/bench.py` parses for its test count. The harness "
+        f"then reports 0 tests beside a GREEN baseline. Measured twice in this project."
+    )
+    assert flags.count("-q") == 1, (
+        f"`tools/bench.py` states *pyproject.toml ALREADY SETS IT* and deliberately omits `-q` "
+        f"because of it. addopts is now {addopts[1]!r}, so that comment is false and the next "
+        f"reader will add the flag back -- which is the `-qq` failure, from the other direction."
+    )
+
+    #: AND THE DEPENDENT STILL OMITS THE FLAG -- derived from the argv the harness builds, not
+    #: from the file's text, because the file's own comment contains `-q` and a text search
+    #: would match the sentence explaining its absence. A substring is not a claim.
+    invocations = [
+        [el.value for el in node.elts if isinstance(el, ast.Constant) and isinstance(el.value, str)]
+        for node in ast.walk(ast.parse(bench.read_text(encoding="utf-8")))
+        if isinstance(node, ast.List)
+    ]
+    pytest_argvs = [argv for argv in invocations if "pytest" in argv]
+    assert pytest_argvs, (
+        "no pytest argv found in tools/bench.py: this assertion cannot speak about a command "
+        "it did not find, and a vacuous leg passes forever"
+    )
+    for argv in pytest_argvs:
+        assert "-q" not in argv, (
+            f"`tools/bench.py` builds {argv!r}. Its own comment explains why `-q` must not be "
+            f"here: `addopts` already sets it, and the resulting `-qq` hides the line this "
+            f"harness parses. Clear `addopts` with `-o addopts=` if the flag is really wanted."
+        )
 
 
 def test_ci_declares_the_bench_step_and_points_it_at_the_harnesss_own_controls():

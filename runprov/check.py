@@ -140,6 +140,12 @@ def reaches_runprov(
         by_stem[path.stem].append(path)
 
     found = {path for path, names in imports.items() if package in names}
+    #: WHY THIS TERMINATES, stated because nothing else can state it: `found` only ever grows
+    #: (`add`, never `discard`) and is a subset of the fixed `imports`, so at most len(imports)
+    #: passes can be productive and the next observes no growth. Breaking that monotonicity
+    #: makes this spin forever, and an infinite loop here is detected ONLY as a CI timeout --
+    #: which names no test and no line. A reader changing this loop needs the invariant, not
+    #: a bound: a cap would turn the hang into a raise that no input can reach.
     growing = True
     while growing:
         growing = False
