@@ -7,7 +7,33 @@ taking precedence over the Python API while this is `0.x`.
 Entries state what was **measured**, not what was improved. A fix with no number beside it
 is a fix nobody checked.
 
-## [Unreleased]
+## [0.8.0] — 2026-10-11
+
+### Fixed — a release guard that could not pass on tag day, found by cutting this release
+
+`test_the_readme_doi_example_names_the_VERSION_citation_cff_declares` compared the README's
+version-DOI example against `CITATION.cff`'s **`version:`** field. Tag day bumps that field in
+step 1, and the new version's DOI does not exist until **step 6** creates the GitHub release that
+Zenodo's webhook fires on — so between those steps the assertion could only be satisfied by
+**inventing a DOI**, which `CITATION.cff`'s own comment refuses in the same breath as a
+placeholder ORCID.
+
+**A check that cannot pass is worse than one that cannot fail**, because the only ways past it
+are to fake the data or to skip the test, and both of those are how a release ships a lie. It
+blocked `ci.py` on the 0.8.0 release commit and was found by running the gate rather than by
+reading.
+
+**The intent is unchanged — it is what the test's own docstring already described**: *"the moment
+`CITATION.cff` is bumped to the new version **with its new identifier**, this fails until the
+README's example follows."* The identifier is the half that exists only once the DOI does, so the
+comparison keys on **the newest version paired with a DOI** instead of on `version:`. It now
+fires at the moment the README *can* be updated rather than at the moment it cannot — verified by
+planting a 0.8.0 identifier, which reds it immediately.
+
+**And a new leg, since the two fields can now differ legitimately:** `version:` may run *ahead*
+of the newest DOI — that is the brief tag-day window — but never *behind* it, which would mean a
+DOI exists for a release the file does not claim to be. Demonstrated separately, with the README
+agreeing with the DOI so only that assertion could fire.
 
 ### Tested — the `repo` marker's scope was narrower than its name, and nothing guarded the machinery
 

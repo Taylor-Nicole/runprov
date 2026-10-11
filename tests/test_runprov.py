@@ -24070,14 +24070,43 @@ def test_the_readme_doi_example_names_the_VERSION_citation_cff_declares():
     assert example, "the README no longer states a version-DOI example in the shape this test reads"
     doi, version = example.group(1), example.group(2)
 
-    assert version == cff["version"], (
-        f"the README's version-DOI example is for {version} and CITATION.cff declares "
-        f"{cff['version']}. After a release the DOI goes into CITATION.cff and the README's "
-        f"example has to follow; this is that reminder"
+    #: AGAINST THE NEWEST VERSION THAT HAS A DOI, NOT AGAINST `version:` — and that distinction
+    #: is the whole of this repair. It compared `version:`, which **made tag day impossible**:
+    #: CONTRIBUTING step 1 bumps `version:` in the same commit that dates the CHANGELOG, and the
+    #: new version's DOI does not exist until step 6 creates the GitHub release that Zenodo's
+    #: webhook fires on. So between those steps the only way to satisfy the old assertion was to
+    #: invent a DOI — which `CITATION.cff`'s own comment refuses in the same breath as a
+    #: placeholder ORCID. Found by running the gate on the 0.8.0 release commit, 2026-10-11.
+    #:
+    #: A CHECK THAT CANNOT PASS IS WORSE THAN ONE THAT CANNOT FAIL, because the only ways past it
+    #: are to fake the data or to skip the test, and both of those are how a release ships a lie.
+    #:
+    #: AND THE INTENT IS UNCHANGED — it is what this test's own docstring already described: *"the
+    #: moment `CITATION.cff` is bumped to the new version WITH ITS NEW IDENTIFIER, this fails
+    #: until the README's example follows"*. The identifier is the half that only exists once the
+    #: DOI does, so keying on it fires at the moment the README CAN be updated rather than at the
+    #: moment it cannot.
+    newest_with_a_doi = max(per_version, key=lambda v: tuple(int(part) for part in v.split(".")))
+    assert version == newest_with_a_doi, (
+        f"the README's version-DOI example is for {version} and the newest version CITATION.cff "
+        f"pairs with a DOI is {newest_with_a_doi}. After a release the DOI goes into "
+        f"CITATION.cff and the README's example has to follow; this is that reminder"
     )
     assert per_version.get(version) == doi, (
         f"the README says {doi} is the version DOI for {version}, and CITATION.cff pairs "
         f"{version} with {per_version.get(version)!r}"
+    )
+
+    #: AND THE DECLARED VERSION MAY RUN AHEAD OF THE NEWEST DOI, BUT NEVER BEHIND IT. Ahead is
+    #: the tag-day window above, which is legitimate and brief. Behind would mean a DOI exists
+    #: for a version this file does not claim to be — a citation pointing past itself.
+    def _parts(v: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in v.split("."))
+
+    assert _parts(cff["version"]) >= _parts(newest_with_a_doi), (
+        f"CITATION.cff declares version {cff['version']} and already pairs a DOI with the later "
+        f"{newest_with_a_doi}. A version DOI cannot exist for a release this file does not claim "
+        f"to be; one of the two fields was edited without the other."
     )
 
 
