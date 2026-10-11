@@ -119,6 +119,20 @@ _HEARTBEAT_DEFAULT_INTERVAL = 30.0
 _HEARTBEAT_POLL_CAP = 1.0
 _HEARTBEAT_JOIN_BUDGET = 2.0
 
+#: `prune`'s DURATION TABLE AND DISPLAY CAP, BY HAND, and for the reason the two blocks above
+#: give. `test_prune_dry_run_names_the_files_and_removes_none` wrote
+#: `range(runprov.prune.LISTED + 3)` and then asserted `count("dead") == runprov.prune.LISTED` —
+#: both sides from the constant under test, so a mutant moving it 10 → 11 moved the test with it
+#: and survived. Measured 2026-10-11, and it is the same tautology I had just introduced into the
+#: observer's ceilings: deriving the input from the subject is the failure mode of "do not restate
+#: the constant".
+#:
+#: THE UNIT TABLE IS SPELLED OUT IN SECONDS, so a mutated key and a mutated VALUE are both
+#: caught. Tests exercised `d`, `m` and `H` only; `s` and `w` were held by nothing, which is
+#: exactly where the four surviving `_UNITS` mutants were.
+_PRUNE_LISTED = 10
+_PRUNE_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
 # ------------------------------------------------- what the platform can be asked to build
 #
 # L-26. `test.yml` runs this suite on windows-latest, and 22 tests here build a fixture
@@ -30450,6 +30464,261 @@ def test_prune_says_why_each_survivor_survived(tmp_path, capsys):
         f.unlink()
     assert cli.main(["prune", "--log", str(tmp_path / "runs.jsonl")]) == 0
     assert "nothing to do." in capsys.readouterr().err
+
+
+def test_parse_age_SAYS_WHAT_IS_WRONG_and_accepts_zero_and_a_fraction():
+    """`parse_age`'s docstring promises *"a message meant for a user, not a log"*, and
+    `test_parse_age_refuses_a_bare_number` raises on five bad inputs with **no `match=`** — so
+    every one of those messages was held by nothing. A mutation run mangled all four of them and
+    two of them survived in a worse way than wrapping: `t[:-1]` became `t[:+1]` and `t[:-2]`, so
+    the message quotes **a different fragment of the input** back at the user, which is the one
+    thing a message for a human must not do.
+
+    AND TWO LEGAL INPUTS WERE TESTED BY NOTHING. The guard is `if n < 0`, and the tested inputs
+    are all either malformed or genuinely negative, so both of these survived:
+
+    * `n <= 0` — which turns **`"0d"`** into a usage error. Zero is legal and means *older than
+      zero seconds*, i.e. everything, which is a reasonable thing to ask for.
+    * `n < 1` — which turns **every fractional age** into a usage error. `"0.5d"` is legal.
+
+    Both are reachable from the command line, and *"--older-than 0d is a usage error"* is the
+    kind of refusal a user cannot work around because nothing explains it.
+    """
+    assert runprov.prune.parse_age("0d") == 0.0, (
+        "zero is a legal age — `--older-than 0d` selects everything, which is a thing to ask "
+        "for; the guard refuses NEGATIVE ages, which select nothing"
+    )
+    assert runprov.prune.parse_age("0.5d") == 43200.0, (
+        "a fractional age is legal: half a day is twelve hours, and nothing about the flag "
+        "says it takes whole units"
+    )
+
+    #: EACH MESSAGE ASSERTED BY ITS SUBSTANCE, not word for word: the shape that must survive is
+    #: *it names the flag, it quotes what the user typed, and it says what was wrong with it*.
+    for bad, must_say in (
+        ("30", ("--older-than", "'30'", "expected a number and a unit")),
+        ("d", ("--older-than", "'d'", "expected a number and a unit")),
+        ("", ("--older-than", "expected a number and a unit")),
+        #: A FOUR-CHARACTER MANTISSA, AND THAT IS THE TEST. `"xd"` was the obvious input and
+        #: `"xd"[:-1]` and `"xd"[:1]` are BOTH `"x"` — so the mutant that slices from the front
+        #: instead of trimming the unit quoted the same fragment and survived this assertion.
+        #: Measured, one tranche after the same shape was written down for a clock starting at
+        #: zero. With `"xyzd"` the three candidate slices are `"xyz"`, `"x"` and `"xy"`.
+        ("xyzd", ("--older-than", "'xyzd'", "'xyz' is not a number")),
+        ("-1d", ("--older-than", "'-1d'", "negative age selects nothing")),
+    ):
+        with pytest.raises(ValueError) as caught:
+            runprov.prune.parse_age(bad)
+        message = str(caught.value)
+        missing = [fragment for fragment in must_say if fragment not in message]
+        assert not missing, (
+            f"the refusal of {bad!r} does not say {missing}: {message!r}. This message is for a "
+            f"user and not a log, so it has to name the flag, quote what they typed, and say "
+            f"what was wrong — and `'x' is not a number` must quote the MANTISSA, not some "
+            f"other slice of the input."
+        )
+
+    #: AND THE UNIT LIST IN THE MESSAGE IS THE REAL ONE. A user told to choose from a list that
+    #: omits a unit the parser accepts has been told something false.
+    with pytest.raises(ValueError) as caught:
+        runprov.prune.parse_age("30")
+    for unit in _PRUNE_UNITS:
+        assert unit in str(caught.value), (
+            f"the refusal lists the accepted units and leaves out {unit!r}: {caught.value}"
+        )
+
+
+def test_every_DURATION_UNIT_parse_age_accepts_is_worth_what_it_says():
+    """Two of the five units were held by nothing. Tests exercised `d`, `m` and `H`, and the four
+    surviving `_UNITS` mutants are exactly the `"s"` and `"w"` keys and their two values —
+    mangling the key makes `--older-than 30s` a usage error, and moving `"w"` to 604801 shifts
+    every week-based cutoff by a second with nobody able to see it.
+
+    THE EXPECTED SECONDS ARE SPELLED OUT HERE, not read from `_UNITS`. Iterating the module's own
+    table would create the test's input from the thing under test: a mangled key would be looked
+    up under its mangled name and a changed value compared against itself. Both sides must have
+    different sources, so this table is what a human must re-read when a unit is added — which is
+    when the module's paragraph about why there is no `M` or `y` is worth re-reading too.
+    """
+    assert set(runprov.prune._UNITS) == set(_PRUNE_UNITS), (
+        f"`_UNITS` accepts {sorted(runprov.prune._UNITS)} and this suite was written against "
+        f"{sorted(_PRUNE_UNITS)}. A unit added there belongs here as well, with its length in "
+        f"seconds — and `M` and `y` are deliberately absent; see `_UNITS`."
+    )
+    for unit, seconds in _PRUNE_UNITS.items():
+        assert runprov.prune.parse_age(f"2{unit}") == 2 * seconds, (
+            f"`2{unit}` is {runprov.prune.parse_age(f'2{unit}')}s and two {unit!r} is "
+            f"{2 * seconds}s"
+        )
+        assert runprov.prune.parse_age(f"2{unit.upper()}") == 2 * seconds, (
+            f"the flag is case-insensitive, and {unit.upper()!r} did not parse as {unit!r}"
+        )
+
+
+def test_prune_COUNTS_EVERY_SURVIVOR_not_just_the_first_of_each_kind(tmp_path):
+    """Six counters, and every fixture created exactly ONE marker per category — so none of them
+    could tell `+= 1` from `= 1`, and five mutants doing exactly that survived. The user-visible
+    consequence is a preview reporting *1 kept* over four hundred, in a command whose whole
+    purpose is to say why nothing was removed.
+
+    AND IT CATCHES THE THREE `continue`s THAT COULD BE `break`s. `plan` skips a marker with
+    `continue` in the foreign, untellable and too-new arms; a `break` there abandons the rest of
+    the directory. `plan` walks `sorted(glob("*.json"))`, so the names below INTERLEAVE the
+    categories deliberately: whichever arm breaks, something that should have been counted comes
+    after it. A fixture grouped by category would have had the same six counts and caught none of
+    the three.
+    """
+    #: AND `foreign` IS FED BY THREE SEPARATE ARMS, each with its own `+= 1` and its own
+    #: `continue`. A first version of this fixture planted two files that were valid JSON
+    #: without a `run_uid` — one arm, twice — and `foreign` came to 2, so it passed while the
+    #: OTHER two arms' mutants survived. Measured. The counter is one name and the thing to
+    #: quantify over is the arms, so all three are reached here twice:
+    #:
+    #:   * not a file at all — a DIRECTORY named `*.json`, which `glob` yields and `is_file`
+    #:     refuses. Chosen over a symlink out of the directory because Windows runners cannot
+    #:     make symlinks, and an arm covered on five legs of six is covered by nothing on the
+    #:     sixth.
+    #:   * unreadable as JSON — a `ValueError` from `json.loads`.
+    #:   * readable, a dict, and no `run_uid` — the shape a foreign tool would leave.
+    d = tmp_path / ".incomplete"
+    d.mkdir(parents=True, exist_ok=True)
+    #: Sorted order interleaves every category, so whichever arm breaks, something that should
+    #: still have been counted comes after it.
+    _marker(d, "a-far", pid=1, host="a-compute-node")
+    _marker(d, "b-young", started_utc="2999-01-01T00:00:00Z")
+    (d / "c-notafile.json").mkdir()
+    (d / "d-badjson.json").write_text("{not json", encoding="utf-8")
+    (d / "e-nouid.json").write_text('{"hello": 1}', encoding="utf-8")
+    _marker(d, "f-alive", pid=os.getpid())
+    _marker(d, "g-bad", started_utc="not-a-stamp")
+    _marker(d, "h-far", pid=1, host="a-compute-node")
+    _marker(d, "i-young", started_utc="2999-01-01T00:00:00Z")
+    (d / "j-notafile.json").mkdir()
+    (d / "k-badjson.json").write_text("{not json", encoding="utf-8")
+    (d / "l-nouid.json").write_text('{"hello": 1}', encoding="utf-8")
+    _marker(d, "m-alive", pid=os.getpid())
+    _marker(d, "n-bad", started_utc="not-a-stamp")
+
+    p = runprov.prune.plan(d, older_than=runprov.prune.parse_age("1d"))
+    counts = {
+        "running": (p.running, 2),
+        "untellable": (p.untellable, 2),
+        "too_new": (p.too_new, 2),
+        "undateable": (p.undateable, 2),
+        #: SIX, not two: three arms, twice each.
+        "foreign": (p.foreign, 6),
+    }
+    wrong = {
+        name: f"{got} (expected {want})" for name, (got, want) in counts.items() if got != want
+    }
+    assert not wrong, (
+        f"these counts disagree with what was planted: {wrong}. A count stuck at 1 is a counter "
+        f"assigning rather than incrementing; a count short by a whole arm's worth is a "
+        f"`continue` that has become a `break` and abandoned the rest of the directory; and "
+        f"`foreign` is three arms, so 2 instead of 6 means two of them were never reached."
+    )
+    assert p.remove == [], f"nothing here is removable, and it planned to remove {p.remove}"
+
+
+def test_prune_removes_a_marker_EXACTLY_as_old_as_the_cutoff(tmp_path):
+    """`--older-than 1d` on a marker aged exactly one day. The guard is `age < older_than →
+    too_new`, so the boundary belongs to REMOVE, and `<=` — which survived — moves it to kept.
+
+    A BOUNDARY IS NOT A DETAIL FOR THIS FLAG. `--older-than` is how a user bounds a deletion, and
+    an off-by-one-second at the edge is the difference between a repeatable command and one whose
+    result depends on when it ran.
+    """
+    d = tmp_path / ".incomplete"
+    now = dt.datetime(2026, 1, 2, tzinfo=dt.timezone.utc)
+    day = runprov.prune.parse_age("1d")
+    _marker(d, "exactly", started_utc="2026-01-01T00:00:00Z")  # exactly 1 day before `now`
+    _marker(d, "asecondyounger", started_utc="2026-01-01T00:00:01Z")
+
+    p = runprov.prune.plan(d, older_than=day, now=now)
+    assert [f.name for f in p.remove] == ["exactly.json"], (
+        f"a marker exactly `--older-than` old is removed and one a second younger is kept; "
+        f"planned {[f.name for f in p.remove]} with too_new={p.too_new}"
+    )
+    assert p.too_new == 1, p
+
+
+def test_prune_counts_a_marker_that_VANISHES_before_the_unlink_as_gone(tmp_path):
+    """`apply` passes `missing_ok=True` and the docstring spends a paragraph on why: *"the run
+    that owns a marker may reach `__exit__` between the plan and this loop and remove it itself.
+    That is the ordinary race and not a failure: the file is gone, which is what was wanted."*
+
+    NO TEST LET A FILE VANISH, so `missing_ok=False` survived — and under it the ordinary race
+    becomes a reported failure and a non-zero exit, on a prune that did exactly what was asked.
+    The existing unremovable-file test monkeypatches `unlink` wholesale, so the flag never
+    matters there.
+    """
+    d = tmp_path / ".incomplete"
+    staying = _marker(d, "staying")
+    vanishing = _marker(d, "vanishing")
+
+    p = runprov.prune.plan(d)
+    assert sorted(f.name for f in p.remove) == ["staying.json", "vanishing.json"], p
+    vanishing.unlink()  # the owning run reached `__exit__` between the plan and the apply
+
+    gone, problems = runprov.prune.apply(p)
+    assert problems == [], (
+        f"a marker that vanished between the plan and the unlink is the ordinary race, not a "
+        f"failure, and it was reported as one: {problems}"
+    )
+    assert gone == 2, f"both planned markers are gone; `apply` counted {gone}"
+    assert not staying.exists()
+
+
+def test_the_prune_PREVIEW_is_lines_and_says_nothing_to_do_only_when_there_is_nothing(tmp_path):
+    """Three mutants lived in `render`'s structure, under assertions that are all substring
+    checks — which is the right shape for the six survivor reasons and blind to all of this.
+
+    * `len(p.remove) > LISTED` → `>=`: with **exactly** `LISTED` removals the preview appends
+      *"… and 0 more"*, which is a summary of nothing.
+    * `not p.remove and not any(kept)` → `or`: *"nothing to do."* is printed over a plan that
+      removes files, in the one command where that sentence is a safety statement.
+    * `"\n".join(...)` wrapped: the page's **line structure**, and that is what
+      `printable_lines` exists to protect — the comment at the return records a forged
+      `GATE: MET (exit 0)` line reproduced through this very function.
+
+    SO THE LINES ARE ASSERTED AS LINES. Not word for word — the reasons stay substring checks —
+    but the block must split into the number of lines it claims, each beginning with `#`.
+    """
+    d = tmp_path / ".incomplete"
+    for i in range(_PRUNE_LISTED):
+        _marker(d, f"dead{i:02d}")
+    p = runprov.prune.plan(d)
+    assert len(p.remove) == _PRUNE_LISTED, p
+
+    page = runprov.prune.render(p, None, d)
+    lines = page.split("\n")
+    assert all(line.startswith("#") for line in lines), (
+        f"every line of the preview is a comment line, and these are not: {lines}. A page whose "
+        f"separator is not a newline is one line pretending to be several."
+    )
+    assert len(lines) == 1 + _PRUNE_LISTED, (
+        f"one banner plus {_PRUNE_LISTED} names is {1 + _PRUNE_LISTED} lines; got {len(lines)}: "
+        f"{lines}"
+    )
+    assert not any("more" in line for line in lines), (
+        f"exactly {_PRUNE_LISTED} names fit, so there is no 'and N more' to add: {lines}"
+    )
+    assert "nothing to do." not in page, "it planned to remove ten markers"
+
+    #: ONE MORE THAN FITS, so the summary line appears and says the right number.
+    _marker(d, "dead99")
+    bigger = runprov.prune.plan(d)
+    page = runprov.prune.render(bigger, None, d)
+    assert page.split("\n")[-1].endswith("… and 1 more"), page
+
+    #: AND A PLAN WITH SURVIVORS BUT NO REMOVALS MUST NOT CLAIM THERE WAS NOTHING TO DO.
+    kept_only = runprov.prune.Plan([], 1, 0, 0, 0, 0, 0)
+    assert "nothing to do." not in runprov.prune.render(kept_only, 0, d), (
+        "a marker was kept, and why it was kept is the whole output; 'nothing to do.' says the "
+        "directory was empty"
+    )
+    empty = runprov.prune.Plan([], 0, 0, 0, 0, 0, 0)
+    assert "nothing to do." in runprov.prune.render(empty, 0, d)
 
 
 def test_prune_reports_a_bad_duration_as_a_usage_error(tmp_path, capsys):

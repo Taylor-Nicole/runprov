@@ -9,6 +9,64 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Tested — `prune.py`: two legal durations were refused by surviving mutants, and nobody could tell
+
+**`runprov/prune.py` is unchanged.** 151 mutants, 108 killed, **43 survived** — and the split is
+the finding: **21 of the 43 are the mutation operator, not the suite.** This module is mostly
+user-facing prose (a dry-run preview, six survivor reasons, four usage errors), mutmut **wraps**
+strings rather than replacing them, so `"XXnothing to do.XX"` still *contains* `"nothing to do."`
+and every assertion on that prose is a substring check. **Those are the right assertions** —
+pinning the six reasons word for word would assert wording as a contract. Half this module's
+survivors are therefore not gaps, and a score quoted without that is wrong by 49%.
+
+**Of the 22 real ones, two are refusals of input that is legal today:**
+
+* **`--older-than 0d`** means *older than zero seconds*, i.e. everything — a reasonable thing to
+  ask for. A surviving mutant changed `if n < 0` to `n <= 0` and turned it into a usage error.
+* **`--older-than 0.5d`** is twelve hours; nothing about the flag says it takes whole units. The
+  mutant `n < 1` refused every fractional age.
+
+Neither was tested, because the five bad inputs in `test_parse_age_refuses_a_bare_number` are all
+either malformed or genuinely negative — and that test raises with **no `match=`**, so every
+refusal message was unchecked too. Two mutants exploited that in a worse way than wrapping: they
+make the message **quote the wrong fragment of what the user typed**, which is the one thing a
+message explicitly *"meant for a user, not a log"* must not do.
+
+**And the rest, each with what it costs:**
+
+* **Two of the five duration units were held by nothing.** Tests exercised `d`, `m` and `H`;
+  mangling the `"s"` key makes `--older-than 30s` a usage error, and moving `"w"` to 604801
+  shifts every week-based cutoff. Swept now over a **hand-written** seconds table, because
+  iterating `_UNITS` would look a mangled key up under its mangled name.
+* **`LISTED` was derived by the test that checks it** — `range(LISTED + 3)` against
+  `count("dead") == LISTED` — so moving it moved both sides. The same tautology that was
+  introduced into the observer's ceilings the day before, already here.
+* **Five counters each exercised with exactly one instance**, so none could tell `+= 1` from
+  `= 1`. The user-visible consequence is a preview reporting *1 kept* over four hundred, in the
+  command whose whole purpose is to say why nothing was removed. And **`foreign` is one counter
+  fed by three arms** — a non-file, unreadable JSON, and a dict with no `run_uid` — so the
+  fixture reaches all three twice, interleaved. A **directory** named `*.json` rather than a
+  symlink out of the directory, because Windows runners cannot create symlinks and an arm
+  covered on five legs of six is covered by nothing on the sixth.
+* **Three `continue`s that could be `break`s**, each abandoning the rest of the directory — the
+  same defect `export.py`'s `_files` had, surviving for the same reason.
+* **A marker exactly `--older-than` old** flipped from removed to kept under `<=`, which is the
+  difference between a repeatable command and one whose result depends on when it ran.
+* **The documented race was untested.** `apply` passes `missing_ok=True` because *"the run that
+  owns a marker may reach `__exit__` between the plan and this loop"*; no test let a file vanish,
+  so `missing_ok=False` survived — and under it the ordinary race becomes a reported failure and
+  a non-zero exit on a prune that did exactly what was asked.
+* **The preview's line structure** was invisible to substring assertions: exactly `LISTED`
+  removals printed *"… and 0 more"*, *"nothing to do."* could be printed over a plan that removes
+  files, and the `"\n"` separator could be mangled without any assertion noticing — which is what
+  `printable_lines` escaping exists to protect, since a forged `GATE: MET (exit 0)` line was
+  reproduced through this very function.
+
+**Both of the new guards failed their own demonstration first**, and both for fixture reasons
+rather than assertion ones: `"xd"` cannot tell `[:-1]` from `[:1]` — both are `"x"` — and
+planting one `foreign` arm twice satisfied the total while two arms went unreached. **The
+counter is one name; the thing to quantify over is the arms.**
+
 ### Tested — `heartbeat.py`: the assertions were right, the fixture's **values** were not
 
 **No behaviour changed.** `runprov/heartbeat.py` loses one `pragma: no cover` and gains the
