@@ -97,6 +97,20 @@ _PACKAGE_MODULES = 24
 #: outside `runprov/`; `_PACKAGE_MODULES` is the one number for a file added inside it.
 _NON_PACKAGE_SOURCES = 11
 
+#: THE OBSERVER'S DECLARED CEILINGS AND ITS VENDORED NAMES, WRITTEN BY HAND, and the reason is
+#: the one `_PACKAGE_MODULES` above gives: the constant IS the instrument. A first version of
+#: `test_the_observer_CEILINGS_THIS_MODULE_DECLARES_are_the_ones_that_bite` read
+#: `runprov.observe.MAX_FUNCTIONS` and fed it `+ 1` subjects — which is a TAUTOLOGY, because the
+#: test's input came from the thing under test. Measured: mutants moving both ceilings by one,
+#: and mangling a `VENDORED` member, SURVIVED that version. The test adapted to the mutation.
+#:
+#: SO THE TWO SIDES MUST HAVE DIFFERENT SOURCES. These are what a human read off `observe.py`
+#: and must re-read when a ceiling moves or a dependency directory is added — which is exactly
+#: when the module's own paragraph about why these values is worth re-reading too.
+_OBSERVER_MAX_FUNCTIONS = 200
+_OBSERVER_MAX_SIGNATURES = 32
+_OBSERVER_VENDORED = ("site-packages", "dist-packages", ".venv", "node_modules")
+
 # ------------------------------------------------- what the platform can be asked to build
 #
 # L-26. `test.yml` runs this suite on windows-latest, and 22 tests here build a fixture
@@ -5501,8 +5515,14 @@ class _StubMonitoring:
         self.callback = None
         self.events_set = None
         self.freed = False
+        self.claimed = None
 
     def use_tool_id(self, tool, name):
+        #: RECORDED, because it used to be discarded and that made two things unassertable: the
+        #: id this package claims and the name it claims it under. A mutation run mangled the
+        #: name to `"XXrunprovXX"` and nothing could see it — `sys.monitoring.get_tool(id)`
+        #: reports that name to whoever is debugging a slot clash, so it has one right value.
+        self.claimed = (tool, name)
         if self.busy:
             raise ValueError(f"tool {tool} is in use")
 
@@ -5514,6 +5534,43 @@ class _StubMonitoring:
 
     def free_tool_id(self, tool):
         self.freed = True
+
+
+class _Frames:
+    """A `sys._getframe` stand-in that answers for ONE depth and records every depth asked for.
+
+    THE DEPTH IS THE SUBJECT, and the stub it replaces threw it away. `observe.py` ends
+    `_on_call` with `self._remember_signature(entry, code, self._frames(1))` over the sharpest
+    comment in the module: *"THE FRAME IS GRABBED HERE, at depth 1 from the callback. Asking for
+    it inside the helper reads one level too shallow and returns `_on_call`'s own frame — which
+    has no arguments of the observed function in it, so every call digested identically and
+    three different inputs recorded as one signature. Measured, not reasoned."*
+
+    The previous stand-in was `def fake_getframe(depth): return frames["current"]` — it accepted
+    the depth and discarded it, so **every test using it was silent about the one number the
+    module calls measured**, including the test whose own docstring is about reading one level
+    too shallow. A mutation run changed `_frames(1)` to `_frames(2)` and nothing noticed.
+
+    A stub that accepts a parameter and ignores it does not merely fail to check it: it makes
+    every test built on it read as coverage of something none of them can see. So this one
+    answers for `depth` and hands back a frame belonging to nothing for any other depth —
+    which is what the real interpreter would effectively do, since a different depth is a
+    different function's frame.
+    """
+
+    def __init__(self, frame, depth=1):
+        self.frame = frame
+        self.depth = depth
+        self.asked = []
+
+    def __call__(self, depth):
+        self.asked.append(depth)
+        if depth != self.depth:
+            #: A FRAME BELONGING TO NOTHING, not an exception: `_remember_signature` is supposed
+            #: to notice that `f_code is not code` and record nothing, so the wrong depth must
+            #: reach that guard rather than being refused here.
+            return types.SimpleNamespace(f_code=None, f_locals={})
+        return self.frame
 
 
 def _code(filename, qualname="f", varnames=(), argcount=0):
@@ -5739,34 +5796,44 @@ def test_observer_arguments_mode_records_distinct_signatures(tmp_path):
     mine.write_text("x = 1\n", encoding="utf-8")
     code = _code(mine, "scale", varnames=("rows", "factor"), argcount=2)
 
-    frames = {}
-
-    def fake_getframe(depth):
-        return frames["current"]
-
+    live = types.SimpleNamespace(f_code=code, f_locals={})
+    #: DEPTH-AWARE, and that is a repair rather than a detail: the stand-in here used to accept
+    #: `depth` and discard it, so `_frames(1)` and `_frames(2)` were the same to this test. See
+    #: `_Frames`. With it, a wrong depth records no signatures at all and the caps below fail.
+    frames = _Frames(live)
     stub = _StubMonitoring()
-    obs = runprov.observe.Observer(
-        tmp_path, "arguments", stub, max_signatures=2, frames=fake_getframe
-    )
+    obs = runprov.observe.Observer(tmp_path, "arguments", stub, max_signatures=2, frames=frames)
     obs.start()
 
     def call(rows, factor):
-        frames["current"] = types.SimpleNamespace(
-            f_code=code, f_locals={"rows": rows, "factor": factor}
-        )
+        live.f_locals = {"rows": rows, "factor": factor}
         stub.callback(code, 0)
 
     call([1, 2], 1.0)
     call([1, 2], 1.0)  # identical -> the same signature
     call([1, 3], 1.0)  # different -> a second
     call([1, 4], 1.0)  # a third, past max_signatures=2
+    #: A SECOND DROPPED SIGNATURE, because a counter exercised once is not a counter. The read
+    #: in `entry.get("signatures_truncated", 0) + 1` was mangled by a surviving mutant and the
+    #: single-increment assertion below could not tell: the write target is untouched, so the
+    #: first truncation stores 1 either way and only the second distinguishes them.
+    call([1, 5], 1.0)  # a fourth, dropped as well
     obs.stop()
 
+    assert set(frames.asked) == {1}, (
+        f"the observer asked for frames at depths {sorted(set(frames.asked))}. The frame must be "
+        f"taken at depth 1 from the callback; one level shallower is `_on_call`'s own frame, "
+        f"which holds none of the observed call's arguments — three different inputs then digest "
+        f"identically, which is what the first version of this module did."
+    )
     entry = obs.records["w.py:scale"]
-    assert entry["calls"] == 4
+    assert entry["calls"] == 5
     assert len(entry["signatures"]) == 2, "the signature cap did not hold"
     assert sum(entry["signatures"].values()) == 3
-    assert entry["signatures_truncated"] == 1, "a dropped signature must be counted"
+    assert entry["signatures_truncated"] == 2, (
+        "both dropped signatures must be counted; a counter that stops at 1 reports one "
+        "truncation however many there were"
+    )
 
 
 def test_observer_refuses_a_frame_that_is_not_the_one_that_started(tmp_path):
@@ -5786,7 +5853,7 @@ def test_observer_refuses_a_frame_that_is_not_the_one_that_started(tmp_path):
         tmp_path,
         "arguments",
         stub,
-        frames=lambda d: types.SimpleNamespace(f_code=other, f_locals={"a": 1}),
+        frames=_Frames(types.SimpleNamespace(f_code=other, f_locals={"a": 1})),
     )
     obs.start()
     stub.callback(code, 0)
@@ -5861,6 +5928,237 @@ def test_observer_scope_is_decided_once_per_file_and_survives_a_bad_path(tmp_pat
     obs.stop()
 
     assert obs.records == {"w.py:f": {"calls": 2}}
+
+
+def test_the_observer_CEILINGS_THIS_MODULE_DECLARES_are_the_ones_that_bite(tmp_path):
+    """`MAX_FUNCTIONS` and `MAX_SIGNATURES` are documented at length — *"bounded by VARIETY
+    rather than by volume, so a loop calling one function a million times costs one entry"* —
+    and until now **every test overrode them**. So the mechanism was checked against whatever
+    number it was handed, and the declared defaults were checked by nothing.
+
+    AN INJECTABLE DEFAULT IS TWO CLAIMS. *The cap honours the number it is given* was tested;
+    *the number it is given when nobody asks is the declared one* was not. A mutation run moved
+    both constants by one and **both survived**, and one of them set `MAX_SIGNATURES = None`,
+    which makes `len(signatures) >= None` a `TypeError` — a default that is not merely wrong but
+    **unusable**, and no test reached it.
+
+    AT THE BOUNDARY, WHICH IS WHAT GIVES THIS A SECOND SIDE. Asserting
+    `obs._max_functions == MAX_FUNCTIONS` would read the same constant twice and hold nothing.
+    Feeding exactly one more distinct subject than the ceiling allows, and asserting where the
+    truncation lands, compares the declared number against the behaviour it produces.
+    """
+    assert runprov.observe.MAX_FUNCTIONS == _OBSERVER_MAX_FUNCTIONS, (
+        f"`MAX_FUNCTIONS` is {runprov.observe.MAX_FUNCTIONS} and this suite was written against "
+        f"{_OBSERVER_MAX_FUNCTIONS}. If the ceiling moved deliberately, re-read the paragraph in "
+        f"`observe.py` that argues for the value and update the constant here; the two must have "
+        f"different sources or the boundary test below reads the number it is testing."
+    )
+    assert runprov.observe.MAX_SIGNATURES == _OBSERVER_MAX_SIGNATURES, (
+        f"`MAX_SIGNATURES` is {runprov.observe.MAX_SIGNATURES} against {_OBSERVER_MAX_SIGNATURES} "
+        f"here; see the message above."
+    )
+
+    stub = _StubMonitoring()
+    declared_functions = _OBSERVER_MAX_FUNCTIONS
+    obs = runprov.observe.Observer(tmp_path, "census", stub)  # NO overrides, deliberately
+    obs.start()
+    for i in range(declared_functions + 1):
+        module = tmp_path / f"m{i}.py"
+        module.write_text("x = 1\n", encoding="utf-8")
+        stub.callback(_code(module), 0)
+    obs.stop()
+    assert len(obs.records) == declared_functions, (
+        f"{declared_functions + 1} distinct functions were offered and "
+        f"{len(obs.records)} were tracked; the declared ceiling is {declared_functions}"
+    )
+    assert obs.truncated_functions == 1, (
+        f"exactly one function was past the ceiling and {obs.truncated_functions} were counted "
+        f"as truncated. A ceiling that bites one subject early or late is a different ceiling "
+        f"from the one this module documents."
+    )
+
+    declared_signatures = _OBSERVER_MAX_SIGNATURES
+    mine = tmp_path / "w.py"
+    mine.write_text("x = 1\n", encoding="utf-8")  # it must EXIST or `_scope` refuses it
+    code = _code(mine, "scale", varnames=("n",), argcount=1)
+    live = types.SimpleNamespace(f_code=code, f_locals={})
+    arg_stub = _StubMonitoring()
+    args = runprov.observe.Observer(tmp_path, "arguments", arg_stub, frames=_Frames(live))
+    args.start()
+    for n in range(declared_signatures + 1):
+        live.f_locals = {"n": n}
+        arg_stub.callback(code, 0)
+    args.stop()
+    entry = args.records["w.py:scale"]
+    assert len(entry["signatures"]) == declared_signatures, (
+        f"{declared_signatures + 1} distinct signatures were offered and "
+        f"{len(entry['signatures'])} were kept; the declared ceiling is {declared_signatures}"
+    )
+    assert entry["signatures_truncated"] == 1, entry
+
+
+def test_every_VENDORED_directory_name_puts_code_OUT_of_the_observers_scope(tmp_path):
+    """`VENDORED` decides whose code is somebody else's — *"a virtualenv inside the project is
+    the ordinary layout, and its contents are dependencies"*. A mutation run mangled its members
+    one at a time and **three of the four survived**: only `.venv` was covered.
+
+    WHAT A HOLE THERE COSTS is the failure the module docstring spends a paragraph on. Reading
+    500 lines of TSV produces 1 505 Python calls, 1 504 of them inside `csv.py`; with
+    `site-packages` no longer vendored, a census fills with third-party internals and stops
+    before recording a single function the author wrote — *"a record that announces its
+    truncation honestly and contains the wrong thing"*.
+
+    OVER A HAND-WRITTEN LIST, NOT THE MODULE'S OWN TUPLE, and the first version of this test
+    got that wrong. Iterating `runprov.observe.VENDORED` creates a directory named after whatever
+    the tuple currently says — so a mangled member excludes a directory named after the mangling,
+    the test adapts to the defect, and the mutant survives. Measured: it did. The two sides need
+    different sources, so the names come from `_OBSERVER_VENDORED` and the module's tuple is
+    checked against it.
+
+    AND AN IN-SCOPE CONTROL RUNS IN THE SAME OBSERVER, because a test where nothing is ever
+    recorded passes whatever `VENDORED` says — a scope filter and a broken callback look
+    identical from outside.
+    """
+    names = _OBSERVER_VENDORED
+    assert names, "the hand-written vendored names are empty, so the loop below checks nothing"
+    assert set(runprov.observe.VENDORED) == set(names), (
+        f"`VENDORED` is {list(runprov.observe.VENDORED)} and this suite was written against "
+        f"{list(names)}. The loop below creates directories named from ITS OWN list on purpose: "
+        f"reading the module's tuple would make a mangled member exclude a directory named after "
+        f"the mangling, and the test would adapt to the defect instead of catching it. A "
+        f"dependency directory added to the module belongs here too."
+    )
+
+    stub = _StubMonitoring()
+    obs = runprov.observe.Observer(tmp_path, "census", stub)
+    obs.start()
+    for name in names:
+        vendored = tmp_path / name / "lib.py"
+        vendored.parent.mkdir(parents=True, exist_ok=True)
+        vendored.write_text("x = 1\n", encoding="utf-8")
+        stub.callback(_code(vendored, qualname=f"dep_{name}"), 0)
+    #: THE CONTROL, in the same observer: a file under the root and under no vendored directory
+    #: IS recorded. Without it every assertion above is satisfied by an observer that records
+    #: nothing at all — a scope filter and a broken callback look identical from outside.
+    mine = tmp_path / "mine.py"
+    mine.write_text("x = 1\n", encoding="utf-8")
+    stub.callback(_code(mine, qualname="mine"), 0)
+    obs.stop()
+
+    assert list(obs.records) == ["mine.py:mine"], (
+        f"the observer recorded {sorted(obs.records)}. Every name in `VENDORED` must put code "
+        f"out of scope even when it sits under the project root, and the project's own file "
+        f"must still be in it. Names checked: {list(names)}"
+    )
+
+
+def test_the_observers_SCOPE_IS_RESOLVED_ONCE_PER_FILE_and_the_answer_is_a_BOOLEAN(
+    tmp_path, monkeypatch
+):
+    """`observe.py` says *"DECIDED ONCE PER FILE, not once per call. The scope test resolves a
+    path and asks whether it is under the root; doing that on every call in a hot loop would
+    make the observer the slowest thing in the run."* The neighbouring test's docstring says
+    *"second time: the cached answer, not a re-resolve"* — and asserts a call count that is
+    **true either way**. So the claim was written down twice and checked in neither place, and
+    four mutants lived there: one disabling the cache and three storing `None` in it.
+
+    ALL FOUR ARE EQUIVALENT FOR CORRECTNESS and that is said plainly: a cache whose only effect
+    is speed gives the same answers, slower. They are worth killing because the contract is
+    already stated twice, and because it can be held **deterministically** — by counting
+    resolutions rather than by timing anything. A timing assertion here would be flaky and would
+    measure the host.
+
+    TWO LEGS, because they catch different things. The count catches a cache that is never read
+    or never written; the type catches one that is written with a value that can never hit,
+    which a count alone cannot see on the path that returns before resolving.
+    """
+    mine = tmp_path / "w.py"
+    mine.write_text("x = 1\n", encoding="utf-8")
+    stub = _StubMonitoring()
+    obs = runprov.observe.Observer(tmp_path, "census", stub)
+    obs.start()
+
+    #: PATCHED AFTER CONSTRUCTION, because `__init__` resolves the root and this module's own
+    #: directory, and counting those would make the number mean something else.
+    resolved: list[str] = []
+    real_resolve = pathlib.Path.resolve
+
+    def counting_resolve(self, *args, **kwargs):
+        resolved.append(str(self))
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "resolve", counting_resolve)
+
+    for _ in range(4):
+        stub.callback(_code(mine), 0)
+    assert resolved.count(str(mine)) == 1, (
+        f"four calls into one file resolved its path {resolved.count(str(mine))} time(s). The "
+        f"scope answer is cached per file on purpose; resolving on every call would make the "
+        f"observer the slowest thing in a hot loop."
+    )
+
+    #: AND THE PATH THAT NEVER REACHES A RESOLVE AT ALL. A filename in angle brackets is refused
+    #: by name, and a filename the filesystem will not answer about raises — both cache a
+    #: verdict, and a verdict that is not a boolean can never satisfy `cached is not None`.
+    #: HOISTED OUT OF THE f-STRING, not a style choice: a backslash inside an f-string
+    #: expression is 3.12 syntax and this project supports 3.10. `ruff` caught it here, which is
+    #: the cheap half of the lesson — the expensive half would have been the matrix.
+    hostile = "bad\x00name.py"
+    for _ in range(3):
+        stub.callback(_code("<string>"), 0)
+        stub.callback(_code(hostile), 0)
+    obs.stop()
+
+    resolves_of_hostile = resolved.count(hostile)
+    assert resolves_of_hostile == 1, (
+        f"the unresolvable filename was resolved {resolves_of_hostile} time(s); its refusal is "
+        f"cached too, and re-raising on every call in a hot loop is the cost this cache exists "
+        f"to avoid"
+    )
+    offenders = {name: value for name, value in obs._in_scope.items() if type(value) is not bool}
+    assert not offenders, (
+        f"these cached scope answers are not booleans: {offenders}. `_scope` returns early on "
+        f"`cached is not None`, so a cached `None` is a cache that can never hit — the lookup "
+        f"silently recomputes for the life of the run and the stated contract is gone."
+    )
+    assert len(obs._in_scope) == 3, (
+        f"the cache holds {sorted(obs._in_scope)}; three distinct filenames were offered and "
+        f"each should have exactly one entry"
+    )
+
+
+def test_the_observer_CLAIMS_A_FREE_TOOL_SLOT_under_this_packages_own_name(tmp_path):
+    """`sys.monitoring` has six slots and `observe.py` explains the choice: *"0, 1 and 2 are
+    reserved by convention for a debugger, `coverage` and a profiler; this project runs
+    `coverage` at 100 %, so taking a low id would collide with its own gate."*
+
+    THE PROPERTY, NOT THE NUMBER. A mutation run moved `TOOL_ID` from 3 to 4 and that mutant is
+    **declared equivalent**: slots 3, 4 and 5 are all free, so any of them satisfies the stated
+    reason and a test pinning `3` would assert an arbitrary pick as though it were a decision.
+    What is not arbitrary is *not colliding with coverage*, and that is what is asserted.
+
+    THE NAME IS DIFFERENT and has one right value: `sys.monitoring.get_tool(id)` reports it to
+    whoever is debugging a slot clash, and a mangled name survived until now because the stub
+    discarded both arguments. A stub that accepts what it is given and throws it away makes the
+    caller's claim unassertable.
+    """
+    reserved = {0: "a debugger", 1: "coverage", 2: "a profiler"}
+    assert runprov.observe.TOOL_ID not in reserved, (
+        f"`TOOL_ID` is {runprov.observe.TOOL_ID}, which is reserved by convention for "
+        f"{reserved[runprov.observe.TOOL_ID]}. This project runs coverage at 100%, so a low id "
+        f"would collide with its own gate — any of the free slots will do, a reserved one "
+        f"will not."
+    )
+
+    stub = _StubMonitoring()
+    obs = runprov.observe.Observer(tmp_path, "census", stub)
+    assert obs.start() == "census"
+    obs.stop()
+    assert stub.claimed == (runprov.observe.TOOL_ID, "runprov"), (
+        f"the observer claimed {stub.claimed!r}. The id must be the one this module declares "
+        f'and the name must be "runprov" — that name is what the interpreter reports for the '
+        f"slot, so a wrong one turns a diagnosable clash into a mystery."
+    )
 
 
 def test_observer_arguments_mode_tolerates_locals_it_cannot_read(tmp_path):

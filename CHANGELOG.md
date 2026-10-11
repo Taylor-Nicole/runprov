@@ -9,6 +9,64 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Tested — `observe.py`'s mutation survivors, and **no behaviour changed**
+
+**`runprov/observe.py` is untouched by this entry.** 128 mutants, 109 killed, 19 survived, and
+every one of the 19 turned out to be a gap in the suite or an artifact of the tool — unlike
+`export.py`, where the equivalent exercise found a live contract violation. Said plainly, because
+a changelog entry that reads like a fix when nothing was fixed is its own kind of false claim.
+
+**Nineteen survivors were six findings and nine non-findings**, and classifying before triaging is
+what separated them. The headline would have been buried in a per-mutant list:
+
+* **The seam that made the module testable discarded the one number it calls measured.**
+  `_on_call` ends `self._remember_signature(entry, code, self._frames(1))`, over the module's
+  sharpest comment: *"THE FRAME IS GRABBED HERE, at depth 1… Asking for it inside the helper
+  reads one level too shallow… three different inputs recorded as one signature. Measured, not
+  reasoned."* Every test injected `def fake_getframe(depth): return frames["current"]` — a
+  stand-in that **accepts the depth and throws it away**. So `_frames(1)` and `_frames(2)` were
+  identical to all of them, including the test whose own docstring is about reading one level too
+  shallow. **A stub that ignores a parameter does not merely fail to check it; it makes every
+  test built on it read as coverage of something none of them can see.** New `_Frames` answers
+  for one depth and records every depth asked for. (The product was never unsafe: the module's
+  `started is not code` guard means a wrong depth records *nothing* rather than something wrong.)
+* **The declared ceilings were never the ones in force.** `MAX_FUNCTIONS = 200` and
+  `MAX_SIGNATURES = 32` are argued for at length, and every test overrode them — so *the cap
+  honours the number it is given* was tested and *the number it is given when nobody asks is the
+  declared one* was not. One surviving mutant set `MAX_SIGNATURES = None`, which makes
+  `len(signatures) >= None` a `TypeError`: a default not merely wrong but **unusable**.
+* **Three of `VENDORED`'s four members had no test** — only `.venv` was covered. A hole there is
+  the failure the module docstring spends a paragraph on: a census that fills with `csv.py`
+  internals and stops before recording a single function the author wrote.
+* **A truncation counter tested with exactly one increment.** The mutation mangled the *read* in
+  `entry.get("signatures_truncated", 0) + 1` while the write target stayed, so the first
+  truncation stores `1` either way and only a second distinguishes them.
+* **The scope cache's contract was written down twice and checked in neither place** — once in
+  `observe.py`, once in a test's own docstring (*"second time: the cached answer, not a
+  re-resolve"*) above an assertion true either way. Held now by **counting `Path.resolve` calls**
+  and requiring every cached verdict to be a `bool`; deterministic, with no timing assertion.
+* **The tool id and its name were invisible**, because the monitoring stub discarded both
+  arguments of `use_tool_id`.
+
+**Nine are not findings, and each records why — the most useful part of the exercise.** Three are
+a property of the mutation operator: it **wraps** strings rather than replacing them, so
+`"XXmode must be one ofXX"` still *contains* `"mode must be one of"` and every substring
+assertion survives it. Those assertions are the right shape; pinning exact prose would assert
+wording as a contract. Two are type annotations, inert because the module has
+`from __future__ import annotations`. One is `TOOL_ID = 3` → `4`: slots 3, 4 and 5 are all free,
+so **any** of them satisfies the stated reason, and the new test asserts the property that
+matters — *not one of the reserved ids* — rather than the arbitrary pick. Four are the scope
+cache, equivalent for correctness and repaired for the contract rather than the score.
+**Reporting a score without that classification would overstate the gap by about 16%.**
+
+**And three of the repairs did not work on their first run, which is why each was demonstrated.**
+Two guards read the very constant they were testing — `declared = runprov.observe.MAX_FUNCTIONS`
+then feeding `declared + 1`, and iterating `VENDORED` to build the directories — so the **test
+adapted to the mutation** and three mutants survived the fix. They have hand-written second sides
+now (`_OBSERVER_MAX_FUNCTIONS`, `_OBSERVER_VENDORED`), for the reason `_PACKAGE_MODULES` already
+gives: where a value's only other source is the code under test, **the hand-written constant is
+the instrument.**
+
 ### Fixed — `export` emitted `null` for a field the record simply does not carry
 
 **ADR-0009 says, unconditionally:** *"A missing field is **omitted, never emitted as null**: a
