@@ -8122,11 +8122,28 @@ class _FakeMsvcrt:
 
 
 def _force_msvcrt(monkeypatch, fake):
-    """Make `_exclusive` take the win32 path: no POSIX lock, and an importable `msvcrt`."""
-    import fcntl
+    """Make `_exclusive` take the win32 path: no POSIX lock, and an importable `msvcrt`.
 
+    `fcntl` IS SUPPRESSED ONLY WHERE IT EXISTS, and the first version of this helper imported it
+    unconditionally. **A test that emulates Windows then could not run ON Windows** -- the leg
+    went red with `ModuleNotFoundError: No module named 'fcntl'`, having passed on five POSIX
+    interpreters and the whole local gate. There is a `@requires_fcntl` marker in this suite that
+    would have made the red go away by SKIPPING these tests on the one platform they are about,
+    which is why it is not used here: with the import guarded, the same two tests exercise the
+    injected branch on POSIX and the genuine one on Windows.
+
+    `ModuleNotFoundError` IS AN `ImportError`, which is what `_exclusive` catches -- so on
+    Windows the POSIX attempt fails by itself and no suppression is needed.
+    """
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(fcntl, "flock", lambda *a, **k: (_ for _ in ()).throw(OSError("no flock")))
+    try:
+        import fcntl
+    except ModuleNotFoundError:
+        pass  # Windows: there is no POSIX lock to suppress, which is the whole point
+    else:
+        monkeypatch.setattr(
+            fcntl, "flock", lambda *a, **k: (_ for _ in ()).throw(OSError("no flock"))
+        )
     monkeypatch.setitem(sys.modules, "msvcrt", fake)
 
 
