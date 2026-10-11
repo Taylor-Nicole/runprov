@@ -144,6 +144,24 @@ there must be a mutant that proves it.
 copied tree, for the reason it names — `tools/bench.py` exists to make that a command rather than a
 good intention, and `ci.py bench` checks the harness can still tell CAUGHT from SURVIVED from VOID.
 
+**A guard whose subject is a FILE can be demonstrated too, if the file is Python.** Such a guard
+parses its subject rather than running it, so coverage can never say the mutation was reached, and
+the harness answered `VOID` for every one of them until control 6s. It now also accepts *the
+selected tests opened the mutated file* as proof, so the command is the same:
+
+```sh
+python tools/bench.py --test <-k expr> --edit <the file the guard reads> --old STR --new STR
+```
+
+The reach proof the harness used is printed — `CONTROL 6 (executed)` or `CONTROL 6s (read)` — and
+reading which one spoke is part of reading the verdict. Three cases are still out of reach and the
+harness says so rather than guessing: a target that is **not Python** (the mutation control diffs
+two ASTs, so it needs a parser), a subject read by a **subprocess** (the parent's audit hook cannot
+see it), and a subject that is a **docstring** (that same control strips docstrings deliberately,
+because a plant harness once hid every variant it had in one and read them all green).
+Demonstrate those by hand, in a copied tree, and say in the commit message which control could
+not speak.
+
 **When a demonstration passes, check the demonstration happened.** A mutant that was never applied
 reads exactly like a guard that works. Assert the anchor matched before replacing it, anchor by
 position rather than by quoted text where the text holds anything exotic, and diff the mutant before

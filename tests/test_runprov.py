@@ -46560,6 +46560,202 @@ def test_the_bench_harnesss_PREMISE_about_addopts_is_still_true():
         )
 
 
+def _read_proof_plugin(tree, target, out):
+    """The embedded read-proof plugin, executed as its own module [T-41].
+
+    It lives in `tools/bench.py` as a STRING, because it has to land in the work root and never
+    inside either tree -- control 1's rationale is that a `.py` file in the tree joins the
+    suite's own `rglob("*.py")` source sweeps. A string is not importable, so the tests below
+    exec it, which is also the only way to prove the string is valid Python at all.
+    """
+    import os
+
+    source = _bench_module()._READ_PROOF_PLUGIN
+    env = {
+        "BENCH_READ_TARGET": str(target),
+        "BENCH_READ_TREE": str(tree),
+        "BENCH_READ_OUT": str(out),
+    }
+    namespace = {"__name__": "_read_proof_under_test"}
+    old = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
+    try:
+        exec(compile(source, "<the read-proof plugin>", "exec"), namespace)  # noqa: S102
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return namespace
+
+
+def test_the_read_proof_does_not_mistake_a_PSEUDO_FILENAME_for_a_tree_frame(tmp_path):
+    """[T-41]. The read proof classifies each open of the mutated file by its stack: an
+    `importlib` frame means the IMPORT system opened it, a frame under the tree means project or
+    test code did, and anything else is infrastructure. Only the middle one proves a guard read
+    its subject.
+
+    MEASURED, AND IT MADE ONE ARM UNREACHABLE. A frame's `co_filename` can be `<frozen runpy>`,
+    `<string>` or `<stdin>`, and `pathlib.Path("<frozen runpy>").resolve()` resolves RELATIVE TO
+    CWD -- which is the tree. So every pseudo-named frame answered "under the tree", and because
+    `python -m pytest` runs under `<frozen runpy>`, which sits at the BASE of every stack in the
+    run, the `infrastructure` arm could never be reached and every non-import open was reported
+    as an explicit read by the guard. **A declared decision behind an unreachable branch is a
+    hole with a label on it**, and the first run of this control had one.
+
+    WHY IT MATTERED RATHER THAN BEING COSMETIC: `--cov` makes coverage open every source it
+    reports on, from `coverage/python.py`. With the arm unreachable that read counted as the
+    guard's, so control 6s would have been satisfied for EVERY target -- including a dynamic
+    mutation whose statement never ran, which is control 6 silently weakened to nothing.
+    """
+    out = tmp_path / "reads.json"
+    tree = tmp_path / "tree"
+    (tree / "tests").mkdir(parents=True)
+    inside = tree / "tests" / "test_thing.py"
+    inside.write_text("x = 1\n", encoding="utf-8")
+    plugin = _read_proof_plugin(tree, inside, out)
+    under_tree = plugin["_under_tree"]
+
+    for pseudo in ("<frozen runpy>", "<frozen importlib._bootstrap>", "<string>", "<stdin>"):
+        assert not under_tree(pseudo), (
+            f"{pseudo!r} is not a file. It resolves against the cwd, and when the cwd is the "
+            f"tree it answers True -- which made the infrastructure arm unreachable and every "
+            f"non-import open read as the guard's own"
+        )
+    assert under_tree(str(inside)), (
+        "a real file under the tree is exactly what an explicit read looks like; if this is "
+        "False the control can never fire and every static guard goes back to VOID"
+    )
+    outside = tmp_path / "elsewhere.py"
+    outside.write_text("y = 2\n", encoding="utf-8")
+    assert not under_tree(str(outside)), (
+        "a real file OUTSIDE the tree is infrastructure -- coverage and pytest live there, and "
+        "counting their reads as the guard's is the failure this classification exists for"
+    )
+    missing = tree / "tests" / "deleted.py"
+    assert not under_tree(str(missing)), (
+        "a path under the tree that is not a file cannot have been read; accepting it would let "
+        "a relative `co_filename` resolve into the tree and count"
+    )
+
+
+def test_an_ABSENT_read_proof_is_void_and_never_an_empty_read_set(tmp_path):
+    """[T-41]. `read_proof` refuses a missing report rather than returning no reads.
+
+    THE TWO ARE OPPOSITE VERDICTS. "The plugin did not run" and "the tests read nothing" would
+    both be an empty explicit set, and the second is a finding about the guard while the first is
+    a finding about the harness. Collapsing them is how `tools/verdicts.py` came to refuse a
+    selector that collected 61 tests on 2026-10-11 -- a count it could not parse, reported as a
+    count of zero.
+    """
+    bench = _bench_module()
+    with pytest.raises(bench.Void) as caught:
+        bench.read_proof(tmp_path / "never-written.json")
+    assert "is NOT the same as a file nobody read" in str(caught.value), (
+        f"the refusal must say WHICH of the two it is, or a reader triages a harness failure as "
+        f"a weak guard: {caught.value}"
+    )
+
+    partial = tmp_path / "partial.json"
+    partial.write_text('{"import": ["a"]}', encoding="utf-8")
+    with pytest.raises(bench.Void) as short:
+        bench.read_proof(partial)
+    assert "An absent arm is NOT an empty one" in str(short.value), (
+        f"a report missing an arm must be VOID too: read through `.get(arm, [])` it would read "
+        f"as a file nobody read, which is the one verdict this must never be confused with: "
+        f"{short.value}"
+    )
+
+    written = tmp_path / "reads.json"
+    written.write_text('{"explicit": [], "import": ["a"], "infrastructure": []}', encoding="utf-8")
+    assert bench.read_proof(written)["import"] == ["a"], (
+        "a report that EXISTS and records no explicit read is a real measurement, and must come "
+        "back rather than raise -- that is the negative control for the two refusals above"
+    )
+
+    #: AND THE ARM NAMES ARE ONE DEFINITION, checked against the PLUGIN that produces them rather
+    #: than restated here. `_READ_ARMS` is what `read_proof` requires; `_SEEN` is what the plugin
+    #: fills. Written the same minute, they would drift separately.
+    plugin = _read_proof_plugin(tmp_path, tmp_path / "x.py", tmp_path / "out.json")
+    assert tuple(plugin["_SEEN"]) == bench._READ_ARMS, (
+        f"the plugin records {tuple(plugin['_SEEN'])} and the reader requires "
+        f"{bench._READ_ARMS}: one side gained or lost an arm alone, and a missing arm is VOID "
+        f"while an empty one is a finding about the guard"
+    )
+
+
+def test_the_selfcheck_exercises_BOTH_proofs_of_reach_and_both_declining(tmp_path):
+    """[T-41]. Control 6 (the statement ran) and control 6s (the file was read) are alternative
+    proofs that the mutation was REACHED. A selfcheck that only ever exercises one of them cannot
+    notice the other breaking.
+
+    SO THE QUANTIFICATION IS OVER THE PROOFS, not over the case list: every proof must have a
+    case that rests on it, and the both-declined path must have one too. Stated as the claim and
+    the quantification in one sentence each, because they came apart in this project before.
+    """
+    bench = _bench_module()
+    cases = {
+        label: (selector, target, kind, expect, reason)
+        for label, selector, target, kind, expect, reason in bench._SELFCHECK
+    }
+    assert len(cases) == len(bench._SELFCHECK), "two selfcheck cases share a label"
+
+    by_proof = {
+        "6 executed": [c for c in cases if "6s" not in c and c.startswith(("CAUGHT", "SURVIVED"))],
+        "6s read": [c for c in cases if "6s" in c],
+        "both declined": [c for c in cases if "never READS" in c],
+    }
+    for proof, found in by_proof.items():
+        assert found, (
+            f"no selfcheck case rests on {proof!r}. A verdict never produced is a verdict never "
+            f"measured: the harness could be structurally incapable of it and still print all-ok"
+        )
+
+    #: AND THE READING CASE MUST NOT BE MEASURABLE BY COVERAGE, or it is not testing 6s at all.
+    #: `tools/bench.py` is read as text by its guard and no line of it executes under that
+    #: selector, which is the only reason control 6 is silent and 6s is the one that speaks.
+    static = [cases[c] for c in by_proof["6s read"]]
+    assert all(target == "tools/bench.py" for _, target, _, _, _ in static), (
+        f"the 6s case must target a file the selection READS rather than RUNS: {static}"
+    )
+
+
+def test_the_bench_harness_COUNTS_its_own_controls_the_way_it_lists_them():
+    """The harness's docstring opens *"THE EIGHT CONTROLS"* and then enumerates them. The word and
+    the list are two definitions of one number, written the same minute and drifting separately
+    -- which is the shape that cost this project a trailer guard with two disagreeing halves.
+
+    IT WAS SEVEN UNTIL T-41 ADDED `6s`, and nothing in the repository noticed the heading. A
+    figure in instrument prose is the one a reader trusts most, because an instrument's docstring
+    is what they consult when deciding whether the instrument still applies.
+
+    THE TWO SIDES COME FROM DIFFERENT PARTS OF THE SAME FILE -- the heading's number word, and the
+    count of numbered entries beneath it -- so this is a comparison and not a restatement. An
+    unmapped number word fails loudly rather than passing by default, because a heading rewritten
+    to "NINE" with no entry added must not read as satisfied.
+    """
+    words = {"FOUR": 4, "FIVE": 5, "SIX": 6, "SEVEN": 7, "EIGHT": 8, "NINE": 9, "TEN": 10}
+    doc = _bench_module().__doc__
+    assert doc, "tools/bench.py has no module docstring, so the claim below is about nothing"
+
+    heading = re.search(r"THE ([A-Z]+) CONTROLS", doc)
+    assert heading, f"the harness no longer announces how many controls it has:\n{doc[:400]}"
+    assert heading[1] in words, (
+        f"{heading[1]!r} is not a number word this test knows. Add it to the map -- a heading "
+        f"this cannot read must not count as agreeing with the list"
+    )
+    #: EVERY NUMBERED ENTRY, `6` and `6s` alike. The letter suffix is what a sub-control looks
+    #: like here, and a pattern that missed it would have reported 7 against a heading of 8 and
+    #: sent a reader to add a control that already exists.
+    entries = re.findall(r"^(\d+s?)\. [A-Z]", doc, re.MULTILINE)
+    assert len(entries) == words[heading[1]], (
+        f"the heading says {heading[1]} ({words[heading[1]]}) and {len(entries)} control(s) are "
+        f"enumerated: {entries}. One of the two was edited without the other."
+    )
+    assert len(set(entries)) == len(entries), f"a control number is used twice: {entries}"
+
+
 def test_ci_declares_the_bench_step_and_points_it_at_the_harnesss_own_controls():
     """`ci.py bench` runs `tools/bench.py selfcheck`, and the step is declared.
 

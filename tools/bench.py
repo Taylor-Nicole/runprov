@@ -29,7 +29,7 @@ Exit: 0 the mutation was CAUGHT (the guard works), 1 it SURVIVED (a finding abou
 contract `tools/torture.py` uses, for the same reason: *"no findings" and "nothing was actually
 damaged" are the same green.*
 
-THE SEVEN CONTROLS, AND THE MEASURED FAILURE EACH ONE ANSWERS
+THE EIGHT CONTROLS, AND THE MEASURED FAILURE EACH ONE ANSWERS
 -------------------------------------------------------------
 Every one of these has silently produced a wrong answer in this project's history. They are not
 defensive programming; they are the list of ways this exact experiment has already lied.
@@ -64,12 +64,48 @@ defensive programming; they are the list of ways this exact experiment has alrea
    tree byte-identical and the test reported `1 passed`. The control compares the two files'
    ASTs WITH EVERY DOCSTRING STRIPPED, so a prose-only edit and a no-op edit are both VOID.
 
-6. THE MUTATED STATEMENT WAS EXECUTED BY THE SELECTED TEST. A plant appended AFTER
+6. THE MUTATION WAS REACHED BY THE SELECTED TEST, by one of TWO proofs. A plant appended AFTER
    `raise SystemExit(main())` is syntactically present, passes an AST dump, and raises
    `NameError` if anything ever reaches it -- which nothing does. Control 5 cannot see that and
    neither can reading the file. So the mutant runs under coverage and the changed lines are
    intersected with what coverage says EXECUTED. A mutation on a line the selected test never
    runs cannot teach you anything, whatever colour the result is.
+
+6s. OR THE MUTATED FILE WAS READ AS TEXT [T-41]. A substantial minority of this suite has a file
+   as its subject rather than a code path -- the claim ratchet, the ADR-citation guard, the
+   leg-table guard, the dependency-pin guard -- and control 6 can NEVER fire for one of them,
+   because such a guard parses the line instead of running it. Every one of them was VOID here,
+   correctly and uselessly, so the project's highest-leverage prevention was the part nothing
+   could break on purpose.
+
+   THEY ARE ALTERNATIVES, NOT A FALLBACK. "Try 6, and if it fails try 6s" is the phrasing under
+   which a dynamic guard's unexecuted plant starts passing, because `_clear_pycache` means
+   importing the mutated module compiles it from source -- which OPENS it. Worse, `--cov` makes
+   coverage open every source it reports on. A naive read proof is therefore satisfied by EVERY
+   mutation of any target, and control 6 would be silently weakened to nothing. So an audit hook
+   classifies each open by its stack and only an EXPLICIT read counts: no `importlib` frame, and
+   some frame belonging to a real file under the tree. Both halves of that were wrong once --
+   `<frozen runpy>` is not an importlib frame and sits at the base of every stack under
+   `python -m pytest`, and `Path("<frozen runpy>").resolve()` lands under the tree, which made
+   the infrastructure arm unreachable. `VOID control 6b` is the standing negative control.
+
+   AND PER-FILE IS THE SAME STRENGTH AS PER-LINE, which needs saying because it reads weaker:
+   the file on disk is mutated, so a test that opened it received the mutated bytes. Neither
+   control proves the guard's ASSERTION depended on the change, and that is equally true of
+   coverage -- a line can be covered without being tested.
+
+   WHAT IT CANNOT SEE: a read performed by a SUBPROCESS, which the parent's audit hook never
+   observes. A guard that shells out to read its subject must be demonstrated by hand, and the
+   refusal says so rather than reporting SURVIVED.
+
+   AND THE SCOPE IS NARROWER THAN "A GUARD THAT READS A FILE", which is worth stating plainly
+   because the gap between a control's name and its reach is this project's most-repeated defect.
+   Control 5 diffs two ASTs, so the TARGET must be Python whatever the guard does with it. Of the
+   68 file-subject guards in this suite on 2026-10-11, 19 named only Python files and are fully
+   reachable, 16 named Python among others, and 26 named only Markdown, TOML, YAML, JSON or text
+   and are still refused -- by control 5, before 6s is ever consulted. Those figures are a dated
+   measurement, not a derived one. A text-subject target needs control 5 to grow a non-Python
+   arm, which is a separate decision about what "the mutation is real" means without a parser.
 
 7. THE VERDICT IS THE RETURN CODE, AND ONLY THE CODES THAT MEAN SOMETHING. `0` passed, `1` a
    test failed, **`5` nothing was collected** -- a selector that matched nothing -- and anything
@@ -85,7 +121,8 @@ ahead of the named defect and every plant reported the wrong fact at `rc=1`.
 
 NOT IN THE GATE. It builds a tree per run and runs pytest twice. It belongs to whoever is
 measuring something, not to every push. `ci.py bench` runs `selfcheck`, which is this file
-proving it can still tell the five verdicts apart.
+proving it can still tell its verdicts apart -- including which PROOF OF REACH spoke, since a
+case resting on control 6 cannot notice 6s breaking.
 """
 
 from __future__ import annotations
@@ -171,6 +208,25 @@ def changed_lines(before: str, after: str) -> set[int]:
     for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
         if tag in ("replace", "insert"):
             out.update(range(j1 + 1, j2 + 1))
+    return out
+
+
+def removed_lines(before: str, after: str) -> set[int]:
+    """Line numbers IN `before` that `after` does not have. A DIAGNOSTIC ONLY, never a proof.
+
+    `changed_lines` reports positions in the MUTANT, because that is the file coverage reports
+    on -- so a mutation that only DELETES lines yields the empty set, and the first version of
+    this harness then blamed the one thing it could not have been: *"the mutation is comment,
+    prose or a bare literal"*. Measured while removing two lines from a guard on purpose.
+
+    A deletion is not unmeasurable, only unmeasurable BY COVERAGE: there is no line left for it
+    to speak about. The read proof is unaffected, since the file's bytes differ either way.
+    """
+    out: set[int] = set()
+    matcher = difflib.SequenceMatcher(None, before.splitlines(), after.splitlines(), autojunk=False)
+    for tag, i1, i2, _j1, _j2 in matcher.get_opcodes():
+        if tag in ("replace", "delete"):
+            out.update(range(i1 + 1, i2 + 1))
     return out
 
 
@@ -280,8 +336,143 @@ def coverage_source(target: str) -> str:
     return "." if str(parent) in (".", "") else str(parent).split("/")[0]
 
 
+#: THE READ-PROOF PLUGIN, as source rather than a file in the repository, because it must land
+#: in the WORK ROOT and never in either tree: control 1's whole rationale is that a `.py` file
+#: inside the tree joins the suite's own `rglob("*.py")` source sweeps. It is written beside the
+#: trees and reached through `PYTHONPATH`.
+#:
+#: WHY THE STACK IS CLASSIFIED, AND NOT JUST THE PATH. `_clear_pycache` means importing the
+#: mutated module COMPILES it from source, which OPENS it. A proof that read "the file was
+#: opened" would therefore be satisfied by every dynamic mutation, and control 6 would be
+#: silently weakened to nothing -- the `after-systemexit` plant would stop being VOID. So an
+#: open caused by the import system is not a read BY THE GUARD, and the three cases are kept
+#: apart rather than collapsed into a boolean.
+_READ_PROOF_PLUGIN = '''
+"""Record which NON-IMPORT reads of one file the selected tests performed.
+
+Loaded with `-p` by `tools/bench.py`. It answers the one question coverage cannot answer about a
+guard whose subject is a file read as text: did the selected tests actually open the mutated file?
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import sys
+
+_TARGET = pathlib.Path(os.environ["BENCH_READ_TARGET"]).resolve()
+_TREE = pathlib.Path(os.environ["BENCH_READ_TREE"]).resolve()
+_OUT = pathlib.Path(os.environ["BENCH_READ_OUT"])
+
+#: Three kinds, never a boolean -- see the comment at `_READ_PROOF_PLUGIN` in tools/bench.py.
+_SEEN: dict[str, set[str]] = {"explicit": set(), "import": set(), "infrastructure": set()}
+_BUSY = False
+
+
+def _hook(event: str, args: tuple) -> None:
+    global _BUSY
+    if event != "open" or _BUSY:
+        return
+    _BUSY = True
+    try:
+        raw = args[0]
+        if isinstance(raw, int):
+            return
+        try:
+            spelled = os.fsdecode(raw)
+        except (TypeError, ValueError):
+            return
+        #: PREFILTER ON THE BASENAME. Resolving every open in a test run is a `realpath` per
+        #: import, per fixture file and per coverage write; the name test costs a substring.
+        if _TARGET.name not in spelled:
+            return
+        try:
+            if pathlib.Path(spelled).resolve() != _TARGET:
+                return
+        except OSError:
+            return
+        frames, frame = [], sys._getframe(1)
+        while frame is not None:
+            frames.append(frame.f_code.co_filename)
+            frame = frame.f_back
+        #: `importlib` ONLY, AND NOT `<frozen …>`. The first version matched any frozen module,
+        #: and `python -m pytest` runs under `<frozen runpy>` -- which sits at the BASE of every
+        #: stack in the run, so every open was classified as an import and the explicit set was
+        #: empty on the very experiment this control was built for. The frozen importlib frames
+        #: are `<frozen importlib._bootstrap>` and `…_bootstrap_external`; both carry the name.
+        if any("importlib" in f for f in frames):
+            kind, who = "import", frames[0]
+        else:
+            under = [f for f in frames if _under_tree(f)]
+            kind, who = ("explicit", under[0]) if under else ("infrastructure", frames[0])
+        _SEEN[kind].add(who)
+    finally:
+        _BUSY = False
+
+
+def _under_tree(spelled: str) -> bool:
+    #: A PSEUDO-FILENAME IS NOT A FILE, and this arm existed for one run without it. A frame's
+    #: `co_filename` may be `<frozen runpy>`, `<string>` or `<stdin>`; `Path("<frozen runpy>")
+    #: .resolve()` resolves RELATIVE TO CWD, which is the tree, so every such frame answered
+    #: True -- and because `<frozen runpy>` sits at the base of every stack under
+    #: `python -m pytest`, the `infrastructure` arm below was UNREACHABLE and every non-import
+    #: open was reported as an explicit read. A declared decision behind an unreachable branch
+    #: is a hole with a label on it.
+    if spelled.startswith("<"):
+        return False
+    try:
+        here = pathlib.Path(spelled).resolve()
+    except (OSError, ValueError):
+        return False
+    return here.is_file() and _TREE in here.parents
+
+
+sys.addaudithook(_hook)
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ARG001, ANN001
+    _OUT.write_text(
+        json.dumps({kind: sorted(who) for kind, who in _SEEN.items()}, indent=1), encoding="utf-8"
+    )
+'''
+
+
+#: THE THREE ARMS, ONE DEFINITION. The plugin builds its `_SEEN` dict with these keys and this
+#: function requires them; a test asserts the two agree, by exec'ing the plugin and reading the
+#: keys back, so the pair cannot drift into the shape where one side quietly stops reporting an
+#: arm and the other quietly stops asking for it.
+_READ_ARMS = ("explicit", "import", "infrastructure")
+
+
+def read_proof(out: pathlib.Path) -> dict[str, list[str]]:
+    """What the plugin recorded. A missing or partial report is VOID, never an empty result."""
+    if not out.exists():
+        raise Void(
+            "the read-proof plugin wrote no report, so control 6s cannot be evaluated. Either "
+            "`pytest_sessionfinish` never ran or the plugin failed to load -- an absent report "
+            "is NOT the same as a file nobody read, and must not be counted as one"
+        )
+    raw = json.loads(out.read_text(encoding="utf-8"))
+    #: A PARTIAL REPORT IS THE SAME DEFECT ONE LAYER IN. A dict missing `explicit` would read as
+    #: a `KeyError` at the call site, or -- with a `.get(…, [])` -- as a file nobody read, which
+    #: is the verdict this whole function exists to keep separate from "nothing was measured".
+    if missing := [arm for arm in _READ_ARMS if arm not in raw]:
+        raise Void(
+            f"the read-proof report is missing {missing}: it was written by something other than "
+            f"this harness's plugin, so control 6s has no measurement to read. An absent arm is "
+            f"NOT an empty one"
+        )
+    return {arm: [str(who) for who in raw[arm]] for arm in _READ_ARMS}
+
+
 def _run_selection(
-    tree: pathlib.Path, py: str, kexpr: str, cov: pathlib.Path | None, source: str = "."
+    tree: pathlib.Path,
+    py: str,
+    kexpr: str,
+    cov: pathlib.Path | None,
+    source: str = ".",
+    proof: tuple[pathlib.Path, pathlib.Path] | None = None,
 ) -> tuple[int, int, list[str], str]:
     """Run the selected tests in `tree`. Returns (rc, collected, failed node ids, output).
 
@@ -297,6 +488,17 @@ def _run_selection(
     if cov is not None:
         args += [f"--cov={source}", f"--cov-report=json:{cov}", "--cov-fail-under=0"]
     env = dict(os.environ, PYTHONPATH=str(tree))
+    if proof is not None:
+        target_abs, out = proof
+        #: THE PLUGIN DIRECTORY IS THE WORK ROOT, and it goes AFTER the tree on `PYTHONPATH` so
+        #: control 3 still proves the copy is what runs. Nothing named `runprov` lives there.
+        plugin_dir = out.parent
+        (plugin_dir / "_bench_readproof.py").write_text(_READ_PROOF_PLUGIN, encoding="utf-8")
+        args += ["-p", "_bench_readproof"]
+        env["PYTHONPATH"] = f"{tree}{os.pathsep}{plugin_dir}"
+        env["BENCH_READ_TARGET"] = str(target_abs)
+        env["BENCH_READ_TREE"] = str(tree)
+        env["BENCH_READ_OUT"] = str(out)
     #: THE INTERPRETER IS PART OF THE COMMAND. An earlier version printed `args[1:]`, which
     #: hid WHICH python was running pytest -- and the one failure this file hit while being
     #: written was exactly that: a python without `pytest-cov`, reported as
@@ -421,29 +623,76 @@ def bench(
     print(f"baseline GREEN, {n0} test(s) collected")
 
     cov = work / "mutant-coverage.json"
-    rc1, n1, failed1, page1 = _run_selection(mutant, py, test, cov, coverage_source(target))
+    proof_out = work / "mutant-reads.json"
+    if proof_out.exists():
+        proof_out.unlink()
+    rc1, n1, failed1, page1 = _run_selection(
+        mutant, py, test, cov, coverage_source(target), proof=(mutant / target, proof_out)
+    )
     verdict = classify(rc1, page1)
 
     #: CONTROL 6, evaluated AFTER the run because it needs the run's coverage, and asserted
-    #: before the verdict is printed because a verdict over an unexecuted line is not a verdict.
+    #: before the verdict is printed because a verdict over an unreached line is not a verdict.
     ran, statements = _executed_lines(cov, target)
     changed_statements = owning_statements(after, touched) & statements
-    if not changed_statements:
-        raise Void(
+    #: WHY CONTROL 6 CANNOT SPEAK, in the three ways it cannot, each with its own sentence. The
+    #: deletion arm was added after removing two lines from a guard on purpose and being told the
+    #: mutation was prose -- the one thing it could not have been.
+    if not touched:
+        why6 = (
+            f"the mutation only DELETED lines ({len(removed_lines(source, after))} removed, none "
+            f"added), so no line of the MUTANT carries it and coverage cannot speak about a line "
+            f"that is gone. Replace the line rather than removing it to get a verdict from 6"
+        )
+    elif not changed_statements:
+        why6 = (
             f"none of the {len(touched)} changed line(s) resolves to a STATEMENT in {target} "
             f"-- the mutation is comment, prose or a bare literal, so nothing about it can run"
         )
-    if not (changed_statements & ran):
-        raise Void(
-            f"no changed statement in {target} was EXECUTED by {test!r}: changed statements "
-            f"{sorted(changed_statements)[:12]}, none of them in coverage's executed set. A "
-            f"plant after `raise SystemExit(main())` looks exactly like this and is invisible "
-            f"to an AST check"
+    else:
+        why6 = (
+            f"changed statements {sorted(changed_statements)[:12]}, none of them in coverage's "
+            f"executed set. A plant after `raise SystemExit(main())` looks exactly like this "
+            f"and is invisible to an AST check"
         )
-    print(
-        f"executed {len(changed_statements & ran)} of {len(changed_statements)} changed "
-        f"statement(s) under the selection"
-    )
+
+    #: TWO PROOFS OF REACH, AND THEY ARE ALTERNATIVES RATHER THAN A FALLBACK [T-41].
+    #:
+    #: `6` says the mutated statement RAN. `6s` says the selected tests OPENED the mutated file.
+    #: A guard whose subject is a file read as text can never satisfy `6` -- it parses the line
+    #: instead of running it -- and 67 of this suite's 1 200 tests are of that kind, including
+    #: the claim ratchet and the ADR-citation guard. Before this, the harness returned VOID for
+    #: every one of them, correctly and uselessly.
+    #:
+    #: NOT A FALLBACK, because "try 6, and if it fails try 6s" is the phrasing under which a
+    #: dynamic guard's UNEXECUTED plant starts passing: `_clear_pycache` means importing the
+    #: mutated module compiles it from source, which OPENS it. The plugin therefore classifies
+    #: each open by its stack and only an EXPLICIT read -- no `importlib` frame, and some frame
+    #: under the tree -- counts here. `VOID control 6b` is the standing negative control.
+    #:
+    #: AND PER-FILE IS THE SAME STRENGTH AS PER-LINE, which is worth saying because it looks
+    #: weaker: the file on disk is mutated, so a test that opened it received the mutated bytes.
+    #: Neither control proves the guard's ASSERTION depended on the change, and that gap is
+    #: identical for coverage -- a line can be covered without being tested.
+    reads = read_proof(proof_out)
+    executed, explicit = changed_statements & ran, reads["explicit"]
+    if not executed and not explicit:
+        raise Void(
+            f"the mutation in {target} was not REACHED by {test!r}, by either proof.\n"
+            f"  control 6  (executed): {why6}.\n"
+            f"  control 6s (read)    : no explicit read of the file. "
+            f"{len(reads['import'])} import-machinery open(s), "
+            f"{len(reads['infrastructure'])} infrastructural. A read done by a SUBPROCESS is "
+            f"invisible to this hook, so a guard that shells out to read its subject must be "
+            f"demonstrated by hand."
+        )
+    if executed:
+        print(
+            f"CONTROL 6 (executed): {len(executed)} of {len(changed_statements)} changed "
+            f"statement(s) ran under the selection"
+        )
+    if explicit:
+        print(f"CONTROL 6s (read): the mutated file was opened by {', '.join(explicit[:3])}")
 
     print(f"\nVERDICT: {verdict}  (pytest rc={rc1}, {n1} collected)")
     if verdict == CAUGHT:
@@ -536,12 +785,29 @@ _SELFCHECK = [
         "resolves to a STATEMENT",
     ),
     (
-        "VOID control 6b -- a TRACKED statement the selection never runs",
+        #: AND IT IS NOW THE NEGATIVE CONTROL FOR 6s TOO [T-41]. This selection runs code; it
+        #: reads no file as text. So BOTH proofs of reach must decline, and the fragment names
+        #: the executed half. If the read proof ever became trivially true -- which is what a
+        #: naive version is, since `--cov` makes coverage open every source it reports on -- this
+        #: case would stop being VOID at all and `expect` would catch it.
+        "VOID control 6b -- a TRACKED statement the selection never runs, and never READS",
         "test_prune_does_not_forge_a_line_from_a_marker_filename",
         "runprov/chain.py",
         "tracked-but-unrun",
         "VOID",
-        "was EXECUTED by",
+        "none of them in coverage's executed set",
+    ),
+    (
+        #: CAUGHT VIA 6s -- THE CASE T-41 WAS FILED FROM. This selection never executes a line of
+        #: `tools/bench.py`; it READS it and parses the argv the harness builds. Control 6 is
+        #: silent by construction, and before the read proof the harness answered VOID here --
+        #: correctly, and uselessly, for 67 of this suite's 1 200 tests.
+        "CAUGHT via 6s -- a guard that READS its subject, which control 6 cannot measure",
+        "bench_harnesss_PREMISE",
+        "tools/bench.py",
+        "static-read",
+        CAUGHT,
+        "",
     ),
     (
         "VOID control 7 -- the selector matches NOTHING (rc=5)",
@@ -616,6 +882,19 @@ def _selfcheck_mutation(kind: str | None) -> Callable[[str], str]:
             "    raise SystemExit(main())",
             "    raise SystemExit(main())\n    _bench_unreachable = 1 / 0",
         )
+    if kind == "static-read":
+        #: THE FLAG THE HARNESS'S OWN COMMENT FORBIDS. `pyproject.toml` already sets `-q`, so a
+        #: second one is `-qq` and the `N passed` line this file parses disappears. The guard
+        #: reads this file's argv and refuses the flag; nothing EXECUTES the mutated line under
+        #: that selection, which is the whole point of the case.
+        #: THE ANCHOR IS ASSEMBLED, NOT WRITTEN. This case mutates the file it is written in, so
+        #: a literal anchor occurs TWICE in the target -- once in the argv it means and once in
+        #: this call -- and `_substitute` refuses a non-unique anchor, correctly. Measured: the
+        #: case reported `--old occurs 2 times`. Splitting it means neither literal contains the
+        #: whole anchor, so the only match is the line that matters. Any self-mutating harness
+        #: meets this, and the refusal is the thing that makes it cheap rather than wrong.
+        head, tail = 'args = [py, "-m", "pytest", "tests", "-k", kexpr, ', '"-p", "no:randomly"]'
+        return _substitute(head + tail, head + '"-p", "no:randomly", "-q"]')
     raise Void(f"unknown selfcheck mutation {kind!r}")
 
 

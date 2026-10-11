@@ -69,6 +69,81 @@ run. `Project.digest_max_bytes` is annotated `int | str | None` and the new
 `assert isinstance` would have been the usual answer and is stripped by `-O`, which is the one
 condition under which it would be needed.
 
+### Fixed — a guard that was green on the whole local gate and red on NTFS
+
+**`str()` of a relative path, compared to a `/`-spelled literal.** The Windows leg failed eight
+minutes in with `assert ['mine\entry.py'] == ['mine/entry.py']`, on a guard added by the same
+commit. Lint, test at 100%, claims, surface, the bench selfcheck and build were all green here.
+
+`as_posix()` **deletes the class rather than testing it**, so the repair is a spelling and not
+another emulation; `check.py`'s own JSON payload already spells every path that way. **And it was
+rehearsable locally the whole time** — `PureWindowsPath("mine") / "entry.py"` gives `mine\entry.py`
+from `str()` and `mine/entry.py` from `as_posix()` on Linux, so the flavour is a class and a
+character set, not a platform.
+
+**Swept, because it is the shape's second instance** (the first was a recorded name, 2026-09-01).
+A new guard walks every comparison in the suite and flags a stringified relative path against a
+literal carrying `/`. Its subject is narrower than that pattern on purpose: a stringified relative
+path used to **open** a file round-trips, since `\` *is* a separator on Windows, and one such site
+exists and is correct — so flagging every `str()` of a path would be a check that cannot pass.
+
+### Tested — `check.py`'s 41 surviving mutants: 26 closed, and each of the 13 explained
+
+The static checker is the module that enforces the project's rules, and it was the least measured
+code in the package. Six guards over derived populations, each with a hand-written second side so
+the test's input cannot come from the constant under test.
+
+| class | n | outcome |
+|---|---|---|
+| every name in `OPENERS` | 12 | an entry point built per name, plus an opens-nothing control |
+| every directory in `VENDORED` | 5 | a vendored entry point per name, plus the declared relationship to `observe.VENDORED` |
+| `imported_names` separators | 4 | each import spelling paired with the dotted parts it must make available |
+| `continue` → `break` | 5 | the skipped file sorts FIRST, so each `continue` has a successor |
+| an undecodable source file | 1 | reported, not crashed on |
+| the printed page | 2 | one listed path per line, carrying nothing else |
+
+**The thirteen that remain are accounted for, not outstanding.** Three are provably equivalent —
+`rsplit(sep, n)[-1]` does not depend on `n` for any `n ≥ 1`, and `growing` is read only by
+`while growing:`. Ten are whole prose sentences: the mutation operator **wraps** a string, so
+`"XX…XX"` still contains the original and a correct substring assertion cannot kill them. Their
+checkable parts — the counts, and the remedy's two function names — are asserted; pinning phrasing
+word for word is the brittle assertion this project refuses.
+
+**Two findings about the tool rather than the code.** `**{` → `*{` is a `SyntaxError`, and mutmut
+records an uncompilable mutant as **survived** — so every survivor total it reports is an upper
+bound. And `growing = False` → `True` makes the fixpoint spin forever: detected, but only as a CI
+timeout, which names no test and no line. A loop cap was considered and refused, because it turns
+the hang into a `raise` no input can reach; the termination argument is stated at the loop instead.
+
+### Tested — the bench harness could not measure a guard that READS its subject
+
+**Control 6s, and it closes T-41.** Control 6 intersects a mutation's lines with coverage's
+executed set, so it can never fire for a guard that parses a file instead of running it — the
+claim ratchet, the ADR-citation guard, the leg-table guard, the dependency-pin guard. Every one of
+those was `VOID` here, correctly and uselessly. An audit hook on the `open` event now supplies the
+second proof: **the selected tests opened the mutated file.**
+
+**They are alternatives, not a fallback**, and the distinction is the whole design. `__pycache__`
+is cleared, so importing the mutated module compiles it from source — which opens it; and `--cov`
+makes coverage open every source it reports on. A naive read proof is therefore satisfied by every
+mutation of any target, which is control 6 weakened to nothing. So each open is classified by its
+stack and only an explicit read counts: no `importlib` frame, and some frame belonging to a real
+file under the tree. **Both halves of that were wrong once** — `<frozen runpy>` is not an importlib
+frame and sits at the base of every stack under `python -m pytest`, and
+`Path("<frozen runpy>").resolve()` lands under the tree, which made the third arm unreachable.
+
+**The scope is narrower than "a guard that reads a file", and the figures are dated rather than
+derived.** Control 5 diffs two ASTs, so the target must be Python whatever the guard does with it.
+Of the 68 file-subject guards in the suite on 2026-10-11: **19 named only Python files and are
+fully reachable, 16 named Python among others, and 26 named only Markdown, TOML, YAML, JSON or
+text and are still refused** — by control 5, before 6s is consulted. A third class was found while
+building this and is filed rather than fixed: a guard whose subject is a **docstring** can be
+measured by none of the three controls, because control 5 deliberately strips docstrings.
+
+`ci.py bench` now reproduces seven verdicts, up from six, and the new case is the experiment that
+produced T-41 in the first place. The harness's control count is bound to its own enumeration,
+which nothing checked while it said seven and listed seven.
+
 ## [0.8.0] — 2026-10-11
 
 ### Fixed — a release guard that could not pass on tag day, found by cutting this release
