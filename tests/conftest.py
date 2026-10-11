@@ -80,13 +80,25 @@ sources, docs or workflows sit across all four tiers. They are the ones that ans
 documentation still describe the code"*, and wanting to run exactly those is a different
 question from wanting the fast ones.
 
-AND ITS SCOPE IS THE FOUR HELPERS BELOW, WHICH IS NARROWER THAN ITS NAME. `_READS_THE_REPO`
-matches tests that reach the repository through one of four named helpers. A test that reaches
-it another way -- `pathlib.Path(runprov.__file__).parent`, which several do -- has the same
-subject and gets no marker. Nothing selects on `-m repo` in `ci.py` or any workflow, so this
-costs navigation rather than a false green; it is filed as the open finding it is, and the
-repair is to derive the predicate from reaching the package tree rather than to add a fifth
-helper name to the list.
+ITS PACKAGE-TREE HALF IS DERIVED, AND ITS REPOSITORY-ROOT HALF CANNOT BE. This was filed as an
+open finding -- `_READS_THE_REPO` matched four named helpers, so a test reading the package's own
+sources as `pathlib.Path(runprov.__file__).parent` had the same subject and got no marker. That
+half is closed: the attribute read is carried as a token (`_PACKAGE_TREE`) and rides the call
+closure, which gained **eleven** tests and lost none, every one of them a *does the packaging
+still describe the code* check.
+
+THE OTHER HALF WAS TRIED AND OVER-SELECTS, which is worth recording rather than attempting again.
+Deriving from `REPO` and `__file__` as well gains **thirty-two**, and about five of those are not
+subject-tests at all: a signal test setting `PYTHONPATH=REPO` for a child, a subclass test
+locating its own file. The identical expression `str(REPO)` is a SUBJECT in
+`ast.parse((REPO / "runprov" / x).read_text())` and a FIXTURE in `env["PYTHONPATH"] = str(REPO)`,
+and the difference is what the value flows INTO -- a dataflow property this walk cannot decide.
+Excepting the five would put the list back one level over, which is the shape the finding was
+about. So the repository-root half stays four helper names, and this paragraph says so instead of
+calling it derived.
+
+Nothing selects on `-m repo` in `ci.py` or any workflow, so the residue costs navigation rather
+than a false green.
 
 A BARE `pytest` MUST STILL WORK, for a Debian, conda-forge or Nix packager rebuilding from the
 sdist -- the same reason `pyproject.toml` keeps coverage flags out of `addopts`. Every marker
@@ -126,16 +138,49 @@ _DRIVES: tuple[tuple[str, frozenset[str]], ...] = (
     ("api", frozenset({"runprov.Run", "runprov.configure", "cli.Run"})),
 )
 
+#: THE PACKAGE TREE, CARRIED AS A SYNTHETIC TOKEN because a callee sweep cannot see it. Several
+#: tests reach the package's own sources as `pathlib.Path(runprov.__file__).parent`, and the CALL
+#: there is `pathlib.Path` -- which every test in the suite makes, so it separates nothing. What
+#: identifies the subject is the attribute READ, so that is recorded as a token and then rides the
+#: same closure as every real callee, through helpers, for free.
+#:
+#: IN ANGLE BRACKETS so it cannot collide with a callee spelling: `_called` below emits dotted
+#: names and bare attributes, and no Python call produces a name with a space or a bracket in it.
+#: A test asserts that, rather than leaving it as something this comment merely says.
+_PACKAGE_TREE = "<the package tree>"
+
 #: AND THE ORTHOGONAL ONE: the test's subject is this repository's own files.
-_READS_THE_REPO = frozenset({"_repo_root", "_readme", "_ci_module", "_bench_module"})
+#:
+#: THE PACKAGE-TREE HALF IS DERIVED NOW, which is test-1 closed [2026-10-11]. It used to be four
+#: helper names and nothing else, so a test reading the package's own sources inline got no
+#: marker -- measured: ELEVEN did, every one of them a *does the packaging still describe the
+#: code* check (the citation file, the licence, `py.typed`, the console script, the four source
+#: sweeps). Adding `_PACKAGE_TREE` here gains exactly those eleven and loses none.
+_READS_THE_REPO = frozenset({"_repo_root", "_readme", "_ci_module", "_bench_module", _PACKAGE_TREE})
 
 _TIERS = (*(name for name, _ in _DRIVES), "unit")
 
 
 def _called(node: ast.AST) -> set[str]:
-    """Every callee spelling in one function body, dotted and bare."""
+    """Every callee spelling in one function body, dotted and bare -- plus the package-tree token.
+
+    THE TOKEN IS EMITTED HERE rather than in a second walk, because the body is parsed once and
+    walked once and this is where that walk is. It is not a callee and is spelled so that it
+    cannot be mistaken for one; see `_PACKAGE_TREE`.
+    """
     out: set[str] = set()
     for inner in ast.walk(node):
+        if (
+            isinstance(inner, ast.Attribute)
+            and inner.attr == "__file__"
+            and isinstance(inner.value, ast.Name)
+            and inner.value.id == "runprov"
+        ):
+            #: `runprov.__file__` AND NOT ANY `X.__file__`. Measured on the first draft of this:
+            #: matching the bare attribute caught `fake.__file__`, `good.__file__` and
+            #: `bad.__file__` -- module objects the suite BUILDS in `tmp_path`, whose subject is
+            #: not this repository at all. A pattern that matches legitimate content.
+            out.add(_PACKAGE_TREE)
         if not isinstance(inner, ast.Call):
             continue
         func = inner.func

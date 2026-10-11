@@ -32947,6 +32947,121 @@ def test_every_checkout_that_runs_the_suite_fetches_the_full_history():
                 )
 
 
+def test_every_test_that_READS_THE_PACKAGES_OWN_SOURCES_is_selected_by_m_repo():
+    """test-1, closed. `tests/conftest.py` derives each test's tier from its call graph, and the
+    orthogonal `repo` marker — *the test's SUBJECT is this repository's own files* — matched
+    **four named helpers and nothing else**. A test reading the package's own sources inline, as
+    `pathlib.Path(runprov.__file__).parent`, had exactly that subject and got no marker: the
+    CALL there is `pathlib.Path`, which every test in the suite makes, so a callee sweep cannot
+    separate it from anything. Eleven tests were in that hole, every one a *does the packaging
+    still describe the code* check.
+
+    NOTHING GUARDED THE MARKER MACHINERY AT ALL before this. `conftest.py` is not measured by
+    the coverage gate (`--cov=runprov`), so the tiering walk, the fixed point and the marker
+    application had no test of any kind — and the finding above sat in a docstring for two days
+    describing itself.
+
+    TWO SIDES, NEITHER OF THEM `conftest`'s. The left is the function's own SOURCE TEXT, read
+    through `inspect.getsource` — a different method from an AST walk of the module, so this is
+    not the walk agreeing with itself. The right is a real `pytest -m repo` collection in a
+    child process, which is the marker as a user would get it, not the reach set that feeds it.
+    A tautology here would be easy and worthless: comparing `conftest`'s closure against
+    `conftest`'s closure proves the fixed point converges and nothing else.
+
+    A SUPERSET, NOT AN EQUALITY, and deliberately. `-m repo` also selects the tests that reach
+    the four repository-root helpers, which this left side does not compute; asserting equality
+    would require re-implementing that closure here. What is asserted is the direction that was
+    broken: everything reading the package tree must be selected.
+
+    SO OVER-SELECTION IS NOT CAUGHT, and that is measured rather than left implied. Dropping the
+    `runprov` qualifier from `conftest`'s attribute rule — matching ANY `X.__file__`, which the
+    first draft did and which catches the `fake`/`good`/`bad` module objects the suite builds in
+    `tmp_path` — takes `-m repo` from 109 items to 113, and this test still passes. The
+    consequence is navigation noise rather than a false green: nothing in `ci.py` or any workflow
+    selects on this marker, so a test wrongly included costs a reader's attention and nothing
+    else. Catching it would need the equality, hence the closure, hence the tautology.
+    """
+    if not _is_the_repository():
+        pytest.skip("needs the repository: this collects the suite in a child from its own tree")
+
+    reads_the_package = sorted(
+        name
+        for name, value in sorted(globals().items())
+        if name.startswith("test_")
+        and inspect.isfunction(value)
+        and "runprov.__file__" in inspect.getsource(value)
+    )
+    assert reads_the_package, (
+        "no test in this module reads `runprov.__file__` in its own body, so this check has no "
+        "subject. Either the package-tree sweeps were removed or `inspect.getsource` is "
+        "returning something other than these functions' source."
+    )
+
+    collected = subprocess.run(
+        [sys.executable, "-m", "pytest", "-o", "addopts=", "-q", "--collect-only", "-m", "repo"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert collected.returncode == 0, (
+        f"collecting `-m repo` failed ({collected.returncode}); this check cannot read the "
+        f"marker it is about:\n{collected.stdout[-2000:]}\n{collected.stderr[-2000:]}"
+    )
+    #: THE NODE IDS, not the count. A count would pass over the right number of the wrong tests.
+    selected = {
+        line.split("::", 1)[1].split("[", 1)[0]
+        for line in collected.stdout.splitlines()
+        if "::" in line
+    }
+    assert selected, f"`-m repo` selected nothing:\n{collected.stdout[-2000:]}"
+
+    missing = [name for name in reads_the_package if name not in selected]
+    assert not missing, (
+        f"these tests read the package's own sources and `-m repo` does not select them: "
+        f"{missing}. The marker's subject is this repository's own files, and reading "
+        f"`runprov.__file__` is reaching them — see `_PACKAGE_TREE` in `tests/conftest.py`, "
+        f"which carries that attribute read through the call closure precisely so that a callee "
+        f"sweep does not have to see it."
+    )
+
+
+def test_the_package_tree_TOKEN_cannot_collide_with_a_real_CALLEE_spelling():
+    """`conftest._PACKAGE_TREE` is a synthetic member of the same sets that hold callee spellings
+    — `_READS_THE_REPO` beside `_repo_root`, and the reach sets that `_DRIVES` is matched
+    against. If it could ever be produced by `_called`, a test calling something of that name
+    would be marked `repo` for no reason, and the two namespaces would have silently merged.
+
+    ITS SAFETY IS A PROPERTY OF THE SPELLING, so that is what is asserted rather than the
+    current value. `_called` emits dotted names and bare attributes built from identifiers, so
+    anything it can produce is a `.`-joined sequence of identifiers; a token that is not makes
+    the collision unspellable instead of merely unlikely.
+
+    AND THE FOUR DECLARED HELPERS MUST STILL EXIST. They are the half of this marker that is a
+    list, so a rename that left the list behind would silently narrow the marker again — which
+    is the finding this closed half of it came from.
+    """
+    import conftest  #: the plugin that applies these markers, imported as pytest imports it
+
+    token = conftest._PACKAGE_TREE
+    assert not all(part.isidentifier() for part in token.split(".")), (
+        f"{token!r} is spellable as a Python callee, so `_called` could emit it and a test that "
+        f"calls something of that name would be marked `repo` for no reason. Keep a character "
+        f"no identifier may contain."
+    )
+
+    declared = sorted(conftest._READS_THE_REPO - {token})
+    assert declared, (
+        "the repository-root half of the marker is empty, so only the derived half acts"
+    )
+    missing = [name for name in declared if not inspect.isfunction(globals().get(name))]
+    assert not missing, (
+        f"`_READS_THE_REPO` names these, and this module has no such function: {missing}. The "
+        f"root half of this marker is a hand-written list; a renamed helper narrows the marker "
+        f"and nothing else notices."
+    )
+
+
 def test_every_TYPE_CHECK_EXEMPTION_is_declared_where_one_is_ALLOWED_and_says_why():
     """F1. `ci.py lint` ran `mypy runprov/` and nothing else until 2026-10-11, so the six
     `tools/` modules, `ci.py` itself and both `examples/` were type-checked by NOTHING — while

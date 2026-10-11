@@ -9,6 +9,53 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Tested — the `repo` marker's scope was narrower than its name, and nothing guarded the machinery
+
+**No package code changed.** `tests/conftest.py` derives every test's tier from its call graph, and
+the orthogonal `repo` marker — *the test's SUBJECT is this repository's own files* — matched
+**four named helpers and nothing else**. A test reading the package's own sources inline, as
+`pathlib.Path(runprov.__file__).parent`, had exactly that subject and got no marker: the **call**
+there is `pathlib.Path`, which every test in the suite makes, so a callee sweep separates nothing.
+**Eleven tests were in that hole** — the citation file, the licence, `py.typed`, the console
+script, the PyPI readme, and the four source sweeps — every one a *does the packaging still
+describe the code* check. `-m repo` goes from **98 items to 109**, and all four tiers are
+unchanged (591 / 540 / 81 / 75), which was the control.
+
+The attribute read is carried through the call closure as a synthetic token spelled so that
+`_called` cannot produce it, so it rides the same fixed point as every real callee, through
+helpers, for free.
+
+**And the first draft of that rule matched any `X.__file__`** — which caught `fake.__file__`,
+`good.__file__` and `bad.__file__`: module objects the suite *builds* in `tmp_path`, whose subject
+is not this repository at all. Found by printing what the sweep matched rather than its count.
+
+**The other half was attempted, over-selects, and is now declared instead of claimed.** Deriving
+from `REPO` and `__file__` as well gains **thirty-two**, of which about five are not
+subject-tests: a signal test setting `PYTHONPATH=REPO` for a child, a subclass test locating its
+own file. The identical expression `str(REPO)` is a **subject** in
+`ast.parse((REPO / "runprov" / x).read_text())` and a **fixture** in
+`env["PYTHONPATH"] = str(REPO)`, and the difference is what the value flows *into* — a dataflow
+property this walk cannot decide. Excepting the five would put the list back one level over, which
+is the shape the finding was about. So the repository-root half stays four names and the docstring
+says so, rather than calling itself derived.
+
+**Nothing guarded any of this before.** `conftest.py` is not measured by the coverage gate
+(`--cov=runprov`), so the tiering walk, the fixed point and the marker application had no test of
+any kind — and the finding sat in a docstring describing itself for two days. Two guards now, with
+both sides derived and neither of them `conftest`'s own closure: the left is each function's
+**source text** via `inspect.getsource`, the right is a real `pytest -m repo` collection in a
+child process. Comparing the closure against the closure would prove the fixed point converges
+and nothing else.
+
+A second guard holds the token's safety as a **property of its spelling** — anything `_called`
+can emit is a dot-joined sequence of identifiers, so a token that is not makes the collision
+unspellable rather than unlikely — and asserts the four declared helper names still resolve to
+functions, since a rename would silently narrow the marker again.
+
+**The over-selection direction is not caught, and that is stated with its measurement**: the
+widened rule takes `-m repo` to 113 items and both guards still pass. Nothing selects on this
+marker in `ci.py` or any workflow, so the residue costs a reader's attention rather than a green.
+
 ### Tested — `_atomic.py`'s three filed survivors: one was equivalent, two were real
 
 **`runprov/_atomic.py` is unchanged.** These three were filed rather than fixed on 2026-10-10
