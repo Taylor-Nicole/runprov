@@ -9,6 +9,51 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Tested — `_atomic.py`'s three filed survivors: one was equivalent, two were real
+
+**`runprov/_atomic.py` is unchanged.** These three were filed rather than fixed on 2026-10-10
+when the other two of its five survivors were repaired. **Each was re-applied to the current tree
+first**, because this module's tests moved that day and a cached verdict from before them says
+nothing: all three still survived the full suite.
+
+* **An arbitrary pick is not a decision, and `hex[:12]` → `[:13]` stays alive deliberately.**
+  Grepped the package and all twenty-one ADRs for any statement about the random component's
+  length, collision resistance, or a name-length budget: **there is none**, and nothing reads the
+  component — `verify` matches `endswith(TEMP_SUFFIX)` and `__main__` tells the user the same.
+  Twelve hex characters is 48 bits and thirteen is 52; both work. A test pinning twelve would
+  assert an accident as a contract, which is the same call as `TOOL_ID = 3` and `indent=2`. The
+  duplication behind it — `run.py:712` builds the shape independently — was already closed by
+  the 2026-10-10 repair, which covers **both** writers and pins the suffix as terminal for each.
+* **A provenance record created where nothing existed could have been executable.**
+  `_write_atomically` creates its temporary with
+  `os.open(..., 0o666 if mode is None else mode)`, and that arm was asserted nowhere — a mutant
+  moving the literal to `0o667` passed the whole suite. The extra bit is **other-execute on a
+  data file**, on the ordinary *first* write to a path. **The assertion is not the number**: the
+  docstring promises *"the umask default, which is what a destination that does not exist gets
+  anyway"*, so the test writes the same payload twice — once with `open()`, once with
+  `atomic_write_text` — and requires the modes to be equal. Two sources, and it holds the
+  sentence the module actually makes.
+
+  **And the umask is set explicitly, which is as much the test as the assertion.** The mutation
+  is invisible under a restrictive umask — `0o666` and `0o667` both yield `0600` under `0o077` —
+  so a test inheriting the ambient value would pass on this machine (`0o002`) and be vacuous for
+  anyone with a tighter one. `0o022` is set and restored in a `finally`, since `os.umask` is
+  process-global.
+* **Seven places quoted `.runprov-tmp` and none was bound to anything.** Renaming `TEMP_SUFFIX`
+  moves the writer and the reader together — so that mutant survives correctly — and silently
+  falsifies ADR-0005, two comments in `run.py`, two test docstrings and two changelog entries.
+  **The claims ratchet cannot see this**: its subject is numeric claims in shipped markdown, and
+  this is a string quoted in a `.py` comment. Same class, one layer in. Swept now **by shape**
+  (`.runprov-<anything>`) rather than by value, because a sweep for the current spelling comes
+  back empty after a rename and reports nothing wrong — which is the failure it exists for.
+
+  `CHANGELOG.md` is excluded, with this project's own reason: an entry describing what an older
+  version wrote is **correct** when the constant moves, and the practice here is to quote the
+  superseded value rather than delete it. **The exclusion's subject is asserted** — the sweep
+  must still find the literal outside the changelog, and must still reach the file that *defines*
+  it, or the exemption has quietly started covering the tree. Both legs demonstrated by narrowing
+  the pattern and by widening the exclusion.
+
 ### Tested — `prune.py`: two legal durations were refused by surviving mutants, and nobody could tell
 
 **`runprov/prune.py` is unchanged.** 151 mutants, 108 killed, **43 survived** — and the split is

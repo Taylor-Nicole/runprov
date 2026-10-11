@@ -33458,6 +33458,143 @@ def test_a_write_whose_TEMP_FILE_CANNOT_BE_CREATED_raises_the_ORIGINAL_error(tmp
     assert sorted(q.name for q in tmp_path.iterdir()) == [], sorted(tmp_path.iterdir())
 
 
+@requires_real_file_modes
+def test_a_record_written_where_NOTHING_EXISTED_gets_the_mode_OPEN_would_have_given_it(tmp_path):
+    """`_write_atomically` creates its temporary file with
+    `os.open(..., 0o666 if mode is None else mode)`, and the no-existing-destination arm of that
+    was asserted nowhere — a mutation run moved the literal to `0o667` and the whole suite
+    passed. The extra bit is **other-execute on a provenance file**: a data file nobody should be
+    able to run, created that way on the ordinary FIRST write to a path.
+
+    THE CONTRACT IS NOT A NUMBER, so neither is the assertion. `_write_atomically`'s docstring
+    says the write *"proceeds at the umask default, **which is what a destination that does not
+    exist gets anyway**"* — so the thing to compare against is `open()`, measured here, rather
+    than a `0o666` typed into this file. Two sources, and it holds the sentence the module makes.
+
+    THE UMASK IS SET EXPLICITLY, AND THAT IS THE TEST AS MUCH AS THE ASSERTION. The mutation is
+    invisible under a restrictive umask, computed rather than guessed:
+
+        umask 0o000 -> 0666 vs 0667      umask 0o022 -> 0644 vs 0645
+        umask 0o002 -> 0664 vs 0665      umask 0o077 -> 0600 vs 0600   <- INVISIBLE
+
+    This machine's umask is `0o002`, which happens to discriminate; a developer or runner with
+    `0o077` would have run a vacuous test and never known. So `0o022` is set here and restored in
+    a `finally` — `os.umask` is process-global, and leaving it moved would change what every
+    later test creates.
+    """
+    old_umask = os.umask(0o022)
+    try:
+        by_open = tmp_path / "by-open.json"
+        #: `open` AND NOT `Path.write_text`, because `open` is the thing being compared against
+        with open(by_open, "w", encoding="utf-8") as fh:
+            fh.write("{}\n")
+        by_us = tmp_path / "by-us.json"
+        runprov._atomic.atomic_write_text(by_us, "{}\n")
+
+        assert by_us.exists() and by_open.exists()
+        theirs, ours = by_open.stat().st_mode & 0o7777, by_us.stat().st_mode & 0o7777
+        assert ours == theirs, (
+            f"a record written where nothing existed came out {ours:04o} and `open()` would have "
+            f"made it {theirs:04o}. The module promises the umask default for this case, so any "
+            f"difference is a permission bit this package invented — and an executable bit on a "
+            f"provenance file is one nobody would look for."
+        )
+        #: AND THE PROPERTY THAT MATTERS SAID DIRECTLY, so a red here names the consequence and
+        #: not only the mismatch. `open()` cannot produce an executable file either, so this is
+        #: implied above — but a reader meeting the failure should not have to derive it.
+        assert not ours & 0o111, f"a provenance record was created executable: {ours:04o}"
+    finally:
+        os.umask(old_umask)
+
+
+def _tracked_text_files() -> list[pathlib.Path]:
+    """Every tracked file, read as text with undecodable bytes replaced.
+
+    GIT IS THE POPULATION, so a file added anywhere is swept without anybody remembering — and
+    nothing is excluded by kind. An exclusion list would be a second place to maintain, and it
+    can only make a sweep SMALLER, which is the direction that goes quiet: the callers below
+    assert that the sweep still reaches a file they name, so a population that has stopped
+    including things fails rather than passes.
+
+    `errors="replace"` rather than a suffix allowlist. The corpus holds `.tsv` and `.json`
+    fixtures and a few near-binary blobs; decoding them loosely costs a few milliseconds and
+    keeps the population derived.
+    """
+    proc = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=REPO, capture_output=True, text=True, check=True
+    )
+    names = [name for name in proc.stdout.split("\0") if name]
+    assert names, "`git ls-files` returned nothing, so any sweep built on this has no subject"
+    return [path for path in (REPO / name for name in names) if path.is_file()]
+
+
+#: THE TEMP-SUFFIX LITERAL AS PROSE QUOTES IT. `.runprov-` then at least one more character, so
+#: the pattern finds a changed suffix as readily as the current one — which is the whole point:
+#: a sweep for the CURRENT value would find nothing to complain about after a rename.
+_TEMP_SUFFIX_QUOTED = re.compile(r"\.runprov-[a-z][a-z0-9-]*")
+
+#: WHERE A SUPERSEDED SPELLING IS CORRECT RATHER THAN STALE, and it is one file. An entry
+#: describing what an older version wrote must keep saying what that version wrote; the practice
+#: here is to quote the superseded value rather than delete it. Every other mention is a
+#: statement about the package as it is now.
+_TEMP_SUFFIX_HISTORY = ("CHANGELOG.md",)
+
+
+def test_every_place_that_QUOTES_the_temp_suffix_quotes_THE_ONE_IN_FORCE():
+    """`TEMP_SUFFIX` is shared between the writer and the reader, so a mutation run changed it
+    and both sides moved together — the mutant survives, correctly. **What does not move is the
+    prose.** Seven places spell `.runprov-tmp` out: ADR-0005, two comments in `run.py`, two test
+    docstrings, and two changelog entries. **None was bound to anything**, so renaming the
+    constant silently falsified all of them.
+
+    `tools/claims.py` CANNOT SEE THIS, and that is why it needs its own guard: the claims
+    ratchet's subject is numeric claims in shipped markdown, and this is a string quoted in a
+    `.py` comment. Same defect class, one layer in.
+
+    SWEPT BY SHAPE, NOT BY VALUE. The pattern matches `.runprov-<anything>`, so it finds the
+    stale spellings after a rename — a sweep for the current value would come back empty and
+    report nothing wrong, which is the failure this is for.
+
+    THE CHANGELOG IS EXCLUDED AND THE EXCLUSION IS ASSERTED. An entry describing an older
+    version's suffix is correct, not stale. But an exemption whose subject goes unchecked
+    silently starts covering everything, so the sweep must still find the literal outside it.
+    """
+    if not _is_the_repository():
+        pytest.skip(
+            "not a git checkout — this sweep's population is `git ls-files`, which exits 128 in "
+            "the sdist `ci.py build` runs this suite from; see `_is_the_repository`"
+        )
+    carriers: dict[str, set[str]] = {}
+    for path in sorted(_tracked_text_files()):
+        if path.name in _TEMP_SUFFIX_HISTORY:
+            continue
+        found = set(_TEMP_SUFFIX_QUOTED.findall(path.read_text(encoding="utf-8", errors="replace")))
+        if found:
+            carriers[str(path.relative_to(REPO)).replace("\\", "/")] = found
+
+    assert carriers, (
+        "no file outside the changelog quotes the temp suffix at all. Either the pattern has "
+        "stopped matching, or the sweep is reading nothing — and the changelog exclusion would "
+        "then be covering the whole tree instead of one file's history."
+    )
+    assert "runprov/_atomic.py" in carriers, (
+        f"the sweep did not reach the file that DEFINES the suffix, so whatever it read is not "
+        f"this package: {sorted(carriers)}"
+    )
+
+    wrong = {
+        where: sorted(spellings - {runprov._atomic.TEMP_SUFFIX})
+        for where, spellings in carriers.items()
+        if spellings - {runprov._atomic.TEMP_SUFFIX}
+    }
+    assert not wrong, (
+        f"these files quote a temp suffix this package does not write: {wrong}. The one in force "
+        f"is {runprov._atomic.TEMP_SUFFIX!r}. Renaming `TEMP_SUFFIX` moves the writer and the "
+        f"reader together and leaves every prose mention of it false — which is why they are "
+        f"swept here rather than trusted. Update the prose, or bind it to the constant."
+    )
+
+
 def test_every_temporary_file_THIS_PACKAGE_WRITES_is_counted_as_debris_by_verify(
     tmp_path, monkeypatch
 ):
