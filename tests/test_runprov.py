@@ -111,6 +111,14 @@ _OBSERVER_MAX_FUNCTIONS = 200
 _OBSERVER_MAX_SIGNATURES = 32
 _OBSERVER_VENDORED = ("site-packages", "dist-packages", ".venv", "node_modules")
 
+#: THE HEARTBEAT'S DECLARED NUMBERS, BY HAND, for the reason the block above gives: every test
+#: passes an interval explicitly, so `DEFAULT_INTERVAL` was never the value in force and a mutant
+#: moved it with nothing noticing. The poll cap and the join budget are the two latencies
+#: `Run.__exit__` depends on — how long a stop takes to be noticed, and how long it is waited for.
+_HEARTBEAT_DEFAULT_INTERVAL = 30.0
+_HEARTBEAT_POLL_CAP = 1.0
+_HEARTBEAT_JOIN_BUDGET = 2.0
+
 # ------------------------------------------------- what the platform can be asked to build
 #
 # L-26. `test.yml` runs this suite on windows-latest, and 22 tests here build a fixture
@@ -5590,28 +5598,155 @@ def test_heartbeat_beats_only_after_silence_and_names_what_it_last_did():
     slower and flakier for no extra coverage. `tick()` IS the decision; the thread only calls
     it.
     """
-    now = [0.0]
+    #: THE CLOCK DOES NOT START AT ZERO, AND THAT IS THE TEST RATHER THAN A DETAIL. It did, and
+    #: 0.0 is the ADDITIVE IDENTITY: `now - self._started` and `now + self._started` are then the
+    #: same number, so a mutation run flipped that `-` to a `+` and this test — which asserts the
+    #: exact rendered line — could not see it. Measured 2026-10-11.
+    #:
+    #: AND THE DURATION PASSES A MINUTE, for the same kind of reason. The old fixture beat at an
+    #: elapsed 25, where `25 // 60` and `25 // 61` are both 0 and `25 % 60` and `25 % 61` are both
+    #: 25 — so neither field of the `mm:ss` clock was pinned by anything. At an elapsed 120 the
+    #: three mutations render `[35:20]`, `[01:00]` and `[02:59]` against the true `[02:00]`.
+    #:
+    #: A fixture that asserts the whole output and still cannot distinguish the expression that
+    #: produced it is the shape to watch for: the values, not the assertions, were the gap.
+    start = 1000.0
+    now = [start]
     said = []
     hb = runprov.heartbeat.Heartbeat(10.0, said.append, clock=lambda: now[0])
 
-    now[0] = 9.9
+    now[0] = start + 9.9
     assert hb.tick() is False, "beat before the interval elapsed"
-    now[0] = 10.0
+    now[0] = start + 10.0
     assert hb.tick() is True
-    assert "still running" in said[0] and "starting" in said[0]
+    assert said[0] == "  [00:10] still running — last: starting", (
+        f"the whole line is asserted, because every part of it was mutable without a test: "
+        f"{said[0]!r}"
+    )
+
+    #: TWICE IN A ROW WITH NO EVENT BETWEEN THEM, which the old fixture never did: it called
+    #: `saw()` between the beats, and `saw()` re-sets `_last_event` — repairing the very field a
+    #: mutant had nulled, so the next tick never met the `None`. Two consecutive beats are the
+    #: only way to see that `tick()` leaves the clock in a usable state; without it the real
+    #: thread would beat once and then die of a `TypeError` inside `_loop`, silently.
+    now[0] = start + 120.0
+    assert hb.tick() is True, "a second beat after a second silence"
+    assert said[1] == "  [02:00] still running — last: starting", (
+        f"elapsed is from the START and not from the last beat, and both fields of the clock "
+        f"are rendered mod 60: {said[1]!r}"
+    )
 
     # An event resets the silence, which is the whole difference from a metronome.
-    now[0] = 15.0
+    now[0] = start + 125.0
     hb.saw("read data/big.tsv")
-    now[0] = 24.0
+    now[0] = start + 134.0
     assert hb.tick() is False, "an event did not reset the silence"
-    now[0] = 25.0
+    now[0] = start + 135.0
     assert hb.tick() is True
-    assert "read data/big.tsv" in said[1]
-    assert said[1].startswith("  [00:25]"), (
-        f"elapsed is from the start, not the last event: {said[1]!r}"
+    assert said[2] == "  [02:15] still running — last: read data/big.tsv", said[2]
+    assert hb.beats == 3
+
+
+class _StopStub:
+    """A `threading.Event` stand-in whose `wait` returns a scripted sequence and records its
+    timeouts, so `Heartbeat._loop` can be driven without a thread and without sleeping.
+
+    `_loop` carried a `pragma: no cover` saying its body is `tick`, tested directly, and that
+    true of the body and not of the loop: both of the mutants that lived there are in the `while`
+    line itself. Inverting `while not self._stop.wait(...)` makes the loop spin on `tick()`
+    forever once a stop is set, and widening `min(self.interval, 1.0)` doubles how long a stop
+    takes to be noticed. Neither is reachable through `tick()`.
+    """
+
+    def __init__(self, returns):
+        self.returns = list(returns)
+        self.waited = []
+
+    def wait(self, timeout=None):
+        self.waited.append(timeout)
+        return self.returns.pop(0) if self.returns else True
+
+    def set(self):
+        self.returns = []
+
+
+def test_the_heartbeat_LOOP_stops_when_asked_and_never_waits_longer_than_its_POLL_CAP():
+    """`_loop` is three tokens of logic and both of the mutants that survived in this module's
+    thread live in them. Driven with a stub event rather than a real one: no sleeping, no timing
+    assertion, and the loop's two properties are separable.
+
+    THE EXIT CONDITION. `while not self._stop.wait(...)` becomes, inverted, a loop that spins on
+    `tick()` forever the moment a stop is set — `wait` returns True immediately on a set event, so
+    the negation is what makes a stop an exit rather than a trigger. A mutation run recorded that
+    as a TIMEOUT, which is the whole suite hanging in place of a message.
+
+    THE POLL CAP, which is a latency and is asserted WITHOUT measuring time. `Event.wait` is used
+    rather than `sleep` so that *"a stop is acted on at once rather than after the rest of an
+    interval, so exiting a run does not hang for up to thirty seconds"* — and the cap is what
+    makes that true for any interval. Reading back the timeouts the loop asked for holds the
+    claim deterministically; a wall-clock assertion here would measure the host.
+    """
+    assert runprov.heartbeat.DEFAULT_INTERVAL == _HEARTBEAT_DEFAULT_INTERVAL, (
+        f"`DEFAULT_INTERVAL` is {runprov.heartbeat.DEFAULT_INTERVAL} and this suite was written "
+        f"against {_HEARTBEAT_DEFAULT_INTERVAL}. Every other test passes an interval explicitly, "
+        f"so this equality is the only thing holding the declared default; the two sides must "
+        f"have different sources or it holds nothing."
     )
-    assert hb.beats == 2
+
+    for interval in (0.25, _HEARTBEAT_POLL_CAP, _HEARTBEAT_DEFAULT_INTERVAL):
+        now = [500.0]
+        said = []
+        #: `clock=lambda _n=now: _n[0]` BINDS THE LIST, rather than closing over the loop
+        #: variable. ruff's B023 caught the closure form here: every lambda built in a loop that
+        #: reads `now` would read whichever `now` the LAST iteration left behind, so the first two
+        #: passes would have been driven by the third pass's clock.
+        hb = runprov.heartbeat.Heartbeat(interval, said.append, clock=lambda _n=now: _n[0])
+        stub = _StopStub([False, False, True])
+        hb._stop = stub
+        now[0] = 500.0 + interval  # silent for exactly the interval, so each pass beats
+        hb._loop()
+
+        assert stub.returns == [], (
+            f"the loop did not run to the end of its scripted waits for interval {interval}: "
+            f"{stub.waited}. A loop that exits early beats fewer times than the run is silent."
+        )
+        expected = min(interval, _HEARTBEAT_POLL_CAP)
+        assert stub.waited == [expected] * 3, (
+            f"with interval {interval} the loop waited {stub.waited}; every wait must be "
+            f"{expected} — the smaller of the interval and the {_HEARTBEAT_POLL_CAP}s cap, so a "
+            f"stop is noticed within a second however long the interval is"
+        )
+        assert said, (
+            f"the loop ran {len(stub.waited)} times at interval {interval} and emitted nothing, "
+            f"so this test would pass over a loop whose body never runs"
+        )
+
+
+def test_the_heartbeat_WAITS_A_BOUNDED_TIME_for_its_thread_to_notice_a_stop():
+    """`stop()` is called from `Run.__exit__` BEFORE the record is assembled, so the join budget
+    is how long finishing a run may be delayed by the thread describing it. A mutant moved it and
+    survived, because no test reads it.
+
+    ASSERTED THROUGH A STAND-IN RATHER THAN BY TIMING. What matters is the number `stop()` asks
+    for, which is a decision; how long the join actually takes is the host's business.
+    """
+    hb = runprov.heartbeat.Heartbeat(_HEARTBEAT_DEFAULT_INTERVAL, lambda line: None)
+    asked = []
+
+    class _ThreadStub:
+        def join(self, timeout=None):
+            asked.append(timeout)
+
+    hb._thread = _ThreadStub()
+    hb.stop()
+
+    assert asked == [_HEARTBEAT_JOIN_BUDGET], (
+        f"`stop()` joined with {asked}; the budget is {_HEARTBEAT_JOIN_BUDGET}s, which is how "
+        f"long `Run.__exit__` may be delayed before the record is assembled. A longer one delays "
+        f"every run that ends while the thread is mid-wait; a shorter one abandons the thread "
+        f"sooner than it can notice."
+    )
+    assert hb._thread is None, "`stop()` must release the thread whatever the join did"
 
 
 def test_heartbeat_never_kills_the_run_it_is_describing():
@@ -5631,10 +5766,32 @@ def test_heartbeat_start_and_stop_are_idempotent_and_zero_disables():
     """A non-daemon thread would keep a finished process alive; a daemon one killed at
     shutdown can raise from inside a module being torn down. So: daemon, and stopped."""
     hb = runprov.heartbeat.Heartbeat(0.05, lambda line: None)
-    hb.start()
-    hb.start()  # idempotent
-    assert hb._thread is not None and hb._thread.daemon, "the thread must be a daemon"
-    hb.stop()
+    #: try/finally, AND IT IS THE POINT OF THIS TEST RATHER THAN TIDINESS. The assertions used to
+    #: sit before `stop()`, so a failing one left a live thread behind — and when the thread is
+    #: NOT a daemon, which is exactly what the first assertion is here to catch, the interpreter
+    #: cannot exit and the suite HANGS. Measured 2026-10-11 with `daemon=False` applied: the
+    #: assertion fired correctly in 2.95 s with a message naming the flag, and the process then
+    #: hung until killed at 60 s. A mutation run recorded it as a TIMEOUT, not a failure.
+    #:
+    #: So the best diagnostic in the run was unreadable: CI reports a killed job and *hung*,
+    #: never *the daemon flag changed*. Where the subject of a test is a thread that can prevent
+    #: exit, the cleanup has to be unconditional.
+    try:
+        hb.start()
+        hb.start()  # idempotent
+        thread = hb._thread
+        assert thread is not None, "start() did not create a thread"
+        assert thread.daemon, (
+            "the thread must be a daemon: a non-daemon one keeps a finished process alive, "
+            "which is why this assertion is inside a try/finally — without it, failing here "
+            "hangs the suite instead of reporting this message"
+        )
+        assert thread.name == "runprov-heartbeat", (
+            f"the thread is named {thread.name!r}; that name is what identifies it in a "
+            f"traceback or a `py-spy` dump of a stuck run, so it has one right value"
+        )
+    finally:
+        hb.stop()
     hb.stop()  # idempotent, and safe twice
     assert hb._thread is None
 

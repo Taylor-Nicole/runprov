@@ -101,9 +101,16 @@ class Heartbeat:
         self._thread = threading.Thread(target=self._loop, name="runprov-heartbeat", daemon=True)
         self._thread.start()
 
-    def _loop(self) -> None:  # pragma: no cover - the body is `tick`, tested directly
+    def _loop(self) -> None:
         # `Event.wait` rather than `sleep`: a stop is acted on at once rather than after the
         # rest of an interval, so exiting a run does not hang for up to thirty seconds.
+        #
+        # NO LONGER `pragma: no cover`. The exemption read "the body is `tick`, tested directly",
+        # which was true of the body and false of the `while`: both of the mutants that survived
+        # in this module's thread are in THIS line — inverting the negation makes a stop a
+        # trigger instead of an exit and the loop spins on `tick()` forever, and widening the cap
+        # doubles how long a stop takes to be noticed. Neither is reachable through `tick()`.
+        # Driven now by a stub event with a scripted `wait`, so there is no thread and no sleep.
         while not self._stop.wait(min(self.interval, 1.0)):
             self.tick()
 

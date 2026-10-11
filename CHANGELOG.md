@@ -9,6 +9,59 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Tested — `heartbeat.py`: the assertions were right, the fixture's **values** were not
+
+**No behaviour changed.** `runprov/heartbeat.py` loses one `pragma: no cover` and gains the
+comment explaining why; everything else is the suite. 48 mutants, 36 killed, **10 survived and 2
+timed out**, and eleven of the twelve share a cause that is not a missing assertion — the
+existing tests assert the exact rendered beat line and the daemon flag, and were still blind.
+
+* **A fake clock starting at `0.0` cannot tell `-` from `+`.** `elapsed = int(now -
+  self._started)` was mutated to `+`, and with `_started == 0.0` the two are the same number.
+  Two more mutants changed `elapsed // 60` to `// 61` and `elapsed % 60` to `% 61`, invisible
+  because the fixture beat at an elapsed of **25**, where `25//60 == 25//61 == 0` and
+  `25%60 == 25%61 == 25`. **Choosing zero as the clock's origin and a sub-minute duration is the
+  natural, readable thing to do, and it disabled an assertion on the whole output string.** The
+  fixture now starts at 1000.0 and beats at an elapsed of 120: the three mutants render
+  `[35:20]`, `[01:00]` and `[02:59]` against the true `[02:00]`. Values computed, not guessed.
+* **A `saw()` between two beats repaired the field under test.** A mutant setting
+  `self._last_event = None` after a beat survived, because the test called `saw()` in between —
+  and `saw()` re-sets that field. Two consecutive beats with no event between them raise
+  `TypeError: unsupported operand type(s) for -: 'float' and 'NoneType'` from inside `tick()`,
+  **outside the `try` that only wraps the beat emission** — which in the thread means the
+  heartbeat beats once and then dies silently. Recorded, **not fixed in the product**: with
+  correct code that subtraction is float-minus-float and cannot raise, so it is unreachable
+  rather than latent.
+* **An assertion before cleanup turned a named failure into a hang**, which is why the
+  `daemon=True` → `False` mutant was recorded as a *timeout* rather than a kill. Measured: the
+  assertion fires correctly **in 2.95 s** with a message naming the flag, and the process then
+  hangs until killed, because the assert ran before `stop()` and left a **non-daemon** thread
+  alive on a 0.05 s interval. **The best diagnostic in the run, unreadable** — CI reports a
+  killed job and *hung*, never *the daemon flag changed*. Now in a `try/finally`, and the same
+  mutant finishes with a failure in three seconds.
+* **`_loop`'s `pragma: no cover` was true of its body and false of its `while`.** The exemption
+  read *"the body is `tick`, tested directly"* — and **both** mutants that survived in this
+  module's thread are in the `while` line itself: inverting the negation makes a stop a *trigger*
+  rather than an exit, so the loop spins on `tick()` forever, and widening `min(self.interval,
+  1.0)` doubles how long a stop takes to be noticed. Driven now by a stub event with a scripted
+  `wait` that records its timeouts — **no thread, no sleeping, and no timing assertion**, which
+  would have measured the host. The exemption is retired and `heartbeat.py` is at 100% with
+  nothing excluded.
+* **Three declared numbers were never the ones in force**: `DEFAULT_INTERVAL` (every test passes
+  an interval explicitly), the 1-second poll cap, and the 2-second join budget — the two
+  latencies `Run.__exit__` depends on. Hand-written second sides, for the reason
+  `_PACKAGE_MODULES` already gives.
+* **The thread's name was unasserted.** `runprov-heartbeat` is what identifies it in a traceback
+  or a `py-spy` dump of a stuck run.
+
+**One mutant is not a finding and says why:** a mutated type annotation, inert because the module
+has `from __future__ import annotations`. Confirmed still alive after the repairs, because a fix
+that kills an equivalent mutant has pinned something nobody decided.
+
+**And `ruff` caught a real closure bug in one of the new tests** — `clock=lambda: now[0]` built
+inside a loop reads whichever `now` the last iteration left behind (B023), so the first two passes
+would have been driven by the third's clock. Bound as a default argument instead.
+
 ### Tested — `observe.py`'s mutation survivors, and **no behaviour changed**
 
 **`runprov/observe.py` is untouched by this entry.** 128 mutants, 109 killed, 19 survived, and
