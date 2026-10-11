@@ -107,7 +107,10 @@ jobs:
       - run: |
           set -euo pipefail
           "${{ steps.py.outputs.bin }}" -m venv "$RUNNER_TEMP/lint"
-          "$RUNNER_TEMP/lint/bin/python" -m pip install --quiet "ruff==0.16.10" "mypy==2.3.1"
+          # `.[test]` TOO -- see the same line in `test.yml` for why: `ci.py lint` derives its
+          # type-check scope now, which includes a file that imports `pytest`.
+          "$RUNNER_TEMP/lint/bin/python" -m pip install --quiet -e ".[test]" \
+              "ruff==0.16.10" "mypy==2.3.1"
       - run: "$RUNNER_TEMP/lint/bin/python ci.py lint"
 
   build:

@@ -235,6 +235,16 @@ test` (pytest with the coverage gate), `python ci.py build` (build, twine check 
 then install the wheel into a clean venv and import it from elsewhere — which is what
 catches a file that is in git and missing from the package).
 
+**`mypy --strict` reads every tracked `.py` file, not just the package.** The scope is asked of
+`git ls-files`, so a file you add anywhere is type-checked without anyone remembering to list
+it — including `tools/`, `ci.py` and `examples/`, which measure this package and went
+unchecked until 2026-10-11. If your new file cannot pass yet, the only place to say so is
+`_UNTYPED` in `ci.py`, with a reason, and only for a file under `tests/` or `examples/`;
+`runprov/`, `tools/` and the root scripts take no exemption. **An exemption expires by
+itself**: `lint` type-checks the exempt files too and goes red when one of them starts
+passing, so the entry has to be deleted rather than left behind. Two files are exempt today
+and `ci.py` names which and why.
+
 They are fast (a few seconds) and hermetic: every test builds its own repository and its own
 temporary directories. If a test needs the ambient environment, it is testing the wrong
 thing — `test_detect_root_finds_the_git_toplevel` used to assert against whatever repository

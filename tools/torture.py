@@ -565,9 +565,15 @@ def main(argv: list[str] | None = None) -> int:
             shutil.rmtree(work, ignore_errors=True)
 
     print(f"\n# {cases} case(s), {len(found)} finding(s)")
-    for f in found:
+    #: `finding`, NOT `f`. `f` is already bound above to a `list[Finding]` returned by `part_a`
+    #: and `part_b`, so this loop rebound a name of a different type -- correct at runtime and
+    #: three errors under `mypy --strict`, in a path with NO coverage at all. Those three errors
+    #: also MASKED a deliberate typo planted here to prove the extended type-check scope works:
+    #: the error COUNT was 4 either way and only the attribute NAME in the message differed.
+    for finding in found:
         print(
-            f"  {f.what}\n    {f.detail}\n    reproduce: --case {f.case} --seed {args.seed} --keep"
+            f"  {finding.what}\n    {finding.detail}\n"
+            f"    reproduce: --case {finding.case} --seed {args.seed} --keep"
         )
     return 1 if found else 0
 

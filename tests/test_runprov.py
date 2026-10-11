@@ -8160,9 +8160,13 @@ def test_the_package_imports_only_downwards():
     #: runprov/` prints on every gate run, and 23 of them are not `__init__`* -- TWO LINES ABOVE
     #: the assertion that reads the constant [Audit P, resolver-4]. It was a FIFTH hand-written
     #: copy of the count, inside the very test `fdf56df` touched to reduce four restatements to
-    #: one, and it was TRUE: `mypy runprov/` does print that figure today. That is what made it
-    #: worth deleting rather than correcting -- a true sentence that goes stale at the one moment
-    #: it is read, which is when somebody bumps `_PACKAGE_MODULES`. The property is stated here
+    #: one, and it was TRUE when written: `mypy runprov/` printed that figure, and `ci.py lint`
+    #: ran exactly that command. BOTH HALVES HAVE SINCE MOVED, which is the point -- the gate's
+    #: type-check scope is DERIVED from `git ls-files` since 2026-10-11 (F1) and prints a larger
+    #: figure, so a sentence naming the gate's own output would now be wrong twice over. That is
+    #: what made it worth deleting rather than correcting -- a true sentence that goes stale at
+    #: the one moment it is read, which is when somebody bumps `_PACKAGE_MODULES`. The property
+    #: is stated here
     #: and the numbers are read from the constant; the dated `24 == 23` measurement further down
     #: is a historical record of a defect and stays.
     assert set(_IMPORT_LAYERS) <= set(seen), (
@@ -32155,6 +32159,167 @@ def test_every_checkout_that_runs_the_suite_fetches_the_full_history():
                 )
 
 
+def test_every_TYPE_CHECK_EXEMPTION_is_declared_where_one_is_ALLOWED_and_says_why(
+    tmp_path, monkeypatch
+):
+    """F1. `ci.py lint` ran `mypy runprov/` and nothing else until 2026-10-11, so the six
+    `tools/` modules, `ci.py` itself and both `examples/` were type-checked by NOTHING — while
+    `ruff check .` on the line above already read the whole tree. Two tools in one step
+    disagreeing about what the step's subject is. The scope is derived from `git ls-files` now,
+    so a source added anywhere is checked without anybody remembering, and the only thing
+    written down is the EXEMPTIONS.
+
+    WHICH MAKES THE EXEMPTION LIST THE THING THAT NEEDS A GUARD, and this is the one part
+    `lint` cannot check about itself. `lint` already refuses an exemption over a path nothing
+    tracks, and an exemption over a file that has become clean — both demonstrated against
+    planted entries. Neither can see an exemption added in the WRONG PLACE: a contributor who
+    hits twenty errors in a new `tools/` instrument may name it here, and every control stays
+    green while the instrument goes back to being read by nothing. That is F1 returning
+    through the front door, and only a policy about WHERE an exemption may live stops it.
+
+    THE CLAIM AND THE QUANTIFICATION ARE ONE SENTENCE, checked against each other
+    deliberately. *`runprov/`, `tools/` and the repository's root scripts are type-checked
+    without exception; an exemption may only name a file under `tests/` or `examples/`, and
+    must say why.* What is quantified over is every key of `_UNTYPED` — the whole subject of
+    that sentence, not a primitive that happens to be convenient to enumerate. Every key gets
+    a decision and nothing is left over.
+
+    ONE EXEMPTION IS ALLOWED OUTSIDE THOSE TWO DIRECTORIES, AND IT IS DERIVED RATHER THAN
+    NAMED. `tools/corpus_scenario.py` cannot be edited at all: `tools/corpus.py` content-
+    addresses its TEXT and the figure is committed in the corpus manifest, so a single added
+    annotation reds `test_the_corpus_describes_the_scenario_that_actually_exists` until the
+    cross-version corpus is rebuilt from seven released wheels. So the allowance is read off
+    `corpus.SCENARIO` — the same constant that does the pinning — and **the reason is then
+    proved rather than believed**: the digest is measured over a copy of the file with one
+    comment added, and must differ. An exemption justified by *"editing this file breaks a
+    digest"* is worth exactly as much as that sentence being true, and nothing else here can
+    check it.
+
+    NO COUNT ANYWHERE, and that is not an oversight. The figure lives in the audit ledger
+    because a number here would go stale on the very commit that pays the debt down, which is
+    the one moment somebody reads it.
+    """
+    import ci
+    from tools import corpus as corpus_tool
+
+    allowed = ("tests/", "examples/")
+    pinned = str(corpus_tool.SCENARIO.relative_to(REPO)).replace("\\", "/")
+    offenders = {
+        path: f"exempt from `mypy --strict` but under none of {allowed}"
+        for path in ci._UNTYPED
+        if not path.startswith(allowed) and path != pinned
+    }
+    offenders.update(
+        {
+            path: "exempt with no reason given"
+            for path, why in ci._UNTYPED.items()
+            if not why.strip()
+        }
+    )
+    assert not offenders, (
+        f"a `mypy --strict` exemption may only name a file under {allowed}, or {pinned!r} "
+        f"because its text is content-addressed; and it must carry a reason: {offenders}. "
+        f"`runprov/`, `tools/` and the root scripts are what this package is measured BY, so "
+        f"exempting one of them puts it back where F1 found it — read by no automated check of "
+        f"any kind. Annotate the file, or raise the exemption as a decision."
+    )
+
+    #: AND THE ONE EXEMPTION THAT RESTS ON A CLAIM GETS THE CLAIM CHECKED. If the digest ever
+    #: stops covering this file's text — an AST digest, a digest over `INPUTS` alone — then the
+    #: file becomes editable, the exemption loses its basis, and this says so instead of letting
+    #: a reason that was true in 2026 keep working forever. Measured against a COPY, so the real
+    #: file and the real corpus are untouched.
+    if pinned in ci._UNTYPED:
+        before = corpus_tool.scenario_digest()
+        copy = tmp_path / "corpus_scenario.py"
+        copy.write_text(
+            corpus_tool.SCENARIO.read_text(encoding="utf-8") + "\n#: one added comment\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(corpus_tool, "SCENARIO", copy)
+        assert corpus_tool.scenario_digest() != before, (
+            f"{pinned} is exempt from `mypy --strict` ONLY because `corpus.scenario_digest()` "
+            f"covers its text, so any edit would invalidate the committed corpus. That is no "
+            f"longer true — the digest did not move when a comment was added — so the file can "
+            f"be annotated now and the exemption should be deleted from `ci.py`'s `_UNTYPED`."
+        )
+
+    #: AND THE DERIVATION HAS TO REACH THE INSTRUMENTS, or the policy above is a rule over an
+    #: empty set — the vacuous pass this repository has caught five times. Two sources, so this
+    #: is not circular: `git ls-files` answers on one side, and what `tools/` is FOR on the
+    #: other. A `--paths`-style narrowing, a renamed directory or a sweep that silently stopped
+    #: matching all show up here as an instrument population of zero.
+    if not _is_the_repository():
+        pytest.skip(
+            "not a git checkout — `ci._tracked_sources` reads TRACKED files and exits 128 in "
+            "the sdist `ci.py build` runs this suite from; see its docstring"
+        )
+    tracked = ci._tracked_sources()
+    #: EACH POPULATION SEPARATELY AND EACH REQUIRED TO BE NON-EMPTY. A single total over the
+    #: two is a floor over a MIXED population: `tools/` could vanish from the derivation
+    #: entirely and `ci.py` alone would carry the count. An exhaustiveness assertion is only as
+    #: total as the primitive it quantifies over, and "the instruments" is two primitives.
+    tooling = sorted(path for path in tracked if path.startswith("tools/"))
+    assert tooling and "ci.py" in tracked, (
+        f"the derived type-check scope reaches none of this repository's instruments — "
+        f"`tools/` resolved to {tooling} and `ci.py` is "
+        f"{'present' if 'ci.py' in tracked else 'ABSENT'}. So the assertion above is a policy "
+        f"over an empty set, and `ci.py lint` type-checks whatever happens to be left. "
+        f"`git ls-files` reported {len(tracked)} path(s) in total: {tracked[:5]}"
+    )
+
+
+def test_every_INSTRUMENT_THIS_REPOSITORY_SHIPS_can_actually_be_LOADED():
+    """F1, the other half. `tools/torture.py` measured **0%** statement and 0% branch coverage
+    on 2026-10-11 — 185 statements and 66 branches, and the missing range starts at the file's
+    first import. NOTHING LOADS IT. No test mentions the module, `ci.py torture` is not in the
+    default `lint test build`, and no workflow runs that step. `tools/corpus_scenario.py` is
+    the same at 0%: the suite names it by PATH and never imports it.
+
+    SO THE INSTRUMENT COULD HAVE BEEN BROKEN FOR MONTHS. A module nobody loads cannot report
+    its own breakage — the mech-1 shape, which this repository has now met three times: a
+    guard cannot notice its own absence, and neither can a tool nobody runs. Demonstrated the
+    same way mech-1 was: a typo'd attribute planted in `torture.py`'s report loop left
+    `ci.py lint`, `ci.py test` AND `ci.py build` green. (`mypy` now reads that file, which
+    closes the STATIC half; this closes the half where module-level code must actually run.)
+
+    AND THE COVERAGE FIGURE IS DELIBERATELY NOT WHAT THIS FIXES. `tools/` sat at 32.8% branch
+    coverage; the gate measures `runprov` only, so importing these modules here does not move
+    that number and is not meant to. A ratchet on it was considered and REFUSED, measured:
+    these are instruments run by hand, each with its own controls (`ci.py bench` runs six
+    self-check cases, `torture.py` has `controls()`), and a percentage over them is a number
+    that rises fastest by testing trivia. **The never-loaded module was the defect; the
+    percentage was the symptom that found it.** The figures live in the audit ledger.
+
+    DERIVED, AND NOT A LIST OF MODULE NAMES. `tools/` is swept, so an instrument added
+    tomorrow is loaded here with nobody remembering — and the population is asserted non-empty
+    first, because a sweep that stopped matching reports a clean result.
+    """
+    directory = REPO / "tools"
+    found = sorted(
+        path
+        for path in directory.glob("*.py")
+        if path.is_file() and "__pycache__" not in path.parts
+    )
+    assert found, (
+        f"the sweep of {directory} found no instrument at all, so this test loads nothing and "
+        f"passes. Either the sweep has stopped matching or the directory is gone — and `ci.py` "
+        f"runs five of these files by path, so it is not gone."
+    )
+
+    broken: dict[str, str] = {}
+    for path in found:
+        try:
+            importlib.import_module(f"tools.{path.stem}")
+        except BaseException as exc:  #: the subject IS "anything at all", including SystemExit
+            broken[path.name] = f"{type(exc).__name__}: {exc}"
+    assert not broken, (
+        f"these instruments do not import, so every automated check in this repository is "
+        f"blind to them and `ci.py torture`/`bench`/`claims`/`corpus` would fail the first "
+        f"time a human ran one: {broken}"
+    )
+
+
 def _live_surface() -> list[str]:
     """The surface, from `ci.py` — the one definition that `ci.py surface` also writes from.
 
@@ -33183,7 +33348,8 @@ def test_no_docstring_in_the_tree_holds_a_character_python_cannot_compile():
         f"(2 in `tests/`, `ci.py`, 6 in `tools/`, 2 in `examples/`). Either a sweep has stopped "
         f"matching, or a file was added: if a PACKAGE module was added, bump "
         f"`_PACKAGE_MODULES`, which is the one number for it; if it was added outside the "
-        f"package, the 8 above is what to re-read. NOT every root ships in the sdist, and this "
+        f"package, `_NON_PACKAGE_SOURCES` is what to re-read. NOT every root ships in the "
+        f"sdist, and this "
         f"assertion does not claim they do: the sdist's `include` lists `examples`, `tools` and "
         f"`ci.py` BY NAME, so a second `.py` at the repository root is swept here and packaged "
         f"nowhere -- which is the right way round, because an unswept file is the failure and an "

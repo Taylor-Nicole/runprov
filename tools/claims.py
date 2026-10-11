@@ -59,11 +59,39 @@ import pathlib
 import re
 import subprocess
 import sys
+import typing
 from collections import abc
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
 BASELINE = ROOT / "docs" / "claims-baseline.txt"
+
+
+def _load(path: pathlib.Path, name: str) -> typing.Any:  # noqa: ANN401 - a FILE as a module
+    """Import a FILE as a module, and say which file when that is impossible.
+
+    ONE COPY of a four-line idiom that was written twice, for `examples/format_compatibility.py`
+    and for `ci.py`. Both copies used `spec` and `spec.loader` unguarded, and both are `| None`:
+    `spec_from_file_location` returns `None` when the path has no loader it recognises, and a
+    recognised spec may still carry no loader. Unguarded, an absent file does not report an absent
+    file -- it reports `AttributeError: 'NoneType' object has no attribute 'loader'`, from inside
+    the tool whose entire purpose is to catch confident wrong statements. **A wrong diagnosis, not
+    a crash**, which is the class this package cares about most.
+
+    Found by pointing `mypy --strict` at `tools/` for the first time (F1, 2026-10-11). The
+    duplication is the other half of the finding: one rule in two places, which is this
+    repository's most-repaired defect.
+    """
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(
+            f"claims: cannot load {path} as a module -- "
+            f"{'the path has no importable spec' if spec is None else 'its spec carries no loader'}"
+        )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 #: A MEASUREMENT-SHAPED LITERAL. Digits, with the thin spaces and commas this document uses as
 #: group separators, optionally a decimal part or a per-cent sign.
@@ -568,11 +596,7 @@ def _format_cases() -> int:
     because `requires=` defers every one of them. So this cannot fail on a matrix leg for want of
     a library.
     """
-    spec = importlib.util.spec_from_file_location(
-        "_formats_for_claims", ROOT / "examples" / "format_compatibility.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load(ROOT / "examples" / "format_compatibility.py", "_formats_for_claims")
     return len(module.CASES)
 
 
@@ -588,7 +612,7 @@ def _format_cases() -> int:
 #: 10% with the same argument -- *a number 5% out still conveys it; one 17% out does not*. An
 #: EXACT binding on "about 1,200 tests" would be red on the next test added, and a guard that is
 #: red on correct work is one that gets deleted.
-_DERIVED: tuple[tuple[str, str, object, float], ...] = (
+_DERIVED: tuple[tuple[str, str, abc.Callable[[], int], float], ...] = (
     (r"\*\*about ([\d,]+) tests\*\*", "tests/test_runprov.py `^def test`", _test_functions, 0.10),
     (r"\*\*about ([\d,]+)\*\* uses of `tmp_path`", "`tmp_path` occurrences", _tmp_path_uses, 0.10),
     #: EXACT, because this one is a table of cases and not a scale figure: `len(CASES)` is a
@@ -822,9 +846,7 @@ def scale_patterns() -> dict[str, str]:
     IMPORTED, NOT RESTATED. A copy of those two patterns here would be a second definition of one
     claim, which is the defect this file exists to find.
     """
-    spec = importlib.util.spec_from_file_location("_ci_for_claims", ROOT / "ci.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load(ROOT / "ci.py", "_ci_for_claims")
     return {label: pattern for label, (pattern, _key) in module._SCALE_FIGURES.items()}
 
 

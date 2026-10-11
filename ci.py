@@ -44,6 +44,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+from collections import abc
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -81,8 +82,145 @@ def lint() -> None:
     # formatters can never disagree about the same file.
     run(PY, "-m", "ruff", "format", "--check", "--diff", ".")
     run(PY, "-m", "ruff", "check", ".")
-    run(PY, "-m", "mypy", "runprov/")
+    typecheck()
     attribution_check()
+
+
+#: THE TYPE-CHECK SCOPE IS DERIVED, AND WHAT IS WRITTEN DOWN IS THE EXEMPTIONS.
+#:
+#: IT WAS `mypy runprov/` UNTIL 2026-10-11, so every instrument pointed AT this package -- the
+#: six `tools/` modules, this file, the two `examples/` -- was type-checked by nothing, while
+#: `ruff check .` two lines above already read the whole tree. Two tools in one step disagreeing
+#: about what the step's subject is: SCOPE NARROWER THAN ITS NAME, in the command whose job is
+#: to catch that. Five of the 2026-10-09 council's six lenses found this class independently.
+#:
+#: WHAT THE WIDENING BUYS, DEMONSTRATED RATHER THAN ARGUED. A typo'd attribute planted in
+#: `tools/torture.py`'s report loop -- 185 statements, SIXTY-SIX branches and ZERO coverage,
+#: because nothing imports that module and no workflow runs its step -- left `ci.py lint`,
+#: `ci.py test` AND `ci.py build` all green, while mypy pointed at the file named it at once.
+#: That path now has its first automated reader of any kind.
+#:
+#: MEASURED BEFORE IT WAS WIDENED, and the counts chose the shape. `tools/` had 12 errors and
+#: this file 1; `examples/summarise.py` and `tests/conftest.py` had NONE; the two paths below
+#: had everything else. A plan written before counting would have exempted `tests/` and
+#: `examples/` whole -- leaving two already-clean files unguarded for the sake of two dirty
+#: ones, which is how a per-directory exemption usually goes wrong.
+_UNTYPED: dict[str, str] = {
+    "tests/test_runprov.py": (
+        "the suite's one module, written throughout against no annotations; every objection "
+        "`mypy --strict` has to it is a missing signature rather than a defect, and there are "
+        "thousands. A gate nobody can pass teaches its audience to ignore it."
+    ),
+    "examples/format_compatibility.py": (
+        "measured 2026-10-11: 74 unannotated functions, and 206 of its 284 objections are the "
+        "knock-on `no-untyped-call` from those 74. One mechanical job on one file rather than a "
+        "judgement about it -- declared here so it is debt that can be seen, not a hole."
+    ),
+    #: THE ONE EXEMPTION THAT IS NOT ABOUT THE FILE'S CONTENTS, and the reason is measurable.
+    #: `tools/corpus.py`'s `scenario_digest()` hashes this file's TEXT, and the figure is
+    #: committed in the corpus `MANIFEST.json`, so ANY edit -- a comment, an annotation, an
+    #: import -- makes `test_the_corpus_describes_the_scenario_that_actually_exists` red until
+    #: the whole cross-version corpus is rebuilt from seven released wheels. Measured: an AST
+    #: digest with docstrings stripped does NOT make the needed edit inert either, because the
+    #: annotation and its `import typing` are both real nodes. So the file cannot be annotated
+    #: at all without rebuilding 21 records, and its ONE objection is type-level -- the code is
+    #: correct as written.
+    #:
+    #: IT SELF-RETIRES LIKE THE OTHERS, by the loop in `typecheck` below: the objection is that
+    #: `configure(**used)` can reach a first parameter typed `Project | None`, so the day that
+    #: signature becomes positional-only -- measured, a one-line change that fixes this
+    #: outright -- this file goes clean and `lint` says to delete the entry. That change is a
+    #: PUBLIC API change and is not made here as a side effect of widening a type-check scope.
+    "tools/corpus_scenario.py": (
+        "its text is content-addressed by the corpus `MANIFEST.json` (`scenario_digest`), so "
+        "any edit invalidates 21 records written by seven released wheels; its single "
+        "objection is type-level and the code is correct as written"
+    ),
+}
+
+
+def _tracked_sources() -> list[str]:
+    """Every `.py` this repository tracks, ASKED OF GIT so a file added anywhere is in scope.
+
+    IT CANNOT ANSWER VACUOUSLY, which is the shape `attribution_check` below refuses for the
+    same reason. `git ls-files` exits 128 outside a checkout and prints NOTHING, and an empty
+    population would let `typecheck` pass having read no file at all -- a guard that is
+    uninformed looks exactly like one that is satisfied. `lint` already needs git for
+    `attribution_check`, so this adds no dependency; it only declines to be quiet about it.
+
+    NAMED MEMBERS RATHER THAN A COUNT. A floor on the total is satisfied by an audit tree copy
+    inside the repository, and an equality here would be a second definition of a number
+    `tests/test_runprov.py` already holds and already gates.
+    """
+    proc = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*.py"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(
+            f"lint: cannot derive the type-check scope -- `git ls-files` exited "
+            f"{proc.returncode}. This step reads the TRACKED sources, so it needs a checkout."
+        )
+    found = sorted(path for path in proc.stdout.split("\0") if path)
+    for required in ("ci.py", "runprov/__init__.py"):
+        if required not in found:
+            raise SystemExit(
+                f"lint: `git ls-files` did not report {required!r}, so whatever it listed is "
+                f"not this repository's sources. Found {len(found)} path(s): {found[:5]}"
+            )
+    return found
+
+
+def typecheck() -> None:
+    """`mypy --strict` over every tracked source but the declared exemptions -- and then over
+    each exemption, to check it is still needed.
+
+    THE EXEMPTION LIST IS SELF-RETIRING, and that is what makes having one safe. A file that
+    has become clean turns this step RED and names itself, so a debt cannot be paid and left
+    declared; and because the retirement is a verdict rather than a threshold, there is no
+    count anywhere here to go stale. The other half is the same rule pointed the other way: an
+    exemption naming a path this repository no longer tracks fails too, because an exemption
+    whose subject is gone silently covers nothing -- or everything.
+
+    CLASSIFIED BY RETURN CODE, and only the codes mypy means. 0 is clean, 1 is errors found,
+    and 2 is a USAGE error -- a mistyped path, a missing file. Treating "non-zero" as "still
+    dirty" would keep an exemption alive forever on a path that cannot be checked at all.
+    """
+    tracked = _tracked_sources()
+    stale = sorted(set(_UNTYPED) - set(tracked))
+    if stale:
+        raise SystemExit(
+            f"lint: these type-check exemptions name paths this repository does not track, so "
+            f"each of them covers nothing: {stale}. Delete the entry, or fix the path."
+        )
+    scope = [path for path in tracked if path not in _UNTYPED]
+    print(f"\n$ {PY} -m mypy <{len(scope)} tracked sources, {len(_UNTYPED)} exempt>", flush=True)
+    r = subprocess.run([PY, "-m", "mypy", *scope], cwd=ROOT)
+    if r.returncode != 0:
+        raise SystemExit(f"FAILED ({r.returncode}): mypy over the derived scope")
+    for path, why in sorted(_UNTYPED.items()):
+        judged = subprocess.run(
+            [PY, "-m", "mypy", path], cwd=ROOT, capture_output=True, text=True, check=False
+        )
+        if judged.returncode == 0:
+            raise SystemExit(
+                f"lint: {path} now PASSES `mypy --strict`, so its exemption is obsolete. "
+                f"Delete it from `_UNTYPED` and the derived scope picks the file up by itself. "
+                f"The reason recorded for exempting it was: {why}"
+            )
+        if judged.returncode != 1:
+            raise SystemExit(
+                f"lint: `mypy {path}` exited {judged.returncode}, which is neither clean (0) "
+                f"nor errors-found (1), so this exemption could not be judged at all:\n"
+                f"{judged.stdout}{judged.stderr}"
+            )
+    print(
+        f"typecheck ok — {len(scope)} tracked source(s) checked, {len(_UNTYPED)} exempt and "
+        f"each still needing it"
+    )
 
 
 #: EVERY TRAILER FAMILY THIS HISTORY REFUSES, AND THIS TABLE IS THE ONLY DEFINITION OF THEM.
@@ -886,7 +1024,11 @@ def corpus() -> None:
     run(PY, str(ROOT / "tools" / "corpus.py"), "verify")
 
 
-STEPS = {
+#: ANNOTATED, so the dispatch at the foot of this file is a CHECKED call. Inferred, the
+#: value type joined a `lambda` with ten plain functions and came out untyped, which made
+#: `STEPS[name]()` the one error `mypy --strict` found in this file -- so a step that took
+#: an argument, or returned something the dispatch ignores, was unnoticeable here.
+STEPS: dict[str, abc.Callable[[], None]] = {
     "lint": lint,
     "test": test,
     "build": build,

@@ -9,6 +9,114 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — the two commands that measure this package did not measure themselves
+
+**`ci.py lint` ran `mypy runprov/` and nothing else; `ci.py test` gates coverage on `runprov`
+only.** So every instrument pointed AT this package — the six `tools/` modules, `ci.py` itself,
+both `examples/` — was type-checked by nothing, while `ruff check .` on the line above already
+read the whole tree. Two tools in one step disagreeing about what the step's subject is, which
+is the one defect class five of the 2026-10-09 council's six lenses found independently: **scope
+narrower than its name**, here in the command whose job is to catch it.
+
+**Measured first, and the counts chose the shape.** `mypy --strict` by surface, 2026-10-11:
+`runprov/` **0** errors over 24 files, `tools/` **12** over 6, `ci.py` **1**,
+`examples/summarise.py` **0**, `tests/conftest.py` **0**,
+`examples/format_compatibility.py` **284**, `tests/test_runprov.py` **2 998**. A plan written
+before counting would have exempted `tests/` and `examples/` whole and left two already-clean
+files unguarded for the sake of two dirty ones. **32 of the 35 tracked `.py` files are checked
+now**, and each of the three that are not is named with a reason.
+
+**What the widening buys, demonstrated rather than argued.** A typo'd attribute planted in
+`tools/torture.py`'s report loop left `ci.py lint`, `ci.py test` **and** `ci.py build` all green;
+`mypy` pointed at the file named it at once. That file measured **0% statement and 0% branch
+coverage** — 185 statements, 66 branches, the missing range starting at its first import —
+because nothing imports it, `ci.py torture` is not in the default `lint test build`, and no
+workflow runs that step. `tools/corpus_scenario.py` is the same at 0%.
+
+* **The scope is derived, and what is written down is the exemptions.** `typecheck` asks
+  `git ls-files` for every tracked `.py` and checks all of it but the declared exemptions, so a
+  source added anywhere is checked without anybody remembering. It **refuses to answer
+  vacuously**: `git ls-files` exits 128 outside a checkout and prints nothing, and an empty
+  population would pass having read no file at all. `lint` already needed git for
+  `attribution_check`, so this adds no dependency.
+* **The exemption list is self-retiring, which is what makes having one safe.** `lint` runs
+  `mypy` over each exempt file too and goes **red when one passes cleanly**, naming it and the
+  reason recorded for it — so a debt cannot be paid and left declared, and there is no count
+  anywhere to go stale. It also refuses an exemption naming a path nothing tracks, because an
+  exemption whose subject is gone silently covers nothing. Classified by **return code**: mypy's
+  2 is a usage error, not a verdict, and "non-zero means still dirty" would keep an exemption
+  alive forever over a path that cannot be checked at all.
+* **And a policy on where an exemption may live**, which is the one thing `lint` cannot check
+  about itself: `test_every_TYPE_CHECK_EXEMPTION_is_declared_where_one_is_ALLOWED_and_says_why`
+  refuses an exemption outside `tests/` or `examples/`, or without a reason. A contributor who
+  hits twenty errors in a new `tools/` instrument would otherwise put it back where this entry
+  found it, with every control green.
+* **Every instrument must now load.**
+  `test_every_INSTRUMENT_THIS_REPOSITORY_SHIPS_can_actually_be_LOADED` sweeps `tools/` and
+  imports each module, population asserted non-empty first. A module nobody loads cannot report
+  its own breakage — the same shape as the guard that could not notice its own absence.
+* **Twelve of the 13 errors fixed, and only one of them named a runtime failure mode.**
+  `tools/claims.py`
+  used `importlib.util.spec_from_file_location` and `spec.loader` unguarded in **two** copies of
+  one four-line idiom, and both are `| None`: an absent `examples/format_compatibility.py` did
+  not report an absent file, it reported `AttributeError: 'NoneType' object has no attribute
+  'loader'` — **a wrong diagnosis, not a crash**, from inside the tool whose purpose is to catch
+  confident wrong statements. Now one guarded `_load` that names the path it could not import.
+  The other 12 were type-level and the code was correct as written: a loop variable in
+  `torture.py` shadowing a `list[Finding]`, an `object` where `_DERIVED`'s callable belongs, a
+  `dict[str, object]` splatted into `configure`, and `ci.py`'s own `STEPS` dispatch inferring
+  untyped. **Zero suppressions**; the one `typing.Any` is a file loaded as a module, which is
+  what that type is for.
+* **The thirteenth is declared rather than fixed, and the reason is a conflict between two
+  guards.** `tools/corpus_scenario.py`'s objection is that `configure(**used)` can reach a
+  first parameter typed `Project | None`, and the annotation that fixes it is a one-line edit —
+  but `tools/corpus.py`'s `scenario_digest()` hashes **that file's text**, and the figure is
+  committed in the corpus `MANIFEST.json`, so **any** edit to it reds
+  `test_the_corpus_describes_the_scenario_that_actually_exists` until the whole cross-version
+  corpus is rebuilt from seven released wheels. Measured, because the obvious escape does not
+  work: an **AST digest with docstrings stripped is not stable across the needed edit either**,
+  since the annotation and its `import typing` are both real nodes. Also measured: making
+  `configure`'s first parameter **positional-only** fixes it outright in one line, nothing in
+  this repository or its documentation passes `project=` by keyword, and `Project` has no field
+  of that name — **but that is a public API change and is not made as a side effect of widening
+  a type-check scope.** Filed as a decision. A per-module `disable_error_code` was rejected
+  after measuring that `--enable-error-code` cannot re-enable it, so it would have been an
+  exemption `lint` could never retire; the declared entry retires itself the day that signature
+  changes.
+* **Two stale claims this exposed, both found by doing the work rather than by a check.** The
+  source-population diagnostic advised re-reading *"the 8 above"* for a constant that reads 11 —
+  a figure left behind when `_PACKAGE_MODULES + 8` became `_NON_PACKAGE_SOURCES`, so the message
+  named a number that is not there. And a paragraph said `mypy runprov/` *"does print that figure
+  today"* of the gate's own output; **both halves of that have now moved.**
+
+**A coverage ratchet over `tools/` was considered and refused, with the measurement.** `tools/`
+sits at **32.8%** branch coverage (statements 343/1003, branches 108/370). These are instruments
+run by hand, each with its own controls — `ci.py bench` runs six self-check cases, `torture.py`
+has `controls()` — and a percentage over them rises fastest by testing trivia. The never-loaded
+module was the defect; the percentage is the symptom that found it.
+
+**The claims ratchet moved, decomposed.** `population 406 -> 407`, both rule digests
+**identical**, residue flat at 123 (55 unexamined, 68 historical). So the movement is **+1
+population, 0 rule, 0 work**: one line arrived in `CONTRIBUTING.md` and the tool classified it
+`dated`, which is an accounted kind. Isolated by restoring each changed file in turn rather than
+by reasoning about the diff — the first four candidates were all wrong.
+
+**And widening the scope moved the LINT JOB'S dependencies, which a local gate cannot see.**
+`ci.py lint` type-checked `runprov/` alone and needed nothing installed; the derived scope puts
+`tests/conftest.py` in it, and that imports `pytest`. Both lint jobs — hosted and self-hosted —
+installed **only** `ruff` and `mypy`, so this change would have gone **red in CI while staying
+green on every developer machine**: `Cannot find implementation or library stub for module named
+"pytest"`. Found by rebuilding the hosted lint job's exact environment locally (a bare venv with
+the two pinned tools and nothing else) rather than by reading the workflow — the same method that
+found the shallow-clone failure. Both jobs now install `-e ".[test]"` beside the pins, because
+**the check's environment has to match the check's scope.**
+
+**One instrument error worth recording, because it inverted a control.** The planted typo was
+**masked** by the pre-existing shadowing in the same loop: `mypy` reported **4 errors before and
+after**, and only the attribute name in the message differed. Classifying that control by error
+count would have read as *"the extended scope does not catch it"*. The shadowing was fixed first,
+and the plant then produced exactly one error naming the typo.
+
 ### Fixed — two gaps a mutation run found in `_atomic.py`, both in things the module's own prose promises
 
 **The council's highest-value unmade measurement, run 2026-10-10 with mutmut 2.5.1.**
