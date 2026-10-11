@@ -32976,6 +32976,398 @@ def test_every_checkout_that_runs_the_suite_fetches_the_full_history():
                 )
 
 
+#: THE METHODS THAT RECORD WHAT A RUN TOUCHED, and the one decision they must share. Both
+#: digest the user's own data, so both are bounded by `Project.digest_max_bytes` — and an escape
+#: added to one of them only is this repository's most-repaired defect in a new feature.
+_RECORDERS_OF_USER_DATA = ("input", "write")
+_THE_ONE_DECISION = "_digest_decision"
+
+
+#: THE LIMIT THESE TESTS USE, AND THE THREE SIZES AROUND IT, worked out before the fixture
+#: rather than after a mutant walked through it. `2047 / 2048 / 2049` against a 2048-byte limit
+#: is the only triple that separates `>=` from `>`: at 2047 both are false, at 2049 both are
+#: true, and **only a file of exactly the limit tells them apart**. The rule is AT OR OVER, so
+#: the middle one must be skipped. Four previous tranches of this work each lost a mutant to a
+#: fixture value chosen for legibility instead of discrimination.
+_DIGEST_LIMIT = 2048
+
+
+def test_a_file_AT_OR_OVER_the_digest_limit_is_recorded_but_not_read(tmp_path, monkeypatch):
+    """[ADR-0022 R-1] [ADR-0022 R-5] [ADR-0022 R-10]. The council's last open item, and the
+    measurement is why it is one: digesting runs at
+    **263 MiB/s cold** off this host's external SSD, so a 50 GB BAM costs about **194 seconds
+    per registration** — and a first registration is cold by definition, which is why the warm
+    figure of 815 MiB/s is the wrong one to quote. The stated audience is genomics.
+
+    `README.md` ALREADY NAMED THAT COST, for the checker: *"reading every byte of a 50 GB BAM to
+    learn it has no pin is the cost that gets a checker deleted."* The recorder paid a larger
+    version of it unconditionally, on inputs **and** outputs. The case was considered in print,
+    one command over.
+
+    AT OR OVER, AND THE BOUNDARY IS THE TEST. See `_DIGEST_LIMIT`: a file of exactly the limit
+    is what separates `>=` from `>`, and both of the obvious fixture sizes are blind to it.
+
+    WHAT THE RECORD SAYS, positively: `digested: false` and a `note` giving the size and the
+    limit. Not an absence — *absent* and *false* are different statements and only one of them
+    is a measurement — and not a `null` digest either, which ADR-0009's rule forbids and which
+    a validator would read as *known to have no hash*.
+    """
+    runprov.configure(
+        root=tmp_path,
+        run_log=tmp_path / "runs.jsonl",
+        auto_steps="off",
+        digest_max_bytes=_DIGEST_LIMIT,
+    )
+    monkeypatch.chdir(tmp_path)
+    sizes = {"under": _DIGEST_LIMIT - 1, "exactly": _DIGEST_LIMIT, "over": _DIGEST_LIMIT + 1}
+    for label, size in sizes.items():
+        (tmp_path / f"{label}.bin").write_bytes(b"x" * size)
+
+    with runprov.Run("probe", provenance=tmp_path / "p.json") as run:
+        for label in sizes:
+            run.input(tmp_path / f"{label}.bin")
+
+    entries = {
+        pathlib.Path(e["path"]).stem: e
+        for e in json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))["inputs"]
+    }
+    assert set(entries) == set(sizes), entries
+
+    assert entries["under"].get("digested") is None, (
+        f"a file under the limit is digested, and the ordinary case says nothing about it: "
+        f"{entries['under']}"
+    )
+    assert entries["under"]["content_sha256"], entries["under"]
+    for label in ("exactly", "over"):
+        entry = entries[label]
+        assert entry["digested"] is False, (
+            f"{label}.bin is {sizes[label]} bytes against a limit of {_DIGEST_LIMIT}; the rule "
+            f"is AT OR OVER, so this must be recorded and not read: {entry}"
+        )
+        assert "sha256" not in entry and "content_sha256" not in entry, (
+            f"{label}.bin was not supposed to be read and carries a digest anyway: {entry}"
+        )
+        assert str(_DIGEST_LIMIT) in entry["note"] and str(sizes[label]) in entry["note"], (
+            f"the note must give both the size and the limit, so a reader can see WHY rather "
+            f"than guess between a policy and a failure: {entry['note']!r}"
+        )
+        #: AND THE STAT FIELDS SURVIVE, which is the whole point of recording it at all: the
+        #: path, the size and the mtime are what `show --stale` has left to work with.
+        assert entry["size_bytes"] == sizes[label] and entry["mtime_utc"], entry
+
+    #: [ADR-0022 R-10] A DIRECTORY, DECLINED EXPLICITLY. The threshold cannot reach one — a
+    #: directory's `st_size` is its inode's, not its content's — so `digest=False` is the only
+    #: escape for a tree, and the one the ADR promises. The walk still runs, because listing
+    #: names is cheap and the counts are worth having; only the per-file reads are skipped.
+    tree = tmp_path / "refs"
+    tree.mkdir()
+    (tree / "a.fa").write_bytes(b"A" * (_DIGEST_LIMIT * 2))
+    with runprov.Run("tree-probe", provenance=tmp_path / "t.json") as run:
+        run.input(tree, digest=False)
+    entry = json.loads((tmp_path / "t.json").read_text(encoding="utf-8"))["inputs"][0]
+    assert entry["kind"] == "directory", f"a directory is still a directory: {entry}"
+    assert entry["digested"] is False and "sha256_tree" not in entry, entry
+    assert entry["n_files"] == 1, (
+        f"the walk must still run — the counts are what a reader has left, and skipping it "
+        f"would make this entry say nothing at all: {entry}"
+    )
+
+
+def test_an_EXPLICIT_digest_choice_beats_the_threshold_in_BOTH_directions(tmp_path, monkeypatch):
+    """[ADR-0022 R-2]. The other half of the feature, and it was asserted by nothing until a
+    planted mutant made
+    `_digest_decision` ignore its `asked` argument and **all four** of the other tests passed.
+    A threshold a caller cannot override is not a default, it is a policy — and the one input a
+    reviewer needs hashed is exactly the one that happens to be large.
+
+    BOTH DIRECTIONS, because they fail independently. `digest=True` over the limit must read the
+    file; `digest=False` under it must not. A test of one leaves the other to a mutation run.
+
+    AND ON BOTH SIDES OF THE RECORD. `output()` cannot act on the flag — the file does not exist
+    when it is registered — so it remembers the choice and `write()` applies it through the same
+    method. That carry is the part most likely to be dropped, since it is the only place the
+    decision is deferred.
+    """
+    runprov.configure(
+        root=tmp_path,
+        run_log=tmp_path / "runs.jsonl",
+        auto_steps="off",
+        digest_max_bytes=_DIGEST_LIMIT,
+    )
+    monkeypatch.chdir(tmp_path)
+    big, small = tmp_path / "big.bin", tmp_path / "small.bin"
+    big.write_bytes(b"x" * (_DIGEST_LIMIT * 2))
+    small.write_bytes(b"y" * 10)
+
+    with runprov.Run("probe", provenance=tmp_path / "p.json") as run:
+        run.input(big, digest=True)  # over the limit, hashed anyway
+        run.input(small, digest=False)  # under it, skipped anyway
+        kept = run.output(tmp_path / "kept.bin", digest=True)
+        skipped = run.output(tmp_path / "skipped.bin", digest=False)
+        kept.write_bytes(b"k" * (_DIGEST_LIMIT * 2))  # over the limit
+        skipped.write_bytes(b"s" * 10)  # under it
+
+    record = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    entries = {pathlib.Path(e["path"]).stem: e for e in record["inputs"] + record["outputs"]}
+    assert set(entries) == {"big", "small", "kept", "skipped"}, entries
+
+    for name, why in (("big", "over the limit with digest=True"), ("kept", "an output, likewise")):
+        assert entries[name].get("digested") is None, (
+            f"{name} was asked for explicitly ({why}) and must be read whatever the threshold "
+            f"says: {entries[name]}"
+        )
+        assert entries[name]["content_sha256"], entries[name]
+    for name, why in (
+        ("small", "under the limit with digest=False"),
+        ("skipped", "an output, likewise — the choice is carried from `output()` to `write()`"),
+    ):
+        assert entries[name]["digested"] is False, (
+            f"{name} was declined explicitly ({why}) and must not be read: {entries[name]}"
+        )
+        assert "content_sha256" not in entries[name], entries[name]
+        assert "digest=False" in entries[name]["note"], (
+            f"the note must say the CALLER chose this, not the threshold, or a reader cannot "
+            f"tell a decision from a limit: {entries[name]['note']!r}"
+        )
+
+
+def test_an_undigested_input_makes_the_DIGEST_BASED_answers_UNVERIFIABLE(
+    tmp_path, monkeypatch, capsys
+):
+    """[ADR-0022 R-8] [ADR-0022 R-9]. The only reason a cost escape is safe to offer: it must
+    not be able to manufacture a
+    clean verdict over a file nobody read. It cannot — and the shape of that is worth stating
+    exactly, because the first version of this test asserted the wrong command and passed a
+    false claim into the design record.
+
+    THE DIGEST-BASED ANSWERS DEGRADE, AND THEY NAME THE REASON. `verify` reports
+    `UNVERIFIABLE … (the run recorded no digest for it)` and exits **2** — *we could not look*,
+    which is a different exit code from *this artifact is wrong*. `show --rehash` agrees.
+
+    THE STAT-BASED ANSWER KEEPS WORKING, and that is the point of recording the file at all
+    rather than dropping it. `show --stale` compares `size_bytes` and `mtime_utc` through
+    `moved_since` and **never read a digest for any input**, so an undigested entry is exactly
+    as checkable there as a digested one. Reporting `?` would throw away a true answer.
+
+    WHICH IS WHY `kind` STAYS `"file"` AND `digested: false` IS A FIELD OF ITS OWN. `show`'s
+    non-rehash path keys on `kind not in ("file", None)` to decide an input is *uncheckable*;
+    had the skip been spelled as a new `kind`, the stat check would have gone UNVERIFIABLE too
+    and lost an answer it can still give. Measured both ways before choosing.
+    """
+    runprov.configure(
+        root=tmp_path,
+        run_log=tmp_path / "runs.jsonl",
+        auto_steps="off",
+        digest_max_bytes=_DIGEST_LIMIT,
+    )
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "huge.bin").write_bytes(b"x" * (_DIGEST_LIMIT * 2))
+    with runprov.Run("probe", provenance=tmp_path / "p.json") as run:
+        run.input(tmp_path / "huge.bin")
+        with run.open_output(tmp_path / "out.tsv") as fh:
+            fh.write("a\tb\n")
+
+    #: THROUGH THE CLI, which is the deliverable. `verify` reads the pin INSIDE the artifact and
+    #: nothing else — what makes it work on a copy somebody emailed you, and the strictest of
+    #: the three answers.
+    assert cli.main(["verify", str(tmp_path / "out.tsv")]) == 2, (
+        "an undigested input must make the pin UNVERIFIABLE — exit 2, *we could not look*, "
+        "which is a different code from exit 1, *this artifact is wrong*"
+    )
+    page = capsys.readouterr().out
+    assert runprov.verify.UNVERIFIABLE in page, page
+    #: AND THE REASON IS NAMED, not merely the verdict. *We could not look* is only useful if it
+    #: says what it could not look at.
+    assert "huge.bin" in page and "no digest" in page, (
+        f"the refusal must name the input it could not check, and say why:\n{page[:700]}"
+    )
+
+    #: THE STAT-BASED ANSWER IS UNAFFECTED, asserted so the distinction above is held rather
+    #: than described. `--stale` never read a digest for any input, so an undigested one is as
+    #: checkable there as any other, and reporting `?` would discard a true answer.
+    assert cli.main(["show", "--stale", "--log", str(tmp_path / "runs.jsonl")]) == 0
+    stale = capsys.readouterr().out
+    assert "out.tsv" in stale and "UNVERIFIABLE" not in stale, (
+        f"`--stale` is a stat check and the stat fields ARE recorded, so it still answers:\n"
+        f"{stale[:700]}"
+    )
+
+
+def test_the_digest_limit_HONOURS_THE_UNIT_IT_IS_GIVEN_and_refuses_a_bare_number():
+    """[ADR-0022 R-6] [ADR-0022 R-7]. `"1KiB"` is 1024 and `"1KB"` is 1000, and this project
+    writes `64 KiB` in its own README —
+    so the two families are a distinction it already makes and must keep making. A parser that
+    guessed would be it inventing a fact about the caller's configuration.
+
+    A BARE NUMERIC STRING IS REFUSED, which is `parse_age`'s rule applied to a second magnitude:
+    `"1000000"` is a value a caller believes they have set, and bytes-or-megabytes is not
+    something to guess. An `int` carries no such ambiguity and passes through.
+
+    AND THE REFUSALS NAME WHAT IS ACCEPTED. A message that says only *invalid* sends the reader
+    to the source; these list the units, because choosing between them is the decision being
+    asked for.
+    """
+    assert runprov.project.parse_size("1KiB") == 1024
+    assert runprov.project.parse_size("1KB") == 1000, (
+        "KiB and KB must differ, or the two unit families are indistinguishable and the parser "
+        "is guessing on the caller's behalf"
+    )
+    assert runprov.project.parse_size(4096) == 4096, "an int is bytes and passes through"
+    assert runprov.project.parse_size("1.5GiB") == int(1.5 * 1024**3)
+
+    for bad, must_say in (
+        ("1000000", ("must carry a unit", "kib")),
+        ("", ("must carry a unit",)),
+        ("-1GiB", ("negative",)),
+        (-1, ("negative",)),
+    ):
+        with pytest.raises(ValueError) as caught:
+            runprov.project.parse_size(bad)
+        message = str(caught.value).lower()
+        missing = [fragment for fragment in must_say if fragment not in message]
+        assert not missing, f"refusing {bad!r} does not say {missing}: {caught.value}"
+
+    #: A NON-NUMERIC MANTISSA IS REFUSED BY NAMING IT, so the reader sees which fragment was
+    #: unreadable rather than being told the whole value is wrong.
+    with pytest.raises(ValueError, match="'1x' is not a number"):
+        runprov.project.parse_size("1xB")
+
+    #: AND A VALUE THAT IS NEITHER AN INT NOR A STRING IS A `TypeError`, not a ValueError: a
+    #: `float` or a list is not a malformed size, it is the wrong kind of thing, and the two
+    #: deserve different exceptions for the same reason exit 1 and exit 2 differ elsewhere.
+    for wrong in (1.5, [1024], True):
+        with pytest.raises(TypeError, match="int of bytes or a string with a unit"):
+            runprov.project.parse_size(wrong)
+
+    #: AND IT FAILS AT `configure()`, not at the first registration — the principle this class
+    #: states for every other field it validates.
+    with pytest.raises(ValueError, match="must carry a unit"):
+        runprov.Project(digest_max_bytes="1000000")
+
+
+def test_a_size_that_CANNOT_BE_STATTED_is_digested_rather_than_silently_skipped(tmp_path):
+    """[ADR-0022 R-1]. `_digest_decision` needs the file's size to compare against the limit,
+    and a `stat` that fails leaves it with no answer. **It digests.**
+
+    THE OTHER CHOICE WOULD BE WORSE, which is the whole of this branch: guessing *skip it* turns
+    a file this package could not measure into a record saying `digested: false`, as though a
+    policy had decided it. Digesting instead means the real error surfaces one line later from
+    `describe`, which `input()` re-raises with the script name and the path. **An unreadable
+    input must fail loudly rather than quietly become an undigested one.**
+
+    THE METHOD IS CALLED DIRECTLY, and with a path that simply does not exist — so `stat` fails
+    for a real reason and nothing is monkeypatched. A first version patched `Path.stat` globally
+    and never reached this branch at all: `_anchor` and `exists()` stat the path first, so the
+    patch raised from inside them and the raw `OSError` escaped before any decision was made.
+    Covering a defensive branch through five callers that also stat is how a patch ends up
+    testing the wrong one.
+    """
+    runprov.configure(
+        root=tmp_path,
+        run_log=tmp_path / "runs.jsonl",
+        auto_steps="off",
+        digest_max_bytes=_DIGEST_LIMIT,
+    )
+    run = runprov.Run("probe", provenance=tmp_path / "p.json")
+    try:
+        wanted, why = run._digest_decision(tmp_path / "never-existed.bin", None)
+        assert wanted is True, (
+            "a path whose size cannot be read must be DIGESTED, so the real failure comes from "
+            "`describe` with the script name on it — not skipped, which would record a policy "
+            "decision nobody made"
+        )
+        assert why == "", f"nothing was declined, so there is no reason to give: {why!r}"
+
+        #: AND THE THRESHOLD IS STILL CONSULTED FOR A PATH THAT CAN BE STATTED, so the branch
+        #: above is the exception and not the rule — a `return True` that fired every time would
+        #: pass the assertion above and disable the whole feature.
+        over = tmp_path / "over.bin"
+        over.write_bytes(b"x" * (_DIGEST_LIMIT * 2))
+        wanted, why = run._digest_decision(over, None)
+        assert wanted is False and "digest_max_bytes" in why, (wanted, why)
+    finally:
+        run.write(tmp_path / "p.json")
+
+
+def test_every_RECORDER_digest_of_user_data_goes_through_THE_ONE_DECISION():
+    """[ADR-0022 R-3] [ADR-0022 R-4]. The guard over the shape, not over the instance. The
+    council filed `Run.input()`'s
+    unbounded digest cost; an AST sweep of all 24 modules found **two** sites on the recording
+    path, not one — `input()` and `write()`'s output loop — because **a run writes 50 GB files
+    as well as reading them**. Fixing only the named one would have put the rule in two places
+    with an escape in one, drifting by a whole case: the exact defect
+    `one-rule-one-definition` is about, in a feature added to prevent a different one.
+
+    SO THE POPULATION IS DERIVED FROM THE CODE, not listed here. Every call to `describe` inside
+    the recording methods is found by walking their ASTs, and each must pass `digest=` — which it
+    can only compute through `_digest_decision`. A third recorder added tomorrow is covered on
+    the day it is written, and a `describe(path)` with no `digest=` fails rather than quietly
+    costing a reader three minutes a file.
+
+    NOT THE WHOLE PACKAGE, and the exclusion is the honest half. `verify`, `show` and `report`
+    call `describe` too and must keep digesting unconditionally: answering *has this changed*
+    without reading the file is not a cheaper answer, it is no answer. The subject here is the
+    RECORDING path, named by the two methods above, and that scope is what the test asserts
+    rather than assumes.
+    """
+    source = (_repo_root() / "runprov" / "run.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    methods = {
+        node.name: node
+        for cls in tree.body
+        if isinstance(cls, ast.ClassDef)
+        for node in cls.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    missing_methods = [name for name in _RECORDERS_OF_USER_DATA if name not in methods]
+    assert not missing_methods, (
+        f"`run.py` has no method(s) named {missing_methods}; this guard names the recording "
+        f"path by method and one of them was renamed out from under it"
+    )
+    assert _THE_ONE_DECISION in methods, (
+        f"`{_THE_ONE_DECISION}` is gone, so there is no shared decision left to share. If the "
+        f"rule moved, this guard must move with it."
+    )
+
+    naked, checked = [], 0
+    for name in _RECORDERS_OF_USER_DATA:
+        for node in ast.walk(methods[name]):
+            if not isinstance(node, ast.Call):
+                continue
+            callee = node.func
+            spelling = (
+                callee.id
+                if isinstance(callee, ast.Name)
+                else (callee.attr if isinstance(callee, ast.Attribute) else "")
+            )
+            if spelling != "describe":
+                continue
+            checked += 1
+            if not any(kw.arg == "digest" for kw in node.keywords):
+                naked.append(f"{name}() at run.py:{node.lineno}")
+    #: NON-VACUITY FIRST, because a sweep that found no `describe` call would report a clean
+    #: recording path that digests everything unconditionally — the state this exists to end.
+    assert checked >= len(_RECORDERS_OF_USER_DATA), (
+        f"found {checked} `describe` call(s) across {list(_RECORDERS_OF_USER_DATA)}, expected at "
+        f"least one each. Either a recorder stopped describing what it records, or this sweep "
+        f"is reading the wrong methods."
+    )
+    assert not naked, (
+        f"these recorder calls digest the user's data with no budget: {naked}. Pass "
+        f"`digest=` computed by `{_THE_ONE_DECISION}`, which is the only place the threshold and "
+        f"the per-call override are reconciled. Digesting runs at ~263 MiB/s cold here, so an "
+        f"unbounded call costs about three minutes for every 50 GB file, every registration."
+    )
+
+    #: AND THE DECISION ITSELF MUST READ THE PROJECT, or it is a method that always says yes.
+    decision = ast.unparse(methods[_THE_ONE_DECISION])
+    for needed in ("resolved_digest_max_bytes", "asked"):
+        assert needed in decision, (
+            f"`{_THE_ONE_DECISION}` does not mention {needed!r}, so it cannot be reconciling the "
+            f"threshold with the per-call override: {decision[:200]}"
+        )
+
+
 def test_every_test_that_READS_THE_PACKAGES_OWN_SOURCES_is_selected_by_m_repo():
     """test-1, closed. `tests/conftest.py` derives each test's tier from its call graph, and the
     orthogonal `repo` marker — *the test's SUBJECT is this repository's own files* — matched

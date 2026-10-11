@@ -31,6 +31,7 @@ JsonlSink  [class]
 JsonlSink.append
 Project  [class]
 Project.history_destination
+Project.resolved_digest_max_bytes
 Project.resolved_incomplete_dir
 Project.resolved_run_log
 Project.resolved_sink
@@ -38,6 +39,7 @@ Project.resolved_transformation_log
 Project:allow_late_inputs
 Project:auto_steps
 Project:code_paths
+Project:digest_max_bytes
 Project:env_snapshot_dir
 Project:generation
 Project:hash_imported_code

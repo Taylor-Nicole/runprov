@@ -174,6 +174,30 @@ an unpacked sdist, which contains nothing else.
 five times worse here and the difference was the drive this checkout lives on. Re-measure on the
 thing the claim describes.
 
+**A digest may be declined, but never invented.** Any cost escape on the recording path records
+what it did *not* do — `digested: false` and a reason — so the digest-based commands report
+UNVERIFIABLE rather than OK. A `(size, mtime, inode)` cache would instead record a hash the run
+never computed, which is the one failure this package exists to refuse; ADR-0022 R-9 says so and
+`test_an_undigested_input_makes_the_DIGEST_BASED_answers_UNVERIFIABLE` holds it. (A large
+genomics input cost **minutes of reading per registration** and there was no way to decline it.
+The throughput, the file size and the cold-versus-warm spread are in ADR-0022, which is where a
+measurement belongs — not restated here, where it would be a figure bound to nothing.)
+
+**A cost that scales with the user's data needs a bound, and the bound needs ONE definition.**
+`Run.input()` was filed as the instance; an AST sweep of **every module in the package** found
+the same shape in `write()`'s output loop too — a run writes large files as well as reading
+them — so `Run._digest_decision` is the
+only place the threshold and the per-call override are reconciled, and
+`test_every_RECORDER_digest_of_user_data_goes_through_THE_ONE_DECISION` derives the recording
+sites from the code rather than listing them. An escape added to one site and not the other is
+one rule with two implementations, drifting by a whole case.
+
+**A citation of a decision record is a claim about SCOPE.** A file may cite an ADR only if that
+ADR lists it under *Applies to*; two documents reaching the same conclusion independently is not
+one governing the other. `test_every_accepted_decision_record_declares_what_it_GOVERNS_and_the_
+targets_resolve` enforces it over `runprov/*.py` — and caught this twice in one day, in
+`export.py` and then in `project.py`, both times for a principle the citing file genuinely shared.
+
 ### Rules with nothing behind them yet
 
 Stated here so the gap is visible rather than implied:

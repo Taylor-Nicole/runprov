@@ -401,8 +401,35 @@ def _posix(path: str | pathlib.Path) -> str:
     return p.as_posix()
 
 
-def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
+def describe(path: str | pathlib.Path, *, digest: bool = True) -> dict[str, typing.Any]:
     """Everything recorded about one input or output. Directories are hashed as a tree.
+
+    `digest=False` RECORDS THE FILE WITHOUT READING IT: the stat fields, and `digested: False`
+    to say so. The caller decides when — `Run` consults `Project.digest_max_bytes` and the
+    per-call override — and this function owns only the SHAPE of the answer, which is why the
+    parameter is here rather than a second entry-building function somewhere else. One shape,
+    one place; a sibling that assembled a stat-only entry of its own would be the same record
+    described twice.
+
+    WHY THE ESCAPE EXISTS, and it is measured: this host digests at **263 MiB/s cold** off an
+    external SSD, so a 50 GB BAM costs about **194 seconds per registration** — and a first
+    registration is cold by definition. The README already names that exact cost for the
+    CHECKER (*"reading every byte of a 50 GB BAM to learn it has no pin is the cost that gets a
+    checker deleted"*) and the RECORDER paid a larger version of it unconditionally. For a
+    directory the walk still runs — names are cheap — and only the per-file reads are skipped;
+    the comment below this one says why that matters, having measured a 40 GB reference tree.
+
+    `digested: False` IS POSITIVE AND OMITTED WHEN TRUE. `kind` keeps saying what the thing IS,
+    so a directory is still a directory, and a reader can tell *not digested by policy* from
+    *no digest field for a reason nobody recorded*. Omitted in the ordinary case for the same
+    reason `inputs_not_in_pin` and `code.imported.omitted` are: absent and false are different
+    statements, and only one of them is a measurement.
+
+    AND NOTHING DOWNSTREAM NEEDED CHANGING, which is what made this safe to add. `show`'s
+    `_recorded_pair` already returns `None` when a run derived no digest and reports
+    **UNVERIFIABLE** rather than OK — ruled 2026-09-29, *"such a record is still one this
+    command accepts and must not be lied to about"*. So an undigested entry cannot read as a
+    clean one.
 
     Raises `ValueError` for anything that is neither a regular file nor a directory. That is
     not fussiness: `open()` on a FIFO BLOCKS until a writer appears, so registering one hung
@@ -512,6 +539,13 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
         # the two digests below are two orderings of it, and sorting a list in memory is free
         # next to reading a 40 GB reference directory. A second `describe()` on the failing
         # path would have re-read the whole tree to answer a question about its order.
+        if not digest:
+            #: THE WALK RAN, THE READS DID NOT. Listing a tree's names is cheap and the counts
+            #: above are worth having; reading its bytes is the cost, and the comment below
+            #: measured that at a 40 GB reference directory. So this returns everything the
+            #: walk learned and no digest at all.
+            rec["digested"] = False
+            return rec
         pairs = [(f.relative_to(path).as_posix(), sha256(f)) for f in files]
         # THE ORDER IS THE WHOLE OF IT, and it lives in exactly ONE place — this key — because
         # it has now been got wrong twice and the second time was a repair of the first.
@@ -538,6 +572,12 @@ def describe(path: str | pathlib.Path) -> dict[str, typing.Any]:
         folded = _tree_stream(pairs, lambda n: tuple(s.lower() for s in _PARTS(n)))
         if folded != rec["sha256_tree"]:
             rec["sha256_tree_casefolded"] = folded
+    elif not digest:
+        #: THE STAT FIELDS ARE ALREADY IN `rec`, from the stat above, so there is nothing to
+        #: recompute and nothing to re-stat: `unstable_during_hash` exists to flag a file that
+        #: moved WHILE IT WAS BEING READ, and nothing was read here.
+        rec["kind"] = "file"
+        rec["digested"] = False
     else:
         rec["kind"] = "file"
         rec["sha256"] = sha256(path)

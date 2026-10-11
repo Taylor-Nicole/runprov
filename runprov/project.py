@@ -243,6 +243,64 @@ def _under(rel: str, scope: str) -> bool:
     return rel == s or rel.startswith(s + "/")
 
 
+#: THE BYTE UNITS, BOTH FAMILIES, and the decimal ones are not a convenience to be guessed at:
+#: this project writes `64 KiB` in its own README, so `KB` meaning 1000 and `KiB` meaning 1024 is
+#: a distinction it already makes and must keep making. `b` is accepted so that a unit is always
+#: available, which is what lets the bare-number case be refused outright.
+_BYTE_UNITS: dict[str, int] = {
+    "b": 1,
+    "kb": 1000,
+    "mb": 1000**2,
+    "gb": 1000**3,
+    "tb": 1000**4,
+    "kib": 1024,
+    "mib": 1024**2,
+    "gib": 1024**3,
+    "tib": 1024**4,
+}
+
+
+def parse_size(value: int | str) -> int:
+    """`"1GiB"` -> 1073741824. An `int` passes through. Raises `ValueError` for a user, not a log.
+
+    A BARE NUMERIC STRING IS REFUSED, and that is the `parse_age` rule applied to a second
+    magnitude: `"1000000"` is a value a caller believes they have set, and whether they meant
+    bytes, kilobytes or megabytes is not something this package may guess. An `int` carries no
+    such ambiguity — bytes is the only base unit a size has — so it passes through untouched.
+
+    THE UNIT LIST IS IN THE MESSAGE, because a refusal that does not say what is accepted sends
+    the reader to the source. Both families are listed, since choosing between them is the
+    decision the caller is being asked to make.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        if value < 0:
+            raise ValueError(f"digest_max_bytes={value!r}: a negative size digests nothing")
+        return value
+    if not isinstance(value, str):
+        raise TypeError(
+            f"digest_max_bytes={value!r}: expected an int of bytes or a string with a unit, "
+            f"one of {'/'.join(sorted(_BYTE_UNITS))}"
+        )
+    text = value.strip().lower().replace(" ", "")
+    for unit in sorted(_BYTE_UNITS, key=len, reverse=True):
+        if text.endswith(unit):
+            number = text[: -len(unit)]
+            try:
+                scaled = float(number)
+            except ValueError:
+                raise ValueError(
+                    f"digest_max_bytes={value!r}: {number!r} is not a number"
+                ) from None
+            if scaled < 0:
+                raise ValueError(f"digest_max_bytes={value!r}: a negative size digests nothing")
+            return int(scaled * _BYTE_UNITS[unit])
+    raise ValueError(
+        f"digest_max_bytes={value!r}: a size given as a string must carry a unit, one of "
+        f"{'/'.join(sorted(_BYTE_UNITS))} — for example 1GiB, 500MB, 64KiB. A bare number "
+        f"could mean bytes or gigabytes and this package will not guess which."
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class DirtyState:
     """What one whole-tree `git status --porcelain` says, split into answerable parts.
@@ -518,6 +576,36 @@ class Project:
     #: How many imported modules are hashed before the rest are counted instead. A record
     #: must not become the repository it describes; `code.imported.omitted` states the tail.
     imported_code_max: int = 200
+    #: Files at or above this many bytes are RECORDED BUT NOT DIGESTED. `None`, the default,
+    #: is today's behaviour exactly: everything is digested, whatever it costs.
+    #:
+    #: WHY THERE IS AN ESCAPE AT ALL, measured rather than assumed. Digesting runs at
+    #: **263 MiB/s cold** off an external SSD here, so a 50 GB BAM costs about **194 seconds
+    #: per registration** — and a first registration is cold by definition, which is why the
+    #: warm figure (815 MiB/s, ~63 s) is the wrong one to quote. The stated audience is
+    #: genomics. `README.md` already names that exact cost for the CHECKER — *"reading every
+    #: byte of a 50 GB BAM to learn it has no pin is the cost that gets a checker deleted"* —
+    #: and the RECORDER paid a larger version of it unconditionally, on inputs AND outputs.
+    #:
+    #: AN `int` IS BYTES, which the name says; a `str` must carry its own unit (`"1GiB"`,
+    #: `"500MB"`) and both families are honoured, because this project distinguishes KiB from
+    #: KB in its own documentation and guessing would be it inventing a fact. A bare numeric
+    #: STRING is refused: `"1000000"` looks accepted and `parse_age`'s lesson is that an
+    #: ambiguous magnitude silently means the wrong thing. Parsed once, HERE, so nothing
+    #: downstream ever sees a string — the failure lands at `configure()` rather than at the
+    #: end of a long run, which is this class's whole principle.
+    #:
+    #: WHAT IT IS NOT: a cache. A `(size, mtime, inode)` cache would record a digest the run
+    #: DID NOT COMPUTE — *measured, not declared*, which is the principle this package records
+    #: elsewhere and the line this escape must never cross. An undigested entry says
+    #: `digested: false` and `show`/`verify` report it UNVERIFIABLE; a cached one would say OK
+    #: on a hash nobody took. **A digest may be declined. It may not be invented.**
+    #:
+    #: NO DECISION RECORD IS CITED BY NUMBER HERE, deliberately: the record that states that
+    #: principle does not list this file among what it governs, and a citation is a claim about
+    #: SCOPE rather than a pointer. The same guard caught the same mistake in `export.py` on
+    #: 2026-10-11, hours earlier.
+    digest_max_bytes: int | str | None = None
     run_id: typing.Callable[[], str] = default_run_id
     generation: typing.Callable[[], str] = default_generation
 
@@ -561,6 +649,15 @@ class Project:
                 # Project safe to share, and `__post_init__` is the one place it may be set.
                 object.__setattr__(self, name, pathlib.Path(value))
 
+        # PARSED HERE, AND THE REASON IS THE SWEEP BELOW. That sweep is derived from the
+        # annotations and covers exactly the fields typed `bool` or `int`; `digest_max_bytes` is
+        # `int | str | None`, so it is NOT in that set and would be validated by nothing at all
+        # — which is `hash_imported_code="no"` again, a value accepted in silence that means
+        # something other than what the caller believes. So it is coerced to an `int` here, and
+        # the string spelling exists nowhere downstream: one definition of what a size is.
+        if self.digest_max_bytes is not None:
+            object.__setattr__(self, "digest_max_bytes", parse_size(self.digest_max_bytes))
+
         # DERIVED FROM THE ANNOTATIONS, not listed. This was a hand-written tuple of six
         # (name, kind) pairs, which is the shape that stops covering what it names the moment
         # a field is added — the defect this audit found five separate times in checks
@@ -581,6 +678,24 @@ class Project:
                 f"Project: {', '.join(wrong)} — expected a bool or an int. A non-empty string "
                 f"is TRUE, so `hash_imported_code='no'` would have turned the feature ON."
             )
+
+    def resolved_digest_max_bytes(self) -> int | None:
+        """The limit as a number, or `None` for *digest everything*.
+
+        THE HOUSE PATTERN, beside `resolved_run_log` and its two siblings, and it exists for the
+        type as much as for the convenience. The field is annotated `int | str | None` because
+        both spellings are accepted at construction, and `__post_init__` has already turned a
+        string into an `int` — but the ANNOTATION cannot say "narrower after construction", so
+        every reader of the field saw `int | str` and `mypy --strict` refused to compare it. An
+        `assert isinstance` would have been the usual answer and is the wrong one here: asserts
+        are stripped by `-O`, which is the one condition under which it would be needed.
+
+        `parse_size` IS IDEMPOTENT, so calling it again costs an `isinstance` and makes this the
+        single answer to *what is the limit* — rather than a second place that knows
+        `__post_init__` already did the work. The coercion up there still earns its keep: it is
+        what makes a bad value fail at `configure()` instead of at the first registration.
+        """
+        return None if self.digest_max_bytes is None else parse_size(self.digest_max_bytes)
 
     def resolved_run_log(self) -> pathlib.Path:
         return self.run_log or (self.root / "provenance" / "runs.jsonl")

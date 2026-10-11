@@ -48,3 +48,4 @@ A *Proposed* ADR is the right place to think out loud. It is not a promise.
 | [0019](0019-rerun-prints-and-never-runs.md) | `rerun` prints, and never runs | Proposed |
 | [0020](0020-an-environment-rendered-from-a-record-is-a-floor.md) | An environment rendered from a record is a floor | Proposed |
 | [0021](0021-many-histories-are-merged-at-read-time-never-rewritten.md) | Many histories are merged at read time, and never rewritten | Proposed |
+| [0022](0022-a-digest-may-be-declined-but-never-faked.md) | A digest may be declined, but never faked | Accepted |

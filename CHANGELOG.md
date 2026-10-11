@@ -9,6 +9,66 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Added — a cost escape for digesting, which may decline a hash but never invent one
+
+**`configure(digest_max_bytes=...)`, plus `digest=` on `input()` and `output()`.** ADR-0022, and
+the last open item of the 2026-10-09 council. `None` is the default and is the previous behaviour
+exactly: everything is digested, whatever it costs, so no existing run changes.
+
+```python
+configure(digest_max_bytes="1GiB")
+run.input("ref/hg38.bam")  # over the limit -> recorded, not read
+run.input("critical.vcf", digest=True)  # override: hashed anyway
+run.output("out/big.bam", digest=False)  # override on the output side, applied in write()
+```
+
+**Why, measured rather than assumed.** Digesting runs at **263 MiB/s cold** off an external SSD
+here, so a 50 GB input cost about **194 seconds per registration** — and a first registration is
+cold by definition, which is why the warm figure (815 MiB/s, ~63 s) is the wrong one to quote.
+The stated audience is genomics. `README.md` already named that exact cost, with that exact file
+size, **for the checker** — *"reading every byte of a 50 GB BAM to learn it has no pin is the cost
+that gets a checker deleted"* — while the recorder paid a strictly larger version of it
+unconditionally. The case was considered, in print, one command over.
+
+**The sweep changed the design, and that is the part worth reading.** The council filed
+`Run.input()`. An AST walk over every module in the package — a `grep` for the same thing reported
+fourteen sites of which ten were the word `describe()` in prose — found the shape *a per-file read
+whose cost scales with the user's data, with no bound and no escape* in **three** places:
+`input()`, **`write()`'s output loop** (a run writes large files too), and the directory-tree
+digest whose own comment measures a 40 GB reference directory. **An escape on `input()` alone
+would have put one rule in two places with an escape in one**, drifting by a whole case. So the
+decision is made in exactly one method, `Run._digest_decision`, and
+`test_every_RECORDER_digest_of_user_data_goes_through_THE_ONE_DECISION` derives the recording
+sites from the code so a third is covered the day it is written.
+
+**What the record says, and what the commands then say.** An undigested entry carries
+`digested: false` and a note giving the size and the limit, or naming the caller's choice —
+positively, because *absent* and *false* are different statements. The digest-based answers
+degrade and **name the reason**: `verify` reports `UNVERIFIABLE … (the run recorded no digest for
+it)` and exits **2**, *we could not look*, a different code from *this artifact is wrong*.
+`show --rehash` agrees.
+
+**And the stat-based answer keeps working, which is why `kind` is untouched.** `show --stale`
+compares `size_bytes` and `mtime_utc` and never read a digest for any input, so an undigested
+entry is as checkable there as any other. `show`'s non-rehash path decides an input is
+*uncheckable* from `kind not in ("file", None)` — so spelling the skip as a new `kind` would have
+made the stat check report `?` and **discard an answer it can still give**. Measured both ways
+before choosing; the first version of the test asserted the wrong command and had to be corrected.
+
+**This is not a cache and must never become one.** A `(size, mtime, inode)` cache would record a
+digest the run did not compute — *measured, not declared* — and would report OK on a hash nobody
+took. **A digest may be declined; it may not be invented.** ADR-0022 R-9, and the rule is now in
+`CONTRIBUTING.md` so it cannot be reintroduced quietly.
+
+**Sizes carry their own unit, and a bare number is refused.** An `int` is bytes; a string must say
+`"1GiB"` or `"500MB"`, and both unit families are honoured because this project writes `64 KiB` in
+its own documentation. `"1000000"` is refused — `parse_age`'s rule applied to a second magnitude —
+and parsing happens at `configure()`, so a bad value fails there rather than at the end of a long
+run. `Project.digest_max_bytes` is annotated `int | str | None` and the new
+`resolved_digest_max_bytes()` narrows it, in the house pattern beside `resolved_run_log()`: an
+`assert isinstance` would have been the usual answer and is stripped by `-O`, which is the one
+condition under which it would be needed.
+
 ## [0.8.0] — 2026-10-11
 
 ### Fixed — a release guard that could not pass on tag day, found by cutting this release

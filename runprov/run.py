@@ -1093,6 +1093,11 @@ class Run:
         # are adjacent. Monotonic, so NTP cannot move it backwards mid-run.
         self._meter = Meter()
         self._pending: list[pathlib.Path] = []
+        #: Per-call digest overrides, by anchored path. Only EXPLICIT choices land here, so an
+        #: empty dict means "nobody overrode anything" and the threshold decides alone — the
+        #: same absent-is-not-false rule the record fields follow. `output()` registers before
+        #: the file exists and `write()` digests it later, so the choice has to be carried.
+        self._digest_asked: dict[pathlib.Path, bool] = {}
         # OPEN PINNED WRITERS. A caller who forgets to close one would otherwise lose the
         # artifact entirely, because it lives in a temporary file until close publishes
         # it. `_seal` closes what is still open, so forgetting costs nothing.
@@ -2228,8 +2233,52 @@ class Run:
             )
         return here / p
 
-    def input(self, path: str | pathlib.Path) -> pathlib.Path:
-        """Hash and record a read. RETURNS the path, so registering is the easy path."""
+    def _digest_decision(self, path: pathlib.Path, asked: bool | None) -> tuple[bool, str]:
+        """Whether to digest `path`, and WHY NOT when the answer is no. One definition.
+
+        THE ONLY PLACE THIS IS DECIDED, and that is the point of it existing at all. The rule
+        applies on the recording path in two places — `input()` here and `write()`'s output
+        loop — and an escape added to one of them would have been this repository's most-repaired
+        defect arriving in a new feature: one rule, two implementations, drifting by a whole
+        case. A sweep of all 24 modules found both sites before either was touched, which is the
+        only reason this is a shared method rather than a copied `if`.
+        `test_every_recorder_digest_goes_through_the_one_decision` holds it.
+
+        AN EXPLICIT CHOICE WINS OVER THE THRESHOLD, in both directions. `digest=True` on a file
+        over the limit hashes it anyway — a reviewer's one critical input in a tree of large
+        ones — and `digest=False` under the limit skips it. The threshold is a default, and a
+        default a caller cannot override is a policy.
+
+        THE LIMIT IS A PER-FILE SIZE, AND A DIRECTORY'S `st_size` IS NOT ITS CONTENT'S. So a
+        registered directory is digested whatever the threshold says, and `digest=False` is the
+        escape for one. Stated rather than fixed by summing the tree: a walk that happens only
+        to decide whether to walk is a surprise, and `describe` already skips the per-file reads
+        when told to.
+
+        A SIZE THAT CANNOT BE READ DIGESTS. `stat` failing here means the real error is one line
+        away in `describe`, which raises with the script name and the path; guessing *skip it*
+        would turn an unreadable input into a silently undigested record.
+        """
+        if asked is not None:
+            return asked, "" if asked else "the caller passed digest=False"
+        limit = self.project.resolved_digest_max_bytes()
+        if limit is None:
+            return True, ""
+        try:
+            size = path.stat().st_size
+        except OSError:  # guards-ok: `describe` raises next with the script name and the path
+            return True, ""
+        if size >= limit:
+            return False, f"{size} bytes, at or over digest_max_bytes={limit}"
+        return True, ""
+
+    def input(self, path: str | pathlib.Path, *, digest: bool | None = None) -> pathlib.Path:
+        """Hash and record a read. RETURNS the path, so registering is the easy path.
+
+        `digest=False` records the file without reading it; `digest=True` reads it whatever
+        `Project.digest_max_bytes` says. KEYWORD-ONLY, so the positional argument stays the
+        path it has always been and no existing call changes meaning.
+        """
         self._refuse_after_exit("input()")
         p = self._anchor(pathlib.Path(path))
         if not p.exists():
@@ -2301,7 +2350,13 @@ class Run:
                 "this input. Register every input before header().",
             )
         try:
-            entry = describe(p)
+            wanted, why = self._digest_decision(p, digest)
+            entry = describe(p, digest=wanted)
+            if not wanted:
+                #: THE REASON TRAVELS WITH THE ENTRY. `describe` says *whether* it digested;
+                #: only this method knows *why not*, and a record that says `digested: false`
+                #: without saying why makes the reader guess between a policy and a failure.
+                entry["note"] = f"not digested: {why}"
             self.record["inputs"].append(entry)
             self._say("read ", entry.get("path", ""), entry.get("content_sha256"))
         except OSError as exc:
@@ -2329,8 +2384,13 @@ class Run:
                 names.append(entry["path"])
         return p
 
-    def output(self, path: str | pathlib.Path) -> pathlib.Path:
+    def output(self, path: str | pathlib.Path, *, digest: bool | None = None) -> pathlib.Path:
         """Register a write. Hashed in `write()`, not here.
+
+        `digest` is remembered rather than acted on, because the file does not exist yet: the
+        decision is made in `write()` through `_digest_decision`, the same method `input()`
+        uses. An output is the user's data too — a run that WRITES a 50 GB BAM pays the same
+        cost as one that reads it, and that second instance is what the sweep found.
 
         Callers do `df.to_csv(run.output(p))`, so the file does not exist yet at call
         time. Hashing eagerly silently dropped every output whose writer had not yet run.
@@ -2341,6 +2401,8 @@ class Run:
         self._refuse_after_exit("output()")
         p = self._anchor(pathlib.Path(path))
         self._pending.append(p)
+        if digest is not None:
+            self._digest_asked[p] = digest
         return p
 
     def open_output(
@@ -3372,7 +3434,15 @@ class Run:
             target = q if q.is_absolute() else pathlib.Path(self.record["cwd"]) / q
             if target.exists():
                 try:
-                    described = describe(target)
+                    #: THE SAME DECISION `input()` MAKES, through the same method. An output is
+                    #: the user's data too, and this was the second instance of the finding: a
+                    #: run that WRITES a 50 GB BAM paid the same unbounded cost as one that
+                    #: reads it. The override was recorded by `output()` because the file did
+                    #: not exist then; the threshold is consulted now, when it does.
+                    wanted, why = self._digest_decision(target, self._digest_asked.get(q))
+                    described = describe(target, digest=wanted)
+                    if not wanted:
+                        described["note"] = f"not digested: {why}"
                 except (OSError, ValueError) as exc:
                     # AN OUTPUT THAT CANNOT BE HASHED IS A FINDING, NOT A REASON TO LOSE
                     # THE RUN. Unguarded, this raise left `write()`, left `_finish()`, and
