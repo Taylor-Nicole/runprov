@@ -9,6 +9,87 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — `export` emitted `null` for a field the record simply does not carry
+
+**ADR-0009 says, unconditionally:** *"A missing field is **omitted, never emitted as null**: a
+validator reads `null` as 'known to be nothing', and a thin history line simply does not know."*
+Four per-run fields were written straight from `rec.get(...)`, so a record without one produced
+`"endTime": null` — saying *known to have no end time* about a run whose end time is merely not
+in the record. In the crate: `startTime`, `endTime`. In PROV: `prov:startTime`, `prov:endTime`,
+`runprov:status`, `runprov:run_id`.
+
+**Latent, not live, and that is measured rather than smoothed over.** No record written by any of
+the seven released versions omits any of the four — checked across every history line and sidecar
+in `tests/corpus/`, excluding the `runprov.start.v1` records this export already leaves out, and
+confirmed against a freshly checkpointed sidecar, which stamps both times. But `export` reads a
+file the **caller** supplies, so a truncated, hand-edited or third-party record reaches this path,
+and a future record shape that dropped a field would have shipped the null in silence. One
+`_without_unknowns` for both vocabularies, because one rule in two places is this repository's
+most-repaired defect. `"?"` is deliberately untouched: a script this package could not name
+renders as `?`, which is a choice about a value known to be absent rather than a claim that
+nothing is there. **No decision record is cited for that**, and the guard on `runprov/*.py` is
+why: the record that draws the same distinction for the report family deliberately excludes
+`export` from its scope, so a citation would claim a governance that does not exist — and
+`test_every_accepted_decision_record_declares_what_it_GOVERNS_and_the_targets_resolve` caught
+the citation in this very commit's first draft.
+
+**Found by a guard written after a mutation run, not by the mutation run.** `runprov/export.py`:
+**225 mutants, 102 killed, 123 survived** — in a module at 100% branch coverage. All 123 were
+classified before anything was repaired, and **117 of them are one finding**:
+
+| class | n |
+|---|---|
+| mangled key name or `.get()` lookup | **59** |
+| mangled string value or namespace URI | **29** |
+| value replaced by `None` | **18** |
+| mangled identifier template or the `"?"` placeholder | **11** |
+| control flow | 5 |
+| `>` → `>=` | 1 |
+
+**The suite asserted the graph's topology and its omissions, and almost none of its vocabulary.**
+So `"@type"` renamed to `"XX@typeXX"` shipped a document that is well-formed JSON and is **not an
+RO-Crate**, and the gate was green — which is the failure ADR-0009 names in its own words:
+*"harder to catch, because it would be well-formed."* Five new guards:
+
+* **`test_every_TERM_an_export_emits_BELONGS_TO_A_VOCABULARY_and_every_declared_term_is_USED`** —
+  both directions in one test, which is the point. Unaccounted terms catch the **writer** side;
+  **declared terms that never appear catch the READER side**, the half a term list alone misses:
+  `entry.get("sha256")` mangled still emits a valid crate, just one with no checksums, and the
+  only symptom is that a promised term is absent. The term tables are hand-written **because the
+  authority is an external specification** and the RO-Crate context is a remote document a test
+  may not fetch — so the table *is* the instrument, and a derived version would agree with
+  `export.py` about a mistake.
+* **`test_every_FIELD_an_export_carries_LANDS_WHERE_THE_MAPPING_SAYS`** — position-aware, because
+  *"the value appears somewhere in the document"* is satisfied by a mapping that puts
+  `started_utc` into `endTime`. A `None` in the mapping table is a declared decision: the crate
+  renders `status` as an `actionStatus` URI and has no term for a run id.
+* **`test_every_CROSS_REFERENCE_in_an_export_RESOLVES_to_something_that_exists`** — derived, no
+  list of identifiers: every `@id` reference and every PROV relation endpoint. **Its limit is
+  recorded at the test**: a template renamed *consistently* still resolves, so the mapping test
+  is what catches that; verified both ways.
+* **`test_neither_export_EMITS_A_NULL_for_anything`** — the rule above, over every leaf of both
+  documents and three record shapes. This is the guard that found the defect.
+* **`test_the_two_CONFORMANCE_CONSTANTS_are_the_values_their_SPECIFICATIONS_define`** — the four
+  strings that say which standard is being followed.
+
+**And a fixture whose ORDER hid a second defect.** `_files` skips a path-less entry with
+`continue`; turning that into `break` abandons the rest of the role's entries, and **all 1 262
+tests passed**. The cause was one list in
+`test_export_describes_a_thin_record_without_inventing_anything`, which put its path-less entry
+**last**, where the real entry was already recorded. Swapping the two makes the same assertion
+catch it; swapping them back makes it green again. **A fixture that contains the awkward case is
+not the same as one that puts it where the code can get it wrong.**
+
+**One unspecified behaviour, now specified.** `_files` keeps the longer description and was
+**silent about ties**, which is why `>` → `>=` was unkillable: an unspecified behaviour cannot be
+violated. Ties go to the first, so one export of one history does not depend on the order the
+runs arrived in.
+
+**Four mutants are declared equivalent, with the grep that justifies it.** `indent=2`→`3` and
+`sort_keys=False`→`True` in `render`: nothing in this project claims anything about the export's
+formatting, JSON object order is not semantic, and a test pinning `indent=2` would assert a style
+choice as though it were a contract.
+
 ### Changed — `configure`'s project argument is positional-only
 
 **`configure(proj)` as before; `configure(project=proj)` is now a `TypeError`.** Nothing in this

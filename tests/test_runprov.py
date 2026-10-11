@@ -34476,7 +34476,14 @@ def test_export_describes_a_thin_record_without_inventing_anything():
             "run_uid": "u1",
             "script": "s",
             "status": "failed",
-            "inputs": [{"path": "a.tsv"}, {"note": "no path at all"}],
+            #: THE PATH-LESS ENTRY COMES FIRST, AND THAT ORDER IS THE TEST. It used to be
+            #: last, where `_files`' `continue` and a `break` are indistinguishable: the real
+            #: entry was already recorded by the time the skip fired. A mutation run flipped
+            #: `continue` to `break` and all 1 262 tests passed; swapping these two makes this
+            #: same assertion catch it, and swapping them back makes it green again (measured
+            #: 2026-10-11). A fixture that CONTAINS the awkward case is not the same as one
+            #: that puts it where the code can get it wrong.
+            "inputs": [{"note": "no path at all"}, {"path": "a.tsv"}],
             "outputs": [{"path": "b.tsv", "kind": "MISSING"}],
         }
     ]
@@ -34498,6 +34505,484 @@ def test_export_describes_a_thin_record_without_inventing_anything():
     # none means something different from one that does not mention them.
     empty = runprov.export.to_prov_json([])
     assert set(empty) == {"prefix"}, empty
+
+
+#: ONE FULLY-POPULATED PAIR OF RUNS, and every value is DISTINCTIVE on purpose. A mapping that
+#: reads the wrong record field must not be able to produce the right answer by coincidence, so
+#: no two fields share a value and none is a prefix of another. Two runs, because the second
+#: reads the first's output -- the lineage case -- and because `status` must take both branches:
+#: `ok` and `failed` render different `actionStatus` values and nothing else here would see the
+#: second one.
+_EXPORT_RECORDS = (
+    {
+        "run_uid": "uid-one",
+        "run_id": "rid-one",
+        "script": "step1.py",
+        "status": "ok",
+        "started_utc": "2026-01-02T03:04:05Z",
+        "finished_utc": "2026-01-02T03:04:06Z",
+        "inputs": [
+            {
+                "path": "data/in.tsv",
+                "sha256": "a" * 64,
+                "size_bytes": 11,
+                "mtime_utc": "2026-01-01T00:00:00Z",
+            }
+        ],
+        "outputs": [
+            {
+                "path": "out/mid.tsv",
+                "sha256": "b" * 64,
+                "size_bytes": 22,
+                "mtime_utc": "2026-01-01T00:00:01Z",
+            }
+        ],
+    },
+    {
+        "run_uid": "uid-two",
+        "run_id": "rid-two",
+        "script": "step2.py",
+        "status": "failed",
+        "started_utc": "2026-01-02T03:05:05Z",
+        "finished_utc": "2026-01-02T03:05:06Z",
+        "inputs": [
+            {
+                "path": "out/mid.tsv",
+                "sha256": "b" * 64,
+                "size_bytes": 22,
+                "mtime_utc": "2026-01-01T00:00:01Z",
+            }
+        ],
+        "outputs": [{"path": "out/final.tsv", "kind": "MISSING"}],
+    },
+)
+
+#: EVERY TERM EITHER DOCUMENT MAY USE, WITH THE VOCABULARY THAT DEFINES IT. A mutation run
+#: mangled 59 key names and `.get()` lookups in `export.py` and every one SURVIVED: the suite
+#: asserted the graph's topology and its omissions and almost none of its vocabulary, so a
+#: document that is well-formed JSON and is not an RO-Crate was green. ADR-0009 names that exact
+#: failure -- *"harder to catch, because it would be well-formed"* -- and nothing checked it.
+#:
+#: HAND-WRITTEN, AND HERE THAT IS THE RIGHT SHAPE RATHER THAN A CONCESSION. The authority for
+#: these names is an external specification, and the RO-Crate context is a remote JSON-LD
+#: document a test may not fetch. So the table IS the instrument: adding a term means coming
+#: here and naming which vocabulary defines it, which is exactly when the mapping should be
+#: re-read against the spec. A derived version would agree with `export.py` about everything,
+#: including a mistake.
+_CRATE_TERMS = {
+    "@context": "JSON-LD",
+    "@graph": "JSON-LD",
+    "@id": "JSON-LD",
+    "@type": "JSON-LD",
+    "about": "RO-Crate 1.1 (metadata descriptor)",
+    "actionStatus": "schema.org",
+    "conformsTo": "RO-Crate 1.1 (metadata descriptor)",
+    "contentSize": "schema.org",
+    "dateModified": "schema.org",
+    "description": "schema.org",
+    "endTime": "schema.org",
+    "hasPart": "schema.org",
+    "instrument": "schema.org",
+    "mentions": "schema.org",
+    "name": "schema.org",
+    "object": "schema.org",
+    "result": "schema.org",
+    "sha256": "RO-Crate 1.1 (file checksum)",
+    "startTime": "schema.org",
+}
+
+#: THE SAME TABLE FOR PROV-JSON. Its document keys are of two kinds and only one is a term: the
+#: section names and field names below, and the IDENTIFIERS this package mints as dict keys
+#: (`runprov:file/...`, `runprov:run/.../used/0`). An identifier carries a `/` and a term never
+#: does, which is the discriminator used below -- identifiers are checked by the cross-reference
+#: test instead, where what matters is that they RESOLVE rather than what they are called.
+_PROV_TERMS = {
+    "prefix": "PROV-JSON",
+    "prov": "PROV-JSON (prefix declaration)",
+    "runprov": "PROV-JSON (prefix declaration)",
+    "entity": "PROV-JSON",
+    "activity": "PROV-JSON",
+    "agent": "PROV-JSON",
+    "used": "PROV-JSON",
+    "wasGeneratedBy": "PROV-JSON",
+    "wasAssociatedWith": "PROV-JSON",
+    "wasDerivedFrom": "PROV-JSON",
+    "prov:label": "PROV",
+    "prov:startTime": "PROV",
+    "prov:endTime": "PROV",
+    "prov:type": "PROV",
+    "prov:activity": "PROV",
+    "prov:agent": "PROV",
+    "prov:entity": "PROV",
+    "prov:generatedEntity": "PROV",
+    "prov:usedEntity": "PROV",
+    "runprov:path": "this package",
+    "runprov:sha256": "this package",
+    "runprov:size_bytes": "this package",
+    "runprov:status": "this package",
+    "runprov:run_id": "this package",
+}
+
+#: THE `@type` VALUES, which are vocabulary too and were mangled by surviving mutants exactly as
+#: the keys were. A node typed `XXFileXX` is not a File to any reader.
+_CRATE_TYPES = {
+    "CreateAction": "schema.org",
+    "CreativeWork": "schema.org",
+    "Dataset": "schema.org",
+    "File": "RO-Crate 1.1",
+    "SoftwareApplication": "schema.org",
+}
+
+#: WHERE EACH RECORD FIELD LANDS, PER FORMAT, AND THIS IS THE ONE PLACE IT IS WRITTEN DOWN.
+#: `None` means *this format does not carry that field*, which is a DECISION and not an
+#: omission -- the crate renders `status` as an `actionStatus` URI rather than verbatim, and has
+#: no term for a run id at all.
+#:
+#: POSITION-AWARE ON PURPOSE. "The value appears somewhere in the document" is the weak form,
+#: and it is satisfied by a mapping that puts `started_utc` into `endTime`.
+_RUN_FIELD_MAPPING = (
+    ("script", "name", "prov:label"),
+    ("started_utc", "startTime", "prov:startTime"),
+    ("finished_utc", "endTime", "prov:endTime"),
+    ("run_id", None, "runprov:run_id"),
+    ("status", None, "runprov:status"),
+)
+
+#: AND THE SAME FOR A FILE ENTRY. `mtime_utc` has no PROV term here; `sha256` is spelled
+#: `sha256` in the crate deliberately -- `export.py` says why, and it is NOT `content_digest`.
+_FILE_FIELD_MAPPING = (
+    ("sha256", "sha256", "runprov:sha256"),
+    ("size_bytes", "contentSize", "runprov:size_bytes"),
+    ("mtime_utc", "dateModified", None),
+)
+
+
+def _crate_and_prov():
+    """Both documents for `_EXPORT_RECORDS`, built by the real renderers."""
+    records = [dict(r) for r in _EXPORT_RECORDS]
+    return runprov.export.to_ro_crate(records), runprov.export.to_prov_json(records)
+
+
+def _prov_terms_only(keys):
+    """The PROV document keys that are TERMS — an identifier carries a `/` and a term does not."""
+    return {key for key in keys if "/" not in key}
+
+
+def test_every_TERM_an_export_emits_BELONGS_TO_A_VOCABULARY_and_every_declared_term_is_USED():
+    """A mutation run over `runprov/export.py` (2026-10-11, mutmut 2.5.1) left **123 of 225
+    mutants alive**, and **59 of them were mangled key names or mangled `.get()` lookups**. The
+    suite asserted the graph's topology — one node per file, unique `@id`s, both required
+    descriptors, the right counts — and its omissions, and almost nothing about its
+    **vocabulary**. So `"@type"` renamed to `"XX@typeXX"` shipped a document that is well-formed
+    JSON and is **not an RO-Crate**, and the gate was green at 100% branch coverage.
+
+    ADR-0009 names this failure and in its own words: *"Saying more in a standard vocabulary
+    than the record supports would be the exact failure this project exists to refuse — and
+    harder to catch, because it would be well-formed."* It was prose, and prose is not a
+    contract until something checks it.
+
+    BOTH DIRECTIONS, WHICH IS WHY ONE TEST RATHER THAN TWO. Unaccounted terms catch the writer
+    side: a key nobody declared means `export.py` invented or mistyped one. **Declared terms
+    that never appear catch the READER side**, which is the half a term list alone would miss —
+    `entry.get("sha256")` mangled still emits a well-formed crate, just one with no checksums in
+    it, and the only visible symptom is that a term this package promises is absent. That is
+    the inverse of an exemption whose subject is never asserted.
+
+    THE RECORD IS FULLY POPULATED FOR EXACTLY THAT REASON. Every conditional field is present,
+    so every declared term must appear; `_EXPORT_RECORDS` says why each value is distinctive.
+    """
+    crate, prov = _crate_and_prov()
+
+    crate_keys = {path[-1] for path, _v in _payload_leaves(crate) if isinstance(path[-1], str)}
+    crate_keys |= {
+        key for path, _v in _payload_leaves(crate) for key in path if isinstance(key, str)
+    }
+    unknown = sorted(crate_keys - set(_CRATE_TERMS))
+    assert not unknown, (
+        f"the RO-Crate export emits these terms and no vocabulary here declares them: "
+        f"{unknown}. Either `export.py` has mistyped a key — a crate with a misspelled term is "
+        f"well-formed JSON and is not a crate — or the mapping has grown and `_CRATE_TERMS` is "
+        f"where to say which specification defines the new one."
+    )
+    missing = sorted(set(_CRATE_TERMS) - crate_keys)
+    assert not missing, (
+        f"these terms are declared and the crate for a FULLY POPULATED record emits none of "
+        f"them: {missing}. The record has every field, so a term that does not appear means the "
+        f"writer stopped emitting it or the READER stopped finding it — `entry.get(...)` "
+        f"against a field name that no longer matches still produces a valid crate, with the "
+        f"data silently gone. Remove the term here only if the mapping genuinely dropped it."
+    )
+
+    prov_keys = {key for path, _v in _payload_leaves(prov) for key in path if isinstance(key, str)}
+    unknown = sorted(_prov_terms_only(prov_keys) - set(_PROV_TERMS))
+    assert not unknown, (
+        f"the PROV-JSON export emits these terms and no vocabulary here declares them: "
+        f"{unknown}. A term carries no `/` — the identifiers this package mints are checked by "
+        f"the cross-reference test instead. Declare it with its specification or fix the key."
+    )
+    missing = sorted(set(_PROV_TERMS) - prov_keys)
+    assert not missing, (
+        f"these PROV terms are declared and nothing emits them for a fully populated record: "
+        f"{missing}. See the RO-Crate half above for why that is the reader's side."
+    )
+
+    types = {node.get("@type") for node in crate["@graph"]}
+    assert types == set(_CRATE_TYPES), (
+        f"the crate's node types are {sorted(t for t in types if t)} and the declared set is "
+        f"{sorted(_CRATE_TYPES)}. A node typed `XXFileXX` is not a File to any reader, and a "
+        f"type that stopped being emitted means a whole class of node is gone."
+    )
+
+
+def test_every_FIELD_an_export_carries_LANDS_WHERE_THE_MAPPING_SAYS():
+    """The other half of the 59, and the 29 mangled VALUES with them. A term can be present and
+    hold the wrong thing: `rec.get("script", "?")` mangled leaves `name` in place and sets every
+    action and every instrument to `"?"`, collapsing the graph's instruments into one node. The
+    document still validates.
+
+    POSITION-AWARE, BECAUSE "THE VALUE APPEARS SOMEWHERE" IS THE WEAK FORM and is satisfied by a
+    mapping that puts `started_utc` into `endTime`. `_RUN_FIELD_MAPPING` and
+    `_FILE_FIELD_MAPPING` are the one place this package's two vocabulary mappings are written
+    down, and a `None` there is a declared decision — the crate has no term for a run id — not
+    a gap.
+
+    AND THE MAPPING TABLES MUST BE REACHED. Each loop asserts it saw every run and every file it
+    was supposed to, because a table iterated over an empty document is the shape that passes
+    forever.
+    """
+    crate, prov = _crate_and_prov()
+    actions = {n["name"]: n for n in crate["@graph"] if n.get("@type") == "CreateAction"}
+    assert len(actions) == len(_EXPORT_RECORDS), (
+        f"expected one CreateAction per record; found {sorted(actions)}. If two actions share a "
+        f"`name` the dict above collapsed them, which is itself the finding."
+    )
+
+    for record in _EXPORT_RECORDS:
+        activity = prov["activity"][f"runprov:run/{record['run_uid']}"]
+        action = actions[record["script"]]
+        for field, crate_key, prov_key in _RUN_FIELD_MAPPING:
+            if crate_key is not None:
+                assert action[crate_key] == record[field], (
+                    f"the crate's `{crate_key}` for run {record['run_uid']} is "
+                    f"{action[crate_key]!r} and the record's `{field}` is {record[field]!r}"
+                )
+            if prov_key is not None:
+                assert activity[prov_key] == record[field], (
+                    f"PROV's `{prov_key}` for run {record['run_uid']} is "
+                    f"{activity[prov_key]!r} and the record's `{field}` is {record[field]!r}"
+                )
+        #: `status` IS THE ONE FIELD THE CRATE TRANSFORMS rather than carries, so it is asserted
+        #: here instead of in the table — and both branches are reached, which is why
+        #: `_EXPORT_RECORDS` has an `ok` run and a `failed` one.
+        expected = "Completed" if record["status"] == "ok" else "Failed"
+        assert action["actionStatus"] == f"http://schema.org/{expected}ActionStatus", (
+            f"run {record['run_uid']} has status {record['status']!r} and the crate says "
+            f"{action['actionStatus']!r}"
+        )
+        assert action["instrument"] == {"@id": f"#script-{record['script']}"}, action
+
+    files = {n["@id"]: n for n in crate["@graph"] if n.get("@type") == "File"}
+    entries = {
+        entry["path"]: entry
+        for record in _EXPORT_RECORDS
+        for role in ("inputs", "outputs")
+        for entry in record[role]
+    }
+    assert set(files) == set(entries), (files, entries)
+    seen = 0
+    for path, entry in entries.items():
+        for field, crate_key, prov_key in _FILE_FIELD_MAPPING:
+            if field not in entry:
+                continue
+            seen += 1
+            if crate_key is not None:
+                assert files[path][crate_key] == entry[field], (
+                    f"the crate's `{crate_key}` for {path} is {files[path][crate_key]!r} and "
+                    f"the record's `{field}` is {entry[field]!r}"
+                )
+            if prov_key is not None:
+                node = prov["entity"][f"runprov:file/{path}"]
+                assert node[prov_key] == entry[field], (
+                    f"PROV's `{prov_key}` for {path} is {node[prov_key]!r} and the record's "
+                    f"`{field}` is {entry[field]!r}"
+                )
+    assert seen >= len(_FILE_FIELD_MAPPING), (
+        f"the file mapping was exercised {seen} time(s) over {len(_FILE_FIELD_MAPPING)} rows, so "
+        f"at least one row was never reached and asserts nothing. `_EXPORT_RECORDS` must "
+        f"populate every field the table names."
+    )
+
+
+def test_every_CROSS_REFERENCE_in_an_export_RESOLVES_to_something_that_exists():
+    """The identifier half: 11 surviving mutants mangled the `@id` and `runprov:` templates —
+    `f"#run-{...}"`, `f"#script-{script}"`, `runprov:file/{path}` — and a reference that names
+    nothing is the one defect both of these formats are *about*. A crate whose `mentions` points
+    at an absent node, or a `wasGeneratedBy` naming an entity that is not declared, is a graph
+    with no edges wearing the shape of one.
+
+    DERIVED, NOT A LIST OF IDENTIFIERS. Every `@id` appearing anywhere below the top level is
+    collected by walking the document, and every PROV relation endpoint is read from the
+    relation itself — so a template nobody has thought of is covered, and the test says nothing
+    about what an identifier is CALLED, only that it resolves. That is the property; the
+    spelling is not.
+
+    AND THAT IS ALSO ITS LIMIT, measured rather than assumed. A template renamed CONSISTENTLY —
+    `instrument = f"#script-{s}"` mangled, which builds both the reference and the node it
+    points at — still resolves, so this test passes and
+    `test_every_FIELD_an_export_carries_LANDS_WHERE_THE_MAPPING_SAYS` is what catches it.
+    Consistency is exactly what is being checked here, so a consistent rename cannot fail it;
+    the two tests cover each other and neither alone is enough. Verified both ways: a template
+    mangled on ONE side only (the `mentions` list) fails here, and one mangled on both fails
+    only there.
+    """
+    crate, prov = _crate_and_prov()
+
+    nodes = {node["@id"] for node in crate["@graph"]}
+    assert len(nodes) == len(crate["@graph"]), "a repeated @id makes the crate invalid"
+    referenced = {
+        value
+        for path, value in _payload_leaves(crate)
+        if path and path[-1] == "@id" and len(path) > 2
+    }
+    assert referenced, (
+        "no `@id` reference was found anywhere in the crate, so this test resolves nothing. "
+        "The root Dataset alone has `hasPart` and `mentions`, so the walk has stopped working."
+    )
+    dangling = sorted(referenced - nodes - {runprov.export.RO_CRATE_SPEC})
+    assert not dangling, (
+        f"these `@id`s are referenced in the crate and no node declares them: {dangling}. "
+        f"Declared nodes: {sorted(nodes)}. A reference naming nothing is a graph with no edges "
+        f"wearing the shape of one."
+    )
+
+    declared = {kind: set(prov.get(kind, {})) for kind in ("entity", "activity", "agent")}
+    relations = {
+        "used": (("prov:activity", "activity"), ("prov:entity", "entity")),
+        "wasGeneratedBy": (("prov:activity", "activity"), ("prov:entity", "entity")),
+        "wasAssociatedWith": (("prov:activity", "activity"), ("prov:agent", "agent")),
+        "wasDerivedFrom": (
+            ("prov:activity", "activity"),
+            ("prov:generatedEntity", "entity"),
+            ("prov:usedEntity", "entity"),
+        ),
+    }
+    checked = 0
+    for section, endpoints in relations.items():
+        for name, relation in prov.get(section, {}).items():
+            for key, kind in endpoints:
+                checked += 1
+                assert relation[key] in declared[kind], (
+                    f"PROV `{section}` entry {name!r} points its `{key}` at "
+                    f"{relation[key]!r}, which is not a declared {kind}. Declared: "
+                    f"{sorted(declared[kind])}"
+                )
+    assert checked >= 2 * len(relations), (
+        f"only {checked} relation endpoint(s) were resolved across {len(relations)} relation "
+        f"kinds, so at least one kind is absent from the document and this test did not read "
+        f"it. `_EXPORT_RECORDS` must exercise every relation `to_prov_json` can emit."
+    )
+
+
+def test_neither_export_EMITS_A_NULL_for_anything():
+    """ADR-0009: *"A missing field is **omitted, never emitted as null**: a validator reads
+    `null` as 'known to be nothing', and a thin history line simply does not know."*
+
+    CHECKED IN ONE DIRECTION ONLY UNTIL NOW, and the mutation run found the other.
+    `test_export_describes_a_thin_record_without_inventing_anything` asserts that an **absent**
+    field is left out — and **18 surviving mutants replaced a PRESENT value with `None`**,
+    including `node["contentSize"] = None` and `RO_CRATE_CONTEXT = None`. The rule held where the
+    test looked and nowhere else.
+
+    OVER EVERY LEAF OF BOTH DOCUMENTS, and over three record shapes rather than one: fully
+    populated, thin, and empty. The thin shape is the one the ADR's sentence is about, and the
+    empty one is where a renderer most easily emits a hollow section.
+    """
+    shapes = {
+        "fully populated": [dict(r) for r in _EXPORT_RECORDS],
+        "thin": [{"run_uid": "u", "script": "s", "outputs": [{"path": "b.tsv"}]}],
+        "empty": [],
+    }
+    for label, records in shapes.items():
+        for name, doc in (
+            ("ro-crate", runprov.export.to_ro_crate(records)),
+            ("prov", runprov.export.to_prov_json(records)),
+        ):
+            leaves = list(_payload_leaves(doc))
+            assert leaves, f"the {name} document for a {label} record has no leaves at all"
+            nulls = sorted(
+                ".".join(str(p) for p in path) for path, value in leaves if value is None
+            )
+            assert not nulls, (
+                f"the {name} export of a {label} record emits `null` at {nulls}. ADR-0009: a "
+                f'validator reads `null` as "known to be nothing", and a record that simply '
+                f"does not know must OMIT the field. Absent fields were already asserted "
+                f"omitted; this is the same rule for a field that is present."
+            )
+
+
+def test_the_two_CONFORMANCE_CONSTANTS_are_the_values_their_SPECIFICATIONS_define():
+    """Four surviving mutants mangled these four strings, and each one ships a document that
+    declares a vocabulary nobody can resolve. They are the only things in either format that say
+    *which* standard is being followed, so they are the last place a typo should be invisible.
+
+    HAND-WRITTEN AGAINST THE SPECIFICATIONS, and there is no non-circular alternative: the
+    authority is an external document, and a test that read these from `export.py` would agree
+    with it about a typo. A human re-reading the spec URI is the instrument — which is the whole
+    reason the values are repeated here rather than derived.
+    """
+    assert runprov.export.RO_CRATE_CONTEXT == "https://w3id.org/ro/crate/1.1/context"
+    assert runprov.export.RO_CRATE_SPEC == "https://w3id.org/ro/crate/1.1"
+    assert runprov.export.PROV_PREFIX == {
+        "prov": "http://www.w3.org/ns/prov#",
+        "runprov": "https://runprov.invalid/ns#",
+    }, (
+        "the PROV prefixes are what makes every `prov:` term in the document mean anything. "
+        "`prov` is the W3C namespace and is not negotiable; `runprov` is deliberately under "
+        "`.invalid` so this package's own terms cannot be mistaken for a registered vocabulary."
+    )
+
+    crate, prov = _crate_and_prov()
+    assert crate["@context"] == runprov.export.RO_CRATE_CONTEXT, crate["@context"]
+    assert crate["@graph"][0]["conformsTo"] == {"@id": runprov.export.RO_CRATE_SPEC}
+    assert prov["prefix"] == runprov.export.PROV_PREFIX
+
+
+def test_the_FULLEST_description_wins_and_a_TIE_goes_to_the_FIRST():
+    """`_files` keeps the longer description of a file two runs both touched — a history line
+    trims an input to path and digests while a sidecar keeps `size_bytes` and `mtime_utc`.
+
+    THE TIE WAS UNSPECIFIED, which is why a mutation run could flip `>` to `>=` with nothing
+    noticing: an unspecified behaviour cannot be violated. Among two descriptions of equal
+    length neither is fuller, so the rule has to BE a rule, and first-wins is the one that makes
+    the result independent of the order records happen to arrive in. Stated at `_files` now, and
+    held here.
+
+    BOTH HALVES, because the fuller-wins half is what the tie rule must not break: a longer
+    description still wins when it comes second.
+    """
+    tie = [
+        {"run_uid": "a", "script": "a.py", "inputs": [{"path": "f.tsv", "sha256": "1" * 64}]},
+        {"run_uid": "b", "script": "b.py", "inputs": [{"path": "f.tsv", "sha256": "2" * 64}]},
+    ]
+    chosen = runprov.export.to_prov_json(tie)["entity"]["runprov:file/f.tsv"]
+    assert chosen["runprov:sha256"] == "1" * 64, (
+        f"two descriptions of equal length and the SECOND won: {chosen}. Ties go to the first, "
+        f"so that one export of one history does not depend on the order the runs arrived in."
+    )
+
+    later_is_fuller = [
+        {"run_uid": "a", "script": "a.py", "inputs": [{"path": "f.tsv", "sha256": "1" * 64}]},
+        {
+            "run_uid": "b",
+            "script": "b.py",
+            "inputs": [{"path": "f.tsv", "sha256": "2" * 64, "size_bytes": 7}],
+        },
+    ]
+    richer = runprov.export.to_prov_json(later_is_fuller)["entity"]["runprov:file/f.tsv"]
+    assert richer["runprov:size_bytes"] == 7 and richer["runprov:sha256"] == "2" * 64, (
+        f"the fuller description came second and did not win: {richer}. The tie rule must not "
+        f"cost the thing the comparison exists for."
+    )
 
 
 # --------------------------------------------------------------------------- Audit C (2026-09-17)

@@ -54,6 +54,36 @@ PROV_PREFIX = {"prov": "http://www.w3.org/ns/prov#", "runprov": "https://runprov
 FORMATS = ("ro-crate", "prov")
 
 
+def _without_unknowns(node: dict[str, typing.Any]) -> dict[str, typing.Any]:
+    """`node` without the keys whose value nothing knows.
+
+    ADR-0009, verbatim: *"A missing field is **omitted, never emitted as null**: a validator
+    reads `null` as 'known to be nothing', and a thin history line simply does not know."* That
+    was held only for fields the renderer never reached. Four per-run fields -- the two times,
+    the status and the run id -- were written straight from `rec.get(...)`, so a record without
+    one of them produced `"endTime": null` and said *known to have no end time* about a run whose
+    end time is simply not in the record.
+
+    LATENT RATHER THAN LIVE WHEN FOUND, and that is recorded rather than smoothed over: no
+    record written by any of the seven released versions omits any of the four -- checked across
+    every history line and sidecar in `tests/corpus/`, excluding the `runprov.start.v1` records
+    this export leaves out anyway. But `export` reads a file the CALLER supplies, so a truncated,
+    hand-edited or third-party record reaches here, and a future record shape that drops a field
+    would have shipped the null in silence. Found 2026-10-11 by a guard written after a mutation
+    run showed that 18 of `export.py`'s 123 surviving mutants simply replaced a value with
+    `None`.
+
+    ONE COPY, because the rule applies identically to both vocabularies and one rule in two
+    places is this repository's most-repaired defect. `"?"` is NOT affected and must not be: a
+    script this package could not name renders as `?`, which is a rendering CHOICE about a value
+    known to be absent, and not a claim that nothing is there. (The same distinction is drawn
+    elsewhere in this package for its own report family; it is not cited here, because the
+    decision record that draws it deliberately excludes `export` from its scope and a citation
+    would claim a governance that does not exist.)
+    """
+    return {key: value for key, value in node.items() if value is not None}
+
+
 def _files(records: typing.Iterable[dict[str, typing.Any]]) -> dict[str, dict[str, typing.Any]]:
     """Every distinct file any run read or wrote, keyed by the path the record spells.
 
@@ -71,6 +101,13 @@ def _files(records: typing.Iterable[dict[str, typing.Any]]) -> dict[str, dict[st
                 # THE FULLEST DESCRIPTION WINS. A history line trims an input to path and
                 # digests; the sidecar keeps `size_bytes` and `mtime_utc`. Exporting a mix of
                 # both should give the reader the better of the two, not whichever came last.
+                #
+                # AND TIES GO TO THE FIRST, which is now stated rather than incidental. Among
+                # two descriptions of equal length neither is fuller, so the rule has to BE a
+                # rule: first-wins makes the result independent of the order the records happen
+                # to arrive in. `>=` reads as a harmless loosening and is not one -- a mutation
+                # run flipped this operator and nothing in the suite noticed, because an
+                # unspecified behaviour cannot be violated.
                 if len(entry) > len(out.get(path, {})):
                     out[path] = entry
     return out
@@ -136,25 +173,27 @@ def to_ro_crate(
         script = rec.get("script", "?")
         instrument = f"#script-{script}"
         graph.append(
-            {
-                "@id": f"#run-{rec.get('run_uid', i)}",
-                "@type": "CreateAction",
-                "name": script,
-                "startTime": rec.get("started_utc"),
-                "endTime": rec.get("finished_utc"),
-                "actionStatus": (
-                    "http://schema.org/CompletedActionStatus"
-                    if rec.get("status") == "ok"
-                    else "http://schema.org/FailedActionStatus"
-                ),
-                "instrument": {"@id": instrument},
-                "object": [
-                    {"@id": e["path"]} for e in rec.get("inputs", []) or [] if e.get("path")
-                ],
-                "result": [
-                    {"@id": e["path"]} for e in rec.get("outputs", []) or [] if e.get("path")
-                ],
-            }
+            _without_unknowns(
+                {
+                    "@id": f"#run-{rec.get('run_uid', i)}",
+                    "@type": "CreateAction",
+                    "name": script,
+                    "startTime": rec.get("started_utc"),
+                    "endTime": rec.get("finished_utc"),
+                    "actionStatus": (
+                        "http://schema.org/CompletedActionStatus"
+                        if rec.get("status") == "ok"
+                        else "http://schema.org/FailedActionStatus"
+                    ),
+                    "instrument": {"@id": instrument},
+                    "object": [
+                        {"@id": e["path"]} for e in rec.get("inputs", []) or [] if e.get("path")
+                    ],
+                    "result": [
+                        {"@id": e["path"]} for e in rec.get("outputs", []) or [] if e.get("path")
+                    ],
+                }
+            )
         )
         graph.append({"@id": instrument, "@type": "SoftwareApplication", "name": script})
     # DEDUPLICATED BY `@id`, because two runs of one script name the same instrument and a
@@ -197,13 +236,15 @@ def to_prov_json(records: typing.Sequence[dict[str, typing.Any]]) -> dict[str, t
 
     for i, rec in enumerate(records):
         act = f"runprov:run/{rec.get('run_uid', i)}"
-        activities[act] = {
-            "prov:label": rec.get("script", "?"),
-            "prov:startTime": rec.get("started_utc"),
-            "prov:endTime": rec.get("finished_utc"),
-            "runprov:status": rec.get("status"),
-            "runprov:run_id": rec.get("run_id"),
-        }
+        activities[act] = _without_unknowns(
+            {
+                "prov:label": rec.get("script", "?"),
+                "prov:startTime": rec.get("started_utc"),
+                "prov:endTime": rec.get("finished_utc"),
+                "runprov:status": rec.get("status"),
+                "runprov:run_id": rec.get("run_id"),
+            }
+        )
         agent = f"runprov:script/{rec.get('script', '?')}"
         agents[agent] = {"prov:type": "prov:SoftwareAgent", "prov:label": rec.get("script", "?")}
         associated[f"{act}/assoc"] = {"prov:activity": act, "prov:agent": agent}
