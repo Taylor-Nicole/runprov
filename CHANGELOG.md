@@ -9,6 +9,38 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Changed — `configure`'s project argument is positional-only
+
+**`configure(proj)` as before; `configure(project=proj)` is now a `TypeError`.** Nothing in this
+repository, its tests or any of its four documents ever spelled the keyword form — the project is
+passed positionally at every call site, including the example in `configure`'s own source comment
+— so this is expected to break nothing. It is listed here because it is a public signature and a
+reader of these notes should not have to discover that from a traceback.
+
+**Why, and it is not a style preference.** `configure` forwards `**kwargs` to `Project(**kwargs)`,
+so its own parameters share a namespace with every field `Project` has **or will ever gain**. A
+named parameter in that namespace is a collision waiting for the field of the same name: the day
+`Project` gains one, `configure(<that name>=value)` binds the **parameter** and the field is
+**silently never set** — this package's characteristic defect and the one shape it must not ship.
+And the guard that exists for exactly this family cannot see it:
+`test_configure_refuses_a_project_and_fields_together` raises when a project and fields arrive
+together, but a `project=` keyword is consumed by the parameter and **never reaches `kwargs`**, so
+"both" is never observed. Positional-only makes the collision unspellable instead of detectable.
+
+**`Project` has no such field today** — measured over `dataclasses.fields` — so this closes a
+latent class rather than a live bug, and that is stated rather than dressed up.
+
+**Found by `mypy --strict`, by pointing it at `tools/` for the first time** (see *Fixed*, above).
+The error was reported at a call site that **cannot be edited**, because its text is content-
+addressed by the corpus manifest; having no repair available there is what sent the search to the
+signature, which is where the ambiguity actually lived. New:
+`test_no_PARAMETER_of_configure_can_collide_with_a_Project_FIELD_it_forwards`, which quantifies
+over every parameter `inspect.signature` reports and requires each to be positional-only or the
+`**kwargs` itself, with both populations asserted non-empty. **It exists for the diagnostic as
+much as the property**: removing the `/` was already caught, because the scenario file then fails
+the type check — but it went red naming *a corpus scenario script*, three inferences from the
+cause. The public surface is unchanged: `docs/public-surface.txt` records names, not signatures.
+
 ### Fixed — the two commands that measure this package did not measure themselves
 
 **`ci.py lint` ran `mypy runprov/` and nothing else; `ci.py test` gates coverage on `runprov`
@@ -67,22 +99,21 @@ workflow runs that step. `tools/corpus_scenario.py` is the same at 0%.
   `dict[str, object]` splatted into `configure`, and `ci.py`'s own `STEPS` dispatch inferring
   untyped. **Zero suppressions**; the one `typing.Any` is a file loaded as a module, which is
   what that type is for.
-* **The thirteenth is declared rather than fixed, and the reason is a conflict between two
-  guards.** `tools/corpus_scenario.py`'s objection is that `configure(**used)` can reach a
-  first parameter typed `Project | None`, and the annotation that fixes it is a one-line edit —
-  but `tools/corpus.py`'s `scenario_digest()` hashes **that file's text**, and the figure is
-  committed in the corpus `MANIFEST.json`, so **any** edit to it reds
-  `test_the_corpus_describes_the_scenario_that_actually_exists` until the whole cross-version
-  corpus is rebuilt from seven released wheels. Measured, because the obvious escape does not
-  work: an **AST digest with docstrings stripped is not stable across the needed edit either**,
-  since the annotation and its `import typing` are both real nodes. Also measured: making
-  `configure`'s first parameter **positional-only** fixes it outright in one line, nothing in
-  this repository or its documentation passes `project=` by keyword, and `Project` has no field
-  of that name — **but that is a public API change and is not made as a side effect of widening
-  a type-check scope.** Filed as a decision. A per-module `disable_error_code` was rejected
-  after measuring that `--enable-error-code` cannot re-enable it, so it would have been an
-  exemption `lint` could never retire; the declared entry retires itself the day that signature
-  changes.
+* **The thirteenth could not be fixed at its call site, and that pointed at the signature.**
+  `tools/corpus_scenario.py` splats a dict of `Project` field names into `configure`, and `**`
+  can reach the first parameter, so the dict's value type had to satisfy `Project | None`. The
+  annotation that fixes that is one line — but `tools/corpus.py`'s `scenario_digest()` hashes
+  **that file's text** and the figure is committed in the corpus `MANIFEST.json`, so **any**
+  edit to it reds `test_the_corpus_describes_the_scenario_that_actually_exists` until the whole
+  cross-version corpus is rebuilt from seven released wheels. Measured, because the obvious
+  escape does not work: an **AST digest with docstrings stripped is not stable across the needed
+  edit either**, since the annotation and its `import typing` are both real nodes. A per-module
+  `disable_error_code` was rejected after measuring that `--enable-error-code` cannot re-enable
+  it — it would have been an exemption `lint` could never retire. So the file was **declared**,
+  with the real repair recorded beside it, and the declaration **retired itself one day later**
+  when that repair landed: see *Changed* below. `ci.py lint` went red quoting the recorded
+  reason back and saying to delete the entry, which is the design working on its first real
+  occasion rather than on a planted one.
 * **Two stale claims this exposed, both found by doing the work rather than by a check.** The
   source-population diagnostic advised re-reading *"the 8 above"* for a constant that reads 11 —
   a figure left behind when `_PACKAGE_MODULES + 8` became `_NON_PACKAGE_SOURCES`, so the message

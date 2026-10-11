@@ -116,26 +116,6 @@ _UNTYPED: dict[str, str] = {
         "knock-on `no-untyped-call` from those 74. One mechanical job on one file rather than a "
         "judgement about it -- declared here so it is debt that can be seen, not a hole."
     ),
-    #: THE ONE EXEMPTION THAT IS NOT ABOUT THE FILE'S CONTENTS, and the reason is measurable.
-    #: `tools/corpus.py`'s `scenario_digest()` hashes this file's TEXT, and the figure is
-    #: committed in the corpus `MANIFEST.json`, so ANY edit -- a comment, an annotation, an
-    #: import -- makes `test_the_corpus_describes_the_scenario_that_actually_exists` red until
-    #: the whole cross-version corpus is rebuilt from seven released wheels. Measured: an AST
-    #: digest with docstrings stripped does NOT make the needed edit inert either, because the
-    #: annotation and its `import typing` are both real nodes. So the file cannot be annotated
-    #: at all without rebuilding 21 records, and its ONE objection is type-level -- the code is
-    #: correct as written.
-    #:
-    #: IT SELF-RETIRES LIKE THE OTHERS, by the loop in `typecheck` below: the objection is that
-    #: `configure(**used)` can reach a first parameter typed `Project | None`, so the day that
-    #: signature becomes positional-only -- measured, a one-line change that fixes this
-    #: outright -- this file goes clean and `lint` says to delete the entry. That change is a
-    #: PUBLIC API change and is not made here as a side effect of widening a type-check scope.
-    "tools/corpus_scenario.py": (
-        "its text is content-addressed by the corpus `MANIFEST.json` (`scenario_digest`), so "
-        "any edit invalidates 21 records written by seven released wheels; its single "
-        "objection is type-level and the code is correct as written"
-    ),
 }
 
 

@@ -4263,6 +4263,70 @@ def test_configure_refuses_a_project_and_fields_together(tmp_path):
     assert runprov.configure(proj).root == tmp_path
 
 
+def test_no_PARAMETER_of_configure_can_collide_with_a_Project_FIELD_it_forwards():
+    """F1, 2026-10-11. `configure` forwards `**kwargs` to `Project(**kwargs)`, so its own
+    parameters share a namespace with every field `Project` has or will ever gain. A named
+    parameter in that namespace is a collision waiting for the field of the same name: the day
+    `Project` gains one, `configure(<that name>=value)` binds the PARAMETER and the field is
+    never set — **silently**, which is this package's characteristic defect.
+
+    AND THE EXISTING GUARD CANNOT CATCH IT. `test_configure_refuses_a_project_and_fields_
+    together` above raises when both arrive, but a `project=` keyword is consumed by the
+    parameter and never reaches `kwargs`, so "both" is never seen. The repair is structural:
+    make every named parameter positional-only and the collision becomes unspellable.
+
+    THE CLAIM AND THE QUANTIFICATION, checked against each other. *No parameter of `configure`
+    can collide with a field it forwards* — and what is quantified over is **every parameter
+    `inspect.signature` reports**, each required to be either positional-only or the `**kwargs`
+    itself. Positional-only implies no-collision, because a keyword cannot bind it; so the
+    quantification entails the claim rather than sampling it, and a parameter nobody has thought
+    of fails by construction.
+
+    BOTH POPULATIONS ASSERTED NON-EMPTY, separately. With no forwarding `**kwargs` the claim is
+    moot, and with no named parameter the loop is empty — either way the assertion below would
+    pass over a signature it has not read. A single total over the two would be a floor over a
+    mixed population.
+
+    THIS TEST EXISTS FOR THE DIAGNOSTIC as much as the property. Reverting the `/` is already
+    caught, because `tools/corpus_scenario.py` then fails `mypy --strict` and `ci.py lint` goes
+    red — but it goes red naming a CORPUS SCENARIO SCRIPT, which is three inferences away from
+    the signature that caused it. A check that catches a regression but cannot name it is a
+    different quality of instrument."""
+    import dataclasses
+
+    parameters = inspect.signature(runprov.configure).parameters
+    forwarding = [p for p in parameters.values() if p.kind is inspect.Parameter.VAR_KEYWORD]
+    named = [p for p in parameters.values() if p.kind is not inspect.Parameter.VAR_KEYWORD]
+    assert forwarding, (
+        f"`configure` no longer takes `**kwargs`, so it forwards nothing and this test is "
+        f"asserting a property of a signature it has not read: {list(parameters)}"
+    )
+    assert named, (
+        f"`configure` has no named parameter at all, so the loop below reads nothing. If the "
+        f"project argument was removed, this test is the wrong shape now: {list(parameters)}"
+    )
+
+    bindable = [p.name for p in named if p.kind is not inspect.Parameter.POSITIONAL_ONLY]
+    assert not bindable, (
+        f"these parameters of `configure` can be passed BY KEYWORD: {bindable}. They share a "
+        f"namespace with every field `Project` has or gains, so the day one of those names is "
+        f"added as a field, `configure({bindable[0]}=...)` binds the parameter and the field is "
+        f"silently never set — and `test_configure_refuses_a_project_and_fields_together` "
+        f"cannot see it, because the keyword never reaches `**kwargs`. Put a `/` after them."
+    )
+
+    #: AND THE COLLISION IS LATENT RATHER THAN LIVE, stated so the next reader does not take the
+    #: paragraph above for a bug report. If a field ever DOES share a parameter name the guard
+    #: above still holds — positional-only makes it unspellable — but this records which it was.
+    fields = {f.name for f in dataclasses.fields(runprov.Project)}
+    assert fields, "`Project` reports no fields, so the collision set is read from nothing"
+    assert not (fields & set(parameters)), (
+        f"`Project` now has a field named the same as a parameter of `configure`: "
+        f"{sorted(fields & set(parameters))}. The positional-only `/` is what keeps that safe, "
+        f"so do not remove it — and say so where the field was added."
+    )
+
+
 def test_the_pin_does_not_call_a_content_digest_a_sha256(tmp_path, monkeypatch):
     """Council C-09. The header said `sha256:` over a value that is `pin_digest` — the
     CONTENT digest, which strips volatile build stamps. A reader who runs `sha256sum` on the
@@ -32159,9 +32223,7 @@ def test_every_checkout_that_runs_the_suite_fetches_the_full_history():
                 )
 
 
-def test_every_TYPE_CHECK_EXEMPTION_is_declared_where_one_is_ALLOWED_and_says_why(
-    tmp_path, monkeypatch
-):
+def test_every_TYPE_CHECK_EXEMPTION_is_declared_where_one_is_ALLOWED_and_says_why():
     """F1. `ci.py lint` ran `mypy runprov/` and nothing else until 2026-10-11, so the six
     `tools/` modules, `ci.py` itself and both `examples/` were type-checked by NOTHING — while
     `ruff check .` on the line above already read the whole tree. Two tools in one step
@@ -32184,30 +32246,34 @@ def test_every_TYPE_CHECK_EXEMPTION_is_declared_where_one_is_ALLOWED_and_says_wh
     that sentence, not a primitive that happens to be convenient to enumerate. Every key gets
     a decision and nothing is left over.
 
-    ONE EXEMPTION IS ALLOWED OUTSIDE THOSE TWO DIRECTORIES, AND IT IS DERIVED RATHER THAN
-    NAMED. `tools/corpus_scenario.py` cannot be edited at all: `tools/corpus.py` content-
-    addresses its TEXT and the figure is committed in the corpus manifest, so a single added
-    annotation reds `test_the_corpus_describes_the_scenario_that_actually_exists` until the
-    cross-version corpus is rebuilt from seven released wheels. So the allowance is read off
-    `corpus.SCENARIO` — the same constant that does the pinning — and **the reason is then
-    proved rather than believed**: the digest is measured over a copy of the file with one
-    comment added, and must differ. An exemption justified by *"editing this file breaks a
-    digest"* is worth exactly as much as that sentence being true, and nothing else here can
-    check it.
+    THERE IS NO CARVE-OUT, AND THERE WAS ONE FOR A DAY. `tools/corpus_scenario.py` could not
+    be annotated at all — `tools/corpus.py` content-addresses its TEXT and the figure is
+    committed in the corpus manifest, so one added annotation reds
+    `test_the_corpus_describes_the_scenario_that_actually_exists` until the cross-version
+    corpus is rebuilt from seven released wheels. It was allowed here, derived off
+    `corpus.SCENARIO` rather than spelled, with the reason PROVED rather than believed (the
+    digest was measured over a copy of the file with one comment added and had to move).
+
+    **Then the exemption retired itself, which is the whole point of the design.** Making
+    `configure`'s first parameter positional-only — the real repair, one line, at the signature
+    that made a field dict ambiguous — left the file clean, and `ci.py lint` went red quoting
+    the recorded reason back and saying to delete the entry. **So the carve-out went with it.**
+    An allowance nothing uses is a list entry that gets reused for the wrong file later; the
+    history belongs in the CHANGELOG, not in a live branch of a guard. If the signature is ever
+    reverted the file goes dirty again, this test refuses the exemption, and somebody has to
+    re-argue it — which is correct.
 
     NO COUNT ANYWHERE, and that is not an oversight. The figure lives in the audit ledger
     because a number here would go stale on the very commit that pays the debt down, which is
     the one moment somebody reads it.
     """
     import ci
-    from tools import corpus as corpus_tool
 
     allowed = ("tests/", "examples/")
-    pinned = str(corpus_tool.SCENARIO.relative_to(REPO)).replace("\\", "/")
     offenders = {
         path: f"exempt from `mypy --strict` but under none of {allowed}"
         for path in ci._UNTYPED
-        if not path.startswith(allowed) and path != pinned
+        if not path.startswith(allowed)
     }
     offenders.update(
         {
@@ -32217,32 +32283,11 @@ def test_every_TYPE_CHECK_EXEMPTION_is_declared_where_one_is_ALLOWED_and_says_wh
         }
     )
     assert not offenders, (
-        f"a `mypy --strict` exemption may only name a file under {allowed}, or {pinned!r} "
-        f"because its text is content-addressed; and it must carry a reason: {offenders}. "
-        f"`runprov/`, `tools/` and the root scripts are what this package is measured BY, so "
-        f"exempting one of them puts it back where F1 found it — read by no automated check of "
-        f"any kind. Annotate the file, or raise the exemption as a decision."
+        f"a `mypy --strict` exemption may only name a file under {allowed}, and must carry a "
+        f"reason: {offenders}. `runprov/`, `tools/` and the root scripts are what this package "
+        f"is measured BY, so exempting one of them puts it back where F1 found it — read by no "
+        f"automated check of any kind. Annotate the file, or raise the exemption as a decision."
     )
-
-    #: AND THE ONE EXEMPTION THAT RESTS ON A CLAIM GETS THE CLAIM CHECKED. If the digest ever
-    #: stops covering this file's text — an AST digest, a digest over `INPUTS` alone — then the
-    #: file becomes editable, the exemption loses its basis, and this says so instead of letting
-    #: a reason that was true in 2026 keep working forever. Measured against a COPY, so the real
-    #: file and the real corpus are untouched.
-    if pinned in ci._UNTYPED:
-        before = corpus_tool.scenario_digest()
-        copy = tmp_path / "corpus_scenario.py"
-        copy.write_text(
-            corpus_tool.SCENARIO.read_text(encoding="utf-8") + "\n#: one added comment\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(corpus_tool, "SCENARIO", copy)
-        assert corpus_tool.scenario_digest() != before, (
-            f"{pinned} is exempt from `mypy --strict` ONLY because `corpus.scenario_digest()` "
-            f"covers its text, so any edit would invalidate the committed corpus. That is no "
-            f"longer true — the digest did not move when a comment was added — so the file can "
-            f"be annotated now and the exemption should be deleted from `ci.py`'s `_UNTYPED`."
-        )
 
     #: AND THE DERIVATION HAS TO REACH THE INSTRUMENTS, or the policy above is a rule over an
     #: empty set — the vacuous pass this repository has caught five times. Two sources, so this

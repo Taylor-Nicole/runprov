@@ -679,10 +679,32 @@ def is_configured() -> bool:
 
 def configure(
     project: Project | None = None,
+    #: POSITIONAL-ONLY, AND THAT IS PART OF THE CONTRACT BELOW RATHER THAN A STYLE CHOICE.
+    #: `**kwargs` is `Project`'s own field set, and a parameter that shares a namespace with it
+    #: is a collision waiting for the field that has the same name: `configure(project=X)` would
+    #: then install `X` as the project instead of setting the field, SILENTLY, which is this
+    #: package's characteristic defect and the one shape it must not ship. The `TypeError` two
+    #: lines down cannot catch it, because a `project=` keyword is consumed by the parameter and
+    #: never reaches `kwargs` to be seen as "both".
+    #:
+    #: `Project` HAS NO SUCH FIELD TODAY -- measured over `dataclasses.fields` -- so this closes
+    #: a latent class rather than a live bug, and it costs nothing: every call site in this
+    #: repository, its tests and all four documents already passes the project POSITIONALLY,
+    #: including the example in the comment below. Nothing anywhere spells `project=`.
+    #:
+    #: FOUND BY `mypy --strict`, F1, 2026-10-11. `tools/corpus_scenario.py` splats a
+    #: `dict[str, object]` of field names in, and `**` can reach this parameter, so the dict's
+    #: value type had to satisfy `Project | None`. That file's text is content-addressed by the
+    #: corpus manifest and so cannot be annotated, which left the error unfixable at the call
+    #: site and pointed here instead -- at the signature that made a field dict ambiguous.
+    /,
     **kwargs: typing.Any,  # noqa: ANN401 - these are Project's own fields, typed there
 ) -> Project:
     """Install the project every later `Run()` uses. Call once, at import of your paths
-    module — not inside each script, which is how three scripts end up disagreeing."""
+    module — not inside each script, which is how three scripts end up disagreeing.
+
+    The project is positional-only: `configure(proj)`, never `configure(project=proj)`, so that
+    `**kwargs` is unambiguously `Project`'s field set. See the comment on the parameter."""
     global _ACTIVE, _CONFIGURED
     # BOTH, OR NEITHER SILENTLY. `configure(existing, write_yaml_sidecar=False)` used to
     # return `existing` unchanged and DISCARD every keyword without a word -- a silent
