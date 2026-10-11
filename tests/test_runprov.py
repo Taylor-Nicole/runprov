@@ -17918,9 +17918,9 @@ def test_every_VENDORED_directory_check_names_puts_its_sources_OUT_of_scope(tmp_
     files["mine/entry.py"] = opener
     root = _source_tree(tmp_path, files)
     report = runprov.check.scan(root, own=tmp_path / "nowhere")
-    assert [str(p.relative_to(root)) for p in report.flagged] == ["mine/entry.py"], (
+    assert [p.relative_to(root).as_posix() for p in report.flagged] == ["mine/entry.py"], (
         f"only the project's own entry point is the subject; flagged "
-        f"{[str(p.relative_to(root)) for p in report.flagged]} over vendored names "
+        f"{[p.relative_to(root).as_posix() for p in report.flagged]} over vendored names "
         f"{list(_CHECK_VENDORED)}"
     )
 
@@ -46409,6 +46409,81 @@ def test_the_bench_harness_refuses_a_work_root_inside_this_repository(tmp_path):
     assert not (root / ".bench").exists(), "the refusal must not create what it refuses"
     #: AND IT MUST NOT REFUSE AN HONEST ROOT, or the harness cannot be run at all.
     bench._refuse_a_work_root_inside_the_repo(tmp_path)
+
+
+def test_no_test_COMPARES_a_stringified_relative_path_to_a_posix_literal():
+    """`str(WindowsPath("mine/entry.py"))` is `mine\\entry.py`, so a test that stringifies a
+    relative path and compares it to a `/`-spelled literal passes on five POSIX interpreters and
+    is RED on the Windows leg. **This has now happened twice**: in product code on 2026-09-01
+    (a recorded name, which `test_a_recorded_relative_name_is_POSIX_on_every_platform` emulates
+    and holds), and in this suite on 2026-10-11, in
+    `test_every_VENDORED_directory_check_names_puts_its_sources_OUT_of_scope` — written that hour,
+    gated green locally through every one of lint, test, claims, surface, bench and build, and
+    discovered only by the hosted matrix eight minutes into the Windows job. Twice is a mechanism,
+    so it is swept rather than fixed.
+
+    `as_posix()` DELETES the class rather than testing it, which is why the repair is a spelling
+    and not another emulation: a separator-independent comparison has nothing left to rehearse.
+    The package already chose it — `check.py`'s own JSON payload spells every path `as_posix()`.
+
+    WHAT IS DELIBERATELY NOT FLAGGED, because it is the difference between this guard and a
+    pattern that cannot pass: a stringified relative path used to OPEN a file round-trips, since
+    `\\` *is* a separator on Windows and `Path(root) / "runprov\\x.py"` resolves there. One such
+    site exists and is correct. So the subject is a stringified relative path on one side of a
+    COMPARISON whose other side is a literal carrying `/` — not every `str()` of a path.
+    """
+    src = (_repo_root() / "tests/test_runprov.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    def stringifies_a_relative_path(node):
+        """`str(x.relative_to(y))`, or the same inside an f-string or a comprehension."""
+        for sub in ast.walk(node):
+            if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)):
+                continue
+            if sub.func.id != "str":
+                continue
+            if any(
+                isinstance(inner, ast.Attribute) and inner.attr == "relative_to"
+                for arg in sub.args
+                for inner in ast.walk(arg)
+            ):
+                return True
+        return False
+
+    def posix_literal(node):
+        """A string constant carrying `/`, bare or inside a list/tuple/set display."""
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and "/" in sub.value:
+                return sub.value
+        return None
+
+    offenders, compared = [], 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        sides = [node.left, *node.comparators]
+        compared += 1
+        for i, side in enumerate(sides):
+            if not stringifies_a_relative_path(side):
+                continue
+            others = [s for j, s in enumerate(sides) if j != i]
+            for other in others:
+                if (lit := posix_literal(other)) is not None:
+                    offenders.append((node.lineno, lit))
+
+    #: THE SWEEP MUST HAVE SEEN SOMETHING. A comparison count of zero means the walk stopped
+    #: finding comparisons, not that the suite is clean -- and an empty sweep is a finding about
+    #: the sweep until proved otherwise.
+    assert compared > 500, (
+        f"only {compared} comparison(s) found in this suite: the walk is not reaching the tests, "
+        f"so a clean result below would mean nothing"
+    )
+    assert not offenders, (
+        "a stringified relative path compared to a `/` literal is RED on the Windows leg and "
+        "green on every POSIX interpreter, including the whole local gate. Spell it "
+        "`.relative_to(root).as_posix()`, which the package itself uses:\n"
+        + "\n".join(f"  tests/test_runprov.py:{line} against {lit!r}" for line, lit in offenders)
+    )
 
 
 def test_the_bench_harnesss_PREMISE_about_addopts_is_still_true():
