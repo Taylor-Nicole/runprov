@@ -69,6 +69,50 @@ run. `Project.digest_max_bytes` is annotated `int | str | None` and the new
 `assert isinstance` would have been the usual answer and is stripped by `-O`, which is the one
 condition under which it would be needed.
 
+### Tested — the bench harness now measures a guard whose subject is not Python
+
+**Control 5t, and it closes T-42.** The reach proof added in T-41 let the harness measure a guard
+that reads its subject, but only if the subject was Python — the mutation control diffs two ASTs,
+so a Markdown, TOML, YAML or JSON target was refused before the reach proof was consulted. Of the
+file-subject guards in this suite, that was most of them.
+
+**The inversion is the whole decision.** Control 5 strips docstrings because prose cannot change
+execution. *That reasoning inverts for a text target: the prose IS the subject.* A TOML guard's
+business is the content, so there is no region to strip, and the only thing decidable without a
+parser is that the bytes differ. The no-op half survives the inversion and is the half that still
+applies — a `--revert` that replaced 2 of 3 uses once left the tree byte-identical and reported
+`1 passed`.
+
+**It is weaker, and it does not stand alone.** Coverage cannot report on a file Python never
+executes, so on this arm the read proof is not an alternative to the executed proof: it is the only
+one, and a run where it does not fire is refused with nowhere to hide. That makes the text arm
+strictly *more* demanding about reach than the Python arm.
+
+**And a SURVIVED is worth less there, so it no longer prints the same.** Reach on the text arm is
+proved per file rather than per line, so a SURVIVED has two readings the harness cannot separate —
+the guard does not check that property, or it never read that part of the file. The verdict now
+carries that qualifier. `CAUGHT` is unaffected. Two verdicts of different strength printed
+identically is how a correct measurement produces a wrong conclusion.
+
+**The arm is chosen by whether coverage can report on the file, which is not the same as whether
+it is Python.** A `.pyi` parses and is never executed, so it takes the text arm despite being
+Python — and a suffix test written as `".py" in target` gets it wrong, which is a case the new
+test names.
+
+**Found by its own controls, not foreseen.** Benching a config file for the first time mutated
+`addopts` to `-qq`, which suppresses pytest's summary line — so a run with one test in it reported
+**`0 collected` beside a CAUGHT verdict**. A mutation had disabled the harness's own
+instrumentation, the failure the guard under test exists to prevent arriving from the other side.
+The verdict came from the return code and was unaffected; it was the number that lied, and
+`outcomes` now returns *unknown* rather than zero. Separately, a control showed the arm decision
+was an expression with no test, while every other control here has one for its pure decision; it
+is a named function now.
+
+`ci.py bench` reproduces 11 verdicts, up from 7, and the suite asserts the grid rather than a list
+of labels: every verdict on every arm, derived from each case's own target and expectation. The
+first version of that test checked three named labels, and could not have noticed that the text arm
+had a CAUGHT and a VOID and no SURVIVED — which is what it had.
+
 ### Fixed — a guard that was green on the whole local gate and red on NTFS
 
 **`str()` of a relative path, compared to a `/`-spelled literal.** The Windows leg failed eight

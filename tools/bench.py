@@ -29,7 +29,7 @@ Exit: 0 the mutation was CAUGHT (the guard works), 1 it SURVIVED (a finding abou
 contract `tools/torture.py` uses, for the same reason: *"no findings" and "nothing was actually
 damaged" are the same green.*
 
-THE EIGHT CONTROLS, AND THE MEASURED FAILURE EACH ONE ANSWERS
+THE NINE CONTROLS, AND THE MEASURED FAILURE EACH ONE ANSWERS
 -------------------------------------------------------------
 Every one of these has silently produced a wrong answer in this project's history. They are not
 defensive programming; they are the list of ways this exact experiment has already lied.
@@ -63,6 +63,22 @@ defensive programming; they are the list of ways this exact experiment has alrea
    fixed guard and nearly refuted a true row; and a "revert" that replaced 2 of 3 uses left the
    tree byte-identical and the test reported `1 passed`. The control compares the two files'
    ASTs WITH EVERY DOCSTRING STRIPPED, so a prose-only edit and a no-op edit are both VOID.
+
+5t. OR THE BYTES DIFFER, FOR A TARGET THAT IS NOT A MODULE [T-42]. Control 5 strips docstrings
+   because prose cannot change execution. **That reasoning inverts for a text target: the prose
+   IS the subject.** A Markdown or TOML guard's whole business is the content, so there is no
+   region to strip and the only thing decidable without a parser is that the bytes differ. The
+   no-op half of control 5 survives the inversion -- a `--revert` that replaced 2 of 3 uses once
+   left the tree byte-identical and reported `1 passed` -- and it is the half that still applies.
+
+   WEAKER, AND NOT STANDING ALONE. Coverage cannot report on a file Python never executes, so on
+   this arm `6s` is not an alternative to `6`: it is the ONLY proof of reach, and a run where it
+   does not fire is VOID with nowhere to hide. That makes the text arm strictly more demanding
+   about reach than the Python arm, which partly offsets this control being weaker.
+
+   THE ARM IS CHOSEN BY `.py`, AND THE DISCRIMINATOR IS NOT "IS IT PYTHON". It is *can coverage
+   report on this file*, i.e. *is it a module Python executes*. A `.pyi` parses and is never
+   executed, so it belongs here despite being Python.
 
 6. THE MUTATION WAS REACHED BY THE SELECTED TEST, by one of TWO proofs. A plant appended AFTER
    `raise SystemExit(main())` is syntactically present, passes an AST dump, and raises
@@ -111,6 +127,14 @@ defensive programming; they are the list of ways this exact experiment has alrea
    test failed, **`5` nothing was collected** -- a selector that matched nothing -- and anything
    else is an ERROR. A harness that treats every non-zero code as a catch reports a mutation
    killed by a suite that never ran. `5` and the rest are VOID here, never CAUGHT.
+
+WHAT A SURVIVED IS WORTH DEPENDS ON THE ARM [T-42]. On the Python arm, control 6 proves the
+mutated STATEMENT was reached, so a SURVIVED is a fact about the guard. On the text arm reach is
+proved per FILE, so a SURVIVED has two readings this harness cannot separate -- the guard does not
+check that property, or it never read that part of the file. CAUGHT is unaffected: a red is a red
+either way. The text-arm SURVIVED therefore prints with that qualifier attached, because two
+verdicts of different strength printed identically is how a correct measurement produces a wrong
+conclusion.
 
 WHAT IT DOES NOT CLAIM. That a CAUGHT verdict means the guard is correct -- only that this
 mutation does not slip past it. A guard can catch the mutation you thought of and miss the five
@@ -320,6 +344,34 @@ _OUTCOMES = re.compile(r"(\d+) (?:passed|failed|skipped|error|errors|xfailed|xpa
 _FAILED = re.compile(r"^FAILED (\S+)", re.M)
 
 
+def coverage_can_report(target: str) -> bool:
+    """Whether coverage can speak about this file at all — which arm the run takes [T-42].
+
+    THE DISCRIMINATOR IS NOT "IS IT PYTHON". It is *is this a module Python executes*, because
+    that is the only thing coverage reports on. A `.pyi` parses perfectly and is never executed,
+    so a guard over one is a TEXT guard however Python-shaped the file is — and `.py` is therefore
+    the whole of the Python arm rather than a list of Python-ish suffixes.
+
+    A pure function, so the choice is testable without building a tree: the inline version of this
+    had no test, and deleting the text arm's no-op refusal was caught by the selfcheck and by
+    nothing in the suite.
+    """
+    return target.endswith(".py")
+
+
+def outcomes(page: str) -> int | None:
+    """How many tests pytest says ran, or `None` when it did not say [T-42].
+
+    NEVER 0 FOR AN UNPARSEABLE PAGE. Measured the first time a config file was benched: mutating
+    `addopts` to `-qq` SUPPRESSES the summary line this reads, so a run with one test in it
+    reported `0 collected` beside a CAUGHT verdict. A mutation can disable the harness's own
+    instrumentation -- which is the failure the guard under test exists to prevent, arriving from
+    the other side. The verdict comes from the return code and was unaffected; it is the NUMBER
+    that lied, and *I could not tell* and *zero* must not share a spelling.
+    """
+    return sum(int(n) for n in _OUTCOMES.findall(page)) if _OUTCOMES.search(page) else None
+
+
 def coverage_source(target: str) -> str:
     """What to give `--cov` so that coverage reports on `target`. DERIVED, never listed.
 
@@ -473,7 +525,7 @@ def _run_selection(
     cov: pathlib.Path | None,
     source: str = ".",
     proof: tuple[pathlib.Path, pathlib.Path] | None = None,
-) -> tuple[int, int, list[str], str]:
+) -> tuple[int, int | None, list[str], str]:
     """Run the selected tests in `tree`. Returns (rc, collected, failed node ids, output).
 
     THE STATUS IS READ FROM THE PROCESS, never from the tail of a pipeline. `cmd | grep` returns
@@ -509,8 +561,14 @@ def _run_selection(
         args, cwd=tree, env=env, capture_output=True, text=True
     )
     page = proc.stdout + proc.stderr
-    ran = sum(int(n) for n in _OUTCOMES.findall(page))
-    return proc.returncode, ran, _FAILED.findall(page), page
+    #: `None` WHEN THE COUNT CANNOT BE PARSED, never 0 [T-42]. Measured the first time a config
+    #: file was benched: mutating `addopts` to `-qq` SUPPRESSES the summary line this regex reads,
+    #: so a run with one test in it reported `0 collected` beside a CAUGHT verdict. A mutation can
+    #: therefore disable the harness's own instrumentation -- which is the very failure the guard
+    #: under test exists to prevent, arriving from the other side. The verdict comes from the
+    #: return code and is unaffected; it is the NUMBER that would have lied, and "I could not
+    #: tell" and "zero" are different answers that must not share a spelling.
+    return proc.returncode, outcomes(page), _FAILED.findall(page), page
 
 
 def _executed_lines(cov: pathlib.Path, target: str) -> tuple[set[int], set[int]]:
@@ -578,28 +636,46 @@ def bench(
     after = mutate(source)
     (mutant / target).write_text(after, encoding="utf-8")
 
+    #: WHICH ARM, AND THE DISCRIMINATOR IS NOT "IS IT PYTHON" [T-42]. It is *can coverage report
+    #: on this file* -- which means *is it a module Python executes*. A `.pyi` parses and is never
+    #: executed, so it belongs to the text arm despite being Python, and `.py` is therefore the
+    #: whole of the Python arm rather than a list of Python-ish suffixes.
+    python_arm = coverage_can_report(target)
+
     #: CONTROL 5: in the parse, and not only in the prose.
     #:
-    #: AND A TARGET THIS CANNOT PARSE IS A VOID RUN, NOT A VERDICT. Controls 5 and 6 both rest on
-    #: Python -- an AST diff and coverage -- so this is a PYTHON-SOURCE instrument and it has to
-    #: say so. Pointing `--edit` at `README.md` raised a bare `SyntaxError` on the first non-Python
-    #: character and exited 1, which is the SURVIVED code: the same shape as the missing-target
-    #: defect fixed above, and the second time in this file that an instrument failure wore a
-    #: verdict's exit code. A Markdown or YAML guard must be demonstrated by hand, in a copied
-    #: tree, and the message says that rather than leaving the reader to guess.
-    try:
-        differs = executable_difference(source, after)
-    except SyntaxError as exc:
+    #: AND A `.py` TARGET THIS CANNOT PARSE IS A VOID RUN, NOT A VERDICT. Pointing `--edit` at a
+    #: non-Python file once raised a bare `SyntaxError` on the first non-Python character and
+    #: exited 1, which is the SURVIVED code -- the second time in this file that an instrument
+    #: failure wore a verdict's exit code. A broken `.py` still refuses here, because a
+    #: syntactically invalid mutant is not an experiment.
+    if python_arm:
+        try:
+            differs = executable_difference(source, after)
+        except SyntaxError as exc:
+            raise Void(
+                f"{target} is not parseable as Python ({exc.msg} at line {exc.lineno}). A `.py` "
+                f"target must parse: control 5 diffs two ASTs, and a syntactically invalid mutant "
+                f"is not an experiment. A NON-Python target takes the text arm instead"
+            ) from exc
+        if not differs:
+            raise Void(
+                f"the mutation changed nothing in {target} that the parser can see -- either it is "
+                f"a no-op, or it landed inside a DOCSTRING. Both have reported `1 passed` in this "
+                f"repository while measuring an unmodified tree"
+            )
+    #: CONTROL 5t, THE TEXT ARM, AND IT IS WEAKER ON PURPOSE [T-42]. Control 5 strips docstrings
+    #: because prose cannot change execution. THAT REASONING INVERTS HERE: for a file whose
+    #: content IS the subject, the prose is the whole behaviour, so there is no region to strip
+    #: and the only thing decidable without a parser is that the bytes differ. The no-op half of
+    #: control 5 survives the inversion -- a `--revert` that replaced 2 of 3 uses once left the
+    #: tree byte-identical and reported `1 passed` -- and it is the half that still applies.
+    elif source == after:
         raise Void(
-            f"{target} is not parseable as Python ({exc.msg} at line {exc.lineno}), and controls 5 "
-            f"and 6 both need a Python AST and coverage. This harness benches PYTHON sources only; "
-            f"demonstrate a Markdown, YAML or TOML guard by hand in a copied tree"
-        ) from exc
-    if not differs:
-        raise Void(
-            f"the mutation changed nothing in {target} that the parser can see -- either it is "
-            f"a no-op, or it landed inside a DOCSTRING. Both have reported `1 passed` in this "
-            f"repository while measuring an unmodified tree"
+            f"the mutation changed no bytes in {target}. For a non-Python target that is the whole "
+            f"of control 5: there is no docstring-equivalent region to strip, because the content "
+            f"IS what the guard reads. A `--revert` that matched nothing has reported `1 passed` "
+            f"in this repository while measuring an unmodified tree"
         )
     touched = changed_lines(source, after)
 
@@ -620,41 +696,61 @@ def bench(
             f"({', '.join(failed0) or 'no FAILED line'}). A red on the mutant would say nothing "
             f"about the mutation.\n{page0[-1200:]}"
         )
-    print(f"baseline GREEN, {n0} test(s) collected")
+    print(f"baseline GREEN, {n0 if n0 is not None else 'an unreportable number of'} test(s) run")
 
-    cov = work / "mutant-coverage.json"
+    #: NO COVERAGE FOR A TEXT TARGET [T-42], and this is not an optimisation. `_executed_lines`
+    #: refuses with *"coverage never saw {target}"* -- which is TRUE and would be reported as the
+    #: harness failing, when the real fact is that coverage cannot speak about a file Python never
+    #: executes. Asking it and then explaining the refusal is worse than not asking.
+    cov = work / "mutant-coverage.json" if python_arm else None
     proof_out = work / "mutant-reads.json"
     if proof_out.exists():
         proof_out.unlink()
     rc1, n1, failed1, page1 = _run_selection(
-        mutant, py, test, cov, coverage_source(target), proof=(mutant / target, proof_out)
+        mutant,
+        py,
+        test,
+        cov,
+        coverage_source(target) if python_arm else ".",
+        proof=(mutant / target, proof_out),
     )
     verdict = classify(rc1, page1)
 
     #: CONTROL 6, evaluated AFTER the run because it needs the run's coverage, and asserted
     #: before the verdict is printed because a verdict over an unreached line is not a verdict.
-    ran, statements = _executed_lines(cov, target)
-    changed_statements = owning_statements(after, touched) & statements
-    #: WHY CONTROL 6 CANNOT SPEAK, in the three ways it cannot, each with its own sentence. The
+    #: WHY CONTROL 6 CANNOT SPEAK, in the four ways it cannot, each with its own sentence. The
     #: deletion arm was added after removing two lines from a guard on purpose and being told the
     #: mutation was prose -- the one thing it could not have been.
-    if not touched:
+    changed_statements: set[int] = set()
+    if cov is None:
+        #: THE TEXT ARM HAS NO CONTROL 6 AT ALL [T-42], so 6s stops being an alternative and
+        #: becomes the only proof of reach -- which makes this arm STRICTLY MORE DEMANDING about
+        #: reach than the Python one, and partly offsets control 5t being weaker.
+        ran: set[int] = set()
         why6 = (
-            f"the mutation only DELETED lines ({len(removed_lines(source, after))} removed, none "
-            f"added), so no line of the MUTANT carries it and coverage cannot speak about a line "
-            f"that is gone. Replace the line rather than removing it to get a verdict from 6"
-        )
-    elif not changed_statements:
-        why6 = (
-            f"none of the {len(touched)} changed line(s) resolves to a STATEMENT in {target} "
-            f"-- the mutation is comment, prose or a bare literal, so nothing about it can run"
+            f"not available: {target} is not a module Python executes, so coverage cannot report "
+            f"on it. For a non-Python target the read proof is the ONLY proof of reach"
         )
     else:
-        why6 = (
-            f"changed statements {sorted(changed_statements)[:12]}, none of them in coverage's "
-            f"executed set. A plant after `raise SystemExit(main())` looks exactly like this "
-            f"and is invisible to an AST check"
-        )
+        ran, statements = _executed_lines(cov, target)
+        changed_statements = owning_statements(after, touched) & statements
+        if not touched:
+            why6 = (
+                f"the mutation only DELETED lines ({len(removed_lines(source, after))} removed, "
+                f"none added), so no line of the MUTANT carries it and coverage cannot speak "
+                f"about a line that is gone. Replace the line rather than removing it"
+            )
+        elif not changed_statements:
+            why6 = (
+                f"none of the {len(touched)} changed line(s) resolves to a STATEMENT in {target} "
+                f"-- the mutation is comment, prose or a bare literal, so nothing about it can run"
+            )
+        else:
+            why6 = (
+                f"changed statements {sorted(changed_statements)[:12]}, none of them in "
+                f"coverage's executed set. A plant after `raise SystemExit(main())` looks exactly "
+                f"like this and is invisible to an AST check"
+            )
 
     #: TWO PROOFS OF REACH, AND THEY ARE ALTERNATIVES RATHER THAN A FALLBACK [T-41].
     #:
@@ -694,7 +790,12 @@ def bench(
     if explicit:
         print(f"CONTROL 6s (read): the mutated file was opened by {', '.join(explicit[:3])}")
 
-    print(f"\nVERDICT: {verdict}  (pytest rc={rc1}, {n1} collected)")
+    counted = (
+        f"{n1} test(s) run"
+        if n1 is not None
+        else "the count was UNREPORTABLE -- the mutation suppressed pytest's own summary line"
+    )
+    print(f"\nVERDICT: {verdict}  (pytest rc={rc1}, {counted})")
     if verdict == CAUGHT:
         print("failed: " + (", ".join(failed1) or "(rc=1 with no FAILED line -- read the page)"))
         print(
@@ -706,6 +807,22 @@ def bench(
         f"the guard did NOT notice this mutation. That is a finding about the guard, not about "
         f"the mutation.\n{page1[-800:]}"
     )
+    #: A TEXT-TARGET SURVIVED IS WEAKER EVIDENCE, AND MUST NOT PRINT LIKE THE OTHER ONE [T-42].
+    #: On the Python arm, control 6 proves the mutated STATEMENT was reached, so a SURVIVED is a
+    #: fact about the guard. On the text arm the only reach proof is per FILE, so a SURVIVED has
+    #: two readings this harness cannot separate -- the guard does not check that property, or it
+    #: never read that part of the file. CAUGHT is unaffected: a red is a red either way. Printing
+    #: two verdicts of different strength identically is how a correct measurement produces a
+    #: wrong conclusion, which is the failure this whole file is built against.
+    if not python_arm:
+        print(
+            f"AND READ THIS ONE MORE CAREFULLY THAN A PYTHON-TARGET SURVIVED. {target} is not a "
+            f"module, so reach was proved per FILE and not per line: the guard read a file whose "
+            f"bytes differ, which does NOT establish that it read the changed region. So this is "
+            f"either a guard that does not check this property, or a guard that never looked "
+            f"here, and nothing in this run tells you which. Narrow the mutation toward what the "
+            f"guard does read, or demonstrate the distinction by hand."
+        )
     return 1
 
 
@@ -810,6 +927,48 @@ _SELFCHECK = [
         "",
     ),
     (
+        #: THE TEXT ARM, CAUGHT. `pyproject.toml` is not a module, so control 6 is not merely
+        #: silent here -- it is unavailable, and 6s is the only proof of reach there is.
+        "CAUGHT via 5t+6s -- a TEXT target, where coverage cannot speak at all",
+        "bench_harnesss_PREMISE",
+        "pyproject.toml",
+        "text-caught",
+        CAUGHT,
+        "",
+    ),
+    (
+        #: AND THE TEXT ARM'S SURVIVED, because a verdict never produced is a verdict never
+        #: measured -- and this one carries an EXTRA sentence no other verdict carries, so
+        #: without a case for it the qualifier could stop printing and nothing would notice.
+        #: The guard reads `pyproject.toml` and checks only `addopts`; `testpaths` is nothing
+        #: to it, which is a fact about the guard's scope rather than about the package.
+        "SURVIVED via 6s -- a TEXT target read but not checked, qualifier attached",
+        "bench_harnesss_PREMISE",
+        "pyproject.toml",
+        "text-unnoticed",
+        SURVIVED,
+        "",
+    ),
+    (
+        "VOID control 5t -- a TEXT target and the mutation changes NO BYTES",
+        "bench_harnesss_PREMISE",
+        "pyproject.toml",
+        "text-noop",
+        "VOID",
+        "changed no bytes",
+    ),
+    (
+        #: AND THE TEXT ARM'S REACH REFUSAL, which has its own sentence because "coverage says
+        #: the line did not run" and "coverage cannot speak about this file" are different facts
+        #: and the first would be a lie here.
+        "VOID 6s-only -- a TEXT target nothing in the selection reads",
+        "test_prune_does_not_forge_a_line_from_a_marker_filename",
+        "pyproject.toml",
+        "text-caught",
+        "VOID",
+        "is not a module Python executes",
+    ),
+    (
         "VOID control 7 -- the selector matches NOTHING (rc=5)",
         "test_a_name_no_test_in_this_repository_has",
         "runprov/_report.py",
@@ -895,6 +1054,19 @@ def _selfcheck_mutation(kind: str | None) -> Callable[[str], str]:
         #: meets this, and the refusal is the thing that makes it cheap rather than wrong.
         head, tail = 'args = [py, "-m", "pytest", "tests", "-k", kexpr, ', '"-p", "no:randomly"]'
         return _substitute(head + tail, head + '"-p", "no:randomly", "-q"]')
+    if kind == "text-caught":
+        #: THE FLAG THE GUARD UNDER TEST EXISTS TO REFUSE, in the file that sets it. `-qq` also
+        #: suppresses pytest's own summary line, which is why the CAUGHT case for this reports
+        #: its count as UNREPORTABLE rather than as zero -- see `outcomes`.
+        return _substitute('addopts = "-q"', 'addopts = "-qq"')
+    if kind == "text-unnoticed":
+        #: READ BY THE GUARD, CHECKED BY NOTHING IN IT. The guard parses `addopts`; `testpaths`
+        #: is in the same file and outside its question.
+        return _substitute('testpaths = ["tests"]', 'testpaths = ["tests", "."]')
+    if kind == "text-noop":
+        #: IDENTICAL REPLACEMENT. `_substitute` is satisfied -- the anchor is unique -- and the
+        #: bytes are unchanged, which is the whole of control 5t.
+        return _substitute('addopts = "-q"', 'addopts = "-q"')
     raise Void(f"unknown selfcheck mutation {kind!r}")
 
 

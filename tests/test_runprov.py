@@ -46685,39 +46685,137 @@ def test_an_ABSENT_read_proof_is_void_and_never_an_empty_read_set(tmp_path):
     )
 
 
-def test_the_selfcheck_exercises_BOTH_proofs_of_reach_and_both_declining(tmp_path):
-    """[T-41]. Control 6 (the statement ran) and control 6s (the file was read) are alternative
-    proofs that the mutation was REACHED. A selfcheck that only ever exercises one of them cannot
-    notice the other breaking.
+def test_the_selfcheck_produces_EVERY_VERDICT_ON_EVERY_ARM():
+    """[T-41, T-42]. The harness has two arms — a Python target, where coverage can speak, and a
+    text target, where it cannot — and three verdicts. **A verdict never produced on an arm is a
+    verdict never measured there**, and the selfcheck would still print all-ok.
 
-    SO THE QUANTIFICATION IS OVER THE PROOFS, not over the case list: every proof must have a
-    case that rests on it, and the both-declined path must have one too. Stated as the claim and
-    the quantification in one sentence each, because they came apart in this project before.
+    QUANTIFIED OVER THE GRID, NOT OVER A LIST OF LABELS. The arm is derived from each case's
+    TARGET and the verdict from its own `expect`, so a cell nobody covered is red by construction
+    rather than waiting for someone to notice a label is missing. The first version of this test
+    asserted three named labels and required the read-proof case to target `tools/bench.py`; it
+    would have gone red when the text arm arrived — for the wrong reason, naming a target rather
+    than a missing measurement — and it could not have noticed that the text arm had a CAUGHT and
+    a VOID and **no SURVIVED**, which is exactly what it had.
+
+    WHY SURVIVED MATTERS MOST HERE: the text arm's SURVIVED is the only verdict in this harness
+    that prints an extra qualifier, because reach on that arm is proved per file rather than per
+    line. Without a case producing it, the qualifier could stop printing and nothing would fail.
     """
     bench = _bench_module()
-    cases = {
-        label: (selector, target, kind, expect, reason)
-        for label, selector, target, kind, expect, reason in bench._SELFCHECK
-    }
-    assert len(cases) == len(bench._SELFCHECK), "two selfcheck cases share a label"
+    cases = bench._SELFCHECK
+    assert cases, "the selfcheck has no cases, so every assertion below is vacuous"
 
-    by_proof = {
-        "6 executed": [c for c in cases if "6s" not in c and c.startswith(("CAUGHT", "SURVIVED"))],
-        "6s read": [c for c in cases if "6s" in c],
-        "both declined": [c for c in cases if "never READS" in c],
+    produced = {
+        ("python" if target.endswith(".py") else "text", expect)
+        for _label, _selector, target, _kind, expect, _reason in cases
     }
-    for proof, found in by_proof.items():
-        assert found, (
-            f"no selfcheck case rests on {proof!r}. A verdict never produced is a verdict never "
-            f"measured: the harness could be structurally incapable of it and still print all-ok"
+    for arm in ("python", "text"):
+        for verdict in (bench.CAUGHT, bench.SURVIVED, "VOID"):
+            assert (arm, verdict) in produced, (
+                f"no selfcheck case produces {verdict} on the {arm} arm. The harness could be "
+                f"structurally incapable of that verdict there and the selfcheck would still "
+                f"print all-ok -- which is the shape this project refuses in a check that "
+                f"cannot fail. Covered: {sorted(produced)}"
+            )
+
+    #: AND THE PYTHON ARM'S READ-PROOF CASE IS NAMED BY ITS TARGET, which is the one thing the
+    #: grid above cannot derive: whether a given selection READS its target rather than RUNNING
+    #: it is not decidable from this table. `tools/bench.py` is the subject of a guard that
+    #: parses it, so its presence here is what keeps control 6s exercised on the arm where
+    #: control 6 is available and could otherwise carry every case.
+    targets = {target for _l, _s, target, _k, _e, _r in cases}
+    assert "tools/bench.py" in targets, (
+        f"no case targets `tools/bench.py`, the guard that READS its subject while coverage is "
+        f"available. Without it every python-arm case can be carried by control 6 and the read "
+        f"proof is unexercised on that arm: {sorted(targets)}"
+    )
+
+    #: AND THE TEXT ARM'S TWO REFUSALS ARE NAMED, because they are DIFFERENT facts and only one
+    #: of them has a pure function behind it. Control 5t's decision is a bare `source == after`,
+    #: so there is nothing to unit-test the way `executable_difference` is tested — its only
+    #: enforcement is a selfcheck case, and `ci.py bench` is not what the matrix runs. Requiring
+    #: the reason fragments here is what puts that enforcement inside the suite.
+    text_reasons = [
+        reason
+        for _l, _s, target, _k, expect, reason in cases
+        if not target.endswith(".py") and expect == "VOID"
+    ]
+    for required in ("changed no bytes", "is not a module Python executes"):
+        assert any(required in reason for reason in text_reasons), (
+            f"no text-arm VOID case requires {required!r} in its reason. "
+            f"*The bytes did not change* and *coverage cannot speak about this file* are "
+            f"different refusals, and a case that stops asserting which one fired is the "
+            f"failure this selfcheck's reason clause exists for. Present: {text_reasons}"
         )
 
-    #: AND THE READING CASE MUST NOT BE MEASURABLE BY COVERAGE, or it is not testing 6s at all.
-    #: `tools/bench.py` is read as text by its guard and no line of it executes under that
-    #: selector, which is the only reason control 6 is silent and 6s is the one that speaks.
-    static = [cases[c] for c in by_proof["6s read"]]
-    assert all(target == "tools/bench.py" for _, target, _, _, _ in static), (
-        f"the 6s case must target a file the selection READS rather than RUNS: {static}"
+    labels = [label for label, *_ in cases]
+    assert len(set(labels)) == len(labels), f"two selfcheck cases share a label: {labels}"
+
+
+def test_which_ARM_the_harness_takes_is_decided_by_what_coverage_can_report_on():
+    """[T-42]. `coverage_can_report` chooses between the two arms, and the choice decides which
+    control 5 applies and whether control 6 exists at all. **A `.pyi` is the case that makes the
+    rule non-obvious**: it parses as Python and is never executed, so coverage can never report on
+    it and a guard over one is a text guard however Python-shaped the file is.
+
+    THIS WAS INLINE AND UNTESTED until a control found it. Deleting the text arm's no-op refusal
+    was caught by `ci.py bench` and by **nothing in the suite** — and the suite is what the matrix
+    runs. Every other control here has a pytest-level test of its pure decision
+    (`executable_difference`, `_refuse_a_work_root_inside_the_repo`, `classify`); the arm had none
+    because the decision was an expression rather than a function.
+    """
+    bench = _bench_module()
+    assert bench.coverage_can_report("runprov/check.py"), (
+        "a module Python executes is the one case coverage can speak about, and the whole "
+        "python arm rests on this being True"
+    )
+    for text in (
+        "pyproject.toml",
+        "README.md",
+        ".github/workflows/test.yml",
+        "docs/x.json",
+        "docs/claims-baseline.txt",
+        "runprov/py.typed",
+    ):
+        assert not bench.coverage_can_report(text), (
+            f"{text} is not a module Python executes, so coverage cannot report on it: taking "
+            f"the python arm would ask `_executed_lines` a question it answers by refusing, and "
+            f"the refusal would read as the harness failing rather than as the wrong arm"
+        )
+    assert not bench.coverage_can_report("runprov/check.pyi"), (
+        "a `.pyi` PARSES and is never EXECUTED. It is the case that shows the rule is about "
+        "execution rather than syntax, and a suffix test written as `.py in target` gets it wrong"
+    )
+
+
+def test_the_harness_reports_an_UNPARSEABLE_test_count_rather_than_zero():
+    """[T-42]. `outcomes` reads how many tests pytest says ran, and returns `None` when it did
+    not say.
+
+    MEASURED THE FIRST TIME A CONFIG FILE WAS BENCHED. Mutating `addopts` to `-qq` suppresses the
+    summary line, so a run with one test in it reported **`0 collected` beside a CAUGHT verdict**
+    — a mutation that disabled the harness's own instrumentation, which is the failure the guard
+    under test exists to prevent arriving from the other side. The verdict comes from the return
+    code and was unaffected; it was the NUMBER that lied.
+
+    `0` AND `None` ARE DIFFERENT ANSWERS and the last case below is the one that makes that
+    assertion mean something: pytest really can report zero, and a reader must be able to tell a
+    genuine zero from a page this could not parse.
+    """
+    bench = _bench_module()
+    assert bench.outcomes("1 passed, 1308 deselected in 7.78s") == 1
+    assert bench.outcomes("3 passed, 2 skipped, 1 failed in 1.0s") == 6, (
+        "every outcome counts toward what RAN, not just passes"
+    )
+    assert bench.outcomes("tests/test_runprov.py: 61\n") is None, (
+        "this is what `-qq` prints instead of a summary: no outcome word, so the count is "
+        "UNKNOWN. Returning 0 here is what printed `0 collected` beside a CAUGHT verdict"
+    )
+    assert bench.outcomes("") is None, "an empty page says nothing, which is not the same as zero"
+    assert bench.outcomes("0 passed in 0.1s") == 0, (
+        "and a GENUINE zero must still be 0 -- without this leg the assertions above are "
+        "satisfied by a function that always returns None"
     )
 
 
@@ -46745,10 +46843,12 @@ def test_the_bench_harness_COUNTS_its_own_controls_the_way_it_lists_them():
         f"{heading[1]!r} is not a number word this test knows. Add it to the map -- a heading "
         f"this cannot read must not count as agreeing with the list"
     )
-    #: EVERY NUMBERED ENTRY, `6` and `6s` alike. The letter suffix is what a sub-control looks
-    #: like here, and a pattern that missed it would have reported 7 against a heading of 8 and
-    #: sent a reader to add a control that already exists.
-    entries = re.findall(r"^(\d+s?)\. [A-Z]", doc, re.MULTILINE)
+    #: EVERY NUMBERED ENTRY, `6` and `6s` and `5t` alike. A single lowercase letter is what a
+    #: sub-control looks like here, and the first version of this pattern accepted only `s` --
+    #: so `5t` was invisible to it and it would have reported 8 against a heading of 9, sending
+    #: a reader to add a control that already exists. The suffix is a CLASS, not the one letter
+    #: that happened to exist when the pattern was written.
+    entries = re.findall(r"^(\d+[a-z]?)\. [A-Z]", doc, re.MULTILINE)
     assert len(entries) == words[heading[1]], (
         f"the heading says {heading[1]} ({words[heading[1]]}) and {len(entries)} control(s) are "
         f"enumerated: {entries}. One of the two was edited without the other."

@@ -144,23 +144,33 @@ there must be a mutant that proves it.
 copied tree, for the reason it names — `tools/bench.py` exists to make that a command rather than a
 good intention, and `ci.py bench` checks the harness can still tell CAUGHT from SURVIVED from VOID.
 
-**A guard whose subject is a FILE can be demonstrated too, if the file is Python.** Such a guard
-parses its subject rather than running it, so coverage can never say the mutation was reached, and
-the harness answered `VOID` for every one of them until control 6s. It now also accepts *the
-selected tests opened the mutated file* as proof, so the command is the same:
+**A guard whose subject is a FILE can be demonstrated too, whatever kind of file it is.** Such a
+guard parses its subject rather than running it, so coverage can never say the mutation was
+reached, and the harness answered `VOID` for every one of them until it gained a second proof of
+reach — *the selected tests opened the mutated file*. The command is the same for a module, a
+README, a workflow or a config:
 
 ```sh
 python tools/bench.py --test <-k expr> --edit <the file the guard reads> --old STR --new STR
 ```
 
-The reach proof the harness used is printed — `CONTROL 6 (executed)` or `CONTROL 6s (read)` — and
-reading which one spoke is part of reading the verdict. Three cases are still out of reach and the
-harness says so rather than guessing: a target that is **not Python** (the mutation control diffs
-two ASTs, so it needs a parser), a subject read by a **subprocess** (the parent's audit hook cannot
-see it), and a subject that is a **docstring** (that same control strips docstrings deliberately,
-because a plant harness once hid every variant it had in one and read them all green).
-Demonstrate those by hand, in a copied tree, and say in the commit message which control could
-not speak.
+**Read which proof spoke; it is part of reading the verdict.** The harness prints either
+`CONTROL 6 (executed)` or `CONTROL 6s (read)`, and for a target that is not a module Python
+executes it prints only the second — coverage cannot speak about such a file at all, so the read
+proof is not an alternative there but the only proof available, and a run where it does not fire
+is refused.
+
+**A SURVIVED on a non-module target is worth less than a SURVIVED on a module, and the harness
+says so in the output.** Reach is proved per file rather than per line there, so the verdict has
+two readings — the guard does not check that property, or it never read that part of the file —
+and nothing in the run separates them. `CAUGHT` is unaffected: a red is a red. Narrow the mutation
+toward what the guard does read, or settle it by hand.
+
+**Two cases remain out of reach, and the harness refuses rather than guessing:** a subject read by
+a **subprocess**, which the parent's audit hook cannot see; and a subject that is a **docstring**,
+because the mutation control strips docstrings deliberately — a plant harness once hid every
+variant it had in one and read them all green. Demonstrate those by hand, in a copied tree, and
+say in the commit message which control could not speak.
 
 **When a demonstration passes, check the demonstration happened.** A mutant that was never applied
 reads exactly like a guard that works. Assert the anchor matched before replacing it, anchor by
