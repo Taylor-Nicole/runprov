@@ -45550,6 +45550,18 @@ def test_the_non_breaking_spaces_are_escaped_and_the_oracle_says_the_same(tmp_pa
         "the oracle must consider an UNESCAPED U+00A0 a character a terminal acts on; if it "
         "stops, widening `printable` becomes silently safe and this coupling is gone"
     )
+
+    #: AND WHY THE `c == " "` HALF OF THAT PREDICATE CANNOT FIRE, measured rather than argued.
+    #: `str.isprintable()` excludes the ASCII space from the characters it calls nonprintable,
+    #: so the second clause is never the reason a space survives -- over the WHOLE Unicode
+    #: range, 1 114 112 code points, there is NOT ONE where it decides the answer, and the two
+    #: forms differ nowhere. That is what makes `" "` -> `"XX XX"` a provable equivalence
+    #: rather than a gap, and pinning the cause here is what will say so the day it changes.
+    assert " ".isprintable(), (
+        "the ASCII space is printable BY DEFINITION in `str.isprintable`, which is the only "
+        "reason `printable`'s second clause is redundant; if this ever changes, that clause "
+        "becomes load-bearing and its mutant stops being equivalent"
+    )
     assert _acted_on(printable("contrôle\xa0: chaque run")) == [], (
         "and the ESCAPED form must satisfy it, or the transform and the oracle disagree"
     )
@@ -48526,3 +48538,229 @@ def test_the_tiering_hook_gives_every_test_function_exactly_one_tier():
     assert set(got) == tiers, f"a tier matched nothing: {got}"
     #: AND `repo` IS APPLIED, which no tier assertion above can see because it is orthogonal.
     assert sum("repo" in s.marks for s in stubs) > 1, "the `repo` marker is never applied"
+
+
+class _NarrowConsole:
+    """A console whose encoding cannot hold the text, which is what Windows CI actually met.
+
+    `write` encodes before recording, exactly as a real stream does, so the first attempt
+    raises `UnicodeEncodeError` for a character the encoding has no room for and the fallback's
+    own write is accepted. `encoding` is an attribute because that is where `_write` looks.
+    """
+
+    def __init__(self, encoding="latin-1"):
+        if encoding is not None:
+            self.encoding = encoding
+        self._encoding = encoding
+        self.written: list[str] = []
+        self.flushes = 0
+
+    def write(self, text):
+        text.encode(self._encoding or "ascii")
+        self.written.append(text)
+        return len(text)
+
+    def flush(self):
+        self.flushes += 1
+
+    @property
+    def got(self):
+        return "".join(self.written)
+
+
+def test_the_degraded_stderr_message_ARRIVES_and_uses_the_streams_own_encoding(monkeypatch):
+    """`_write`'s whole contract is that the warning still arrives. Four mutants lived there.
+
+    The docstring promises *"the message degrades instead: unencodable characters become the
+    target encoding's replacement and the warning still arrives"* — and **the fallback is
+    wrapped in `except Exception: del exc`**, so every way of breaking it produces the same
+    observable as a working one: silence. Nothing asserted that the degraded message arrives,
+    so mangling the `encoding` attribute name, the fallback codec, or the trailing newline all
+    survived.
+
+    THE DECODE'S ERROR HANDLER IS NOT AMONG THEM, AND THAT WAS MEASURED RATHER THAN ASSUMED.
+    `line.encode(enc, "replace")` yields bytes that are valid in `enc` **by construction**, so
+    the matching `.decode(enc, …)` can never invoke its handler: mangling it is a provable
+    equivalence, not a gap this test leaves open. It is recorded as one.
+
+    THE STREAM'S OWN ENCODING IS THE POINT, not a fixed `"ascii"`. `é` fits `latin-1` and the
+    em dash does not, so a correct fallback keeps the `é` and replaces only the dash. A
+    fallback that reached for `"ascii"` instead — which is what mangling the attribute NAME
+    produces, since the `getattr` then always misses — loses both.
+    """
+    console = _NarrowConsole("latin-1")
+    monkeypatch.setattr(sys, "stderr", console)
+    runprov._report._write("é — x")
+
+    assert console.got, (
+        "the warning must ARRIVE. The fallback swallows every exception, so a broken codec "
+        "name, a broken error handler and a working path are all silent in the same way"
+    )
+    assert "é" in console.got, (
+        f"the replacement uses the STREAM's encoding, not a fixed 'ascii': latin-1 holds é and "
+        f"only the em dash is unencodable: {console.got!r}"
+    )
+    assert "é — x" not in console.got, (
+        f"and the em dash really was replaced rather than passed through: {console.got!r}"
+    )
+    assert console.got.endswith("\n"), (
+        f"the fallback writes the line separator itself — `print` is not involved on this "
+        f"path, so without it two diagnostics share one line: {console.got!r}"
+    )
+
+
+def test_a_stream_with_no_encoding_still_RECEIVES_the_degraded_message(monkeypatch):
+    """The `or "ascii"` arm, which only fires when the stream cannot say what it encodes.
+
+    A stream with no `encoding` attribute is the ordinary case for a pipe wrapper or a test
+    double, and it is the only way the fallback codec name is reached. A mangled name raises
+    `LookupError` **inside the except block**, which is swallowed, so the message vanishes and
+    nothing says so.
+    """
+    console = _NarrowConsole(None)
+    assert not hasattr(console, "encoding"), "the fixture must not answer, or this arm is dead"
+    monkeypatch.setattr(sys, "stderr", console)
+    runprov._report._write("é — x")
+
+    assert console.got, (
+        "with no encoding to read, the fallback names a codec itself — and it has to be a real "
+        "one, or the message is lost inside a bare `except Exception`"
+    )
+    assert console.got.endswith("\n"), console.got
+
+
+def test_a_None_stderr_sends_nothing_to_STDOUT(monkeypatch, capsys):
+    """`print(..., file=None)` falls back to STDOUT, which is the caller's data channel.
+
+    `sys.stderr is None` is the documented state under `pythonw.exe`, embedded interpreters
+    and windowed frozen builds. The module's own comment records the measurement — 725 bytes of
+    provenance chatter into the caller's data and 0 into stderr — and **nothing asserted it**.
+
+    THIS KILLS NO SURVIVING MUTANT, AND THAT IS SAID RATHER THAN LEFT TO BE FOUND. Flipping
+    the guard's `or` to `and` is a provable equivalence: for `stream is None` BOTH forms are
+    true, because `not hasattr(None, "write")` is true as well, and for a non-`None` stream
+    with no `write` the mutant's `AttributeError` is swallowed by the outer `except Exception`
+    that exists for exactly that class. Measured over four stream shapes — `None`, writeless,
+    `latin-1`, `utf-8` — with no observable difference in either channel.
+
+    **SO ITS FALSIFIABILITY WAS DEMONSTRATED SEPARATELY**, by deleting the guard rather than
+    mutating it: with the condition removed, `print(file=None)` reaches stdout and this test
+    fails on its own named assertion. A guard nothing can break is the shape this repository
+    refuses, so the break was performed instead of assumed.
+    """
+    capsys.readouterr()
+    monkeypatch.setattr(sys, "stderr", None)
+    runprov._report._write("a diagnostic nobody can be shown")
+    seen = capsys.readouterr()
+
+    assert seen.out == "", (
+        f"silence is the correct degradation. A diagnostic in the DATA channel corrupts the "
+        f"thing the caller is piping, which is worse than the lost message: {seen.out!r}"
+    )
+
+
+def test_every_diagnostic_is_FLUSHED_as_it_is_written(monkeypatch):
+    """A buffered diagnostic is lost by the crash it was describing.
+
+    `_write` exists so a run that is about to die still reports. stderr is unbuffered on a
+    console and BLOCK-buffered when redirected to a file or a pipe, which is exactly the
+    deployment this package is written for — so `flush=True` is what makes the message survive
+    an abort, and nothing held it.
+    """
+    console = _NarrowConsole("utf-8")
+    monkeypatch.setattr(sys, "stderr", console)
+    runprov._report._write("a line that must not sit in a buffer")
+
+    assert console.got, "the ordinary path writes through `print`"
+    assert console.flushes >= 1, (
+        "and flushes as it goes: redirected to a file, stderr is block-buffered, so an "
+        "unflushed warning is lost by the very crash it was written to report"
+    )
+
+
+def test_progress_shows_exactly_the_cap_and_then_says_so_ONCE(monkeypatch, capsys):
+    """The cap is a BOUNDARY, and `>=` versus `>` is the whole of it.
+
+    `PROGRESS_MAX_LINES` is bound to the README by the claims tool, so the VALUE is held —
+    but nothing exercised the line where it is compared. With `>` the run narrates one line
+    past the cap **and never prints the suppression notice at all**, because the equality that
+    triggers it is then unreachable: the counter is already past it.
+
+    THE NOTICE IS ASSERTED BY ITS SHAPE, NOT ITS PROSE. It is indented like every other
+    narration line, and `mutmut`'s string operator WRAPS — `"XX…XX"` still contains the
+    original — so a substring assertion cannot kill a mangled message while a check that the
+    line still begins with the page's indent can.
+    """
+    cap = runprov._report.PROGRESS_MAX_LINES
+    state: dict[str, int] = {}
+    capsys.readouterr()
+    for n in range(cap + 5):
+        runprov._report.progress(f"line {n}", state=state)
+    lines = [ln for ln in capsys.readouterr().err.split("\n") if ln.strip()]
+
+    narration = [ln for ln in lines if "suppressed" not in ln]
+    notices = [ln for ln in lines if "suppressed" in ln]
+    assert len(narration) == cap, (
+        f"exactly the cap is shown — one more means the comparison admits the boundary it is "
+        f"supposed to stop at: {len(narration)} of {cap}"
+    )
+    assert len(notices) == 1, (
+        f"and the suppression is announced exactly once, however many lines follow: {notices}"
+    )
+    assert notices[0].startswith("  "), (
+        f"the notice is indented like the narration it replaces; a mangled message is not a "
+        f"line of this page: {notices[0]!r}"
+    )
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "fork"),
+    reason="fork and os.register_at_fork are both POSIX-only, so the MECHANISM this holds does "
+    "not exist on Windows -- unlike the `@requires_fcntl` trap, where a marker would have "
+    "skipped the test on the one platform it was about",
+)
+#: THE WARNING THIS SILENCES IS THE SUBJECT. From 3.12 CPython warns that forking a
+#: multi-threaded process "may lead to deadlocks in the child" -- which is precisely the hazard
+#: `_reset_lock_after_fork` exists to remove and precisely what this test provokes on purpose,
+#: holding the lock across the fork. Suppressed HERE and nowhere wider, so the same warning
+#: from a fork nobody intended still reaches whoever added it.
+@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning")
+def test_the_fork_handler_is_REGISTERED_so_a_child_does_not_inherit_a_held_lock(monkeypatch):
+    """A child inheriting a lock held by a thread that no longer exists deadlocks on its first
+    message — and `os.register_at_fork` is what stops it.
+
+    THE PROPERTY IS ASSERTED, NOT THE SPELLING. `hasattr(os, "register_at_fork")` mangled to a
+    name that cannot exist leaves the handler unregistered, and no test noticed, because the
+    registration has no return value to inspect and the module's own branch carries
+    `# pragma: no branch`. What IS observable is the consequence: with the parent holding the
+    lock at fork time, a child whose lock was re-created can take it and a child that inherited
+    it cannot.
+
+    NON-BLOCKING ON PURPOSE. `acquire(blocking=False)` answers the question without ever
+    waiting, so a regression here FAILS BY NAME rather than hanging the suite — which is the
+    cleanup-ordering lesson this repository has already paid for once.
+    """
+    lock = runprov._report._WRITE_LOCK
+    read_fd, write_fd = os.pipe()
+    assert lock.acquire(timeout=5), "the parent must hold the lock for this to mean anything"
+    try:
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - the child never reports coverage
+            try:
+                os.close(read_fd)
+                fresh = runprov._report._WRITE_LOCK.acquire(blocking=False)
+                os.write(write_fd, b"1" if fresh else b"0")
+            finally:
+                os._exit(0)
+        os.close(write_fd)
+        answer = os.read(read_fd, 1)
+        os.waitpid(pid, 0)
+    finally:
+        lock.release()
+        os.close(read_fd)
+
+    assert answer == b"1", (
+        "the child's lock must be a NEW one. It inherited a lock held by a thread that does "
+        "not exist in it, so without the at-fork handler its first diagnostic deadlocks the "
+        "run this package is supposed to be describing"
+    )

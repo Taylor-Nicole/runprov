@@ -69,6 +69,49 @@ run. `Project.digest_max_bytes` is annotated `int | str | None` and the new
 `assert isinstance` would have been the usual answer and is stripped by `-O`, which is the one
 condition under which it would be needed.
 
+### Tested — `_report.py`'s 12 surviving mutants, and a fallback that could not be seen to work
+
+**12 survivors → 7 caught, 3 killed by the type checker, 3 provably equivalent. Nothing left
+unexplained.** `_report.py` is the package's one stderr emission point, so every `diagnostic()`,
+`summary()` and `progress()` call in the package passes through it.
+
+**Seven of the twelve sat in `_write`, whose whole contract is that it NEVER raises — and the
+fallback that makes it true is wrapped in `except Exception: del exc`.** So every way of breaking
+the degraded path produced exactly the observable of a working one: silence. The docstring
+promises *"unencodable characters become the target encoding's replacement and the warning still
+arrives"*, and nothing asserted that the warning arrives. Mangling the `encoding` attribute name,
+the fallback codec, and the trailing newline all survived inside that guard.
+
+The repair drives a console whose encoding cannot hold the text — the case Windows CI actually
+met — and asserts the degraded message **arrives**, keeps the characters the stream's own encoding
+can hold, and ends in its own separator. `latin-1` holds `é` and not an em dash, so a fallback
+that silently reached for `"ascii"` instead loses both and is now caught.
+
+**The progress cap was a boundary nobody stood on.** `PROGRESS_MAX_LINES` is bound to the README
+by the claims tool, so its VALUE was held while the comparison was not: `>=` → `>` narrates one
+line past the cap **and never prints the suppression notice at all**, because the equality that
+triggers it becomes unreachable. The notice is now asserted by its **shape** — it is indented like
+the narration it replaces — which also kills the mangled-prose mutant that a substring assertion
+cannot, since mutmut's operator wraps.
+
+**And the at-fork handler is now held by its consequence rather than its spelling.** A child
+inheriting a lock held by a thread that does not exist in it deadlocks on its first message;
+the test forks with the parent holding the lock and asks the child for it **non-blocking**, so a
+regression fails by name instead of hanging.
+
+**Three are provable equivalences, each measured rather than argued.** `printable`'s `c == " "`
+clause can never decide the answer — `str.isprintable()` already admits the ASCII space, and over
+all 1,114,112 code points the two forms differ nowhere; the cause is now pinned by an assertion so
+the day it changes, something says so. `_write`'s `or` → `and` is indistinguishable because
+`not hasattr(None, "write")` is also true, and the one case that differs is swallowed by the outer
+guard that exists for it. And the fallback's `.decode(enc, …)` error handler is unreachable:
+`encode(enc, "replace")` yields bytes valid in `enc` by construction.
+
+**Two of the nine intended kills did not kill, and the bench is why that is known.** Both were
+re-measured in an isolated copy across four stream shapes, reclassified as equivalences, and the
+test docstrings that claimed them were corrected — including one test that kills no mutant at all,
+whose falsifiability was then demonstrated by deleting the guard it protects rather than assumed.
+
 ### Tested — `impact.py`'s 43 surviving mutants, and a refusal that had outgrown its measurement
 
 **43 survivors → 32 closed by six assertions, 1 killed by the type checker, 1 uncompilable, 2
