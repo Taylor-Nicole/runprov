@@ -49144,3 +49144,83 @@ def test_fd_capture_covers_STDERR_as_well_as_stdout_and_restores_both(tmp_path, 
         f"once the capture has stopped the split is back, which is what makes the restore "
         f"worth asserting: {passed_err!r}"
     )
+
+
+class _FakeClock:
+    """A clock the test drives, so a bound can be asserted without waiting for it."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def test_the_out_of_order_drain_is_bounded_by_its_OWN_DEFAULTS(tmp_path, monkeypatch):
+    """`_quiesce()` is called in production with NO ARGUMENTS, and nothing exercised that.
+
+    Both existing tests pass `limit=` and `idle=` explicitly, so the two defaults that decide
+    how long an out-of-order `stop()` may block were unmeasured: `limit` could become 3.0 and
+    `idle` 1.05 with the suite green.
+
+    WHY THE PAIR IS WORTH PINNING. This is the only place a `stop()` waits on another thread
+    without being able to close the descriptors and force an EOF, so `limit` is the longest a
+    caller's run can be held by provenance bookkeeping, and `limit / idle` is how many chances
+    the drain gets to notice the pipe went quiet. Those are the two numbers a reader of this
+    method needs, and they are not stated anywhere else.
+
+    DERIVED FROM NEITHER SIDE ON PURPOSE. The expected poll count is written here rather than
+    read back from `inspect.signature`: taking it from the defaults would move the expectation
+    with the mutation and assert nothing at all. A hand-written pair IS the instrument here —
+    see `guard-shapes` on the constant that a human must re-read.
+    """
+
+    class _NeverSettles(runprov.terminal.Capture):
+        """A pump whose byte count moves on every read, so the drain runs to its deadline."""
+
+        @property
+        def _seen(self):
+            self._reads = getattr(self, "_reads", 0) + 1
+            return self._reads
+
+        @_seen.setter
+        def _seen(self, _value):
+            pass
+
+    clock = _FakeClock()
+    monkeypatch.setattr(runprov.terminal, "time", clock)
+    busy = _NeverSettles(tmp_path / "busy.log")
+    busy._quiesce()
+
+    #: 2.0 / 0.05 = 40 chances. The band is wide enough not to care about the off-by-one at the
+    #: boundary and narrow enough that either default moving is caught: 3.0 gives 60, and an
+    #: `idle` of 1.05 gives 2.
+    assert 30 <= len(clock.sleeps) <= 50, (
+        f"the drain polls about 40 times — `limit` 2.0 over `idle` 0.05. {len(clock.sleeps)} "
+        f"means one of those defaults moved, and with it either how long a caller's run can be "
+        f"held or how many chances the drain gets"
+    )
+    assert clock.now <= 2.0 + 0.05, (
+        f"and it is BOUNDED: an out-of-order stop may not hold the caller indefinitely because "
+        f"a pump never went quiet. Ran to {clock.now}"
+    )
+
+    #: AND THE SENTINEL MUST NOT COLLIDE WITH A REAL BYTE COUNT. `last = -1` cannot equal any
+    #: number of bytes; `last = 1` can, so a capture that had seen exactly one byte would be
+    #: declared drained on the first look, without waiting at all.
+    settled_clock = _FakeClock()
+    monkeypatch.setattr(runprov.terminal, "time", settled_clock)
+    one_byte = runprov.terminal.Capture(tmp_path / "one.log")
+    one_byte._seen = 1
+    one_byte._quiesce()
+
+    assert len(settled_clock.sleeps) >= 1, (
+        "a capture whose count is 1 must still be LOOKED AT TWICE before it is called drained. "
+        "Returning on the first pass means the sentinel collided with a real byte count, and "
+        "everything still in the pipe is lost"
+    )

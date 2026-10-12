@@ -69,6 +69,31 @@ run. `Project.digest_max_bytes` is annotated `int | str | None` and the new
 `assert isinstance` would have been the usual answer and is stripped by `-O`, which is the one
 condition under which it would be needed.
 
+### Tested — the out-of-order drain's two defaults were never exercised by anything
+
+`_quiesce()` is called in production with **no arguments**, and both existing tests pass `limit=`
+and `idle=` explicitly — so the two numbers that decide how long an out-of-order `stop()` may
+hold a caller were unmeasured. `limit` could become 3.0 and `idle` 1.05 with the suite green.
+
+The pair is worth pinning because this is the only place a `stop()` waits on another thread
+without being able to close the descriptors and force an EOF: **`limit` is the longest a run can
+be held by provenance bookkeeping, and `limit / idle` is how many chances the drain gets to
+notice the pipe went quiet.** Measured with an injected clock — 40 polls, 2.0 s — so the
+assertion is deterministic and takes no time.
+
+**The expected count is written down rather than read back from the signature**, deliberately:
+taking it from the defaults would move the expectation with the mutation and assert nothing.
+
+**And the sentinel must not collide with a real byte count.** `last = -1` cannot equal any number
+of bytes; `last = 1` can, so a capture that had seen exactly one byte would be declared drained on
+the first look, losing everything still in the pipe.
+
+**Three of the six are provable equivalences, measured over six cases** (byte counts 0, 1, 2, 7
+and 1024, plus a pump that never settles): `last = -2` and `last = None` behave identically to
+`-1` because the sentinel's only job is to differ from a non-negative count, and `<` → `<=` on a
+float clock differs only when the time is exactly the deadline. Recorded rather than guarded —
+there is nothing to guard.
+
 ### Tested — nothing in the suite had ever written to file descriptor 2
 
 Every existing fd-level capture test drives `os.write(1, ...)`. **Not one wrote to fd 2**, so
