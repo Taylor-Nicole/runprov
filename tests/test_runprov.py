@@ -48990,3 +48990,157 @@ def test_a_capture_that_FELL_BACK_still_records_why_the_first_mechanism_failed(
         monkeypatch.setattr(os, "dup", real_dup)
         cap.stop()
         capsys.readouterr()
+
+
+def test_every_logging_handler_bound_to_a_captured_stream_is_COUNTED(tmp_path):
+    """`_prebound_handlers` had SIX surviving mutants and no test of its own.
+
+    It is the function behind the subtlest failure this module reports: a
+    `logging.StreamHandler(sys.stdout)` holds the STREAM OBJECT it was built with, so under
+    python-level capture it keeps writing to the original stream and its lines never reach the
+    log — while a bare `print()`, which resolves `sys.stdout` at call time, does. **A script
+    that routes everything through `logging` gets a log that looks complete and contains almost
+    nothing**, and this count is the only thing that tells anyone.
+
+    THE ROOT LOGGER IS THE CASE THAT MATTERS MOST. `loggers += [...]` → `loggers = [...]` drops
+    it, and `logging.basicConfig()` — the commonest setup there is — puts its handler exactly
+    there. A count that silently excluded the root logger would report 0 for the most ordinary
+    arrangement in Python.
+
+    FOUR STATES, because they reach six different mutants: none bound; one on the ROOT; one on a
+    NAMED logger as well; and one writing somewhere else entirely, which must NOT be counted —
+    that last is what holds the `stream is out or stream is err` test against either half being
+    inverted, and the two-handler state is what holds `seen += 1` against saturating at one or
+    counting in twos.
+    """
+    import logging
+
+    count = runprov.terminal._prebound_handlers
+    captured_out, captured_err, elsewhere = io.StringIO(), io.StringIO(), io.StringIO()
+    root = logging.getLogger()
+    named_name = "runprov.test.prebound_handlers"
+    named = logging.getLogger(named_name)
+    installed: list[tuple[logging.Logger, logging.Handler]] = []
+    try:
+        assert count(captured_out, captured_err) == 0, (
+            "nothing is bound to these two brand-new stream objects yet, and a count that "
+            "starts anywhere but zero reports a hazard that is not there"
+        )
+
+        on_root = logging.StreamHandler(captured_out)
+        root.addHandler(on_root)
+        installed.append((root, on_root))
+        assert count(captured_out, captured_err) == 1, (
+            "a handler on the ROOT logger counts — `logging.basicConfig()` puts it there, so a "
+            "walk that skips the root misses the most ordinary setup in Python"
+        )
+
+        on_named = logging.StreamHandler(captured_err)
+        named.addHandler(on_named)
+        installed.append((named, on_named))
+        assert count(captured_out, captured_err) == 2, (
+            "and one on a named logger, bound to the OTHER captured stream — two handlers must "
+            "count as two rather than saturating at one or counting in twos"
+        )
+
+        on_elsewhere = logging.StreamHandler(elsewhere)
+        root.addHandler(on_elsewhere)
+        installed.append((root, on_elsewhere))
+        assert count(captured_out, captured_err) == 2, (
+            "a handler writing somewhere this capture does not touch is NOT a hazard and must "
+            "not be counted — which is what holds the stream test against either half of it "
+            "being inverted"
+        )
+    finally:
+        #: RESTORED, because `logging`'s manager is process-global: a handler left on the root
+        #: logger reaches every later test, and an inter-test leak in this suite cost a whole
+        #: mutation sweep today.
+        for logger, handler in installed:
+            logger.removeHandler(handler)
+        logging.Logger.manager.loggerDict.pop(named_name, None)
+
+
+def test_fd_capture_covers_STDERR_as_well_as_stdout_and_restores_both(tmp_path, monkeypatch):
+    """Three mutants moved a descriptor number and nothing noticed, because no test wrote to fd 2.
+
+    Every existing fd-level test drives `os.write(1, ...)`. **Not one wrote to fd 2**, so
+    `{1: os.dup(1), 2: os.dup(2)}` could become `{1: …, 3: os.dup(2)}` — saving stderr under a
+    key nothing restores — and `os.dup2(wfd, 2)` could redirect fd 3 instead of stderr, with the
+    suite green either way. **Stderr is where a traceback goes**, so a capture that quietly
+    misses it loses the half of a failing run that explains the failure.
+
+    THE RESTORE IS THE HALF THAT CATCHES THE KEY. A wrong key in `_saved` leaves fd 2 pointing
+    into the pipe after the capture has stopped, so later output keeps landing in a closed run's
+    log — which this asserts by writing AFTER the block and requiring it to be absent.
+
+    BOTH SINKS ARE READ BACK, because capture must TEE and never divert: the output still
+    belongs to the caller. A test that only checked the log would pass a capture that swallowed
+    stderr entirely.
+    """
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "t.log"
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    out_sink, err_sink = tmp_path / "real_out.txt", tmp_path / "real_err.txt"
+    child = "import sys; sys.stderr.write('CHILD-STDERR\\n')"
+    with open(out_sink, "w", encoding="utf-8") as fo, open(err_sink, "w", encoding="utf-8") as fe:
+        saved_out, saved_err = os.dup(1), os.dup(2)
+        os.dup2(fo.fileno(), 1)
+        os.dup2(fe.fileno(), 2)
+        try:
+            with runprov.Run("s", provenance=tmp_path / "p.json", terminal_log=log) as run:
+                os.write(1, b"ON-STDOUT\n")
+                os.write(2, b"ON-STDERR\n")
+                subprocess.run([sys.executable, "-c", child], check=True)
+            #: AFTER the capture has stopped: fd 2 must be the caller's again, not the pipe's.
+            os.write(2, b"AFTER-RESTORE-STDERR\n")
+            os.write(1, b"AFTER-RESTORE-STDOUT\n")
+        finally:
+            os.dup2(saved_out, 1)
+            os.close(saved_out)
+            os.dup2(saved_err, 2)
+            os.close(saved_err)
+
+    body = log.read_text(encoding="utf-8")
+    assert run.record["terminal_log"]["capture"] == "fd", (
+        f"this test is about the fd mechanism; a fallback to python would make every assertion "
+        f"below prove something else: {run.record['terminal_log']}"
+    )
+    assert "ON-STDOUT" in body, body
+    assert "ON-STDERR" in body, (
+        f"fd 2 is captured too. Stderr is where a traceback goes, so missing it loses the half "
+        f"of a failing run that explains it: {body!r}"
+    )
+    assert "CHILD-STDERR" in body, (
+        "including a CHILD's stderr, which is the whole reason this mechanism exists rather "
+        "than the python-level one"
+    )
+    assert "AFTER-RESTORE-STDERR" not in body, (
+        f"fd 2 must be RESTORED when the capture stops. Saving it under a key nothing restores "
+        f"leaves it pointing into the pipe, so a closed run's log keeps growing: {body!r}"
+    )
+    assert "AFTER-RESTORE-STDOUT" not in body, body
+
+    #: THE TEE IS REAL BUT IT DOES NOT PRESERVE THE SPLIT, and that is asserted here rather
+    #: than assumed either way. One pipe sits over BOTH descriptors, so the pump cannot tell
+    #: which stream a byte came from and mirrors everything to the saved STDOUT. Measured:
+    #: during a captured run the caller's stderr arrives on its stdout and its stderr receives
+    #: NOTHING. That is a disclosed limitation rather than a verdict -- see the audit ledger row
+    #: `fd capture merges the caller's streams`. **If it is ever repaired to two pipes, this
+    #: assertion is the one that will tell you to update the record.**
+    passed_out, passed_err = (
+        out_sink.read_text(encoding="utf-8"),
+        err_sink.read_text(encoding="utf-8"),
+    )
+    assert "ON-STDOUT" in passed_out, (
+        f"capture TEES and never diverts: the caller's output still reaches the caller: "
+        f"{passed_out!r}"
+    )
+    assert "ON-STDERR" in passed_out and "ON-STDERR" not in passed_err, (
+        f"and it arrives on STDOUT, because one pipe over two descriptors cannot separate "
+        f"them. Asserted so the limitation is on record and a repair is visible: "
+        f"out={passed_out!r} err={passed_err!r}"
+    )
+    assert "AFTER-RESTORE-STDERR" in passed_err, (
+        f"once the capture has stopped the split is back, which is what makes the restore "
+        f"worth asserting: {passed_err!r}"
+    )

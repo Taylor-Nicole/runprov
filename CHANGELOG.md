@@ -69,6 +69,38 @@ run. `Project.digest_max_bytes` is annotated `int | str | None` and the new
 `assert isinstance` would have been the usual answer and is stripped by `-O`, which is the one
 condition under which it would be needed.
 
+### Tested — nothing in the suite had ever written to file descriptor 2
+
+Every existing fd-level capture test drives `os.write(1, ...)`. **Not one wrote to fd 2**, so
+three mutants that move a descriptor number survived: `{1: os.dup(1), 2: os.dup(2)}` could save
+stderr under a key nothing restores, `os.dup(2)` could dup the wrong descriptor, and
+`os.dup2(wfd, 2)` could redirect fd 3 instead of stderr — with the suite green either way.
+**Stderr is where a traceback goes**, so a capture that quietly misses it loses the half of a
+failing run that explains the failure.
+
+Now exercised: a child's stderr reaches the log, and **fd 2 is restored when the capture stops** —
+asserted by writing *after* the block and requiring it to be absent from the log, which is what
+catches a wrong key in the saved map. Both sinks are read back, because capture must tee and
+never divert.
+
+**And it recorded a limitation that was not written down anywhere.** One pipe sits over both
+descriptors, so the mirror thread cannot tell which stream a byte came from and sends everything
+to the saved **stdout**. Measured during a captured run:
+
+| destination | received |
+|---|---|
+| the capture log | stdout **and** stderr ✓ |
+| the caller's stdout | stdout **and stderr** |
+| the caller's stderr | **nothing** |
+
+So `cmd > out 2> err` leaves `err` empty for the duration, and `cmd \| consumer` has the
+caller's stderr injected into the consumer's input. That is the shape this package guards
+against for its *own* diagnostics — `_report._write` exists because a run once put 725 bytes of
+provenance chatter into a caller's data channel — while fd capture routes the *caller's* stderr
+into it. **Recorded and asserted rather than changed**: separating the streams needs two pipes
+and two pumps, which is a design decision and not a test fix. The assertion is written so that a
+repair makes it fail and tells you to update the record.
+
 ### Tested — a terminal capture could lose the REASON it failed, four different ways
 
 `Capture.start()` never raises — *"a failure downgrades, then gives up quietly"* — so the only
