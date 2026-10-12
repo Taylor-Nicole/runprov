@@ -1133,6 +1133,32 @@ different failure offsets, and a reviewer holding a different copy produced thre
 wrong corrections to this section. Naming the file is the same discipline the package is
 about — a measurement that does not say what it measured is not checkable.
 
+> **CORRECTED 2026-10-12, AND THE CORRECTION IS THE POINT.** The pin below did its job: the
+> bytes it names are **no longer present anywhere on this machine**, so every figure in this
+> section is a measurement of a file that has since moved. The subject is a LIVE log OUTSIDE
+> this repository and it is still being appended to — **naming the file made the staleness
+> detectable; it could not stop it**, which is this package's own thesis pointed at its own
+> README. Nothing in this repository's gate can check a path outside it, so these figures are
+> permanently unverifiable here and are dated rather than asserted.
+>
+> | | measured 2026-04-24, bytes now GONE | re-measured 2026-10-12 |
+> |---|---|---|
+> | sha256 | `bc0a72ca0dcea3fc25c32fbdd960349e66f44f31a852b440bd102c9a722e3c71` | `f2e84bd39fdd7059e74b141e070602b470184ea3884adec58e847a0a6f4bbf8d` |
+> | bytes / lines | 2,147,154 / 24,300 | **2,080,339 / 23,391** |
+> | `- step:` entries | 295 | **300** |
+> | `yaml.safe_load` | `ComposerError` line 14,547 | **line 14,568** |
+> | `yaml.safe_load_all` | `ScannerError` line 14,554 | **line 14,575** |
+> | `---` documents | 252 | **245** |
+> | longest single entry | 6,544 lines | **5,558 lines** |
+> | tolerant per-entry recovery | 293 of 295 | **298 of 300** |
+>
+> **The direction is unchanged and is what the section argues:** the file does not parse, by
+> two independent defects, and nine `fix_transformation_log_*.py` repair scripts exist. Only
+> the offsets moved. **The sentence below about *243 records appended without their list
+> markers* described the superseded bytes and is NOT re-derivable from the file as it stands
+> today** — the heal entry's length now comes from block scalars — so it is kept as a dated
+> observation rather than restated as current.
+
 ```
 path    hcv_genotyping/transformation_log.yml   (flaviviridae_20260424_FULL)
 bytes   2,147,154                               (2.1 MB, 24,300 lines)
