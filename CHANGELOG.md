@@ -69,6 +69,34 @@ run. `Project.digest_max_bytes` is annotated `int | str | None` and the new
 `assert isinstance` would have been the usual answer and is stripped by `-O`, which is the one
 condition under which it would be needed.
 
+### Tested — a terminal capture could lose the REASON it failed, four different ways
+
+`Capture.start()` never raises — *"a failure downgrades, then gives up quietly"* — so the only
+thing between a user and a silently absent terminal log is the `error` field and the warning that
+carries it. **Every assignment to `self.error` could be replaced by `None` and the suite stayed
+green**: the record would say a capture did not happen and never say why.
+
+Four reasons, four assignments, now each exercised: the log file that could not be opened (it
+names the path), the case where neither mechanism is available, **the specific reason surviving
+the generic fallback** — `self.error or "no capture mechanism available"` keeps it, `and` throws
+it away — and the python level's own failure. Plus the `capture: "none"` value a consumer keys on.
+
+**A capture that SUCCEEDED can still carry a reason, and that is the point.** fd capture sees
+subprocesses and python capture does not, so a run that fell back has a log with a real hole in
+it; `error` is where the cause of that hole lives, beside `capture: "python"` and the caveat
+saying what is missing. Removing the assignment leaves the hole and deletes its explanation —
+the same shape as the `note` defect above.
+
+**One mutant came back VOID rather than caught or survived**, with control 6 reporting that the
+python level's assignment was never executed by the three cases next door. That refusal is why
+there is a fourth test: a VOID verdict is the instrument saying *ask again*, and it is worth more
+than either answer would have been.
+
+**And that fourth test is separate because the patches do not compose.** Written as a fourth case
+it failed on the unmutated tree — the case before it stubs `_start_python` to return `False`
+without setting a reason, so the generic message won and the assertion could never see the
+specific one. Four cumulative `monkeypatch` calls in one test is more than one variable.
+
 ### Fixed — a terminal capture's most complete-looking record was its least complete
 
 **`Capture.describe()` dropped two disclosures.** It wrote `rec["note"]` from three branches —

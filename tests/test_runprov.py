@@ -48848,3 +48848,145 @@ def test_the_fork_handler_is_REGISTERED_so_a_child_does_not_inherit_a_held_lock(
         "not exist in it, so without the at-fork handler its first diagnostic deadlocks the "
         "run this package is supposed to be describing"
     )
+
+
+def test_a_capture_that_could_not_start_records_WHY_not_merely_THAT_it_failed(
+    tmp_path, monkeypatch, capsys
+):
+    """Four mutants replaced a failure's REASON with `None`, and nothing noticed.
+
+    `start()` never raises — *"a failure downgrades, then gives up quietly"* — so the only
+    thing standing between a user and a silently absent terminal log is the `error` field and
+    the warning that carries it. Every assignment to `self.error` could be replaced by `None`
+    and the suite stayed green: the record would say a capture did not happen and never say why.
+
+    THREE WAYS TO FAIL, because they reach three different assignments, and the third is the
+    one a single case cannot cover.
+    """
+    #: A -- the log file cannot be opened at all: its parent is a FILE, so `mkdir` raises.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    denied = runprov.terminal.Capture(blocker / "inner" / "terminal.log")
+    capsys.readouterr()
+    denied.start()
+    record = denied.stop()
+    said = capsys.readouterr().err
+
+    assert record is not None and record["capture"] == "none", (
+        f"a capture that never started reports itself as none, and the value is the one a "
+        f"consumer keys on: {record}"
+    )
+    assert record["error"], (
+        "the REASON is the field: a record saying only that capture did not happen leaves a "
+        "reader unable to tell a locked-down console from a bug in this package"
+    )
+    assert "terminal.log" in record["error"], (
+        f"and it names the path it could not open, which is what makes it actionable: "
+        f"{record['error']!r}"
+    )
+    assert record["error"] in said, (
+        f"the same reason reaches the user at the time it happens, not only the record: {said!r}"
+    )
+
+    #: B -- the file opens and NEITHER mechanism is available. Nothing has set `error` yet, so
+    #: this is the `self.error or "..."` arm, and it is the one that must supply a reason.
+    monkeypatch.setattr(runprov.terminal.Capture, "_start_fd", lambda self: False)
+    monkeypatch.setattr(runprov.terminal.Capture, "_start_python", lambda self: False)
+    stuck = runprov.terminal.Capture(tmp_path / "stuck.log")
+    capsys.readouterr()
+    stuck.start()
+    said = capsys.readouterr().err
+
+    assert stuck.mode == "none", stuck.mode
+    assert stuck.error, "with no mechanism and no prior reason, a reason still has to be invented"
+    assert stuck.error in said, said
+
+    #: C -- a mechanism failed FOR A SPECIFIC REASON, then the fallback failed too. The specific
+    #: reason must win: `self.error or <generic>` keeps it, and `and` would throw it away for a
+    #: sentence that says less. One case cannot tell those apart; this one can.
+    def _fd_fails_loudly(self):
+        self.error = "fd capture unavailable: a very specific cause"
+        return False
+
+    monkeypatch.setattr(runprov.terminal.Capture, "_start_fd", _fd_fails_loudly)
+    specific = runprov.terminal.Capture(tmp_path / "specific.log")
+    specific.start()
+
+    assert specific.error == "fd capture unavailable: a very specific cause", (
+        f"the SPECIFIC reason survives the generic fallback. Replacing it with 'no capture "
+        f"mechanism available' loses the only part a reader could act on: {specific.error!r}"
+    )
+
+
+def test_the_PYTHON_levels_own_failure_carries_its_own_reason(tmp_path, monkeypatch, capsys):
+    """The fourth assignment, and it needed a test of its own rather than a fourth case.
+
+    REACHED ONLY HERE, and that is measured rather than assumed: `tools/bench.py` refused a
+    verdict on this assignment with control 6 reporting the statement never executed by the
+    three cases next door. **A VOID verdict is the instrument saying "ask again", and it is the
+    reason this test exists.**
+
+    AND IT IS A SEPARATE TEST BECAUSE THE PATCHES DO NOT COMPOSE. Written as a fourth case in
+    the test above it failed on the unmutated tree: that test patches `_start_python` to a stub
+    returning `False` WITHOUT setting a reason, so the generic fallback message won and this
+    assertion could never see the specific one. Four cumulative `monkeypatch` calls in one test
+    is more than one variable; a test per mechanism is one each.
+    """
+
+    def _tee_refuses(*_args, **_kwargs):
+        raise RuntimeError("simulated: cannot tee")
+
+    monkeypatch.setattr(runprov.terminal.Capture, "_start_fd", lambda self: False)
+    monkeypatch.setattr(runprov.terminal, "_StreamTee", _tee_refuses)
+    capsys.readouterr()
+    broken = runprov.terminal.Capture(tmp_path / "broken.log")
+    broken.start()
+    said = capsys.readouterr().err
+
+    assert broken.mode == "none", broken.mode
+    assert broken.error and "python capture unavailable" in broken.error, (
+        f"the python level's failure carries its own reason, distinct from the generic one, "
+        f"because it is the mechanism a reader would otherwise assume had worked: "
+        f"{broken.error!r}"
+    )
+    assert broken.error in said, said
+
+
+def test_a_capture_that_FELL_BACK_still_records_why_the_first_mechanism_failed(
+    tmp_path, monkeypatch, capsys
+):
+    """A capture that SUCCEEDED can still carry a reason, and that is the point.
+
+    fd capture is the one that sees subprocesses; python capture does not. So a run that fell
+    back has a log with a real hole in it, and `error` is where the cause of that hole lives —
+    beside `capture: "python"` and the notice that says what is missing. Replacing the
+    assignment with `None` leaves the hole and removes its explanation, which is the same shape
+    as the `note` defect this module just had.
+    """
+    real_dup = os.dup
+
+    def _dup_refuses(fd):
+        raise OSError(9, "simulated: no spare descriptors")
+
+    monkeypatch.setattr(os, "dup", _dup_refuses)
+    capsys.readouterr()
+    cap = runprov.terminal.Capture(tmp_path / "fellback.log")
+    cap.start()
+    try:
+        assert cap.mode == "python", (
+            f"with fd capture refused, the python level is the fallback this asserts about: "
+            f"{cap.mode} (error: {cap.error!r})"
+        )
+        assert cap.error, "the fd failure's reason is kept even though the capture then worked"
+        assert "unavailable" in cap.error, cap.error
+        record = cap.describe()
+        assert record["error"] == cap.error, (
+            f"and it travels into the record rather than living only on the object: {record}"
+        )
+        assert record["capture"] == "python" and "subprocesses" in record["note"], (
+            f"beside the mode and the caveat that says what the fallback cannot see: {record}"
+        )
+    finally:
+        monkeypatch.setattr(os, "dup", real_dup)
+        cap.stop()
+        capsys.readouterr()
