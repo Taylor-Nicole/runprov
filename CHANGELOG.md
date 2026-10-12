@@ -69,6 +69,22 @@ run. `Project.digest_max_bytes` is annotated `int | str | None` and the new
 `assert isinstance` would have been the usual answer and is stripped by `-O`, which is the one
 condition under which it would be needed.
 
+### Tested — the pump's byte counter, which the drain is the only reader of
+
+`_seen` is the one thing `_quiesce` can watch to decide a pump has gone quiet, and nothing
+measured it. Three mutants broke it with the suite green: starting it at 1, **assigning** each
+chunk's length instead of adding it, and subtracting.
+
+The assignment is the one that matters. An assigned count reads **the same for any two
+consecutive reads of equal size**, so the drain would call a busy pump drained and close the log
+on output still in flight — the exact failure `_quiesce` exists to prevent, arriving through the
+number it relies on.
+
+**Driven from a file rather than a pipe, deliberately.** `_CHUNK` is 65,536 and a pipe's buffer
+is about the same, so a pipe cannot be pre-filled past one read without a second thread — and a
+single read makes an assignment indistinguishable from an addition, which is precisely the mutant
+this has to catch. A 100,000-byte file guarantees two reads with no concurrency in the test.
+
 ### Tested — the out-of-order drain's two defaults were never exercised by anything
 
 `_quiesce()` is called in production with **no arguments**, and both existing tests pass `limit=`

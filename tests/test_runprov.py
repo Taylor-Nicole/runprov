@@ -49224,3 +49224,50 @@ def test_the_out_of_order_drain_is_bounded_by_its_OWN_DEFAULTS(tmp_path, monkeyp
         "Returning on the first pass means the sentinel collided with a real byte count, and "
         "everything still in the pipe is lost"
     )
+
+
+def test_the_pump_counts_every_byte_it_has_MIRRORED_not_just_the_last_read(tmp_path):
+    """`_seen` is the only thing the out-of-order drain can watch, and nothing measured it.
+
+    `_quiesce` decides a pump has gone quiet by watching this number stop moving. Three mutants
+    broke it with the suite green: starting it at 1, **assigning** each chunk's length instead
+    of adding it, and subtracting. The first two are the ones that matter — an assigned count
+    reads the same for any two consecutive reads of equal size, so the drain would call a busy
+    pump drained and close the log on output still in flight.
+
+    DRIVEN FROM A FILE RATHER THAN A PIPE, deliberately. `_CHUNK` is 65 536 and a pipe's buffer
+    is about the same, so a pipe cannot be pre-filled past one read without a second thread —
+    and a single read makes an assignment indistinguishable from an addition, which is exactly
+    the mutant this has to catch. A 100 000-byte file guarantees **two** reads with no
+    concurrency in the test at all.
+    """
+    source = tmp_path / "src.bin"
+    source.write_bytes(b"x" * 100_000)
+    capture = runprov.terminal.Capture(tmp_path / "t.log")
+
+    assert capture._seen == 0, (
+        f"a capture that has mirrored nothing has seen nothing; starting anywhere else makes "
+        f"the drain's first comparison meaningless: {capture._seen}"
+    )
+
+    read_fd = os.open(source, os.O_RDONLY)
+    sink_fd = os.open(os.devnull, os.O_WRONLY)
+    with open(tmp_path / "t.log", "wb") as fh:
+        capture._fh = fh
+        try:
+            #: `_pump` OWNS `read_fd` and closes it in its own `finally` -- closing it here
+            #: too raises `EBADF`, which is how this test learned whose descriptor it is.
+            capture._pump(read_fd, sink_fd)
+        finally:
+            capture._fh = None
+            os.close(sink_fd)
+
+    assert capture._seen == 100_000, (
+        f"the count is CUMULATIVE over every read. Assigning the last chunk's length instead "
+        f"of adding it makes two consecutive reads of equal size look identical, and the drain "
+        f"then closes the log while output is still in flight: {capture._seen}"
+    )
+    assert (tmp_path / "t.log").stat().st_size == 100_000, (
+        "and the bytes really were written, so the count is of work done rather than of a loop "
+        "that ran"
+    )
