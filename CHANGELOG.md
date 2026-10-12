@@ -69,6 +69,33 @@ run. `Project.digest_max_bytes` is annotated `int | str | None` and the new
 `assert isinstance` would have been the usual answer and is stripped by `-O`, which is the one
 condition under which it would be needed.
 
+### Fixed — a test that failed whenever pytest's own `-k` expression contained one word
+
+`test_the_yaml_view_flags_a_log_that_stops_before_its_run_does` asserted
+`"out_of_order" not in cli._yaml([b.record])`, and that rendering carries **`run_command` — the
+argv of the process that produced it.** So a `-k` expression naming
+`test_stopping_captures_out_of_order_does_not_destroy_stdout` put the string into the record
+legitimately, and the test failed for a reason that had nothing to do with its subject.
+
+**It passed alone, passed in the full suite, and failed in a 34-test subset.** In a module that
+swaps `sys.stdout`/`sys.stderr` and dups file descriptors, that reads exactly like an inter-test
+state leak — a very believable wrong diagnosis. Bisecting the 33 companion tests named the two
+with `out_of_order` in their own names, which is what turned it from "a leak somewhere" into
+"the string is in the command line".
+
+**The package is correct here**: recording the interpreter, arguments and working directory is
+the sixth property, and *"which python ran it is most of the answer to why did this run differ"*.
+The defect was the assertion's SUBJECT. It now checks the record's own keys —
+`"terminal_log_out_of_order" not in yaml.safe_load(...)[0]` — which is the claim it was always
+making. **A substring assertion over a page that interpolates an outside value is not a claim
+about the page.**
+
+Found by a mutation sweep that this made VOID: 62 mutants were reported caught by that
+pre-existing failure rather than by anything done to the source. The real figures for that module
+are 61 survived, 10 killed by the type checker, 1 caught. And it was a landmine for anyone, not
+just this sweep — any future `-k` carrying that substring would have broken the same test the
+same invisible way.
+
 ### Tested — `_report.py`'s 12 surviving mutants, and a fallback that could not be seen to work
 
 **12 survivors → 7 caught, 3 killed by the type checker, 3 provably equivalent. Nothing left

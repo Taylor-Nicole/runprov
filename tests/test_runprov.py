@@ -11549,8 +11549,22 @@ def test_the_yaml_view_flags_a_log_that_stops_before_its_run_does(tmp_path, monk
     rendered = cli._yaml([a.record])
     assert "terminal_log_out_of_order: true" in rendered
     assert yaml.safe_load(rendered)[0]["terminal_log_out_of_order"] is True
-    assert "out_of_order" not in cli._yaml([b.record]), (
-        "the ordinary case must not carry the caveat"
+    #: THE ABSENCE IS ASSERTED OVER THE RECORD'S OWN KEYS, NOT OVER THE RENDERED BLOB, and the
+    #: difference is not pedantry: this assertion used to read `"out_of_order" not in
+    #: cli._yaml([b.record])`, and the rendering carries `run_command` -- the argv of the process
+    #: that produced it. So the test FAILED whenever pytest's own `-k` expression happened to
+    #: contain the string `out_of_order`, which a selector naming
+    #: `test_stopping_captures_out_of_order_does_not_destroy_stdout` does. It passed alone and
+    #: passed in the full suite (neither uses `-k`), and failed in a 34-test subset -- which read
+    #: exactly like an inter-test state leak and cost a whole mutation sweep: 62 mutants were
+    #: reported `caught` by this failure rather than by anything done to the source.
+    #:
+    #: A SUBSTRING ASSERTION OVER A PAGE THAT INTERPOLATES AN OUTSIDE VALUE IS NOT A CLAIM ABOUT
+    #: THE PAGE. The claim here is that the FIELD is absent, so the field is what is checked.
+    ordinary = yaml.safe_load(cli._yaml([b.record]))[0]
+    assert "terminal_log_out_of_order" not in ordinary, (
+        f"the ordinary case must not carry the caveat, and the subject is the record's own keys "
+        f"rather than the rendered text: {sorted(ordinary)}"
     )
 
 
