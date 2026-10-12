@@ -376,11 +376,24 @@ class Capture:
         else:
             # Registered and absent is a FINDING, exactly as for any other output.
             rec["kind"] = "MISSING"
+        # EVERY CAVEAT IS COLLECTED AND JOINED ONCE, and this is a repair rather than a style.
+        # The three branches below used to write `rec["note"]` directly -- two assigning, one
+        # appending -- so THE LAST ASSIGNMENT WON. Measured: a python-mode capture that was also
+        # stopped out of order lost BOTH the "subprocesses are NOT included" caveat and the
+        # logging-handler one, while keeping `prebound_stream_handlers: 3` as a field whose
+        # explanation had vanished. A disclosure that erases a disclosure is the exact defect
+        # the comments in this module argue against elsewhere -- "the disclosure has to displace
+        # the false clause, not sit beneath it" was never meant to mean *delete the other one*.
+        #
+        # One list and one join, so a FOURTH caveat is safe by construction rather than by
+        # whoever adds it remembering to use `+=`. An AST sweep over every module found this to
+        # be the only field in the package written by both an append and an assignment.
+        notes: list[str] = []
         if self.mode == "python":
             # Stated in the record, not only in a warning nobody kept. This is the field a
             # reader needs to know an empty log may mean "could not see" rather than
             # "printed nothing".
-            rec["note"] = "python-level capture: output from subprocesses is NOT included"
+            notes.append("python-level capture: output from subprocesses is NOT included")
             if self.prebound_handlers:
                 # The subtler half, and the one that bites a well-behaved script hardest.
                 # `logging.StreamHandler(sys.stdout)` stores the STREAM OBJECT it was given,
@@ -394,18 +407,22 @@ class Capture:
                 # repaired: rebinding another library's handlers from inside a provenance
                 # module is the overreach `_report.py` exists to prevent.
                 rec["prebound_stream_handlers"] = self.prebound_handlers
-                rec["note"] += (
-                    f"; {self.prebound_handlers} logging handler(s) were bound to the "
+                notes.append(
+                    f"{self.prebound_handlers} logging handler(s) were bound to the "
                     "original streams before capture started and are NOT included"
                 )
         if self.out_of_order:
             # A reader comparing this log to the run's own start/finish times would
             # otherwise find output from AFTER the run ended and have no way to explain it.
             rec["out_of_order"] = True
-            rec["note"] = (
+            notes.append(
                 "this capture was stopped while an inner capture was still running, so the "
                 "log also contains output written after this run finished"
             )
+        # JOINED WITH THE SEPARATOR THE APPEND USED, so a record carrying one caveat is
+        # byte-identical to what this emitted before.
+        if notes:
+            rec["note"] = "; ".join(notes)
         if self.error:
             rec["error"] = self.error
         return rec

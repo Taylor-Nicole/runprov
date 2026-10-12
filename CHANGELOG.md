@@ -69,6 +69,42 @@ run. `Project.digest_max_bytes` is annotated `int | str | None` and the new
 `assert isinstance` would have been the usual answer and is stripped by `-O`, which is the one
 condition under which it would be needed.
 
+### Fixed — a terminal capture's most complete-looking record was its least complete
+
+**`Capture.describe()` dropped two disclosures.** It wrote `rec["note"]` from three branches —
+two assigning and one appending — so **the last assignment won.** A python-mode capture that was
+also stopped out of order reported only the out-of-order sentence: the reader was **not told that
+subprocess output is missing from the log**, nor that logging handlers bound before the capture
+had been writing somewhere else, while `prebound_stream_handlers: 3` stayed in the record as a
+field whose explanation had vanished.
+
+Measured before the repair, all three conditions true at once:
+
+```
+note: "this capture was stopped while an inner capture was still running, …"
+   subprocess caveat present?  False
+   handler caveat present?     False
+   prebound_stream_handlers:   3      ← the field survived; its meaning did not
+```
+
+**A disclosure that erases a disclosure** is the one thing this module's own comments argue
+against — *"the disclosure has to displace the false clause, not sit beneath it"* was never meant
+to mean *delete the other one*. The caveats are now collected in a list and joined once, with the
+separator the append used, so **a record carrying a single caveat is byte-identical to before**
+and a fourth caveat is safe by construction rather than by whoever adds it remembering `+=`.
+
+**Swept, with a denominator.** An AST pass over all 24 modules found 13 record fields written
+more than once inside one function and **exactly one** mixing an append with an assignment —
+this one. The other twelve are mutually exclusive branches.
+
+**The guard holds the registry to the code.** It asserts every caveat appears when every
+condition applies, and that the count of `notes.append(...)` calls in `describe` equals the
+number of caveats named — so a caveat added without a row is a red rather than a silent gap.
+Both halves were broken on purpose: making the last caveat win is caught by name, and adding a
+fourth unregistered one is caught by the count.
+
+Found by a surviving mutant on the single `+=` of the three — the line that was right.
+
 ### Fixed — a test that failed whenever pytest's own `-k` expression contained one word
 
 `test_the_yaml_view_flags_a_log_that_stops_before_its_run_does` asserted

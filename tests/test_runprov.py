@@ -11568,6 +11568,76 @@ def test_the_yaml_view_flags_a_log_that_stops_before_its_run_does(tmp_path, monk
     )
 
 
+#: Every caveat `Capture.describe` can put in `note`, keyed to a marker no other caveat carries.
+#: A REGISTRY because the mapping from a condition to its sentence is a judgement; held to the
+#: code by the count below, so a fourth caveat cannot arrive without a row here.
+_CAPTURE_CAVEATS = {
+    "python-level capture": "subprocesses is NOT included",
+    "handlers bound before capture started": "logging handler(s) were bound",
+    "stopped while an inner capture ran": "inner capture was still running",
+}
+
+
+def test_every_caveat_a_capture_can_carry_SURVIVES_THE_OTHERS(tmp_path):
+    """A disclosure must not erase a disclosure. Two of these used to be lost silently.
+
+    MEASURED BEFORE THE REPAIR: `describe()` wrote `rec["note"]` from three branches — two
+    assigning and one appending — so the LAST assignment won. A python-mode capture that was
+    also stopped out of order reported only the out-of-order sentence: the reader was not told
+    that **subprocess output is missing from the log**, nor that three logging handlers had been
+    writing somewhere else, while `prebound_stream_handlers: 3` stayed in the record as a field
+    whose explanation had gone. The most complete-looking record was the least complete.
+
+    Found by a surviving mutant on the one `+=` of the three, which is the line that was right.
+    An AST sweep over every module found this the only field in the package written by both an
+    append and an assignment — denominator in the audit record.
+
+    THE REGISTRY IS HELD TO THE CODE, not trusted. `describe` now collects into a list and joins
+    once, so the count of `notes.append(...)` calls is the number of caveats it can emit; if
+    that count and this registry disagree, a caveat exists that nothing here proves survives.
+    """
+    capture = runprov.terminal.Capture(tmp_path / "terminal.log")
+    capture.path.write_text("some output\n", encoding="utf-8")
+    capture.mode = "python"
+    capture.prebound_handlers = 3
+    capture.out_of_order = True
+    note = capture.describe()["note"]
+
+    missing = {name: mark for name, mark in _CAPTURE_CAVEATS.items() if mark not in note}
+    assert not missing, (
+        f"every caveat that applies has to appear, and these were dropped by the ones that "
+        f"came after them: {sorted(missing)}\nnote was: {note!r}"
+    )
+
+    source = (REPO / "runprov" / "terminal.py").read_text(encoding="utf-8")
+    capture_cls = next(
+        n
+        for n in ast.walk(ast.parse(source))
+        if isinstance(n, ast.ClassDef) and n.name == "Capture"
+    )
+    describe_fn = next(
+        n for n in ast.walk(capture_cls) if isinstance(n, ast.FunctionDef) and n.name == "describe"
+    )
+    appended = sum(
+        1
+        for n in ast.walk(describe_fn)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "append"
+        and isinstance(n.func.value, ast.Name)
+        and n.func.value.id == "notes"
+    )
+    assert appended == len(_CAPTURE_CAVEATS), (
+        f"`describe` emits {appended} caveat(s) and this registry names "
+        f"{len(_CAPTURE_CAVEATS)}. A caveat with no row here is one nothing proves survives the "
+        f"others, which is exactly how two of them were being erased"
+    )
+    assert "note" not in runprov.terminal.Capture(tmp_path / "quiet.log").describe(), (
+        "and a capture with nothing to disclose carries no `note` at all, rather than an empty "
+        "one a reader has to interpret"
+    )
+
+
 # ------------------------------------------------------- CONSUMER COMPATIBILITY (v1)
 # `tests/fixtures/history_v1.jsonl` is real v1 output, produced by the v1 code at 2953e56.
 # See tests/fixtures/README.md — a compatibility fixture written from memory tests memory.
