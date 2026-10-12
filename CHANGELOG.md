@@ -69,6 +69,82 @@ run. `Project.digest_max_bytes` is annotated `int | str | None` and the new
 `assert isinstance` would have been the usual answer and is stripped by `-O`, which is the one
 condition under which it would be needed.
 
+### Tested — `impact.py`'s 43 surviving mutants, and a refusal that had outgrown its measurement
+
+**43 survivors → 32 closed by six assertions, 1 killed by the type checker, 1 uncompilable, 2
+provably equivalent, 7 left alive deliberately.** No product defect: unlike `watch.py` and
+`sinks.py`, every one of these was a gap in what the suite asserted, which is a measurement about
+this module worth stating rather than passing over.
+
+**The page's LAYOUT is a property, and it pins no prose — 18 of the 26 `render` survivors.** The
+standing reason for leaving rendered prose alive, recorded for four modules now, is sound: mutmut's
+string operator **wraps** (`"XX…XX"` contains the original), so `"the sentence" in page` is true of
+the mutant too, and pinning exact phrasing is the brittle assertion this project refuses. **But
+that argues about one assertion shape, and it had been applied to the whole class.** A line that
+must be EMPTY is outside it — `"" in out` is exact list membership over a list of lines, and
+`"XXXX"` is not `""` — and so is any line whose wrap lands at its start. So the assertion is the
+page's shape: one flush-left digest header, and after it every line is a blank separator or an
+indented entry. Measured in an isolated copy with a void control and a positive control: **18 of
+26 die on that one line, and not a word of prose is asserted.** The 7 that remain are mid-line
+fragments of concatenated f-strings, where the wrapping argument does hold.
+
+**A claim about a key's presence and a claim about its value are different claims.** `payload`'s
+docstring argues both in one sentence — *"`unregistered: 0` is looked, and found none, and a key
+that simply was not there would be indistinguishable from this version did not look"* — and the
+test asserted the presence half plus the two values where null-versus-false was the subtle
+question. **Every numeric zero in the no-history branch was unasserted, and six mutants lived
+there**: a `1` says one read bypassed registration in a history that does not exist. The counter
+population is now DERIVED from `Chain`'s resolved annotations plus `artifacts`, so a seventh is
+covered the day it is added.
+
+**`continue` → `break` in the walk IS the `beyond_depth` count, and nothing else.** The frontier's
+depth is non-decreasing, so once an over-limit entry is popped every later one is too: `break`
+leaves the rebuild order identical and loses only the tail of the count. And **a linear chain
+cannot discriminate** — one run beyond `--depth 1` is what a saturating `= 1` also reports — so the
+fixture fans out to two runs at the same over-limit depth: correct gives 2, `= 1` gives 1, `+= 2`
+gives 4, `break` gives 1. One assertion, three mutants.
+
+**`Chain`'s defaults are documented, relied on at 15 construction sites, and were asserted at
+none.** An AST census of the suite found 15 constructions with five or six positional arguments and
+not one supplying `unreadable`, so `unreadable: int = 0` → `= 1` survived: a chain nobody gave an
+unreadable count to would report a hole in its own answer.
+
+### Fixed — one README sentence, two instruments, two different measurements
+
+`README.md`'s *about 1,200 tests* went out of tolerance on this commit — six new tests took the
+suite from 1,328 collected to 1,334, and `|1,200 − 1,334| = 134` against a 10% bound of `133.4`,
+**over by less than one test**. Updating it exposed the real defect: **two instruments bind that
+same sentence, with the same 10% tolerance, to two different quantities.**
+
+| instrument | what it measures | live |
+|---|---|---|
+| `test_the_quoted_scale_figures_have_not_drifted_out_of_meaning` | what pytest **collects** | 1,334 |
+| `tools/claims.py` `_DERIVED` | `^def test` **definitions** | 1,227 |
+
+They differ by 8.7% — parametrisation — so each accepts a different window and **only 149 values
+satisfy both**: `[1,201 … 1,350]`. *about 1,200* sat 0.6 below that band and *about 1,350*, the
+first repair, sat 0.3 above it. Now *about 1,300*, which has 110 tests of headroom.
+
+**And the suite's own guard had already argued which definition is right, naming this exact
+failure mode.** Its docstring: *"COLLECTED, NOT `def test_`, because the number in the README is
+the number pytest PRINTS — that is what a reader can check. … measuring one while the document
+quotes the other let the known-stale figure sit inside the tolerance of a baseline it was never
+compared against."* That is precisely what happened: the figure sat green inside `claims.py`'s
+window while being red in the test's. The duplication itself is filed, not fixed — one definition
+in `ci.py` with two callers — because it is a change to three files and not to `impact.py`.
+
+**This is the fifth drift of that sentence** (L-09 → C-03 → L-58/L-101 → the *about N* repair →
+here) and the first caught by the gate on the commit that caused it rather than by an audit weeks
+later. The tolerance remedy never claimed the figure would stop moving; it claimed a wrong figure
+would stop being silent, and measured against that claim it worked.
+
+**And one test stripped the whitespace that encodes the order it was asserting.** `render` prints
+each step's depth twice, as a number and as an indent, and the rebuild-order test reads the number
+after `.strip()`. The indent is now held by what it IS — whitespace — after two wrong shapes were
+measured first: a guard on the row's leading whitespace cannot pass (the indent sits between the
+number and the name, so every row starts with two spaces), and a guard on where the name begins
+cannot fail (`'XX  XX'` is a constant-width unit just as `'  '` is).
+
 ### Tested — the bench harness now measures a guard whose subject is not Python
 
 **Control 5t, and it closes T-42.** The reach proof added in T-41 let the harness measure a guard

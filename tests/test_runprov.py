@@ -48,6 +48,7 @@ import textwrap
 import threading
 import time
 import types
+import typing
 import zipfile
 
 import pytest
@@ -17526,6 +17527,273 @@ def test_impact_reports_a_run_that_wrote_nothing_recorded():
     chain = runprov.impact.Chain("d1", ["A"], steps, 0, 1)
     assert chain.artifacts == 0
     assert "wrote nothing recorded" in "\n".join(runprov.impact.render(chain))
+
+
+#: Every branch of `impact.render`, with a marker that proves the branch was REACHED. A list of
+#: chains is a sample, and a sample's completeness is a claim; the markers below turn that claim
+#: into an assertion, so a branch added to the renderer leaves this red rather than unexercised.
+_IMPACT_BRANCHES = {
+    "the order": "derive from them",
+    "truncated to nothing": "TRUNCATED before any of them",
+    "unreadable and nothing read": "no READABLE record",
+    "nothing read": "no recorded run read these bytes",
+    "a run that wrote nothing": "wrote nothing recorded",
+    "the depth limit cost something": "STOPPED AT DEPTH",
+    "the depth limit cost nothing": "Rebuild in that order",
+    "a line could not be read": "could not be read, so any run",
+    "reads bypassed registration": "bypassed registration",
+    "the watch dropped reads": "dropped by the watch itself",
+}
+
+
+def _impact_pages():
+    """One rendered page per branch of `render`, keyed by nothing — the markers do the work."""
+    step = runprov.impact.Step
+    chains = (
+        runprov.impact.Chain(
+            "a" * 64,
+            ["u1"],
+            [
+                step(1, "u1", "align.py", ["/o1.tsv"]),
+                step(2, "u2", "geno.py", ["/o2.tsv"]),
+                step(3, "u3", "sum.py", []),
+            ],
+            unregistered=2,
+            runs_examined=5,
+            watch_drops=3,
+            depth_limit=3,
+            beyond_depth=0,
+            unreadable=1,
+        ),
+        runprov.impact.Chain(
+            "b" * 64,
+            ["u1"],
+            [step(1, "u1", "align.py", ["/o1.tsv"])],
+            0,
+            1,
+            0,
+            depth_limit=1,
+            beyond_depth=2,
+        ),
+        runprov.impact.Chain("c" * 64, [], [], 0, 3, 0),
+        runprov.impact.Chain("d" * 64, ["u1"], [], 0, 1, 0, depth_limit=0),
+        runprov.impact.Chain("e" * 64, [], [], 0, 1, 0, unreadable=4),
+    )
+    pages = [runprov.impact.render(chain) for chain in chains]
+    whole = "\n".join("\n".join(page) for page in pages)
+    unreached = {name for name, mark in _IMPACT_BRANCHES.items() if mark not in whole}
+    assert not unreached, (
+        f"these chains do not reach every branch of the renderer, so anything asserted over "
+        f"them is a sample rather than a property: {sorted(unreached)}"
+    )
+    return pages
+
+
+def test_every_line_of_the_impact_page_is_a_separator_or_an_INDENTED_entry():
+    """THE PAGE'S LAYOUT IS A PROPERTY, AND IT PINS NO PROSE. 18 of 43 survivors.
+
+    `impact.py` had 26 surviving mutants inside `render`, and the standing reason for leaving
+    that class alive — recorded for `check.py`, `prune.py` and `sinks.py` — is sound and is
+    about ONE assertion shape: **mutmut's string operator WRAPS** (`"XX…XX"` contains the
+    original), so `"the sentence" in page` is true of the mutant too and a substring assertion
+    cannot kill it. Pinning exact phrasing is the brittle assertion this project refuses.
+
+    **BUT THAT ARGUMENT IS ABOUT A SUBSTRING OF A LINE, AND IT WAS APPLIED TO THE WHOLE CLASS.**
+    Two kinds of line are not covered by it:
+
+    * a line that must be EMPTY — `"" in out` is exact list membership over a list of lines, and
+      `"XXXX"` is not `""`. Five separators die here, and a page that loses them is a wall of
+      text;
+    * any line whose wrap lands at its START — `"XX  no recorded run read these bytes.XX"` is
+      neither blank nor indented, whatever it says.
+
+    So the property is the page's SHAPE: one flush-left digest header, and after it every line
+    is a blank separator or an indented entry. **Measured: this kills 18 of the 26 without
+    asserting a single word.** The 7 that remain are mid-line fragments of concatenated
+    f-strings, where the wrapping argument does hold, and they stay alive deliberately.
+    """
+    for page in _impact_pages():
+        assert page, "a renderer that emits nothing has no shape to check"
+        for index, line in enumerate(page):
+            assert index == 0 or line == "" or line.startswith("  "), (
+                f"line {index} is neither a blank separator nor an indented entry, and only the "
+                f"digest header is flush left: {line!r}"
+            )
+
+
+def test_the_depth_INDENT_is_whitespace_and_deepens_with_the_number_beside_it():
+    """THE DEPTH IS PRINTED TWICE — as a number and as an indent — and one of them was unread.
+
+    `render` emits `f"  {step.depth}{'  ' * step.depth}{step.script}"`, and
+    `test_impact_walks_the_whole_chain_in_rebuild_order` asserts the order with
+    `order[0].strip().startswith("1")`: **the test strips the whitespace that encodes the order
+    it is asserting.** So `'  '` → `'XX  XX'` survived, and the answer this module exists to
+    give — *which to rebuild first* — reads correctly to a parser and wrongly to a person.
+
+    TWO WRONG SHAPES WERE MEASURED FIRST, and both are recorded because each is a class:
+
+    * **the leading whitespace is constant.** The indent sits BETWEEN the number and the script
+      name, so every row of the list starts with exactly two spaces. A guard on `lstrip` is a
+      check that CANNOT PASS.
+    * **the name's position stays monotonic.** `'XX  XX'` is a constant-width unit like `'  '`,
+      so "the script name moves right with depth" is true of the mutant. A guard on it CANNOT
+      FAIL.
+
+    What the indent IS, is whitespace, and that is what the mutant breaks.
+    """
+    step = runprov.impact.Step
+    chain = runprov.impact.Chain(
+        "a" * 64,
+        ["u1"],
+        [
+            step(1, "u1", "a.py", ["/1"]),
+            step(2, "u2", "b.py", ["/2"]),
+            step(3, "u3", "c.py", ["/3"]),
+        ],
+        0,
+        3,
+        0,
+    )
+    rows = [line for line in runprov.impact.render(chain) if "→" in line]
+    assert len(rows) == 3, f"one row per step, each carrying its output: {rows}"
+    gaps = [
+        row[len(f"  {depth}") : row.index(f"{name}.py")]
+        for depth, name, row in zip((1, 2, 3), "abc", rows, strict=True)
+    ]
+    assert all(set(gap) <= {" "} for gap in gaps), (
+        f"the depth indent is whitespace; anything else is a label where a layout should be: {gaps}"
+    )
+    assert len(gaps[0]) < len(gaps[1]) < len(gaps[2]), (
+        f"and it deepens with the number beside it, which is the order a person reads: {gaps}"
+    )
+
+
+def test_a_cannot_check_impact_payload_reports_every_counter_as_ZERO_not_merely_present():
+    """[ADR-0017 R-8] A claim about a key's PRESENCE and one about its VALUE are not the same.
+
+    `payload`'s own docstring argues both: *"`unregistered: 0` is looked, and found none, and a
+    key that simply was not there would be indistinguishable from this version did not look"*.
+    `test_a_cannot_check_payload_has_the_same_keys_as_a_real_one` asserts the presence half, and
+    the two values where null-versus-false was the subtle question — `digest` and `truncated`.
+    **Every numeric zero in that hand-written branch was unasserted**, and six mutants lived
+    there: a `1` says one read bypassed registration in a history that does not exist.
+
+    DERIVED, NOT LISTED. The counter population comes from `Chain`'s own resolved annotations
+    plus the derived `artifacts` property, so a seventh counter is covered on the day it is
+    added and a hand-written branch that forgets it reds by construction — which is the
+    assertion that caught `unreadable` missing from this branch in the first place.
+
+    RESOLVED RATHER THAN STRING-MATCHED: `typing.NamedTuple` wraps a postponed annotation in a
+    `ForwardRef`, so `__annotations__["unregistered"] == "int"` is False and that derivation
+    collapses silently to one name.
+    """
+    refused = runprov.impact.payload(None, cannot_check="no run history at h.jsonl")
+    counters = {key for key, value in refused.items() if type(value) is int}
+    expected = {
+        name for name, hint in typing.get_type_hints(runprov.impact.Chain).items() if hint is int
+    } | {"artifacts"}
+    assert counters == expected, (
+        f"a counter reached one shape of this payload and not the other, which is the inference "
+        f"R-8 exists to remove: {sorted(counters ^ expected)}"
+    )
+    measured = {key: refused[key] for key in sorted(counters)}
+    assert set(measured.values()) == {0}, (
+        f"nothing was looked at, so every counter is zero — not a number a consumer would read "
+        f"as a measurement: {measured}"
+    )
+
+
+def test_every_DEFAULTED_counter_on_a_Chain_is_zero_and_fifteen_call_sites_rely_on_it():
+    """`Chain`'s defaults are load-bearing and were never asserted. Three mutants lived there.
+
+    The structure documents why they exist — *"`Chain` is constructed positionally in
+    `__main__` and in a dozen tests, and a required sixth field would have made adding the
+    blind spot a breaking change nobody made"* — and this suite builds one with five or six
+    positional arguments at fifteen places, every one of them taking the defaults. **Nothing
+    asserted what a default IS**, so `unreadable: int = 0` → `= 1` survived: a chain nobody
+    gave an unreadable count to would have reported a hole in its own answer.
+
+    QUANTIFIED OVER THE RESOLVED ANNOTATIONS, so a counter appended to the structure arrives
+    here with a decision already made rather than needing one.
+    """
+    bare = runprov.impact.Chain("a" * 64, [], [], 0, 0)
+    counters = {
+        name for name, hint in typing.get_type_hints(runprov.impact.Chain).items() if hint is int
+    }
+    assert counters, "the derivation found no counter at all, so the loop below proves nothing"
+    defaulted = {
+        name: getattr(bare, name)
+        for name in counters
+        if name in runprov.impact.Chain._field_defaults
+    }
+    assert defaulted, "no counter is defaulted, so this test's subject has gone"
+    assert set(defaulted.values()) == {0}, (
+        f"a counter nobody supplied is zero, because a blind spot reported by default is a hole "
+        f"in an answer nobody claimed: {defaulted}"
+    )
+    assert bare.depth_limit is None, (
+        f"and no limit is None rather than zero — `--depth 0` is a real limit that truncates "
+        f"everything, which is a different statement: {bare.depth_limit}"
+    )
+
+
+def test_two_runs_beyond_the_depth_limit_are_COUNTED_as_two():
+    """I-04. THE DISCLOSURE'S NUMBER, and the `continue` that exists only to produce it.
+
+    `walk` counts the runs it REACHED and chose not to follow, and the page prints that number:
+    *"STOPPED AT DEPTH 1: N run(s) this walk reached were not followed"*.
+    `test_a_depth_limit_that_cut_nothing_says_nothing` asserts the ZERO, and nothing asserted a
+    non-zero one, so three mutants lived on it.
+
+    **A LINEAR CHAIN CANNOT TELL THEM APART, which is why this fixture fans out.** `_three_deep`
+    puts exactly one run beyond `--depth 1`, and `counted[0] += 1` → `counted[0] = 1` gives the
+    right answer for one. Two runs at the SAME over-limit depth is what discriminates: correct
+    gives 2, `= 1` gives 1, `+= 2` gives 4.
+
+    AND `continue` → `break` IS THE SAME GAP, which is the part worth keeping. The frontier's
+    depth is non-decreasing, so once an over-limit entry is popped every later one is over-limit
+    too: `break` leaves `steps` IDENTICAL and loses only the tail of the count. **The `continue`
+    is load-bearing for this number and for nothing else**, so this assertion is the only thing
+    that can hold it.
+    """
+    beyond = [0]
+    steps = runprov.impact.walk(
+        "d1",
+        consumers={"d1": ["A"]},
+        edges=[("A", "B"), ("A", "C")],
+        scripts={"A": "a", "B": "b", "C": "c"},
+        outputs_by={},
+        max_depth=1,
+        beyond=beyond,
+    )
+    assert [step.address for step in steps] == ["A"], (
+        f"the limit admits depth one and no more: {[step.address for step in steps]}"
+    )
+    assert beyond[0] == 2, (
+        f"BOTH runs were reached and not followed. One is what a linear chain reports and what "
+        f"a saturating counter reports; two is the measurement: {beyond[0]}"
+    )
+
+
+def test_a_run_the_walk_reached_with_no_recorded_script_is_named_by_the_PLACEHOLDER():
+    """`walk`'s own fallback, which no CLI path reaches and which nothing asserted.
+
+    `__main__` fills the address→script map with `names.setdefault(here, str(r.get("script",
+    "?")))`, so every address it hands over already has a name and `scripts.get(address, "?")`
+    never fires through the command. It is the second line of defence for a `walk` called
+    directly — this suite does so four times — and `"?"` is this package's placeholder for a
+    field a record does not carry, spelled the same way at some two dozen sites across ten
+    modules.
+
+    NOT FILED AS A DUPLICATED RULE. Unifying those sites is a package-wide question and
+    `report.py` has already extracted its own `_or(value, "?")`; what belongs here is that this
+    module's fallback is the placeholder and not something a reader would mistake for a name.
+    """
+    steps = runprov.impact.walk("d1", {"d1": ["A"]}, [], {}, {})
+    assert [step.script for step in steps] == ["?"], (
+        f"a run with no recorded script is still part of the chain, and is named by the "
+        f"placeholder rather than omitted: {steps}"
+    )
 
 
 def test_impact_connectivity_comes_from_the_single_lineage_walk(tmp_path):
