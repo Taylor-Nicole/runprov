@@ -69,6 +69,34 @@ run. `Project.digest_max_bytes` is annotated `int | str | None` and the new
 `assert isinstance` would have been the usual answer and is stripped by `-O`, which is the one
 condition under which it would be needed.
 
+### Fixed — the mirror-thread timeout and the number the record quotes were two definitions
+
+`self._thread.join(timeout=5.0)` and `self.error = "mirror thread did not finish within 5 s"`
+sat **three lines apart**. Changing the bound would have left the RECORD saying 5 while the code
+waited something else — and that message is `self.error`, which a reader sees. Now one
+`_JOIN_TIMEOUT` with two references, and an f-string that cannot disagree with the value it
+waits. The emitted message is byte-identical.
+
+### Tested — python capture put a tee on both streams and could put back neither
+
+Two mutants left the interpreter broken after a run. `self._py_saved = (sys.stdout, sys.stderr)`
+→ `None` makes `_restore_python` a no-op — its whole body is behind `if self._py_saved is not
+None` — so **the tees stay installed for the life of the process**, writing into a closed run's
+log. And `sys.stderr = _StreamTee(…)` → `None` is worse than losing the tee: `_report._write`
+returns silently when `sys.stderr` is None, so every diagnostic for the rest of the run
+disappears — the one failure that module exists to prevent.
+
+Also closed: the log's directory is created with **every** missing level (asserted two deep,
+because a one-level fixture agrees with `parents=False` — the lesson `sinks.py` already paid
+for); a never-started capture reports `error: null` rather than `""`, which is the same
+known-versus-unknown distinction this package draws elsewhere; and **the mirror thread is a
+daemon**, since it blocks on a pipe held open until the capture stops and a run that never stops
+one would hold the interpreter open for ever.
+
+**Five are provable equivalences, each measured rather than argued** — three in `_quiesce`, plus
+`prebound_handlers`' initial value (overwritten before anything reads it, in every state the
+program can actually reach) and `_CHUNK`'s read size (identical bytes and identical count).
+
 ### Tested — the pump's byte counter, which the drain is the only reader of
 
 `_seen` is the one thing `_quiesce` can watch to decide a pump has gone quiet, and nothing

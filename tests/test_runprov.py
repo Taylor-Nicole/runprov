@@ -49271,3 +49271,100 @@ def test_the_pump_counts_every_byte_it_has_MIRRORED_not_just_the_last_read(tmp_p
         "and the bytes really were written, so the count is of work done rather than of a loop "
         "that ran"
     )
+
+
+def test_python_capture_tees_BOTH_streams_and_puts_BOTH_back(tmp_path, monkeypatch):
+    """Two mutants left the interpreter's streams broken after a run, and nothing noticed.
+
+    `self._py_saved = (sys.stdout, sys.stderr)` → `None` makes `_restore_python` a no-op —
+    its whole body is behind `if self._py_saved is not None` — so **the tees stay installed for
+    the life of the process**, writing into a closed run's log. And `sys.stderr = _StreamTee(…)`
+    → `None` is worse than losing the tee: `_report._write` returns silently when `sys.stderr`
+    is None, so every diagnostic for the rest of the run disappears, which is the one failure
+    that module exists to prevent.
+
+    THE IDENTITIES ARE THE SUBJECT, not the behaviour of writing through them: the contract is
+    that the objects installed at `start()` are the objects restored at `stop()`.
+    """
+    monkeypatch.setattr(runprov.terminal.Capture, "_start_fd", lambda self: False)
+    before_out, before_err = sys.stdout, sys.stderr
+    capture = runprov.terminal.Capture(tmp_path / "t.log")
+    capture.start()
+    try:
+        assert capture.mode == "python", f"this test is about the python level: {capture.mode}"
+        assert sys.stdout is not before_out, "the tee is installed on stdout"
+        assert sys.stderr is not before_err, "and on stderr — BOTH streams or half the run is lost"
+        assert sys.stderr is not None, (
+            "and stderr is a TEE, not None. `_report._write` returns silently when stderr is "
+            "None, so every diagnostic for the rest of the run would vanish"
+        )
+    finally:
+        capture.stop()
+
+    assert sys.stdout is before_out, (
+        "stdout is the object it was. A capture that cannot restore leaves its tee installed "
+        "for the life of the process, writing into a closed run's log"
+    )
+    assert sys.stderr is before_err, "and stderr likewise"
+
+
+def test_the_log_directory_is_created_with_EVERY_missing_level(tmp_path):
+    """`parents=True` → `False` needs TWO missing levels to tell apart, which is a paid lesson.
+
+    `sinks.py` taught it: a one-level-deep fixture agrees with `parents=False` everywhere, so
+    the mutant survived a test that looked like it covered the case. Here the log is asked for
+    two directories down, which is what a `provenance/terminal/` layout actually looks like.
+    """
+    deep = tmp_path / "provenance" / "terminal" / "run.log"
+    assert not deep.parent.exists() and not deep.parent.parent.exists(), (
+        "TWO levels must be missing, or this fixture cannot tell `parents=True` from `False`"
+    )
+    capture = runprov.terminal.Capture(deep)
+    capture.start()
+    try:
+        assert capture.error is None, (
+            f"creating the log's directory is the capture's job, however deep it is: "
+            f"{capture.error!r}"
+        )
+        assert deep.parent.is_dir(), "every missing level, not just the last one"
+    finally:
+        capture.stop()
+
+
+def test_a_never_started_capture_reports_NO_error_and_its_thread_is_a_DAEMON(tmp_path):
+    """Two small claims with nothing holding them, and the second one can hang an interpreter.
+
+    `error: null` means *nothing went wrong*; `error: ""` is a value a reader has to interpret,
+    and the two are the same to `if rec["error"]` and different to `rec["error"] is None`. This
+    package already draws that line elsewhere — `truncated: false` rather than null because *no
+    walk was cut short* is KNOWN, not unknown — so the attribute's initial value is part of the
+    record's shape rather than a detail.
+
+    AND THE MIRROR THREAD MUST BE A DAEMON. It blocks on `os.read` of a pipe that stays open
+    until the capture is stopped, so a run that never stops one — a crash past the handler, a
+    caller that forgot — leaves a non-daemon thread holding the interpreter open forever. The
+    flag is the property here: there is no in-process observable for "the interpreter would not
+    have exited", short of exiting it.
+    """
+    never_started = runprov.terminal.Capture(tmp_path / "unused.log")
+    record = never_started.stop()
+
+    assert record is not None and record["capture"] == "none", record
+    assert record["error"] is None, (
+        f"null is 'nothing went wrong'. An empty string is a value a consumer has to guess at, "
+        f"and it is not the same answer: {record['error']!r}"
+    )
+
+    running = runprov.terminal.Capture(tmp_path / "t.log")
+    running.start()
+    try:
+        assert running.mode == "fd", (
+            f"the mirror thread only exists on the fd path: {running.mode} ({running.error!r})"
+        )
+        assert running._thread is not None, "fd capture runs a mirror thread"
+        assert running._thread.daemon is True, (
+            "and it is a DAEMON. It blocks on `os.read` of a pipe held open until the capture "
+            "stops, so a run that never stops one would hold the interpreter open for ever"
+        )
+    finally:
+        running.stop()

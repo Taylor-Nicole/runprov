@@ -94,6 +94,13 @@ import typing
 from ._report import diagnostic
 from .hashing import _posix
 
+#: HOW LONG TEARDOWN WAITS FOR THE MIRROR THREAD, and the number the record quotes when it
+#: gives up. ONE DEFINITION because it was two: the `join(timeout=5.0)` and the message
+#: "did not finish within 5 s" sat three lines apart, so changing the bound would have left the
+#: RECORD saying 5 while the code waited something else -- and that message is `self.error`,
+#: which a reader sees. An f-string over the constant cannot disagree with the value it waits.
+_JOIN_TIMEOUT = 5.0
+
 #: Read size for the mirror thread. Large enough that a chatty run does not spin, small
 #: enough that output reaches the terminal promptly — a capture that batches a progress bar
 #: into invisibility has changed the thing it was meant to observe.
@@ -355,9 +362,9 @@ class Capture:
             # and the thread exits. The timeout is a backstop against a subprocess that
             # inherited the fd and is still holding it open — a provenance module must not
             # hang the run it is describing.
-            self._thread.join(timeout=5.0)
+            self._thread.join(timeout=_JOIN_TIMEOUT)
             if self._thread.is_alive():
-                self.error = "mirror thread did not finish within 5 s"
+                self.error = f"mirror thread did not finish within {_JOIN_TIMEOUT:g} s"
                 diagnostic(
                     "  WARNING: terminal capture: a process still holds the "
                     "captured output open; the log may be short."
