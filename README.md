@@ -3148,12 +3148,12 @@ is the one that went green afterwards.
 
 ## Tests
 
-`tests/test_runprov.py`, **about 1,300 tests**, all of which import `runprov` and exercise the real
+`tests/test_runprov.py`, **about 1,400 tests**, all of which import `runprov` and exercise the real
 objects — a test that reimplements its subject proves only that the test is self-consistent.
 There is **one** `unittest.mock` use in the whole suite — in
 `test_size_is_stat_ed_after_the_hash_not_before` — to
 assert a call ORDER that no returned value can show. Everything else is substituted by a real
-thing — **about 4,300** uses of `tmp_path` (`grep -oE '\btmp_path\b' tests/test_runprov.py | wc -l`), actual
+thing — **about 4,700** uses of `tmp_path` (`grep -oE '\btmp_path\b' tests/test_runprov.py | wc -l`), actual
 files, actual JSONL, actual `Run` objects — or by a
 narrow simulation of an environment this machine is not (`sys.platform` for Windows,
 `__import__` for an absent package, `subprocess.run` for a machine with no git). Nothing

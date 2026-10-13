@@ -51,6 +51,7 @@ DECLARES` binds the CI section's leg table to the workflow matrix.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import importlib
 import importlib.util
@@ -579,11 +580,70 @@ def dead_historical_entries() -> list[str]:
     ]
 
 
-def _test_functions() -> int:
-    """`^def test` in the suite's one module -- the same walk `tests/conftest.py` does."""
-    return len(
-        re.findall(r"^def test", (ROOT / "tests" / "test_runprov.py").read_text("utf-8"), re.M)
+@functools.cache
+def _collected_items() -> int:
+    """What `pytest` COLLECTS -- not `^def test`, and the difference is the whole row.
+
+    THIS BINDING MEASURED THE WRONG QUANTITY AND CITED THE WRONG AUTHORITY FOR IT. The docstring
+    here read *"`^def test` in the suite's one module -- the same walk `tests/conftest.py`
+    does"*, and `conftest.py` does no such walk for a count: it walks the AST to assign tiers,
+    writes no number at all, and the paragraph saying why ends *"Both granularities are right at
+    their own level; the guard checks the item one, since that is what runs."* A rationale that
+    names a neighbour as its authority is the hardest kind to re-examine, because the neighbour
+    sounds like it was consulted.
+
+    AND THE SUITE HAD ALREADY DECIDED THE SAME WAY, in a comment whose last clause states this
+    defect exactly: *"measuring one while the document quotes the other let the known-stale
+    figure sit inside the tolerance of a baseline it was never compared against."* That comment
+    is in `_measured_figures`, which measured COLLECTED items -- so one README sentence was bound
+    twice, to two quantities, by two instruments that each believed they were the only one.
+
+    MEASURED 2026-10-13, on the tree that fixed it. `^def test` gives **1 317**; `--collect-only`
+    gives **1 424**; they are 107 apart because `parametrize` expands. The README's *about 1,300*
+    was **1.3%** from this tool's number and **8.7%** from the suite's, inside the same 10% band.
+    So the suite was about to go red on ordinary work while this tool stayed green -- and the
+    repair a reader reaches for is whichever number their red came from, which is how a figure
+    gets "corrected" to the wrong instrument. There were 149 values satisfying both at once.
+
+    THE COST IS A SUBPROCESS, AND IT IS THE ENTIRE REASON THE WRONG QUANTITY WAS ATTRACTIVE:
+    `^def test` is one `re.findall`. This report went from a fifth of a second to a few seconds,
+    all of it the collection -- the direction rather than a rate, because the rate is this host's
+    and the suite's size moves it. A tool that is fast about the wrong number is not cheaper than
+    one that is slow about the right one. Cached, so a run resolving this sentence against six
+    documents collects once.
+
+    IT RAISES RATHER THAN GUESSING, like `_live`: a collection that printed nothing this can
+    parse makes the run VOID, never a number compared against a document.
+    """
+    collected = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(ROOT / "tests"),
+            "--collect-only",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            #: THE PROJECT'S OWN `addopts` CARRIES `--cov` AND `-q`, and both would be wrong
+            #: here: coverage on a collect-only run measures nothing, and a second `-q`
+            #: suppresses the very line this parses. Cleared for the same reason the suite
+            #: clears it.
+            "-o",
+            "addopts=",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
     )
+    found = re.search(r"(\d+) tests? collected", collected.stdout)
+    if not found:
+        raise RuntimeError(
+            "pytest printed no collected count, so the suite's size cannot be resolved and this "
+            f"run is VOID rather than green: {collected.stdout[-400:]}"
+        )
+    return int(found.group(1))
 
 
 def _tmp_path_uses() -> int:
@@ -633,7 +693,12 @@ def _format_cases() -> int:
 #: EXACT binding on "about 1,200 tests" would be red on the next test added, and a guard that is
 #: red on correct work is one that gets deleted.
 _DERIVED: tuple[tuple[str, str, abc.Callable[[], int], float], ...] = (
-    (r"\*\*about ([\d,]+) tests\*\*", "tests/test_runprov.py `^def test`", _test_functions, 0.10),
+    (
+        r"\*\*about ([\d,]+) tests\*\*",
+        "tests/test_runprov.py, what pytest COLLECTS",
+        _collected_items,
+        0.10,
+    ),
     (r"\*\*about ([\d,]+)\*\* uses of `tmp_path`", "`tmp_path` occurrences", _tmp_path_uses, 0.10),
     #: EXACT, because this one is a table of cases and not a scale figure: `len(CASES)` is a
     #: number the program states about itself, so "about" would be an evasion.

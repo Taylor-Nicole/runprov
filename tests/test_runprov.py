@@ -22,6 +22,7 @@ import dataclasses
 import datetime as dt
 import enum
 import errno
+import functools
 import gc
 import gzip
 import hashlib
@@ -5392,50 +5393,83 @@ def test_the_watcher_remembers_a_bounded_number_of_paths(tmp_path, monkeypatch):
     assert len(run._opened) <= 5, "the hook must stop collecting at the bound"
 
 
-def _measured_figures():
-    """Re-derive every scale figure the documents quote. See the test below."""
-    root = _repo_root()
-    suite = (root / "tests" / "test_runprov.py").read_text(encoding="utf-8")
-    # COLLECTED, NOT `def test_`, because "601 tests" in the README means the number pytest
-    # PRINTS — that is what a reader can check. Counting definitions gives a different
-    # quantity (626 against 669 here, because of parametrisation), and measuring one while
-    # the document quotes the other let the known-stale figure sit inside the tolerance of a
-    # baseline it was never compared against.
-    collected = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            str(root / "tests"),
-            "--collect-only",
-            "-q",
-            "-p",
-            "no:cacheprovider",
-            "-o",
-            "addopts=",
-        ],
-        capture_output=True,
-        text=True,
-        cwd=root,
-        check=False,
+@functools.cache
+def _claims_module():
+    """`tools/claims.py`, loaded ONCE — it is the single definition of every derived figure.
+
+    CACHED FOR CORRECTNESS BEFORE SPEED. Two module objects are two instruments: each would hold
+    its own `_collected_items` cache and shell out to `pytest --collect-only` separately, which
+    is ten seconds each, and — far worse — a change to one reader's copy would not be a change to
+    the other's. One object is what makes "the suite and the tool read the same definition" a
+    structural fact rather than a convention.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_claims_under_test", _repo_root() / "tools" / "claims.py"
     )
-    found = re.search(r"(\d+) tests? collected", collected.stdout)
-    assert found, f"could not count the suite: {collected.stdout[-400:]}"
-    # THE AST STATEMENT PROXY IS GONE FROM HERE [K-37], AND THE NUMBER IS WHY. It said "any
-    # stable proxy that moves with the code will do", which is true of a proxy compared against
-    # ITSELF and false the moment the document quotes coverage: measured, the walk counts 5 829
-    # statements where coverage counts 5 543, a ratio of **1.052** that does not shrink. So a
-    # README quoting coverage while this compared against the proxy burned half of its own 10%
-    # tolerance on the day it was written — which is the mechanism behind all five drifts of that
-    # sentence, the last of them a repair that reached for the GUARD's instrument.
-    #
-    # The two coverage figures are now checked by `ci.py` against the totals of the run that just
-    # happened; see `test_the_quoted_coverage_figures_are_coverages_own_and_not_a_proxys`. They
-    # cannot be checked from inside that run: coverage has no totals until it ends, and CI checks
-    # out a fresh tree, so there is never a previous run's file to read.
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _derived_pattern(resolver):
+    """The sentence `tools/claims.py` binds this resolver to — resolved by runtime IDENTITY.
+
+    NOT BY NAME AND NOT BY A COPY OF THE PATTERN. A copy is a second definition that agrees on
+    the day it is typed, which is the whole subject of the row below; a name is a string that
+    goes on matching after the function it names has been replaced. `is` against the real object
+    cannot do either, and it fails loudly when the registry stops holding the resolver at all.
+    """
+    claims = _claims_module()
+    found = [pattern for pattern, _what, how, _tol in claims._DERIVED if how is resolver]
+    assert len(found) == 1, (
+        f"{resolver.__name__} appears {len(found)} time(s) in `tools/claims.py`'s `_DERIVED`, "
+        f"and this test needs exactly one: it reads that registry's pattern rather than keeping "
+        f"a second copy of it"
+    )
+    return found[0]
+
+
+def _measured_figures():
+    """Re-derive every scale figure the documents quote. See the test below.
+
+    EVERY NUMBER AND EVERY PATTERN HERE IS `tools/claims.py`'s, AND THAT IS THE REPAIR.
+    This function used to measure the figures itself, which made the README's test-count
+    sentence a claim bound TWICE by two instruments that had each decided what it meant:
+
+      * this suite ran `pytest --collect-only` and compared against **1 424** collected ITEMS;
+      * `tools/claims.py` ran `^def test` over the same file and compared against **1 317**
+        FUNCTION definitions, 107 fewer, because `parametrize` expands.
+
+    Both carried the README's own 10% band, so the document satisfied both — *about 1,300* is
+    1.3% from one and 8.7% from the other, and **149 values satisfied both at once**. Nothing
+    was red, and the arrangement was converging on the shape where the suite fails on ordinary
+    work while the tool stays green and a reader "corrects" the sentence toward whichever
+    instrument their red came from. The comment that used to stand here had already named the
+    mechanism — *"measuring one while the document quotes the other let the known-stale figure
+    sit inside the tolerance of a baseline it was never compared against"* — and the tool's own
+    docstring cited `tests/conftest.py` as its authority for the other quantity, while
+    `conftest.py` says the opposite in as many words: *"the guard checks the item one, since
+    that is what runs."*
+
+    SO THE QUANTITY IS SETTLED — what pytest COLLECTS — and it is settled in ONE place.
+    `tools/claims.py` resolves it and this reads that resolver; the pattern comes from the same
+    registry entry, so rewording the sentence moves one line and not two.
+
+    THE AST STATEMENT PROXY IS STILL GONE FROM HERE [K-37], and for the same reason one layer
+    down. It said *"any stable proxy that moves with the code will do"*, which is true of a proxy
+    compared against ITSELF and false the moment the document quotes coverage: measured, the walk
+    counted 5 829 statements where coverage counted 5 543, a ratio of **1.052** that does not
+    shrink, so a README quoting coverage while this compared the proxy burned half its own 10%
+    band on the day it was written. The two coverage figures are checked by `ci.py` against the
+    totals of the run that just happened; see
+    `test_the_quoted_coverage_figures_are_coverages_own_and_not_a_proxys`. They cannot be checked
+    from inside that run — coverage has no totals until it ends, and CI checks out a fresh tree,
+    so there is never a previous run's file to read.
+    """
+    claims = _claims_module()
     return {
-        "tests": int(found.group(1)),
-        "tmp_path": len(re.findall(r"\btmp_path\b", suite)),
+        "tests": claims._collected_items(),
+        "tmp_path": claims._tmp_path_uses(),
     }
 
 
@@ -5468,17 +5502,34 @@ def test_the_quoted_scale_figures_have_not_drifted_out_of_meaning():
         assert m, f"the {label} figure is gone from the document: {pattern}"
         return int(m.group(1).replace(",", ""))
 
+    #: EVERY PATTERN BELOW IS READ FROM THE INSTRUMENT THAT OWNS THE FIGURE, never copied here.
+    #: Four of this test's five patterns used to be literals, and three of the four were a
+    #: second definition of a pattern another file already held — the test count and `tmp_path`
+    #: duplicating `tools/claims.py`'s registry, the coverage pair duplicating `ci.py`'s
+    #: `_SCALE_FIGURES` while this docstring claimed the parse was *"the same pattern
+    #: `ci.scale_drift` uses, which that function's own test holds it to"*. Nothing held it:
+    #: that other test reads `ci._SCALE_FIGURES` and never compares it with the copy that stood
+    #: here, so rewording the sentence in `ci.py` would have left this one quietly guarding a
+    #: pattern no instrument used. A claim that a copy is held is worse than an unheld copy.
+    ci = _ci_module()
     checks = [
-        ("tests", quoted(readme, r"\*\*about ([\d,]+) tests\*\*", "test count"), measured["tests"]),
+        (
+            "tests",
+            quoted(readme, _derived_pattern(_claims_module()._collected_items), "test count"),
+            measured["tests"],
+        ),
         (
             "tmp_path",
-            quoted(readme, r"\*\*about ([\d,]+)\*\* uses of `tmp_path`", "tmp_path"),
+            quoted(readme, _derived_pattern(_claims_module()._tmp_path_uses), "tmp_path"),
             measured["tmp_path"],
         ),
         # BOTH COVERAGE FIGURES ARE PARSED HERE AND ASSERTED BY `ci.py` [K-37], against the
         # totals of the run that just finished. They are still parsed so that rewording the
-        # sentence fails here loudly rather than silently checking nothing — and the parse is
-        # the same pattern `ci.scale_drift` uses, which that function's own test holds it to.
+        # sentence fails here loudly rather than silently checking nothing — and the pattern is
+        # now READ OUT OF `ci._SCALE_FIGURES` rather than copied. This comment used to say the
+        # parse was "the same pattern `ci.scale_drift` uses, which that function's own test
+        # holds it to", and nothing held it: the copy here and the original in `ci.py` were two
+        # definitions that happened to agree.
         #
         # WHY NOT HERE: coverage has no totals until the run ends, so a test inside it could
         # only read a PREVIOUS run's file, and CI checks out a fresh tree where there is none.
@@ -5486,12 +5537,12 @@ def test_the_quoted_scale_figures_have_not_drifted_out_of_meaning():
         # enters, which is the shape this project refuses elsewhere.
         (
             "statements (parsed; `ci.py` asserts it against coverage)",
-            quoted(readme, r"about ([\d,]+) statements and [\d,]+ branches", "statements"),
+            quoted(readme, ci._SCALE_FIGURES["statements"][0], "statements"),
             None,
         ),
         (
             "branches (parsed; `ci.py` asserts it against coverage)",
-            quoted(readme, r"about [\d,]+ statements and ([\d,]+) branches", "branches"),
+            quoted(readme, ci._SCALE_FIGURES["branches"][0], "branches"),
             None,
         ),
     ]
@@ -49862,11 +49913,12 @@ def test_every_readme_binding_resolves_and_still_holds():
     rather than `__main__.py`. Two of six module paths were wrong, and the VOID path is what said
     so instead of reporting a drift that was not one.
     """
-    spec = importlib.util.spec_from_file_location(
-        "_claims_under_test", _repo_root() / "tools" / "claims.py"
-    )
-    claims = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(claims)
+    #: THE SHARED MODULE OBJECT, not a fresh load [the test-count row]. `_DERIVED` now holds a
+    #: resolver that shells out to `pytest --collect-only`, which is about ten seconds and is
+    #: cached on the module; a second object would pay it again, and — the reason that matters —
+    #: would make this test and `_measured_figures` two instruments reading two copies of the
+    #: registry, which is the exact arrangement this row retired.
+    claims = _claims_module()
 
     rows = claims.registry_verdicts()
     #: NOT VACUOUS: an empty registry would make every assertion below true.
@@ -49892,6 +49944,245 @@ def test_every_readme_binding_resolves_and_still_holds():
     #: that must never happen quietly is this check becoming vacuous"*.
     vacuous = [what for what, verdict, _where in rows if verdict.startswith("VACUOUS")]
     assert not vacuous, f"these bindings quote sentences no audited page contains: {vacuous}"
+
+
+#: THE INSTRUMENTS THAT BIND A FIGURE IN A SHIPPED DOCUMENT. Three files, and the list is NOT a
+#: list of names anyone may extend quietly: `test_these_are_every_file_that_binds_a_document`
+#: below derives the same set from the repository and holds this to it.
+_FIGURE_INSTRUMENTS = ("tests/test_runprov.py", "ci.py", "tools/claims.py")
+
+#: A DOCUMENT LINE MATCHED BY TWO INSTRUMENTS, DECLARED, WITH THE QUANTITY THEY SHARE.
+#:
+#: The key is the SORTED PATTERNS, never the line number and never the line's text: a line number
+#: moves when a paragraph is added above it, and the text moves when the sentence is reworded,
+#: and in both cases the declaration would retire itself over an edit that changed nothing about
+#: the duplication. The patterns are what is duplicated, so the patterns are the key -- and
+#: editing either of them retires the entry, which is exactly when the shared quantity has to be
+#: re-checked.
+#:
+#: WHY AN ENTRY IS EVER ALLOWED. Two patterns over one line are safe when both sides resolve the
+#: SAME quantity; they are the test-count defect when they do not. Nothing mechanical can read a
+#: quantity out of a `pytest` assertion, so the honest instrument is a declaration that makes a
+#: human write the shared quantity down -- which is the step that was missing when one sentence
+#: was bound to `^def test` here and to collected items there, each inside its own 10% band.
+_SHARED_FIGURE_LINES: dict[tuple[str, ...], str] = {
+    (
+        r"(\d+)\s*(?:-second|\s?s)\s+timeout",
+        r"with a (\d+)-second timeout",
+    ): (
+        "both resolve to `runprov.project._GIT_TIMEOUT_SECONDS`. They are not two bindings of "
+        "one sentence: `tools/claims.py` binds SECURITY.md's figure to the constant, while "
+        "`test_the_git_TIMEOUT_is_a_bound_a_reader_can_find` sweeps every file that states the "
+        "bound and asserts the figure is findable in all of them -- a wider pattern for a wider "
+        "claim, which happens to cover the bound line too. Narrowing it to miss this line would "
+        "put a hole in the sweep at the one file the binding already covers."
+    ),
+}
+
+
+def _number_capturing_literals(path: pathlib.Path) -> set[str]:
+    """Every string constant in a source file that CAPTURES a number.
+
+    AST, NOT GREP, and in both directions. A grep for `(\\d` finds the pattern quoted inside a
+    docstring explaining why it was deleted, and misses nothing a parser sees; an AST walk cannot
+    be satisfied by prose. The unit is the constant, so an f-string's literal segments and a
+    concatenation's parts are each their own node -- which is right here, because a pattern
+    assembled at runtime is not a pattern a reader can match against a line by eye.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    #: DOCSTRINGS ARE NOT PATTERNS, and this walk found that out the way the skill says it
+    #: would: the FIRST literal it refused to compile was this function's own docstring, three
+    #: lines above, which quotes the thing it detects. A docstring is prose about a pattern and
+    #: matching it would report the paragraph explaining a pattern as a second definition of it.
+    #: Identified by position -- a docstring is the first statement of any body when it is a
+    #: string constant, which needs no list of node kinds to narrow.
+    #: AND THE DECLARATION TABLE IS NOT A PATTERN EITHER. `_SHARED_FIGURE_LINES`' keys ARE the
+    #: duplicated patterns, written out so a human can read what is shared -- so a sweep that
+    #: counted them found every declared pair matching itself, from this file, and reported the
+    #: pair as one pattern duplicated by one instrument. A table ABOUT patterns is prose with
+    #: syntax, and it is skipped for the same reason a docstring is.
+    declaration = {
+        id(child)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AnnAssign | ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_SHARED_FIGURE_LINES"
+            for target in ([node.target] if isinstance(node, ast.AnnAssign) else node.targets)
+        )
+        for child in ast.walk(node)
+    }
+    prose = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    }
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        if id(node) in prose or id(node) in declaration:
+            continue
+        if not re.search(r"\(\\d|\(\[\\d", node.value):
+            continue
+        #: AND NOTHING IS SKIPPED QUIETLY. A literal that captures a number and is not a valid
+        #: pattern on its own is a FRAGMENT of one assembled elsewhere, which this sweep cannot
+        #: match against a line -- a real blind spot, and the one way this check could go green
+        #: over a double binding. There are none today; if one arrives it is a red here, naming
+        #: the file and line, rather than a `continue` nobody reads.
+        try:
+            re.compile(node.value)
+        except re.error as why:  # pragma: no cover - no fragment exists today
+            raise AssertionError(
+                f"{path.name}:{node.lineno} captures a number and is not a valid pattern on "
+                f"its own ({why}), so the double-binding sweep cannot match it against a "
+                f"document line. Assemble it once into a named constant the sweep can read"
+            ) from why
+        found.add(node.value)
+    return found
+
+
+def _lines_bound_by_two(
+    patterns: dict[str, set[str]], documents: dict[str, str]
+) -> dict[tuple[str, ...], list[str]]:
+    """Which (sorted patterns) match one document line from more than one instrument file.
+
+    PURE, so it has a positive control that does not need the repository -- `guard-the-instruments`
+    says the rule lives in the small pure core and that is the part worth testing.
+    """
+    shared: dict[tuple[str, ...], list[str]] = {}
+    for name, text in documents.items():
+        for number, line in enumerate(text.split("\n"), 1):
+            hit = {
+                where: pattern
+                for where, group in patterns.items()
+                for pattern in group
+                if re.search(pattern, line)
+            }
+            if len(hit) > 1:
+                shared.setdefault(tuple(sorted(hit.values())), []).append(f"{name}:{number}")
+    return shared
+
+
+def test_no_shipped_LINE_is_BOUND_BY_TWO_INSTRUMENTS_that_never_agreed_on_what_it_MEANS():
+    """One sentence, two instruments, two quantities -- and nothing red. THE test-count row.
+
+    WHAT HAPPENED. `README.md` says the suite is *about 1,300 tests*. `tools/claims.py` compared
+    that against `^def test` in the suite's one module and measured **1 317**; this suite's
+    `_measured_figures` compared the same sentence against `pytest --collect-only` and measured
+    **1 424**. Both carried the README's own 10% band, so the document satisfied both at once --
+    **149 integers did** -- and each instrument's docstring read like the only one. The tool's
+    even named `tests/conftest.py` as its authority for counting functions, where `conftest.py`
+    says the opposite in as many words: *"the guard checks the item one, since that is what
+    runs."* A rationale that cites a neighbour is the hardest to re-examine.
+
+    IT WAS CONVERGING ON A RED NOBODY COULD READ. `parametrize` expands, so the gap grows with
+    ordinary work: at the repair the suite's figure was 8.7% out and the tool's 1.3%, and the
+    next few parametrised tests would have reddened one instrument while the other stayed green
+    -- and the repair a reader reaches for is whichever number their red came from.
+
+    THE SWEEP, BECAUSE ONE INSTANCE IS NOT A CLASS. Every number-capturing string literal in the
+    three files that bind a figure, against every line of all six shipped documents: **5 double-
+    bound lines**, of which one was the live conflict (the test count), three were one definition
+    typed twice and agreeing by coincidence (`tmp_path`, and the coverage pair where this suite
+    kept its own copy of `ci._SCALE_FIGURES`' patterns under a comment claiming they were held
+    equal -- nothing held them), and one is legitimate and declared below. **Two of the five were
+    written the day before, by the work that was closing this class.**
+
+    SO THE REPAIR IS STRUCTURAL AND THIS IS WHAT KEEPS IT. Four of the five are gone because the
+    second definition was deleted rather than corrected -- each reader now reads the owner's
+    pattern and the owner's producer. The fifth is declared, with the quantity both sides share.
+
+    THE DECLARATION RETIRES ITSELF. An entry naming patterns that no longer overlap is a red, not
+    a silently-correct exemption, because the commonest reason an overlap disappears is that
+    somebody rewrote one of the two patterns -- which is precisely when the shared quantity needs
+    re-reading. `guard-shapes`: an exemption whose subject is never asserted starts covering
+    nothing, or everything.
+    """
+    root = _repo_root()
+    patterns = {name: _number_capturing_literals(root / name) for name in _FIGURE_INSTRUMENTS}
+    documents = _claims_module().documents()
+
+    #: NON-ZERO CONTROLS, ONE PER PRIMITIVE AND NEVER A TOTAL. A floor over the sum is defeated
+    #: by one instrument going silent while another carries the count, which is the shape this
+    #: file keeps finding; so every file must contribute, and the documents must be real.
+    empty = [name for name, group in patterns.items() if not group]
+    assert not empty, (
+        f"these instruments yielded no number-capturing literal at all, so this sweep was not "
+        f"looking at them: {empty}. A walk that finds nothing reports no overlap for the wrong "
+        f"reason"
+    )
+    assert len(documents) >= 6, (
+        f"only {len(documents)} shipped document(s) swept: {sorted(documents)}"
+    )
+    assert sum(len(text.split(chr(10))) for text in documents.values()) > 3000
+
+    #: AND THE DETECTOR CATCHES A DOUBLE BINDING IT IS SHOWN. The whole check is worthless if
+    #: `_lines_bound_by_two` cannot report one, and the live tree is the wrong place to learn
+    #: that -- after the repair it reports almost nothing, which reads identically to a detector
+    #: that reports nothing.
+    control = _lines_bound_by_two(
+        {"a.py": {r"about ([\d,]+) widgets"}, "b.py": {r"about ([\d]+) widgets"}},
+        {"DOC.md": "intro\nthe shop holds about 42 widgets\nend"},
+    )
+    assert control == {(r"about ([\d,]+) widgets", r"about ([\d]+) widgets"): ["DOC.md:2"]}, control
+    assert not _lines_bound_by_two(
+        {"a.py": {r"about ([\d,]+) widgets"}}, {"DOC.md": "the shop holds about 42 widgets"}
+    ), "one instrument over one line is not a double binding"
+
+    shared = _lines_bound_by_two(patterns, documents)
+    undeclared = {key: where for key, where in shared.items() if key not in _SHARED_FIGURE_LINES}
+    assert not undeclared, (
+        "these document lines are matched by number-capturing patterns in two different "
+        "instruments, and nothing says the two measure the same quantity. That is how "
+        "`README.md`'s test count came to mean 1 317 to one instrument and 1 424 to the other "
+        "with neither red. Delete the second definition and have that reader read the owner's "
+        "pattern -- or, if both claims are real and separate, declare the pair in "
+        f"`_SHARED_FIGURE_LINES` with the quantity they share: {undeclared}"
+    )
+    stale = [key for key in _SHARED_FIGURE_LINES if key not in shared]
+    assert not stale, (
+        "these declarations name pattern pairs that no longer overlap on any line of any "
+        "shipped document. An exemption whose subject is gone covers nothing -- and the usual "
+        "reason an overlap disappears is that one of the two patterns was rewritten, which is "
+        f"exactly when the shared quantity needs re-reading: {stale}"
+    )
+
+
+def test_these_are_every_file_that_binds_a_FIGURE_in_a_shipped_document():
+    """The guard above quantifies over three files; this is what stops that being a list.
+
+    A LIST IN THE INPUT SET DEFEATS AN EXHAUSTIVENESS ASSERTION IN THE MATCHER. `guard-shapes`
+    puts it exactly: deleting the list from the matcher does nothing if the list has moved to
+    the input set. The sweep above walks every literal in `_FIGURE_INSTRUMENTS` and would be
+    silent about a fourth file binding a fourth figure -- so the set is derived here from the
+    repository and held to the constant.
+
+    DERIVED HOW. A file binds a document figure if it both reads a shipped document and carries
+    a number-capturing pattern. Nothing else in this repository does both, and a file that
+    starts doing both turns this red on the commit that does it.
+    """
+    root = _repo_root()
+    names = sorted(_claims_module().documents())
+    candidates = sorted(
+        path.relative_to(root).as_posix()
+        for path in [
+            root / "ci.py",
+            *sorted((root / "tools").glob("*.py")),
+            *sorted((root / "tests").glob("*.py")),
+        ]
+        if _number_capturing_literals(path)
+        and any(document in path.read_text(encoding="utf-8") for document in names)
+    )
+    assert candidates, "no file in this repository reads a shipped document and captures a number"
+    assert candidates == sorted(_FIGURE_INSTRUMENTS), (
+        f"the set of files that bind a figure in a shipped document has changed. Derived: "
+        f"{candidates}; `_FIGURE_INSTRUMENTS` says {sorted(_FIGURE_INSTRUMENTS)}. Add it there "
+        f"so the double-binding sweep can see it, or this sweep is quantifying over a list"
+    )
 
 
 def test_the_claims_report_is_not_in_the_default_gate_and_ci_declares_it():
@@ -51885,28 +52176,25 @@ def test_the_torture_FRACTIONS_contributing_names_are_the_ones_the_harness_DEFAU
     )
 
 
-def test_the_FULL_digest_length_getting_started_shows_is_the_one_sha256_PRODUCES():
+def test_the_SHORT_digest_in_the_artifact_is_really_SHORTER_than_the_full_one():
     """`GETTING-STARTED.md` tells a reader the fingerprints in the sidecar are written out in
-    full, *"64 characters"*, against the short form inside the artifact. The short form is bound
-    (`hashing.PIN_DIGEST_CHARS`); the full one was not, although it is the one figure here that
-    needs no measurement at all -- it is the width of a sha256 hexdigest.
+    full, *"64 characters"*, against the short form inside the artifact.
 
-    COMPUTED, NOT RESTATED: the expected value comes from `hashlib`, so this cannot be satisfied
-    by a reader who typed the same wrong number twice.
+    THE FIGURE ITSELF IS BOUND IN ONE PLACE AND IT IS NOT HERE. `tools/claims.py`'s `_DERIVED`
+    holds the pair — the sentence and `len(hashlib.sha256(b"").hexdigest())` — and
+    `test_every_readme_binding_resolves_and_still_holds` gates it across every audited page,
+    reporting VACUOUS if the sentence is reworded away. This test used to carry its own copy of
+    that pattern and its own copy of that derivation, which made one document line a claim bound
+    twice; the test-count row is what that arrangement costs when the two copies stop agreeing.
+
+    WHAT IS LEFT HERE IS THE HALF NO BINDING CAN MAKE. A registry entry compares ONE number
+    against ONE producer. The sentence's point is a CONTRAST — the in-artifact header is a
+    truncation of the sidecar's digest — and a contrast between two values is a relation, not a
+    figure, so it has nowhere to live in a (pattern, producer) registry. It would still hold if
+    both numbers were wrong, and the binding would still hold if the contrast were empty, which
+    is why both exist.
     """
     full = len(hashlib.sha256(b"").hexdigest())
-    text = " ".join((REPO / "GETTING-STARTED.md").read_text(encoding="utf-8").split())
-    said = re.search(r"written out in full here\s*[—-]\s*(\d+) characters", text)
-    assert said, (
-        "`GETTING-STARTED.md` no longer says the fingerprints are *written out in full here — N "
-        "characters*; re-bind the sentence here if it was reworded"
-    )
-    assert int(said.group(1)) == full, (
-        f"the document shows a full fingerprint as {said.group(1)} characters and sha256 "
-        f"produces {full}"
-    )
-    #: AND THE SHORT FORM IS THE OTHER HALF OF THE SAME SENTENCE. The contrast only means
-    #: anything while the two differ, so a reader is told the truncation is a truncation.
     assert runprov.hashing.PIN_DIGEST_CHARS < full, (
         f"the in-artifact header shows {runprov.hashing.PIN_DIGEST_CHARS} characters, which must "
         f"be SHORTER than the full {full} or the sentence's contrast is empty"

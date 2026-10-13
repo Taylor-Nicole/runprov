@@ -260,6 +260,42 @@ because every break looks like silence.*
 here, because a figure in prose rots unless something binds it — which is the subject of the next
 section but one.)
 
+### A figure in a shipped document is bound in ONE place, and the quantity is named
+
+**Bind it once, and have every other reader read that binding.** The pair — the sentence's
+pattern and the thing that produces its number — belongs in `tools/claims.py`'s registry, and a
+test that also cares about the sentence reads the registry rather than keeping its own copy of
+the pattern or its own copy of the derivation. Resolve the registry entry by **runtime identity**
+against the producer, never by the producer's name: a name goes on matching after the function it
+names has been replaced.
+
+**Two instruments over one sentence is not belt and braces.** It is two definitions that agree on
+the day they are typed. If both claims are real and separate — a binding to one page's figure, and
+a wider sweep asserting the same bound is findable everywhere it is stated — declare the pair and
+**write down the quantity they share**, so the next reader does not have to infer it.
+`test_no_shipped_LINE_is_BOUND_BY_TWO_INSTRUMENTS_that_never_agreed_on_what_it_MEANS` refuses an
+undeclared overlap, and refuses a declaration whose patterns have stopped overlapping — because
+the usual reason an overlap disappears is that somebody rewrote one of the two patterns, which is
+exactly when the shared quantity needs re-reading.
+
+**A relation is not a figure and has nowhere to live in the registry.** *The short fingerprint is
+shorter than the full one* is a claim about two values, and a (pattern, producer) entry holds one.
+Those belong in the suite, and that is the half of such a test worth keeping once the figure
+itself is bound.
+
+Why this is written down: one README sentence was compared by the suite against what `pytest`
+collects and by the claim tool against `^def test` in the same file, two quantities a parametrised
+suite drives apart, each inside the same documented tolerance — so the document satisfied both and
+nothing was red. Each instrument's own comment explained why its quantity was the right one, and
+the tool's cited `tests/conftest.py` as the authority for counting definitions while
+`conftest.py` says the opposite in as many words. **A rationale that cites a neighbour is the
+hardest kind to re-examine, because the neighbour sounds like it was consulted.** The arrangement
+fails by reddening one instrument while the other stays green, and the number a reader then
+"corrects" is whichever one their red came from.
+
+(The figures behind this are a measurement of one day and are deliberately not quoted here, for
+the reason the section above gives.)
+
 ### Rules with nothing behind them yet
 
 Stated here so the gap is visible rather than implied:
