@@ -15743,6 +15743,290 @@ def test_resources_cgroup_path_declines_a_line_it_does_not_understand():
     assert runprov.resources.cgroup_path("", mount) is None
 
 
+#: THE PARSER EACH PAGE `resources` EMITS IS ACTUALLY READ BY. Keyed exactly as `_SERIALISERS`
+#: keys it — module, function — because that table already records *which parser* reads each
+#: page (*"an sbatch header, parsed by Slurm"*), and a second list here would be the same claim
+#: written twice. The test below asserts this map COVERS every `resources` entry of that table,
+#: so a renderer added there without a parse check fails this file.
+#:
+#: WHY THIS EXISTS [Audit R, resources mutation sweep]. Forty-two of this module's eighty-two
+#: surviving mutants sit in these three functions, and every test reading their output read it
+#: as PROSE: `assert "--mem=100M" in slurm`. A substring assertion cannot see a directive whose
+#: whole line has been corrupted around it, an indent that has stopped being an indent, or a
+#: cell that is no longer a number — and the consumer of all three of these pages is a PARSER.
+def _slurm_directives(page: list[str]) -> dict[str, str]:
+    """Every line of an sbatch header, read the way `sbatch` reads one.
+
+    Slurm accepts a `#SBATCH --key=value` directive or a comment and SILENTLY IGNORES anything
+    it does not recognise, which is the whole reason this is asserted here: a corrupted
+    directive does not fail the job, it submits a job with the default limit.
+    """
+    directives: dict[str, str] = {}
+    for line in page:
+        if line.startswith("#SBATCH"):
+            match = re.fullmatch(r"#SBATCH --([a-z][a-z-]*)=(\S+)", line)
+            assert match, f"not a directive sbatch can parse, and sbatch would not say so: {line!r}"
+            directives[match.group(1)] = match.group(2)
+        else:
+            assert line.startswith("# "), f"neither a directive nor a comment: {line!r}"
+    return directives
+
+
+def _k8s_document(page: list[str]) -> typing.Any:
+    """The manifest as `kubectl` receives it: YAML, not a block of text that resembles it."""
+    import yaml
+
+    return yaml.safe_load("\n".join(page))
+
+
+def _snakemake_cells(pair: tuple[list[str], list[str]]) -> dict[str, str]:
+    """Header and row zipped, with the row required to be as wide as the header.
+
+    `strict=True` is the assertion: a row one cell short shifts every column after it, and a
+    TSV does not complain. Every value is then checked against the column's own grammar.
+    """
+    header, row = pair
+    cells = dict(zip(header, row, strict=True))
+    for column, value in cells.items():
+        pattern = r"\d+:\d\d:\d\d" if column == "h:m:s" else r"(?:\d+\.\d+)?"
+        assert re.fullmatch(pattern, value), (
+            f"column {column!r} carries {value!r}, which Snakemake's parser and every plotting "
+            f"script pointed at this TSV read as a number or as nothing"
+        )
+    return cells
+
+
+_RESOURCE_PARSERS = {
+    "render_slurm": _slurm_directives,
+    "render_k8s": _k8s_document,
+    "snakemake_row": _snakemake_cells,
+}
+
+
+def test_every_machine_format_resources_emits_is_PARSED_by_a_test_not_merely_read():
+    """The population is `_SERIALISERS`, not a list written beside the parsers. [Audit R]
+
+    That table exists because these pages must never be HTML-escaped, and its reason for each
+    entry names the parser: Slurm, kubectl, Snakemake. The same sentence says what a test owes
+    the page, so the two are held equal here rather than drifting — a renderer declared a
+    machine format without a parse check is the gap this closes.
+    """
+    declared = {name for module, name in _SERIALISERS if module == "resources"}
+    assert declared == set(_RESOURCE_PARSERS), (
+        f"`_SERIALISERS` says resources emits {sorted(declared)} as machine formats and this "
+        f"file parses {sorted(_RESOURCE_PARSERS)}; the difference is a page whose syntax "
+        f"nothing checks"
+    )
+
+
+def test_every_line_of_an_sbatch_header_is_a_DIRECTIVE_or_a_COMMENT_slurm_can_read(tmp_path):
+    """[ADR-0013 R-14]. The page is read by `sbatch`, which ignores what it cannot parse.
+
+    Both shapes of the page are checked, because they are different code paths: a measurement
+    that filled every field, and one that filled none and therefore emits only commentary.
+    """
+    measured = runprov.resources.Measurement(
+        wall_seconds=4800.0,
+        cpu_seconds=9600.0,
+        max_rss_bytes=100 * runprov.resources.MIB,
+        max_vms_bytes=None,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        source="getrusage",
+        unavailable=(),
+        io_self_only=True,
+    )
+    assert set(_slurm_directives(runprov.resources.render_slurm(measured))) == {
+        "mem",
+        "cpus-per-task",
+        "time",
+    }, "the three Slurm needs, and nothing it would ignore"
+
+    nothing = measured._replace(max_rss_bytes=None, cpu_seconds=None, source="none")
+    assert _slurm_directives(runprov.resources.render_slurm(nothing)) == {"time": "02:00:00"}, (
+        "wall is always measured; a figure that is not becomes a comment, never a directive"
+    )
+
+
+def test_the_kubernetes_page_PARSES_as_yaml_with_both_fields_under_BOTH_keys(tmp_path):
+    """[ADR-0013 R-14]. `kubectl` reads YAML, so the test reads YAML.
+
+    The first version of this renderer appended cpu after the `limits:` block and produced
+    VALID YAML with memory under both keys and cpu under only one — a wrong manifest that no
+    substring assertion over the text can see, because every substring it would look for is
+    present.
+    """
+    measured = runprov.resources.Measurement(
+        wall_seconds=4800.0,
+        cpu_seconds=9600.0,
+        max_rss_bytes=100 * runprov.resources.MIB,
+        max_vms_bytes=None,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        source="getrusage",
+        unavailable=(),
+        io_self_only=True,
+    )
+    document = _k8s_document(runprov.resources.render_k8s(measured))
+    assert set(document) == {"resources"}, "one top-level key, which is what a manifest merges"
+    assert set(document["resources"]) == {"requests", "limits"}
+    for key, block in document["resources"].items():
+        assert block == {"memory": "150Mi", "cpu": "3000m"}, (
+            f"`{key}` must carry BOTH fields: a request without a limit is unbounded, and a "
+            f"limit without a request is unschedulable"
+        )
+
+    nothing = measured._replace(max_rss_bytes=None, cpu_seconds=None, source="none")
+    assert _k8s_document(runprov.resources.render_k8s(nothing)) is None, (
+        "a page with nothing to request is COMMENTARY: it must parse to no manifest at all, "
+        "not to an empty one a cluster would accept"
+    )
+
+
+def test_every_snakemake_cell_is_EMPTY_or_a_number_its_own_parser_can_read(tmp_path):
+    """[ADR-0013 R-13]. The TSV is read by Snakemake's benchmark parser and by pandas.
+
+    A cell that is neither blank nor a number is read as NaN by one and as a string by the
+    other, and a plot made from it is wrong without failing. The row with no CPU figure is here
+    because an empty column and a filled one are different branches and only one of them was
+    ever exercised.
+    """
+    full = runprov.resources.Measurement(
+        wall_seconds=3660.0,
+        cpu_seconds=120.5,
+        max_rss_bytes=100 * runprov.resources.MIB,
+        max_vms_bytes=100 * runprov.resources.MIB,
+        io_read_bytes=2 * runprov.resources.MIB,
+        io_write_bytes=3 * runprov.resources.MIB,
+        source="getrusage",
+        unavailable=(),
+        io_self_only=True,
+    )
+    cells = _snakemake_cells(runprov.resources.snakemake_row(full))
+    assert cells["max_vms"] == "100.00", (
+        "a virtual size EQUAL to the resident one describes the same subject and is comparable; "
+        "only a SMALLER one is the nonsense this column drops"
+    )
+    assert cells["cpu_time"] == "120.5000" and cells["s"] == "3660.0000"
+
+    unmeasured = full._replace(cpu_seconds=None, io_read_bytes=None)
+    blank = _snakemake_cells(runprov.resources.snakemake_row(unmeasured))
+    assert blank["cpu_time"] == "" and blank["io_in"] == "", (
+        "[ADR-0013 R-7] a column this package cannot fill is EMPTY, never 0 and never a word"
+    )
+
+
+def test_snakemakes_SECOND_column_is_hours_minutes_seconds_and_each_divisor_is_its_own(tmp_path):
+    """`h:m:s` is three divisions and two moduli, and every one of them is a separate claim.
+
+    One hour exactly and one hour one minute are chosen between them to separate all five: an
+    hour boundary catches an off-by-one in the hour divisor and in the seconds modulus, and a
+    minute past it catches the minute divisor. A single arbitrary duration leaves four of the
+    five indistinguishable from a neighbour.
+    """
+    base = runprov.resources.Measurement(
+        wall_seconds=0.0,
+        cpu_seconds=None,
+        max_rss_bytes=None,
+        max_vms_bytes=None,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        source="none",
+        unavailable=(),
+        io_self_only=False,
+    )
+    for seconds, expected in ((3600.0, "1:00:00"), (3660.0, "1:01:00"), (59.4, "0:00:59")):
+        cells = _snakemake_cells(
+            runprov.resources.snakemake_row(base._replace(wall_seconds=seconds))
+        )
+        assert cells["h:m:s"] == expected, f"{seconds} s is {expected}"
+
+
+def test_the_DEFAULT_margin_MULTIPLIES_the_measurement_and_both_targets_use_the_same_one(tmp_path):
+    """[ADR-0013 R-15]. The margin is a headroom FACTOR, and every existing test passed 1.0.
+
+    At a margin of 1 a multiplication and a division are the same function, so the direction
+    of three of these four operators was unasserted. The default is exercised rather than
+    passed, because the default is what every caller that does not care gets.
+    """
+    measured = runprov.resources.Measurement(
+        wall_seconds=4800.0,
+        cpu_seconds=9600.0,
+        max_rss_bytes=100 * runprov.resources.MIB,
+        max_vms_bytes=None,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        source="getrusage",
+        unavailable=(),
+        io_self_only=True,
+    )
+    slurm = _slurm_directives(runprov.resources.render_slurm(measured))
+    assert slurm["mem"] == "150M", "100 MiB x 1.5, RAISED not lowered"
+    assert slurm["cpus-per-task"] == "3", "2 cores x 1.5, rounded up"
+
+    k8s = _k8s_document(runprov.resources.render_k8s(measured))["resources"]["requests"]
+    assert k8s == {"memory": "150Mi", "cpu": "3000m"}, "the same factor, each in its own units"
+
+    assert "x1.5" in runprov.resources.render_slurm(measured)[0], (
+        "and the page SAYS which factor it applied, so a reader can undo it"
+    )
+
+
+def test_a_request_too_small_to_round_up_is_FLOORED_at_ONE_unit_not_two(tmp_path):
+    """Every figure here is `max(1, ceil(...))`, and the floor is reached by real runs.
+
+    A script that used a megabyte and a thousandth of a core is not unusual; it is what every
+    test in this suite looks like from the outside. `--mem=0M` is rejected by Slurm and
+    `cpu: "0m"` is accepted by Kubernetes and means something else, so both are floored — and
+    a floor of TWO would silently double the smallest request this tool can make.
+    """
+    sliver = runprov.resources.Measurement(
+        wall_seconds=1.0,
+        cpu_seconds=0.0001,
+        max_rss_bytes=1,
+        max_vms_bytes=None,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        source="getrusage",
+        unavailable=(),
+        io_self_only=True,
+    )
+    slurm = _slurm_directives(runprov.resources.render_slurm(sliver))
+    assert slurm == {"mem": "1M", "cpus-per-task": "1", "time": "00:01:00"}
+
+    k8s = _k8s_document(runprov.resources.render_k8s(sliver))["resources"]["limits"]
+    assert k8s == {"memory": "1Mi", "cpu": "1m"}
+
+
+def test_the_walltime_is_MINUTES_rendered_as_hours_and_minutes(tmp_path):
+    """`--time` is three conversions in one line: seconds to minutes, then minutes to h:mm.
+
+    Two hours is chosen because it separates every divisor from its neighbour — 120 minutes is
+    2 hours 0 minutes, and a divisor one larger makes it 1 hour 59, which is a plausible-looking
+    walltime that silently requests 1 % less than the run needs.
+    """
+    measured = runprov.resources.Measurement(
+        wall_seconds=4800.0,
+        cpu_seconds=None,
+        max_rss_bytes=None,
+        max_vms_bytes=None,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        source="none",
+        unavailable=(),
+        io_self_only=False,
+    )
+    assert _slurm_directives(runprov.resources.render_slurm(measured))["time"] == "02:00:00", (
+        "4800 s x 1.5 is 7200 s, which is 120 minutes, which is 02:00"
+    )
+    assert (
+        _slurm_directives(runprov.resources.render_slurm(measured._replace(wall_seconds=2440.0)))[
+            "time"
+        ]
+        == "01:01:00"
+    ), "3660 s is 61 minutes, which is one hour and ONE minute"
+
+
 def _hrec(**over):
     """A completed history record, minimal but of the right shape."""
     base = {
