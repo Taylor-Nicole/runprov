@@ -51067,26 +51067,84 @@ def test_EVERY_declared_table_in_this_package_is_HELD_BY_EQUALITY_somewhere_in_t
     `==` or `!=` -- one side of which loads the table's name. Measured when this was written:
     36 tables, 20 already held, 16 held by the tests above, 0 left over.
 
+    AND THAT MEASUREMENT WAS OVER A POPULATION MISSING FOUR TABLES. The first version of the
+    sweep below could not see a declaration wrapped in `types.MappingProxyType({...})`, so
+    `run.py`'s `PIN_UNSAFE`, `PIN_INLINE`, `PIN_ALTERNATIVE` and `HEADER_DELIMITERS` were
+    never in the subject: 35 swept against 39 declared, and "0 left over" was true of the 35.
+    The hole was found by the MUTATION RUN -- 34 of `run.py`'s survivors sat inside three of
+    those four tables -- not by this assertion, which is exactly the failure mode an
+    exhaustiveness assertion moves rather than removes: the member list is derived, and the
+    list of DECLARATION FORMS was still hand-written. Now every form carries a decision and an
+    unrecognised one is a red. Re-measured after the repair: 39 tables, 2 genuinely unheld
+    (`PIN_ALTERNATIVE`, `HEADER_DELIMITERS`, both now held), 2 already held by the README
+    binding tests -- which is the split, not the raw four.
+
+    AND WHAT "HELD" MEANS HERE IS A PROXY. The search cannot tell `set(T) == {...}`, which
+    holds the membership, from `len(T) == 7`, which does not -- both are comparisons loading
+    the name, and the first is legitimate and common (`PIN_UNSAFE` is held that way against the
+    README). Tightening it to require the bare table on one side would reject that. So this
+    assertion holds the WEAKER property it can decide, and the stronger one is a reviewer's
+    job; a table satisfied here by a length comparison alone would be a false clean, and the
+    way to find one is to read the comparison this names, not to trust the green.
+
     WHAT THIS DOES NOT CLAIM. Holding a table by equality does not make its members' values
     guarded; a value is guarded behaviourally, and over the four modules mutation-triaged so
     far 17 of 18 mutants on such lines were already killed that way. This asserts the other
     half: that nothing can ADD or REMOVE a member unnoticed.
     """
     min_members = 2
+    #: Declarations in a form this sweep has no decision for. A form nobody thought of lands
+    #: here and turns this RED, which is the whole difference between this assertion and a
+    #: hand-written list of table names.
+    undecided: list[str] = []
+    #: How each table was REACHED, so the repair below has a control of its own.
+    through: dict[str, int] = {}
 
-    def table_size(node):
+    def table_size(node, where):
+        """The count of literal members this declaration offers, or None with a decision."""
         if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
             members = node.elts
         elif isinstance(node, ast.Dict):
             members = [k for k in node.keys if k is not None]
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id in ("frozenset", "set", "tuple", "dict")
-            and len(node.args) == 1
-        ):
-            return table_size(node.args[0])
+        elif isinstance(node, ast.Call):
+            #: A WRAPPER IS TRANSPARENT, WHATEVER IT IS CALLED, and this is the repair. The
+            #: first version accepted a wrapping call only when the callee was an `ast.Name`
+            #: in a four-name list, so the four tables this package declares as
+            #: `types.MappingProxyType({...})` -- an `ast.Attribute` callee -- were never in
+            #: the population at all. It swept 35 where 39 are declared and reported "0 left
+            #: over" over a subject missing a tenth of itself. `frozenset` and
+            #: `types.MappingProxyType` differ in how the callee is SPELLED, which is not a
+            #: fact about tables.
+            #: A call with anything but one positional argument offers no literal member list:
+            #: `threading.Lock()`, `weakref.WeakSet()`, `object()`, `re.compile(p, flags)`.
+            if len(node.args) == 1 and not node.keywords:
+                callee = type(node.func).__name__
+                through[callee] = through.get(callee, 0) + 1
+                return table_size(node.args[0], where)
+            return None
+        elif isinstance(node, (ast.Constant, ast.JoinedStr)):
+            #: A SCALAR, written or formatted. `ast.JoinedStr` is here because the walk above
+            #: recurses THROUGH a one-argument wrapper, so it reaches the f-string inside
+            #: `re.compile(rf"...")` -- a form the top-level census that designed this table
+            #: could not see, and the first thing this assertion caught after being repaired.
+            #: The census was of the wrong population: the forms a walk REACHES, not the forms
+            #: an assignment starts with.
+            return None
+        elif isinstance(node, (ast.BinOp, ast.UnaryOp)):
+            #: A COMPUTED SCALAR -- `1 << 23`, `1024 * 1024`, `'0' * N`, `-256`, `max(...) + 1`.
+            #: Measured when this was written: all 8 of this package's operator declarations are
+            #: scalars. A BinOp over a literal CONTAINER is a merge, which would be a table, so
+            #: it is sent to `undecided` rather than quietly called a scalar.
+            #: DECLARED GAP: a merge of two NAMES (`A | B`) cannot be told from scalar
+            #: arithmetic without resolving them, so it would read as a scalar here. This
+            #: package has none; the day one is written, this comment is the thing that was
+            #: wrong, and it is written down rather than left to be re-derived.
+            sides = (node.left, node.right) if isinstance(node, ast.BinOp) else (node.operand,)
+            if any(isinstance(s, (ast.Tuple, ast.List, ast.Set, ast.Dict)) for s in sides):
+                undecided.append(f"{where}: an operator over a literal container -- a merge?")
+            return None
         else:
+            undecided.append(f"{where}: a value of form {type(node).__name__}")
             return None
         if len(members) < min_members or not all(isinstance(m, ast.Constant) for m in members):
             return None
@@ -51102,9 +51160,30 @@ def test_EVERY_declared_table_in_this_package_is_HELD_BY_EQUALITY_somewhere_in_t
                 targets, value = [node.target], node.value
             else:
                 continue
+            where = f"{path.name}:{node.lineno}"
             for target in targets:
-                if isinstance(target, ast.Name) and table_size(value):
-                    declared.setdefault(target.id, []).append(path.name)
+                if isinstance(target, ast.Name):
+                    if table_size(value, where):
+                        declared.setdefault(target.id, []).append(path.name)
+                elif isinstance(target, ast.Tuple):
+                    #: AN UNPACKING DECLARES N SCALARS, NOT ONE TABLE -- `CHANGED, UNCHANGED,
+                    #: INCOMPARABLE = ("changed", ...)`. CHECKED rather than merely declared: a
+                    #: right-hand side that is not a tuple of bare constants makes that claim
+                    #: false, and then this is a decision that is WRONG rather than missing,
+                    #: which no amount of exhaustiveness would catch.
+                    if not (
+                        isinstance(value, ast.Tuple)
+                        and all(isinstance(e, ast.Constant) for e in value.elts)
+                    ):
+                        undecided.append(f"{where}: an unpacking of something other than constants")
+                else:
+                    undecided.append(f"{where}: a target of form {type(target).__name__}")
+
+    assert not undecided, (
+        f"{len(undecided)} module-level declaration(s) are in a form this sweep has no decision "
+        f"for, so they are neither held nor exempt -- and the population below is not the "
+        f"subject it claims to be: {undecided}"
+    )
 
     #: `__all__` is excluded by SUBJECT, not by name: it is the module's export list, which
     #: `docs/public-surface.txt` and `ci.py surface` already derive and gate -- a second,
@@ -51140,6 +51219,16 @@ def test_EVERY_declared_table_in_this_package_is_HELD_BY_EQUALITY_somewhere_in_t
     assert len(declared) >= 30, (
         f"the sweep found only {len(declared)} table(s) across {swept} module(s); a collapsed "
         f"population reads exactly like a held one"
+    )
+    #: THE CONTROL ON THE REPAIR, and it is not a count. At least one table must have been
+    #: reached THROUGH a wrapping call whose callee is not a bare name, because that is the
+    #: form the first version could not see. Reverting the fix makes this RED instead of
+    #: making the population a tenth smaller in silence -- which a floor cannot do, since 35
+    #: clears 30 comfortably.
+    assert through.get("Attribute"), (
+        f"no table was reached through a dotted wrapper such as `types.MappingProxyType(...)`; "
+        f"either the package stopped declaring one that way or this sweep stopped following "
+        f"it, and the second is how four tables went missing. Reached through: {through}"
     )
 
 
@@ -51200,3 +51289,176 @@ def test_an_untrusted_verify_FIELD_is_capped_at_SIXTY_characters_INCLUDING_the_e
     )
     assert runprov.verify._bounded("y" * 5000) == "y" * 59 + "…", "and length does not matter"
     assert runprov.verify._bounded("") == ""
+
+
+# ========================================= THE TWO PIN TABLES NOTHING HELD, AND THEIR FIGURES
+# FOUND BY THE MUTATION RUN, NOT BY THE GUARD WRITTEN TO FIND THIS. `run.py` declares six
+# tables; four of them through `types.MappingProxyType`, which the exhaustiveness assertion
+# above could not see until it was repaired. Of those four, `PIN_UNSAFE` and `PIN_INLINE`
+# turned out to be held already -- the README binding tests compare both key sets -- so the
+# honest count is TWO unheld, not four. That split is the finding; the raw four would have
+# overstated it by half.
+
+
+def test_the_ALTERNATIVE_comment_markers_are_held_AND_each_one_really_pins_IN_BAND(
+    tmp_path, capsys
+):
+    """`PIN_ALTERNATIVE` is the one table where immutability bites, and nothing held it.
+
+    A row here changes what an EXISTING call does: a caller who passes `comment="// "` gets an
+    in-band pin only if this table agrees, so adding a row rewrites the bytes of an artifact
+    that nobody touched. Seven rows, written out, because the right-hand side is a CLAIM ABOUT
+    A FORMAT that nothing else in this repository can compute.
+
+    THE SECOND SIDE IS BEHAVIOURAL, so this is not only a restatement. Every row is exercised
+    twice -- once with the marker it declares, which must land in-band behind exactly that
+    marker, and once with a marker it does not declare, which must leave the artifact's own
+    bytes untouched and put the pin in a sidecar. And the CAVEAT is product rather than
+    documentation: `open_output` interpolates it into a stderr note at the moment the trade is
+    made, so a caveat garbled here is visible there.
+    """
+    assert dict(runprov.run.PIN_ALTERNATIVE) == {
+        ".sql": ("-- ", ""),
+        ".tex": ("% ", ""),
+        ".fasta": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
+        ".fa": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
+        ".fna": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
+        ".faa": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
+        ".ffn": ("; ", "Biopython reads it; `samtools faidx` REJECTS the file"),
+    }
+
+    project = _project(tmp_path)
+    run = runprov.Run("alt", project=project)
+    body = "ACGT\n"
+    #: `"# "` IS THE POINT OF THE CONTROL: it is the package's default marker and no row here
+    #: declares it, so it must NOT get through for any of these suffixes.
+    refused = "# "
+    assert refused not in {marker for marker, _ in runprov.run.PIN_ALTERNATIVE.values()}, (
+        "the control marker must be one no row declares, or it proves nothing"
+    )
+
+    rows = sorted(runprov.run.PIN_ALTERNATIVE.items())
+    for i, (suffix, (marker, _caveat)) in enumerate(rows):
+        good = tmp_path / f"alt{i}{suffix}"
+        with run.open_output(good, comment=marker) as fh:
+            fh.write(body)
+        written = good.read_text(encoding="utf-8")
+        assert written.startswith(f"{marker}provenance"), (
+            f"{suffix} declares {marker!r} as a marker its parsers accept, so the pin must be "
+            f"in-band behind exactly that -- the file begins {written[:40]!r}"
+        )
+        assert not good.with_name(good.name + ".prov.txt").exists(), (
+            f"{suffix} took the pin in-band, so there must not be a sidecar as well"
+        )
+
+        bad = tmp_path / f"def{i}{suffix}"
+        with run.open_output(bad, comment=refused) as fh:
+            fh.write(body)
+        assert bad.read_text(encoding="utf-8") == body, (
+            f"{suffix} declares {marker!r} and NOT {refused!r}, so the default marker must "
+            f"leave the artifact untouched; it is {bad.read_text(encoding='utf-8')!r}"
+        )
+        assert bad.with_name(bad.name + ".prov.txt").is_file(), (
+            f"{suffix} with {refused!r} must get the SIDECAR, which is the safe default"
+        )
+
+    err = capsys.readouterr().err
+    #: EVERY NON-EMPTY CAVEAT, and the empty ones must say nothing -- an empty caveat means
+    #: there is no trade at all, only the format's own comment syntax.
+    for suffix, (_marker, caveat) in rows:
+        if caveat:
+            assert caveat in err, (
+                f"{suffix} declares the trade {caveat!r}, which `open_output` says on stderr at "
+                f"the moment it is made; it is not in what was said"
+            )
+    traded = sorted(s for s, (_, c) in runprov.run.PIN_ALTERNATIVE.items() if c)
+    assert traded, "a leg over the caveats is vacuous if no row declares one"
+    assert err.count("PROVENANCE NOTE: pinning") == len(traded), (
+        f"one note per trade and no more: {len(traded)} row(s) declare a caveat "
+        f"({traded}), and the two rows that declare none must be silent"
+    )
+
+
+def test_the_header_DELIMITERS_are_held_AND_each_one_is_the_separator_actually_READ(tmp_path):
+    """Two rows, and `csv.Sniffer` is why they are written rather than guessed.
+
+    THE SECOND SIDE IS WHAT THE HEADER COMES BACK AS. Each suffix is written with BOTH
+    separators: its own, which must split into two columns, and the other one, which must not.
+    That cross leg is what a swapped pair of values cannot survive -- an equality assertion
+    alone would catch a row removed, and a behavioural leg on one suffix alone would still pass
+    if the two delimiters traded places.
+    """
+    assert dict(runprov.run.HEADER_DELIMITERS) == {".tsv": "\t", ".csv": ","}
+
+    for suffix, delimiter in sorted(runprov.run.HEADER_DELIMITERS.items()):
+        other = next(d for s, d in runprov.run.HEADER_DELIMITERS.items() if s != suffix)
+        assert other != delimiter, "the cross leg needs two different delimiters to be a leg"
+        mine = _header_of(
+            tmp_path, f"own{suffix}", f"a{delimiter}b\n1{delimiter}2\n", record_header=True
+        )
+        assert mine == ["a", "b"], (
+            f"{suffix} is declared to split on {delimiter!r}, so its header is two columns; "
+            f"it came back as {mine!r}"
+        )
+        theirs = _header_of(tmp_path, f"cross{suffix}", f"a{other}b\n", record_header=True)
+        assert theirs == [f"a{other}b"], (
+            f"{suffix} must NOT split on {other!r} -- the delimiter is taken from the suffix "
+            f"and never sniffed, and this came back as {theirs!r}"
+        )
+
+    #: AND A SUFFIX THE TABLE DOES NOT NAME IS REFUSED, with a message that names the ones it
+    #: does -- the error text is rendered from the table, so it is the table a caller is shown.
+    runprov.configure(root=tmp_path)
+    with runprov.Run("hdr", {}, provenance=tmp_path / "q.prov.json") as run:
+        with pytest.raises(ValueError) as caught:
+            run.open_output(tmp_path / "notes.txt", record_header=True)
+    for suffix in runprov.run.HEADER_DELIMITERS:
+        assert suffix in str(caught.value), (
+            f"the refusal lists what IS supported, and {suffix} is missing from it: {caught.value}"
+        )
+
+
+def test_the_FIGURES_the_pin_tables_state_ABOUT_THEMSELVES_are_the_figures_they_HOLD():
+    """Three numbers written into `run.py`'s own comments, two of them bound to nothing.
+
+    The comment above `PIN_BINARY` says *"Measured: 40 entries here against 38 there, and 25 of
+    these are in neither the allowlist nor `PIN_UNSAFE`"*, and the refusal message's comment
+    repeats the 25. Only the 40 was held -- by the frozenset equality beside it -- so the other
+    two could drift the moment a suffix moved between tables, in a comment whose whole job is
+    to stop a reader re-deriving the relationship by hand.
+
+    THE FLOOR BESIDE THIS IS NOT THE DEFECT. `test_the_binary_refusal_names_the_mode...` asserts
+    `len(outside) > 20`, and that floor is correct: its claim is the PREMISE *most binary
+    suffixes are not in that table*, for which a bound is the property. The defect is that the
+    exact figure the prose states was stated three times and derived nowhere.
+    """
+    binary = set(runprov.run.PIN_BINARY)
+    unsafe = set(runprov.run.PIN_UNSAFE)
+    inline = set(runprov.run.PIN_INLINE)
+    stated = {"here": 40, "there": 38, "neither": 25}
+    held = {
+        "here": len(binary),
+        "there": len(unsafe),
+        "neither": len(binary - inline - unsafe),
+    }
+    assert held == stated, (
+        f"`run.py` states these figures about its own tables in prose and they no longer "
+        f"describe it: stated {stated}, holds {held}"
+    )
+
+    #: AND THE PROSE IS SWEPT, so a figure corrected in one comment and not the other is a red
+    #: rather than a reader's problem. Three sites were measured when this was written: the
+    #: comment above `PIN_BINARY` (40, 38, 25) and the one inside the refusal branch (25, 40).
+    source = " ".join((REPO / "runprov" / "run.py").read_text(encoding="utf-8").split())
+    mentions = re.findall(r"(\d+) of the (\d+) binary suffixes", source)
+    assert mentions, "the prose no longer says `N of the M binary suffixes`; the sweep is broken"
+    for neither, total in mentions:
+        assert (int(neither), int(total)) == (held["neither"], held["here"]), (
+            f"a comment says {neither} of {total} binary suffixes, and the tables hold "
+            f"{held['neither']} of {held['here']}"
+        )
+    assert f"{held['here']} entries here against {held['there']} there" in source, (
+        f"the comment above `PIN_BINARY` no longer states the pair it measures "
+        f"({held['here']}, {held['there']}); correcting it in one place and not the other is "
+        f"what this leg exists to refuse"
+    )
