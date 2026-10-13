@@ -12547,19 +12547,24 @@ def _nogit(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("direct_url", "source", "identifies"),
+    ("direct_url", "source", "identifies", "url"),
     [
         # NO direct_url.json MEANS AN INDEX INSTALL (PEP 610). PyPI never reuses a filename,
         # so name + version is an exact identification — the ONLY case where a version is.
-        (None, "index", True),
-        ('{"url": "git+https://h/r", "vcs_info": {"commit_id": "a1b2c3d4"}}', "vcs", True),
-        ('{"url": "file:///tmp/x", "dir_info": {"editable": true}}', "local", False),
+        (None, "index", True, None),
+        ('{"url": "git+https://h/r", "vcs_info": {"commit_id": "a1b2c3d4"}}', "vcs", True, None),
+        (
+            '{"url": "file:///tmp/x", "dir_info": {"editable": true}}',
+            "local",
+            False,
+            "file:///tmp/x",
+        ),
         # A VCS entry with no commit_id identifies nothing, whatever it claims to be.
-        ('{"url": "git+https://h/r", "vcs_info": {}}', "local", False),
+        ('{"url": "git+https://h/r", "vcs_info": {}}', "local", False, "git+https://h/r"),
     ],
 )
 def test_tool_identity_reads_how_the_package_was_installed(
-    tmp_path, direct_url, source, identifies
+    tmp_path, direct_url, source, identifies, url
 ):
     """U-01. Which runprov wrote this record, and whether that answer identifies the code.
 
@@ -12574,6 +12579,11 @@ def test_tool_identity_reads_how_the_package_was_installed(
     assert got["identifies_code"] is identifies
     assert got["version"] == runprov.__version__
     assert got["name"] == "runprov"
+    # WHERE IT CAME FROM, when that is all there is. `url` is PEP 610's own key and the only
+    # thing a `local` install leaves to go on -- a path or a URL a reader can at least look
+    # at. It was rendered by this very parametrisation and asserted by nothing, so reading it
+    # from the wrong key published `url: null` for every editable install in existence.
+    assert got.get("url") == url
 
 
 def test_tool_identity_says_unknown_rather_than_guessing(tmp_path):
@@ -12668,11 +12678,147 @@ def test_the_default_lookups_answer_for_this_very_package():
     record does — and requires a real answer from the real interpreter.
     """
     got = runprov.environment.tool_identity()
-    assert got["source"] in ("index", "vcs", "checkout", "local", "unknown")
+    assert got["source"] in runprov.environment._TOOL_SOURCES
     assert got["version"] == runprov.__version__
     assert isinstance(got["identifies_code"], bool)
     assert runprov.environment._distribution("runprov") is not None, "runprov is installed here"
     assert runprov.environment._distribution("no-such-package-anywhere-3f7a") is None
+
+
+def test_the_tool_source_VOCABULARY_is_declared_AND_held_against_what_the_code_writes():
+    """`_TOOL_SOURCES` was declared and read by NOTHING — not the package, not this suite.
+
+    It is the vocabulary of `tool.source`, the field a consumer switches on to decide whether
+    a record names code or names a label, and it was written THREE times: once as that
+    constant, which nothing imported, and twice as a hand-typed tuple inside two tests below.
+    So the declaration was decoration — `_TOOL_SOURCES = None` changes nothing anywhere — and
+    a sixth value added to `tool_identity` tomorrow would belong to no vocabulary at all.
+    That is `a declared table with no second side`, and the second side is the module's own
+    AST: the population of values `tool_identity` can assign is one the language supplies.
+
+    EQUALITY, not containment, because a member that has stopped being reachable is as much a
+    defect as a value that is written and undeclared: the first tells a consumer to handle a
+    case that cannot arrive.
+    """
+    module = ast.parse((REPO / "runprov" / "environment.py").read_text(encoding="utf-8"))
+    function = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "tool_identity"
+    )
+    written, computed = [], []
+    for node in ast.walk(function):
+        #: BOTH FORMS THE FUNCTION USES: the initial dict literal, and every `out.update(...)`.
+        #: A third form would land in `computed` below rather than be skipped, because a source
+        #: this derivation cannot read makes the vocabulary underivable -- which is a refusal,
+        #: not a pass.
+        if isinstance(node, ast.keyword) and node.arg == "source":
+            (written if isinstance(node.value, ast.Constant) else computed).append(node.value)
+        elif isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values, strict=True):
+                if isinstance(key, ast.Constant) and key.value == "source":
+                    (written if isinstance(value, ast.Constant) else computed).append(value)
+    written = {node.value for node in written}
+    assert not computed, (
+        f"{len(computed)} `source` assignment(s) are not literals, so this derivation cannot "
+        f"answer what the vocabulary is; it must not report a clean set instead"
+    )
+    assert written == set(runprov.environment._TOOL_SOURCES), (
+        f"`tool_identity` writes {sorted(written)} and `_TOOL_SOURCES` declares "
+        f"{sorted(runprov.environment._TOOL_SOURCES)}"
+    )
+
+
+def test_the_environment_variables_this_module_watches_are_the_ones_THOSE_TOOLS_SET():
+    """Spelt out, because nothing in this repository can derive them. [ADR-0009]
+
+    `CONDA_PREFIX`, `POETRY_ACTIVE`, `PIXI_PROJECT_ROOT` and the rest are set by conda, by
+    poetry and by pixi. A typo in any of them disables a detection with NO symptom — the
+    manager is reported as absent, which is exactly what a machine not using that tool
+    reports, and `manager()` returning an empty list is documented as a real answer. So these
+    literals ARE the instrument; a derived parametrize cannot be one, because it would inject
+    the mutated name and recognise it.
+
+    The derived legs below are for the other direction: a variable ADDED to either table
+    without being detected, or a manager NAME nothing reports.
+    """
+    assert runprov.environment._MANAGER_VARS == {
+        "CONDA_PREFIX": "conda",
+        "MAMBA_EXE": "mamba",
+        "MAMBA_ROOT_PREFIX": "mamba",
+        "PIXI_PROJECT_ROOT": "pixi",
+        "POETRY_ACTIVE": "poetry",
+        "PDM_PROJECT_ROOT": "pdm",
+        "HATCH_ENV_ACTIVE": "hatch",
+        "RYE_HOME": "rye",
+        "UV_PROJECT_ENVIRONMENT": "uv",
+        "VIRTUAL_ENV": "venv",
+    }
+    assert runprov.environment._NAME_VARS == (
+        "CONDA_DEFAULT_ENV",
+        "HATCH_ENV_ACTIVE",
+        "PIXI_ENVIRONMENT_NAME",
+    )
+
+    empty = pathlib.Path("/nonexistent-prefix-3f7a")
+    for var, name in runprov.environment._MANAGER_VARS.items():
+        answer = runprov.environment.manager(prefix=empty, env={var: "my-env"})
+        assert answer["detected"] == [name], f"{var} must name {name}, got {answer}"
+        #: THE OVERLAP IS REAL AND IS THE POINT: `HATCH_ENV_ACTIVE` is in BOTH tables, and the
+        #: name wins. Hatch sets it to the environment's NAME, which is the thing a human asks
+        #: for, so its value is recorded where a prefix PATH would be reduced to `set`. The
+        #: comment above `_MANAGER_VARS` used to say *the values are paths* of all ten members,
+        #: which was false of this one -- a present-tense claim inside the code, true when it
+        #: was written and overtaken by a member added to the other table.
+        recorded = "my-env" if var in runprov.environment._NAME_VARS else "set"
+        assert answer["evidence"] == {var: recorded}, (
+            f"{var}: a variable whose value is a PATH carries a username and a machine layout "
+            f"and this dict is committed, so only the fact that it is set may be recorded; a "
+            f"variable that NAMES an environment records the name"
+        )
+    for var in runprov.environment._NAME_VARS:
+        answer = runprov.environment.manager(prefix=empty, env={var: "my-env"})
+        assert answer["evidence"][var] == "my-env", (
+            f"{var} NAMES an environment, which is the thing a human asks for, so its value "
+            f"is recorded where a path's would not be"
+        )
+
+
+def test_every_lock_file_this_module_DECLARES_is_captured_and_pinned(tmp_path):
+    """[ADR-0009]. The names belong to other tools, so they are spelt out and then exercised.
+
+    `lockfiles` is the half that makes an environment reproducible rather than merely
+    described, and a name misspelt here does not fail: the file is simply not captured, and
+    the record says the project declares nothing. The derived leg writes EVERY declared name
+    into one tree and requires every one of them back, with a digest — a name captured without
+    a digest names a moving target.
+    """
+    assert runprov.environment.LOCKFILES == (
+        "uv.lock",
+        "poetry.lock",
+        "pdm.lock",
+        "pixi.lock",
+        "conda-lock.yml",
+        "Pipfile.lock",
+        "environment.yml",
+        "environment.yaml",
+        "requirements.txt",
+        "requirements.lock",
+        "requirements-dev.lock",
+    ), "each one is its own tool's choice of filename; none of them is derivable here"
+
+    for index, name in enumerate(runprov.environment.LOCKFILES):
+        (tmp_path / name).write_text(f"# {index}\n", encoding="utf-8")
+    captured = runprov.environment.lockfiles(tmp_path)
+    assert [entry["name"] for entry in captured] == list(runprov.environment.LOCKFILES), (
+        "every declared name, in the declared order — a reader should meet a resolved lock "
+        "before a loose `requirements.txt`"
+    )
+    assert len({entry["sha256"] for entry in captured}) == len(captured), (
+        "a distinct digest per file, because the contents here are distinct: one digest "
+        "reused would mean the pin is not of the file"
+    )
+    assert all(entry["bytes"] == len(f"# {i}\n") for i, entry in enumerate(captured))
 
 
 def test_every_record_names_the_tool_that_wrote_it(tmp_path):
@@ -12691,8 +12837,393 @@ def test_every_record_names_the_tool_that_wrote_it(tmp_path):
     tool = rec["tool"]
     assert tool["name"] == "runprov"
     assert tool["version"] == runprov.__version__
-    assert tool["source"] in ("index", "vcs", "checkout", "local", "unknown")
+    assert tool["source"] in runprov.environment._TOOL_SOURCES
     assert isinstance(tool["identifies_code"], bool)
+
+
+def _snapshot_sections(text: str) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """PARSE the snapshot with the grammar it is written in, instead of reading it as prose.
+
+    `_render_snapshot` emits a requirements-style file: a comment header, a `name==version`
+    body, and -- when the prefix has a conda-meta -- a second body under a heading in conda's
+    own `name=version=build` spelling. Every one of those lines is MACHINE-READ downstream,
+    by `pip install -r`, by a reader diffing two snapshots, and by the digest the filename is
+    derived from. Eleven of this module's surviving mutants lived in those lines, and they
+    survived because the suite checked the file with `in` -- a substring assertion cannot
+    kill a wrapped string, because `"XXfooXX"` still contains `"foo"`.
+
+    So: every line must be classifiable, and the mappings must come back equal to what went
+    in. Returns (header, pip, conda).
+    """
+    assert text.endswith("\n"), "a text file ends with a newline"
+    lines = text[:-1].split("\n")
+    assert lines and lines[0].startswith("# "), (
+        f"the first line is the snapshot's own title COMMENT, and a reader that strips "
+        f"comments must be left with installable requirements: {lines[0]!r}"
+    )
+    header: dict[str, str] = {}
+    pip: dict[str, str] = {}
+    conda: dict[str, str] = {}
+    where = "head"
+    for line in lines[1:]:
+        if line.startswith("# --- conda-meta"):
+            assert where in ("head", "pip"), f"the conda section is opened once: {line!r}"
+            where = "conda"
+            continue
+        if line.startswith("# "):
+            assert where == "head", f"a comment after the body began: {line!r}"
+            key, sep, value = line[2:].partition(":")
+            assert sep, f"a header line is `# key : value` and this is not one: {line!r}"
+            header[key.strip()] = value.strip()
+            continue
+        if where == "head":
+            where = "pip"
+        if where == "pip":
+            entry = re.fullmatch(r"([A-Za-z0-9._-]+)==(\S+)", line)
+            assert entry, f"not a requirements entry `pip install -r` could read: {line!r}"
+            pip[entry.group(1)] = entry.group(2)
+        else:
+            built = re.fullmatch(r"([A-Za-z0-9._-]+)=([^=\s]+)(?:=(\S+))?", line)
+            assert built, f"not an entry in conda's own `--export` spelling: {line!r}"
+            conda[built.group(1)] = (
+                f"{built.group(2)}={built.group(3)}" if built.group(3) else built.group(2)
+            )
+    return header, pip, conda
+
+
+def test_the_environment_snapshot_PARSES_as_the_requirements_FILE_it_claims_to_be():
+    """Every figure in the header is DERIVED, and both bodies survive the render intact.
+
+    The conda section is appended with `body +=`, and the mutant that makes it `body =`
+    REPLACES the pip section with the conda one: a snapshot of a conda-family environment
+    that silently drops every Python distribution, under a header still announcing how many
+    there were. No substring assertion can see that, and `in` was all this file had. The
+    round trip can -- it compares the mapping that came back against the one that went in.
+    """
+    pip = {"pandas": "3.0.5", "pytest": "8.4.1"}
+    conda = {"blast": "2.16.0=h66d330f_4", "samtools": "1.21=h50ea8bc_0"}
+    text = runprov.environment._render_snapshot(pip, 3, conda)
+    header, got_pip, got_conda = _snapshot_sections(text)
+    assert got_pip == pip, "the pip body is still there, entry for entry, beside the conda one"
+    assert got_conda == conda, "and the conda body carries name, version AND build"
+    assert set(header) == {"python", "platform", "packages", "conda", "UNREADABLE"}
+    assert header["packages"] == str(len(pip))
+    assert header["conda"].split()[0] == str(len(conda))
+    assert header["UNREADABLE"].split()[0] == "3"
+    assert header["platform"] == platform.platform()
+    assert header["python"].startswith(platform.python_version()), (
+        "the interpreter's VERSION, which is the first field of `sys.version` -- the second is "
+        "`(main,` and identifies nothing"
+    )
+
+
+def test_a_snapshot_with_NOTHING_unreadable_and_no_conda_prefix_says_NEITHER():
+    """The two conditional header lines, and the DEFAULTS that decide whether they appear.
+
+    `unreadable` defaults to 0, and a default of 1 would stamp
+    `# UNREADABLE: 1 distribution(s) had no readable name` into every snapshot of a perfectly
+    healthy environment -- changing the digest, hence the filename, hence what every
+    provenance record points at, while reporting a fault that did not happen.
+    """
+    header, pip, conda = _snapshot_sections(runprov.environment._render_snapshot({"a": "1"}))
+    assert set(header) == {"python", "platform", "packages"}, (
+        "no UNREADABLE line when nothing was unreadable, and no conda line without a prefix"
+    )
+    assert pip == {"a": "1"} and conda == {}
+
+
+def test_the_snapshot_RECORD_names_every_FIGURE_the_file_itself_carries(tmp_path, monkeypatch):
+    """The record is the half a consumer reads, and it must agree with the file it points at.
+
+    Its keys are the record's public vocabulary -- `n_unreadable` is how a reader learns the
+    snapshot is incomplete -- so they are held by EQUALITY: a key renamed is a field that
+    silently stops being published, and a key added is one nothing documents.
+
+    The store is TWO levels deep on purpose. `mkdir(parents=True)` is what makes
+    `snapshot_dir=".runprov/env"` work on a first run, and with `parents=False` it raises
+    `FileNotFoundError` -- which nothing here caught, because every test wrote into a
+    directory whose parent already existed.
+    """
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "plain-venv"))
+    rec = runprov.environment.write_snapshot(tmp_path / "deep" / "store")
+    assert set(rec) == {"path", "sha256", "n_packages", "n_unreadable", "python", "reused"}
+    header, pip, conda = _snapshot_sections(pathlib.Path(rec["path"]).read_text(encoding="utf-8"))
+    assert rec["n_packages"] == len(pip) == int(header["packages"])
+    stated = int(header["UNREADABLE"].split()[0]) if "UNREADABLE" in header else 0
+    assert rec["n_unreadable"] == stated, "the record and the file state the same count"
+    assert rec["python"].startswith(platform.python_version())
+    assert conda == {} and "n_conda_packages" not in rec
+
+
+def test_a_snapshot_file_whose_BYTES_ARE_NOT_UTF8_is_rewritten_not_read_as_REUSABLE(tmp_path):
+    """C-11's companion: the decode that reads a candidate file must not be able to RAISE.
+
+    `errors="replace"` is why a file holding bytes that are not UTF-8 can be compared at all,
+    and Python resolves an error handler LAZILY -- only when a byte actually needs it. So a
+    bogus handler name is invisible until the day the file is damaged, which is the one day
+    this line runs for real. Then it raises `LookupError`, which is not an `OSError`, so the
+    guard above it does not catch it and the caller's run dies inside provenance.
+    """
+    store = tmp_path / "envs"
+    first = runprov.environment.write_snapshot(store)
+    path = pathlib.Path(first["path"])
+    path.write_bytes(b"\xff\xfe not a snapshot, and not decodable either\n")
+    again = runprov.environment.write_snapshot(store)
+    assert again["sha256"] == first["sha256"], "the same environment, so the same name"
+    assert again["reused"] is False, "the CONTENT is checked; the name is not evidence"
+    assert path.read_bytes().decode("utf-8").startswith("# environment snapshot")
+
+
+def test_the_git_questions_this_module_asks_are_ones_git_ITSELF_ANSWERS(tmp_path):
+    """The behavioural leg: a REAL repository, so every argument has to actually work.
+
+    `--error-unmatch`, `HEAD` and `--porcelain` are git's vocabulary, not this package's, and
+    a test that replaces `git_command` with a fake cannot tell a working invocation from a
+    misspelled one -- the fake answers whatever it was written to answer. Here git answers,
+    and a mangled flag makes it exit non-zero: `project.git` returns None, `tracked` is None,
+    and `tool_identity` falls through to the installed metadata while reporting a source that
+    is not `checkout`. That is a silent downgrade of the field whose whole job is to say
+    whether the record identifies the code that ran.
+    """
+    root = _git_repo(tmp_path / "proj")
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "t@e.org"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "T"], check=True)
+    pkg = root / "runprov"
+    pkg.mkdir()
+    (pkg / "environment.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-qm", "one"], check=True, capture_output=True
+    )
+    head = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    clean = runprov.environment.tool_identity(package_file=pkg / "environment.py")
+    assert clean["source"] == "checkout", "git answered all three questions"
+    assert clean["commit"] == head, "and the commit is the one git reports, not a label"
+    assert clean["dirty"] is False and clean["identifies_code"] is True
+
+    (pkg / "environment.py").write_text("x = 2\n", encoding="utf-8")
+    dirty = runprov.environment.tool_identity(package_file=pkg / "environment.py")
+    assert dirty["commit"] == head
+    assert dirty["dirty"] is True, "the status question is SCOPED to the package and answered"
+    assert dirty["identifies_code"] is False, "a dirty tree identifies nothing"
+
+
+def test_the_ARGUMENTS_git_is_given_are_recorded_because_they_are_GITS_vocabulary(tmp_path):
+    """The literal leg, beside the real-git one above, and for the reason `SCHEDULER_VARS`
+    has one: these names are set OUTSIDE this repository, so a derived expectation would
+    have to re-spell them and would move whenever the code did.
+
+    The pre-existing test recorded `args[0]` only -- the subcommand -- so `--error-unmatch`,
+    `HEAD`, `--porcelain` and both `--` separators were unasserted. The separator is the one
+    argument no behavioural test can reach: drop it from `status` and git still answers,
+    because the pathspec it protects happens not to look like an option. It is there so a
+    package in a directory whose name begins with a dash is not read as one.
+    """
+    (tmp_path / ".git").mkdir()
+    pkg = tmp_path / "runprov"
+    pkg.mkdir()
+    here = (pkg / "__init__.py").resolve()
+    seen: list[tuple[pathlib.Path, tuple[str, ...]]] = []
+
+    def fake_git(root, *args):
+        seen.append((root, args))
+        if args[0] == "ls-files":
+            return "runprov/__init__.py"
+        return "deadbeefcafe" if args[0] == "rev-parse" else " M runprov/__init__.py"
+
+    got = runprov.environment.tool_identity(package_file=pkg / "__init__.py", git_command=fake_git)
+    assert got["source"] == "checkout" and got["dirty"] is True
+    assert [args for _root, args in seen] == [
+        ("ls-files", "--error-unmatch", "--", str(here)),
+        ("rev-parse", "HEAD"),
+        ("status", "--porcelain", "--", str(here.parent)),
+    ]
+    assert {root for root, _args in seen} == {tmp_path.resolve()}, "all three asked of one root"
+
+
+def test_the_distribution_this_module_asks_the_metadata_about_is_its_OWN(tmp_path):
+    """`tool_identity` answers "which runprov wrote this record", so the name it looks up is
+    this package's own -- derived from the package rather than spelled again, because a
+    lookup of some other name would answer `unknown` for ever and look like an environment
+    without runprov installed."""
+    asked: list[str] = []
+
+    def lookup(name):
+        asked.append(name)
+        return None
+
+    got = runprov.environment.tool_identity(package_file=_nogit(tmp_path), distribution=lookup)
+    assert asked == [runprov.__name__]
+    assert got["name"] == runprov.__name__ and got["source"] == "unknown"
+
+
+def test_a_distribution_with_NO_READABLE_NAME_is_COUNTED_and_never_INVENTED(monkeypatch):
+    """Three things the snapshot's honesty rests on, none of them previously reachable.
+
+    A distribution whose metadata will not give up a name cannot be keyed, so it is counted
+    instead -- and the fallback for that name must be EMPTY, not a placeholder: any truthy
+    fallback makes it an entry, so the snapshot gains a package that does not exist and loses
+    the count that said something was unreadable.
+
+    `_path` is where its location is read from, `"?"` is the answer when even that is absent,
+    and the loop must CONTINUE: a `break` there ends the sweep at the first unreadable
+    distribution and silently truncates the environment at whatever name sorts near it.
+    """
+    import importlib.metadata as md
+
+    class _Dists:
+        def __init__(self, name, version, path=None):
+            self.metadata = {"Name": name}
+            self.version = version
+            if path is not None:
+                self._path = path
+
+    dists = [
+        _Dists("alpha", "1.0"),
+        _Dists(None, "2.0", path="/x/nameless-2.0.dist-info"),
+        _Dists("", "3.0"),
+        _Dists("omega", "4.0"),
+    ]
+    monkeypatch.setattr(md, "distributions", lambda: iter(dists))
+    bad: list[str] = []
+    got = runprov.environment.installed_packages(bad)
+    assert got == {"alpha": "1.0", "omega": "4.0"}, (
+        "the two nameless distributions are counted, never invented -- and the sweep "
+        "CONTINUES past them, so `omega` is still in the environment"
+    )
+    assert bad == ["/x/nameless-2.0.dist-info", "?"], (
+        "where it was, and `?` when the distribution will not say even that"
+    )
+
+
+def test_a_conda_RECORDS_OWN_FIELDS_are_believed_and_its_FILENAME_is_only_the_FALLBACK(tmp_path):
+    """The JSON is the record; the filename is the recovery path, and only that.
+
+    Reading the name or the version from the wrong key sends every record down the recovery
+    path, where a well-formed prefix answers IDENTICALLY -- conda names each file after its
+    contents -- so the defect is invisible in any fixture whose two halves agree. Here they
+    disagree, which is the only state that can tell them apart, and the build key is read
+    from a record that has none: a missing build must leave the version alone, because
+    `name=version=` is not a thing conda can read back.
+    """
+    meta = tmp_path / "conda-meta"
+    meta.mkdir(parents=True)
+    (meta / "wrong-0.0-wrongbuild.json").write_text(
+        json.dumps({"name": "right", "version": "9.9", "build": "rightbuild"}), encoding="utf-8"
+    )
+    (meta / "nobuild-1.2-x.json").write_text(
+        json.dumps({"name": "nobuild", "version": "1.2"}), encoding="utf-8"
+    )
+    assert runprov.environment.conda_packages(tmp_path) == {
+        "nobuild": "1.2",
+        "right": "9.9=rightbuild",
+    }
+
+
+def test_a_CORRUPT_conda_record_is_recovered_from_a_FILENAME_WHOSE_NAME_HAS_A_HYPHEN(tmp_path):
+    """`rsplit("-", 2)` splits from the RIGHT, exactly twice: version and build come off the
+    end and whatever is left is the name, hyphens and all. Splitting three times makes
+    `python-dateutil-2.9.0-pyhd8ed1ab_0` four parts, the record fails the length check and is
+    DROPPED -- so the environment is understated, which this function's own docstring calls
+    the one thing a snapshot must never do. Measured on a real prefix: 'python-' alone
+    prefixes dozens of conda packages.
+
+    And the record that cannot be recovered sorts FIRST here, because a `break` in its place
+    would end the sweep before any of the three survivors was read.
+    """
+    root = _conda_prefix(
+        tmp_path,
+        PKGS,
+        corrupt=("aaa-unrecoverable.json", "python-dateutil-2.9.0-pyhd8ed1ab_0.json"),
+    )
+    got = runprov.environment.conda_packages(root)
+    assert set(got) == {"blast", "python-dateutil", "samtools"}, (
+        "the unrecoverable record is SKIPPED, not taken as the end of the prefix"
+    )
+    assert got["python-dateutil"] == "2.9.0=pyhd8ed1ab_0"
+
+
+def test_a_pyvenv_cfg_whose_BYTES_ARE_NOT_UTF8_still_NAMES_the_tool_that_wrote_it(tmp_path):
+    """`errors="replace"` is why an undecodable byte in `pyvenv.cfg` does not cost the answer.
+
+    Python resolves an error handler lazily -- only when a byte actually needs one -- so a
+    bogus handler name is invisible on every well-formed file and raises `LookupError` on the
+    first damaged one. `LookupError` is not an `OSError`, so the handler written for exactly
+    this case does not catch it, and `manager()` raises instead of reporting a venv.
+
+    The two keys are the instrument here, as the git flags are: `uv` and `virtualenv` write
+    their own names into this file and plain `venv` writes neither, so the vocabulary is
+    theirs. A third tool that starts writing one is a member nobody detects -- which is why
+    the names are asserted beside the behaviour and not derived from it.
+    """
+    prefix = tmp_path / "pfx"
+    prefix.mkdir()
+    (prefix / "pyvenv.cfg").write_bytes(
+        b"home = /x\n# \xff\xfe not utf-8 at all\nvirtualenv = 20.26.3\nuv = 0.4.18\n"
+    )
+    got = runprov.environment.manager(prefix=prefix, env={})
+    assert got["detected"] == ["uv", "venv", "virtualenv"]
+    assert got["evidence"]["pyvenv.cfg:uv"] == "0.4.18"
+    assert got["evidence"]["pyvenv.cfg:virtualenv"] == "20.26.3"
+
+
+def test_a_conda_PREFIX_is_evidence_recorded_as_TRUE_and_never_as_a_PATH(tmp_path):
+    """The key is the directory that proves it and the value is `True`.
+
+    Not the path: this record is committed, and a prefix carries a username and a machine
+    layout. Not `False` or `None` either -- the field is read as "is there evidence", so a
+    falsey value reads as a prefix that was checked and found absent, which is the opposite
+    of what was measured.
+    """
+    got = runprov.environment.manager(prefix=_conda_prefix(tmp_path / "pfx", PKGS), env={})
+    assert got["detected"] == ["conda-family"]
+    assert got["evidence"] == {"conda-meta": True}
+    assert got["evidence"]["conda-meta"] is True, "a fact, not a path and not a falsey stand-in"
+
+
+def test_an_archived_lock_is_named_by_SIXTEEN_characters_of_its_own_digest(tmp_path):
+    """The filename is the content address, and its length is the claim `env-<sha16>` makes
+    one function above. Seventeen characters is still a valid, unique, perfectly working
+    filename -- which is why nothing noticed: the store keeps functioning and every name in
+    it stops matching the convention the records and the documentation both state.
+
+    The store is TWO levels deep, because `mkdir(parents=True)` is what lets a project point
+    its archive at `.runprov/locks` without creating the parent first, and every existing
+    test here passed a directory one level under an existing root.
+    """
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    rec = runprov.environment.archive_lockfiles(root, root / "deep" / "locks")[0]
+    assert "error" not in rec, "the store's own parent did not exist, and was created"
+    assert rec["archived"] is True
+    name = pathlib.Path(rec["path"]).name
+    short = name.split("-")[1]
+    assert len(short) == 16 and rec["sha256"].startswith(short)
+    assert name == f"lock-{short}-{rec['name']}"
+    assert pathlib.Path(rec["path"]).read_text(encoding="utf-8") == "version = 1\n"
+
+
+def test_a_lock_GIT_ALREADY_HAS_does_not_stop_the_NEXT_lock_being_ARCHIVED(tmp_path):
+    """The skip is per lock file, and `LOCKFILES` has eleven members.
+
+    A `break` where the skip is written ends the sweep at the first lock git already stores
+    -- and `uv.lock` is first in that tuple and the one most likely to be committed, so the
+    projects this feature was built for are exactly the ones whose remaining locks would
+    vanish from the record while the first one reported success.
+    """
+    root = _git_repo(tmp_path / "proj")
+    (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (root / "poetry.lock").write_text("package = []\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "uv.lock"], check=True, capture_output=True)
+    got = runprov.environment.archive_lockfiles(root, root / "locks")
+    assert [rec["name"] for rec in got] == ["uv.lock", "poetry.lock"], "LOCKFILES order"
+    assert got[0]["archived"] is False and got[0]["note"] == "git already stores it"
+    assert got[1]["archived"] is True, "the sweep CONTINUES past a lock git already holds"
+    assert pathlib.Path(got[1]["path"]).read_text(encoding="utf-8") == "package = []\n"
 
 
 def _source_tree(tmp_path, files):

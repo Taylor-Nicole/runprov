@@ -386,8 +386,14 @@ LOCKFILES = (
 #: the thing a human asks for -- "which env was that?" -- and none of these is a path.
 _NAME_VARS = ("CONDA_DEFAULT_ENV", "HATCH_ENV_ACTIVE", "PIXI_ENVIRONMENT_NAME")
 
-#: Variables whose PRESENCE identifies a manager. The values are paths, and paths carry
-#: usernames and machine layout, so only the fact that they are set is recorded.
+#: Variables whose PRESENCE identifies a manager. Their values are paths -- which carry a
+#: username and a machine layout, and this dict is committed -- so only the fact that they
+#: are set is recorded.
+#:
+#: WITH ONE EXCEPTION, AND IT IS IN BOTH TABLES: `HATCH_ENV_ACTIVE` holds an environment NAME,
+#: not a path, so `_NAME_VARS` records its value and that write lands after this one. The
+#: sentence above said *the values are paths* of all ten members and was false of that one from
+#: the day it joined the other table.
 _MANAGER_VARS = {
     "CONDA_PREFIX": "conda",
     "MAMBA_EXE": "mamba",
