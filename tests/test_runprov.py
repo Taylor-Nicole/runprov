@@ -9860,6 +9860,197 @@ def test_the_dirty_other_files_cap_is_small_enough_to_be_a_cap(tmp_path):
     )
 
 
+def test_every_SUFFIX_this_package_calls_SOURCE_is_one_a_LANGUAGE_gave_it():
+    """`CODE_SUFFIXES` decides `git_code_dirty` for every layout nobody declared.
+
+    THE LITERALS ARE THE INSTRUMENT HERE, as they are for the scheduler variables in
+    `resources.py` and git's flags in `environment.py`: these spellings belong to languages
+    outside this repository, so an expectation derived from the module would have to re-spell
+    them and would move whenever the module did. Thirty-three members, each able to be
+    mutated on its own, and nothing held any of them.
+
+    The second leg is derived over whatever the table HOLDS, so a member added tomorrow is
+    required to work rather than merely to be present -- and the negative leg is the table's
+    own stated exclusion: `.json`, `.csv` and the rest are what a pipeline WRITES, and a
+    boolean that goes red on its own outputs is a permanently red check.
+    """
+    assert runprov.project.CODE_SUFFIXES == frozenset(
+        {
+            ".bash",
+            ".c",
+            ".cc",
+            ".cpp",
+            ".cs",
+            ".cwl",
+            ".go",
+            ".h",
+            ".hpp",
+            ".ipynb",
+            ".java",
+            ".jl",
+            ".js",
+            ".lua",
+            ".m",
+            ".mjs",
+            ".nf",
+            ".pl",
+            ".ps1",
+            ".py",
+            ".pyi",
+            ".pyx",
+            ".r",
+            ".rb",
+            ".rmd",
+            ".rs",
+            ".scala",
+            ".sh",
+            ".smk",
+            ".sql",
+            ".ts",
+            ".wdl",
+            ".zsh",
+        }
+    )
+    for suffix in runprov.project.CODE_SUFFIXES:
+        assert runprov.project.looks_like_code(f"any/depth/module{suffix}") is True, (
+            f"{suffix} is declared source and is not recognised as any"
+        )
+        assert runprov.project.looks_like_code(f"module{suffix}") is True, "and at the root"
+    written = {".json", ".yaml", ".yml", ".csv", ".tsv", ".parquet", ".md"}
+    assert not runprov.project.CODE_SUFFIXES & written, (
+        "these are what a pipeline WRITES, and the table says so in its own comment"
+    )
+    for suffix in written:
+        assert runprov.project.looks_like_code(f"reports/out{suffix}") is False
+
+
+def test_every_BUILD_FILE_basename_is_recognised_WHEREVER_IT_SITS_and_in_ANY_CASE():
+    """The suffix-less files that decide how the code is built or entered.
+
+    Both halves of the lookup were unguarded. The names themselves are build tools' --
+    `Dockerfile`, `Snakefile`, `meson.build` -- so they are written down; and the BASENAME is
+    taken by splitting the path on `/`, which nothing exercised with a nested path whose
+    basename is what decides. A separator that no longer separates leaves
+    `build/tools/dockerfile` compared whole against the table, matching nothing and ending in
+    no suffix, so every build file outside the repository root stops being code.
+    """
+    assert runprov.project.CODE_BASENAMES == frozenset(
+        {
+            "cmakelists.txt",
+            "containerfile",
+            "dockerfile",
+            "gnumakefile",
+            "justfile",
+            "makefile",
+            "meson.build",
+            "nextflow.config",
+            "pyproject.toml",
+            "rakefile",
+            "setup.cfg",
+            "setup.py",
+            "snakefile",
+        }
+    )
+    for name in runprov.project.CODE_BASENAMES:
+        assert runprov.project.looks_like_code(name) is True, f"{name} at the root"
+        assert runprov.project.looks_like_code(f"build/tools/{name}") is True, (
+            f"{name} in a subdirectory -- the path is split on `/` and the BASENAME decides"
+        )
+        assert runprov.project.looks_like_code(f"build/tools/{name.upper()}") is True, (
+            f"{name} however it is capitalised: a repository holds `Dockerfile`, not `dockerfile`"
+        )
+
+
+def test_the_DEFAULT_code_paths_are_each_a_SCOPE_a_change_can_be_INSIDE():
+    """The hint a project gets when it declares nothing, and every member must WORK as one.
+
+    `code_paths` widens: a change is code if it is under one of these OR is recognisably
+    source. So `outside` is the derived second side -- it lists code that changed OUTSIDE the
+    declared paths, and a declared path that has stopped being recognised sends its own
+    changes there while `code` still looks right. Two of these five are files that
+    `looks_like_code` would catch anyway, and `outside` is the only thing that can tell the
+    table was consulted at all.
+    """
+    assert runprov.DEFAULT_CODE_PATHS == ("src", "scripts", "conf", "pyproject.toml", "Makefile")
+    for path in runprov.DEFAULT_CODE_PATHS:
+        state = runprov.project.classify_status(f" M {path}", runprov.DEFAULT_CODE_PATHS)
+        assert state.code == (f" M {path}",), f"{path} is declared code and was not read as code"
+        assert state.other == ()
+        assert state.outside_code_paths == (), (
+            f"{path} is one of the DECLARED paths, so a change to it is not code found outside "
+            f"them -- which is what `outside` would say if the declaration stopped matching"
+        )
+
+
+def test_the_other_files_cap_is_FIFTY_measured_against_a_fixture_that_does_not_move_with_it(
+    tmp_path,
+):
+    """The companion the neighbouring two tests each say they cannot be.
+
+    One sizes its fixture from `OTHER_FILES_KEPT`, so the constant and the expectation move
+    together and the cap is proved APPLIED rather than proved to be a cap. The other bounds
+    it at `<= 200`, which is a FLOOR -- and a floor is defeated by narrowing the subject:
+    `OTHER_FILES_KEPT = 51` satisfies it exactly, and nothing in the suite noticed.
+
+    So the fixture is a literal: fifty-five dirty data files, fifty kept, five omitted. Both
+    numbers are stated here and neither is read from the module, which is the only
+    arrangement in which the constant moving makes something go red.
+    """
+    repo = _repo_with(tmp_path, "pkg")
+    # AT THE ROOT, not in a subdirectory: `git status --porcelain` collapses an untracked
+    # DIRECTORY into one line, so fifty-five files under `reports/` would arrive as `?? reports/`
+    # and the cap would never be reached. A fixture that cannot reach the branch is a vacuous leg.
+    for i in range(55):
+        (repo / f"d{i:03d}.tsv").write_text(f"{i}\n", encoding="utf-8")
+    code = runprov.Run(
+        "t", project=runprov.Project(root=repo, sink=runprov.sinks.MemorySink())
+    ).record["code"]
+    kept = code["git_dirty_other_files"]
+    assert len(kept) == 50, (
+        f"the cap is fifty change lines per record; this record kept {len(kept)}"
+    )
+    assert code["git_other_files_omitted"] == 5, "and it says what it left out"
+    assert code["git_other_changes"] == 55
+
+
+def test_the_git_TIMEOUT_is_a_bound_a_reader_can_find(tmp_path):
+    """Provenance capture must not be able to hang a run, and twenty seconds is the bound.
+
+    This is one of the few numbers in the package with no second side: nothing can compute
+    what a reasonable ceiling on `git status` is, so the literal IS the instrument and this
+    assertion is the tripwire that makes a human re-read it. It is taken from the AST rather
+    than from a clock, because the alternative is a test that waits.
+    """
+    tree = ast.parse((REPO / "runprov" / "project.py").read_text(encoding="utf-8"))
+    found = [
+        keyword.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "git"
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        for keyword in call.keywords
+        if keyword.arg == "timeout" and isinstance(keyword.value, ast.Constant)
+    ]
+    assert found == [20], (
+        f"`git()` runs one subprocess with one timeout, and it is 20 seconds; found {found}"
+    )
+    # AND IT IS WRITTEN FIVE TIMES, IN THREE SPELLINGS. Besides this call, `project.py` says
+    # `20s timeout` in its module docstring, `a 20-second timeout` in `DirtyState` -- wrapped
+    # across two lines, so a line-shaped search cannot see it -- and `a 20 s timeout` in
+    # `Project`; this suite says `20s timeout` too. Prose is the half a reader reaches for, and
+    # four copies of a number can disagree with the one that runs. Bound, not restated: every
+    # mention must be the value the call carries, and the count it SAW is printed so a sweep
+    # that matched nothing cannot read as a sweep that found nothing wrong.
+    said: list[str] = []
+    for name in ("runprov/project.py", "tests/test_runprov.py"):
+        text = " ".join((REPO / name).read_text(encoding="utf-8").split())
+        said += re.findall(r"(\d+)\s*(?:-second|\s?s)\s+timeout", text)
+    assert len(said) >= 4, f"only {len(said)} prose mention(s) of this bound; the sweep is broken"
+    assert set(said) == {str(found[0])}, (
+        f"the prose says {sorted(set(said))} and the call says {found}; one rule, one definition"
+    )
+
+
 def test_data_churn_alone_still_does_not_report_the_code_as_dirty(tmp_path):
     """The other half, and the reason `git_code_dirty` is not simply the whole-tree state:
     a pipeline dirties its own output tree on every run, and a boolean that is red forever
