@@ -883,6 +883,23 @@ def bench(
                 f"nowhere inside a function body, so there is no reader whose execution could "
                 f"prove the change was reached. This verdict rests on control 6 alone"
             )
+        elif not reached and verdict != SURVIVED:
+            #: A CAUGHT VERDICT IS ITS OWN PROOF OF REACH, and this branch exists because the
+            #: first version of this control refused one. Nothing can FAIL because of a change
+            #: it never saw, so a catch cannot be a false catch caused by unreach -- which is
+            #: the only thing the reach controls are for. Measured on its own first use: a guard
+            #: that asserts `report.WIDTH == 78` DIRECTLY fails on that line, so `_rule` is
+            #: never called and no package reader runs, and the control called a working guard
+            #: VOID. A pure tripwire assertion must stay measurable.
+            #:
+            #: THE SAME QUESTION EXISTS FOR CONTROL 6 and is deliberately not answered here:
+            #: it has its own calibration and its own negative controls, and widening it is a
+            #: separate measurement rather than a tidy-up of this one.
+            print(
+                f"CONTROL 6c (consequence): no reader of {', '.join(sorted(bound))} ran, which "
+                f"is CONSISTENT with this verdict -- the selection asserted the value directly "
+                f"and failed before any package reader could be reached"
+            )
         elif not reached:
             raise Void(
                 f"the mutation in {target} binds {', '.join(sorted(bound))} at MODULE LEVEL, so "
@@ -1010,10 +1027,28 @@ _SELFCHECK = [
         "",
     ),
     (
-        #: THE NEGATIVE CONTROL FOR 6c. `-k resource` runs 42 tests, imports `diff.py` and never
-        #: reaches the one line that reads this constant, so control 6 passes and 6c refuses.
+        "CAUGHT with NO reader -- control 6c must not refuse its own catch",
+        "FIGURES_the_pin",
+        "runprov/run.py",
+        "constant-asserted-directly",
+        CAUGHT,
+        "",
+    ),
+    (
+        #: THE NEGATIVE CONTROL FOR 6c. The selection runs 42 tests, imports `diff.py` and
+        #: never reaches the one line that reads this constant, so control 6 passes and 6c
+        #: refuses.
+        #:
+        #: `and not noise_band` IS PART OF THE CASE, and the reason is worth more than the
+        #: exclusion. This case was written as plain `-k resource` and passed. Then
+        #: `RESOURCE_NOISE` was GUARDED -- by a test whose name contains "resource" -- and the
+        #: case began reporting CAUGHT against an expected VOID: the negative control stopped
+        #: being a negative control BECAUSE THE CODE IMPROVED. The selfcheck caught it, which
+        #: is the whole argument for asserting each verdict instead of describing it. A control
+        #: keyed to the absence of a guard must exclude that guard by name, or it decays into a
+        #: test of whatever the suite happens not to cover yet.
         "VOID control 6c -- a MODULE CONSTANT whose readers never ran",
-        "resource",
+        "resource and not noise_band",
         "runprov/diff.py",
         "module-constant-unread",
         "VOID",
@@ -1125,6 +1160,15 @@ def _selfcheck_mutation(kind: str | None) -> Callable[[str], str]:
             "    )",
             "    return text  # bench selfcheck: printable made the identity",
         )
+    if kind == "constant-asserted-directly":
+        #: A MODULE-LEVEL TABLE WHOSE VALUE A TEST ASSERTS DIRECTLY. The selected guard counts
+        #: `PIN_BINARY`'s members against the figure `run.py` states about itself in prose, so
+        #: it fails on that comparison -- and never calls `open_output`, which is where the only
+        #: body reader of the table lives. So the verdict is CAUGHT with NO reader executed,
+        #: which is the branch of control 6c that exists because its first version refused
+        #: exactly this and called a working guard VOID. If that branch is ever removed, this
+        #: case reports VOID against an expected CAUGHT and says so.
+        return _substitute('    ".arrow", ".bam",', '    ".bam",')
     if kind == "module-constant-unread":
         #: A MODULE-LEVEL CONSTANT WHOSE READERS THE SELECTION DOES NOT REACH. Control 6 is
         #: satisfied the instant anything imports `diff.py`, because the changed statement IS

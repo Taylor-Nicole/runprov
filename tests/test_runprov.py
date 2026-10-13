@@ -37263,21 +37263,34 @@ def _fake_ctypes(*, handle=7, last_error=0, waited=None, raises=None):
     test Windows — CI does that on a real runner — but it proves this code asks the right
     question and reads the three answers apart. The numbers are the ones measured ON the
     runner, 2026-09-01, not ones copied out of a header file.
-    """
-    from runprov.show import _WAIT_TIMEOUT
 
-    closed = []
+    AND EVERY NUMBER HERE IS NOW A LITERAL, which is a repair and not a style choice. This
+    defaulted `waited` to `runprov.show._WAIT_TIMEOUT` and its callers passed
+    `runprov.show._WAIT_OBJECT_0`, so THE FIXTURE MOVED WITH THE CONSTANT and could not see
+    it move. Measured with `tools/bench.py`: `_WAIT_OBJECT_0` changed to 9 SURVIVED with the
+    reader confirmed executed at `show.py:710`, and so did `_WAIT_TIMEOUT`, `_SYNCHRONIZE`
+    and `_ERROR_ACCESS_DENIED`. `last_error=1450` was already written out, which is what
+    showed the literal form works here. Written out, the suite disagrees with a constant
+    that drifts — which is the only thing holding five values Windows defines and this
+    platform cannot be asked about.
+
+    `opened` records the ACCESS MASK each `OpenProcess` was given, because `_SYNCHRONIZE` is
+    a request rather than a comparison: nothing reads it back, so the only way to hold it is
+    to assert what the call asked for.
+    """
+    closed, masks = [], []
 
     class Kernel32:
         @staticmethod
         def OpenProcess(access, inherit, pid):
+            masks.append(access)
             if raises is not None:
                 raise raises
             return handle
 
         @staticmethod
         def WaitForSingleObject(h, ms):
-            return _WAIT_TIMEOUT if waited is None else waited
+            return 0x00000102 if waited is None else waited
 
         @staticmethod
         def CloseHandle(h):
@@ -37286,6 +37299,7 @@ def _fake_ctypes(*, handle=7, last_error=0, waited=None, raises=None):
     class FakeCtypes:
         WinDLL = staticmethod(lambda name, use_last_error=False: Kernel32())
         get_last_error = staticmethod(lambda: last_error)
+        opened = masks
 
     return FakeCtypes, closed
 
@@ -37306,7 +37320,7 @@ def test_show_NEVER_signals_a_process_when_asking_whether_it_is_alive(monkeypatc
     Asserted as "os.kill is not called at all" rather than as an outcome, because an
     outcome-only test passes on any implementation that signals the process and then
     happens to return the right answer."""
-    fake, _ = _fake_ctypes(waited=runprov.show._WAIT_OBJECT_0)
+    fake, _ = _fake_ctypes(waited=0x00000000)  # WAIT_OBJECT_0, written out
     _as_windows(monkeypatch, fake)
 
     def refuse(*a, **k):
@@ -37314,6 +37328,15 @@ def test_show_NEVER_signals_a_process_when_asking_whether_it_is_alive(monkeypatc
 
     monkeypatch.setattr(runprov.show.os, "kill", refuse)
     assert runprov.show._still_running(4321) is False
+    #: AND IT ASKS FOR NOTHING BUT THE RIGHT TO WAIT. `SYNCHRONIZE` alone, written out: an
+    #: access mask is a REQUEST, so nothing reads it back and no outcome assertion can see it.
+    #: `PROCESS_QUERY_INFORMATION` (0x0400) would also answer the question and would also fail
+    #: on a process this account may not inspect, turning "it exists" into "we could not ask"
+    #: -- so the narrower mask is the behaviour, not an implementation detail.
+    assert fake.opened == [0x00100000], (
+        f"the handle must be opened asking only for SYNCHRONIZE (0x00100000); it asked for "
+        f"{[hex(a) for a in fake.opened]}"
+    )
 
 
 def test_the_three_windows_answers_are_read_apart(monkeypatch):
@@ -37321,19 +37344,19 @@ def test_the_three_windows_answers_are_read_apart(monkeypatch):
     an absurd pid -> no handle, error 87. Three questions, three different right answers —
     and the old code gave the same one to all three."""
     for waited, expect in (
-        (runprov.show._WAIT_TIMEOUT, True),
-        (runprov.show._WAIT_OBJECT_0, False),
+        (0x00000102, True),  # WAIT_TIMEOUT -- the wait timed out, so it is still running
+        (0x00000000, False),  # WAIT_OBJECT_0 -- the object is signalled, so it exited
     ):
         fake, closed = _fake_ctypes(waited=waited)
         _as_windows(monkeypatch, fake)
         assert runprov.show._still_running(11) is expect, waited
         assert closed == [7], "the handle must be closed whatever the answer"
 
-    fake, _ = _fake_ctypes(handle=0, last_error=runprov.show._ERROR_INVALID_PARAMETER)
+    fake, _ = _fake_ctypes(handle=0, last_error=87)  # ERROR_INVALID_PARAMETER
     _as_windows(monkeypatch, fake)
     assert runprov.show._still_running(12) is False, "error 87 IS 'there is no such process'"
 
-    fake, _ = _fake_ctypes(handle=0, last_error=runprov.show._ERROR_ACCESS_DENIED)
+    fake, _ = _fake_ctypes(handle=0, last_error=5)  # ERROR_ACCESS_DENIED
     _as_windows(monkeypatch, fake)
     assert runprov.show._still_running(13) is True, (
         "a process we may not open is a process that EXISTS -- Windows for EPERM, and the "
@@ -51461,4 +51484,115 @@ def test_the_FIGURES_the_pin_tables_state_ABOUT_THEMSELVES_are_the_figures_they_
         f"the comment above `PIN_BINARY` no longer states the pair it measures "
         f"({held['here']}, {held['there']}); correcting it in one place and not the other is "
         f"what this leg exists to refuse"
+    )
+
+
+# ================================== THE BOUNDARY CONSTANTS, HELD BY WHAT THEY DECIDE
+# MEASURED, NOT ASSUMED. `tools/registries.py` named nine single-value constants that no test
+# names at all. Six of them were benched with a selector wide enough for control 6c to confirm
+# a reader RAN, and all six survived; a seventh (`__main__.UNREADABLE_SHOWN`) was CAUGHT, held
+# behaviourally by a test asserting a figure derived from the cap.
+#
+# THE SPLIT IS THE FINDING. Of the survivors, three decide an OUTCOME and are held below by a
+# pair of fixtures either side of the declared value -- a second side that is the behaviour
+# rather than a restatement. The rest are bounds where a bound IS the property, and they are
+# declared at the end of this block rather than wrapped in a guard that proves nothing.
+
+
+def test_a_resource_gap_INSIDE_the_noise_band_is_not_material_and_one_OUTSIDE_it_IS():
+    """`RESOURCE_NOISE` is the relative half of *"material means the difference is large next
+    to the measurement AND large in its own units"*, measured over twelve identical runs in
+    Audit D. Its absolute sibling `RESOURCE_FLOOR` is held by a set equality; this half was
+    held by nothing, so the band could move and no test would disagree.
+
+    THE RATIOS ARE LITERALS, deliberately. Deriving them from `RESOURCE_NOISE` would make the
+    fixture move with the constant, which is the exact shape that left five Windows constants
+    in this file unfalsifiable until it was measured.
+
+    AND THE FLOOR IS HELD OUT OF THE WAY. Every leg uses `max_rss_bytes`, whose floor is 8 MiB,
+    with gaps of 45-55 MB -- so the floor passes in all three and the BAND is what decides. A
+    leg where the floor also failed could not tell the two halves apart.
+    """
+    base = 1_000_000_000
+    floor = runprov.diff.RESOURCE_FLOOR["max_rss_bytes"]
+    for other, ratio, material in (
+        (945_000_000, "5.5%", True),
+        (955_000_000, "4.5%", False),
+        (950_000_000, "exactly 5%", False),
+    ):
+        gap = base - other
+        assert gap > floor, (
+            f"the {ratio} leg must clear the absolute floor ({floor}) or it cannot isolate the "
+            f"band from it -- the gap is only {gap}"
+        )
+        got = runprov.diff._materially("max_rss_bytes", base, other)
+        assert got is material, (
+            f"a {ratio} difference in max_rss_bytes must be "
+            f"{'material' if material else 'noise'}, and this call says {got}"
+        )
+    #: THE EXACT-5% LEG PINS THE COMPARISON, not just the number: `>` admits nothing at the
+    #: boundary, and `>=` would make the band 5% INCLUSIVE, which is a different claim.
+
+
+def test_a_pin_FOUR_lines_into_a_file_is_already_too_far_IN_to_make_it_count(tmp_path):
+    """`PIN_STARTS_WITHIN` decides whether a file counts as an artifact at all -- a first pin
+    beginning deeper than this is not the one that makes it count. Held by nothing.
+
+    THE FIXTURE IS WRITTEN BY THE PACKAGE and then pushed down, so the pin under test is a real
+    one rather than a hand-typed imitation of one, and the only thing varying between the two
+    legs is how many lines sit above it. The pad counts are literals for the same reason as
+    above: derived ones would move with the constant.
+    """
+    project = _project(tmp_path)
+    run = runprov.Run("pinned", project=project)
+    pinned = tmp_path / "out.tsv"
+    with run.open_output(pinned, comment="# ") as fh:
+        fh.write("a\tb\n")
+    body = pinned.read_text(encoding="utf-8")
+    assert body.startswith("# "), "the fixture must be a genuinely pinned artifact"
+    assert runprov.verify.read_pins(pinned), "and one this reader finds at offset zero"
+
+    for pad, found in ((3, True), (4, False)):
+        probe = tmp_path / f"pad{pad}.tsv"
+        probe.write_text("# filler\n" * pad + body, encoding="utf-8")
+        pins = runprov.verify.read_pins(probe)
+        assert bool(pins) is found, (
+            f"a pin beginning on line {pad} (zero-based) must "
+            f"{'still be found' if found else 'be too far in to count'}; "
+            f"read_pins returned {len(pins)} block(s)"
+        )
+
+
+def test_the_report_RULE_fills_the_DECLARED_width_whatever_the_title_length():
+    """Two claims, and they are separate on purpose.
+
+    THE RELATION holds the arithmetic: a rule is exactly `WIDTH` characters wide for any title
+    short enough to fit, whatever `WIDTH` is. That catches an off-by-one in
+    `WIDTH - len(title) - 4` and is true at every value, so it cannot hold the value.
+
+    THE VALUE is therefore a literal, and here the hand-written constant IS the instrument --
+    78 is a convention about terminals that nothing in this repository can compute, so a
+    derived second side would be a restatement. A reader changing it must come here.
+    """
+    #: THE RELATION FIRST, then the literal. Measured with `tools/bench.py`: with the literal
+    #: asserted first, a `WIDTH` mutant failed on that line before `_rule` was ever called, so
+    #: the behavioural leg never ran and the harness could not show the change had been
+    #: REACHED. Same verdict, strictly more demonstrated.
+    for title in ("x", "a longer heading", "s" * 40):
+        rule = runprov.report._rule(title)
+        assert len(rule) == runprov.report.WIDTH, (
+            f"a rule titled {title!r} came out {len(rule)} characters wide against a declared "
+            f"width of {runprov.report.WIDTH}"
+        )
+        assert rule.startswith(f"── {title} "), "and the title is still inside its own rule"
+    #: AND THE DEGENERATE CASE, which is where `max(0, ...)` lives: a title longer than the
+    #: width cannot make the rule NEGATIVE, so the rule is the title's own line and no shorter.
+    long_rule = runprov.report._rule("t" * (runprov.report.WIDTH + 10))
+    assert runprov.report.WIDTH == 78, (
+        "the report rule's width is a stated convention; nothing else in this repository can "
+        "compute it, so this literal is the tripwire for changing it"
+    )
+    assert len(long_rule) == runprov.report.WIDTH + 14, (
+        "a title wider than the rule gets no dashes and is not truncated -- the rule is then "
+        "as wide as its title, which is the only sane reading of `max(0, ...)`"
     )
