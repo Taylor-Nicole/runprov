@@ -667,7 +667,15 @@ def bound_lines(text: str) -> tuple[dict[int, str], list[str]]:
     line, and a line holding a bound number beside an unbound one would be credited whole --
     `resolved` is the weak verdict, and over-crediting it is how a gap hides. Such a line stays
     UNACCOUNTED and is named in the second return value instead of being silently absorbed.
-    Today all six carry exactly one number; that is checked here rather than assumed.
+    AND THIS SENTENCE SAID *"today all six carry exactly one number; that is checked here
+    rather than assumed"*, WHICH WAS FALSE IN BOTH HALVES. `README.md` line 1396 --
+    *"**60 formats, 0 failures, nothing skipped**"* -- carries two, and has for as long as the
+    `CASES` binding has existed; the registries hold more than six entries now. Nor is it
+    checked: this function HANDLES both cases, which is a different thing from asserting one
+    of them. The run's own output refutes the sentence every time it prints *"NOT ATTRIBUTED
+    TO A LINE"* for that line, two lines under the `ok` that compares 60 against the live 60.
+    A present-tense claim about the tree inside an instrument is a check waiting to be
+    written, or a sentence that needs its date; this one is now a description of the code.
     """
     lines = text.split("\n")
     credited: dict[int, str] = {}

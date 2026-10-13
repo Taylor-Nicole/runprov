@@ -45099,6 +45099,36 @@ def test_the_toml_extra_is_an_extra_and_the_recommendation_says_why():
         "dropping a version is its own decision with its own cost"
     )
 
+    #: AND THE FLOOR THE PROSE STATES IS THE FLOOR A RESOLVER ENFORCES. Both shipped READMEs
+    #: close that paragraph with *"The floor stays 3.10."* and the sentence was bound to
+    #: nothing: the literal above is a tripwire on `pyproject.toml`, so moving the floor reds
+    #: it and a reader is sent HERE -- where they would edit this literal and could leave both
+    #: READMEs stating the old version, one of them the page PyPI freezes.
+    #:
+    #: DERIVED FROM PYPROJECT, not restated: the expected version is read out of
+    #: `requires-python` rather than typed again, so this leg cannot disagree with the
+    #: tripwire above and the two together say "the floor is 3.10 AND the prose says so".
+    #:
+    #: `ci.py claims` CANNOT BIND THIS, and the reason is structural rather than an oversight:
+    #: its bindings resolve to an INTEGER or a sized collection, and a version is neither --
+    #: read as a number, `3.10` is `3.1`. So the line stays in that tool's UNACCOUNTED bucket
+    #: and this is where it is held.
+    declared = re.search(r'^requires-python = ">=(\d+\.\d+)"', pyproject, re.M)
+    assert declared, "pyproject declares no `requires-python` floor to bind the prose to"
+    for readme in ("README.md", name):
+        text = (_repo_root() / readme).read_text(encoding="utf-8")
+        said = re.findall(r"[Tt]he floor stays (\d+\.\d+)", text)
+        assert said, (
+            f"[ADR-0018 R-12] {readme} no longer says *the floor stays <version>*. If the "
+            f"sentence was reworded, re-bind it here; a claim bound by its shape has to be "
+            f"re-bound when the shape changes, and this going red is how you find out"
+        )
+        assert set(said) == {declared.group(1)}, (
+            f"[ADR-0018 R-12] {readme} states the floor as {sorted(set(said))} and "
+            f"`requires-python` enforces >={declared.group(1)}. The prose and the resolver "
+            f"must agree, and `README-pypi.md` is the one that can never be edited after upload"
+        )
+
 
 def test_the_rule_set_is_the_registry_and_the_adr_table_agrees_with_it(tmp_path):
     """[ADR-0018 R-5] [ADR-0018 R-7] T-34. The registry is the source; this holds R-7 to it.
