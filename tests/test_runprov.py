@@ -50763,3 +50763,381 @@ def test_a_never_started_capture_reports_NO_error_and_its_thread_is_a_DAEMON(tmp
         )
     finally:
         running.stop()
+
+
+# ============================================================ THE DECLARED TABLES, HELD
+# A MEMBER ADDED OR REMOVED IS A DIFFERENT DEFECT FROM A MEMBER CHANGED, and only one of them
+# was detectable. A behavioural test kills a member whose VALUE moved -- feed a value through
+# the code, observe the effect, and `MODES = ("XXoffXX", ...)` dies without the test ever naming
+# `MODES`. Measured over the four modules already mutation-triaged: of 18 mutants sitting on
+# such a declaration line, 17 were killed by tests that never mention the table. So the gap is
+# not "these members are unguarded"; it is narrower and real: NOTHING NOTICES A MEMBER BEING
+# ADDED OR TAKEN AWAY, which is exactly what `_TOOL_SOURCES` was found missing -- a sixth value
+# added to `tool_identity` would have belonged to no vocabulary at all.
+#
+# A sweep of the package found 36 module-level literal tables, 20 held by an equality comparison
+# in this suite and 16 not. These are those 16, and the last test in the group asserts the
+# population is now EXHAUSTED -- with no exemption list, so a table declared tomorrow fails here
+# until something holds it.
+
+
+def test_the_directories_the_verifier_REFUSES_TO_WALK_are_held_by_name():
+    """Every name belongs to some other tool -- a VCS, a build system, a cache, a virtualenv.
+
+    A name added here silently narrows what `verify` checks, and the module's own prose is no
+    guard: this table's only mention anywhere in this suite was inside a DOCSTRING, where a
+    `grep` sees a reader and the code sees nothing.
+    """
+    assert runprov.verify.SKIP_DIRS == frozenset(
+        {
+            ".bzr",
+            ".git",
+            ".hg",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".svn",
+            ".tox",
+            ".venv",
+            "__pycache__",
+            "build",
+            "dist",
+            "env",
+            "node_modules",
+            "site-packages",
+            "venv",
+        }
+    )
+
+
+def test_the_suffixes_pinned_as_BINARY_are_held_by_name():
+    """Forty suffixes, the largest declared table in the package, and nothing held it.
+
+    They decide whether a file is digested as bytes rather than as text, so a suffix dropped
+    here changes what a pin MEANS for that file -- and every one of them is some other format's
+    choice of extension, which is why they are written out rather than derived.
+    """
+    assert runprov.run.PIN_BINARY == frozenset(
+        {
+            ".arrow",
+            ".bam",
+            ".bcf",
+            ".bgz",
+            ".bz2",
+            ".cram",
+            ".db",
+            ".feather",
+            ".gif",
+            ".gz",
+            ".h5",
+            ".h5ad",
+            ".hdf5",
+            ".joblib",
+            ".jpeg",
+            ".jpg",
+            ".loom",
+            ".mat",
+            ".nc",
+            ".npy",
+            ".npz",
+            ".onnx",
+            ".parquet",
+            ".pdf",
+            ".pickle",
+            ".pkl",
+            ".png",
+            ".pt",
+            ".pth",
+            ".qza",
+            ".rds",
+            ".safetensors",
+            ".sqlite",
+            ".sqlite3",
+            ".tif",
+            ".tiff",
+            ".webp",
+            ".xlsx",
+            ".zip",
+            ".zst",
+        }
+    )
+
+
+def test_the_directories_that_are_NOT_project_code_are_held_by_name():
+    """The exclusion that decides whose code a record describes. Its members overlap
+    `verify.SKIP_DIRS` without being it: this one is about AUTHORSHIP -- vendored and built
+    directories hold code the project did not write -- and that is a different question from
+    what a tree walk should descend into, so the two tables are held separately."""
+    assert runprov.run._NOT_PROJECT_CODE == frozenset(
+        {"site-packages", "dist-packages", ".venv", "venv", "env", "node_modules", "build", "dist"}
+    )
+
+
+def test_every_byte_unit_is_a_POWER_of_its_own_base_and_the_two_families_stay_apart():
+    """`KB` is 1000 and `KiB` is 1024, and this project writes `64 KiB` in its own README.
+
+    The second side is COMPUTED rather than restated: each decimal unit must be a power of
+    1000 and each binary unit the same power of 1024, so a digit typed wrong in any of the
+    nine is caught by arithmetic and not by a reader comparing two long literals.
+    """
+    assert runprov.project._BYTE_UNITS == {
+        "b": 1,
+        "kb": 1000,
+        "mb": 1000**2,
+        "gb": 1000**3,
+        "tb": 1000**4,
+        "kib": 1024,
+        "mib": 1024**2,
+        "gib": 1024**3,
+        "tib": 1024**4,
+    }
+    units = runprov.project._BYTE_UNITS
+    for prefix, power in (("k", 1), ("m", 2), ("g", 3), ("t", 4)):
+        assert units[f"{prefix}b"] == 1000**power, f"{prefix}B is DECIMAL"
+        assert units[f"{prefix}ib"] == 1024**power, f"{prefix}iB is BINARY"
+    assert units["b"] == 1, (
+        "a unit is always available, which is what lets a bare number be refused"
+    )
+
+
+def test_the_lineage_COUNTERS_are_the_keys_the_lineage_payload_publishes():
+    """Declared in one place and published in another, so the two are held against each other.
+
+    The counters are the payload's own vocabulary: a consumer reads `orphan` to find inputs no
+    recorded run produced. A counter renamed here renames a published field, and a counter
+    removed deletes one -- neither of which any test could see.
+    """
+    assert runprov.__main__._LINEAGE_COUNTERS == (
+        "runs",
+        "records_without_uid",
+        "resolvable",
+        "ambiguous",
+        "orphan",
+    )
+    built = runprov.__main__._lineage([])
+    assert set(built) == set(runprov.__main__._LINEAGE_COUNTERS) | {"edges"}, (
+        "the payload's keys ARE the declared counters plus the edge list, so a counter renamed "
+        "here renames a published field and one removed deletes it"
+    )
+
+
+def test_the_commands_that_ANSWER_WITHOUT_A_HISTORY_are_the_ones_the_CLI_offers():
+    """The three subcommands that must say something useful when there is no history file.
+
+    Only the KEYS are held -- the values are functions, and a function identity is not a
+    vocabulary. The second side is the CLI itself: a key naming a subcommand that does not
+    exist would be an answer nothing can reach.
+    """
+    assert set(runprov.__main__._NO_HISTORY_ANSWER) == {"log", "lineage", "show"}
+    for name in sorted(runprov.__main__._NO_HISTORY_ANSWER):
+        with pytest.raises(SystemExit) as known:
+            runprov.__main__.main([name, "--help"])
+        assert known.value.code == 0, (
+            f"`{name}` has a no-history answer and must be a real subcommand"
+        )
+    #: THE CONTROL, so the leg above can fail: argparse exits 2 for a subcommand it does not
+    #: have, and 0 only for one it does.
+    with pytest.raises(SystemExit) as unknown:
+        runprov.__main__.main(["no-such-subcommand", "--help"])
+    assert unknown.value.code == 2
+
+
+def test_the_chain_VOCABULARIES_are_held_and_every_member_is_REACHABLE_in_the_module():
+    """Three vocabularies a consumer switches on, and the second side is the module's own AST.
+
+    A member that appears in no literal anywhere in `chain.py` cannot be produced by it, so it
+    is dead vocabulary telling a consumer to handle a case that never arrives -- the mirror of
+    `_TOOL_SOURCES`, where the code could write a value the vocabulary did not declare.
+    """
+    assert runprov.chain.WRITERS == ("PRE_CHAIN", "CAPABLE", "UNSTATED", "UNREADABLE")
+    assert runprov.chain.PREDECESSORS == ("NONE_FIRST", "READABLE", "UNREADABLE")
+    assert runprov.chain.AGREEMENTS == ("NA", "MATCHES", "DIFFERS")
+
+    tree = ast.parse((REPO / "runprov" / "chain.py").read_text(encoding="utf-8"))
+    written = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    for table in (runprov.chain.WRITERS, runprov.chain.PREDECESSORS, runprov.chain.AGREEMENTS):
+        for member in table:
+            assert member in written, (
+                f"{member!r} is declared vocabulary that no literal in chain.py produces"
+            )
+
+
+def test_the_version_the_CHAIN_BEGINS_AT_is_held_and_is_the_BOUNDARY_it_claims():
+    """R-5, and its comment forbids the obvious derivation: this is the version at which the
+    BEHAVIOUR changed, and it must not move when the package does.
+
+    So the literal is the instrument, and the second side is the boundary itself -- the release
+    before it reads as a pre-chain writer and the release at it reads as capable. A threshold
+    asserted only as a tuple could be off by one release and look right.
+    """
+    assert runprov.chain.CHAINS_FROM == (0, 6, 0)
+    below = ".".join(str(n) for n in (0, 5, 99))
+    at = ".".join(str(n) for n in runprov.chain.CHAINS_FROM)
+    assert runprov.chain._writer_of({"tool": {"version": below}}, {}) == "PRE_CHAIN"
+    assert runprov.chain._writer_of({"tool": {"version": at}}, {}) == "CAPABLE", (
+        "the declared version is the FIRST that writes a chain, not the last that does not"
+    )
+
+
+def test_the_keys_a_record_can_carry_a_DIGEST_under_are_held_by_name():
+    """Three spellings, because the record format grew them at different times, and `show`
+    looks under each. A spelling dropped here makes a digest invisible to the reader while the
+    record still carries it."""
+    assert runprov.show._DIGEST_KEYS == ("content_sha256", "sha256", "sha256_tree")
+
+
+def test_the_resource_FIGURES_and_their_FLOORS_name_the_same_three_quantities():
+    """Two declarations, one subject -- which is the second side each of them needed.
+
+    `FIGURES` is what a comparison reports on and `RESOURCE_FLOOR` is the absolute floor below
+    which a relative change is noise. A figure added to one and not the other is either a
+    quantity compared with no floor, so every run reports noise, or a floor for a quantity
+    nobody compares, which is decoration.
+    """
+    assert runprov.diff.FIGURES == ("max_rss_bytes", "cpu_seconds", "wall_seconds")
+    assert runprov.diff.RESOURCE_FLOOR == {
+        "wall_seconds": 0.5,
+        "cpu_seconds": 0.5,
+        "max_rss_bytes": 8 * 1024 * 1024,
+    }
+    assert set(runprov.diff.FIGURES) == set(runprov.diff.RESOURCE_FLOOR), (
+        "every figure compared has a floor, and every floor belongs to a figure"
+    )
+
+
+def test_every_EXPORT_FORMAT_declared_is_one_the_exporter_will_actually_write(tmp_path):
+    """The vocabulary a `--format` argument is checked against, held and then exercised.
+
+    `export` raises `ValueError` for anything not in this table, so a format declared but
+    unimplemented raises for a value the table says is legal -- and one implemented but
+    undeclared is unreachable through the CLI.
+    """
+    assert runprov.export.FORMATS == ("ro-crate", "prov")
+    record = {
+        "step": "s",
+        "run_id": "r",
+        "started": "2026-01-01T00:00:00Z",
+        "inputs": [],
+        "outputs": [],
+    }
+    for fmt in runprov.export.FORMATS:
+        assert runprov.export.render([record], fmt), f"{fmt} is declared and must render"
+    with pytest.raises(ValueError):
+        runprov.export.render([record], "no-such-format")
+
+
+def test_every_OBSERVE_MODE_declared_is_one_the_observer_ACCEPTS(tmp_path):
+    """Same shape one module over: the table is the argument check, so every member must be
+    accepted and anything else refused. A mode declared but not handled is a value the error
+    message says is legal."""
+    assert runprov.observe.MODES == ("off", "census", "arguments")
+    for mode in runprov.observe.MODES:
+        runprov.observe.Observer(tmp_path, mode, None)  # must not raise
+    with pytest.raises(ValueError):
+        runprov.observe.Observer(tmp_path, "loud", None)
+
+
+def test_every_spelling_of_FALSE_turns_the_quiet_switch_OFF(monkeypatch):
+    """The five strings that mean "no" in an environment variable, and each is exercised.
+
+    A spelling dropped here makes `RUNPROV_QUIET=off` switch quiet ON, which is the opposite of
+    what the operator typed -- the kind of inversion nothing notices because both states are
+    plausible.
+    """
+    assert runprov._report._FALSEY == frozenset({"", "0", "false", "no", "off"})
+    for spelling in sorted(runprov._report._FALSEY):
+        monkeypatch.setenv(runprov._report.QUIET_ENV, spelling)
+        assert runprov._report.quiet() is False, f"{spelling!r} means NO"
+        monkeypatch.setenv(runprov._report.QUIET_ENV, spelling.upper() or " ")
+        assert runprov._report.quiet() is False, "and case and surrounding space do not change it"
+    monkeypatch.setenv(runprov._report.QUIET_ENV, "1")
+    assert runprov._report.quiet() is True
+
+
+def test_EVERY_declared_table_in_this_package_is_HELD_BY_EQUALITY_somewhere_in_this_suite():
+    """The population, derived, with NO exemption list -- so a table declared tomorrow fails
+    here until something holds it.
+
+    WHY EQUALITY AND NOT MENTION. A test may name a table while asserting only that some value
+    is IN it, which cannot notice a member being added. So the search is for a comparison --
+    `==` or `!=` -- one side of which loads the table's name. Measured when this was written:
+    36 tables, 20 already held, 16 held by the tests above, 0 left over.
+
+    WHAT THIS DOES NOT CLAIM. Holding a table by equality does not make its members' values
+    guarded; a value is guarded behaviourally, and over the four modules mutation-triaged so
+    far 17 of 18 mutants on such lines were already killed that way. This asserts the other
+    half: that nothing can ADD or REMOVE a member unnoticed.
+    """
+    min_members = 2
+
+    def table_size(node):
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            members = node.elts
+        elif isinstance(node, ast.Dict):
+            members = [k for k in node.keys if k is not None]
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in ("frozenset", "set", "tuple", "dict")
+            and len(node.args) == 1
+        ):
+            return table_size(node.args[0])
+        else:
+            return None
+        if len(members) < min_members or not all(isinstance(m, ast.Constant) for m in members):
+            return None
+        return len(members)
+
+    declared: dict[str, list[str]] = {}
+    for path in sorted((REPO / "runprov").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                targets, value = node.targets, node.value
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                targets, value = [node.target], node.value
+            else:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and table_size(value):
+                    declared.setdefault(target.id, []).append(path.name)
+
+    #: `__all__` is excluded by SUBJECT, not by name: it is the module's export list, which
+    #: `docs/public-surface.txt` and `ci.py surface` already derive and gate -- a second,
+    #: stronger instrument than an equality assertion here would be.
+    declared.pop("__all__", None)
+    assert declared, (
+        "no declared tables found -- the sweep is broken, which is not the same as clean"
+    )
+
+    compared: set[str] = set()
+    for path in sorted((REPO / "tests").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Compare):
+                continue
+            if not any(isinstance(op, (ast.Eq, ast.NotEq)) for op in node.ops):
+                continue
+            for side in [node.left, *node.comparators]:
+                for sub in ast.walk(side):
+                    if isinstance(sub, ast.Name):
+                        compared.add(sub.id)
+                    elif isinstance(sub, ast.Attribute):
+                        compared.add(sub.attr)
+
+    unheld = dict(sorted((n, m) for n, m in declared.items() if n not in compared))
+    assert not unheld, (
+        f"{len(unheld)} declared table(s) are held by no equality comparison in this suite, so a "
+        f"member added to or removed from any of them is undetected: {unheld}"
+    )
+    #: THE NON-ZERO CONTROL. A population that has collapsed -- a walk that stopped matching, a
+    #: glob that found nothing -- reads exactly like a population that is fully held.
+    swept = len(list((REPO / "runprov").glob("*.py")))
+    assert len(declared) >= 30, (
+        f"the sweep found only {len(declared)} table(s) across {swept} module(s); a collapsed "
+        f"population reads exactly like a held one"
+    )
