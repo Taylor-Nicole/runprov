@@ -12999,7 +12999,12 @@ def test_every_lock_file_this_module_DECLARES_is_captured_and_pinned(tmp_path):
     ), "each one is its own tool's choice of filename; none of them is derivable here"
 
     for index, name in enumerate(runprov.environment.LOCKFILES):
-        (tmp_path / name).write_text(f"# {index}\n", encoding="utf-8")
+        # BYTES, NOT `write_text` -- A-15's lesson, in a fixture. `write_text` opens with
+        # `newline=None`, so every "\n" becomes "\r\n" on Windows and the file on disk is one
+        # byte longer per line than the string that produced it. The size assertion below then
+        # compared a recorded `st_size` of 5 against a `len` of 4 and went red on
+        # windows-latest while five POSIX interpreters and the whole local gate were green.
+        (tmp_path / name).write_bytes(f"# {index}\n".encode())
     captured = runprov.environment.lockfiles(tmp_path)
     assert [entry["name"] for entry in captured] == list(runprov.environment.LOCKFILES), (
         "every declared name, in the declared order — a reader should meet a resolved lock "
@@ -13009,7 +13014,9 @@ def test_every_lock_file_this_module_DECLARES_is_captured_and_pinned(tmp_path):
         "a distinct digest per file, because the contents here are distinct: one digest "
         "reused would mean the pin is not of the file"
     )
-    assert all(entry["bytes"] == len(f"# {i}\n") for i, entry in enumerate(captured))
+    assert all(entry["bytes"] == len(f"# {i}\n".encode()) for i, entry in enumerate(captured)), (
+        "the recorded size is the file's own, measured on disk, in bytes rather than characters"
+    )
 
 
 def test_every_record_names_the_tool_that_wrote_it(tmp_path):
