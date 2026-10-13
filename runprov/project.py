@@ -165,6 +165,19 @@ CODE_BASENAMES = frozenset(
 # become one; `git_other_files_omitted` states what was left out.
 OTHER_FILES_KEPT = 50
 
+#: THE ONE DEFINITION OF THIS BOUND. It was an inline `timeout=20` in the call below while the
+#: figure was stated in prose in SEVEN files -- `SECURITY.md` tells a reader what this package
+#: runs on their machine, ADR-0003 quotes the contract with status `accepted`, and
+#: `runprov/__init__.py`, `run.py`, this module and the suite each say it in their own words.
+#: Two of the seven were bound to the call; the rest could disagree with it silently, and
+#: `tools/claims.py` could not bind any of them because a prose figure binds to a module
+#: ATTRIBUTE and this had no name.
+#:
+#: Provenance capture must not be able to hang a run, and nothing can compute what a reasonable
+#: ceiling on `git status` is -- so the literal IS the instrument, and giving it one home is
+#: what lets every reader of it be checked against the same number.
+_GIT_TIMEOUT_SECONDS = 20
+
 
 def git(root: pathlib.Path, *args: str) -> str | None:
     """Run git in `root`. Returns None on any failure, including git not existing.
@@ -179,7 +192,10 @@ def git(root: pathlib.Path, *args: str) -> str | None:
         # decision, it is a coincidence. (Writing the directive token in this comment also
         # made ruff parse the prose AS a directive, which is its own small lesson.)
         r = subprocess.run(
-            ("git", "-C", str(root), *args), capture_output=True, text=True, timeout=20
+            ("git", "-C", str(root), *args),
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
         )
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:

@@ -120,6 +120,14 @@ _BOUND: tuple[tuple[str, str, str, int], ...] = (
     (r"stops itself after ([\d\u2009 ]+?) calls", "runprov.observe", "MAX_CALLS", 1),
     (r"begin within the first (\d+) lines", "runprov.verify", "PIN_STARTS_WITHIN", 1),
     (r"a warning naming up to (\d+) files", "runprov.run", "DIRTY_FILES_SHOWN", 1),
+    #: THE GIT TIMEOUT, IN THE SECURITY DOCUMENT. `SECURITY.md` tells a reader what this
+    #: package runs on their machine and with what bound, and it was bound to nothing -- it
+    #: had been printing in this tool's own UNACCOUNTED list on every run. It could not be
+    #: bound before 2026-10-13 because the figure was an inline `timeout=20` with no name for
+    #: this entry's third column to point at; extracting `_GIT_TIMEOUT_SECONDS` is what made
+    #: the binding possible, and the suite holds the other six statements of it against the
+    #: same constant.
+    (r"with a (\d+)-second timeout", "runprov.project", "_GIT_TIMEOUT_SECONDS", 1),
     (r"Capped at (\d+) lines a run", "runprov._report", "PROGRESS_MAX_LINES", 1),
     (r"looked for in the \*\*first (\d+) KiB\*\*", "runprov.verify", "SCAN_BYTES", 1024),
     #: THE SUFFIX MAPS, bound by their LENGTH because that is what the sentence claims. Added

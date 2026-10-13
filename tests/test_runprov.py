@@ -10021,16 +10021,26 @@ def test_the_git_TIMEOUT_is_a_bound_a_reader_can_find(tmp_path):
     assertion is the tripwire that makes a human re-read it. It is taken from the AST rather
     than from a clock, because the alternative is a test that waits.
     """
+    #: AND THE CALL MUST NOT CARRY ITS OWN NUMBER, which is a claim this could not make while
+    #: the timeout was an inline `timeout=20`. Every `timeout=` inside `git()` must name the
+    #: module constant, because a prose figure binds to a module ATTRIBUTE -- an inline literal
+    #: has no name for `tools/claims.py` to bind `SECURITY.md`'s sentence to, which is why that
+    #: line sat in the claims report's UNACCOUNTED list.
     tree = ast.parse((REPO / "runprov" / "project.py").read_text(encoding="utf-8"))
-    found = [
-        keyword.value.value
+    passed = [
+        ast.unparse(keyword.value)
         for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "git"
         for call in ast.walk(node)
         if isinstance(call, ast.Call)
         for keyword in call.keywords
-        if keyword.arg == "timeout" and isinstance(keyword.value, ast.Constant)
+        if keyword.arg == "timeout"
     ]
+    assert passed == ["_GIT_TIMEOUT_SECONDS"], (
+        f"`git()` runs one subprocess with one timeout and it must be the named bound, not a "
+        f"literal of its own; the call(s) pass {passed}"
+    )
+    found = [runprov.project._GIT_TIMEOUT_SECONDS]
     assert found == [20], (
         f"`git()` runs one subprocess with one timeout, and it is 20 seconds; found {found}"
     )
@@ -10041,13 +10051,64 @@ def test_the_git_TIMEOUT_is_a_bound_a_reader_can_find(tmp_path):
     # four copies of a number can disagree with the one that runs. Bound, not restated: every
     # mention must be the value the call carries, and the count it SAW is printed so a sweep
     # that matched nothing cannot read as a sweep that found nothing wrong.
-    said: list[str] = []
-    for name in ("runprov/project.py", "tests/test_runprov.py"):
-        text = " ".join((REPO / name).read_text(encoding="utf-8").split())
-        said += re.findall(r"(\d+)\s*(?:-second|\s?s)\s+timeout", text)
-    assert len(said) >= 4, f"only {len(said)} prose mention(s) of this bound; the sweep is broken"
-    assert set(said) == {str(found[0])}, (
-        f"the prose says {sorted(set(said))} and the call says {found}; one rule, one definition"
+    #: THE POPULATION IS DERIVED, AND THE TWO-NAME LIST IT REPLACES IS A FINDING OF ITS OWN.
+    #: This swept `runprov/project.py` and `tests/test_runprov.py`. The figure is stated in
+    #: SIX files: `runprov/__init__.py` repeats the same contract sentence in a comment,
+    #: `SECURITY.md` tells a reader what this package runs on their machine, and ADR-0003 --
+    #: status ACCEPTED, so a claim about current behaviour -- quotes the contract too. None of
+    #: the three was bound by anything. Found not by this guard but by the claims report's own
+    #: UNACCOUNTED list, which had been printing `SECURITY.md:35` on every run.
+    #:
+    #: `rglob`, NOT `git ls-files`: that exits 128 in the sdist `ci.py build` runs this suite
+    #: from. The exclusions are the directories that are not this repository's prose --
+    #: `tests/corpus` above all, which holds FROZEN records whose bytes are pinned by digest
+    #: and must never be read as claims about HEAD.
+    skip = {
+        ".venv",
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "__pycache__",
+        "build",
+        "dist",
+        "node_modules",
+        "corpus",
+    }
+    #: AN EXEMPTION KEYED TO THE FILE, WITH ITS REASON, AND IT RETIRES ITSELF below.
+    exempt = {
+        "CHANGELOG.md": "an entry states what a RELEASE did, so it stays true about that "
+        "release after the bound moves; binding it would forbid the entry from being history",
+    }
+    pattern = re.compile(r"(\d+)\s*(?:-second|\s?s)\s+timeout")
+    said: dict[str, list[str]] = {}
+    for path in [*REPO.rglob("*.py"), *REPO.rglob("*.md")]:
+        parts = path.relative_to(REPO).parts
+        if any(part in skip or part.startswith(".audit") for part in parts):
+            continue
+        hits = pattern.findall(" ".join(path.read_text(encoding="utf-8").split()))
+        if hits:
+            said[path.relative_to(REPO).as_posix()] = hits
+
+    #: THE NON-ZERO CONTROL IS PER FILE, not a total. A floor over the pooled mentions is
+    #: satisfied by this suite's seven on its own, so the three files that must carry the
+    #: figure in ANY distribution are named and each required separately -- `SECURITY.md`
+    #: among them, which `ci.py test` already proves is in the sdist.
+    for required in ("runprov/project.py", "runprov/__init__.py", "SECURITY.md"):
+        assert said.get(required), (
+            f"{required} no longer states this bound in prose. If that is deliberate, delete "
+            f"it from this control; if not, the sweep is broken and found nothing for the "
+            f"wrong reason. Saw: {sorted(said)}"
+        )
+    for name, reason in exempt.items():
+        assert said.pop(name, None), (
+            f"{name} is exempted here ({reason}) and no longer states the figure at all, so "
+            f"the exemption now covers nothing -- delete it rather than leave it standing"
+        )
+    disagree = {name: hits for name, hits in said.items() if set(hits) != {str(found[0])}}
+    assert not disagree, (
+        f"the call carries {found[0]} and these files say otherwise: {disagree}. One rule, one "
+        f"definition -- and a figure stated in prose is bound in EVERY file that ships it"
     )
 
 
