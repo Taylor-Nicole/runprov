@@ -51141,3 +51141,62 @@ def test_EVERY_declared_table_in_this_package_is_HELD_BY_EQUALITY_somewhere_in_t
         f"the sweep found only {len(declared)} table(s) across {swept} module(s); a collapsed "
         f"population reads exactly like a held one"
     )
+
+
+# ===================================================== THE DISPLAY CAPS, SIZED BY A LITERAL
+# A RANGE IS NOT ALWAYS THE WRONG INSTRUMENT. Of the four constants bounded only by a range,
+# two are correct that way: `hashing._CARRY` must be "comfortably longer than any stamp the
+# rule can match", and `chain._TAIL_BLOCK` is a read-backwards block size that is correct at
+# any value -- for both, a FLOOR is the property. The other two are DISPLAY CAPS, whose whole
+# purpose is to be small enough to be a cap, and for those a range abandons the purpose while
+# satisfying the mechanism: `OTHER_FILES_KEPT = 51` satisfied `0 < x <= 200` exactly.
+#
+# So these two are measured against fixtures sized by a LITERAL. Nothing below reads the
+# constant, which is the only arrangement in which the constant moving makes something red.
+
+
+def test_the_lineage_text_view_shows_TWO_HUNDRED_edges_and_SAYS_how_many_it_withheld():
+    """The cap and the "N more" line are one constant because they have to agree.
+
+    They were two literal 200s, and a change to either would have left the message stating a
+    number the page had not truncated at. Here the fixture carries 205 edges and both halves
+    are asserted against literals: two hundred lines drawn, five declared withheld. The
+    neighbouring test sizes its fixture FROM the constant, so it proves the cap is applied and
+    cannot notice the cap moving.
+    """
+    graph = {
+        "runs": 205,
+        "resolvable": 205,
+        "ambiguous": 0,
+        "orphan": 0,
+        "records_without_uid": 0,
+        "edges": [(f"produced{i:04d}", f"consumed{i:04d}") for i in range(205)],
+    }
+    page = runprov.__main__._render_lineage(graph).splitlines()
+    drawn = [line for line in page if " -> " in line]
+    assert len(drawn) == 200, (
+        f"the text view draws two hundred edges and this page drew {len(drawn)}; a terminal is "
+        f"not where forty thousand of them are read, and `--format json` carries them all"
+    )
+    assert "  ... 5 more edge(s) not shown" in page, (
+        "and it states what it withheld -- 205 given, 200 drawn, 5 declared"
+    )
+    assert "205 edge(s)" in page, "the total is the WHOLE graph's, never the truncated page's"
+
+
+def test_an_untrusted_verify_FIELD_is_capped_at_SIXTY_characters_INCLUDING_the_ellipsis():
+    """A-09, fixed in the reader so artifacts already written are repaired too.
+
+    The field is caller-supplied and reaches a page, so its length is the whole of the abuse a
+    line-based field can carry. Sixty characters total, not sixty plus an ellipsis: the cap is
+    on what the terminal receives, so the marker has to come out of the budget rather than be
+    added to it.
+    """
+    assert runprov.verify._bounded("x" * 60) == "x" * 60, "sixty is under the cap, untouched"
+    capped = runprov.verify._bounded("x" * 61)
+    assert len(capped) == 60, f"one over the cap must come back at sixty, not {len(capped)}"
+    assert capped == "x" * 59 + "…", (
+        "fifty-nine characters and the marker that says there were more"
+    )
+    assert runprov.verify._bounded("y" * 5000) == "y" * 59 + "…", "and length does not matter"
+    assert runprov.verify._bounded("") == ""
