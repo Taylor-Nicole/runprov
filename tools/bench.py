@@ -587,6 +587,66 @@ def _executed_lines(cov: pathlib.Path, target: str) -> tuple[set[int], set[int]]
     )
 
 
+def _executed_by_file(cov: pathlib.Path) -> dict[str, set[int]]:
+    """Coverage's executed set for EVERY file it reports on, keyed by its own path spelling."""
+    data = json.loads(cov.read_text(encoding="utf-8"))
+    return {
+        name.replace("\\", "/"): set(body["executed_lines"])
+        for name, body in data.get("files", {}).items()
+    }
+
+
+def _module_bindings(after: str, statements: set[int]) -> set[str]:
+    """The names bound by a changed statement that sits at MODULE LEVEL.
+
+    A mutation to `WIDTH = 78` changes a statement the interpreter runs when it IMPORTS the
+    module, which is why control 6 below cannot be trusted on its own for one of these.
+    """
+    names: set[str] = set()
+    for node in ast.parse(after).body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.lineno not in statements:
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            names |= {s.id for s in ast.walk(target) if isinstance(s, ast.Name)}
+    return names
+
+
+def _consequence_lines(
+    root: pathlib.Path, files: list[str], names: set[str]
+) -> dict[str, set[int]]:
+    """Every line INSIDE A FUNCTION BODY that loads one of `names`, per file.
+
+    NOT every reader, and the difference is the whole control. A load in a signature default
+    (`def observe(max_calls = MAX_CALLS)`), in a decorator, in an annotation or at module level
+    is evaluated when the module is IMPORTED -- exactly as the declaration is -- so it is no
+    more evidence that the mutation's consequence was reached than the declaration was. Only a
+    load the interpreter arrives at by CALLING something counts here.
+    """
+    out: dict[str, set[int]] = {}
+    for name in files:
+        path = root / name
+        if not path.is_file() or path.suffix != ".py":
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:  # pragma: no cover - a tree that will not parse cannot be read
+            continue
+        hit: set[int] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for statement in node.body:
+                for sub in ast.walk(statement):
+                    if isinstance(sub, ast.Name) and sub.id in names:
+                        hit.add(sub.lineno)
+                    elif isinstance(sub, ast.Attribute) and sub.attr in names:
+                        hit.add(sub.lineno)
+        if hit:
+            out[name.replace("\\", "/")] = hit
+    return out
+
+
 def _refuse_a_work_root_inside_the_repo(work: pathlib.Path) -> None:
     """CONTROL 1, and it runs BEFORE anything is created.
 
@@ -790,6 +850,54 @@ def bench(
     if explicit:
         print(f"CONTROL 6s (read): the mutated file was opened by {', '.join(explicit[:3])}")
 
+    #: CONTROL 6c (consequence), AND IT EXISTS BECAUSE CONTROL 6 IS NEARLY VACUOUS FOR A
+    #: MODULE-LEVEL CONSTANT. A mutation to `RESOURCE_NOISE = 0.05` changes a statement that
+    #: runs when the module is imported, so control 6 reports *"1 of 1 changed statement(s)
+    #: ran"* as soon as anything imports it -- while every line that READS the constant may be
+    #: unreached. Measured: `--test resource` on that very constant returned a clean SURVIVED
+    #: with control 6 green, and `--cov-report=term-missing` put the only use site, `diff.py`
+    #: 638-655, squarely in the MISSING list. Eight constants were benched that way and all
+    #: eight "survived"; not one of those verdicts was about a guard.
+    #:
+    #: SO WHEN THE MUTATION IS A MODULE-LEVEL BINDING, REACH MEANS A READER RAN. The bar is a
+    #: load inside a function BODY, in any file coverage reported on, because that is the only
+    #: kind the interpreter cannot arrive at by importing.
+    #:
+    #: AND IT SAYS WHEN IT CANNOT SPEAK rather than refusing. A constant whose only loads are
+    #: signature defaults or annotations has no body reader to wait for, and a FALSE VOID is
+    #: still a refusal to measure something measurable [see `owning_statements`]. The verdict
+    #: then stands on control 6 alone and prints that it does, which is a weaker claim stated
+    #: as a weaker claim.
+    if cov is not None and executed and (bound := _module_bindings(after, changed_statements)):
+        by_file = _executed_by_file(cov)
+        readers = _consequence_lines(mutant, sorted(by_file), bound)
+        reached = {
+            f"{name}:{line}"
+            for name, lines in readers.items()
+            for line in sorted(lines)
+            if line in by_file.get(name, set())
+        }
+        if not readers:
+            print(
+                f"CONTROL 6c (consequence): CANNOT SPEAK -- {', '.join(sorted(bound))} is loaded "
+                f"nowhere inside a function body, so there is no reader whose execution could "
+                f"prove the change was reached. This verdict rests on control 6 alone"
+            )
+        elif not reached:
+            raise Void(
+                f"the mutation in {target} binds {', '.join(sorted(bound))} at MODULE LEVEL, so "
+                f"control 6 is satisfied by the import alone. No line that READS it ran under "
+                f"{test!r}: {sum(len(v) for v in readers.values())} reader(s) across "
+                f"{len(readers)} file(s), none executed. Widen the selection until a reader "
+                f"runs, or the verdict is about reach and not about the guard"
+            )
+        else:
+            print(
+                f"CONTROL 6c (consequence): {len(reached)} of "
+                f"{sum(len(v) for v in readers.values())} reader(s) of "
+                f"{', '.join(sorted(bound))} ran -- {', '.join(sorted(reached)[:3])}"
+            )
+
     counted = (
         f"{n1} test(s) run"
         if n1 is not None
@@ -902,6 +1010,16 @@ _SELFCHECK = [
         "",
     ),
     (
+        #: THE NEGATIVE CONTROL FOR 6c. `-k resource` runs 42 tests, imports `diff.py` and never
+        #: reaches the one line that reads this constant, so control 6 passes and 6c refuses.
+        "VOID control 6c -- a MODULE CONSTANT whose readers never ran",
+        "resource",
+        "runprov/diff.py",
+        "module-constant-unread",
+        "VOID",
+        "No line that READS it ran",
+    ),
+    (
         "VOID control 5 -- the edit is PROSE ONLY",
         "test_prune_does_not_forge_a_line_from_a_marker_filename",
         "runprov/_report.py",
@@ -1007,6 +1125,14 @@ def _selfcheck_mutation(kind: str | None) -> Callable[[str], str]:
             "    )",
             "    return text  # bench selfcheck: printable made the identity",
         )
+    if kind == "module-constant-unread":
+        #: A MODULE-LEVEL CONSTANT WHOSE READERS THE SELECTION DOES NOT REACH. Control 6 is
+        #: satisfied the instant anything imports `diff.py`, because the changed statement IS
+        #: the declaration -- so without control 6c this case returns a clean SURVIVED, which
+        #: is what it did when it was measured: `--test resource` green, control 6 green, and
+        #: `--cov-report=term-missing` putting the only use site (`diff.py` 638-655) in the
+        #: MISSING list. Eight constants were benched that way and all eight "survived".
+        return _substitute("RESOURCE_NOISE = 0.05", "RESOURCE_NOISE = 0.06")
     if kind == "docstring-only":
         #: INSERTED INSIDE THE MODULE DOCSTRING, which is exactly where a plant harness put six
         #: variants once and read all six green against the guard they were meant to break.
