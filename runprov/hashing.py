@@ -279,8 +279,8 @@ def _gzip_digest(path: pathlib.Path, chunk: int = 1 << 20) -> str:
         with gzip.open(path, "rt", encoding="utf-8") as tfh:
             return _stream_digest(tfh, is_json=path.name.endswith(".json.gz"), chunk_lines=8192)
     except (UnicodeDecodeError, OSError, EOFError, gzip.BadGzipFile, zlib.error):
-        # A gzipped BINARY must not be decoded as text -- that is exactly the mistake
-        # ADR-029 rejects R13 for. Hash the decompressed bytes instead.
+        # guards-ok: A gzipped BINARY must not be decoded as text -- that is exactly the
+        # mistake ADR-029 rejects R13 for. Hash the decompressed bytes instead.
         pass
     h = hashlib.sha256()
     with gzip.open(path, "rb") as fh:

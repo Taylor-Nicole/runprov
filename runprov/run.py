@@ -1671,7 +1671,7 @@ class Run:
             return
         try:
             self._in_flight.unlink(missing_ok=True)
-        except OSError as exc:  # guards-ok
+        except OSError as exc:
             diagnostic(f"  WARNING: could not clear the in-flight marker: {exc}")
         self._in_flight = None
 
@@ -3292,7 +3292,8 @@ class Run:
             for candidate, base in self._pin_bases(p, root):
                 try:
                     rel = candidate.relative_to(base)
-                except ValueError:
+                except ValueError:  # guards-ok: not relative to THIS base, so the next
+                    # candidate is tried and the fallthrough below decides
                     continue
                 # `.as_posix()`, NOT `str()`. `str(PurePath)` renders the platform
                 # separator, so the same input pinned on Windows and on Linux produced two
@@ -3302,8 +3303,9 @@ class Run:
                 # job, not by review.
                 return self._safe_for_pin(rel.as_posix())
         except (TypeError, OSError, RuntimeError):
-            # RuntimeError is `resolve()` on a SYMLINK LOOP, and it is not an OSError --
-            # so it was never caught here, escaped `_pin_name`, escaped `header()`, and
+            # guards-ok: RuntimeError is `resolve()` on a SYMLINK LOOP, and it is not an
+            # OSError -- so it was never caught here, escaped `_pin_name`, escaped
+            # `header()`, and
             # killed the run at the moment it tried to describe itself. A loop is a
             # misconfigured mount or a broken staging step, which is a fact about the
             # inputs worth recording, not a reason to lose the run: it pins as external,

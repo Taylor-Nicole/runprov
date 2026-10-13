@@ -858,7 +858,8 @@ def _toml_parser() -> types.ModuleType:
     for name in ("tomllib", "tomli"):
         try:
             return importlib.import_module(name)
-        except ModuleNotFoundError:
+        except ModuleNotFoundError:  # guards-ok: try the next name; the raise below is
+            # what reports when neither parser can be imported
             continue
     raise PolicyError(
         "a .toml policy needs a TOML parser, and this interpreter has none: `tomllib` is in the "

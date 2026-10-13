@@ -226,6 +226,40 @@ one governing the other. `test_every_accepted_decision_record_declares_what_it_G
 targets_resolve` enforces it over `runprov/*.py` — and caught this twice in one day, in
 `export.py` and then in `project.py`, both times for a principle the citing file genuinely shared.
 
+### A failure that leaves no trace must say why: `# guards-ok:`
+
+**If you write a handler whose body is only `pass`, `continue`, `break` or `del`, put
+`# guards-ok: <reason>` on it.** On the `except` line, on a comment immediately above it, or on a
+comment inside the body — wherever a reader of that handler will see it.
+`test_every_handler_that_SWALLOWS_IN_SILENCE_carries_guards_ok_AND_A_REASON` enforces it over
+every `except` clause in `runprov/`, and also refuses a bare `# guards-ok` with no reason, which
+reads as a justification while asserting nothing.
+
+The reason has to be the one that is true. The ones already here say things like *a torn marker
+is not a finding*, *`cpu` stays None, which the record reads as "could not measure" rather than as
+zero*, and *reporting it through `diagnostic` would write to the very stream that just failed*.
+Each names what the caller gets instead, which is what a reader needs in order to disagree.
+
+**Silence is the thing being justified, not breadth.** A handler that reports, raises, returns or
+assigns needs no marker: the failure is observable, so a reader can find it. `terminal.py` catches
+`OSError` around fd operations during teardown in several places — a rule keyed on
+`except Exception` would have missed every one of them and demanded markers on handlers that
+already speak. The marker is also *permitted* on a handler that leaves a trace, and many carry it
+there as documentation, so **`grep guards-ok` does not enumerate the silent handlers** — the check
+does.
+
+Why this is written down: the marker has been in use since the first commit and was named in no
+test, tool, document or config, so the bar was whatever the comments happened to say. Nothing
+could be derived from its usage either — it appeared on narrow handlers and on handlers that
+report, and was missing from most of the ones that swallowed, so no candidate rule survived
+contact with its own distribution. The rule above is narrower than the habit was, and it is the
+one the `_report.py` finding earned: *`except Exception: del exc` makes a whole family invisible
+because every break looks like silence.*
+
+(The counts behind those sentences are a measurement of one day and are deliberately not quoted
+here, because a figure in prose rots unless something binds it — which is the subject of the next
+section but one.)
+
 ### Rules with nothing behind them yet
 
 Stated here so the gap is visible rather than implied:

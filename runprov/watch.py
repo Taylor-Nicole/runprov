@@ -127,6 +127,7 @@ class _Watcher:
     def detach(self, run: object) -> None:
         try:
             self._active.remove(run)
+        # guards-ok: already detached, which is the same end state as detaching it here.
         except ValueError:  # pragma: no cover - detach is only ever called after attach
             pass
 
@@ -287,7 +288,8 @@ def unregistered(
     for e in exclude:
         try:
             skip.append(pathlib.Path(e).resolve())
-        except _UNRESOLVABLE:
+        except _UNRESOLVABLE:  # guards-ok: an exclusion that cannot be resolved excludes
+            # nothing, and raising here costs the whole check
             continue
     # RESOLVED, because every path below is resolved before comparison and `relative_to` is
     # literal: an unresolved root containing a symlink (pytest's tmp_path on some systems,
@@ -314,7 +316,7 @@ def unregistered(
                 continue
             rel = rp.relative_to(root)  # raises if outside the project
         except _UNRESOLVABLE:
-            # outside the root, unresolvable, a symlink loop, or gone by now: not our
+            # guards-ok: outside the root, unresolvable, a symlink loop, or gone by now: not our
             # business, and never a reason to abandon the other paths in this run.
             continue
         # `.as_posix()`, NOT `str()`. A RECORD IS READ ON A DIFFERENT MACHINE FROM THE ONE

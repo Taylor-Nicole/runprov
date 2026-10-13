@@ -2013,7 +2013,8 @@ def _resources(args: argparse.Namespace) -> int:
             continue
         try:
             record = json.loads(line)
-        except ValueError:
+        except ValueError:  # guards-ok: a torn line is not a record, and one torn line is
+            # not a reason to abandon the rest of the history
             continue
         if not isinstance(record, dict) or "resources" not in record:
             continue

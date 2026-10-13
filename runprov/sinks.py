@@ -353,6 +353,8 @@ def _exclusive(fh: typing.IO[typing.Any]) -> typing.Iterator[bool]:
                 msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
                 locked = "msvcrt"
         except (ImportError, OSError):
+            # guards-ok: `locked` stays None and the branch below falls back, which is the
+            # whole point of recording which lock was taken rather than assuming one.
             pass
     if locked is None:
         # OUTSIDE the platform branches, and that is the whole fix. This notice used to

@@ -320,6 +320,8 @@ class Meter:
                 if stat.startswith("usage_usec"):
                     cpu = int(stat.split()[1]) / 1_000_000
         except (OSError, ValueError, IndexError):
+            # guards-ok: `cpu` stays None, which the record reads as "could not measure"
+            # rather than as zero -- an absent figure is not a figure of nought.
             pass
         return peak, cpu, missing
 

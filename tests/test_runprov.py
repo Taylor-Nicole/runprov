@@ -51765,3 +51765,101 @@ def test_the_FULL_digest_length_getting_started_shows_is_the_one_sha256_PRODUCES
         f"the in-artifact header shows {runprov.hashing.PIN_DIGEST_CHARS} characters, which must "
         f"be SHORTER than the full {full} or the sentence's contrast is empty"
     )
+
+
+# ================== `guards-ok`: THE CONVENTION, DEFINED AND ENFORCED (Taylor, 2026-10-13)
+# IT WAS A HABIT FOR TWO MONTHS. 61 markers across 10 modules, present since the 0.1.0 commit
+# `222bbf4`, and named in no test, no tool, no document and no lint config -- so the bar was
+# whatever the comments happened to say. And no rule could be derived from its own usage: 42
+# NARROW handlers carried it, 8 that REPORT carried it, and 58 of 108 that swallowed did not.
+#
+# THE RULE IS NARROWER THAN THE HABIT, DELIBERATELY, and it is the one the `_report.py` finding
+# earned -- *"`except Exception: del exc` makes a whole family invisible because every break
+# looks like silence"*. Silence is what must be justified, not breadth: seven handlers in
+# `terminal.py` catch `OSError` around fd operations during teardown, where there is nothing to
+# say and nowhere to say it, and a rule keyed on `Exception` would have missed all of them while
+# demanding markers on handlers that already report.
+
+
+def _except_handlers() -> list[tuple[str, int, int, bool]]:
+    """(module, line, end, leaves-no-trace) for every `except` clause in the package.
+
+    SILENCE IS DEFINED SYNTACTICALLY AND WITHOUT A NAME LIST: a handler leaves no trace when
+    every statement in its body is `pass`, `continue`, `break` or `del`. Nothing else can be
+    observed from outside it -- no raise, no call, no return, no assignment. The alternative,
+    "does it call something that reports", needs a list of reporting function names, which is
+    the shape this repository keeps being defeated by.
+
+    SO THE CLASSIFICATION IS TOTAL BY CONSTRUCTION and there is no third bucket to leave
+    undecided: a body either reduces to those four statements or it does not.
+    """
+    out = []
+    for path in sorted((REPO / "runprov").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ExceptHandler):
+                silent = all(
+                    isinstance(s, (ast.Pass, ast.Continue, ast.Break, ast.Delete))
+                    for s in node.body
+                )
+                out.append((path.name, node.lineno, node.end_lineno or node.lineno, silent))
+    return out
+
+
+def test_every_handler_that_SWALLOWS_IN_SILENCE_carries_guards_ok_AND_A_REASON():
+    """A failure that leaves no trace must say why, in the file where it is dropped.
+
+    THE MARKER MAY SIT ANYWHERE ON THE HANDLER: on the `except` line, on a comment line
+    immediately above it, or on a comment inside its body. All three spellings are in use and
+    all three put the reason where a reader of that handler sees it, which is the whole point --
+    so the window is the handler's own extent plus the line above, and not a fixed number of
+    lines.
+
+    WHAT THIS DOES NOT CLAIM. The marker is PERMITTED on a handler that does leave a trace, and
+    43 carry it that way as documentation. So `grep guards-ok` does not enumerate the silent
+    handlers and must not be read as doing so -- this check enumerates them. Forbidding the
+    marker elsewhere would mean deleting 43 argued reasons to make a grep tidier.
+    """
+    handlers = _except_handlers()
+    #: THE NON-ZERO CONTROL, and it is per class rather than a total: a walk that stopped
+    #: finding handlers, or a package that stopped having silent ones, both read as compliance.
+    silent = [h for h in handlers if h[3]]
+    assert len(handlers) >= 100, f"only {len(handlers)} handler(s) found; the sweep is broken"
+    assert len(silent) >= 20, (
+        f"only {len(silent)} silent handler(s) found out of {len(handlers)}; either the "
+        f"classification stopped working or this package changed shape enough to re-read this"
+    )
+
+    sources = {
+        name: (REPO / "runprov" / name).read_text(encoding="utf-8").splitlines()
+        for name, _, _, _ in handlers
+    }
+    unmarked = []
+    for name, line, end, _is_silent in silent:
+        #: 1-based lines; the window is the line ABOVE the `except` through the handler's end.
+        window = sources[name][max(0, line - 2) : end]
+        if not any("guards-ok" in text for text in window):
+            unmarked.append(f"{name}:{line}")
+    assert not unmarked, (
+        f"{len(unmarked)} handler(s) drop a failure without a trace and without saying why. "
+        f"Add `# guards-ok: <reason>` on the handler, or make it leave a trace -- a report, a "
+        f"raise, or a value that records what could not be done: {unmarked}"
+    )
+
+    #: AND A MARKER WITHOUT A REASON IS NOT A MARKER. One carried none (`run.py`, the in-flight
+    #: cleanup) and it sat on a handler that reports through `diagnostic` -- so it asserted
+    #: nothing, needed nothing, and was removed rather than given words to satisfy a checker.
+    bare = []
+    for name, lines in sources.items():
+        for n, text in enumerate(lines, 1):
+            if "guards-ok" in text and not re.search(r"guards-ok\s*:\s*\S", text):
+                bare.append(f"{name}:{n}")
+    assert not bare, (
+        f"`guards-ok` with no reason after the colon asserts nothing and is worse than no "
+        f"marker, because it reads as a justification: {bare}"
+    )
+    markers = sum(text.count("guards-ok") for lines in sources.values() for text in lines)
+    assert markers >= len(silent), (
+        f"{markers} marker(s) for {len(silent)} silent handler(s) -- fewer markers than "
+        f"handlers requiring one means the window above is matching something it should not"
+    )

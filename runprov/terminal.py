@@ -535,7 +535,7 @@ def _flush_std() -> None:
         try:
             s.flush()
         except Exception as exc:
-            # flush has buffered bytes already beyond help, and this runs while fds are
+            # guards-ok: flush has buffered bytes already beyond help, and this runs while fds are
             # mid-swap. Reporting it through `diagnostic` would write to the very stream
             # that just failed, so the exception is named and dropped deliberately.
             del exc

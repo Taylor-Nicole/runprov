@@ -1006,7 +1006,7 @@ def render(artifact: pathlib.Path, root: pathlib.Path, log: pathlib.Path | None)
             try:
                 record = json.loads(line)
             except ValueError:
-                continue  # a torn line is not a reason to refuse the page
+                continue  # guards-ok: a torn line is not a reason to refuse the page
             if isinstance(record, dict):
                 history.append(record)
     return page(artifact, root, history)
