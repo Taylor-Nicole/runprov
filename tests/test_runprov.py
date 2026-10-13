@@ -2489,16 +2489,128 @@ def test_a_process_still_holding_the_output_open_is_reported_not_hung(tmp_path, 
     cap = runprov.terminal.Capture(tmp_path / "t.log")
     cap.start()
 
-    class _Stuck:
+    class _Pump:
+        """A pump that joins instantly and reports whatever liveness it was given."""
+
+        def __init__(self, name: str, alive: bool) -> None:
+            self.name, self._alive = name, alive
+
         def join(self, timeout=None):
             return None
 
         def is_alive(self):
-            return True
+            return self._alive
 
-    cap._thread = _Stuck()
+    #: ONE STUCK AND ONE FINISHED, since 2026-10-13 there are two pumps. This substituted a
+    #: single `_Stuck` into `cap._thread`, and after the repair that attribute no longer
+    #: existed: the real pumps finished, nothing was reported, and `rec["error"]` was None --
+    #: which is how the suite caught the message's contract changing under it.
+    #:
+    #: THE PAIR IS THE CLAIM. A child holding STDERR open is a different fact from one holding
+    #: stdout open, and the message must name the stream that is stuck and only that one. A
+    #: single stuck pump would pass a message that named both, or neither.
+    cap._threads = [_Pump("runprov-tee-1", False), _Pump("runprov-tee-2", True)]
     rec = cap.stop()
     assert "did not finish" in rec["error"]
+    assert "runprov-tee-2" in rec["error"], (
+        f"the record must name the pump that is still holding output open: {rec['error']!r}"
+    )
+    assert "runprov-tee-1" not in rec["error"], (
+        f"and must NOT name the one that finished -- a message naming both sends a reader to "
+        f"look at the wrong stream: {rec['error']!r}"
+    )
+
+
+def _fd_is_open(fd: int) -> bool:
+    """Whether a descriptor number is still live in this process."""
+    try:
+        os.fstat(fd)
+    except OSError:
+        return False
+    return True
+
+
+def test_an_fd_capture_that_fails_AFTER_opening_its_pipes_closes_them(tmp_path, monkeypatch):
+    """Two pipes mean the failure path can be reached with descriptors already open.
+
+    WITH ONE PIPE THIS COULD NOT HAPPEN: it was created in the same statement that either
+    raised or did not, so `_start_fd`'s degradation path had nothing to release. With one pipe
+    per descriptor the second `os.pipe()` can raise after the first has succeeded -- EMFILE is
+    exactly the condition under which it does -- and `os.dup` or `os.dup2` can raise after
+    both exist. A descriptor pair stranded for the life of the process, by the branch whose
+    whole job is to degrade cleanly, is the shape being refused here.
+
+    THE FAILURE IS INJECTED AT `os.dup`, which runs after both pipes exist, so the cleanup has
+    something real to close. `os.pipe` is wrapped rather than replaced, because the property is
+    about descriptors this module actually opened: a fake would prove the test's own
+    bookkeeping and nothing about the module's.
+    """
+    opened: list[int] = []
+    real_pipe = os.pipe
+
+    def recording_pipe():
+        pair = real_pipe()
+        opened.extend(pair)
+        return pair
+
+    monkeypatch.setattr(runprov.terminal.os, "pipe", recording_pipe)
+    monkeypatch.setattr(runprov.terminal.os, "dup", _raise_runtime)
+    cap = runprov.terminal.Capture(tmp_path / "t.log")
+    cap.start()  # the promise is that this NEVER raises, whatever fails inside it
+    try:
+        assert cap.mode != "fd", (
+            f"the fd path must have failed for this test to be about anything: {cap.mode}"
+        )
+        #: THE CONTROL. If the pipes were never created the assertion below is vacuous and
+        #: would pass on a `_start_fd` that leaks everything it opens.
+        assert len(opened) == 4, (
+            f"two pipes, four descriptors, created before the injected failure: {opened}"
+        )
+        still_open = [fd for fd in opened if _fd_is_open(fd)]
+        assert not still_open, (
+            f"these descriptors were opened by `_start_fd` and survived its failure: "
+            f"{still_open}. A capture that degrades must not cost the process a descriptor "
+            f"pair for every attempt"
+        )
+    finally:
+        cap.stop()
+
+
+def test_a_failing_os_close_cannot_derail_the_capture_degradation(tmp_path, monkeypatch):
+    """`start()` promises never to raise, and the cleanup it runs on failure uses `os.close`.
+
+    A GUARD ON THAT CLOSE LOOKS LIKE DEFENSIVE PROGRAMMING AND IS NOT: without it, a close
+    that fails inside the `except` block replaces the degradation with an exception out of
+    `start()` -- so a capture that could not start would take the caller's run with it, which
+    is the one thing this module's docstring forbids. Reached by making every `os.close` fail,
+    which is also the only way to exercise it: on the ordinary failure path the descriptors
+    are genuinely open and closing them succeeds.
+    """
+    real_close = os.close
+    opened: list[int] = []
+    real_pipe = os.pipe
+
+    def recording_pipe():
+        pair = real_pipe()
+        opened.extend(pair)
+        return pair
+
+    def refuse_close(_fd):
+        raise OSError("close refused")
+
+    monkeypatch.setattr(runprov.terminal.os, "pipe", recording_pipe)
+    monkeypatch.setattr(runprov.terminal.os, "dup", _raise_runtime)
+    monkeypatch.setattr(runprov.terminal.os, "close", refuse_close)
+    cap = runprov.terminal.Capture(tmp_path / "t.log")
+    cap.start()  # must still not raise, with the cleanup itself failing
+    monkeypatch.undo()
+    assert cap.mode != "fd", cap.mode
+    assert opened, "the control: pipes must have been opened for the cleanup to have run"
+    #: AND THE TEST CLEANS UP WHAT THE REFUSED CLOSES LEFT BEHIND, with the real `os.close`.
+    for fd in opened:
+        if _fd_is_open(fd):
+            real_close(fd)
+    cap.stop()
 
 
 def test_stopping_a_capture_never_raises_into_the_run(tmp_path, monkeypatch, capsys):
@@ -50629,13 +50741,17 @@ def test_fd_capture_covers_STDERR_as_well_as_stdout_and_restores_both(tmp_path, 
     )
     assert "AFTER-RESTORE-STDOUT" not in body, body
 
-    #: THE TEE IS REAL BUT IT DOES NOT PRESERVE THE SPLIT, and that is asserted here rather
-    #: than assumed either way. One pipe sits over BOTH descriptors, so the pump cannot tell
-    #: which stream a byte came from and mirrors everything to the saved STDOUT. Measured:
-    #: during a captured run the caller's stderr arrives on its stdout and its stderr receives
-    #: NOTHING. That is a disclosed limitation rather than a verdict -- see the audit ledger row
-    #: `fd capture merges the caller's streams`. **If it is ever repaired to two pipes, this
-    #: assertion is the one that will tell you to update the record.**
+    #: THE TEE IS REAL AND IT PRESERVES THE SPLIT -- repaired 2026-10-13 (Taylor's call), and
+    #: this assertion is the one that said it would tell you. It read `"ON-STDERR" in
+    #: passed_out and "ON-STDERR" not in passed_err`, asserting the MERGE, with a comment
+    #: calling it a disclosed limitation: one pipe over both descriptors could not tell which
+    #: stream a byte came from, so the pump mirrored everything to the saved STDOUT and the
+    #: caller's stderr received nothing for the duration of the run.
+    #:
+    #: WHAT THAT COST THE CALLER, which is why it was a defect and not a quirk:
+    #: `script.py | gzip > out.gz` had its warnings injected into the gzip stream -- data
+    #: corruption caused by the observer. There is one pipe per descriptor now and one pump
+    #: per pipe, each mirroring to the saved copy of ITS OWN fd.
     passed_out, passed_err = (
         out_sink.read_text(encoding="utf-8"),
         err_sink.read_text(encoding="utf-8"),
@@ -50644,15 +50760,28 @@ def test_fd_capture_covers_STDERR_as_well_as_stdout_and_restores_both(tmp_path, 
         f"capture TEES and never diverts: the caller's output still reaches the caller: "
         f"{passed_out!r}"
     )
-    assert "ON-STDERR" in passed_out and "ON-STDERR" not in passed_err, (
-        f"and it arrives on STDOUT, because one pipe over two descriptors cannot separate "
-        f"them. Asserted so the limitation is on record and a repair is visible: "
-        f"out={passed_out!r} err={passed_err!r}"
+    #: BOTH DIRECTIONS, because either one alone passes on a capture that merges. "stderr
+    #: reaches stderr" is satisfied by a merge onto both; "stdout is clean of stderr" is
+    #: satisfied by a capture that drops stderr entirely. The pair is the claim.
+    assert "ON-STDERR" in passed_err, (
+        f"the caller's stderr must reach the caller's STDERR: out={passed_out!r} err={passed_err!r}"
+    )
+    assert "ON-STDERR" not in passed_out, (
+        f"and must NOT reach their stdout. This is the repair: a caller who separated the "
+        f"streams gets what they asked for, and a pipeline's data channel stays theirs: "
+        f"out={passed_out!r}"
+    )
+    #: A CHILD'S STDERR TOO, which is the half the python-level mechanism cannot do at all and
+    #: therefore the half worth asserting here: the fd-level capture exists for descendants.
+    assert "CHILD-STDERR" in passed_err and "CHILD-STDERR" not in passed_out, (
+        f"a subprocess's stderr follows the same route as this process's: out={passed_out!r} "
+        f"err={passed_err!r}"
     )
     assert "AFTER-RESTORE-STDERR" in passed_err, (
         f"once the capture has stopped the split is back, which is what makes the restore "
         f"worth asserting: {passed_err!r}"
     )
+    assert "AFTER-RESTORE-STDOUT" in passed_out, f"and so is stdout's: {passed_out!r}"
 
 
 class _FakeClock:
@@ -50870,11 +50999,28 @@ def test_a_never_started_capture_reports_NO_error_and_its_thread_is_a_DAEMON(tmp
         assert running.mode == "fd", (
             f"the mirror thread only exists on the fd path: {running.mode} ({running.error!r})"
         )
-        assert running._thread is not None, "fd capture runs a mirror thread"
-        assert running._thread.daemon is True, (
-            "and it is a DAEMON. It blocks on `os.read` of a pipe held open until the capture "
-            "stops, so a run that never stops one would hold the interpreter open for ever"
+        #: TWO THREADS SINCE 2026-10-13, one per descriptor, and the count is asserted rather
+        #: than the existence of "a" thread: with `running._thread is not None` a repair that
+        #: started one pump and forgot the other would have passed, which is the shape of the
+        #: defect being repaired (one mirror target for two streams).
+        assert len(running._threads) == 2, (
+            f"fd capture runs one mirror thread per descriptor, so that each stream can be "
+            f"mirrored back to the fd the caller gave it: {running._threads}"
         )
+        assert {thread.name for thread in running._threads} == {
+            "runprov-tee-1",
+            "runprov-tee-2",
+        }, (
+            f"and each names its descriptor, because the join below reports which one is stuck "
+            f"and a child holding stderr open is a different fact from one holding stdout: "
+            f"{[thread.name for thread in running._threads]}"
+        )
+        for thread in running._threads:
+            assert thread.daemon is True, (
+                f"and {thread.name} is a DAEMON. It blocks on `os.read` of a pipe held open "
+                f"until the capture stops, so a run that never stops one would hold the "
+                f"interpreter open for ever"
+            )
     finally:
         running.stop()
 

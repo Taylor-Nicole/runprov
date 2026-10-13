@@ -132,7 +132,16 @@ class Capture:
         self.prebound_handlers = 0
         self._fh: typing.IO[bytes] | None = None
         self._saved: dict[int, int] = {}
-        self._thread: threading.Thread | None = None
+        #: ONE THREAD PER DESCRIPTOR since 2026-10-13. There were two reasons to keep a single
+        #: pipe over both fds and only one of them survived measurement: the log's interleaving
+        #: was exactly the order the process wrote in. The other -- that a merged mirror is good
+        #: enough -- was false, and the cost fell on the CALLER's data channel. See `_start_fd`.
+        self._threads: list[threading.Thread] = []
+        #: The log is ONE file written by BOTH pumps now, so a chunk must land whole and the
+        #: byte count must not lose an increment to a lost update. Held for the write and the
+        #: `+=` together, and for nothing else -- the mirror writes are per-descriptor and
+        #: must not serialise behind each other.
+        self._sink_lock = threading.Lock()
         self._py_saved: tuple[typing.IO[str], typing.IO[str]] | None = None
         self._finished = False
         self._seen = 0
@@ -162,16 +171,46 @@ class Capture:
             self._close_file()
 
     def _start_fd(self) -> bool:
-        """`dup2` a pipe over fds 1 and 2, mirroring from a thread."""
+        """`dup2` ONE PIPE PER DESCRIPTOR over fds 1 and 2, mirroring each from its own thread.
+
+        IT WAS ONE PIPE OVER BOTH UNTIL 2026-10-13, and the consequence fell on the caller
+        rather than on the record. A single pipe cannot tell which descriptor a byte came
+        from, so the pump mirrored everything to the saved STDOUT: the caller's stderr arrived
+        on their stdout and their stderr received nothing for the duration of the run.
+        Measured, in the order the consequences bite:
+
+        1. `script.py | gzip > out.gz` had its warnings injected into the gzip stream. That is
+           DATA CORRUPTION CAUSED BY THE OBSERVER, which is the one thing this package exists
+           to refuse.
+        2. `cmd > out 2> err` left `err` empty, so a caller who separated the streams for a
+           reason stopped getting what they asked for.
+        3. A supervisor watching stderr for warnings saw none while a run was captured.
+
+        AND THE ASYMMETRY WAS THE ARGUMENT. `_report._write` already returns silently when
+        `sys.stderr is None`, precisely because *a run put 725 bytes of provenance chatter into
+        the caller's data channel and 0 into stderr* -- and the same module then routed the
+        caller's ENTIRE stderr into that channel.
+
+        WHAT IT COSTS, stated because it is a real loss. With one pipe the log held both
+        streams in exactly the order the process wrote them. With two, each pump reaches the
+        shared log independently, so the ORDER BETWEEN the streams in the log is approximate;
+        within one stream it is exact. A reader correlating a warning with the line it
+        followed can no longer rely on the log's order to do it. The split is now recoverable
+        -- each pump knows its descriptor -- so the log COULD record which stream a chunk came
+        from, but that changes the log's bytes and is a format decision, not this repair.
+        """
+        #: DECLARED BEFORE THE `try`, so the failure path below can close whatever was opened.
+        #: Reaching for it through `locals()` worked and hid the question of whether it exists.
+        pipes: dict[int, tuple[int, int]] = {}
         try:
             # Python's own buffers must reach the OLD fd before it moves, or their contents
             # land in the capture out of order with anything already written.
             _flush_std()
-            rfd, wfd = os.pipe()
+            pipes = {1: os.pipe(), 2: os.pipe()}
             self._saved = {1: os.dup(1), 2: os.dup(2)}
-            os.dup2(wfd, 1)
-            os.dup2(wfd, 2)
-            os.close(wfd)
+            for fd, (_rfd, wfd) in pipes.items():
+                os.dup2(wfd, fd)
+                os.close(wfd)
         except Exception as exc:  # guards-ok: `start()` promises NEVER to raise, and a
             # narrower tuple made that promise false — (OSError, ValueError, AttributeError)
             # let anything else through, out of start(), into the caller's __init__. Found
@@ -181,13 +220,34 @@ class Capture:
             # No pump thread exists yet on this path, so the saved fds can go immediately.
             self._restore_fds()
             self._close_saved()
+            #: AND THE READ ENDS GO TOO. With one pipe this path leaked nothing, because the
+            #: pipe was created in the same statement that raised or not at all. With two,
+            #: the second `os.pipe()` can raise after the first has succeeded -- EMFILE is
+            #: exactly when that happens -- so a descriptor pair would be stranded for the
+            #: life of the process, by the branch whose whole job is to degrade cleanly.
+            for _fd, (rfd, wfd) in pipes.items():
+                for leaked in (rfd, wfd):
+                    try:
+                        os.close(leaked)
+                    except OSError:  # guards-ok: already closed by the dup2 loop above, or
+                        # never opened. Nothing is owed to a descriptor that is gone.
+                        pass
             return False
         # The mirror target is the SAVED fd — the real terminal — not fd 1, which is now the
         # pipe. Writing the mirror to fd 1 would feed the capture its own output forever.
-        self._thread = threading.Thread(
-            target=self._pump, args=(rfd, self._saved[1]), daemon=True, name="runprov-tee"
-        )
-        self._thread.start()
+        #
+        # AND IT IS THE SAVED COPY OF *THAT* DESCRIPTOR, which is the whole repair: fd 1's
+        # pump mirrors to the saved fd 1 and fd 2's to the saved fd 2, so each stream goes
+        # back where the caller put it. `args=(rfd, self._saved[1])` for both was the defect.
+        for fd, (rfd, _wfd) in pipes.items():
+            thread = threading.Thread(
+                target=self._pump,
+                args=(rfd, self._saved[fd]),
+                daemon=True,
+                name=f"runprov-tee-{fd}",
+            )
+            self._threads.append(thread)
+            thread.start()
         with _LIVE_LOCK:
             _LIVE.append(self)
         return True
@@ -203,10 +263,20 @@ class Capture:
                 # thread, and re-reading the attribute between the check and the write is
                 # exactly the window that produces a write to a closed file.
                 if fh is not None:
+                    #: THE LOCK IS NEW AND IT IS ABOUT THE SECOND PUMP, not about `stop()`.
+                    #: Two threads now reach this one file: without it a chunk can be split
+                    #: by the other's write, and `self._seen += len(chunk)` is a read, an
+                    #: add and a store that can lose an increment -- which would understate
+                    #: the byte count in the RECORD, silently, under load only.
+                    #: SCOPED TO THE SHARED SINK. The mirror below is per-descriptor and
+                    #: stays outside, so a slow terminal on one stream cannot hold up the
+                    #: other, and the lock can never be held across a write to a descriptor
+                    #: the other pump might be blocked on.
                     try:
-                        fh.write(chunk)
-                        fh.flush()
-                        self._seen += len(chunk)
+                        with self._sink_lock:
+                            fh.write(chunk)
+                            fh.flush()
+                            self._seen += len(chunk)
                     except (OSError, ValueError):  # guards-ok: a full disk must not eat the
                         # output — the mirror below still runs, so the terminal keeps
                         # working and only the RECORD is short. The reverse would lose the
@@ -357,18 +427,27 @@ class Capture:
         and never the terminal.
         """
         self._restore_fds()
-        if self._thread is not None:
+        #: EVERY PUMP, and the timeout is PER THREAD rather than a shared deadline. A shared
+        #: one would let a hung stdout pump consume the whole budget and report the stderr
+        #: pump as hung too -- naming the wrong stream in the record.
+        for thread in self._threads:
             # Bounded: the pipe's write ends are closed above, so the read returns empty
             # and the thread exits. The timeout is a backstop against a subprocess that
             # inherited the fd and is still holding it open — a provenance module must not
             # hang the run it is describing.
-            self._thread.join(timeout=_JOIN_TIMEOUT)
-            if self._thread.is_alive():
-                self.error = f"mirror thread did not finish within {_JOIN_TIMEOUT:g} s"
-                diagnostic(
-                    "  WARNING: terminal capture: a process still holds the "
-                    "captured output open; the log may be short."
-                )
+            thread.join(timeout=_JOIN_TIMEOUT)
+        stuck = [thread.name for thread in self._threads if thread.is_alive()]
+        if stuck:
+            #: NAMED, because there are two now and they fail independently: a child holding
+            #: stderr open is a different fact from one holding stdout open, and the record
+            #: said neither when the message was written for a single thread.
+            self.error = (
+                f"mirror thread(s) did not finish within {_JOIN_TIMEOUT:g} s: {', '.join(stuck)}"
+            )
+            diagnostic(
+                "  WARNING: terminal capture: a process still holds the "
+                "captured output open; the log may be short."
+            )
         self._close_saved()
         self._close_file()
 
