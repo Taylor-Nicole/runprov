@@ -51687,3 +51687,81 @@ def test_the_report_RULE_fills_the_DECLARED_width_whatever_the_title_length():
         "a title wider than the rule gets no dashes and is not truncated -- the rule is then "
         "as wide as its title, which is the only sane reading of `max(0, ...)`"
     )
+
+
+# ============================ TWO MORE FIGURES OUT OF THE CLAIMS REPORT'S RESIDUE
+# `ci.py claims` prints its UNACCOUNTED bucket under *NOBODY HAS LOOKED AT THESE*, and that is
+# where `SECURITY.md`'s git timeout was found. 54 lines were read one at a time; most are
+# measured facts about something outside this repository (a CPython behaviour, a GitHub API
+# response, a figure the document itself says depends on the header) or rhetorical quantities in
+# a tutorial. These two are not: each states a figure that something here computes.
+
+
+def test_the_torture_FRACTIONS_contributing_names_are_the_ones_the_harness_DEFAULTS_to():
+    """`CONTRIBUTING.md` tells a contributor the torn-write harness *"crashes inside each one in
+    turn at 0%, 50% and 90%"*. That is a claim about `tools/torture.py`'s own default, and it was
+    bound to nothing -- so changing `--fractions` would leave the document describing a sweep
+    nobody runs, in the file that tells people how to reproduce the finding.
+
+    READ FROM THE ARGPARSE DECLARATION, not from a second copy of the list: the default is the
+    single definition, and the document is held to it.
+    """
+    tree = ast.parse((REPO / "tools" / "torture.py").read_text(encoding="utf-8"))
+    declared = [
+        keyword.value.value
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and any(isinstance(a, ast.Constant) and a.value == "--fractions" for a in call.args)
+        for keyword in call.keywords
+        if keyword.arg == "default" and isinstance(keyword.value, ast.Constant)
+    ]
+    assert len(declared) == 1, (
+        f"`tools/torture.py` must declare exactly one `--fractions` default for this to bind; "
+        f"found {declared}"
+    )
+    fractions = [float(part) for part in declared[0].split(",")]
+    #: THE DOCUMENT WRITES THEM AS PERCENTAGES, which is the reader's unit, so the comparison
+    #: converts rather than requiring the prose to speak in fractions.
+    expected = [f"{f * 100:g}%" for f in fractions]
+
+    text = (REPO / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    said = re.search(r"crashes inside each one in turn at ([^.]+?)\.", " ".join(text.split()))
+    assert said, (
+        "`CONTRIBUTING.md` no longer says *crashes inside each one in turn at ...*. If the "
+        "sentence was reworded, re-bind it here -- a claim bound by its shape must be re-bound "
+        "when the shape changes, and this going red is how a reader finds out"
+    )
+    stated = re.findall(r"\d+(?:\.\d+)?%", said.group(1))
+    assert stated == expected, (
+        f"`CONTRIBUTING.md` says the harness crashes at {stated} and `--fractions` defaults to "
+        f"{declared[0]} ({expected}). The document describes the sweep a contributor will "
+        f"actually run, so the two cannot disagree"
+    )
+
+
+def test_the_FULL_digest_length_getting_started_shows_is_the_one_sha256_PRODUCES():
+    """`GETTING-STARTED.md` tells a reader the fingerprints in the sidecar are written out in
+    full, *"64 characters"*, against the short form inside the artifact. The short form is bound
+    (`hashing.PIN_DIGEST_CHARS`); the full one was not, although it is the one figure here that
+    needs no measurement at all -- it is the width of a sha256 hexdigest.
+
+    COMPUTED, NOT RESTATED: the expected value comes from `hashlib`, so this cannot be satisfied
+    by a reader who typed the same wrong number twice.
+    """
+    full = len(hashlib.sha256(b"").hexdigest())
+    text = " ".join((REPO / "GETTING-STARTED.md").read_text(encoding="utf-8").split())
+    said = re.search(r"written out in full here\s*[—-]\s*(\d+) characters", text)
+    assert said, (
+        "`GETTING-STARTED.md` no longer says the fingerprints are *written out in full here — N "
+        "characters*; re-bind the sentence here if it was reworded"
+    )
+    assert int(said.group(1)) == full, (
+        f"the document shows a full fingerprint as {said.group(1)} characters and sha256 "
+        f"produces {full}"
+    )
+    #: AND THE SHORT FORM IS THE OTHER HALF OF THE SAME SENTENCE. The contrast only means
+    #: anything while the two differ, so a reader is told the truncation is a truncation.
+    assert runprov.hashing.PIN_DIGEST_CHARS < full, (
+        f"the in-artifact header shows {runprov.hashing.PIN_DIGEST_CHARS} characters, which must "
+        f"be SHORTER than the full {full} or the sentence's contrast is empty"
+    )

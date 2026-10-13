@@ -591,6 +591,18 @@ def _tmp_path_uses() -> int:
     return len(re.findall(r"\btmp_path\b", (ROOT / "tests" / "test_runprov.py").read_text("utf-8")))
 
 
+def _full_digest_width() -> int:
+    """How wide a sha256 hexdigest is, asked of `hashlib` rather than counted by anyone.
+
+    `GETTING-STARTED.md` contrasts the full fingerprint in the sidecar with the short one inside
+    the artifact, and the short one is already bound (`hashing.PIN_DIGEST_CHARS`). The full one
+    was in this tool's own UNACCOUNTED bucket -- the single figure in that bucket needing no
+    measurement at all, because the library states it. The suite holds the sentence's other half
+    (that the short form is SHORTER, or the contrast is empty).
+    """
+    return len(hashlib.sha256(b"").hexdigest())
+
+
 def _format_cases() -> int:
     """`len(CASES)` in the format matrix, LOADED rather than counted by pattern.
 
@@ -625,6 +637,14 @@ _DERIVED: tuple[tuple[str, str, abc.Callable[[], int], float], ...] = (
     (r"\*\*about ([\d,]+)\*\* uses of `tmp_path`", "`tmp_path` occurrences", _tmp_path_uses, 0.10),
     #: EXACT, because this one is a table of cases and not a scale figure: `len(CASES)` is a
     #: number the program states about itself, so "about" would be an evasion.
+    #: EXACT, like the one below and for the same reason: a hexdigest's width is a fact the
+    #: library states, not a figure that conveys scale.
+    (
+        r"written out in full here\s*[\u2014-]\s*(\d+) characters",
+        "a sha256 hexdigest's width",
+        _full_digest_width,
+        0.0,
+    ),
     (
         r"\*\*(\d+) formats, \d+ failures",
         "examples/format_compatibility.py `CASES`",
