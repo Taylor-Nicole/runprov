@@ -16027,6 +16027,388 @@ def test_the_walltime_is_MINUTES_rendered_as_hours_and_minutes(tmp_path):
     ), "3660 s is 61 minutes, which is one hour and ONE minute"
 
 
+def test_every_FIELD_of_a_measurement_SURVIVES_the_round_trip_through_a_record(tmp_path):
+    """[ADR-0013 R-7] in both directions, over the whole structure rather than two fields of it.
+
+    `as_record` and `from_record` name every key twice, in two functions, and a key misspelt on
+    one side comes back as None — which is indistinguishable from *nothing measured it*, the
+    one thing this module exists to keep distinguishable. Held by comparing the WHOLE named
+    tuple, so a field added to `Measurement` joins this claim without anyone remembering.
+    """
+    full = runprov.resources.Measurement(
+        wall_seconds=1.25,
+        cpu_seconds=2.5,
+        max_rss_bytes=11,
+        max_vms_bytes=22,
+        io_read_bytes=33,
+        io_write_bytes=44,
+        source="cgroup",
+        unavailable=("cgroup: memory.peak absent on this kernel",),
+        io_self_only=True,
+    )
+    assert runprov.resources.from_record(full.as_record()) == full, (
+        "every field, not a sample of them: a key misspelt in either direction returns None, "
+        "which reads as a measurement nobody took"
+    )
+    floored = full._replace(source="getrusage")
+    assert runprov.resources.from_record(floored.as_record()) == floored, (
+        "and with the derived caveat present, which `from_record` must read past"
+    )
+
+
+def test_a_record_carrying_NO_resources_block_comes_back_as_nothing_measured(tmp_path):
+    """The defaults on the rebuilding side are the *absent* answer, not a plausible one.
+
+    `from_record({})` is what a history written before [ADR-0013] produces, and every default here
+    is a claim: a wall of ONE second, or a source of `getrusage`, would make a run nobody
+    measured indistinguishable from one that was.
+    """
+    empty = runprov.resources.from_record({})
+    assert empty.wall_seconds == 0.0, "an absent duration is zero, never a plausible one"
+    assert empty.source == "none", "[ADR-0013 R-5] no mechanism answered, and it says so"
+    assert empty.unavailable == () and empty.io_self_only is False
+    stated = {"wall_seconds", "source", "unavailable", "io_self_only"}
+    figures = {name: value for name, value in empty._asdict().items() if name not in stated}
+    assert set(figures) == set(runprov.resources.Measurement._fields) - stated
+    assert all(value is None for value in figures.values()), (
+        f"[ADR-0013 R-7] every FIGURE is absent, never zero: {figures}"
+    )
+
+
+def test_a_recorded_figure_keeps_MICROSECONDS_and_no_more(tmp_path):
+    """[ADR-0013 R-2]. Six decimal places, which is a microsecond, chosen and therefore asserted.
+
+    A float straight from the clock carries seventeen significant digits of which the last
+    eleven are noise, and the history is appended forever. The rounding is what stops a diff
+    between two runs reporting a move that is the floating-point representation moving.
+    """
+    noisy = runprov.resources.Measurement(
+        wall_seconds=1.234567891,
+        cpu_seconds=2.345678912,
+        max_rss_bytes=None,
+        max_vms_bytes=None,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        source="none",
+        unavailable=(),
+        io_self_only=False,
+    )
+    record = noisy.as_record()
+    assert record["wall_seconds"] == 1.234568, "six places, and the seventh is dropped"
+    assert record["cpu_seconds"] == 2.345679, "the cpu figure is rounded the same way"
+
+
+def test_the_io_caveat_travels_ONLY_beside_a_number_it_qualifies(tmp_path):
+    """[ADR-0013 R-9b]. `io_self_only` explains an io figure; with no figure it explains nothing.
+
+    The meter sets the flag unconditionally, because `/proc/self/io` has no children's
+    equivalent whether or not it could be read. So the flag alone is not the condition: a
+    record carrying `io_self_only` and no io figure tells a reader that a number they cannot
+    see covers this process only.
+    """
+    blank = runprov.resources.Measurement(
+        wall_seconds=1.0,
+        cpu_seconds=None,
+        max_rss_bytes=None,
+        max_vms_bytes=None,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        source="none",
+        unavailable=(),
+        io_self_only=True,
+    )
+    assert "io_self_only" not in blank.as_record(), (
+        "the flag is set and there is no io figure, so there is nothing to qualify"
+    )
+    assert blank._replace(io_read_bytes=0).as_record()["io_self_only"] is True, (
+        "and a measured ZERO is a number: the caveat belongs beside it"
+    )
+
+
+def test_the_resources_payload_carries_the_IDENTITY_of_the_run_it_describes(tmp_path):
+    """[ADR-0017 R-1]. A figure without the run it came from cannot be checked against anything.
+
+    Both names are read from the history record rather than recomputed, and both were read by
+    the same expression, so a key misspelt in one of them is invisible to a test that looks at
+    the other.
+    """
+    measured = runprov.resources.from_record({"wall_seconds": 3.0, "source": "getrusage"})
+    out = runprov.resources.payload(
+        pathlib.Path("h.jsonl"), measured, {"script": "align", "run_id": "r-7"}
+    )
+    assert out["script"] == "align" and out["run_id"] == "r-7"
+    assert runprov.resources.payload(pathlib.Path("h.jsonl"), measured, None)["run_id"] is None
+
+
+def test_every_reason_a_figure_is_UNAVAILABLE_is_written_subject_then_reason(tmp_path):
+    """[ADR-0013 R-8]. These strings are the record's only account of a missing number.
+
+    They are read by a person and grouped by a reader, so they are not free prose: each is
+    `<subject>: <what happened>`, lower-case, with the subject naming the mechanism that did
+    not answer. Every path that can produce one is driven here, because a shape assertion over
+    a list nothing filled is the vacuous leg this suite keeps finding.
+    """
+    proc, cg = tmp_path / "proc", tmp_path / "cg"
+    proc.mkdir()
+    seen: list[str] = []
+
+    # 1. `/proc/self/cgroup` is not readable at all
+    seen += _meter(tmp_path, proc=tmp_path / "absent", cgroup_mount=cg).read().unavailable
+    # 2. a v2 line that belongs to the desktop session rather than to this run
+    (proc / "cgroup").write_text("0::/user.slice/user-1000.slice/app.scope\n", encoding="utf-8")
+    seen += _meter(tmp_path, proc=proc, cgroup_mount=cg, environ={}).read().unavailable
+    # 3. a v1 line, which names controllers and has no comparable peak
+    (proc / "cgroup").write_text("11:memory:/slurm/uid_1/job_9\n", encoding="utf-8")
+    seen += (
+        _meter(tmp_path, proc=proc, cgroup_mount=cg, environ={"SLURM_JOB_ID": "9"})
+        .read()
+        .unavailable
+    )
+    # 4. the group is ours and this kernel has no `memory.peak` — measured on 5.15
+    (proc / "cgroup").write_text("0::/kubepods/pod1\n", encoding="utf-8")
+    (cg / "kubepods" / "pod1").mkdir(parents=True)
+    seen += _meter(tmp_path, proc=proc, cgroup_mount=cg).read().unavailable
+    # 5. no `resource` module, which is every Windows run
+    seen += _meter(tmp_path, proc=proc, cgroup_mount=cg, rusage=None).read().unavailable
+
+    assert len(set(seen)) == 5, f"five distinct reasons must have been reached, got {set(seen)}"
+    for reason in set(seen):
+        assert re.fullmatch(r"[a-z][a-z0-9_. ]*: \S.*", reason), (
+            f"{reason!r} is not `<subject>: <what happened>`; these are the record's whole "
+            f"account of a figure that is not there"
+        )
+    assert {reason.split(":")[0] for reason in seen} == {"cgroup", "resource module"}, (
+        "two mechanisms can fail to answer, and each says which one it was"
+    )
+
+
+def test_the_scheduler_names_this_module_watches_for_are_the_ones_SLURM_AND_KUBERNETES_SET():
+    """[ADR-0013 R-6]. Spelt out, because nothing in this repository can derive them.
+
+    These come from Slurm and from Kubernetes, not from runprov, so a typo in one disables a
+    detection with NO symptom — the run simply declines its own cgroup and falls back, which
+    is a correct-looking answer. The literals are therefore the tripwire, and the behavioural
+    leg below is derived from them so that a name ADDED without being recognised fails too.
+    """
+    assert runprov.resources.SCHEDULER_VARS == (
+        "SLURM_JOB_ID",
+        "SLURM_STEP_ID",
+        "KUBERNETES_SERVICE_HOST",
+    ), "Slurm exports the first two per job and per step; Kubernetes injects the third"
+    assert runprov.resources.CONTAINER_MARKS == (
+        "kubepods",
+        "docker",
+        "containerd",
+        "slurm",
+        "lxc",
+    ), "the path fragments each runtime puts in `/proc/self/cgroup`"
+
+    for name in runprov.resources.SCHEDULER_VARS:
+        assert runprov.resources.owns_cgroup({name: "1"}, "0::/user.slice/x") is True, name
+    for mark in runprov.resources.CONTAINER_MARKS:
+        assert runprov.resources.owns_cgroup({}, f"0::/{mark}/job-1") is True, mark
+
+
+def test_the_floor_caveat_names_WHAT_WAS_MEASURED_and_WHAT_IS_ENFORCED(tmp_path):
+    """[ADR-0013 R-9]. The caveat travels with the number because the number alone OOM-kills a job.
+
+    It is one clause and it has two halves, and either half alone is useless: *the maximum of
+    any one child* without *the scheduler enforces the total* reads as a limitation of the
+    tool, and the second without the first reads as advice.
+    """
+    note = runprov.resources.FLOOR_NOTE
+    assert note.startswith("the maximum of any one child"), (
+        "it opens by naming what `RUSAGE_CHILDREN` actually is"
+    )
+    assert note.endswith("which is larger"), "and closes on the quantity that gets the job killed"
+    assert "cgroup total" in note
+
+
+def test_cgroup_path_strips_the_THREE_character_prefix_and_only_SLASHES():
+    """Two off-by-ones that a well-formed kernel line cannot tell apart. [ADR-0013 R-6]
+
+    Every `0::` line the kernel writes has a slash straight after the prefix, so `line[3:]` and
+    `line[4:]` are the same function over all of them — the `lstrip` removes whichever one is
+    left. And `lstrip` takes a CHARACTER SET, not a prefix: a set with a letter in it eats the
+    first letter of a cgroup directory named with it, silently, on a path that then resolves to
+    somewhere else.
+    """
+    mount = pathlib.Path("/sys/fs/cgroup")
+    assert runprov.resources.cgroup_path("0::relative/p", mount) == mount / "relative/p", (
+        "exactly the three characters of the prefix come off"
+    )
+    assert runprov.resources.cgroup_path("0::/Xjob/p", mount) == mount / "Xjob/p", (
+        "only `/` is stripped; a directory beginning with any other character keeps it"
+    )
+
+
+def test_the_cpu_figure_is_SELF_plus_CHILDREN_in_both_user_and_system_time(tmp_path):
+    """[ADR-0013 R-3]. Four terms, and a sign wrong in any of them is a plausible smaller number.
+
+    The four values are powers of two so that every subset sums to something different: with
+    the suite's usual stub, SELF and CHILDREN carry the same times and three of the four
+    additions are indistinguishable from a subtraction of a different one.
+    """
+
+    class _Distinct:
+        RUSAGE_SELF, RUSAGE_CHILDREN = 0, 1
+
+        def getrusage(self, who):
+            if who == self.RUSAGE_SELF:
+                return _Usage(100, utime=1.0, stime=2.0)
+            return _Usage(200, utime=4.0, stime=8.0)
+
+    measured = _meter(tmp_path, rusage=_Distinct()).read()
+    assert measured.cpu_seconds == 15.0, (
+        "1 + 2 + 4 + 8: this run's user and system time AND its children's, all four added"
+    )
+
+
+def test_the_io_figures_name_their_OWN_file_and_their_OWN_key(tmp_path):
+    """[ADR-0013 R-9b]. Two reads of one file, and each names the file and the key separately.
+
+    Real `/proc/self/io` leads with `rchar` and `wchar`, which are a different quantity —
+    bytes passed to the syscall, not bytes that reached the device — and ends with
+    `cancelled_write_bytes`. A reader that matched loosely would report the wrong one.
+    """
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    (proc / "io").write_text(
+        "rchar: 999999\nwchar: 888888\nsyscr: 7\nsyscw: 8\n"
+        "read_bytes: 4096\nwrite_bytes: 8192\ncancelled_write_bytes: 512\n",
+        encoding="utf-8",
+    )
+    measured = _meter(tmp_path, proc=proc).read()
+    assert measured.io_read_bytes == 4096, "not `rchar`, which is nine hundred thousand here"
+    assert measured.io_write_bytes == 8192, "not `wchar`, and not `cancelled_write_bytes`"
+
+
+def test_the_paths_this_meter_reads_by_DEFAULT_are_the_real_ones(tmp_path):
+    """Every test in this file injects these, so nothing else in the suite ever names them.
+
+    That is the `guard-the-instruments` shape exactly: a default pointing somewhere that does
+    not exist measures nothing on a real cluster, records `cgroup: unreadable`, and leaves this
+    suite entirely green — because the suite never uses the default.
+    """
+    meter = inspect.signature(runprov.resources.Meter.__init__).parameters
+    assert meter["proc"].default == pathlib.Path("/proc/self")
+    assert meter["cgroup_mount"].default == pathlib.Path("/sys/fs/cgroup")
+    assert inspect.signature(runprov.resources.cgroup_path).parameters[
+        "mount"
+    ].default == pathlib.Path("/sys/fs/cgroup"), "and the same mount where the path is built"
+
+
+def test_the_environment_the_meter_was_GIVEN_is_the_one_it_asks(tmp_path, monkeypatch):
+    """[ADR-0013 R-6]. An injected environment that is silently replaced by the ambient one is a
+    test measuring the host.
+
+    The cgroup line here carries NO container mark, so the scheduler variable is the only thing
+    that can make this run own its group — and the real environment is cleared of all three
+    first, so a pass here cannot be the machine agreeing by accident.
+    """
+    for name in runprov.resources.SCHEDULER_VARS:
+        monkeypatch.delenv(name, raising=False)
+    proc, cg = tmp_path / "proc", tmp_path / "cg"
+    proc.mkdir()
+    (proc / "cgroup").write_text("0::/user.slice/u/app.scope\n", encoding="utf-8")
+    group = cg / "user.slice" / "u" / "app.scope"
+    group.mkdir(parents=True)
+    (group / "memory.peak").write_text("1234\n", encoding="utf-8")
+
+    measured = _meter(tmp_path, proc=proc, cgroup_mount=cg, environ={"SLURM_JOB_ID": "9"}).read()
+    assert measured.source == "cgroup" and measured.max_rss_bytes == 1234, (
+        "the injected `SLURM_JOB_ID` is what makes this group ours; reading `os.environ` "
+        "instead would decline it and fall back"
+    )
+
+
+def test_a_run_SHORTER_than_a_second_still_has_a_core_count(tmp_path):
+    """`mean_cores` declines a zero interval, and a zero interval only. [ADR-0013 R-14]
+
+    Most runs in any suite finish in well under a second, and a threshold of one second rather
+    than zero would hand every one of them a Slurm header with no `--cpus-per-task` at all —
+    silently, because the renderer omits what it cannot compute.
+    """
+    brief = runprov.resources.Measurement(
+        wall_seconds=0.5,
+        cpu_seconds=1.0,
+        max_rss_bytes=None,
+        max_vms_bytes=None,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        source="getrusage",
+        unavailable=(),
+        io_self_only=False,
+    )
+    assert runprov.resources.mean_cores(brief) == 2.0, "half a second of wall, one of cpu"
+    assert runprov.resources.mean_cores(brief._replace(wall_seconds=0.0)) is None
+
+
+def test_the_windows_fallback_for_the_resource_module_binds_NONE_and_nothing_else():
+    """Asserted STRUCTURALLY, because this line cannot execute on the machine reading it.
+
+    `except ImportError: _resource = None` runs on Windows only, and `None` is not decoration:
+    `_cpu_and_rss` and `read` both branch on `is None`, so any other falsey value makes the
+    meter try to call `getrusage` on it, swallow the `AttributeError` in the handler that
+    exists for a failing measurement, and record a Windows run with NO figures and NO reason —
+    which is the one combination [ADR-0013 R-8] forbids. A guard that cannot run here is an
+    absent one, so the claim is made against the source instead.
+    """
+    tree = ast.parse((REPO / "runprov" / "resources.py").read_text(encoding="utf-8"))
+    bindings = [
+        node
+        for block in ast.walk(tree)
+        if isinstance(block, ast.Try)
+        for handler in block.handlers
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "_resource" for t in node.targets)
+    ]
+    assert len(bindings) == 1, f"one fallback, and it is the module's import guard: {bindings}"
+    assert isinstance(bindings[0].value, ast.Constant) and bindings[0].value.value is None, (
+        "the absent `resource` module is None, because that is what both readers test for"
+    )
+
+
+def test_the_margin_note_names_WHICH_mechanism_measured_and_what_that_COSTS(tmp_path):
+    """[ADR-0013 R-15] [ADR-0013 R-9]. Two sources, two different warnings, and one of them
+    had never been rendered.
+
+    A `getrusage` figure UNDER-REPORTS and the note must say so; a cgroup figure is the exact
+    quantity the scheduler enforces and the note says that instead. The under-reporting
+    sentence is written as two adjacent string fragments, and a check on the line's opening —
+    or on its shape — reaches only the first of them: the half that says what the number is
+    NOT lives in the second.
+    """
+    base = runprov.resources.Measurement(
+        wall_seconds=60.0,
+        cpu_seconds=60.0,
+        max_rss_bytes=runprov.resources.MIB,
+        max_vms_bytes=None,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        source="getrusage",
+        unavailable=(),
+        io_self_only=True,
+    )
+    page = runprov.resources.render_slurm(base)
+    _slurm_directives(page)
+    caveat = [line for line in page if "UNDER-REPORTS" in line]
+    assert len(caveat) == 1, "said once, on the page that carries the number"
+    assert caveat[0].endswith("while the scheduler enforces the concurrent cgroup total."), (
+        "the second fragment of the sentence names the quantity that kills the job"
+    )
+
+    measured_by_cgroup = runprov.resources.render_slurm(base._replace(source="cgroup"))
+    _slurm_directives(measured_by_cgroup)
+    assert not [line for line in measured_by_cgroup if "UNDER-REPORTS" in line], (
+        "a cgroup peak is not the under-reporting one, and saying so would be false"
+    )
+    assert [line for line in measured_by_cgroup if line.startswith("# From the cgroup")], (
+        "it says which mechanism answered, because the two are different quantities"
+    )
+
+
 def _hrec(**over):
     """A completed history record, minimal but of the right shape."""
     base = {
