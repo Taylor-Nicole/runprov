@@ -40707,6 +40707,60 @@ def test_gh_json_turns_every_way_gh_fails_to_answer_into_a_SENTENCE(
     )
 
 
+def test_matrix_check_asks_GitHub_about_the_FULL_sha_and_never_the_ABBREVIATION(tmp_path):
+    """`gh run list --commit` answers `[]` for a SHORT sha, and says nothing about why.
+
+    MEASURED 2026-10-14, while checking this repository's own matrix: the run existed and was
+    `in_progress`, `--commit 5e82f1a` answered `[]`, and `--commit <the full forty>` answered
+    with the run. `matrix_check` reads an empty list as *"no `test.yml` run for 5e82f1a. Push
+    the commit and let the matrix finish BEFORE tagging"* -- advice that is wrong in every
+    particular about a commit that is pushed and running, and that would send someone to push
+    a commit already on the remote.
+
+    THIS IS A GUARD, NOT A FIX: the step is correct today, because it passes what
+    `git rev-parse HEAD` returns. The trap is that the same function prints `head[:7]` in its
+    messages, so the abbreviation is sitting right there to be reused by anyone tidying the
+    duplication away -- and the result is a FALSE CLEAN, the direction this repository rates
+    worst, which nothing else here would catch.
+    """
+    ci = _ci_module()
+    workflow = tmp_path / ".github" / "workflows"
+    workflow.mkdir(parents=True)
+    (workflow / "test.yml").write_text("on: [push]\n", encoding="utf-8")
+    head = "4ee4ae6" + "a" * 33
+    assert len(head) == 40
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(list(argv))
+        if argv[0] == "git" and argv[1] == "rev-parse":
+            return subprocess.CompletedProcess(argv, 0, head + "\n", "")
+        if argv[0] == "git":
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[:3] == ["gh", "run", "list"]:
+            #: AN EMPTY LIST, which is what GitHub returns for an abbreviation -- so if the step
+            #: ever asks with one, the refusal below is the message a human would actually meet.
+            return subprocess.CompletedProcess(argv, 0, "[]", "")
+        return subprocess.CompletedProcess(argv, 0, '{"jobs": []}', "")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ci, "ROOT", tmp_path)
+        patch.setattr(ci.subprocess, "run", fake_run)
+        with pytest.raises(SystemExit):
+            ci.matrix_check()
+
+    asked = [argv for argv in seen if argv[0] == "gh" and "--commit" in argv]
+    #: THE CONTROL: without this the test passes on a step that never asked GitHub anything.
+    assert len(asked) == 1, f"the commit query was not reached, so nothing here is asserted: {seen}"
+    given = asked[0][asked[0].index("--commit") + 1]
+    assert given == head, (
+        f"`matrix_check` asked GitHub about {given!r} rather than the full HEAD. A short sha "
+        f"makes `gh run list --commit` answer `[]` SILENTLY, and this step reads an empty list "
+        f"as 'no run for this commit -- push it and wait'."
+    )
+    assert len(given) == 40 and given != head[:7]
+
+
 def test_matrix_check_refuses_readably_when_gh_dies_on_its_SECOND_call_not_its_first(tmp_path):
     """THE REGRESSION, in the direction that was broken.
 
