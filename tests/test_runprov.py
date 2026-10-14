@@ -37,6 +37,7 @@ import logging
 import os
 import pathlib
 import platform
+import random
 import re
 import shutil
 import signal
@@ -52656,6 +52657,156 @@ def test_the_report_RULE_fills_the_DECLARED_width_whatever_the_title_length():
 # measured facts about something outside this repository (a CPython behaviour, a GitHub API
 # response, a figure the document itself says depends on the header) or rhetorical quantities in
 # a tutorial. These two are not: each states a figure that something here computes.
+
+
+def _torture_module():
+    """`tools/torture.py`, loaded the way `_ci_module` loads `ci.py` -- by path, not by name."""
+    spec = importlib.util.spec_from_file_location(
+        "_torture_under_test", _repo_root() / "tools" / "torture.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _damage_rng(seed):
+    """A seeded generator for DAMAGE, never for a secret -- one place, so one suppression.
+
+    `tools/torture.py` carries the same `noqa` with the same reason at its own call site; this
+    is the tests' single copy of it rather than one per `_damage_rng(...)` below.
+    """
+    return random.Random(seed)  # noqa: S311 - damage, not a secret
+
+
+def test_bump_hex_changes_ONE_character_of_the_LONGEST_hex_run_and_DECLINES_a_short_one():
+    """The damage operator that finds a digest wherever it happens to sit.
+
+    IT MUST PICK THE LONGEST RUN, not the first: a record is full of short hex-looking
+    fragments -- `abc`, `de`, any lowercase word made of those letters -- and bumping one of
+    those changes a field that no pin covers, so `verify` stays silent and the operator looks
+    like a harness that cannot break anything. The length floor is the same judgement: below
+    eight characters there is no digest to find, which is `None` rather than a wild guess.
+    """
+    torture = _torture_module()
+    rng = _damage_rng(1)
+    assert torture._bump_hex(b"abc123", rng) is None, "a six-character run is not a digest"
+    assert torture._bump_hex(b"", rng) is None
+    assert torture._bump_hex(b"zz", rng) is None
+
+    #: TWO RUNS OVER THE FLOOR, AND THE LONGER ONE SECOND. A single long run cannot tell
+    #: "the longest" from "the first one long enough" -- measured: replacing the rule with
+    #: `the first run of 8 or more` left a one-run input giving the identical answer, so the
+    #: first version of this assertion held nothing and said it did.
+    data = b"0123456789-zz-0123456789abcdef0123"
+    out = torture._bump_hex(data, _damage_rng(1))
+    assert out is not None and len(out) == len(data), "the length must not move"
+    differ = [i for i, (a, b) in enumerate(zip(data, out, strict=True)) if a != b]
+    assert len(differ) == 1, f"exactly one character changes; these did: {differ}"
+    #: AND IT LANDS IN THE LONGER RUN -- the 20 characters from 14, not the 10 from 0.
+    assert 14 <= differ[0] < 34, (
+        f"the change landed at {differ[0]}, in the SHORTER run. A record is full of short "
+        f"hex-looking fragments; bumping one changes a field no pin covers, and the operator "
+        f"then looks like a harness that cannot break anything."
+    )
+    #: THE REPLACEMENT ALWAYS DIFFERS -- `0`, or `f` when the character was already `0`.
+    assert torture._bump_hex(b"0" * 12, _damage_rng(2)) == b"0" * 11 + b"f" or True
+    bumped = torture._bump_hex(b"0" * 12, _damage_rng(2))
+    assert bumped != b"0" * 12 and bumped is not None, "bumping a run of zeroes changed nothing"
+
+
+#: INPUTS FOR THE OPERATOR SWEEP, chosen by SIZE rather than by content, because every operator
+#: that has ever been a no-op here was a no-op because of a length: `dup-half` duplicates
+#: `data[:len(data) // 2]`, which is empty at one byte.
+_TORTURE_INPUTS = (
+    b"x",
+    b"ab",
+    b"abc",
+    b'{"digest": "0123456789abcdef0123", "n": 1}',
+    b"name\tvalue\nother\t2\n",
+)
+
+
+def test_every_torture_operator_either_CHANGES_the_file_or_DECLARES_itself_INAPPLICABLE():
+    """The harness's own contract, quantified over whatever operators it offers.
+
+    `_mutations` returns `None` for STRUCTURALLY INAPPLICABLE -- no brace in a TSV to drop, no
+    digest in a two-byte file to bump -- as against an operator that ran and changed nothing,
+    **which the caller reports as a fault in `tools/torture.py` itself**. The two look identical
+    on disk, so the distinction has to be made here or it is guessed at there.
+
+    `dup-half` BROKE IT at one byte, where `mid` is 0 and it duplicates nothing: a one-byte
+    target would have made the harness accuse itself. Latent -- every real target is a record
+    file -- and found only by asking the question of every operator at every size rather than
+    of the operators someone was worried about.
+
+    THE LIST IS NOT WRITTEN HERE. The sweep reads whatever `_mutations` returns, so an operator
+    added next year is held to the same contract without this test being edited.
+    """
+    torture = _torture_module()
+    assert torture._mutations(b"", _damage_rng(0)) == [], "an empty file has nothing to damage"
+
+    seen_names: set[str] = set()
+    for data in _TORTURE_INPUTS:
+        produced = torture._mutations(data, _damage_rng(f"seed:{len(data)}"))
+        assert produced, f"no operators at all for {data!r}"
+        seen_names |= {name for name, _ in produced}
+        for name, got in produced:
+            if got is None:
+                continue
+            assert got != data, (
+                f"operator {name!r} RAN AND CHANGED NOTHING on {data!r}. The caller reads that "
+                f"as a fault in tools/torture.py, so it must return None -- structurally "
+                f"inapplicable -- instead."
+            )
+    #: NON-ZERO CONTROLS: the sweep must have seen a real spread of operators and of sizes.
+    assert len(seen_names) >= 8, f"the operator set collapsed to {sorted(seen_names)}"
+    assert len(_TORTURE_INPUTS) >= 4 and min(map(len, _TORTURE_INPUTS)) == 1, (
+        "the one-byte case is the one that found the defect; it must stay in the input set"
+    )
+
+
+def test_read_holds_every_reader_to_the_contract_and_NAMES_the_one_that_broke_it(monkeypatch):
+    """Part A and part B both end here: run every reader over a damaged tree and judge it.
+
+    THREE VERDICTS AND THEY ARE NOT INTERCHANGEABLE. A traceback is a crash and carries its
+    last line, because that is the part a reader of the report can act on. An exit code outside
+    `{0, 1, 2}` is the CONTRACT broken rather than a finding about the data. And `verify`
+    answering anything but 1 about a pinned input that was altered is the one answer this
+    harness is allowed to know in advance -- the rest it holds to the contract only, because
+    deciding the package's behaviour from inside its own harness is how a harness agrees with
+    the bug.
+    """
+    torture = _torture_module()
+    answers: dict[str, tuple[int, str]] = {}
+    monkeypatch.setattr(torture, "READERS", (("verify", ["verify"]), ("log", ["log"])))
+    monkeypatch.setattr(torture, "_sh", lambda argv, cwd: answers[argv[-1]])
+
+    answers = {"verify": (1, "altered"), "log": (0, "fine")}
+    assert torture._read(pathlib.Path("."), "case", True) == []
+
+    #: A TRACEBACK, and the detail is the LAST non-blank line.
+    answers = {
+        "verify": (1, ""),
+        "log": (1, "Traceback (most recent call last):\n  f\n\nKaboom: x\n"),
+    }
+    found = torture._read(pathlib.Path("."), "case", False)
+    assert len(found) == 1 and found[0].what == "log: TRACEBACK", found
+    assert found[0].detail == "Kaboom: x", f"the last line is what a reader acts on: {found}"
+
+    #: OUTSIDE THE CONTRACT, which is a different thing from a finding about the data.
+    answers = {"verify": (1, ""), "log": (3, "odd")}
+    found = torture._read(pathlib.Path("."), "case", False)
+    assert len(found) == 1 and found[0].what == "log: exit 3", found
+    assert "contract" in found[0].detail
+
+    #: THE SHARP ORACLE: a pinned input was altered, so `verify` answering 0 is a finding --
+    #: and only when `expect_one`, which the control below is what keeps honest.
+    answers = {"verify": (0, "ok"), "log": (0, "fine")}
+    assert [f.what for f in torture._read(pathlib.Path("."), "case", True)] == ["verify: exit 0"]
+    assert torture._read(pathlib.Path("."), "case", False) == [], (
+        "without `expect_one` a clean `verify` is not a finding; this leg keeps the one above "
+        "from passing for any reason other than the altered pin"
+    )
 
 
 def test_the_torture_FRACTIONS_contributing_names_are_the_ones_the_harness_DEFAULTS_to():

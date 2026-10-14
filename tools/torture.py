@@ -445,7 +445,11 @@ def _mutations(data: bytes, rng: random.Random) -> list[tuple[str, bytes | None]
         ("drop-byte", data[:at] + data[at + 1 :]),
         ("insert-nul", data[:at] + b"\x00" + data[at:]),
         ("break-utf8", data[:at] + b"\xc3\x28" + data[at:]),
-        ("dup-half", data[:mid] + data[:mid] + data[mid:]),
+        #: `None` AT ONE BYTE, where `mid` is 0 and this duplicates nothing. The caller
+        #: reports an operator that ran and changed nothing as a fault in THIS file, so a
+        #: one-byte target would make the harness accuse itself. Structurally inapplicable
+        #: is what that is, and this function already has a word for it.
+        ("dup-half", data[:mid] + data[:mid] + data[mid:] if mid else None),
         ("zero-fill", b"\x00" * len(data)),
         ("shuffle-digest", _bump_hex(data, rng)),
         ("drop-brace", next((data.replace(c, b"", 1) for c in (b"{", b"[") if c in data), None)),
