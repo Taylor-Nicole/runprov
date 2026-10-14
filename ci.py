@@ -504,6 +504,50 @@ _VERSION_SOURCES = {
 }
 
 
+def _gh_json(argv: list[str], about: str) -> object:
+    """Run a `gh` argv and return its parsed JSON, or REFUSE with a sentence naming the step.
+
+    ONE DEFINITION OF "`gh` could not answer", because `matrix_check` had two. The probe
+    (`gh run list`) raised a readable `SystemExit`; the second call (`gh run view`) used
+    `check=True` and nothing else, so an outage there was a `CalledProcessError` traceback.
+    **Both were observed on one machine on 2026-10-13** -- the probe's handled message in the
+    morning, the traceback that night -- and which one a caller got depended on nothing but
+    where the outage happened to land. The rule is *a step that cannot ask is not a step that
+    found a problem*, and it has to read the same way at every site.
+
+    THREE WAYS `gh` FAILS TO ANSWER, and the third is the one neither call site had:
+
+    * it is **not installed** -- `FileNotFoundError` from `subprocess.run` itself, an
+      unhandled traceback at BOTH sites before this. It is the most literal form of
+      unreachable and the likeliest on a fresh machine.
+    * it **returns non-zero** -- no network, not logged in, repository not found.
+    * it returns zero and **prints something that is not JSON**. Rare, and a bare
+      `JSONDecodeError` names a column offset rather than the command that produced it.
+
+    `about` completes the sentence "could not ask GitHub <about>", so the message says which
+    question went unanswered rather than only that a question did.
+    """
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise SystemExit(
+            f"could not ask GitHub {about} — `{argv[0]}` is required for this step and is not "
+            f"installed. This step cannot clear a tag without it."
+        ) from None
+    if done.returncode != 0:
+        raise SystemExit(
+            f"could not ask GitHub {about} — `{argv[0]}` is required for this step and it "
+            f"said: {done.stderr.strip()[:200]}"
+        )
+    try:
+        return json.loads(done.stdout or "null")
+    except json.JSONDecodeError as why:
+        raise SystemExit(
+            f"could not ask GitHub {about} — `{argv[0]}` returned success and then output "
+            f"this step cannot read ({why}): {done.stdout.strip()[:200]!r}"
+        ) from None
+
+
 def matrix_check() -> None:
     """Refuse a tag whose COMMIT has not been through the hosted matrix. Added 2026-10-01.
 
@@ -544,7 +588,7 @@ def matrix_check() -> None:
         raise SystemExit(
             "the tree is dirty, so the matrix cannot have seen what you are about to tag"
         )
-    probe = subprocess.run(
+    runs = _gh_json(
         [
             "gh",
             "run",
@@ -558,15 +602,14 @@ def matrix_check() -> None:
             "--json",
             "databaseId,status,conclusion",
         ],
-        capture_output=True,
-        text=True,
+        f"about {head[:7]}",
     )
-    if probe.returncode != 0:
+    if not isinstance(runs, list):
         raise SystemExit(
-            f"could not ask GitHub about {head[:7]} — `gh` is required for this step and it "
-            f"said: {probe.stderr.strip()[:200]}"
+            f"could not ask GitHub about {head[:7]} — `gh` answered with {type(runs).__name__} "
+            f"where this step expects a list of runs, so it cannot tell a green matrix from no "
+            f"matrix at all."
         )
-    runs = json.loads(probe.stdout or "[]")
     if not runs:
         raise SystemExit(
             f"no `test.yml` run for {head[:7]}. Push the commit and let the matrix finish "
@@ -575,14 +618,19 @@ def matrix_check() -> None:
     run = runs[0]
     if run["status"] != "completed":
         raise SystemExit(f"the matrix for {head[:7]} is still {run['status']} — wait for it")
-    jobs = json.loads(
-        subprocess.run(
-            ["gh", "run", "view", str(run["databaseId"]), "--json", "jobs"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-    )["jobs"]
+    payload = _gh_json(
+        ["gh", "run", "view", str(run["databaseId"]), "--json", "jobs"],
+        f"about the jobs of run {run['databaseId']}",
+    )
+    #: AND `["jobs"]` IS NOT A DIAGNOSIS. A successful `gh` whose payload lacks the key is a
+    #: `KeyError` naming nothing; this step would rather say which question went unanswered.
+    if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
+        raise SystemExit(
+            f"could not ask GitHub about the jobs of run {run['databaseId']} — `gh` answered "
+            f"without a `jobs` list, so this step has no per-leg result to read and cannot "
+            f"tell a skipped windows leg from a green one."
+        )
+    jobs = payload["jobs"]
     #: EVERY JOB BY NAME, so a leg that was SKIPPED is not read as a leg that passed.
     bad = {j["name"]: (j.get("conclusion") or j.get("status")) for j in jobs}
     bad = {name: got for name, got in bad.items() if got != "success"}

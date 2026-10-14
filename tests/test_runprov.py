@@ -40538,6 +40538,230 @@ def test_ci_py_check_commit_msg_refuses_each_family_and_accepts_a_clean_message(
         assert family in said, f"the refusal must name the family; it said {said!r}"
 
 
+#: ARGV HEADS `ci.py` STARTS A PROCESS WITH THAT ARE NOT A STRING LITERAL, each with the reason
+#: it cannot be `gh`. The test below clears a literal head by reading it; anything else it
+#: cannot decide, and an undecidable process start is where a third `gh` call would hide. A key
+#: that no longer appears is RED, so a declaration retires itself when its call site goes.
+_ARGV_HEADS_THAT_ARE_NOT_GH = {
+    "PY": "the module constant `PY = sys.executable`, asserted below to still be exactly that",
+    "cmd": (
+        "the generic `run(*cmd)` helper's own parameter -- a pass-through, so the subject moves "
+        "to its CALLERS, every one of which this test reads"
+    ),
+    "str(vpy)": "the interpreter inside a throwaway venv this step just built",
+    "str(script)": "a path to a file in this repository that the step then runs",
+}
+
+
+def _ci_process_starts():
+    """Every way `ci.py` can start a process, with the head of its argv.
+
+    THE PRIMITIVE IS "a process is started", not "`subprocess.run` is called with a list whose
+    first element is `gh`" -- those are different sentences, and the second is a spelling. So
+    this collects `subprocess.<anything>`, `os.system`/`os.popen`/`os.exec*`, and `ci.py`'s own
+    `run()` helper, and resolves each one's argv head whatever shape it arrives in.
+
+    Returns `(lineno, how, head, inside_gh_json)`, where `head` is `("literal", "git")` for a
+    string constant and `("expr", "str(vpy)")` for anything else.
+    """
+    tree = ast.parse((_repo_root() / "ci.py").read_text(encoding="utf-8"))
+    owner = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_gh_json"]
+    assert len(owner) == 1, (
+        '`ci.py` has no single `_gh_json`, so the one definition of "`gh` could not answer" '
+        f"this test is about does not exist: found {len(owner)}"
+    )
+    inside = {id(node) for node in ast.walk(owner[0])}
+
+    def head_of(node):
+        if isinstance(node, ast.List | ast.Tuple):
+            node = node.elts[0] if node.elts else None
+        if isinstance(node, ast.BinOp):  # ["gh", ...] + extra
+            return head_of(node.left)
+        if node is None:
+            return ("expr", "<no argv>")
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return ("literal", node.value)
+        return ("expr", ast.unparse(node))
+
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            how = f"{func.value.id}.{func.attr}"
+        elif isinstance(func, ast.Name):
+            how = func.id
+        else:
+            continue
+        starts = (
+            how.startswith("subprocess.")
+            or how in {"run", "_gh_json"}
+            or (
+                (how.startswith("os.") and func.attr in {"system", "popen"})
+                or func.attr.startswith("exec")
+                if isinstance(func, ast.Attribute)
+                else False
+            )
+        )
+        if not starts or not node.args:
+            continue
+        found.append((node.lineno, how, head_of(node.args[0]), id(node) in inside))
+    return found
+
+
+def test_every_way_ci_py_can_START_GH_goes_through_the_ONE_helper_that_refuses_readably():
+    """THE DEFECT: `matrix_check` asked GitHub twice and handled an unreachable `gh` once.
+
+    The probe (`gh run list`) raised a `SystemExit` naming the command; the second call
+    (`gh run view`) used `check=True` and nothing else, so the same outage produced a readable
+    refusal or a `CalledProcessError` traceback depending only on WHERE it landed. Both were
+    observed on one machine on 2026-10-13, hours apart, on the same network.
+
+    THE GUARD IS NOT "THOSE TWO CALLS", because that is the list that produced the defect. It
+    is: every process `ci.py` starts is read, a literal argv head decides the site, and a head
+    this test cannot read must be DECLARED. A third `gh` call added next year is red whether it
+    is spelled as a new `subprocess.run`, a new `os.system`, or `run("gh", ...)`.
+    """
+    starts = _ci_process_starts()
+    #: NON-ZERO CONTROLS, one per primitive this quantifies over. A walk that silently stopped
+    #: matching would find no offender for the wrong reason, which is this file's house defect.
+    outside = [s for s in starts if not s[3]]
+    assert len(outside) >= 8, f"the process-start walk found almost nothing; it is broken: {starts}"
+    gh_sites = [s for s in starts if s[2] == ("literal", "gh")]
+    assert gh_sites, "no `gh` argv found in `ci.py` at all -- this test's subject is gone"
+
+    #: 1. EVERY `gh` ARGV IS AN ARGUMENT TO `_gh_json`, whatever started it.
+    misrouted = [(line, how) for line, how, _head, _in in gh_sites if how != "_gh_json"]
+    assert not misrouted, (
+        "these start `gh` without going through `_gh_json`, so an unreachable `gh` there is a "
+        f"traceback rather than a sentence naming the command: {misrouted}"
+    )
+
+    #: 2. NOTHING IS LEFT OVER. A head this test cannot read is where the next one would hide.
+    undeclared = sorted(
+        {
+            (how, text)
+            for line, how, (kind, text), ins in starts
+            if not ins and kind == "expr" and text not in _ARGV_HEADS_THAT_ARE_NOT_GH
+        }
+    )
+    assert not undeclared, (
+        "these start a process with an argv this test cannot read, so it cannot say whether "
+        "they run `gh`. Route it through `_gh_json`, give it a literal head, or declare it in "
+        f"`_ARGV_HEADS_THAT_ARE_NOT_GH` with the reason: {undeclared}"
+    )
+
+    #: 3. A DECLARATION RETIRES ITSELF. Its reason was about a call site; when that site goes,
+    #: the reason is about nothing and the next reader inherits a cleared exemption.
+    live = {text for _l, _h, (kind, text), ins in starts if not ins and kind == "expr"}
+    stale = sorted(set(_ARGV_HEADS_THAT_ARE_NOT_GH) - live)
+    assert not stale, (
+        f"these heads are declared not-`gh` and no longer start anything: {stale}. Delete the "
+        "entry -- an exemption whose subject is gone covers nothing, or everything."
+    )
+    #: And the one declaration that is CHECKABLE is checked rather than believed.
+    assert _ci_module().PY == sys.executable, (
+        "`ci.py`'s `PY` is no longer `sys.executable`, so the reason declared for it above is "
+        "false and every `run(PY, ...)` site is undecided again"
+    )
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "missing", "expected"),
+    [
+        (0, '{"jobs": []}', "", False, None),
+        (1, "", "error connecting to api.github.com", False, "api.github.com"),
+        (0, "<!DOCTYPE html>", "", False, "cannot read"),
+        (0, "", "", True, "not installed"),
+    ],
+    ids=["answers", "non-zero", "not-json", "not-installed"],
+)
+def test_gh_json_turns_every_way_gh_fails_to_answer_into_a_SENTENCE(
+    monkeypatch, returncode, stdout, stderr, missing, expected
+):
+    """THE THREE WAYS `gh` FAILS, and the third is the one neither call site had.
+
+    Not installed is the most literal form of unreachable and the likeliest on a fresh machine,
+    and before this it was a `FileNotFoundError` traceback at BOTH sites -- so the call that
+    WAS guarded was guarded against two of three. A step that cannot ask is not a step that
+    found a problem, and all three have to read that way.
+    """
+    ci = _ci_module()
+
+    def fake_run(argv, **kwargs):
+        if missing:
+            raise FileNotFoundError(2, "No such file or directory", argv[0])
+        return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+
+    monkeypatch.setattr(ci.subprocess, "run", fake_run)
+    if expected is None:
+        assert ci._gh_json(["gh", "run", "list"], "about nothing") == {"jobs": []}
+        return
+    with pytest.raises(SystemExit) as refused:
+        ci._gh_json(["gh", "run", "list"], "about nothing")
+    said = str(refused.value)
+    assert expected in said, f"the refusal must say what went wrong; it said {said!r}"
+    assert "gh" in said and "about nothing" in said, (
+        f"the refusal must name the command AND the question that went unanswered: {said!r}"
+    )
+
+
+def test_matrix_check_refuses_readably_when_gh_dies_on_its_SECOND_call_not_its_first(tmp_path):
+    """THE REGRESSION, in the direction that was broken.
+
+    `gh` failing on the FIRST call was always handled, and the first call is the one a reader
+    reaches first -- so the guarded path was also the better-tested path, and a test that let
+    the probe fail would pass against the original defect. This one makes the probe SUCCEED and
+    kills the second call, and asserts the fake saw BOTH: without that control the test passes
+    for the wrong reason the moment the probe starts failing again.
+
+    IT BUILDS ITS OWN `ROOT`, AND THE CONTROL IS WHY. The first version read the repository's
+    real `.github/workflows/test.yml`, which `matrix_check` requires before it asks GitHub
+    anything -- and `pyproject.toml` excludes `.github/` from the sdist ON PURPOSE, so inside
+    `build`'s isolated install the step refused at that first gate and reached NO `gh` call.
+    The suite was green and the sdist leg was red: a check's environment must match its scope.
+    Without `len(gh_calls) == 2` below it would have read as a pass there too, for a reason
+    that has nothing to do with `gh`.
+    """
+    ci = _ci_module()
+    workflow = tmp_path / ".github" / "workflows"
+    workflow.mkdir(parents=True)
+    (workflow / "test.yml").write_text("on: [push]\n", encoding="utf-8")
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(tuple(argv))
+        if argv[0] == "git" and argv[1] == "rev-parse":
+            return subprocess.CompletedProcess(argv, 0, "9" * 40 + "\n", "")
+        if argv[0] == "git":  # status --porcelain: a clean tree
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[:3] == ["gh", "run", "list"]:
+            payload = '[{"databaseId": 42, "status": "completed", "conclusion": "success"}]'
+            return subprocess.CompletedProcess(argv, 0, payload, "")
+        return subprocess.CompletedProcess(argv, 1, "", "error connecting to api.github.com")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ci, "ROOT", tmp_path)
+        patch.setattr(ci.subprocess, "run", fake_run)
+        with pytest.raises(SystemExit) as refused:
+            ci.matrix_check()
+
+    gh_calls = [argv for argv in seen if argv[0] == "gh"]
+    #: THE CONTROL: the probe must have SUCCEEDED and the second call must have been reached.
+    assert len(gh_calls) == 2, (
+        f"the second `gh` call was never reached, so this test is about the first one and the "
+        f"defect it guards is untouched: {gh_calls}"
+    )
+    assert gh_calls[1][:3] == ("gh", "run", "view"), gh_calls
+    said = str(refused.value)
+    assert "api.github.com" in said and "42" in said, (
+        "the refusal must carry what `gh` said and WHICH question went unanswered; it said "
+        f"{said!r}"
+    )
+    assert "Traceback" not in said and "CalledProcessError" not in said, said
+
+
 _HOOKS_THAT_REWRITE_FILES = {
     "ruff-check": "`args: [--fix]` edits the file in place",
     "ruff-format": "a formatter writes the file it formats",
