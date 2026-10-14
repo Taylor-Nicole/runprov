@@ -49452,6 +49452,141 @@ def test_the_bench_harness_numbers_the_lines_it_changed_in_the_mutant():
     assert bench.changed_lines("a\nb\nc\n", "a\nc\n") == set()
 
 
+def test_the_bench_harness_numbers_the_lines_a_DELETION_took_out_OF_THE_ORIGINAL():
+    """`removed_lines` is the half `changed_lines` cannot have, and the test above says why.
+
+    A deletion changes no line IN the mutant, so `changed_lines` is empty and the harness once
+    blamed the one thing it could not have been -- *"the mutation is comment, prose or a bare
+    literal"* -- while removing two lines from a guard on purpose. These numbers are positions
+    in the ORIGINAL, which is the only file that still has them, and that makes it a diagnostic
+    rather than a proof: coverage reports on the mutant, where there is no line left to speak.
+    """
+    bench = _bench_module()
+    assert bench.removed_lines("a\nb\nc\n", "a\nb\nc\n") == set()
+    assert bench.removed_lines("a\nb\nc\n", "a\nc\n") == {2}
+    assert bench.removed_lines("a\nb\nc\nd\n", "a\nd\n") == {2, 3}
+    #: A REPLACEMENT counts too -- the original line is gone either way, and the control that
+    #: reads this set is asking "what did the original have that the mutant does not".
+    assert bench.removed_lines("a\nb\nc\n", "a\nB\nc\n") == {2}
+    #: AN INSERTION removes nothing, which is what keeps this from double-counting every edit.
+    assert bench.removed_lines("a\nc\n", "a\nb\nc\n") == set()
+
+
+def test_owning_statements_maps_a_CONTINUATION_line_to_THE_LINE_COVERAGE_REPORTS():
+    """Coverage numbers a multi-line statement by its FIRST line, and control 6 compares against
+    coverage's statement set -- so a mutation on a continuation line is absent from that set.
+
+    THAT WAS A FALSE VOID: editing one entry of a six-line tuple in `tools/claims.py` made the
+    control refuse a perfectly valid experiment with *"none of the changed lines is a
+    STATEMENT"*. A refusal to measure something measurable is the stricter mistake, and still a
+    mistake. The innermost enclosing statement wins, because that is the one coverage reports.
+    """
+    bench = _bench_module()
+    table = "X = (\n    1,\n    2,\n)\n"
+    assert bench.owning_statements(table, {3}) == {1}, "a continuation line belongs to line 1"
+    assert bench.owning_statements(table, {1}) == {1}
+    #: INNERMOST WINS, and only a nested case can tell that rule from "the outermost".
+    nested = "def f(x):\n    if x:\n        y = (\n            1,\n        )\n    return x\n"
+    assert bench.owning_statements(nested, {4}) == {3}, (
+        "line 4 resolved to the `def` or the `if` rather than the assignment coverage reports on"
+    )
+    #: A LINE NO STATEMENT OWNS is dropped rather than guessed at -- a blank line past the end.
+    assert bench.owning_statements(table, {99}) == set()
+    assert bench.owning_statements(table, set()) == set()
+
+
+def test_coverage_source_is_DERIVED_from_the_target_and_a_ROOT_file_gets_a_dot():
+    """What to hand `--cov`, computed from the target rather than listed.
+
+    THE LIST THAT WAS HERE COULD NOT SEE THIS FILE: `--cov=runprov --cov=tests` was hard-coded,
+    so the control refused every mutation outside those two trees -- including every mutation of
+    `tools/bench.py` itself, which is the file the harness's own demonstrations live in.
+    """
+    bench = _bench_module()
+    assert bench.coverage_source("runprov/run.py") == "runprov"
+    assert bench.coverage_source("tools/bench.py") == "tools"
+    assert bench.coverage_source("runprov/sub/deeper.py") == "runprov", "the TOP directory"
+    #: A FILE AT THE ROOT, which is the case the hard-coded list could not express at all.
+    assert bench.coverage_source("ci.py") == "."
+    #: A WINDOWS SEPARATOR, because a target reaches this as text and the matrix runs there.
+    assert bench.coverage_source("runprov\\run.py") == "runprov"
+
+
+def test_module_bindings_sees_a_binding_THE_IMPORT_RUNS_and_not_one_inside_a_function():
+    """A mutation to `WIDTH = 78` changes a statement the interpreter runs on IMPORT.
+
+    That is why control 6 cannot be trusted alone for one of these: importing the module
+    executes the changed line, so "the changed line ran" is satisfied by the import and says
+    nothing about whether any READER of the constant ran. Eight constants were benched that way
+    and all eight reported a clean SURVIVED.
+    """
+    bench = _bench_module()
+    source = "WIDTH = 78\n\n\ndef f():\n    inner = 1\n    return inner\n"
+    assert bench._module_bindings(source, {1}) == {"WIDTH"}
+    #: INSIDE A FUNCTION BODY is not a module-level binding, whatever line is named.
+    assert bench._module_bindings(source, {5}) == set()
+    #: AND THE LINE MUST BE ONE OF THE CHANGED ONES, or every constant in the file would qualify.
+    assert bench._module_bindings(source, set()) == set()
+    assert bench._module_bindings("A, B = 1, 2\n", {1}) == {"A", "B"}, "a tuple target binds both"
+    assert bench._module_bindings("WIDTH: int = 78\n", {1}) == {"WIDTH"}, "an annotated binding"
+
+
+def test_substitute_REFUSES_an_anchor_that_is_not_UNIQUE_in_either_direction():
+    """One exact substitution, and the anchor must occur exactly once.
+
+    BOTH FAILURES WEAR A SUCCESSFUL-LOOKING COMMAND LINE. Zero sites is control 5's no-op -- the
+    experiment did not happen and the verdict reads clean. Two sites is a different experiment
+    from the one about to be reported. So the count is asserted rather than the replacement.
+    """
+    bench = _bench_module()
+    assert bench._substitute("b", "B")("a b c") == "a B c"
+    for source, times in (("a c", 0), ("a b b", 2)):
+        with pytest.raises(bench.Void, match=f"occurs {times} times"):
+            bench._substitute("b", "B")(source)
+
+
+def test_every_bench_SELFCHECK_ANCHOR_still_occurs_EXACTLY_ONCE_in_its_target():
+    """THE SELFCHECK'S CASES ARE ANCHORED IN THE PACKAGE'S SOURCE, and the package moves.
+
+    Each case substitutes a hard-coded fragment of a real file. When that fragment drifts the
+    case stops being the experiment it describes -- `--old occurs 0 times` -- and the harness's
+    own docstring says that is "the correct failure for a control somebody owns". But nothing
+    NOTICED it until someone ran the whole bench, which copies trees and runs suites. This is
+    the same assertion for the price of a `read_text`, so an anchor broken by an ordinary edit
+    is red on the commit that breaks it.
+
+    IT USES THE HARNESS'S OWN UNIQUENESS RULE rather than restating it: `_substitute` raises
+    `Void` unless the anchor occurs exactly once, so applying each case IS the check. And the
+    no-op case is not special-cased by its name -- the table already declares itself, in the
+    reason fragment the selfcheck requires of that verdict.
+    """
+    bench = _bench_module()
+    cases = bench._SELFCHECK
+    #: NON-ZERO CONTROLS, one per thing this quantifies over.
+    assert len(cases) >= 8, f"the selfcheck table has almost nothing in it: {len(cases)}"
+    assert len({row[3] for row in cases}) >= 6, "the kinds collapsed; this loop tests one path"
+    assert len({row[2] for row in cases}) >= 4, "every case points at one file; the sweep is thin"
+
+    for label, _selector, target, kind, _expect, fragment in cases:
+        path = _repo_root() / target
+        assert path.is_file(), f"{label}: its target {target} is gone, so the case measures nothing"
+        source = path.read_text(encoding="utf-8")
+        try:
+            mutated = bench._selfcheck_mutation(kind)(source)
+        except bench.Void as why:  # pragma: no cover - green while every anchor holds
+            raise AssertionError(f"{label}: the anchor in {target} has drifted -- {why}") from None
+        if "changed no bytes" in fragment:
+            assert mutated == source, (
+                f"{label}: this case exists to prove the harness calls an unchanged file VOID, "
+                f"and its mutation now changes something"
+            )
+        else:
+            assert mutated != source, (
+                f"{label}: the anchor applied and changed nothing, which is control 5's no-op "
+                f"wearing a successful-looking command line"
+            )
+
+
 def test_the_bench_harness_refuses_a_work_root_inside_this_repository(tmp_path):
     """Control 1, and it refuses BEFORE creating anything.
 
