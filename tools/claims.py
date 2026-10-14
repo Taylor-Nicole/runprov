@@ -988,9 +988,22 @@ def pattern_branches(pattern: str) -> list[str]:
     """Split a pattern on its TOP-LEVEL `|`, so each branch can be tried on its own.
 
     Depth-aware, because `(?:a|b)` is one branch and `a|b` is two; an escaped pipe is a literal.
+
+    AND A CHARACTER CLASS IS NOT A GROUP, which this counted as one until 2026-10-14. `(` and
+    `[` both incremented one depth and `)` and `]` both decremented it, so `[(]|a` left depth at
+    1 when the top-level `|` arrived and came back as ONE branch instead of two. **The error
+    direction is a FALSE CLEAN**: `unexercised_branches` only reports a branch that matches
+    nothing, and a branch it never separated is a branch it never tries. Latent when found --
+    0 of the 104 live detection patterns put a bracket inside a class -- which is exactly when
+    a splitter defect is cheap to fix and invisible to every verdict the tool has ever printed.
+
+    Inside a class the only character that matters is the close, and `]` in first position is a
+    literal (`[]]` is a class containing `]`), so the open index is kept to recognise it.
     """
     out: list[str] = []
     depth = 0
+    in_class = False
+    first_in_class = -1
     current = ""
     index = 0
     while index < len(pattern):
@@ -999,11 +1012,18 @@ def pattern_branches(pattern: str) -> list[str]:
             current += pattern[index : index + 2]
             index += 2
             continue
-        if char in "([":
+        if in_class:
+            if char == "]" and index != first_in_class:
+                in_class = False
+        elif char == "[":
+            in_class = True
+            #: `[^]]` negates, so the literal-`]` position shifts by one.
+            first_in_class = index + (2 if pattern[index + 1 : index + 2] == "^" else 1)
+        elif char == "(":
             depth += 1
-        elif char in ")]":
+        elif char == ")":
             depth -= 1
-        if char == "|" and depth == 0:
+        if char == "|" and depth == 0 and not in_class:
             out.append(current)
             current = ""
         else:

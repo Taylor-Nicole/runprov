@@ -50430,6 +50430,117 @@ def test_the_claims_report_is_not_in_the_default_gate_and_ci_declares_it():
     )
 
 
+#: THE SPLITTER'S CONTRACT, as a table. Each row is (pattern, branches, why this row exists),
+#: and the last four are the 2026-10-14 regression: `(` and `[` both counted as one depth, so a
+#: bracket inside a character class left the depth non-zero and the top-level `|` never split.
+_BRANCH_SPLITS = (
+    (r"a|b", ["a", "b"], "the plain case"),
+    (r"(?:a|b)", [r"(?:a|b)"], "a group is ONE branch"),
+    (r"a|(?:b|c)|d", ["a", "(?:b|c)", "d"], "a group between two top-level pipes"),
+    (r"a\|b", [r"a\|b"], "an escaped pipe is a literal, not a split"),
+    (r"a||b", ["a", "b"], "an empty branch is dropped rather than reported as matching nothing"),
+    (r"[|]|a", ["[|]", "a"], "a pipe inside a class is a literal -- this one always worked"),
+    (r"[(]|a", ["[(]", "a"], "REGRESSION: an open paren inside a class is not a group"),
+    (r"[)]|a", ["[)]", "a"], "REGRESSION: and neither is a close paren"),
+    (
+        r"[]|]|a",
+        ["[]|]", "a"],
+        "REGRESSION: `]` in first position is a literal, so the class runs on",
+    ),
+    (r"[^]|]|a", ["[^]|]", "a"], "REGRESSION: `[^` shifts that first position by one"),
+)
+
+
+def test_pattern_branches_splits_on_TOP_LEVEL_pipes_and_a_CHARACTER_CLASS_IS_NOT_A_GROUP():
+    """`tools/claims.py`'s branch splitter, which had never been called by a test.
+
+    IT FEEDS `unexercised_branches`, whose job is to report a pattern branch that matches
+    nothing -- so a branch the splitter never separates is a branch nothing ever tries, and the
+    failure direction is a **FALSE CLEAN**. That is the direction this repository rates worst,
+    and it is why this is the first instrument function to get a test.
+
+    It was LATENT when found: 0 of the 104 live detection patterns put a bracket inside a class.
+    A latent defect in a splitter is cheap to fix and invisible to every verdict the tool has
+    printed, which is a reason to fix it rather than a reason to wait.
+    """
+    claims = _claims_module()
+    for pattern, want, why in _BRANCH_SPLITS:
+        got = claims.pattern_branches(pattern)
+        assert got == want, f"{why}: {pattern!r} split to {got} rather than {want}"
+        #: THE CONTROL, and it is the one that would have caught the original defect from the
+        #: other side: a split that cuts a group in half leaves a branch that cannot compile.
+        for branch in got:
+            re.compile(branch)
+
+
+def test_unexercised_branches_NAMES_a_dead_branch_and_is_SILENT_about_a_declared_one(monkeypatch):
+    """The dead-branch sweep, driven over documents this test writes.
+
+    Three things in one pass, because they are the three verdicts it can reach: a branch that
+    matches a line is not reported, a branch that matches nothing IS, and a branch declared in
+    `_FIRES_NOWHERE_TODAY` is not. The fourth -- a branch that is not a valid pattern once it is
+    alone -- is below.
+    """
+    claims = _claims_module()
+    pages = {"DOC.md": "\n".join(f"a live line {number}" for number in range(120))}
+    monkeypatch.setattr(claims, "documents", lambda: pages)
+    monkeypatch.setattr(claims, "_FIRES_NOWHERE_TODAY", {})
+    monkeypatch.setattr(claims, "_KINDS", (("probe", r"live|NOSUCHTEXTANYWHERE", "a reason"),))
+
+    found = claims.unexercised_branches()
+    assert len(found) == 1 and "NOSUCHTEXTANYWHERE" in found[0], found
+    assert "'live'" not in found[0], f"the branch that DOES match was reported dead: {found}"
+
+    #: DECLARED -- and the declaration is keyed on the branch text, so this is the real path.
+    monkeypatch.setattr(claims, "_FIRES_NOWHERE_TODAY", {"NOSUCHTEXTANYWHERE": "declared here"})
+    assert claims.unexercised_branches() == []
+
+
+def test_unexercised_branches_reports_a_branch_that_cannot_COMPILE_once_it_is_alone(monkeypatch):
+    """A branch is a fragment, and a fragment of a valid pattern need not be one.
+
+    `(?:a|b)` is fine and `(?:a` is not. The sweep must say so rather than raise, because one
+    unparseable fragment would otherwise take the whole report down with it.
+    """
+    claims = _claims_module()
+    pages = {"DOC.md": "\n".join(f"a live line {number}" for number in range(120))}
+    monkeypatch.setattr(claims, "documents", lambda: pages)
+    monkeypatch.setattr(claims, "_FIRES_NOWHERE_TODAY", {})
+    monkeypatch.setattr(claims, "_KINDS", (("probe", r"live|(unclosed", "a reason"),))
+    found = claims.unexercised_branches()
+    assert len(found) == 1 and "not a valid pattern" in found[0], found
+
+
+def test_unexercised_branches_REFUSES_when_it_has_read_too_few_lines_to_judge(monkeypatch):
+    """THE NON-VACUOUS CONTROL, and it is the defect that produced this function's docstring.
+
+    With no lines, EVERY branch matches nothing and every one reads as dead -- four false
+    findings at once, from the instrument rather than the subject. So too few lines is a
+    refusal, not a report. A sweep that saw nothing found nothing for the wrong reason.
+    """
+    claims = _claims_module()
+    monkeypatch.setattr(claims, "documents", lambda: {"DOC.md": "one\ntwo\nthree\n"})
+    with pytest.raises(RuntimeError, match="not reading the documents"):
+        claims.unexercised_branches()
+
+
+def test_live_reads_an_int_a_SIZED_collection_by_LENGTH_and_REFUSES_anything_else():
+    """`_live` resolves a bound constant, and a wrong answer here is a wrong verdict everywhere.
+
+    THE SIZED CASE IS THE INTERESTING ONE. *"refuses 40 binary suffixes"* is a claim about
+    `len(PIN_BINARY)` and there is no integer beside it; binding the length keeps the collection
+    as the single definition rather than writing the number down twice. And a `bool` is an `int`
+    in Python, so without the explicit exclusion `_live` would answer `1` for a flag and compare
+    it against a document's figure -- which is why the refusal, not the int path, is asserted.
+    """
+    claims = _claims_module()
+    assert claims._live("runprov", "__all__") == len(runprov.__all__)
+    assert claims._live("runprov.hashing", "PIN_DIGEST_CHARS") == runprov.hashing.PIN_DIGEST_CHARS
+    assert isinstance(claims._live("runprov.hashing", "PIN_DIGEST_CHARS"), int)
+    with pytest.raises(TypeError, match="neither an int nor sized"):
+        claims._live("sys", "dont_write_bytecode")  # a bool, which `isinstance(_, int)` accepts
+
+
 def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
     """THE RATCHET, and it is in the default gate while the report above is not.
 
