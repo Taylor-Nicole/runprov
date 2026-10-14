@@ -49643,6 +49643,180 @@ def test_every_bench_SELFCHECK_ANCHOR_still_occurs_EXACTLY_ONCE_in_its_target():
             )
 
 
+#: EVERY WAY `tools/bench.py main` REFUSES AN ARGUMENT, with the fragment that names WHICH.
+#: Asserting only "it exited 2" would pass on any refusal for any reason -- the control must say
+#: which one fired, or five cases collapse into one.
+_BENCH_ARGV_REFUSALS = (
+    (["--edit", "runprov/run.py", "--old", "alpha"], "--test is required"),
+    (["--test", "t", "--revert", "runprov/run.py", "--edit", "ci.py"], "two different experiments"),
+    (["--test", "t", "--revert", "runprov/run.py"], "--revert needs --from"),
+    (["--test", "t", "--edit", "runprov/run.py"], "--edit needs --old"),
+    (["--test", "t"], "say what to break"),
+)
+
+
+@pytest.mark.parametrize(
+    ("argv", "says"), _BENCH_ARGV_REFUSALS, ids=[r[1] for r in _BENCH_ARGV_REFUSALS]
+)
+def test_bench_main_REFUSES_each_incoherent_argument_set_and_says_which(
+    argv, says, tmp_path, capsys
+):
+    """`main`'s argument dispatch, which nothing had ever called.
+
+    THESE ARE THE REFUSALS A PERSON MEETS FIRST. `bench` is a harness whose entire value is that
+    it will not return a verdict it has not earned, and the cheapest way to get an unearned one
+    is to ask it for an experiment that is not fully specified -- a `--revert` with no `--from`
+    names no second state to compare against.
+
+    `parser.error` exits **2**, which is neither of this harness's verdicts (0 CAUGHT,
+    1 SURVIVED). That is deliberate and is asserted here: an instrument's own failures must use
+    a code no verdict uses, or a typo reads as a finding.
+    """
+    bench = _bench_module()
+    with pytest.raises(SystemExit) as refused:
+        bench.main([*argv, "--work", str(tmp_path / "w")])
+    #: THE FRAGMENT, NOT JUST THE CODE. The first version of this test declared `says` in the
+    #: table and never asserted it, so all five cases checked one thing -- that something
+    #: refused -- and any refusal for any reason passed. `argparse` writes to stderr and exits.
+    said = capsys.readouterr().err
+    assert says in said, f"refused, but not for the reason this case is about: {said.strip()!r}"
+    assert refused.value.code == 2, (
+        f"argparse refused with {refused.value.code}, which collides with a verdict "
+        f"(0 CAUGHT, 1 SURVIVED); an instrument's own failure needs a code no verdict uses"
+    )
+
+
+def test_bench_main_hands_the_RIGHT_EXPERIMENT_to_bench_for_each_spelling(tmp_path):
+    """What `main` builds out of the argv, asserted at the seam rather than by running it.
+
+    THE DOUBLES RECORD WHAT THEY WERE ASKED, because the thing under test is the CALL: which
+    target, which label, and which transformation. A stub that swallowed its arguments would
+    leave every one of those invisible while reading as coverage.
+
+    NO GIT, AND THAT IS THE SECOND TIME TODAY. A first version read the real `git rev-parse
+    --short HEAD`, because `_revert` resolves its sha EAGERLY -- it runs `git show SHA:PATH`
+    during dispatch, so an invented sha becomes a `Void` before `bench` is reached. The suite
+    was green and **`build`'s isolated sdist install was red**: `pyproject` ships no `.git`, so
+    `check=True` raised there. Patching `_revert` removes the dependency AND sharpens the test,
+    because the dispatch's actual job is to CALL it with the right two arguments -- which an
+    identity check on the returned object pins exactly.
+
+    FIXTURE VALUES CHOSEN TO DISCRIMINATE, not to read well. `old` and `new` differ in length
+    and content, so swapping them changes the result; the path and the sha are different
+    strings, so transposing them in the label changes it.
+    """
+    bench = _bench_module()
+    asked: list[dict] = []
+    reverts: list[tuple] = []
+    sentinel = object()
+
+    def record(**kwargs):
+        asked.append(kwargs)
+        return 0
+
+    def fake_revert(path, sha):
+        reverts.append((path, sha))
+        return sentinel
+
+    work = tmp_path / "w"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(bench, "bench", record)
+        patch.setattr(bench, "_revert", fake_revert)
+        assert (
+            bench.main(
+                [
+                    "--test",
+                    "k",
+                    "--edit",
+                    "runprov/run.py",
+                    "--old",
+                    "alpha",
+                    "--new",
+                    "OMEGA-9",
+                    "--work",
+                    str(work),
+                ]
+            )
+            == 0
+        )
+        assert (
+            bench.main(
+                [
+                    "--test",
+                    "k",
+                    "--revert",
+                    "runprov/diff.py",
+                    "--from",
+                    "abc1234",
+                    "--work",
+                    str(work),
+                ]
+            )
+            == 0
+        )
+
+    assert len(asked) == 2, f"`main` did not reach `bench` for both spellings: {asked}"
+    edit, revert = asked
+
+    assert edit["target"] == "runprov/run.py"
+    assert edit["label"] == "edit runprov/run.py", edit["label"]
+    #: THE TRANSFORMATION ITSELF, applied -- the only thing that distinguishes `_substitute(old,
+    #: new)` from `_substitute(new, old)`, which a label or a target cannot see.
+    assert edit["mutate"]("x alpha x") == "x OMEGA-9 x", (
+        "`--edit` built a substitution that does not replace --old with --new"
+    )
+
+    assert revert["target"] == "runprov/diff.py"
+    assert revert["label"] == "revert runprov/diff.py to abc1234", revert["label"]
+    #: THE ARGUMENTS `_revert` WAS GIVEN, in order -- transposing them in the dispatch would
+    #: leave the label right and the experiment reversed.
+    assert reverts == [("runprov/diff.py", "abc1234")], reverts
+    #: AND THE OBJECT IT RETURNED IS WHAT REACHED `bench`, by identity. A dispatch that built
+    #: the mutate some other way would pass every assertion above and fail this one.
+    assert revert["mutate"] is sentinel
+
+
+def test_bench_main_turns_a_Void_into_exit_2_from_BOTH_places_it_can_be_raised(tmp_path):
+    """A `Void` is not a verdict, and `main` has two separate guards that say so.
+
+    THE EARLY ONE wraps the work-root refusal, and its comment records why it is where it is: the
+    first version sat ABOVE the `try`, so a refused work root escaped as an uncaught traceback
+    exiting **1** -- this harness's SURVIVED code -- and reported a refused run as a verdict
+    about the guard.
+
+    THE LATE ONE wraps the experiment. Both must answer 2, and they are asserted separately
+    because one handler covering for the other is exactly the regression that comment describes.
+    """
+    bench = _bench_module()
+
+    #: EARLY: a work root inside the repository is refused before any experiment begins.
+    inside = _repo_root() / ".bench-probe-that-is-not-created"
+    assert bench.main(["--test", "k", "--edit", "ci.py", "--old", "x", "--work", str(inside)]) == 2
+    assert not inside.exists(), "the refused work root must not have been created"
+
+    #: LATE: the experiment itself raises, which only the second handler can catch.
+    def raises(**kwargs):
+        raise bench.Void("the mutation changed nothing")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(bench, "bench", raises)
+        assert (
+            bench.main(
+                [
+                    "--test",
+                    "k",
+                    "--edit",
+                    "runprov/run.py",
+                    "--old",
+                    "a",
+                    "--work",
+                    str(tmp_path / "w"),
+                ]
+            )
+            == 2
+        )
+
+
 def test_the_bench_harness_refuses_a_work_root_inside_this_repository(tmp_path):
     """Control 1, and it refuses BEFORE creating anything.
 
