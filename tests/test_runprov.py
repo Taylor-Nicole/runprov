@@ -22,6 +22,7 @@ import dataclasses
 import datetime as dt
 import enum
 import errno
+import fnmatch
 import functools
 import gc
 import gzip
@@ -50363,6 +50364,154 @@ def test_every_readme_binding_resolves_and_still_holds():
 #: THE INSTRUMENTS THAT BIND A FIGURE IN A SHIPPED DOCUMENT. Three files, and the list is NOT a
 #: list of names anyone may extend quietly: `test_these_are_every_file_that_binds_a_document`
 #: below derives the same set from the repository and holds this to it.
+#: EVERY FILE WHOSE COVERAGE IS MEASURED OUT OF BAND, and the command that measures it.
+#:
+#: THE PACKAGE IS GATED AT 100% AND THESE ARE NOT MEASURED BY THE GATE AT ALL. That is a
+#: deliberate position rather than an oversight -- most of what is missing here is harness code
+#: run by hand, and `guard-the-instruments` is explicit that gating it at the product's floor is
+#: the wrong reflex -- but a position is only honest while somebody can still take the
+#: measurement. The one way it silently stops being takeable is a NEW INSTRUMENT FILE that the
+#: command's globs do not reach: measured at 47% on 2026-10-14, and a file outside `ci.py` and
+#: `tools/` would have been absent from that number with nothing saying so.
+#:
+#: THE TUPLE AND THE COMMAND ARE TWO DEFINITIONS OF ONE SCOPE, so the test below holds them to
+#: each other as well as to the repository. A new file added to the tuple and not to the globs
+#: is the same hole wearing a tidy-looking declaration.
+_INSTRUMENT_FILES = (
+    "ci.py",
+    "tools/__init__.py",
+    "tools/bench.py",
+    "tools/claims.py",
+    "tools/corpus.py",
+    "tools/corpus_scenario.py",
+    "tools/torture.py",
+)
+
+_INSTRUMENT_COVERAGE_COMMAND = (
+    "python -m coverage run --branch --include='ci.py,tools/*.py' -m pytest tests/ "
+    "-o addopts= -p no:randomly -q "
+    "&& python -m coverage report --include='ci.py,tools/*.py'"
+)
+
+#: DIRECTORIES THAT ARE BUILD OUTPUT, not content. Everything beginning with a dot is excluded
+#: by rule rather than by name -- `.venv`, `.git`, `.audit-scratch` and whatever the next one is
+#: called -- and these four are the ones that do not. Where `.git` is present the derivation is
+#: cross-checked against `git ls-files`, which needs no exclusions at all; inside the sdist, where
+#: there is no `.git`, this list is what stands in for it.
+_NOT_CONTENT = frozenset({"build", "dist", "htmlcov", "__pycache__"})
+
+
+def _instrument_files_in_tree(root: pathlib.Path) -> set[str]:
+    """Every `.py` in the working tree that is not the package, the suite or the examples.
+
+    DERIVED, because a list here would be the defect this guards against. The three content
+    buckets are named rather than the instruments: an instrument is whatever is left, so a file
+    in a directory nobody has thought of is an instrument by default rather than invisible.
+    """
+    found: set[str] = set()
+    for path in root.rglob("*.py"):
+        parts = path.relative_to(root).parts
+        if any(part.startswith(".") or part in _NOT_CONTENT for part in parts):
+            continue
+        if parts[0] in ("runprov", "tests", "examples"):
+            continue
+        found.add(path.relative_to(root).as_posix())
+    return found
+
+
+def test_these_are_every_FILE_whose_coverage_is_MEASURED_OUT_OF_BAND():
+    """The instruments are outside the gate's coverage, and this is what keeps that honest.
+
+    `--cov=ci` cannot measure `ci.py` -- the suite loads it through `spec_from_file_location`,
+    so the module name is never imported and coverage has no file to attribute, and `--cov=ci.py`
+    fails the same way because pytest-cov reads it as a module name too. The measurement is
+    therefore an out-of-band `coverage run --include=`, recorded above, and an out-of-band
+    measurement is exactly the kind whose SCOPE rots: there is no red anywhere when it quietly
+    stops covering a file.
+
+    WHAT THIS DOES NOT CLAIM. It says nothing about any of these files being TESTED. A guard
+    keyed on *is this function named by a test* was measured first and refused: against the
+    functions the suite never executes it had 41% recall, because the names it fails on are
+    exactly the ones a large suite is full of -- `run`, `test`, `build`, `main`, `report`. A
+    cheap proxy for an expensive property is a proxy, and this one is honest about being a
+    scope check instead.
+    """
+    root = _repo_root()
+    derived = _instrument_files_in_tree(root)
+
+    #: NON-ZERO CONTROLS, one per bucket this partitions on. A walk that silently matched nothing
+    #: would agree with an empty tuple, and a walk that excluded nothing would drown it.
+    every = {
+        p.relative_to(root).as_posix()
+        for p in root.rglob("*.py")
+        if not any(
+            part.startswith(".") or part in _NOT_CONTENT for part in p.relative_to(root).parts
+        )
+    }
+    assert len(every) > 25, f"the tree walk found {len(every)} python files; it is reading nothing"
+    for bucket in ("runprov", "tests", "examples"):
+        assert any(name.startswith(f"{bucket}/") for name in every), (
+            f"nothing was found under {bucket}/, so the exclusion below is not excluding anything "
+            f"and every file would read as an instrument"
+        )
+
+    assert derived == set(_INSTRUMENT_FILES), (
+        "the files measured out of band have changed. `_INSTRUMENT_FILES` says "
+        f"{sorted(_INSTRUMENT_FILES)} and the tree says {sorted(derived)}. A new instrument that "
+        "nobody adds here is measured by nothing, and nothing goes red to say so -- add it, and "
+        "add it to the globs in `_INSTRUMENT_COVERAGE_COMMAND` too."
+    )
+    #: THE TUPLE AND THE COMMAND MUST AGREE -- two definitions of one scope, which is the defect
+    #: this repository keeps landing on. Every declared file must be matched by some glob the
+    #: recorded command actually passes to `--include`, and every glob must match something.
+    globs = sorted(
+        {
+            g
+            for chunk in re.findall(r"--include='([^']+)'", _INSTRUMENT_COVERAGE_COMMAND)
+            for g in chunk.split(",")
+        }
+    )
+    assert globs, "no `--include` glob could be read out of the recorded command"
+    for name in _INSTRUMENT_FILES:
+        assert any(fnmatch.fnmatch(name, glob) for glob in globs), (
+            f"{name} is declared an instrument and no glob in the recorded command reaches it, "
+            f"so the measurement silently leaves it out. The globs are {globs}."
+        )
+    for glob in globs:
+        assert any(fnmatch.fnmatch(name, glob) for name in _INSTRUMENT_FILES), (
+            f"the glob {glob!r} in the recorded command matches none of the instruments, so it is "
+            f"a scope that has outlived its subject"
+        )
+
+
+def test_the_instrument_file_derivation_AGREES_WITH_GIT_wherever_git_is_present():
+    """The weak derivation, checked against the strong one wherever the strong one exists.
+
+    `_instrument_files_in_tree` walks the filesystem and skips build output by a small declared
+    list, because inside `build`'s isolated sdist install there is no `.git` to ask -- and a test
+    that skipped there would be a vacuous leg in the one environment that has caught two defects
+    this week. So the walk runs everywhere and this holds it to `git ls-files` wherever a
+    repository is present, which is the developer's tree and every matrix leg.
+    """
+    root = _repo_root()
+    listed = subprocess.run(
+        ["git", "ls-files", "*.py"], cwd=root, capture_output=True, text=True, check=False
+    )
+    if listed.returncode != 0:  # pragma: no cover - the sdist has no .git; the walk stands alone
+        pytest.skip("no git repository here, which is the sdist case this derivation exists for")
+    tracked = {
+        name
+        for name in listed.stdout.split()
+        if name.split("/")[0] not in ("runprov", "tests", "examples")
+    }
+    assert tracked, "git listed no instrument files at all; this comparison is vacuous"
+    assert tracked == _instrument_files_in_tree(root), (
+        f"the filesystem walk and git disagree about what the instruments are. git says "
+        f"{sorted(tracked)}; the walk says {sorted(_instrument_files_in_tree(root))}. The walk is "
+        f"what runs inside the sdist, so a disagreement here is a hole there."
+    )
+
+
 _FIGURE_INSTRUMENTS = ("tests/test_runprov.py", "ci.py", "tools/claims.py")
 
 #: A DOCUMENT LINE MATCHED BY TWO INSTRUMENTS, DECLARED, WITH THE QUANTITY THEY SHARE.

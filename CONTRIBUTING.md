@@ -296,6 +296,34 @@ fails by reddening one instrument while the other stays green, and the number a 
 (The figures behind this are a measurement of one day and are deliberately not quoted here, for
 the reason the section above gives.)
 
+### The instruments are outside the coverage gate, and the SCOPE of that is held
+
+The package is gated at full branch coverage. `ci.py` and `tools/` are not measured by the gate
+at all, and that is a position rather than an oversight: most of what is unmeasured there is
+harness code a person runs by hand, and gating it at the package's floor would buy a number
+instead of a guard.
+
+A position like that stays honest only while somebody can still take the measurement. Two things
+make that stop being true, and both are silent.
+
+**The first is the tool.** `--cov=ci` reports that the module was never imported, because the
+suite loads `ci.py` by path rather than by name — and `--cov=ci.py` does the same, because it is
+read as a module name too. Coverage of these files is taken out of band, with `coverage run
+--include=`, which matches by path. The command is recorded beside the file list in the suite.
+
+**The second is the scope.** A new instrument file that the command's globs do not reach is
+absent from the measurement with nothing to say so. So the file list is derived from the
+repository — everything outside the package, the suite and the examples is an instrument, which
+makes a file in a directory nobody thought of an instrument by default — and the list and the
+command's globs are held to each other, because two spellings of one scope is the defect this
+repository keeps finding.
+
+**Do not reach for "is this function named by a test" as a substitute.** It was measured against
+the functions the suite never executes and missed most of them, because the names it fails on are
+the ones a large suite is full of: `run`, `test`, `build`, `main`, `report`. A proxy cheap enough
+to run in the gate is still a proxy, and one that fails in the direction of a clean answer is
+worse than an honest dated measurement.
+
 ### Rules with nothing behind them yet
 
 Stated here so the gap is visible rather than implied:
