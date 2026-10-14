@@ -50419,6 +50419,67 @@ def _instrument_files_in_tree(root: pathlib.Path) -> set[str]:
     return found
 
 
+def test_the_corpus_SCENARIO_runs_under_a_FOREIGN_interpreter_which_is_why_it_is_UNMEASURABLE():
+    """The subject of the one declared coverage exemption, asserted so the exemption cannot
+    outlive it.
+
+    `tools/corpus_scenario.py` is the only instrument file excluded from the out-of-band
+    coverage measurement on a reason rather than on effort, and the reason is an OBSERVER
+    EFFECT: `tools/corpus.py` runs it with the THROWAWAY VENV's interpreter, which holds
+    `runprov==X.Y.Z` and nothing else. Installing coverage there to watch it would change what
+    the generator installs, and therefore change **the recorded tree the corpus exists to
+    capture**. The measurement would corrupt its own subject.
+
+    MEASURED 2026-10-14: every other instrument file reached 88% once the measurement crossed
+    the process boundary; `corpus_scenario.py` stayed at 10 of 56 through a full
+    `generate --all` of all eight versions, because none of it ran under an observed
+    interpreter.
+
+    THE DAY THAT CHANGES, THE EXEMPTION IS WRONG. If the scenario is ever run in-process, or
+    with the interpreter that is already measured, it becomes ordinary measurable code and the
+    declaration becomes a hole with a label on it. This asserts the shape the reason depends on:
+    the scenario is handed to a DIFFERENT interpreter than the one running `corpus.py`.
+    """
+    corpus = _repo_root() / "tools" / "corpus.py"
+    tree = ast.parse(corpus.read_text(encoding="utf-8"))
+
+    #: Every `subprocess.*` call whose argv mentions the scenario, by the name `corpus.py` uses.
+    launches = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        func = node.func
+        if not (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "subprocess"
+        ):
+            continue
+        argv = node.args[0]
+        if not isinstance(argv, ast.List) or not argv.elts:
+            continue
+        rendered = [ast.unparse(e) for e in argv.elts]
+        if any("SCENARIO" in r for r in rendered):
+            launches.append((node.lineno, rendered))
+
+    assert len(launches) == 1, (
+        f"`tools/corpus.py` must hand the scenario to exactly one subprocess for this exemption "
+        f"to mean anything; found {len(launches)}: {launches}"
+    )
+    line, argv = launches[0]
+    interpreter = argv[0]
+    #: THE WHOLE CLAIM: argv[0] is NOT this interpreter. `sys.executable` is the measured one.
+    assert "sys.executable" not in interpreter, (
+        f"tools/corpus.py:{line} now runs the scenario with `{interpreter}` — this interpreter, "
+        f"which coverage already observes. The exemption for `tools/corpus_scenario.py` rested "
+        f"on it running under the throwaway venv, and is now a hole with a label on it."
+    )
+    assert "python" in interpreter.lower(), (
+        f"tools/corpus.py:{line} hands the scenario to `{interpreter}`, which this test cannot "
+        f"recognise as an interpreter at all; the exemption's reason can no longer be checked"
+    )
+
+
 def test_these_are_every_FILE_whose_coverage_is_MEASURED_OUT_OF_BAND():
     """The instruments are outside the gate's coverage, and this is what keeps that honest.
 
