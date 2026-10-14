@@ -53241,6 +53241,119 @@ def _damage_rng(seed):
     return random.Random(seed)  # noqa: S311 - damage, not a secret
 
 
+def test_torture_controls_refuse_in_BOTH_directions_and_say_which(tmp_path):
+    """The oracle's two-sided control, whose own failure arms had never run.
+
+    Its docstring states the reason: *"one of them alone is a tautology -- a harness that only
+    checks 'clean is clean' passes with a broken reader, and one that only checks 'damage is
+    seen' passes with a reader that condemns everything."* Both arms are exercised here, plus
+    the third case the function returns EARLY for: a pipeline that could not run at all, which
+    is not a finding about the oracle and must not be reported as one.
+
+    `_sh` and `_build` are the seams; the doubles answer DIFFERENTLY for the arguments they are
+    given, because a stub returning one value for every call cannot tell the two arms apart.
+    """
+    torture = _torture_module()
+
+    def run(build_code, clean_code, altered_code):
+        calls = []
+
+        def fake_sh(argv, cwd):
+            calls.append(tuple(argv[-1:]))
+            #: the FIRST verify is the clean tree, the SECOND is after the file is altered
+            return (clean_code if len(calls) == 1 else altered_code), ""
+
+        def fake_build(tree):
+            #: THE DOUBLE MUST BUILD, because `controls` rmtree's the directory first and then
+            #: reads `out/mid.tsv` out of what `_build` left. A fake that only returns a code
+            #: leaves the function reading a file nothing created.
+            if build_code == 0:
+                (tree / "out").mkdir(parents=True, exist_ok=True)
+                (tree / "out" / "mid.tsv").write_bytes(b"a\tb\n")
+            return build_code, "boom\nlast line"
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(torture, "_build", fake_build)
+            patch.setattr(torture, "_sh", fake_sh)
+            return torture.controls(tmp_path), calls
+
+    #: HEALTHY: clean verifies 0, altered verifies 1 -- nothing to report, and BOTH calls made.
+    bad, calls = run(0, 0, 1)
+    assert bad == [], bad
+    assert len(calls) == 2, f"both directions must be exercised; the oracle saw {calls}"
+
+    #: THE ORACLE CANNOT RECOGNISE CLEAN.
+    bad, _ = run(0, 3, 1)
+    assert len(bad) == 1 and "cannot recognise clean" in bad[0], bad
+
+    #: THE ORACLE CANNOT SEE DAMAGE -- the direction a reader that condemns everything passes.
+    bad, _ = run(0, 0, 0)
+    assert len(bad) == 1 and "cannot see damage" in bad[0], bad
+
+    #: BOTH AT ONCE accumulate, which one `return` in place of an `append` would hide.
+    bad, _ = run(0, 3, 0)
+    assert len(bad) == 2, bad
+
+    #: AND A PIPELINE THAT DID NOT RUN returns EARLY: that is not a finding about the oracle.
+    bad, calls = run(9, 0, 1)
+    assert len(bad) == 1 and "the pipeline itself failed (exit 9)" in bad[0], bad
+    assert calls == [], "the oracle was questioned after its own pipeline failed"
+
+
+def test_torture_main_reports_VOID_with_its_own_code_when_a_CONTROL_fails(tmp_path, capsys):
+    """A failed control is not a finding, and `main` must not let it read as one.
+
+    It returns **2**, which is neither 0 (no findings) nor 1 (findings). *Nothing was measured*
+    is a third verdict, and this repository's whole argument is that collapsing it into either
+    is how an experiment that never ran reports clean.
+    """
+    torture = _torture_module()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(torture, "controls", lambda work: ["the oracle cannot see damage"])
+        code = torture.main([])
+    said = capsys.readouterr().out
+    assert code == 2, f"a failed control answered {code}; 0 and 1 are both claims about damage"
+    assert "CONTROL FAILED: the oracle cannot see damage" in said, said
+    assert "VOID — nothing was measured" in said, said
+
+
+def test_bench_revert_returns_the_OLD_text_and_REFUSES_a_sha_git_cannot_resolve():
+    """`_revert` builds the mutation for a revert experiment, and it reads git.
+
+    NO GIT HERE, BY RULE. `subprocess.run` is the seam, because a test that shells out to git
+    is green in the suite and red in `build`'s isolated install, which ships no `.git` -- twice
+    measured today. Faking the seam also lets the failing branch be reached at all, which a
+    real repository makes awkward.
+
+    THE RETURNED CALLABLE DISCARDS ITS ARGUMENT ON PURPOSE: a revert replaces the file wholesale
+    with the old text, so the current source is irrelevant. That is asserted rather than
+    assumed, by handing it two different sources and requiring the same answer.
+    """
+    bench = _bench_module()
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "THE OLD TEXT\n", "")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(bench.subprocess, "run", fake_run)
+        mutate = bench._revert("runprov/run.py", "abc1234")
+    assert seen == [["git", "show", "abc1234:runprov/run.py"]], seen
+    assert mutate("anything at all") == "THE OLD TEXT\n"
+    assert mutate("something entirely different") == "THE OLD TEXT\n", (
+        "the revert must replace the source wholesale, not depend on it"
+    )
+
+    def fake_fail(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 128, "", "fatal: invalid object name")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(bench.subprocess, "run", fake_fail)
+        with pytest.raises(bench.Void, match="invalid object name"):
+            bench._revert("runprov/run.py", "nosuchsha")
+
+
 def test_bump_hex_changes_ONE_character_of_the_LONGEST_hex_run_and_DECLINES_a_short_one():
     """The damage operator that finds a digest wherever it happens to sit.
 
