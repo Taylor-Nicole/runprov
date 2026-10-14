@@ -40282,6 +40282,185 @@ def test_a_captured_history_from_a_chaining_release_verifies(tmp_path):
     )
 
 
+def _corpus_module():
+    """`tools/corpus.py`, loaded by path the way `_ci_module` loads `ci.py`."""
+    spec = importlib.util.spec_from_file_location(
+        "_corpus_under_test", _repo_root() / "tools" / "corpus.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_leaks_reports_an_absolute_path_SKIPS_a_binary_and_KEEPS_GOING(tmp_path):
+    """The corpus leak scanner, whose silence is the thing that needs proving.
+
+    A committed fixture carrying somebody's `$HOME` makes the corpus describe the machine that
+    built it rather than the version that wrote it, so a scanner that quietly returns nothing
+    is worse than no scanner. Four arms, and three of them are a `continue`.
+
+    THE SKIPPED ENTRIES COME FIRST ON PURPOSE. `leaks` walks `sorted(rglob("*"))`, so the
+    filenames decide the order — and a `continue` at the END of a walk is indistinguishable
+    from a `break`. `a-*` names sort before `z-leak.json`, so turning any skip into a `break`
+    loses the finding and this test says so.
+    """
+    corpus = _corpus_module()
+    tree = tmp_path / "tree"
+    (tree / "a-dir.json").mkdir(parents=True)  # a DIRECTORY named like a file: `is_file` arm
+    (tree / "a-binary.bin").write_bytes(b"\xff\xfe\x00\x01 /home/someone/secret")
+    (tree / "a-token.json").write_text(
+        f'{{"cwd": "{corpus.ROOT_TOKEN}/out/x.tsv"}}', encoding="utf-8"
+    )
+    (tree / "a-clean.json").write_text('{"n": 3}', encoding="utf-8")
+    (tree / "z-leak.json").write_text('{"cwd": "/home/someone/work/out.tsv"}', encoding="utf-8")
+
+    found = corpus.leaks(tree)
+    assert len(found) == 1, f"expected exactly the one real leak, got {found}"
+    assert found[0].startswith("z-leak.json: "), found[0]
+    assert "/home/someone/work/out.tsv" in found[0]
+
+    #: THE BINARY IS SKIPPED, NOT READ — it contains a leak-shaped string and must not be
+    #: reported, because decoding it is what raises.
+    assert not any("a-binary" in f for f in found), found
+    #: NOTHING IS ASSERTED ABOUT THE CORPUS TOKEN, AND THAT IS DELIBERATE. `leaks` carries
+    #: `if ROOT_TOKEN in hit: continue`, but `ABSOLUTE_PATH`'s character classes are `[\w.+-]`
+    #: and `[\w.\\/+-]`, neither of which admits `@` -- so no hit the regex can produce can
+    #: ever contain `@@RUNPROV_CORPUS_ROOT@@`, and the branch is unreachable by construction.
+    #: Coverage agrees: the `if` is executed and the `continue` never is. An assertion here
+    #: could not fail, so there is none; the dead branch is filed rather than frozen.
+
+    #: THE `extra` NEEDLE, which exists for what the shape cannot see — and an empty needle is
+    #: filtered out, or it would match every file and report everything.
+    assert corpus.leaks(tree, extra=["someone"]), "an extra needle found nothing"
+    assert corpus.leaks(tree, extra=["", None]) == found, "an empty needle changed the result"
+
+
+def _plant_corpus(
+    corpus,
+    root,
+    *,
+    versions=("0.1.0", "0.2.0"),
+    artifacts=True,
+    leak=False,
+    manifest=True,
+    scenario=True,
+):
+    """A synthetic corpus with exactly one thing wrong, so an arm can be reached alone."""
+    for version in versions:
+        tree = root / version / "tree"
+        (tree / "out").mkdir(parents=True)
+        (tree / "prov").mkdir(parents=True)
+        if artifacts:
+            (tree / "out" / "a.tsv").write_text("x\ty\n", encoding="utf-8")
+        (tree / "scenario.json").write_text('{"step": true, "python": "3.12"}', encoding="utf-8")
+    if leak:
+        #: IN THE FIRST VERSION, so a `break` instead of a `continue` loses the second one.
+        (root / versions[0] / "tree" / "prov" / "p.json").write_text(
+            '{"cwd": "/home/someone/x.tsv"}', encoding="utf-8"
+        )
+    (root / "MANIFEST.json").write_text(
+        json.dumps(
+            {
+                "scenario_sha256": corpus.scenario_digest() if scenario else "a" * 64,
+                "versions": {v: {} for v in versions} if manifest else {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _run_self_check(corpus, root, capsys):
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(corpus, "CORPUS", root)
+        patch.setattr(corpus, "MANIFEST", root / "MANIFEST.json")
+        code = corpus.self_check()
+    return code, capsys.readouterr().out
+
+
+#: EVERY ARM THAT INCREMENTS `bad`, with the words it prints. Five arms, one counter.
+_SELF_CHECK_ARMS = (
+    ("leak", {"leak": True}, "LEAKED PATHS"),
+    ("no-artifacts", {"artifacts": False}, "no artifacts"),
+    ("unmanifested", {"manifest": False}, "absent from the manifest"),
+    ("scenario-moved", {"scenario": False}, "SCENARIO CHANGED"),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "plant", "says"), _SELF_CHECK_ARMS, ids=[a[0] for a in _SELF_CHECK_ARMS]
+)
+def test_corpus_self_check_NAMES_each_defect_it_finds(name, plant, says, tmp_path, capsys):
+    """`self_check` answers *is the corpus honest*, and every arm that says "no" was unrun.
+
+    FIVE SEPARATE ARMS INCREMENT ONE COUNTER. An aggregate hides which of them moved it, so
+    each is reached ALONE here and asserted by the words it prints — a test on the exit code
+    alone would pass for any of the five and prove nothing about the other four.
+    """
+    corpus = _corpus_module()
+    root = tmp_path / name
+    _plant_corpus(corpus, root, **plant)
+    code, said = _run_self_check(corpus, root, capsys)
+    assert code == 1, f"{name}: a dishonest corpus answered {code}, not 1"
+    assert says in said, f"{name}: refused, but did not say why: {said}"
+    #: AND IT KEPT GOING. The defect is in `0.1.0`; a `break` would lose the second version.
+    assert "0.2.0:" in said, f"{name}: the walk stopped at the first defect: {said}"
+
+
+def test_corpus_self_check_ACCUMULATES_rather_than_overwriting_its_count(tmp_path, capsys):
+    """Two arms at once, because the count is the only thing that tells `+= 1` from `= 1`.
+
+    The exit code is `1 if bad else 0`, so it cannot see the difference; the printed total can.
+    Three defects are planted in one corpus and the line must say three.
+    """
+    corpus = _corpus_module()
+    root = tmp_path / "several"
+    #: `scenario=False` FIRES FIRST, BEFORE THE LOOP, AND THAT IS THE WHOLE POINT. Without it
+    #: the leak arm is the FIRST increment, where `bad = 1` and `bad += 1` agree -- the
+    #: additive identity, measured: the mutation was invisible until this was added.
+    _plant_corpus(corpus, root, scenario=False, leak=True, artifacts=False, manifest=False)
+    code, said = _run_self_check(corpus, root, capsys)
+    assert code == 1
+    #: scenario(1); then 0.1.0 leak(2) no-artifacts(3) unmanifested(4); then 0.2.0
+    #: no-artifacts(5) unmanifested(6) -- the leak is planted only in the first version.
+    assert "6 PROBLEM(S)" in said, (
+        f"the counter did not accumulate across arms and versions; it said: {said}"
+    )
+
+
+def test_corpus_self_check_refuses_an_ABSENT_corpus_with_a_code_of_its_own(tmp_path, capsys):
+    """No corpus is not a clean corpus, and the two must not share an answer.
+
+    It returns **2**, which is neither 0 (honest) nor 1 (dishonest): *nothing was checked* is a
+    third verdict, and collapsing it into either is how an empty directory passes a gate.
+    """
+    corpus = _corpus_module()
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    code, said = _run_self_check(corpus, empty, capsys)
+    assert code == 2, f"an absent corpus answered {code}; 0 and 1 are both claims about content"
+    assert "NO CORPUS" in said, said
+
+
+def test_corpus_self_check_fails_when_its_OWN_POSITIVE_CONTROL_fails(tmp_path, capsys):
+    """The arm that exists because "no leaks found" and "nothing was scanned" are one green.
+
+    `self_check` plants an absolute path into a materialised tree and requires `leaks` to find
+    it. With the scanner blinded, every other arm goes quiet — which is precisely the state
+    this arm exists to refuse — so it is the only one that can still speak.
+    """
+    corpus = _corpus_module()
+    root = tmp_path / "blind"
+    _plant_corpus(corpus, root)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(corpus, "CORPUS", root)
+        patch.setattr(corpus, "MANIFEST", root / "MANIFEST.json")
+        patch.setattr(corpus, "leaks", lambda tree, extra=(): [])
+        code = corpus.self_check()
+    said = capsys.readouterr().out
+    assert code == 1, "a scanner that finds nothing anywhere must not answer 0"
+    assert "THE SCANNER DOES NOT WORK" in said, said
+
+
 def test_the_corpus_keeps_up_with_the_releases_by_itself():
     """A corpus that has to be REMEMBERED after each release is a corpus that stops growing.
 
