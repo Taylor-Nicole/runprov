@@ -299,7 +299,12 @@ def generate(version: str) -> dict[str, typing.Any]:
         if install.returncode:
             raise SystemExit(
                 f"could not install runprov=={version} — the corpus needs the network.\n"
-                f"{install.stderr.strip()[:800]}"
+                #: THE TAIL. `pip`'s actionable line is the last one -- `ERROR: Could not
+                #: find a version that satisfies the requirement` -- after however much
+                #: resolver chatter it chose to print, so the first 800 characters can be
+                #: entirely preamble. Same defect as `bench._prove_the_copy_is_what_runs`,
+                #: found by sweeping its shape rather than by failing.
+                f"…{install.stderr.strip()[-800:]}"
             )
         work = area / "work"
         work.mkdir()

@@ -556,7 +556,8 @@ def _gh_json(argv: list[str], about: str) -> object:
     if done.returncode != 0:
         raise SystemExit(
             f"could not ask GitHub {about} — `{argv[0]}` is required for this step and it "
-            f"said: {done.stderr.strip()[:200]}"
+            #: THE TAIL, for the same reason as every other child's stderr here.
+            f"said: …{done.stderr.strip()[-200:]}"
         )
     try:
         return json.loads(done.stdout or "null")

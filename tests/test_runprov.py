@@ -54804,3 +54804,73 @@ def test_setup_installs_BOTH_HOOK_TYPES_and_agrees_with_the_pre_commit_config(mo
         f"the config no longer asks for the commit-msg stage, so `ci.py setup` installs a "
         f"hook set that cannot refuse an assistant trailer: {sorted(types_)}"
     )
+
+
+def _stderr_truncations():
+    """Every slice taken of a subprocess's `.stderr` across `ci.py` and `tools/*.py`.
+
+    DERIVED FROM THE AST, never listed. The subject is *a truncation of a child's error
+    output*, and the population is whatever the instruments contain today -- so a fourth one
+    written tomorrow is covered on the day it is written rather than when somebody remembers
+    this test exists.
+    """
+    out = []
+    for path in [REPO / "ci.py", *sorted((REPO / "tools").glob("*.py"))]:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Subscript) or not isinstance(node.slice, ast.Slice):
+                continue
+            #: `proc.stderr.strip()[...]` and `proc.stderr[...]` alike: walk the value for an
+            #: attribute named `stderr`, rather than matching one spelling of the chain.
+            if not any(
+                isinstance(inner, ast.Attribute) and inner.attr == "stderr"
+                for inner in ast.walk(node.value)
+            ):
+                continue
+            out.append((path.name, node.lineno, node.slice))
+    return out
+
+
+def test_every_truncation_of_a_CHILD_S_STDERR_keeps_the_TAIL():
+    """A traceback puts the useful line last, so the first N characters are the frames.
+
+    MEASURED, AND IT COST A RED MATRIX. `tools/bench.py` reported a copy that would not import
+    as `proc.stderr.strip()[:300]`. Whether the reason survived depended on the LENGTH OF THE
+    TEMPORARY PATH -- short on the development host, longer on every runner -- so the gate was
+    green here while macOS 3.12 and ubuntu 3.13 were red on `8117dfa`, with the message cut as
+    `raise ImportError('planted: this copy does not imp`.
+
+    THE SWEEP FOUND THREE MORE, each a different instrument: `pip install`'s failure in
+    `tools/corpus.py` (whose actionable line is the last one, after the resolver's chatter),
+    `gh`'s in `ci.py`, and `git show`'s in `tools/bench.py`. None had been reached by a test.
+
+    WHAT THIS DOES NOT CLAIM. It is about `stderr` only. A truncation of `stdout` is a
+    different question with a different answer -- `_gh_json` prints the FIRST 200 characters
+    of unparseable output on purpose, because what matters there is what the output STARTS
+    with, an HTML login page rather than JSON. Quantifying over both would have forced that
+    one to be wrong or exempt, and an exemption on a correct line is how a guard loses its
+    meaning.
+    """
+    found = _stderr_truncations()
+    #: THE NON-ZERO CONTROL. A walk that stopped matching agrees with every codebase.
+    assert len(found) >= 3, (
+        f"only {len(found)} stderr truncation(s) found across ci.py and tools/*.py; the AST "
+        f"walk has stopped recognising them and this test now asserts nothing"
+    )
+
+    head_cut = []
+    for name, lineno, piece in found:
+        #: A TAIL IS `[-N:]`: no lower bound of its own, an upper bound that is negative.
+        lower, upper = piece.lower, piece.upper
+        tail = (
+            lower is not None
+            and upper is None
+            and isinstance(lower, ast.UnaryOp)
+            and isinstance(lower.op, ast.USub)
+        )
+        if not tail:
+            head_cut.append(f"{name}:{lineno}")
+    assert not head_cut, (
+        f"these keep the FRONT of a child's error output, which on a traceback is the frames "
+        f"and never the error — take the tail: {head_cut}"
+    )

@@ -333,6 +333,26 @@ Stated here so the gap is visible rather than implied:
 - **A claim in prose should be bound** — the count of unbound ones is ratcheted, not driven to zero;
   `docs/claims-baseline.txt` carries the residue and what would close each part of it.
 
+### A truncated error message keeps the END, and a bound is crossed by the FIXTURE
+
+**A traceback puts the useful line last.** The frames come first and the exception is at the
+end, so slicing a child's `stderr` from the front keeps the part a reader does not need and
+drops the part they do. Every truncation of a subprocess's error output in `ci.py` and
+`tools/` therefore takes the tail, and
+`test_every_truncation_of_a_CHILD_S_STDERR_keeps_the_TAIL` derives that population from the
+AST rather than listing it, so one written tomorrow is covered the day it is written.
+
+**`stdout` is a different question and is deliberately outside that rule.** Where unparseable
+output is reported, what matters is what it *starts* with — an HTML login page where JSON was
+expected — so the front is correct there. Widening the guard to cover both would have forced a
+correct line to be wrong or exempt.
+
+**And the half that stops it recurring: when a check has a bound, the FIXTURE must cross it.**
+The defect that produced this rule was invisible on the development host and red on two CI
+legs, because whether the message survived the cut depended on how long the temporary path
+happened to be. A fixture that relies on the environment to exceed a limit is a fixture that
+tests the environment. Make the planted input longer than the bound, on every host.
+
 ## Run the CI locally, before you push
 
 ```bash

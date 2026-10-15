@@ -983,7 +983,7 @@ def _revert(target: str, sha: str) -> Callable[[str], str]:
         text=True,
     )
     if proc.returncode != 0:
-        raise Void(f"git show {sha}:{target} failed: {proc.stderr.strip()[:200]}")
+        raise Void(f"git show {sha}:{target} failed: …{proc.stderr.strip()[-200:]}")
     old = proc.stdout
     return lambda _source: old
 
