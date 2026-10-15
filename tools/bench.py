@@ -326,7 +326,15 @@ def _prove_the_copy_is_what_runs(tree: pathlib.Path, py: str) -> str:
         text=True,
     )
     if proc.returncode != 0:
-        raise Void(f"the copy will not import: {proc.stderr.strip()[:300]}")
+        #: THE TAIL, NOT THE HEAD. This read `[:300]` until 2026-10-15, and a traceback puts
+        #: the useful line LAST: the frames come first and the exception is at the end. On a
+        #: host with a short temp path the message fitted and the diagnostic looked fine; on
+        #: every CI runner the paths are longer (`/home/runner/work/...`,
+        #: `/private/var/folders/...`) and the cut landed mid-sentence --
+        #: `raise ImportError('planted: this copy does not imp`. Found by the matrix, red on
+        #: macOS and Python 3.13 while the local gate was green, which is the whole reason
+        #: `matrix-check` exists.
+        raise Void(f"the copy will not import: …{proc.stderr.strip()[-300:]}")
     where = pathlib.Path(proc.stdout.strip()).resolve()
     if tree.resolve() not in where.parents:
         raise Void(

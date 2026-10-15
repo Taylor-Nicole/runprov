@@ -54118,16 +54118,33 @@ def test_control_3_REFUSES_a_copy_that_will_not_import_and_one_that_LOSES_to_the
     bench = _bench_module()
 
     #: ARM ONE -- the copy raises on import.
+    #:
+    #: THE FIXTURE MAKES THE STDERR LONG ON PURPOSE, and that is the whole repair. The refusal
+    #: truncates to 300 characters, so whether the planted message survives depended on the
+    #: LENGTH OF THE TEMPORARY PATH: short here, longer on every CI runner. This test was green
+    #: locally and red on macOS and Python 3.13 at `8117dfa` for exactly that reason, and the
+    #: truncation was taking the HEAD of a traceback -- the frames -- and discarding the
+    #: exception at the end. Padding stderr past the limit on every host makes the two ends
+    #: distinguishable everywhere instead of only where the paths happen to be long.
     broken = tmp_path / "broken"
     (broken / "runprov").mkdir(parents=True)
     (broken / "runprov" / "__init__.py").write_text(
-        "raise ImportError('planted: this copy does not import')\n", encoding="utf-8"
+        "import sys\n"
+        "sys.stderr.write('HEAD-MARKER-' + 'x' * 500 + chr(10))\n"
+        "raise ImportError('planted: this copy does not import')\n",
+        encoding="utf-8",
     )
     with pytest.raises(bench.Void) as wont:
         bench._prove_the_copy_is_what_runs(broken, sys.executable)
     assert "the copy will not import" in str(wont.value)
     #: THE STDERR IS CARRIED. Without it the refusal names a failure and not its cause.
     assert "planted: this copy does not import" in str(wont.value)
+    #: AND IT IS THE TAIL. The 500 characters written before the traceback cannot fit in the
+    #: same 300, so their presence would mean the head was kept and the exception dropped.
+    assert "HEAD-MARKER" not in str(wont.value), (
+        "the refusal kept the FRONT of the child's output, which on a traceback is the frames "
+        "and never the error"
+    )
 
     #: ARM TWO -- it imports, and from the wrong place. THE WRONG PLACE IS A SIBLING WHOSE
     #: NAME EXTENDS THE COPY'S, which is not decoration: `tree.resolve() in where.parents` and
