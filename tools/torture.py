@@ -147,6 +147,36 @@ class Finding(typing.NamedTuple):
     detail: str
 
 
+def _not_atomic(nth: int, rel: str, kind: str, torn: list[str], ours: bool) -> list[Finding]:
+    """The finding a torn package write produces, or nothing when there is nothing to report.
+
+    EXTRACTED SO THE MESSAGE CAN BE RENDERED WITHOUT A TEAR. ADR-0005 made every write in the
+    package atomic, so `torn` is empty for runprov's own sites and this is the one sentence
+    this harness exists to say that nothing has ever produced. A wrong name in the f-string --
+    `path` where `rel` is meant, `nth` where `kind` is -- would ship invisibly and surface on
+    the day a tear is finally found, which is the worst possible moment to discover that the
+    report is wrong.
+
+    THE CONDITION IS A PARAMETER, for the same reason `ci.py`'s `_console_script` takes the
+    platform rather than reading `sys.platform`: a test that had to arrange a real torn write
+    to see this text would be a test about the arrangement. "Untestable" here was a claim
+    about the shape the code was in.
+
+    RETURNS A LIST so the call site is one unconditional statement. An `if` at the call site
+    would leave the append exactly as unreachable as the construction was, one line further
+    out.
+    """
+    if not (torn and ours):
+        return []
+    return [
+        Finding(
+            f"a:{nth}",
+            f"NOT ATOMIC: a crash inside this write leaves a prefix — {rel}",
+            f"site {nth} ({kind}), written by runprov; torn at {', '.join(torn)}",
+        )
+    ]
+
+
 def _sh(argv: list[str], cwd: pathlib.Path) -> tuple[int, str]:
     """Run a command in `cwd` and return its exit code and everything it said."""
     p = subprocess.run(  # noqa: S603 - argv is built here, no shell
@@ -407,14 +437,7 @@ def part_a(
                 torn.append(f"{int(frac * 100)}% -> {len(on_disk)} of {len(whole)} B")
             findings += _read(t, case, expect_one=False)
             shutil.rmtree(t, ignore_errors=True)
-        if torn and ours:
-            findings.append(
-                Finding(
-                    f"a:{nth}",
-                    f"NOT ATOMIC: a crash inside this write leaves a prefix — {rel}",
-                    f"site {nth} ({kind}), written by runprov; torn at {', '.join(torn)}",
-                )
-            )
+        findings += _not_atomic(nth, rel, kind, torn, ours)
     for k in ("TORTURE_NTH", "TORTURE_FRAC", "TORTURE_TORN"):
         os.environ.pop(k, None)
     return findings, n

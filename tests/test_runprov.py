@@ -54986,3 +54986,54 @@ def test_write_baseline_writes_EXACTLY_THE_FIELDS_read_baseline_requires(monkeyp
         f"the round trip did not preserve the values: wrote (4242, 17, 5) with injected "
         f"digests and read back {back}"
     )
+
+
+def test_the_NOT_ATOMIC_finding_names_the_file_the_site_and_every_fraction():
+    """The one sentence the torture harness exists to say, and nothing has ever rendered it.
+
+    ADR-0005 made every write in the package atomic, so `torn` is empty for runprov's own
+    sites and this arm cannot fire against the package as it stands. That is exactly why the
+    text needs a guard: a wrong name in the f-string ships invisibly and surfaces on the day a
+    tear is finally found, in front of the person trying to understand it.
+
+    THREE FACTS, each read back from the rendered strings rather than from the code: WHICH
+    file, WHICH site and of what kind, and EVERY fraction at which it tore. The last one is
+    the one a reader acts on, and it is a join, which is the part that silently drops
+    elements.
+    """
+    torture = _torture_module()
+    out = torture._not_atomic(
+        7, "record.json", "write_text", ["25% -> 3 of 12 B", "50% -> 6 of 12 B"], True
+    )
+
+    assert len(out) == 1, f"one torn site is one finding: {out}"
+    finding = out[0]
+    assert finding.case == "a:7"
+    assert "NOT ATOMIC" in finding.what
+    assert "record.json" in finding.what, (
+        f"the message must name the file that tore, or the reader cannot find it: {finding.what!r}"
+    )
+    assert "site 7" in finding.detail and "write_text" in finding.detail, finding.detail
+    #: EVERY FRACTION, not the first. A join is where elements go missing without a trace.
+    assert "25% -> 3 of 12 B" in finding.detail, finding.detail
+    assert "50% -> 6 of 12 B" in finding.detail, (
+        f"only the first fraction survived the join, so a site that tears at several points "
+        f"reports as though it tore at one: {finding.detail!r}"
+    )
+
+
+def test_a_torn_write_that_is_NOT_the_packages_is_not_the_packages_problem():
+    """Both halves of the condition, separately, because `torn and ours` has two ways to be
+    false and reporting the wrong one is worse than reporting nothing.
+
+    A site torn by the harness that runprov does not own is a fact about the dependency or the
+    interpreter, and claiming it is a fact about the package would send someone to fix code
+    that is already atomic.
+    """
+    torture = _torture_module()
+    assert torture._not_atomic(7, "x.json", "write_text", ["50% -> 1 of 2 B"], False) == [], (
+        "a write runprov does not own tore; that is not a finding about runprov"
+    )
+    assert torture._not_atomic(7, "x.json", "write_text", [], True) == [], (
+        "runprov owns the site and nothing tore, which is the state ADR-0005 guarantees"
+    )
