@@ -66,6 +66,25 @@ ROOT = Path(__file__).resolve().parent
 SCALE_REPORT = ROOT / ".coverage-scale.json"
 
 
+def _console_script(venv: Path, platform: str = sys.platform) -> Path:
+    """Where `pip` puts the `runprov` console script in a venv, per platform.
+
+    A PURE FUNCTION BECAUSE THE WINDOWS ARM CANNOT RUN HERE. `build` is the only caller and it
+    installs into a throwaway venv, so the `.exe` spelling was reachable on exactly one of the
+    matrix's platforms and measured on none of them -- and this repository has met three
+    Windows-only reds in just-written tests. Taking the platform as an argument lets both arms
+    run on every leg; a test that patched `sys.platform` instead would be a test about the patch.
+
+    AND IT SPELLS THE NAME RATHER THAN CALLING `with_suffix`. `Path.with_suffix` REPLACES an
+    existing suffix, which is the compound-suffix trap this package has already met twice
+    (`calls.v2.json` becomes `calls.yml`). `runprov` has no suffix today, so the two agree --
+    but only by accident of the name, and the accident is not worth depending on.
+    """
+    if platform == "win32":
+        return venv / "Scripts" / "runprov.exe"
+    return venv / "bin" / "runprov"
+
+
 def run(*cmd: str, cwd: Path | None = None) -> None:
     printable = " ".join(cmd)
     print(f"\n$ {printable}", flush=True)
@@ -771,9 +790,7 @@ def build() -> None:
         # reach a `-m` module at all, so without it the "a reviewer can install it and
         # check your claims" argument is one command short of true. Its absence is quiet:
         # every `-m` invocation keeps working.
-        script = venv / ("Scripts" if sys.platform == "win32" else "bin") / "runprov"
-        if sys.platform == "win32":
-            script = script.with_suffix(".exe")
+        script = _console_script(venv)
         if not script.exists():
             raise SystemExit(f"the `runprov` console script is NOT in the venv ({script})")
         run(str(script), "log", "--log", "h.jsonl", cwd=Path(tmp))

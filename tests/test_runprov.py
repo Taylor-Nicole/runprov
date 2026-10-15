@@ -51409,6 +51409,30 @@ def test_attribution_check_LISTS_the_offending_commits_rather_than_only_counting
     for sha, family in offenders:
         assert sha in said and family in said, said
 
+    #: AND THE CAP, WHICH IS WHERE THE OFF-BY-ONE LIVES. The message lists `bad[:10]` and adds
+    #: an ellipsis past ten. Measured 2026-10-15: the listing line was covered by the two
+    #: offenders above and the boundary was not, so a `bad[:11]` or a `> 10` would have shipped
+    #: green -- hiding a commit from the person who has to fix them, or claiming one that is
+    #: not there. Ten lists ten with no ellipsis; eleven lists ten and says there are more.
+    def refusal(count):
+        monkeypatch.setattr(
+            ci,
+            "_attribution_offenders",
+            lambda out: [(f"sha{n:05d}", "Claude-Session") for n in range(count)],
+        )
+        with pytest.raises(SystemExit) as refused_here:
+            ci.attribution_check()
+        return str(refused_here.value)
+
+    exactly_ten = refusal(10)
+    assert exactly_ten.count("sha0") == 10, exactly_ten
+    assert "…" not in exactly_ten, f"ten offenders must be listed in full: {exactly_ten}"
+
+    eleven = refusal(11)
+    assert "11 commit(s) carry a refused trailer" in eleven, eleven
+    assert eleven.count("sha0") == 10, f"the cap listed {eleven.count('sha0')}: {eleven}"
+    assert eleven.rstrip().endswith("…"), f"more than ten were found and nothing said so: {eleven}"
+
 
 def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
     """THE RATCHET, and it is in the default gate while the report above is not.
@@ -54633,4 +54657,133 @@ def test_the_case_filter_skips_the_cases_BEFORE_the_one_it_names_in_both_parts(t
         _findings, n = torture.part_b(tmp_path, seed=7, only=f"b:{last}:second")
     assert n == 1, (
         f"the filter must leave exactly one of {len(torture.TARGETS)} targets x 2 operators: n={n}"
+    )
+
+
+# --------------------------------------------------------------------------------------------
+# N-5: `ci.py`'s singles. Three of the four are the FORMATTING beside a refusal -- `raise
+# SystemExit` is excluded from this repository's coverage denominator, so what remains
+# unmeasured in a refusal path is the sentence a human will read at four in the morning. The
+# fourth is `setup`, which installs things and therefore cannot be run for real.
+#
+# NONE OF THESE TESTS READS GIT OR `.github/`. Both are absent from the sdist, and `ci.py
+# build` is the only leg that would notice -- a lesson this repository learned twice in one
+# day. Where the real function shells out, the module's `subprocess` REFERENCE is replaced,
+# not the stdlib function.
+# --------------------------------------------------------------------------------------------
+
+
+def test_matrix_check_NAMES_each_failing_leg_and_reads_SKIPPED_as_not_passed(
+    monkeypatch, tmp_path, capsys
+):
+    """A conclusion can be `success` while a leg was skipped, and skipped is not passed.
+
+    THAT SENTENCE IS THE WHOLE REASON THIS STEP READS JOBS BY NAME rather than the run's
+    conclusion, and nothing checked it. The gap it closes is measured: the Windows leg was red
+    for thirteen commits while the local gate was green each time.
+
+    `ROOT` IS A TEMPORARY TREE HERE. The real `.github/` is not in the sdist, so a test that
+    reached for it would be green in the suite and red in `ci.py build` -- the exact shape this
+    repository has already shipped twice.
+    """
+    ci = _ci_module()
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows" / "test.yml").write_text("on: push\n", encoding="utf-8")
+    monkeypatch.setattr(ci, "ROOT", tmp_path)
+
+    def fake_run(argv, **kwargs):
+        del kwargs
+        if argv[:2] == ["git", "rev-parse"]:
+            return types.SimpleNamespace(returncode=0, stdout="cafe1234567890\n", stderr="")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ci, "subprocess", types.SimpleNamespace(run=fake_run))
+
+    def gh_for(jobs):
+        def fake_gh(argv, about):
+            del about
+            if argv[1:3] == ["run", "list"]:
+                return [{"databaseId": 42, "status": "completed", "conclusion": "success"}]
+            return {"jobs": jobs}
+
+        return fake_gh
+
+    #: A SKIPPED LEG BESIDE SEVEN GREEN ONES. The run's own conclusion is `success`; only the
+    #: per-job read can object, and the objection must NAME the leg and what it said.
+    jobs = [{"name": f"test (ubuntu, 3.{n})", "conclusion": "success"} for n in (9, 10, 11, 12)]
+    jobs += [{"name": "test (windows, 3.12)", "conclusion": None, "status": "skipped"}]
+    monkeypatch.setattr(ci, "_gh_json", gh_for(jobs))
+    with pytest.raises(SystemExit) as refused:
+        ci.matrix_check()
+    page = str(refused.value)
+    assert "is not green" in page and "cafe123" in page, page
+    assert "test (windows, 3.12)" in page, f"the failing leg is not named: {page}"
+    assert "skipped" in page, f"the leg's own answer is not quoted: {page}"
+    assert "ubuntu" not in page, f"a green leg was listed as failing: {page}"
+
+    #: TWO BAD LEGS ARE BOTH LISTED -- with one, a report that stops after the first and one
+    #: that lists them all are the same report.
+    jobs[0] = {"name": "test (ubuntu, 3.9)", "conclusion": "failure"}
+    monkeypatch.setattr(ci, "_gh_json", gh_for(jobs))
+    with pytest.raises(SystemExit) as both:
+        ci.matrix_check()
+    assert "test (ubuntu, 3.9)" in str(both.value) and "test (windows, 3.12)" in str(both.value)
+
+    #: AND ALL-GREEN PASSES, with windows present -- otherwise the refusals above are
+    #: satisfied by a step that refuses every matrix.
+    green = [{"name": f"test (ubuntu, 3.{n})", "conclusion": "success"} for n in (9, 10, 11, 12)]
+    green += [{"name": "test (windows, 3.12)", "conclusion": "success"}]
+    monkeypatch.setattr(ci, "_gh_json", gh_for(green))
+    ci.matrix_check()
+    assert "5 job(s) green on cafe123, windows included" in capsys.readouterr().out
+
+
+def test_console_script_is_spelled_per_PLATFORM_and_the_windows_one_carries_exe():
+    """`uvx runprov` and `pipx run runprov` resolve this entry point and cannot reach `-m`.
+
+    THE PLATFORM IS A PARAMETER, not `sys.platform` read inside the test. A Windows-only arm
+    tested by patching the interpreter's own notion of its platform is a test about the patch;
+    passing the name makes both arms run on every leg, which is what this repository needs
+    after three Windows-only reds in just-written tests.
+    """
+    ci = _ci_module()
+    venv = pathlib.Path("/tmp/a-venv")
+    assert ci._console_script(venv, "linux") == venv / "bin" / "runprov"
+    assert ci._console_script(venv, "darwin") == venv / "bin" / "runprov"
+    assert ci._console_script(venv, "win32") == venv / "Scripts" / "runprov.exe"
+
+
+def test_setup_installs_BOTH_HOOK_TYPES_and_agrees_with_the_pre_commit_config(monkeypatch):
+    """`pre-commit install` alone installs only `pre-commit`, and the commit-msg hook is the
+    one that refuses assistant trailers -- the rule whose violation cost a 272-commit history
+    rewrite and three permanent pull-request snapshots no API can delete.
+
+    TWO INDEPENDENT SIDES, which is what makes this an equality worth asserting rather than a
+    restatement of the code: what `setup` invokes, and what `.pre-commit-config.yaml` declares
+    in `default_install_hook_types`. The rule had two definitions that disagreed once already.
+    """
+    ci = _ci_module()
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(ci, "run", lambda *cmd, cwd=None: calls.append(cmd))
+
+    ci.setup()
+
+    flat = [" ".join(cmd) for cmd in calls]
+    assert any("pip install -e .[dev]" in line for line in flat), flat
+    hooks = [line for line in flat if "pre_commit" in line]
+    assert len(hooks) == 1, f"expected exactly one pre-commit invocation: {flat}"
+    assert "--install-hooks" in hooks[0], (
+        f"`pre-commit install` without `--install-hooks` leaves the commit-msg stage hook "
+        f"uninstalled, which is how the rule ended up with two definitions: {hooks[0]}"
+    )
+
+    #: THE OTHER SIDE. `.pre-commit-config.yaml` is in `pyproject`'s explicit sdist include
+    #: list, so reading it here is green on every leg including the tarball's own suite.
+    config = (_repo_root() / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    declared = re.search(r"^default_install_hook_types:\s*\[([^\]]*)\]", config, re.M)
+    assert declared, "`default_install_hook_types` is gone from .pre-commit-config.yaml"
+    types_ = {name.strip() for name in declared.group(1).split(",")}
+    assert "commit-msg" in types_, (
+        f"the config no longer asks for the commit-msg stage, so `ci.py setup` installs a "
+        f"hook set that cannot refuse an assistant trailer: {sorted(types_)}"
     )
