@@ -54874,3 +54874,115 @@ def test_every_truncation_of_a_CHILD_S_STDERR_keeps_the_TAIL():
         f"these keep the FRONT of a child's error output, which on a traceback is the frames "
         f"and never the error — take the tail: {head_cut}"
     )
+
+
+def _argv_flags_the_claims_entry_point_branches_on() -> list[str]:
+    """Every string literal `tools/claims.py`'s `__main__` block tests for membership in argv.
+
+    READ FROM THE SOURCE, and the reason is structural rather than lazy: the dispatch lives
+    inside `if __name__ == "__main__":`, which an import never runs and a `spec_from_file_location`
+    load never reaches, so there is no object to interrogate. An AST walk is the only second
+    source available, and a second source is what makes the assertion below an equality between
+    two files instead of a restatement of one.
+    """
+    tree = ast.parse((_repo_root() / "tools" / "claims.py").read_text(encoding="utf-8"))
+    main = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and isinstance(node.test.left, ast.Name)
+        and node.test.left.id == "__name__"
+    ]
+    flags: list[str] = []
+    for block in main:
+        for node in ast.walk(block):
+            if (
+                isinstance(node, ast.Compare)
+                and len(node.ops) == 1
+                and isinstance(node.ops[0], ast.In)
+                and isinstance(node.left, ast.Constant)
+                and isinstance(node.left.value, str)
+            ):
+                flags.append(node.left.value)
+    return flags
+
+
+def test_claims_baseline_passes_the_token_the_claims_entry_point_BRANCHES_ON(monkeypatch):
+    """`ci.py claims-baseline` must actually rewrite the baseline, not print the report.
+
+    THE FAILURE THIS CATCHES IS SILENT IN BOTH DIRECTIONS. `tools/claims.py` with no argument
+    runs `report()` and exits 0; with `--baseline` it writes the file and exits 0. So a step
+    that lost the flag, or an entry point that renamed it, would leave `ci.py claims-baseline`
+    exiting cleanly having changed nothing — and the next person to pay the residue down would
+    run it, see a zero return code, find no diff, and have no way to tell a working step from a
+    baseline that was already current.
+
+    TWO INDEPENDENT SIDES, in two files: what `ci.py` hands the subprocess, and the literal the
+    entry point tests `sys.argv` for. Neither is written in this test, so agreeing is a fact
+    about the repository rather than about what was typed here.
+    """
+    ci = _ci_module()
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(ci, "run", lambda *cmd, cwd=None: calls.append(cmd))
+
+    ci.claims_baseline()
+
+    assert len(calls) == 1, f"expected exactly one invocation: {calls}"
+    cmd = calls[0]
+    assert cmd[0] == ci.PY, cmd
+    assert cmd[1].endswith(os.path.join("tools", "claims.py")), cmd
+    passed = [arg for arg in cmd[2:] if arg.startswith("-")]
+
+    branched_on = _argv_flags_the_claims_entry_point_branches_on()
+    #: THE NON-VACUITY CONTROL. A walk that found no flag would make the equality below hold
+    #: between two empty lists and agree with a step that passes nothing at all.
+    assert len(branched_on) == 1, (
+        f"tools/claims.py's entry point tests argv for {branched_on}; this assertion is "
+        f"written for exactly one such flag and cannot speak for several"
+    )
+    assert passed == branched_on, (
+        f"`ci.py claims-baseline` passes {passed} and tools/claims.py branches on "
+        f"{branched_on}. The step would exit 0 having printed the report instead of writing "
+        f"the baseline, which looks exactly like a baseline that was already current."
+    )
+
+
+def test_write_baseline_writes_EXACTLY_THE_FIELDS_read_baseline_requires(monkeypatch, tmp_path):
+    """The writer and the reader of the claims baseline must agree on the field set.
+
+    `read_baseline` returns None for a file missing any of its five fields, and None means
+    "nothing here can be compared, so re-measure" — a RATCHET THAT HAS QUIETLY STOPPED
+    COMPARING. Nothing goes red: the gate reads None, skips the comparison, and reports the
+    live figure. A guard that is uninformed looks exactly like one that is satisfied.
+
+    THE PROPERTY IS A ROUND TRIP, not a copy of the field list. The expected values are
+    INJECTED, so what comes back cannot be right by reading the same documents twice, and the
+    destination is a directory that does not exist, so the writer's `mkdir` is exercised rather
+    than assumed.
+    """
+    claims = _claims_module()
+    destination = tmp_path / "docs" / "nested" / "claims-baseline.txt"
+    assert not destination.parent.exists(), "the mkdir must have something to create"
+    monkeypatch.setattr(claims, "BASELINE", destination)
+    monkeypatch.setattr(claims, "counts", lambda: (4242, 17, 5))
+    monkeypatch.setattr(claims, "detection_digest", lambda: "d" * 12)
+    monkeypatch.setattr(claims, "bindings_digest", lambda: "b" * 12)
+
+    returned = claims.write_baseline()
+    assert returned == (4242, 17, 5), (
+        f"write_baseline returned {returned}; the caller prints these, so a reordering here "
+        f"mislabels the residue in the one message a human reads before committing a baseline"
+    )
+    assert destination.is_file(), f"nothing was written to {destination}"
+
+    back = claims.read_baseline()
+    assert back is not None, (
+        f"read_baseline cannot parse what write_baseline just wrote, so every future "
+        f"comparison is skipped and the ratchet is off while the gate stays green. The file "
+        f"holds:\n{destination.read_text(encoding='utf-8')}"
+    )
+    assert back == ("d" * 12, "b" * 12, 4242, 17, 5), (
+        f"the round trip did not preserve the values: wrote (4242, 17, 5) with injected "
+        f"digests and read back {back}"
+    )
