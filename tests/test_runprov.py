@@ -53357,6 +53357,116 @@ def _damage_rng(seed):
     return random.Random(seed)  # noqa: S311 - damage, not a secret
 
 
+def test_torture_part_a_is_VOID_when_the_census_finds_NONE_of_the_packages_writes(tmp_path, capsys):
+    """The arm ADR-0005 earned, and it has been unrun ever since it was added.
+
+    `tools/torture.py` says it at the arm: *"a run that finds none of the package's writes has
+    lost sight of its subject, and prints what a run that found no problem prints. This is not
+    hypothetical: ADR-0005 moved every site off `Path.write_text` and this harness reported
+    '0 findings' over '0 of them runprov's' until the seam was added."*
+
+    SEAM, NOT A PLANTED DEFECT, and that is forced. The arm fires when a CLEAN run writes no
+    census — which can only be arranged by disabling the census, i.e. by faking it. A defect
+    planted in a copied tree cannot produce "the instrument stopped seeing its subject".
+    """
+    torture = _torture_module()
+    with pytest.MonkeyPatch.context() as patch:
+        #: `_build` that builds nothing: no census file, so no sites, so none of them ours.
+        patch.setattr(torture, "_build", lambda tree, preload="": (0, ""))
+        findings, n = torture.part_a(tmp_path, (0.0, 0.5), None)
+    assert n == 0, f"nothing can have been tortured when no site was found: {n}"
+    assert len(findings) == 1, findings
+    assert findings[0].case == "a:census", findings[0]
+    #: THE VERDICT MUST NOT READ AS "no problem". That is the whole point of the arm.
+    assert "0 findings" not in capsys.readouterr().out.lower().replace("0 finding(s)", "0 findings")
+
+
+def test_torture_part_a_reports_a_TEAR_THAT_DID_NOT_LAND_and_keeps_going(tmp_path):
+    """An injected crash that never ran is not a clean result, and the harness must say so.
+
+    TWO FRACTIONS, NOT ONE, AND THAT IS THE WHOLE FIXTURE. The `continue` lives in the INNER
+    loop over fractions, so with a single fraction it is indistinguishable from a `break` —
+    measured: the mutation was invisible until the second fraction was added. Two sites by two
+    fractions gives four cases, and a `break` reports two of them.
+    """
+    torture = _torture_module()
+    census = tmp_path / "census.json"
+    #: (nth, path, size, ours, kind) -- `ours` truthy, or the site is not this project's.
+    census.write_text(
+        json.dumps([[1, "a.tsv", 40, True, "write_text"], [2, "b.tsv", 40, True, "write_text"]]),
+        encoding="utf-8",
+    )
+
+    def build_without_tearing(tree, preload=""):
+        #: writes the census the first call expects, and never the torn report
+        census.write_text(census.read_text(encoding="utf-8"), encoding="utf-8")
+        return 0, ""
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(torture, "_build", build_without_tearing)
+        findings, n = torture.part_a(tmp_path, (0.5, 0.9), None)
+    tears = [f for f in findings if f.what == "THE TEAR DID NOT LAND"]
+    assert len(tears) == 4, f"every site-and-fraction must be reported: {findings}"
+    assert {f.case for f in tears} == {
+        "a:1:a.tsv:0.5",
+        "a:1:a.tsv:0.9",
+        "a:2:b.tsv:0.5",
+        "a:2:b.tsv:0.9",
+    }, tears
+    assert n == 4, n
+
+
+def test_torture_part_b_reports_an_ABSENT_TARGET_for_every_file_a_clean_run_did_not_write(tmp_path):
+    """A target a clean run never wrote is a broken pipeline, not an absence of damage.
+
+    Every entry in `TARGETS` must be reported, not the first — the arm ends in `continue`, and
+    with six targets a `break` would report one and call the rest clean.
+    """
+    torture = _torture_module()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(torture, "_build", lambda tree, preload="": (0, ""))
+        findings, n = torture.part_b(tmp_path, seed=7, only=None)
+    absent = [f for f in findings if f.what == "TARGET ABSENT"]
+    assert len(absent) == len(torture.TARGETS), (
+        f"{len(absent)} of {len(torture.TARGETS)} targets reported; the walk stopped early"
+    )
+    assert n == 0, "nothing was mutated, so nothing was counted"
+
+
+def test_torture_part_b_reports_a_MUTATION_THAT_DID_NOT_LAND(tmp_path):
+    """An operator that RAN and changed nothing is a fault in the harness, not in the data.
+
+    `_mutations` returns `None` for *structurally inapplicable* precisely so that this arm means
+    something narrower: the operator produced bytes, and they are the bytes it started with.
+    M-3 fixed one of those (`dup-half` at one byte); this is the report that would have named it.
+    """
+    torture = _torture_module()
+
+    def build_one_target(tree, preload=""):
+        for name in torture.TARGETS:
+            path = tree / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"col\tval\nx\t1\n")
+        return 0, ""
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(torture, "_build", build_one_target)
+        #: ONE operator that declines, then one that RAN AND CHANGED NOTHING, then a real one --
+        #: the no-op in the MIDDLE, so a `break` loses the third.
+        patch.setattr(
+            torture,
+            "_mutations",
+            lambda data, rng: [("declines", None), ("noop", data), ("real", data + b"X")],
+        )
+        patch.setattr(torture, "_read", lambda tree, case, expect_one: [])
+        findings, n = torture.part_b(tmp_path, seed=7, only=None)
+    stalled = [f for f in findings if f.what == "THE MUTATION DID NOT LAND"]
+    assert len(stalled) == len(torture.TARGETS), f"one per target expected: {findings}"
+    assert "noop" in stalled[0].case and "left the bytes" in stalled[0].detail, stalled[0]
+    #: AND THE REAL OPERATOR AFTER IT STILL RAN -- one per target, so the walk continued.
+    assert n == len(torture.TARGETS), f"the third operator never ran: n={n}"
+
+
 def test_torture_controls_refuse_in_BOTH_directions_and_say_which(tmp_path):
     """The oracle's two-sided control, whose own failure arms had never run.
 
@@ -53431,6 +53541,47 @@ def test_torture_main_reports_VOID_with_its_own_code_when_a_CONTROL_fails(tmp_pa
     assert code == 2, f"a failed control answered {code}; 0 and 1 are both claims about damage"
     assert "CONTROL FAILED: the oracle cannot see damage" in said, said
     assert "VOID — nothing was measured" in said, said
+
+
+def test_bench_REFUSES_a_missing_target_and_an_unparseable_mutation_as_VOID(tmp_path):
+    """Two refusals inside the experiment driver, reached by RUNNING it rather than faking it.
+
+    A REAL INVOCATION, AND IT IS CHEAP because both refusals come before any pytest runs: the
+    driver copies the working tree and then checks its subject. That is the honest route for
+    these two, where the other arms of this function have none — reaching "the baseline is not
+    green" would need a deliberately red suite.
+
+    WHY THESE TWO MATTER. A missing target used to raise `FileNotFoundError` and exit **1**,
+    which is this harness's SURVIVED code — so a typo in `--edit` read to every caller as *the
+    guard did not notice*. And a `.py` target the mutation leaves unparseable is a VOID run,
+    not a verdict: the suite would fail to import it and the red would say nothing about the
+    guard. Both are `Void`, which exits 2, a code no verdict uses.
+    """
+    bench = _bench_module()
+    work = tmp_path / "w"
+
+    with pytest.raises(bench.Void, match="is not a file in"):
+        bench.bench(
+            test="k",
+            target="no/such/file.py",
+            mutate=lambda source: source,
+            work=work,
+            py=sys.executable,
+            label="missing target",
+        )
+
+    #: THE SECOND CALL ALSO EXERCISES THE RMTREE of the trees the first call left behind,
+    #: which is why the same `work` is reused rather than a fresh one.
+    assert (work / "base").is_dir(), "the first call should have left its trees in place"
+    with pytest.raises(bench.Void, match="is not parseable as Python"):
+        bench.bench(
+            test="k",
+            target="runprov/hashing.py",
+            mutate=lambda source: source + "\ndef (:\n",
+            work=work,
+            py=sys.executable,
+            label="unparseable mutation",
+        )
 
 
 def test_bench_revert_returns_the_OLD_text_and_REFUSES_a_sha_git_cannot_resolve():
