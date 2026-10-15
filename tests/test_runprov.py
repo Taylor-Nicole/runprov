@@ -53915,3 +53915,317 @@ def test_every_handler_that_SWALLOWS_IN_SILENCE_carries_guards_ok_AND_A_REASON()
         f"{markers} marker(s) for {len(silent)} silent handler(s) -- fewer markers than "
         f"handlers requiring one means the window above is matching something it should not"
     )
+
+
+# --------------------------------------------------------------------------------------------
+# N-1: the bench harness's PURE singles. Each of these is one arm of a function the harness
+# already runs -- a refusal, a skip, or a second spelling the walk has never met. None of them
+# needs a subprocess, so none of them is measured by `ci.py bench`'s own selfcheck: the
+# selfcheck proves the VERDICTS reproduce, which is a different claim from "every arm of every
+# helper behaves". Thirteen selfcheck cases reach none of the lines below.
+# --------------------------------------------------------------------------------------------
+
+
+def test_strip_docstrings_survives_an_EMPTY_module_and_still_strips_a_real_one():
+    """`body[0]` on an empty module is an IndexError, and `ast.parse("")` is the one way there.
+
+    THE BREAK CONTROL CANNOT FIRE HERE, AND THAT IS A PROPERTY OF THE SUBJECT, NOT AN OMISSION.
+    Only `ast.Module` can carry an empty `body` -- a `ClassDef` or a `FunctionDef` with no
+    statements does not parse -- and a tree has exactly one Module, so when the guard fires
+    there is nothing after it to skip to. `continue` and `break` are the same statement in the
+    only state that reaches the line, so this asserts reach and the absence of an IndexError,
+    and does not pretend to hold the loop's shape. The second half below is what holds that.
+    """
+    bench = _bench_module()
+    #: The empty module: the guard's only reachable trigger.
+    assert isinstance(bench.strip_docstrings(ast.parse("")), ast.Module)
+
+    #: AND THE ARM THAT MATTERS STILL WORKS, in the same test, because a guard that swallowed
+    #: every node would also pass the line above.
+    stripped = ast.dump(bench.strip_docstrings(ast.parse('"""a doc."""\nx = 1\n')))
+    assert "<docstring>" in stripped, "the docstring was not replaced"
+    assert "a doc." not in stripped, "the original docstring text survived the strip"
+
+
+def test_clear_pycache_removes_EVERY_cache_and_not_only_the_first(tmp_path):
+    """Stale bytecode names the ORIGINAL tree in `co_filename`, which is why this exists.
+
+    TWO CACHES AT TWO DEPTHS, deliberately. With one, a body that removed nothing and a loop
+    that stopped after the first are both invisible; with two, each is a named failure.
+    """
+    bench = _bench_module()
+    shallow = tmp_path / "__pycache__"
+    deep = tmp_path / "pkg" / "sub" / "__pycache__"
+    for cache in (shallow, deep):
+        cache.mkdir(parents=True)
+        (cache / "mod.cpython-312.pyc").write_bytes(b"\x00stale")
+    keep = tmp_path / "pkg" / "keep.py"
+    keep.write_text("x = 1\n", encoding="utf-8")
+
+    bench._clear_pycache(tmp_path)
+
+    left = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("__pycache__"))
+    assert left == [], f"a cache survived, so a stale .pyc can still name the original: {left}"
+    assert keep.is_file(), "_clear_pycache removed something that is not a cache"
+
+
+def test_executed_lines_REFUSES_an_absent_report_and_a_report_without_the_target(tmp_path):
+    """Control 6 cannot be evaluated without a report, and `Void` is how that is said.
+
+    `raise SystemExit` is excluded from this repository's coverage denominator; `raise Void` is
+    not, and the difference is the point -- a `Void` is the harness saying *no verdict*, which
+    is the one answer that must never be mistaken for `survived`.
+    """
+    bench = _bench_module()
+
+    #: ARM ONE -- no file at all.
+    with pytest.raises(bench.Void) as absent:
+        bench._executed_lines(tmp_path / "nothing.json", "runprov/run.py")
+    assert "coverage wrote no report" in str(absent.value)
+
+    #: ARM TWO -- a report that saw other files. The target is deliberately NOT the only entry
+    #: and NOT the first one, so a lookup that returns whatever it reads first still fails.
+    cov = tmp_path / "cov.json"
+    cov.write_text(
+        json.dumps(
+            {
+                "files": {
+                    "runprov/export.py": {"executed_lines": [1], "missing_lines": [2]},
+                    "runprov/sinks.py": {"executed_lines": [3], "missing_lines": []},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(bench.Void) as unseen:
+        bench._executed_lines(cov, "runprov/run.py")
+    assert "coverage never saw runprov/run.py" in str(unseen.value)
+
+    #: AND THE ANSWER IT GIVES WHEN IT CAN. The target sits SECOND, after a decoy, so a
+    #: first-entry shortcut returns the decoy's lines and this assertion names it.
+    ran, every = bench._executed_lines(cov, "runprov/sinks.py")
+    assert ran == {3}, f"the wrong file's executed lines came back: {sorted(ran)}"
+    assert every == {3}, "a file with no missing lines must report its statements as executed"
+
+    #: A WINDOWS-SPELLED KEY RESOLVES TOO -- the normalisation is the reason the loop exists
+    #: rather than a dict lookup, and nothing else asserts it.
+    win = tmp_path / "win.json"
+    win.write_text(
+        json.dumps({"files": {"runprov\\run.py": {"executed_lines": [7], "missing_lines": [8]}}}),
+        encoding="utf-8",
+    )
+    ran, every = bench._executed_lines(win, "runprov/run.py")
+    assert (ran, every) == ({7}, {7, 8})
+
+
+def test_consequence_lines_skips_a_NON_PYTHON_file_and_counts_an_ATTRIBUTE_load(tmp_path):
+    """Only a load the interpreter reaches by CALLING something counts as a consequence.
+
+    THE SKIPPED FILE COMES FIRST AND A REAL ONE FOLLOWS. A skip tested with the awkward entry
+    last is indistinguishable from a stop: this loop's `continue` and a `break` differ only if
+    something after the skipped entry must still appear in the result. `a.txt` sorts before
+    `b.py` in the list passed here, so a `break` loses `b.py` entirely.
+    """
+    bench = _bench_module()
+    (tmp_path / "a.txt").write_text("MAX_CALLS\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text(
+        #: line 1 module level, line 2 a decorator, line 3 a default, line 5 the only
+        #: consequence -- a NAME load inside a body -- and line 6 an ATTRIBUTE load, which is
+        #: the second spelling and the arm this walk had never been given.
+        "TOP = MAX_CALLS\n"
+        "@MAX_CALLS\n"
+        "def observe(limit=MAX_CALLS):\n"
+        "    del limit\n"
+        "    return MAX_CALLS\n"
+        "    return cfg.MAX_CALLS\n",
+        encoding="utf-8",
+    )
+
+    hit = bench._consequence_lines(tmp_path, ["a.txt", "b.py", "gone.py"], {"MAX_CALLS"})
+
+    assert "a.txt" not in hit, "a non-Python file was parsed as Python"
+    assert "gone.py" not in hit, "a file that does not exist produced a result"
+    assert "b.py" in hit, (
+        "the Python file AFTER the skipped one is missing, which is what a `break` in place of "
+        "that `continue` looks like"
+    )
+    assert hit["b.py"] == {5, 6}, (
+        f"expected the in-body NAME load (5) and the ATTRIBUTE load (6) and nothing evaluated "
+        f"at import -- module level (1), decorator (2) and default (3): {sorted(hit['b.py'])}"
+    )
+
+
+def test_selfcheck_mutation_REFUSES_a_kind_it_does_not_know_and_QUOTES_it():
+    """An unknown kind is a typo in the table, and a typo must not read as a mutation."""
+    bench = _bench_module()
+    with pytest.raises(bench.Void) as refused:
+        bench._selfcheck_mutation("tetx-noop")
+    #: THE KIND IS QUOTED. Without it the message names no subject and a reader has to grep
+    #: the table to find out which row is wrong.
+    assert "'tetx-noop'" in str(refused.value), str(refused.value)
+
+    #: NON-VACUITY: every kind the table actually uses must be accepted, or the assertion above
+    #: would also pass if `_selfcheck_mutation` refused everything.
+    #: `None` is in the table too -- the CAUGHT row mutates nothing -- so the sort is keyed on
+    #: `str`, and `None` is kept rather than filtered: it is a kind this function must accept.
+    kinds = {row[3] for row in bench._SELFCHECK}
+    assert len(kinds) >= 3, f"only {len(kinds)} mutation kind(s) in the table"
+    for kind in sorted(kinds, key=str):
+        assert callable(bench._selfcheck_mutation(kind)), f"{kind} is in the table and refused"
+
+
+# --------------------------------------------------------------------------------------------
+# N-2: the bench harness's singles that need a SEAM. Control 3 needs a process; the selfcheck's
+# own failure path needs a verdict that does not reproduce. Neither can be reached by running
+# the harness correctly, which is exactly why neither had ever run.
+# --------------------------------------------------------------------------------------------
+
+
+def test_control_3_REFUSES_a_copy_that_will_not_import_and_one_that_LOSES_to_the_path(tmp_path):
+    """Control 3 is the only thing standing between a mutation run and a void result.
+
+    THE SECOND ARM IS THE ONE THAT MATTERS AND IT IS PLANTED, NOT BORROWED. An editable install
+    writes an absolute path into `site-packages/*.pth`, so the copy imports the ORIGINAL and
+    every mutation reads as having no effect. Rather than depend on this machine having runprov
+    installed -- which would make the test's subject the environment -- the copy here holds a
+    `runprov` that reports a `__file__` somewhere else, which is what that trap looks like from
+    inside the process.
+    """
+    bench = _bench_module()
+
+    #: ARM ONE -- the copy raises on import.
+    broken = tmp_path / "broken"
+    (broken / "runprov").mkdir(parents=True)
+    (broken / "runprov" / "__init__.py").write_text(
+        "raise ImportError('planted: this copy does not import')\n", encoding="utf-8"
+    )
+    with pytest.raises(bench.Void) as wont:
+        bench._prove_the_copy_is_what_runs(broken, sys.executable)
+    assert "the copy will not import" in str(wont.value)
+    #: THE STDERR IS CARRIED. Without it the refusal names a failure and not its cause.
+    assert "planted: this copy does not import" in str(wont.value)
+
+    #: ARM TWO -- it imports, and from the wrong place. THE WRONG PLACE IS A SIBLING WHOSE
+    #: NAME EXTENDS THE COPY'S, which is not decoration: `tree.resolve() in where.parents` and
+    #: `str(tree) in str(where)` agree on every unrelated path and disagree only here. With an
+    #: unrelated directory the substring spelling -- a real and common way to write this
+    #: wrongly -- still refuses, and the control proved nothing.
+    lying = tmp_path / "lying"
+    (lying / "runprov").mkdir(parents=True)
+    (lying / "runprov" / "__init__.py").write_text(
+        f"__file__ = {str(tmp_path / 'lying-elsewhere' / 'runprov' / '__init__.py')!r}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(bench.Void) as lost:
+        bench._prove_the_copy_is_what_runs(lying, sys.executable)
+    assert "PYTHONPATH did not win" in str(lost.value)
+    assert "lying-elsewhere" in str(lost.value), "the refusal does not say WHICH file was imported"
+
+    #: AND THE PASS, so the two refusals above are not satisfied by a function that refuses
+    #: everything. A copy whose runprov really is under it returns that path.
+    honest = tmp_path / "honest"
+    (honest / "runprov").mkdir(parents=True)
+    (honest / "runprov" / "__init__.py").write_text("", encoding="utf-8")
+    where = bench._prove_the_copy_is_what_runs(honest, sys.executable)
+    assert str(honest) in where, where
+
+
+def _selfcheck_double(bench, answers):
+    """A stand-in for `bench()` that answers per LABEL, the way the real one answers per run.
+
+    IT DOES WHAT THE REAL THING DOES to the extent `selfcheck` depends on it: it returns an
+    exit code, or raises `Void` with a reason, and it refuses a label it was not given -- so a
+    table row that stops being passed through is a named failure rather than a silent default.
+    """
+
+    def fake(*, test, target, mutate, work, py, label):
+        del test, target, mutate, work, py
+        if label not in answers:
+            raise AssertionError(f"selfcheck called bench with an unknown label: {label!r}")
+        answer = answers[label]
+        if isinstance(answer, str):
+            raise bench.Void(answer)
+        return answer
+
+    return fake
+
+
+def test_selfcheck_returns_0_when_every_verdict_reproduces_and_2_WITH_THE_ROW_when_one_does_not(
+    monkeypatch, tmp_path, capsys
+):
+    """`ci.py bench` trusts this return code, so the code is the thing to hold.
+
+    THE TABLE DRIVES THE DOUBLE, WHICH IS CORRECT HERE AND WOULD NOT BE FOR AN EXPECTATION.
+    What is asserted is structural -- *0 iff every row reproduces* -- so the double has to
+    answer whatever each row asks for; the discrimination comes from flipping ONE row and
+    requiring the failure to name it.
+    """
+    bench = _bench_module()
+    rows = bench._SELFCHECK
+    assert len(rows) >= 3, f"only {len(rows)} selfcheck row(s); this test needs several"
+
+    def honest():
+        out = {}
+        for label, _test, _target, _kind, expect, because in rows:
+            if expect == bench.CAUGHT:
+                out[label] = 0
+            elif expect == bench.SURVIVED:
+                out[label] = 1
+            else:
+                #: A VOID row is reproduced by raising with the reason it requires.
+                out[label] = because or "void"
+        return out
+
+    monkeypatch.setattr(bench, "bench", _selfcheck_double(bench, honest()))
+    assert bench.selfcheck(tmp_path / "ok", sys.executable) == 0
+    assert f"all {len(rows)} verdicts reproduce" in capsys.readouterr().out
+
+    #: ONE ROW FLIPPED. The last row is chosen deliberately: a failure in the first would also
+    #: be reported by a loop that stops at the first bad row.
+    broken_label = rows[-1][0]
+    answers = honest()
+    answers[broken_label] = 0 if answers[broken_label] != 0 else 1
+    monkeypatch.setattr(bench, "bench", _selfcheck_double(bench, answers))
+    assert bench.selfcheck(tmp_path / "bad", sys.executable) == 2
+    page = capsys.readouterr().out
+    assert f"1 of {len(rows)} selfcheck case(s) did not reproduce" in page
+    assert "WRONG expect" in page and broken_label in page, (
+        f"the summary does not name the row that failed:\n{page}"
+    )
+
+
+def test_selfcheck_reports_WRONG_REASON_when_a_VOID_arrives_for_the_wrong_cause(
+    monkeypatch, tmp_path, capsys
+):
+    """A verdict that is right for the wrong reason is not a control.
+
+    TWO OF THREE VOID CASES ONCE PASSED THIS WAY -- one on a non-unique anchor and one on an
+    interpreter without `pytest-cov` -- while printing `ok`. The reason fragment is what ended
+    that, and until now nothing had ever made the fragment fail.
+    """
+    bench = _bench_module()
+    rows = bench._SELFCHECK
+    voids = [r for r in rows if r[4] not in (bench.CAUGHT, bench.SURVIVED) and r[5]]
+    assert voids, "no VOID row with a required reason; this test's subject is gone"
+
+    answers = {}
+    for label, _test, _target, _kind, expect, because in rows:
+        if expect == bench.CAUGHT:
+            answers[label] = 0
+        elif expect == bench.SURVIVED:
+            answers[label] = 1
+        else:
+            #: THE RIGHT VERDICT, THE WRONG CAUSE -- `VOID`, with a reason the row does not ask
+            #: for. `expect` alone is satisfied; only the fragment check can object.
+            answers[label] = "the host ran out of disk"
+            del because
+
+    monkeypatch.setattr(bench, "bench", _selfcheck_double(bench, answers))
+    assert bench.selfcheck(tmp_path / "reason", sys.executable) == 2
+    page = capsys.readouterr().out
+    assert "WRONG REASON" in page, f"a VOID for the wrong cause printed no objection:\n{page}"
+    assert voids[0][5][:30] in page, "the required fragment is not quoted back to the reader"
+    #: AND THE VERDICT LINE AGREES WITH THE DIAGNOSTIC. A `WRONG REASON` printed beside `ok`
+    #: is the contradiction this harness has already shipped once.
+    for line in page.splitlines():
+        assert not (line.strip().startswith("ok ") and "WRONG REASON" in line), line
