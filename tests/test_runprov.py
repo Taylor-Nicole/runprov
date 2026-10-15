@@ -51294,6 +51294,122 @@ def test_live_reads_an_int_a_SIZED_collection_by_LENGTH_and_REFUSES_anything_els
         claims._live("sys", "dont_write_bytecode")  # a bool, which `isinstance(_, int)` accepts
 
 
+def test_claims_report_NAMES_a_drifted_binding_and_exits_1_rather_than_listing_it(capsys):
+    """A bound claim that no longer holds is a FINDING, and the exit code has to say so.
+
+    The report's own words: *"a bound claim that drifts is a FINDING, not a backlog item, which
+    is why this exits 1 rather than reporting it."* That branch had never run — the claims have
+    always held — so nothing checked that the report distinguishes *a figure drifted* from
+    *a figure is unaccounted for*, which are its two halves and have opposite urgencies.
+    """
+    claims = _claims_module()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            claims,
+            "registry_verdicts",
+            lambda: [("the test count", "DRIFTED", "README.md says 9, live 4201")],
+        )
+        code = claims.report()
+    said = capsys.readouterr().out
+    assert code == 1, f"a drifted bound claim answered {code}, not 1"
+    assert "1 bound claim(s) no longer hold" in said, said
+    assert "FINDING, not a backlog item" in said, said
+
+
+def test_claims_report_names_a_DEAD_HISTORICAL_entry_an_excuse_outliving_its_subject(capsys):
+    """An exemption whose subject is gone covers nothing, and the report has a line for it.
+
+    This is the self-retiring half of the project's own exemption discipline, and it had never
+    fired — every historical entry still has a subject. The arm is reached with a synthetic
+    note, because the alternative is deleting a real document line to provoke it.
+    """
+    claims = _claims_module()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(claims, "dead_historical_entries", lambda: ["a note nobody can still read"])
+        claims.report()
+    said = capsys.readouterr().out
+    assert "DEAD HISTORICAL ENTRY" in said and "a note nobody can still read" in said, said
+
+
+#: THE FOUR THINGS THE BASELINE COMPARISON CAN SAY, and three of them had never been said.
+#: `read_baseline` returns (detection, bindings, population, unaccounted, historical); the
+#: digests decide whether a movement is COMPARABLE, and the counts decide whether it is WORK.
+_BASELINE_VERDICTS = (
+    ("absent", None, "no baseline committed yet"),
+    ("detection-moved", "detection", "is not comparable with the figure above"),
+    ("bindings-moved", "bindings", "and the detection rule"),
+    ("counts-moved", "counts", "the rule has not moved, but the COUNTS have"),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "what", "says"), _BASELINE_VERDICTS, ids=[v[0] for v in _BASELINE_VERDICTS]
+)
+def test_claims_report_distinguishes_a_rule_change_from_WORK_in_the_baseline(
+    name, what, says, capsys
+):
+    """Four verdicts about one movement, and conflating any two of them is the documented bug.
+
+    The reasoning is in the module: tightening a detection pattern lowers the residue **with no
+    work done at all**, while binding a claim also lowers it and that IS the work. One digest
+    could not tell them apart, so *"honest work tripped the alarm meant for a fall nobody
+    earned — and an alarm that fires on good news is one people learn to silence."*
+
+    THE COUNTS ARM IS THE ONE THAT WAS A REPAIR. It used to print three values read back out of
+    the baseline file, so it could not see the denominator move, and on 2026-10-10 it reported
+    "nothing in the rule has moved" while the population had gone 405 -> 406. The drift is
+    injected as **+7**, not +1, so an off-by-one in the comparison cannot pass for a match.
+    """
+    claims = _claims_module()
+    population, unaccounted, historical = claims.counts()
+    detection, bindings = claims.detection_digest(), claims.bindings_digest()
+    crafted = {
+        None: None,
+        "detection": ("a-rule-nobody-wrote", bindings, population, unaccounted, historical),
+        "bindings": (detection, "bindings-nobody-wrote", population, unaccounted, historical),
+        "counts": (detection, bindings, population + 7, unaccounted, historical),
+    }[what]
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(claims, "read_baseline", lambda: crafted)
+        claims.report()
+    said = capsys.readouterr().out
+    assert says in said, f"{name}: the baseline comparison did not say it; it said:\n{said[-600:]}"
+
+
+def test_attribution_check_LISTS_the_offending_commits_rather_than_only_counting_them(monkeypatch):
+    """The rule whose violation cost a 272-commit rewrite, and the line that names the culprits.
+
+    `attribution-check` refuses when a commit carries a refused trailer. Counting them is not
+    enough: the person who has to fix it needs the shas. That listing line had never run,
+    because no commit in this history carries one — so the refusal nobody has ever seen is the
+    one that has to be legible.
+
+    THE OFFENDERS ARE INJECTED, not planted in git. A test that writes a bad commit would need
+    a repository, and no test here may read git — the sdist ships none, and `build` is the only
+    leg that would notice.
+    """
+    ci = _ci_module()
+    offenders = [("abc1234", "Co-Authored-By"), ("def5678", "Claude-Session")]
+
+    def fake_run(argv, **kwargs):
+        #: THE RECORD SEPARATOR IS `\0\0\n`, and getting it wrong is caught by the check's
+        #: own non-vacuity guard -- it counts records and refuses when it saw none, which is
+        #: how the first version of this fake was found. That guard is doing its job here.
+        return subprocess.CompletedProcess(argv, 0, "subject\0body\0\0\n" * 3, "")
+
+    monkeypatch.setattr(ci.subprocess, "run", fake_run)
+    monkeypatch.setattr(ci, "_attribution_offenders", lambda out: offenders)
+    with pytest.raises(SystemExit) as refused:
+        ci.attribution_check()
+    said = str(refused.value)
+    assert "2 commit(s) carry a refused trailer" in said, said
+    #: BOTH SHAS AND BOTH FAMILIES -- a message naming only the count, or only the first, sends
+    #: the reader back to the history to find them.
+    for sha, family in offenders:
+        assert sha in said and family in said, said
+
+
 def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
     """THE RATCHET, and it is in the default gate while the report above is not.
 
