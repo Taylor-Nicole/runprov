@@ -150,9 +150,14 @@ def leaks(tree: pathlib.Path, extra: typing.Iterable[str] = ()) -> list[str]:
         except (OSError, UnicodeDecodeError):  # a binary fixture is not a leak vector here
             continue
         where = path.relative_to(tree).as_posix()
+        #: NO `ROOT_TOKEN` SKIP HERE, AND ITS REMOVAL IS THE POINT. This loop carried
+        #: `if ROOT_TOKEN in hit: continue`, which was UNREACHABLE BY CONSTRUCTION:
+        #: `ABSOLUTE_PATH`'s lookbehind is `(?<![\w:@])`, so a `/` preceded by `@` cannot
+        #: begin a match and no hit can ever contain the token. It was a second spelling of a
+        #: rule the pattern already enforces, unreachable precisely BECAUSE the pattern
+        #: enforces it -- and a rule written twice cannot be attributed at all. The property
+        #: it stood for is asserted by a test instead, which is the half nothing held.
         for hit in ABSOLUTE_PATH.findall(text):
-            if ROOT_TOKEN in hit:
-                continue
             found.append(f"{where}: {hit!r}")
         for needle in extra:  # a caller may still name something the shape cannot see
             if needle in text:

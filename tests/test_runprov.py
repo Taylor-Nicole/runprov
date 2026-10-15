@@ -54229,3 +54229,408 @@ def test_selfcheck_reports_WRONG_REASON_when_a_VOID_arrives_for_the_wrong_cause(
     #: is the contradiction this harness has already shipped once.
     for line in page.splitlines():
         assert not (line.strip().startswith("ok ") and "WRONG REASON" in line), line
+
+
+# --------------------------------------------------------------------------------------------
+# N-3: the claims tool's singles. Every one is an arm of a function the report already calls,
+# or -- in two cases -- of a function the report does not call at all, which is a different
+# finding and is said so at the test rather than hidden by covering the line.
+# --------------------------------------------------------------------------------------------
+
+
+def test_documents_REFUSES_a_survey_of_fewer_than_two_pages(monkeypatch, tmp_path):
+    """A one-document survey is the state this layer was built to end.
+
+    AND AN EMPTY ONE MAKES EVERY ASSERTION BELOW IT TRUE: zero pages means zero drifted
+    figures, zero unaccounted literals and a green report about nothing. The refusal is what
+    stops a derivation that has quietly stopped deriving from reading as a clean result.
+    """
+    claims = _claims_module()
+    (tmp_path / "ONE.md").write_text("a page\n", encoding="utf-8")
+    (tmp_path / "TWO.md").write_text("another page\n", encoding="utf-8")
+    monkeypatch.setattr(claims, "ROOT", tmp_path)
+    #: `_shipped_markdown` SHELLS OUT TO GIT, and a test that reads git is green here and red
+    #: in the sdist leg, which this repository has now been taught twice. It is replaced, not
+    #: pointed at a temporary directory.
+    monkeypatch.setattr(claims, "_shipped_markdown", lambda: ["ONE.md"])
+    with pytest.raises(RuntimeError, match="the document derivation has stopped") as alone:
+        claims.documents()
+    #: THE REFUSAL NAMES WHAT IT DID FIND, so a reader is not left grepping for the survivor.
+    #: Asserted on the captured exception rather than in an `except` block: a bare `try` whose
+    #: body does not raise skips its assertions entirely and reads as a pass.
+    assert "ONE.md" in str(alone.value), str(alone.value)
+
+    #: TWO IS ENOUGH -- the boundary, not a comfortable number, because an off-by-one here
+    #: refuses every healthy run or accepts every broken one.
+    monkeypatch.setattr(claims, "_shipped_markdown", lambda: ["ONE.md", "TWO.md"])
+    assert sorted(claims.documents()) == ["ONE.md", "TWO.md"]
+
+
+def test_collected_items_REFUSES_when_pytest_PRINTS_NO_COUNT_and_clears_addopts(monkeypatch):
+    """No collected count is VOID, not zero -- and zero would satisfy every bound sentence.
+
+    THE ARGV IS ASSERTED IN THE SAME TEST, because the refusal and the reason it must never
+    fire are one rule: the project's own `addopts` carries `-q`, a second `-q` suppresses the
+    very line this parses, and the result would be a permanent refusal that looks like a
+    broken suite. `-o addopts=` is what keeps the line printable.
+    """
+    claims = _claims_module()
+    seen: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(list(argv))
+        del kwargs
+        return types.SimpleNamespace(stdout="no count anywhere in this output\n", returncode=0)
+
+    #: THE MODULE REFERENCE IS REPLACED, NOT `subprocess.run` ITSELF -- patching the stdlib
+    #: function would reach every other caller in the process for the length of this test.
+    monkeypatch.setattr(claims, "subprocess", types.SimpleNamespace(run=fake_run))
+    claims._collected_items.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="VOID rather than green"):
+            claims._collected_items()
+    finally:
+        claims._collected_items.cache_clear()
+
+    assert len(seen) == 1, f"expected exactly one collection, got {len(seen)}"
+    argv = seen[0]
+    assert "--collect-only" in argv
+    assert "addopts=" in argv, (
+        "`-o addopts=` is gone, so the project's own `-q` would suppress the collected-count "
+        "line and this function would refuse forever"
+    )
+
+    #: AND THE COUNT IS READ WHEN IT IS THERE, so the refusal above is not a function that
+    #: refuses everything. A four-digit count with no separator, as pytest prints it.
+    def good_run(argv, **kwargs):
+        del argv, kwargs
+        return types.SimpleNamespace(stdout="1480 tests collected in 3.21s\n", returncode=0)
+
+    monkeypatch.setattr(claims, "subprocess", types.SimpleNamespace(run=good_run))
+    claims._collected_items.cache_clear()
+    try:
+        assert claims._collected_items() == 1480
+    finally:
+        claims._collected_items.cache_clear()
+
+
+def test_registry_verdicts_marks_an_entry_NO_PAGE_STATES_as_vacuous(monkeypatch):
+    """A binding nobody quotes is a check that cannot fail, and it must be visible as one.
+
+    THE POPULATION IS DERIVED, NOT LISTED. Every entry of both registries must appear exactly
+    once, so an entry added tomorrow is covered on arrival and an entry that stops being
+    reported is a named failure rather than a shorter list.
+    """
+    claims = _claims_module()
+    #: Two pages that state nothing at all: every registry entry is then stated nowhere, which
+    #: is the only state that reaches the vacuity arm for ALL of them at once.
+    monkeypatch.setattr(claims, "documents", lambda: {"A.md": "nothing\n", "B.md": "here\n"})
+
+    rows = claims.registry_verdicts()
+    expected = len(claims._BOUND) + len(claims._DERIVED)
+    assert expected >= 5, f"only {expected} registry entries; this assertion is not worth much"
+    assert len(rows) == expected, (
+        f"{len(rows)} verdict(s) for {expected} registry entries — every entry must be "
+        f"accounted for exactly once, or an unquoted binding can hide"
+    )
+    assert all("VACUOUS" in verdict for _what, verdict, _where in rows), [
+        r for r in rows if "VACUOUS" not in r[1]
+    ]
+    #: THE LIVE VALUE IS STILL CARRIED. A vacuity report with no number tells a reader the
+    #: sentence is gone and not what it should have said.
+    assert all(where.startswith("live ") for _what, _verdict, where in rows), rows
+
+
+def test_unexercised_branches_skips_a_FENCED_block_and_a_SINGLE_BRANCH_pattern(monkeypatch):
+    """Two skips this sweep has never taken, and each is tested with a successor that matters.
+
+    THE FENCE. A code block is not prose, so a detection branch must not count a line inside
+    one. The `continue` after the toggle is in the loop over LINES, so a `break` there stops
+    reading the page -- and the sweep's own non-vacuity guard then refuses with *"not reading
+    the documents"*, which is why the fenced block is placed EARLY and 120 live lines follow.
+
+    THE SINGLE-BRANCH PATTERN. `len(branches) < 2` skips a pattern with no top-level `|`,
+    because a lone branch is the pattern itself and reporting it dead would report the whole
+    detection rule dead. That `continue` is in the loop over `_KINDS`, so the single-branch
+    entry is placed FIRST and a real two-branch entry follows: a `break` loses the second.
+    """
+    claims = _claims_module()
+    page = "\n".join(
+        ["```", "NOSUCHTEXTANYWHERE inside a fence does not count", "```"]
+        + [f"a live line {number}" for number in range(120)]
+    )
+    monkeypatch.setattr(claims, "documents", lambda: {"DOC.md": page})
+    monkeypatch.setattr(claims, "_FIRES_NOWHERE_TODAY", {})
+    monkeypatch.setattr(
+        claims,
+        "_KINDS",
+        (
+            ("alone", r"NOSUCHTEXTANYWHERE", "one branch, so it is skipped whole"),
+            ("pair", r"live|NOSUCHTEXTANYWHERE", "two branches, so both are tried"),
+        ),
+    )
+
+    found = claims.unexercised_branches()
+
+    assert len(found) == 1, f"expected exactly the dead branch of `pair`: {found}"
+    assert found[0].startswith("_KINDS[pair]"), (
+        f"the single-branch entry was reported, or the two-branch entry after it was never "
+        f"reached — which is what a `break` in place of that `continue` looks like: {found}"
+    )
+    assert "NOSUCHTEXTANYWHERE" in found[0], found
+    #: THE FENCE DID ITS WORK: the only occurrence of that text outside `_KINDS` is inside the
+    #: code block, and the branch is still reported dead. If the fence were read as prose the
+    #: branch would match and nothing would be reported at all.
+
+
+def test_unaccounted_count_returns_the_UNACCOUNTED_field_and_not_a_neighbour(monkeypatch):
+    """One line, and the only way it can be wrong is an index — so the index is what is held."""
+    claims = _claims_module()
+    #: THREE DISTINGUISHABLE VALUES. With (0, 0, 0) every index passes; with the population
+    #: first and the historical last, picking either neighbour is a named failure.
+    monkeypatch.setattr(claims, "counts", lambda: (418, 121, 7))
+    assert claims.unaccounted_count() == 121, (
+        "unaccounted_count returned the population or the historical count; the ratchet "
+        "compares this number against a committed baseline, so an index error moves a gate"
+    )
+
+
+def test_read_baseline_returns_None_for_an_ABSENT_file_and_for_an_OLD_ONE(monkeypatch, tmp_path):
+    """Both mean the same thing to a caller: there is nothing here to compare, so re-measure.
+
+    THE SECOND ARM IS THE ONE THAT MATTERS. A baseline written before the digest was split
+    parses fine and is missing a field; returning a partial tuple there would compare today's
+    detection rule against a file that never had one, and bank a fall nobody earned.
+    """
+    claims = _claims_module()
+    absent = tmp_path / "nothing" / "claims-baseline.txt"
+    monkeypatch.setattr(claims, "BASELINE", absent)
+    assert claims.read_baseline() is None
+
+    complete = {
+        "detection": "d" * 8,
+        "bindings": "b" * 8,
+        "population": "418",
+        "unaccounted": "121",
+        "historical": "7",
+    }
+    path = tmp_path / "claims-baseline.txt"
+    monkeypatch.setattr(claims, "BASELINE", path)
+
+    #: EVERY FIELD IN TURN, so the check is "all five required" and not "one of them".
+    for missing in sorted(complete):
+        body = "# a comment line, which is skipped\n" + "".join(
+            f"{key} {value}\n" for key, value in complete.items() if key != missing
+        )
+        path.write_text(body, encoding="utf-8")
+        assert claims.read_baseline() is None, f"a file missing `{missing}` was accepted"
+
+    #: AND THE COMPLETE ONE PARSES, or every assertion above is satisfied by a function that
+    #: returns None unconditionally.
+    path.write_text(
+        "# a comment\n" + "".join(f"{key} {value}\n" for key, value in complete.items()),
+        encoding="utf-8",
+    )
+    assert claims.read_baseline() == ("d" * 8, "b" * 8, 418, 121, 7)
+
+
+# --------------------------------------------------------------------------------------------
+# N-4: the corpus tool's refusals and the torture harness's finding report. Both are arms a
+# healthy run never takes -- the corpus is always present and the package no longer tears a
+# write -- which is why neither had ever executed.
+# --------------------------------------------------------------------------------------------
+
+
+def test_corpus_versions_is_EMPTY_without_a_corpus_and_SORTS_NUMERICALLY_with_one(
+    monkeypatch, tmp_path
+):
+    """The gate iterates this, so what it returns is the gate's scope.
+
+    `0.10.0` AFTER `0.9.0`. String order puts it before and would keep doing so quietly for
+    exactly as long as nobody had ten minor releases — so the version that sorts wrong is in
+    the fixture, not a comfortable set of three.
+    """
+    corpus = _corpus_module()
+    monkeypatch.setattr(corpus, "CORPUS", tmp_path / "not-generated")
+    assert corpus.corpus_versions() == [], (
+        "an absent corpus must be an empty scope, not a crash — the gate iterates this before "
+        "anything has been generated"
+    )
+
+    root = tmp_path / "corpus"
+    for version in ("0.9.0", "0.10.0", "0.8.0"):
+        (root / version / "tree").mkdir(parents=True)
+    #: A DIRECTORY WITHOUT A `tree/` IS NOT A VERSION. Left in the middle of the set, where a
+    #: filter that silently passes everything is visible.
+    (root / "0.9.5" / "notes").mkdir(parents=True)
+    monkeypatch.setattr(corpus, "CORPUS", root)
+
+    assert corpus.corpus_versions() == ["0.8.0", "0.9.0", "0.10.0"], corpus.corpus_versions()
+
+
+def test_materialise_REFUSES_a_version_that_was_never_captured(monkeypatch, tmp_path):
+    """And it says how to fix it, because the fix is a command and not a thought."""
+    corpus = _corpus_module()
+    monkeypatch.setattr(corpus, "CORPUS", tmp_path / "corpus")
+    with pytest.raises(FileNotFoundError) as absent:
+        corpus.materialise("9.9.9", tmp_path / "dest")
+    assert "no corpus for 9.9.9" in str(absent.value)
+    assert "tools/corpus.py generate" in str(absent.value), (
+        "the refusal does not name the command that would fix it"
+    )
+
+
+def test_leaks_does_not_report_the_NORMALISED_ROOT_TOKEN_and_still_reports_a_real_path(tmp_path):
+    """The placeholder is not a leak, and the rule that excludes it lives in ONE place.
+
+    THIS REPLACES A SECOND SPELLING OF THE SAME RULE. `leaks` carried
+    `if ROOT_TOKEN in hit: continue`, which was unreachable by construction: `ABSOLUTE_PATH`'s
+    lookbehind is `(?<![\\w:@])`, so a `/` preceded by `@` cannot begin a match and no hit can
+    ever contain the token. The skip was a restatement of a rule the pattern already enforced,
+    and it was unreachable precisely BECAUSE the pattern enforces it.
+
+    So the branch is gone and the PROPERTY is asserted here instead — which is the half that
+    was never held. Widening `ABSOLUTE_PATH` was the other candidate repair and is refuted: a
+    token-bearing path is the normalised placeholder, so missing it is correct, not a gap.
+    """
+    corpus = _corpus_module()
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    #: THE TOKEN-BEARING PATH COMES FIRST and a real absolute path follows, so a walk that
+    #: stopped at the first file would lose the thing this function exists to find.
+    (tree / "a-record.json").write_text(
+        f'{{"path": "{corpus.ROOT_TOKEN}/data/input.csv"}}\n', encoding="utf-8"
+    )
+    (tree / "b-record.json").write_text(
+        '{"path": "/home/someone/build/input.csv"}\n', encoding="utf-8"
+    )
+
+    found = corpus.leaks(tree)
+
+    assert len(found) == 1, f"expected exactly the real path: {found}"
+    assert "b-record.json" in found[0] and "/home/someone/build/input.csv" in found[0], found
+    assert corpus.ROOT_TOKEN not in "".join(found), (
+        "the normalised placeholder was reported as a leak; the lookbehind that excludes it "
+        "has stopped excluding it"
+    )
+
+
+def test_torture_main_PRINTS_EVERY_FINDING_with_a_reproduce_line(monkeypatch, capsys):
+    """A harness that finds something and cannot say what is a harness nobody can act on.
+
+    THE REPORTING LOOP HAD NO COVERAGE AT ALL, and that is where three `mypy --strict` errors
+    lived — the loop variable was `f`, already bound above to a `list[Finding]`, so it rebound
+    a name of a different type. Those three errors also MASKED a typo planted here to prove the
+    extended type-check scope works: the error count was 4 either way, and only the attribute
+    name in the message differed.
+
+    TWO FINDINGS, ONE FROM EACH PART. With one, a loop that reports only the first and a loop
+    that reports all are the same loop; and a report that lost part b's finding is exactly what
+    a mis-concatenation looks like.
+    """
+    torture = _torture_module()
+    first = torture.Finding(case="a-dup-half-0.5", what="a torn write verified", detail="d1")
+    second = torture.Finding(case="b-flip-byte-7", what="a mutation went unnoticed", detail="d2")
+    monkeypatch.setattr(torture, "controls", lambda work: [])
+    monkeypatch.setattr(torture, "part_a", lambda work, fractions, case: ([first], 3))
+    monkeypatch.setattr(torture, "part_b", lambda work, seed, case: ([second], 4))
+
+    assert torture.main(["--seed", "11"]) == 1, "findings must make this a non-zero exit"
+
+    page = capsys.readouterr().out
+    assert "7 case(s), 2 finding(s)" in page, page
+    for finding in (first, second):
+        assert finding.what in page, f"{finding.what} is missing from the report"
+        assert finding.detail in page, f"{finding.detail} is missing from the report"
+        assert f"--case {finding.case} --seed 11 --keep" in page, (
+            f"the reproduce line for {finding.case} does not carry the seed and the case, so "
+            f"the finding cannot be re-run:\n{page}"
+        )
+
+    #: AND NO FINDINGS IS ZERO, so the exit code above is not what this function always returns.
+    monkeypatch.setattr(torture, "part_a", lambda work, fractions, case: ([], 3))
+    monkeypatch.setattr(torture, "part_b", lambda work, seed, case: ([], 4))
+    assert torture.main(["--seed", "11"]) == 0
+    assert "7 case(s), 0 finding(s)" in capsys.readouterr().out
+
+
+def _torture_census(tmp_path, sites):
+    """The census `part_a` reads, written where `_build` would have left it.
+
+    `(nth, path, size, ours, kind)` -- `ours` truthy, or the site is not this project's and
+    the NOT ATOMIC arm below is correctly silent about it.
+    """
+    census = tmp_path / "census.json"
+    census.write_text(json.dumps(sites), encoding="utf-8")
+    return census
+
+
+def test_torture_part_a_does_not_call_a_WHOLE_WRITE_a_tear(tmp_path):
+    """A fraction that keeps every byte is not a torn write, and counting it as one would put
+    a finding against a site that behaved.
+
+    THE WHOLE FRACTION COMES FIRST AND A REAL ONE FOLLOWS. The skip is in the inner loop over
+    fractions, so with `1.0` alone a `break` is the same statement; with `(1.0, 0.5)` the
+    second fraction must still produce a case, and `n` counts them.
+    """
+    torture = _torture_module()
+    census = _torture_census(tmp_path, [[1, "a.tsv", 40, True, "write_text"]])
+
+    def build_without_tearing(tree, preload=""):
+        census.write_text(census.read_text(encoding="utf-8"), encoding="utf-8")
+        return 0, ""
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(torture, "_build", build_without_tearing)
+        findings, n = torture.part_a(tmp_path, (1.0, 0.5), None)
+
+    assert n == 1, (
+        f"one case expected: `1.0` keeps all 40 bytes and is not a tear, `0.5` is -- n={n} "
+        f"means either the whole write was tortured or the real fraction never ran"
+    )
+    assert {f.case for f in findings if f.what == "THE TEAR DID NOT LAND"} == {"a:1:a.tsv:0.5"}
+
+
+def test_the_case_filter_skips_the_cases_BEFORE_the_one_it_names_in_both_parts(tmp_path):
+    """`--case` is how a reported finding is re-run, and it had never selected anything.
+
+    THE NAMED CASE IS THE LAST ONE, not the first. With the first, a filter that skips and a
+    filter that stops are the same filter -- the earlier cases must be passed over and the
+    named one must still arrive.
+    """
+    torture = _torture_module()
+    census = _torture_census(
+        tmp_path, [[1, "a.tsv", 40, True, "write_text"], [2, "b.tsv", 40, True, "write_text"]]
+    )
+
+    def build_without_tearing(tree, preload=""):
+        census.write_text(census.read_text(encoding="utf-8"), encoding="utf-8")
+        return 0, ""
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(torture, "_build", build_without_tearing)
+        findings, n = torture.part_a(tmp_path, (0.5, 0.9), "a:2:b.tsv:0.9")
+    assert n == 1, f"the filter must leave exactly the named case: n={n}"
+    assert [f.case for f in findings if f.what == "THE TEAR DID NOT LAND"] == ["a:2:b.tsv:0.9"]
+
+    #: PART B HAS THE SAME FILTER OVER A DIFFERENT LOOP, and it is a separate statement.
+    def build_every_target(tree, preload=""):
+        for name in torture.TARGETS:
+            path = tree / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"col\tval\nx\t1\n")
+        return 0, ""
+
+    last = sorted(torture.TARGETS)[-1]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(torture, "_build", build_every_target)
+        patch.setattr(
+            torture,
+            "_mutations",
+            lambda data, rng: [("first", data + b"A"), ("second", data + b"B")],
+        )
+        patch.setattr(torture, "_read", lambda tree, case, expect_one: [])
+        _findings, n = torture.part_b(tmp_path, seed=7, only=f"b:{last}:second")
+    assert n == 1, (
+        f"the filter must leave exactly one of {len(torture.TARGETS)} targets x 2 operators: n={n}"
+    )
