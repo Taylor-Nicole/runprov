@@ -17,6 +17,7 @@ import ast
 import builtins
 import concurrent.futures
 import contextlib
+import copy
 import csv
 import dataclasses
 import datetime as dt
@@ -56002,4 +56003,189 @@ def test_the_STANDING_PROMPT_is_never_copied_into_this_repository():
         f"definition, in the audit repository, and a second copy drifts silently because each "
         f"copy reads complete on its own -- it already drifted six lessons once. Point at it "
         f"from docs/HANDOFF.md instead of copying it."
+    )
+
+
+#: WHERE EACH SUBJECT VARIABLE IN `_timeline_entry` LIVES INSIDE A RECORD. The renderer reads
+#: four different things -- the record, one input entry, one output entry, the failure block --
+#: and a guard that assumed one subject would have covered 12 of the 20 reads while reading as
+#: total. A subject this does not name goes UNACCOUNTED below rather than being skipped.
+_TIMELINE_SUBJECTS = {
+    "r": lambda rec: rec,
+    "i": lambda rec: rec["inputs"][0],
+    "o": lambda rec: rec["outputs"][0],
+    "f": lambda rec: rec["failure"],
+}
+
+#: A DISTINCTIVE VALUE PER FIELD, so no removal can be masked by a default that happens to
+#: render the same text. `status` is `failed` because the failure block is only read for a
+#: RECORDED non-ok status, and `git_status_captured` is False because the disclosure it drives
+#: is written `is False` rather than falsy -- a record that never knew the answer must not get
+#: the reassuring one.
+_TIMELINE_RECORD = {
+    "started_utc": "ZSTARTEDZ",
+    "script": "ZSCRIPTZ",
+    "run_id": "ZRUNIDZ",
+    "generation": "ZGENZ",
+    "command": "ZCOMMANDZ",
+    "cwd": "ZCWDZ",
+    "git_commit": "ZCOMMITZ",
+    "git_code_dirty": True,
+    "git_status_captured": False,
+    "inputs": [{"path": "ZINPATHZ", "sha256": "a" * 64}],
+    "outputs": [{"path": "ZOUTPATHZ", "sha256": "b" * 64}],
+    "status": "failed",
+    "failure": {"type": "ZFTYPEZ", "message": "ZFMSGZ"},
+    "history_destination": "ZHISTZ",
+    "seeds": ["ZSEEDZ"],
+}
+
+
+def _timeline_field_reads() -> set[tuple[str, str]]:
+    """Every `(subject, field)` that `_timeline_entry` reads, derived from its own source.
+
+    Both spellings the function uses: `x.get("k")` and `x["k"]`. Collected together because
+    the renderer mixes them on the same field -- `r.get("cwd")` guards and `r["cwd"]` prints --
+    so a walk that saw only one would miss half of a pair it had already found.
+    """
+    source = (_repo_root() / "runprov" / "__main__.py").read_text(encoding="utf-8")
+    fn = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "_timeline_entry"
+    )
+    pairs: set[tuple[str, str]] = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "get"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                subject = getattr(func.value, "id", f"<{type(func.value).__name__}>")
+                pairs.add((subject, node.args[0].value))
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+            if isinstance(node.slice.value, str):
+                pairs.add(
+                    (getattr(node.value, "id", f"<{type(node.value).__name__}>"), node.slice.value)
+                )
+    return pairs
+
+
+def _record_writer_keys() -> set[str]:
+    """Every string key `run.py` can write into a record, from the WRITER's own source.
+
+    THE SECOND, INDEPENDENT SIDE for the reader guard below, and it had to be this rather
+    than the obvious candidate. THE FROZEN CORPUS CANNOT SERVE: its scenario is a successful
+    run in a non-git tree, so `failure`, `git_commit`, `git_code_dirty`,
+    `git_status_captured`, `history_destination` and the failure's `type`/`message` appear in
+    ZERO of the 24 released records -- 8 of the 20 reads would have been a false demand. A
+    corpus cannot see a field its scenario never records.
+
+    Subscript keys and dict-literal keys, not keyword arguments: kwargs supply none of the
+    18 names and would only widen the net. 166 keys, and no mutmut-style `XX...XX` name
+    among them, which is what makes it discriminate.
+    """
+    source = (_repo_root() / "runprov" / "run.py").read_text(encoding="utf-8")
+    keys: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+            if isinstance(node.slice.value, str):
+                keys.add(node.slice.value)
+        if isinstance(node, ast.Dict):
+            for key in node.keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    keys.add(key.value)
+    return keys
+
+
+def test_every_RECORD_FIELD_the_timeline_renderer_READS_must_REACH_the_page():
+    """A field `log`'s page reads must change the page. Aimed at a measured survivor class.
+
+    THE CLAIM AND THE QUANTIFICATION: *every record field `_timeline_entry` reads affects
+    what it renders* / *for every `(subject, field)` the function's own source reads, a record
+    with that field REMOVED renders differently from the full one*. The same sentence.
+
+    WHY REMOVAL IS THE RIGHT PROBE, and it is the whole design. The survivors here mutate the
+    KEY -- `r.get("run_id")` becomes `r.get("XXrun_idXX")` -- so the read misses and `.get`
+    returns its default. That is INDISTINGUISHABLE, from the renderer's side, from the field
+    being absent. So this test needs no witness table and no per-field assertion about what
+    the page should say: under the mutant the full record and the stripped record render
+    IDENTICALLY, and the comparison below fires. Mutate any of the keys and this goes red.
+
+    MEASURED: 18 of `__main__.py`'s 240 survivors are a mutated `.get` KEY, 12 of them here.
+    They are not prose. A mutated key prints `?` where a value belongs, on the page a reader
+    scans -- the record-value-worse-than-missing rule applied to a READ rather than a write.
+
+    AND THE FIGURE THIS REPLACES WAS MINE AND WRONG: the roadmap said 27. The classifier
+    bucket was *argument to `get()`*, which includes the DEFAULT argument; the split is 18
+    keys and 9 defaults, and only the keys are this finding. The 9 defaults are the placeholder
+    a reader sees when a field is genuinely absent -- terminal prose, ACCEPT.
+
+    TWO INDEPENDENT SIDES: the reads come from `__main__.py` and the writable field names
+    from `run.py`, so the equality is load-bearing rather than a restatement.
+
+    WHAT IT DOES NOT COVER: the other six key survivors, in `_lineage` (4), `_export` (1) and
+    `_verify` (1). Those are separate renderers needing separate fixtures, and naming them here
+    is the boundary rather than an excuse -- a guard whose scope is narrower than its name is
+    the defect this suite keeps finding.
+    """
+    pairs = _timeline_field_reads()
+    assert pairs, (
+        "`_timeline_entry` reads no string-keyed field at all, so this derivation is vacuous "
+        "-- the renderer was rewritten, or the walk stopped reaching it"
+    )
+
+    unaccounted = sorted(p for p in pairs if p[0] not in _TIMELINE_SUBJECTS)
+    assert not unaccounted, (
+        f"`_timeline_entry` reads a field off a subject this test cannot place inside a "
+        f"record, so it cannot say whether that read reaches the page: {unaccounted}. Add the "
+        f"subject to `_TIMELINE_SUBJECTS`, or the guard is narrower than its name."
+    )
+
+    #: THE NAMED DEFECT, ASSERTED BEFORE ANY CENSUS, and three controls are why. Mutating a
+    #: key in the source -- which is the survivor class this guard exists for -- made the walk
+    #: collect `XXrun_idXX`, and the fixture census fired FIRST and reported *"the renderer
+    #: reads fields the fixture does not carry"*. The guard went red, so the mutant was killed,
+    #: but the diagnostic accused the FIXTURE and told its reader to add the mangled key to it.
+    #: A check that goes red correctly and names the wrong thing costs a real investigation.
+    writable = _record_writer_keys()
+    unwritten = sorted({field for _, field in pairs} - writable)
+    assert not unwritten, (
+        f"`_timeline_entry` reads record fields that `run.py` never writes: {unwritten}. "
+        f"Either the key is wrong -- a typo, or a mutation -- and every run renders a "
+        f"placeholder where a value belongs, or the writer stopped writing a field its own "
+        f"page still reads. Check the WRITER before touching the fixture."
+    )
+
+    #: A FIELD THE FIXTURE DOES NOT CARRY IS A DIFFERENT FAILURE from a read that changes
+    #: nothing, and it must say so: removing an absent field is a no-op, so without this the
+    #: diagnostic below would accuse the renderer of a dead read when the fixture is the thing
+    #: that drifted. Reachable now only for a field the writer DOES write, which is the only
+    #: case where "add it to the fixture" is the right advice.
+    absent = sorted(
+        (subject, field)
+        for subject, field in pairs
+        if field not in _TIMELINE_SUBJECTS[subject](copy.deepcopy(_TIMELINE_RECORD))
+    )
+    assert not absent, (
+        f"the renderer reads fields the fixture does not carry, so their removal cannot be "
+        f"tested: {absent}. Add them to `_TIMELINE_RECORD` with distinctive values."
+    )
+
+    page = cli._timeline_entry(_TIMELINE_RECORD)
+    dead = []
+    for subject, field in sorted(pairs):
+        record = copy.deepcopy(_TIMELINE_RECORD)
+        _TIMELINE_SUBJECTS[subject](record).pop(field)
+        if cli._timeline_entry(record) == page:
+            dead.append(f"{subject}.{field}")
+    assert not dead, (
+        f"removing these fields changes nothing the renderer prints, so the page does not "
+        f"depend on them: {dead}. Either the read is dead, or -- and this is what the mutation "
+        f"campaign found -- the key it reads by no longer matches the field the record carries, "
+        f"in which case every run renders a placeholder where a value belongs."
     )
