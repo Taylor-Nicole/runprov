@@ -1271,6 +1271,15 @@ class Run:
         `*.prov.json`, the glob every tool and every reader uses to find these. Measured by
         writing three of them and watching the glob return nothing. The compound suffix is
         part of what the name MEANS, so the stamp goes in front of it.
+
+        WHAT IS PROMISED, AND WHAT IS NOT. Three properties are the contract, because they are
+        what a consumer depends on: the name still matches `*.prov.json`; two runs inside one
+        second get DIFFERENT names; and the name is a function of the record, so the same run
+        yields the same path. **The exact spelling of the stamp is NOT promised** -- nothing
+        reads it back, since every consumer takes `started_utc` from the record itself, and the
+        timestamp here is for a person browsing a directory. Stated because a guard over an
+        unspecified behaviour guards nothing: a mutation run left eight survivors on these two
+        lines, and deciding which of them MATTER had to come before asserting anything.
         """
         p = pathlib.Path(provenance)
         if not self.project.sidecar_per_run:
