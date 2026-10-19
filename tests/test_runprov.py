@@ -55880,3 +55880,126 @@ def test_no_record_NOTE_is_spelled_INLINE_at_its_assignment_site():
         f"an inline note reaches the RECORD, so nothing holds its text and a consumer reading "
         f"it cannot be told that the wording moved."
     )
+
+
+#: THE STANDING PROMPT'S OWN SECTION BANNER, built from escapes ON PURPOSE. Spelling the
+#: character literally would put it in this file and the sweep below would flag its own source
+#: -- a guard that cannot pass. Four occurrences in the real document; zero here.
+_PROMPT_BANNER = "═" * 3
+
+#: What the sweep reads. NOT `rglob("*")`: measured in this suite already, a bare rglob from the
+#: repository root finds 1 796 files with 1 764 inside `.venv`.
+_TEXTISH = ("*.md", "*.py", "*.txt", "*.toml", "*.yml", "*.yaml", "*.cfg")
+_SWEEP_SKIP = ("__pycache__", ".venv", ".git", "build", "dist", ".mypy_cache", ".ruff_cache")
+
+
+def _runprov_textfiles() -> list[pathlib.Path]:
+    root = _repo_root()
+    out = []
+    for pattern in _TEXTISH:
+        for p in root.rglob(pattern):
+            if any(part in _SWEEP_SKIP for part in p.relative_to(root).parts):
+                continue
+            out.append(p)
+    return sorted(set(out))
+
+
+def test_docs_HANDOFF_names_only_paths_that_exist_or_are_marked_as_living_elsewhere():
+    """`docs/HANDOFF.md` is the prompt cycle's entry point here, and its paths must resolve.
+
+    THE CLAIM AND THE QUANTIFICATION: *every path this document names either exists in this
+    repository, or the document says on that line that it lives in the audit repository* /
+    *for every backtick-quoted path-looking token in the file, `ROOT / token` exists, or its
+    PARAGRAPH mentions the audit repository*. The same sentence.
+
+    NO NAME LIST. An earlier draft would have carried `("HANDOFF-PROMPT.md",
+    "prompt-graph.py")` as known-elsewhere files, which is the list this project deletes
+    rather than extends: the next sibling-repo file added would be uncovered. The document
+    marking its own out-of-repo references is checkable prose and needs no list.
+
+    WHY A MISSING PATH MATTERS HERE SPECIFICALLY: the audit repository's own continuity check
+    exists because prose that names a file asserts the file exists, and `RESUME.md` rotted for
+    six weeks naming a commit forty behind. This document is the runprov-side equivalent, and
+    runprov is the side with a gate.
+    """
+    #: THE CLAIM IS ABOUT A CHECKOUT, and an unpacked sdist is a different file set BY DESIGN
+    #: -- `.github/` is excluded from it, so `.github/workflows/test.yml` is absent there and
+    #: the document naming it is not wrong. Found by the BUILD leg, which runs this suite from
+    #: the real sdist in a clean venv: the local gate was green and `ci.py build` was red.
+    #: `PKG-INFO` at the root is the discriminator this suite already uses for exactly this
+    #: distinction (see the sdist-excluded-files test) -- present in an sdist, never in the
+    #: repository. The no-copy guard below needs no such carve-out and runs everywhere.
+    if (_repo_root() / "PKG-INFO").is_file():  # pragma: no cover - only true inside an sdist
+        pytest.skip("unpacked sdist: its file set is deliberately narrower than a checkout's")
+    doc = _repo_root() / "docs" / "HANDOFF.md"
+    assert doc.is_file(), (
+        "docs/HANDOFF.md is GONE -- the prompt cycle has no entry point in this repository "
+        "again, which is the state this document was written to end"
+    )
+    text = doc.read_text(encoding="utf-8")
+
+    #: THE WINDOW IS THE PARAGRAPH, NOT THE LINE, and a control is why: naming the audit
+    #: repository beside a token put `repository` on the NEXT line when the prose reflowed, so
+    #: a per-line check went red on a document that said exactly the right thing. A paragraph
+    #: is also the granularity a READER learns the answer at, which is the point of the claim.
+    tokens: list[tuple[str, str]] = []
+    for para in re.split(r"\n\s*\n", text):
+        #: THE LEADING DOT IS IN THE CLASS ON PURPOSE. Without it `.github/workflows/test.yml`
+        #: was invisible to this check -- named in the document, asserted by nothing, and
+        #: absent from the control's listing, which is how the hole was found.
+        for tok in re.findall(r"`([.A-Za-z0-9_][A-Za-z0-9_./-]*(?:/|\.[a-z]{2,4}))`", para):
+            tokens.append((tok, para))
+    assert tokens, (
+        "no path-looking token was found in docs/HANDOFF.md, so this check is vacuous -- "
+        "either the document stopped naming files or the pattern stopped matching them"
+    )
+
+    missing = []
+    for tok, para in tokens:
+        if (_repo_root() / tok).exists():
+            continue
+        if "audit repositor" in para:
+            continue  # declared as living in the sibling repository, and not checked here
+        missing.append(tok)
+    assert not missing, (
+        f"docs/HANDOFF.md names paths that do not exist here and are not marked as living in "
+        f"the audit repository: {sorted(set(missing))}. Prose that names a file asserts the "
+        f"file exists; fix the name or say where it really lives."
+    )
+
+
+def test_the_STANDING_PROMPT_is_never_copied_into_this_repository():
+    """One rule, one definition — asserted from the side that has a gate.
+
+    The standing prompt lives in ONE file, in the audit repository, and the hand-off READS it
+    rather than recalling it because the two copies once drifted six lessons apart. The audit
+    repository has no gate, so nothing there can enforce single-copy-ness. This repository
+    does, so the rule is enforced here: no file in runprov may carry the prompt's section
+    banner.
+
+    THE CONTROL THAT MUST NOT FIRE is this file itself. `_PROMPT_BANNER` is built from
+    `\\u2550` escapes precisely so that runprov's source never contains the character, and the
+    sweep below includes `tests/`, so spelling it literally would make this guard red against
+    its own text — a check that cannot pass.
+    """
+    files = _runprov_textfiles()
+    assert len(files) > 20, (
+        f"the sweep found only {len(files)} text file(s), so it is not reading this repository "
+        f"and a clean result below would mean nothing"
+    )
+    assert any(p.name == "HANDOFF.md" for p in files), (
+        "the sweep did not reach docs/HANDOFF.md, the one file most likely to grow a copy of "
+        "the prompt, so its silence is not evidence"
+    )
+
+    carrying = [
+        str(p.relative_to(_repo_root()))
+        for p in files
+        if _PROMPT_BANNER in p.read_text(encoding="utf-8", errors="replace")
+    ]
+    assert not carrying, (
+        f"the standing prompt's section banner appears in {carrying}. The prompt has ONE "
+        f"definition, in the audit repository, and a second copy drifts silently because each "
+        f"copy reads complete on its own -- it already drifted six lessons once. Point at it "
+        f"from docs/HANDOFF.md instead of copying it."
+    )
