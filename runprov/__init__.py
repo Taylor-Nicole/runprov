@@ -66,8 +66,13 @@ from .sinks import JsonlSink, RecordSink
 #
 #   VOLATILE, VOLATILE_JSON   compiled regexes -- the MECHANISM of volatile-stamp stripping.
 #                             Exporting them means never being able to change how it works.
-#   PIN_UNSAFE                documentation rendered into a refusal message. Nothing branches
-#                             on it -- proved by emptying it, behaviour unchanged.
+#   PIN_UNSAFE                documentation, rendered in the README. Nothing branches on it
+#                             -- proved by emptying it, behaviour unchanged. It WAS rendered
+#                             into `open_output`'s binary refusal; that stopped, because 25 of
+#                             the 40 binary suffixes are absent from it and fell to its
+#                             default, naming the wrong cause. The suffix set is held against
+#                             the README's table by a test; the reasons reach no record and no
+#                             message, so a change to their wording is uncatchable by design.
 #   default_run_id,           defaults `Project` already supplies; a caller passes a callable
 #   default_generation        rather than reaching for these.
 #
