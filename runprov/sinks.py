@@ -49,10 +49,12 @@ from __future__ import annotations
 # docstring needs a paragraph to correct it should be renamed before it is frozen.
 __all__ = ["JsonlSink", "RecordSink"]
 
+import errno
 import json
 import os
 import pathlib
 import sys
+import threading
 import typing
 
 from . import chain
@@ -147,9 +149,12 @@ class JsonlSink:
                     else:
                         chained = dict(record)
                     line = json.dumps(chained, default=str) + "\n"
-                    fh.write(line.encode("utf-8"))
-                    fh.flush()
-                    os.fsync(fh.fileno())
+                    # T-47(F). WITHOUT A LOCK THE WRITE IS PROVED, not assumed. `YamlLogSink`
+                    # deliberately does NOT get this: it is a regenerable VIEW by its own
+                    # documented design -- "a bad entry here costs the YAML and not the
+                    # record" -- and `python -m runprov log --format yaml` rebuilds it. This
+                    # file is the record of truth, so it is the one that must not lose a line.
+                    _write_verified(fh, line.encode("utf-8"), holds_lock=holds_lock)
         except Exception as exc:  # never let recording break a run
             # DIAGNOSTIC: a record that was meant to be kept was not kept. stderr, and
             # RUNPROV_QUIET does not reach it -- losing history silently is the failure
@@ -314,6 +319,124 @@ def _close_torn_line(fh: typing.BinaryIO) -> None:
         fh.write(b"\n")
 
 
+#: ONE PROCESS SERIALISES ITSELF BEFORE IT ASKS THE OS. T-47(E).
+#:
+#: The matrix failure that opened T-47 was EIGHT THREADS IN ONE PROCESS appending to one
+#: history: `23 of 24 records survived`. An OS file lock is the wrong tool for that -- it is
+#: per-descriptor and the retry budget is what ran out -- and this makes the case exact rather
+#: than merely rarer. It is also correct whether or not Windows' `"ab"` append is atomic,
+#: which is the hypothesis that could not be tested on the host where this was written.
+#:
+#: THE PACKAGE'S OWN IDIOM, not a new mechanism: `terminal._LIVE_LOCK`, `run._SIDECARS_LOCK`
+#: and `_report._WRITE_LOCK` are the same shape.
+_APPEND_LOCK = threading.Lock()
+
+#: AND IT IS BOUNDED, because a sink that must not ABORT a run must not HANG one either --
+#: `RecordSink.append`'s own contract, one hazard along. Nothing inside the locked block
+#: re-enters `_exclusive` today (checked: `_close_torn_line`, `chain.previous_digest` and
+#: `diagnostic` contain no sink call), so this cannot deadlock now; the timeout is what keeps
+#: that true for whoever edits those. On timeout the append proceeds WITHOUT the in-process
+#: lock and says so, which `_write_verified` then makes safe rather than merely hopeful.
+_APPEND_LOCK_WAIT = 30.0
+
+#: `errno` values that mean THE LOCK WAS CONTENDED, not THIS PLATFORM CANNOT LOCK. T-47(B).
+#:
+#: The conflation of those two was the trigger for T-47: both arrive as `OSError`, both took
+#: the same branch, and the second then appended unlocked. `msvcrt.locking(.., LK_LOCK, ..)`
+#: retries ten times at one-second intervals and then raises EDEADLOCK, which is contention
+#: and nothing else.
+#:
+#: ENOLCK IS DELIBERATELY ABSENT. "No locks available" is what an NFS mount without a lock
+#: manager reports, and that IS a capability statement -- it is the fallback's entire
+#: justification. A test raises exactly `OSError(errno.ENOLCK)` to hold this distinction.
+#:
+#: A LIST, AND SAID SO: this is the PLATFORM's enumeration rather than one invented here, and
+#: it will still be incomplete. So it decides only what the NOTICE SAYS. Correctness rests on
+#: `_write_verified`, which does not consult it.
+#: A SET LITERAL OF LOOKUPS, not a comprehension, and the declared-table sweep is why: it
+#: recurses through a one-argument wrapper like `frozenset(...)` and a `GeneratorExp` is a
+#: form it has no decision for -- it said so, by name. Members that are not literal constants
+#: put this outside the population of FIXED tables, which is correct: the set is
+#: PLATFORM-CONDITIONAL, since a name this platform does not define resolves to `None`.
+#: `exc.errno` CAN ITSELF BE `None`, AND THAT NEEDS NO GUARD -- which a control established
+#: rather than a reading. The sentinel for "not contended" IS `None`, so when the input is
+#: `None` the function returns `None` whichever branch it takes, and the caller reaches the
+#: CAPABILITY notice either way. A guard was written for this and then deleted: removing it
+#: changed no behaviour and its test could not fail, which is a control that cannot fire.
+_CONTENDED_ERRNOS = {
+    getattr(errno, "EDEADLOCK", None),
+    getattr(errno, "EDEADLK", None),
+    getattr(errno, "EACCES", None),
+    getattr(errno, "EAGAIN", None),
+    getattr(errno, "EWOULDBLOCK", None),
+}
+
+
+def _contended(err: int | None) -> int | None:
+    """The errno if it means THE LOCK WAS CONTENDED, else `None` for a capability statement."""
+    return err if err in _CONTENDED_ERRNOS else None
+
+
+#: How many times an UNLOCKED write may be re-attempted after read-back shows it did not land.
+_UNLOCKED_WRITE_ATTEMPTS = 3
+
+
+def _write_verified(fh: typing.IO[typing.Any], payload: bytes, *, holds_lock: bool) -> None:
+    """Append `payload`, and WITHOUT a lock prove it actually landed. T-47(F).
+
+    WHY THIS EXISTS AT ALL. `_exclusive`'s own measurement says the unlocked fallback loses
+    nothing on Linux -- "8 processes x 20 appends of 9 KB produced 160/160 intact records,
+    because Linux holds the inode lock across the whole write()" -- and the Windows job
+    produced 23 of 24. So the fallback's documented harm, *writers may interleave*, is true on
+    POSIX and an UNDERSTATEMENT where a record can be destroyed. The remedy is not to refuse
+    the append, which loses the record always rather than sometimes, and which
+    `RecordSink.append` cannot even signal: its contract is MUST NOT RAISE and it returns
+    `None`. The remedy is to make the unlocked append SAFE.
+
+    THE WINDOW IS "EVERYTHING APPENDED SINCE WE LOOKED", not the file. `start` is our
+    observation of the end before writing; appends only grow the file, so our bytes land at or
+    after it, and reading `start`..EOF covers them plus whatever arrived concurrently. That is
+    bounded by concurrent activity rather than by history length -- the O(n)-per-append cost
+    `YamlLogSink`'s docstring names as the defect to avoid.
+
+    FILE SIZE CANNOT SERVE, and this is why the obvious check was rejected: two writers that
+    seek to the same end E and write L each leave a file of size E+L. BOTH observe a growth of
+    exactly L. Neither can tell it was overwritten.
+
+    THE RESIDUAL, STATED. A false POSITIVE is possible if `payload` occurs byte-identically
+    elsewhere in the window; every history record carries a `run_uid` (24 of 24 released
+    records do), so this needs two runs with the same uid and the same bytes. A false positive
+    only returns the behaviour to what it was before this function existed.
+
+    ON THE LOCKED PATH THIS COSTS NOTHING: no read-back, no extra syscall.
+    """
+    if holds_lock:
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+        return
+    for attempt in range(1, _UNLOCKED_WRITE_ATTEMPTS + 1):
+        start = fh.seek(0, os.SEEK_END)
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+        fh.seek(start)
+        if payload in fh.read():
+            return
+        # ONLY WHEN A RETRY WILL ACTUALLY FOLLOW. Caught by its own guard: this announced
+        # "being retried" after the LAST attempt too, which promises an action that is not
+        # going to happen -- the same overstatement as the notice this change exists to fix.
+        if attempt < _UNLOCKED_WRITE_ATTEMPTS:
+            diagnostic(
+                f"  NOTE: an unlocked append did not land and is being retried "
+                f"(attempt {attempt} of {_UNLOCKED_WRITE_ATTEMPTS})."
+            )
+    diagnostic(
+        f"  WARNING: a run history record could not be appended without a lock after "
+        f"{_UNLOCKED_WRITE_ATTEMPTS} attempts; it is NOT in the history."
+    )
+
+
 @contextlib.contextmanager
 def _exclusive(fh: typing.IO[typing.Any]) -> typing.Iterator[bool]:
     """Exclusive lock for the duration of the block.
@@ -338,47 +461,82 @@ def _exclusive(fh: typing.IO[typing.Any]) -> typing.Iterator[bool]:
     semantics of this kind -- but it is a PORTABILITY property, not a Linux one, and the
     mechanism originally cited here is not the one that fails.
     """
+    # T-47(E). IN-PROCESS FIRST, so threads never race each other into the OS lock. Bounded,
+    # and a timeout is not a failure to swallow: it proceeds unlocked and says so.
+    serialised = _APPEND_LOCK.acquire(timeout=_APPEND_LOCK_WAIT)
+    if not serialised:
+        diagnostic(
+            f"  NOTE: waited {_APPEND_LOCK_WAIT:.0f}s for this process's own history lock and "
+            f"gave up; appending without it rather than hanging the run."
+        )
     locked: str | None = None
+    contended: int | None = None
     try:
-        import fcntl
-
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        locked = "fcntl"
-    except (ImportError, OSError):
         try:
-            if sys.platform == "win32":
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            locked = "fcntl"
+        except ImportError:
+            contended = None  # the module is absent: a CAPABILITY statement, not contention
+        except OSError as exc:
+            contended = _contended(exc.errno)
+        if locked is None:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+                    locked = "msvcrt"
+            except ImportError:
+                contended = None
+            except OSError as exc:
+                # T-47(B). THE SPLIT THAT WAS MISSING. This arm used to be `pass`, which made
+                # "could not take the lock just now" indistinguishable from "this filesystem
+                # cannot lock" -- and only the second justifies an unlocked append.
+                # `LK_LOCK` raises EDEADLOCK after ten one-second attempts.
+                contended = _contended(exc.errno)
+        if locked is None:
+            # OUTSIDE the platform branches, and that is the whole fix. This notice used to
+            # sit inside the win32-only inner `except`, so a POSIX `flock` that raised -- an
+            # NFS or CIFS mount, a container without the syscall -- degraded to an unlocked
+            # append and said NOTHING. Those filesystems are the lock's entire justification,
+            # so the one case that most deserved announcing was the one case that could not.
+            # Verified by stubbing fcntl to raise: the line was written, no notice appeared.
+            #
+            # AND THE CLAIM IS CORRECTED. It said "Concurrent writers may interleave", which
+            # is true on POSIX -- measured in this docstring, 160/160 -- and an UNDERSTATEMENT
+            # on a platform where a concurrent unlocked append can DESTROY a record rather
+            # than reorder one. A disclosure that understates the harm is worse than none.
+            if contended is None:
+                diagnostic(
+                    "  NOTE: no file locking available; run history appended unlocked. "
+                    "On some platforms a concurrent unlocked append can LOSE a record and "
+                    "not merely interleave, so each unlocked write is read back."
+                )
+            else:
+                diagnostic(
+                    f"  NOTE: the run history lock was CONTENDED and could not be taken "
+                    f"(errno {contended}); appended unlocked. On some platforms a concurrent "
+                    f"unlocked append can LOSE a record, so each one is read back."
+                )
+        try:
+            # YIELDS WHETHER A LOCK IS ACTUALLY HELD. ADR-0016 R-22: chaining under the
+            # unlocked fallback lets two writers claim the same predecessor, so a file in
+            # which every record landed correctly gets reported as tampered. The caller has
+            # to be able to tell.
+            yield locked is not None
+        finally:
+            if locked == "fcntl":
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            elif locked == "msvcrt" and sys.platform == "win32":
                 import msvcrt
 
                 fh.seek(0)
-                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
-                locked = "msvcrt"
-        except (ImportError, OSError):
-            # guards-ok: `locked` stays None and the branch below falls back, which is the
-            # whole point of recording which lock was taken rather than assuming one.
-            pass
-    if locked is None:
-        # OUTSIDE the platform branches, and that is the whole fix. This notice used to
-        # sit inside the win32-only inner `except`, so a POSIX `flock` that raised -- an
-        # NFS or CIFS mount, a container without the syscall -- degraded to an unlocked
-        # append and said NOTHING. Those filesystems are the lock's entire justification,
-        # so the one case that most deserved announcing was the one case that could not.
-        # Verified by stubbing fcntl to raise: the line was written, no notice appeared.
-        diagnostic(
-            "  NOTE: no file locking available; run history appended unlocked. "
-            "Concurrent writers may interleave."
-        )
-    try:
-        # YIELDS WHETHER A LOCK IS ACTUALLY HELD. ADR-0016 R-22: chaining under the unlocked
-        # fallback lets two writers claim the same predecessor, so a file in which every record
-        # landed correctly gets reported as tampered. The caller has to be able to tell.
-        yield locked is not None
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
     finally:
-        if locked == "fcntl":
-            import fcntl
-
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        elif locked == "msvcrt" and sys.platform == "win32":
-            import msvcrt
-
-            fh.seek(0)
-            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        if serialised:
+            _APPEND_LOCK.release()

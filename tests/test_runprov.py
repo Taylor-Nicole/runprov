@@ -8927,7 +8927,9 @@ def test_no_library_module_calls_bare_print():
 #: docstring edit; this cannot rot without a writer site moving.
 _WRITER_SURFACE = {
     "run.py": {"diagnostic": 27, "progress": 2, "summary": 2},
-    "sinks.py": {"diagnostic": 3},
+    #: 3 -> 7 with T-47: the in-process lock giving up, the two halves of the capability /
+    #: contention split, and the two notices `_write_verified` emits on an unlocked write.
+    "sinks.py": {"diagnostic": 7},
     "terminal.py": {"diagnostic": 6},
 }
 
@@ -32613,7 +32615,13 @@ def test_the_downgrade_to_no_locking_is_ANNOUNCED(tmp_path, monkeypatch, capsys)
     runprov.JsonlSink(tmp_path / "h.jsonl").append({"a": 1})
     err = capsys.readouterr().err
     assert "no file locking available" in err
-    assert "may interleave" in err, "the consequence, not only the fact"
+    #: THE CONSEQUENCE, NOT ONLY THE FACT -- and the consequence was UNDERSTATED until T-47.
+    #: This asserted `"may interleave"`, which is what the notice said and what `WHY.md` had
+    #: already corrected: interleaving is the POSIX outcome (measured, 160/160 intact), while
+    #: Windows "has no `O_APPEND` semantics of this kind, where CI caught 24 concurrent
+    #: appends producing 23 lines". So the test was holding a claim the shipped document
+    #: already knew to be too weak, and the stronger one is what a reader needs.
+    assert "LOSE a record" in err, "the consequence, and the WORST one, not only the fact"
     assert _lines(tmp_path / "h.jsonl")[-1]["a"] == 1
 
 
@@ -56308,4 +56316,249 @@ def test_exporting_one_sidecar_names_the_crate_after_the_SCRIPT_that_ran(
         f"the crate is titled {titles} instead of after the script that ran. `run — one run` "
         f"is the fallback for a sidecar with no `script`, and a reader cannot tell the two "
         f"apart from the title alone."
+    )
+
+
+class _DroppingFile:
+    """A file whose first `n` writes are silently DISCARDED, as a non-atomic append is.
+
+    THE HAZARD T-47 IS ABOUT, made portable. On Windows `open(p, "ab")` is a seek-to-end
+    followed by a write rather than one operation, so a concurrent writer can land on the same
+    offset and the earlier payload is gone -- `WHY.md` states this as the project's own
+    position: *"Windows has no `O_APPEND` semantics of this kind, where CI caught 24 concurrent
+    appends producing 23 lines"*. There is no Windows on the host this was written on, and the
+    POSIX fallback loses NOTHING (measured, 160/160), so a concurrency test here cannot fail
+    for the right reason. This can.
+    """
+
+    def __init__(self, drop: int) -> None:
+        self.buf = bytearray()
+        self.drop = drop
+        self.pos = 0
+        self.reads = 0
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        self.pos = len(self.buf) if whence == os.SEEK_END else offset
+        return self.pos
+
+    def write(self, payload: bytes) -> int:
+        if self.drop > 0:
+            self.drop -= 1
+            return len(payload)  # claims success, writes nothing -- the whole point
+        self.buf.extend(payload)
+        return len(payload)
+
+    def read(self) -> bytes:
+        self.reads += 1
+        return bytes(self.buf[self.pos :])
+
+    def flush(self) -> None:
+        return None
+
+    def fileno(self) -> int:
+        return -1
+
+
+def test_an_UNLOCKED_append_that_did_not_land_is_RETRIED_until_it_does(monkeypatch):
+    """T-47(F). Without a lock the write is PROVED to have landed, not assumed.
+
+    THE CLAIM AND THE QUANTIFICATION: *a record appended without a lock is never silently
+    lost* / *when the first write does not land, `_write_verified` writes again and the
+    payload is present afterwards*. The same sentence.
+
+    WHY THIS IS THE REMEDY AND REFUSING IS NOT. Refusing to append loses the record ALWAYS
+    rather than sometimes, and `RecordSink.append` could not even signal a refusal: its
+    contract is MUST NOT RAISE and it returns `None`. So the fallback is not the defect --
+    the defect was that the fallback was not safe.
+    """
+    monkeypatch.setattr(runprov.sinks.os, "fsync", lambda _fd: None)
+    fh = _DroppingFile(drop=1)
+    runprov.sinks._write_verified(fh, b'{"n": 1}\n', holds_lock=False)
+    assert bytes(fh.buf) == b'{"n": 1}\n', (
+        "the first write was discarded and nothing replaced it, so an unlocked append still "
+        "loses a record silently"
+    )
+    assert fh.reads >= 1, "it cannot have PROVED anything without reading the file back"
+
+
+def test_an_unlocked_append_that_never_lands_SAYS_the_record_is_not_in_the_history(
+    monkeypatch, capsys
+):
+    """And when retrying cannot help, the loss is ANNOUNCED rather than assumed away.
+
+    The attempts are bounded, so the remaining case has to be reported: this package's whole
+    position is that losing history silently is the one outcome it exists to prevent.
+    """
+    monkeypatch.setattr(runprov.sinks.os, "fsync", lambda _fd: None)
+    fh = _DroppingFile(drop=99)  # every write is discarded
+    runprov.sinks._write_verified(fh, b'{"n": 1}\n', holds_lock=False)
+    err = capsys.readouterr().err
+    assert "NOT in the history" in err, (
+        f"a record that could not be appended must say so; stderr was {err!r}"
+    )
+    assert err.count("being retried") == runprov.sinks._UNLOCKED_WRITE_ATTEMPTS - 1, (
+        "each failed attempt is reported, so the count of notices is the evidence that the "
+        "bound was actually used rather than one try being dressed up as three"
+    )
+
+
+def test_the_LOCKED_path_does_no_read_back_at_all(monkeypatch):
+    """THE CONTROL THAT MUST NOT FIRE: verification costs nothing when a lock is held.
+
+    `_write_verified`'s docstring claims the locked path adds no syscall. A claim about cost
+    is a claim, so it is asserted: this file counts its own reads, and a lock-held write must
+    leave that count at zero. Without it, a later edit could make every append pay for the
+    unlocked path's insurance and nothing would notice.
+    """
+    monkeypatch.setattr(runprov.sinks.os, "fsync", lambda _fd: None)
+    fh = _DroppingFile(drop=0)
+    runprov.sinks._write_verified(fh, b'{"n": 1}\n', holds_lock=True)
+    assert bytes(fh.buf) == b'{"n": 1}\n'
+    assert fh.reads == 0, f"the locked path read the file back {fh.reads} time(s); it must not"
+
+
+def test_two_THREADS_cannot_be_inside_the_history_lock_at_once(tmp_path, monkeypatch, capsys):
+    """T-47(E). One process serialises itself before it asks the OS.
+
+    THE CASE THE MATRIX ACTUALLY FAILED ON: eight threads, one process, one history, `23 of
+    24 records survived`. An OS file lock is the wrong tool for that -- it is per-descriptor
+    and its retry budget is what ran out -- so this asserts the in-process lock directly
+    rather than through the record count, which on POSIX would pass either way.
+
+    MEASURED BY OVERLAP, not by timing: each thread records the number of threads inside the
+    block while it is inside it. Serialised, that is always 1.
+
+    AND THE OS LOCK IS DISABLED HERE ON PURPOSE, which a control forced. On Linux `flock`
+    already excludes two descriptors of the same process, so with it in place this passed
+    with `_APPEND_LOCK` REMOVED -- a guard that could not fire for the property it names.
+    Raising from `flock` leaves the in-process lock as the only serialiser, which is also
+    exactly the state Windows reaches when its own lock is contended out.
+    """
+    import fcntl
+
+    monkeypatch.setattr(
+        fcntl, "flock", lambda *_a, **_k: (_ for _ in ()).throw(OSError(errno.ENOLCK, "nope"))
+    )
+    inside = [0]
+    peak = [0]
+    guard = threading.Lock()
+    seen: list[bool] = []
+
+    def one(_i: int) -> None:
+        with open(tmp_path / "h.jsonl", "ab+") as fh:
+            with runprov.sinks._exclusive(fh) as holds:
+                with guard:
+                    inside[0] += 1
+                    peak[0] = max(peak[0], inside[0])
+                seen.append(holds)
+                time.sleep(0.01)  # hold it, so an overlap would be observable
+                with guard:
+                    inside[0] -= 1
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(one, range(24)))
+
+    capsys.readouterr()  # the unlocked notice is expected here and is not the subject
+    assert len(seen) == 24, "every thread must have reached the block, or this reads nothing"
+    assert not any(seen), "the OS lock is disabled here, so no thread may report holding one"
+    assert peak[0] == 1, (
+        f"{peak[0]} threads were inside the history lock at once. One process must serialise "
+        f"itself before asking the OS: a file lock is per-descriptor and its retry budget is "
+        f"what ran out on Windows, where this cost a record."
+    )
+
+
+def test_a_held_in_process_lock_does_not_HANG_the_run(tmp_path, monkeypatch, capsys):
+    """T-47(E), the bound. A sink that must not ABORT a run must not HANG one either.
+
+    `RecordSink.append`'s contract is MUST NOT RAISE, *"a sink that can abort a run gets
+    removed from the run, and then nothing is recorded at all"*. A deadlock is the same
+    failure with worse manners: the run never ends and nothing says why. Nothing inside the
+    locked block re-enters `_exclusive` today, so this cannot happen now -- the timeout is
+    what keeps that true for whoever edits `_close_torn_line` or `chain.previous_digest`.
+
+    AND THE APPEND STILL HAPPENS. Giving up on the in-process lock degrades to the unlocked
+    path, which `_write_verified` makes safe; it does not drop the record. That is the whole
+    shape of this change: never refuse, always verify.
+    """
+    monkeypatch.setattr(runprov.sinks, "_APPEND_LOCK_WAIT", 0.05)
+    runprov.sinks._APPEND_LOCK.acquire()
+    try:
+        runprov.JsonlSink(tmp_path / "h.jsonl").append({"a": 1})
+    finally:
+        runprov.sinks._APPEND_LOCK.release()
+    err = capsys.readouterr().err
+    assert "gave up" in err, (
+        f"waiting out the in-process lock must be ANNOUNCED, not silent; stderr was {err!r}"
+    )
+    assert _lines(tmp_path / "h.jsonl")[-1]["a"] == 1, (
+        "and the record must still be there: giving up on the lock degrades to the verified "
+        "unlocked path, it does not drop the append"
+    )
+
+
+def test_a_CONTENDED_lock_is_not_reported_as_an_ABSENT_one(monkeypatch, tmp_path, capsys):
+    """T-47(B), from the other side. The two causes get two notices.
+
+    THE CONFLATION WAS THE TRIGGER FOR T-47: both arrive as `OSError`, both took one branch,
+    and the second then appended unlocked -- so a lock that was merely CONTENDED was handled
+    as though the filesystem could not lock at all. Its neighbour
+    `test_the_downgrade_to_no_locking_is_ANNOUNCED` holds the capability half with
+    `errno.ENOLCK`; this holds the contention half, and the two together are what make the
+    split load-bearing rather than decorative.
+
+    `EACCES` is used because it exists on every platform this runs on. On Windows the real
+    arrival is `EDEADLOCK`, which `msvcrt.locking(.., LK_LOCK, ..)` raises after ten
+    one-second attempts -- the exact path that cost a record in matrix run 39277901811.
+    """
+    import fcntl
+
+    monkeypatch.setattr(
+        fcntl, "flock", lambda *_a, **_k: (_ for _ in ()).throw(OSError(errno.EACCES, "busy"))
+    )
+    runprov.JsonlSink(tmp_path / "h.jsonl").append({"a": 1})
+    err = capsys.readouterr().err
+    assert "CONTENDED" in err, (
+        f"a contended lock must not be reported as an absent one; stderr was {err!r}"
+    )
+    assert "no file locking available" not in err, (
+        "that sentence is the CAPABILITY message and it is false here -- the filesystem can "
+        "lock, this attempt merely did not get the lock"
+    )
+    assert "LOSE a record" in err, "and the consequence is stated on this path too"
+    assert _lines(tmp_path / "h.jsonl")[-1]["a"] == 1, "the record still lands, verified"
+
+
+def test_the_CONTENDED_errno_set_excludes_ENOLCK_and_says_why():
+    """`_CONTENDED_ERRNOS` held by equality, and the EXCLUSION is the load-bearing half.
+
+    THE EXPECTED SET IS SPELLED OUT BY HAND HERE ON PURPOSE. Deriving it from `errno` would
+    read the same source the module reads and assert nothing -- the tautology this suite
+    refuses. A human re-reads this line when adding a member, which is what the constant in a
+    test is FOR.
+
+    AND ENOLCK MUST STAY OUT. "No locks available" is what an NFS mount with no lock manager
+    reports; that IS a capability statement and it is the fallback's entire justification.
+    Classifying it as contention would make the capability notice unreachable -- demonstrated
+    while building this: adding ENOLCK to the set turned
+    `test_the_downgrade_to_no_locking_is_ANNOUNCED` red with `errno 37` reported as CONTENDED.
+    """
+    assert runprov.sinks._contended(errno.EACCES) == errno.EACCES, (
+        "a busy lock must classify as CONTENDED, or the split is decorative"
+    )
+    assert runprov.sinks._contended(errno.ENOLCK) is None, (
+        "ENOLCK is 'no locks available' -- an NFS mount without a lock manager. That is the "
+        "CAPABILITY case the unlocked fallback exists for, so calling it contention makes the "
+        "capability notice unreachable. Demonstrated while building this: adding ENOLCK to "
+        "the set turned `test_the_downgrade_to_no_locking_is_ANNOUNCED` red with errno 37 "
+        "reported as CONTENDED."
+    )
+    #: AND AN `OSError` WITH NO ERRNO NEEDS NO ASSERTION OF ITS OWN, which a control
+    #: established rather than a reading. `None` is both "no errno" and "not contended", so
+    #: this function returns `None` on that input whichever branch it takes and the caller
+    #: reaches the CAPABILITY notice either way. A guard was written for it and then DELETED:
+    #: removing the guard changed no behaviour and the assertion for it could not fail even
+    #: with a `None` forced into the set. A control that cannot fire is deleted, not kept.
+    assert runprov.sinks._contended(errno.EAGAIN) == errno.EAGAIN, (
+        "a lock that would have blocked is contention too, not a filesystem that cannot lock"
     )
