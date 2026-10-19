@@ -55037,3 +55037,693 @@ def test_a_torn_write_that_is_NOT_the_packages_is_not_the_packages_problem():
     assert torture._not_atomic(7, "x.json", "write_text", [], True) == [], (
         "runprov owns the site and nothing tore, which is the state ADR-0005 guarantees"
     )
+
+
+def _digest_reasons_in_the_source() -> list[str]:
+    """Every non-empty reason `_digest_decision` can return, derived from its own AST.
+
+    THE POPULATION IS DERIVED, NOT LISTED, because the mutation run that prompted this guard is
+    only two thirds finished: the CLASSES of survivor are stable and the MEMBERSHIP is not. A
+    fifth reason added tomorrow is covered by this walk on the day it is written; a test naming
+    today's two would not be.
+    """
+    source = (_repo_root() / "runprov" / "run.py").read_text(encoding="utf-8")
+    fn = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "_digest_decision"
+    )
+    found: list[str] = []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Tuple):
+            continue
+        #: EVERY STRING-BEARING NODE INSIDE THE REASON, whatever holds it. Enumerating
+        #: `Constant` and `JoinedStr` found ONE of the two reasons: the other sits inside an
+        #: `IfExp` (`"" if asked else "..."`), a third form the language offers that this walk
+        #: did not recognise. The non-vacuity assertion below is what caught it — a derived
+        #: population is only as total as the node forms it knows about.
+        for part in node.value.elts[1:]:
+            pieces = [s for s in ast.walk(part) if isinstance(s, ast.JoinedStr)]
+            for piece in pieces:
+                found.append(
+                    "".join(
+                        v.value if isinstance(v, ast.Constant) else "\x00" for v in piece.values
+                    )
+                )
+            if not pieces:
+                found += [
+                    s.value
+                    for s in ast.walk(part)
+                    if isinstance(s, ast.Constant) and isinstance(s.value, str) and s.value
+                ]
+    return found
+
+
+def test_every_REASON_digest_decision_can_return_IS_THE_RECORD_S_AND_NOT_A_DIAGNOSTIC(tmp_path):
+    """[ADR-0022]. The reason is written to disk as `note: not digested: <reason>`, so its
+    wording is a shipped contract and not a developer string.
+
+    WHY A SUBSTRING ASSERTION WAS NOT ENOUGH, which is the finding this guard comes from. The
+    existing check is `"digest_max_bytes" in why`. A mutation that WRAPS the string —
+    `f"XX{size} bytes, at or over digest_max_bytes={limit}XX"` — still contains that substring,
+    so it survived; and the mutation run shows the pattern exactly, every DECISION on those
+    lines killed and every REASON surviving. **A containment test cannot kill a mutation that
+    adds rather than replaces.** The reasons are compared whole, against a pattern built from
+    values injected here, so neither side is a copy of the other.
+
+    THE POPULATION IS DERIVED FROM THE SOURCE and every member must be produced by a case
+    below, so a reason nobody exercises is a red rather than a silence.
+    """
+    limit = 64
+    runprov.configure(
+        root=tmp_path,
+        run_log=tmp_path / "runs.jsonl",
+        auto_steps="off",
+        digest_max_bytes=limit,
+    )
+    run = runprov.Run("probe", provenance=tmp_path / "p.json")
+    try:
+        big = tmp_path / "over.bin"
+        big.write_bytes(b"x" * (limit * 3))
+        size = big.stat().st_size
+
+        wanted, over_why = run._digest_decision(big, None)
+        assert wanted is False, "a file past the limit is declined; that half is already held"
+        assert over_why == f"{size} bytes, at or over digest_max_bytes={limit}", (
+            f"the threshold reason is a RECORD FIELD and must read exactly as the method's "
+            f"docstring states — leading with the measured size and ending with the limit "
+            f"that rejected it. Got {over_why!r}"
+        )
+
+        wanted, asked_why = run._digest_decision(big, False)
+        assert wanted is False
+        assert asked_why == "the caller passed digest=False", (
+            f"the explicit-choice reason must name the argument the caller passed, so a reader "
+            f"of the record can tell a policy decision from their own: {asked_why!r}"
+        )
+
+        #: NOTHING LEFT OVER. Both non-empty reasons the source can return were produced above;
+        #: a third added later and exercised by nothing fails here rather than going unread.
+        produced = {over_why, asked_why}
+        declared = _digest_reasons_in_the_source()
+        assert len(declared) >= 2, (
+            f"the AST walk found {len(declared)} non-empty reason(s) in `_digest_decision`; it "
+            f"has stopped recognising them and this test now asserts nothing"
+        )
+        for reason in declared:
+            shape = reason.replace("\x00", "")
+            assert any(
+                all(piece in got for piece in shape.split("\x00") if piece) for got in produced
+            ), (
+                f"`_digest_decision` can return a reason no case here produces: {reason!r}. "
+                f"Exercise it, or the record can carry text nothing has ever read back."
+            )
+    finally:
+        run.write(tmp_path / "p.json")
+
+
+def _readme_pin_unsafe_rows() -> dict[str, str]:
+    """The README's `PIN_UNSAFE` table, as {suffix: the `open_output` column}.
+
+    THE SECOND SIDE IS A DOCUMENT, which is what makes the equality below load-bearing: the
+    module is one source and the shipped README is the other, and neither is derived from the
+    other. The reasons themselves are PARAPHRASED there rather than copied, so prose equality
+    is impossible and is not attempted — see the test's docstring.
+    """
+    text = (_repo_root() / "README.md").read_text(encoding="utf-8")
+    start = text.index("| suffix | why `#` fails | `open_output` |")
+    block = text[start:].split("\n\n", 1)[0]
+    rows: dict[str, str] = {}
+    for line in block.splitlines()[2:]:
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) != 3:
+            continue
+        for suffix in re.findall(r"`(\.[A-Za-z0-9]+)`", cells[0]):
+            rows[suffix] = cells[2]
+    return rows
+
+
+def test_the_README_S_PIN_UNSAFE_TABLE_NAMES_EXACTLY_THE_SUFFIXES_THE_MODULE_DOES():
+    """`PIN_UNSAFE`'s reasons reach no record and no message — and they ARE shipped, in the
+    README. This binds the part that can be bound.
+
+    THE RECORD QUESTION, ASKED FIRST AND ANSWERED NO. `run.py` states it outright: the reason
+    strings are documentation, not a message source. The binary refusal used to render one and
+    stopped, because 25 of the 40 binary suffixes are not in this table and fell to its default
+    — telling someone writing a pickle that the format is not known to accept a `#`, which is
+    true and the wrong cause. So a mutation to a reason STRING changes no behaviour anywhere
+    and no test can kill it. That is recorded rather than guarded.
+
+    WHAT IS BINDABLE IS THE SUFFIX SET, and it is the half a reader acts on: a format added to
+    the module and not the table sends someone to a document that does not mention their file.
+    Both sides are DERIVED — the module's keys, and the table's first column parsed out of the
+    shipped README — so neither is a copy of the other.
+
+    AND THE `raises` ROW IS DERIVED TOO. The README says that row is the binary suffixes, which
+    makes it exactly `PIN_UNSAFE & PIN_BINARY` — a set this test computes rather than lists.
+    Asserting it keeps the document's own split honest when either table moves.
+
+    WHAT IS NOT ASSERTED, deliberately: that no suffix appears in two tables. Measured
+    2026-10-16 — `PIN_UNSAFE & PIN_BINARY` is 15 and `& PIN_ALTERNATIVE` is 6, both by design.
+    That property would have been red on arrival.
+    """
+    rows = _readme_pin_unsafe_rows()
+    #: NON-ZERO CONTROL. A parser that stopped matching agrees with every README.
+    assert len(rows) >= 20, (
+        f"the README's PIN_UNSAFE table parsed to {len(rows)} suffix(es); the row reader has "
+        f"stopped recognising it and this test now asserts nothing"
+    )
+
+    assert set(rows) == set(runprov.run.PIN_UNSAFE), (
+        f"the README's table and `PIN_UNSAFE` name different suffixes. Only in the module: "
+        f"{sorted(set(runprov.run.PIN_UNSAFE) - set(rows))}; only in the README: "
+        f"{sorted(set(rows) - set(runprov.run.PIN_UNSAFE))}. A format added to one and not the "
+        f"other sends a reader to a document that does not mention their file."
+    )
+
+    binary = {s for s, outcome in rows.items() if "raises" in outcome}
+    assert binary == set(runprov.run.PIN_UNSAFE) & set(runprov.run.PIN_BINARY), (
+        f"the README marks these as raising: {sorted(binary)}, but the suffixes that are both "
+        f"unsafe and binary are "
+        f"{sorted(set(runprov.run.PIN_UNSAFE) & set(runprov.run.PIN_BINARY))}. The document's "
+        f"split between `sidecar` and `raises` is a claim about those two tables."
+    )
+
+
+#: KEYS A CALLER SUPPLIES, not fields runprov declares. The corpus scenario calls
+#: `run.note("rows_seen", ...)`, `run.step(..., factor=2)` and passes `stage` as a parameter,
+#: so these appear in a frozen record and must NOT be expected in the package's source. Each
+#: is asserted ABSENT from the source below, so an entry that becomes a real field is named.
+_RECORD_KEYS_FROM_THE_CALLER = {
+    "rows_seen": "the scenario's `run.note('rows_seen', ...)`",
+    "factor": "a keyword the scenario passes to `run.step`",
+    "stage": "a scenario parameter",
+}
+
+#: FIELDS ADDED SINCE 0.8.0. A live record may carry these and the frozen one will not. Each
+#: is asserted ABSENT from the frozen record, so the entry retires itself the day the corpus
+#: is regenerated at a release that has them.
+_RECORD_KEYS_ADDED_SINCE_0_8_0 = {
+    # THE TOOL BLOCK IS A TAGGED UNION, tagged by `source`, so these are present on SOME
+    # install routes and absent on others -- which is correct, not a gap. Named by branch
+    # here, because an entry that does not say which branch it belongs to reads as a field
+    # the record sometimes forgets.
+    "tool.commit": "the CHECKOUT and VCS branches: the commit that built this runprov",
+    "tool.dirty": "the CHECKOUT branch only, and `identifies_code` is its negation",
+    "tool.url": "the LOCAL branch only -- PEP 610's `url`, the only trace a path install "
+    "leaves. UNDECLARED until 2026-10-19, and invisible in a dev tree because a live "
+    "checkout never takes that branch; the build check's clean-venv wheel found it.",
+}
+
+#: MAPS WHOSE KEYS ARE DATA. `environment.manager.evidence` is keyed by the filename the
+#: evidence came from, so its children are not a schema and comparing them would compare the
+#: host. The PARENT is still required to exist.
+_RECORD_DATA_KEYED_MAPS = {"environment.manager.evidence"}
+
+
+def _frozen_record() -> dict:
+    """The record written by the RELEASED 0.8.0 wheel — the independent second side.
+
+    NOT A FIXTURE THIS TREE PRODUCED. `tests/corpus/` holds records captured from each
+    released wheel, byte-frozen and digest-pinned, so this side cannot be edited into
+    agreement by a change that breaks the recorder.
+    """
+    return json.loads(
+        (_repo_root() / "tests/corpus/0.8.0/tree/prov/align.prov.json").read_text(encoding="utf-8")
+    )
+
+
+def _leaf_key_names(value, depth_first_path: str = "") -> set[str]:
+    out: set[str] = set()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            out.add(key)
+            out |= _leaf_key_names(child)
+    elif isinstance(value, list):
+        for child in value:
+            out |= _leaf_key_names(child)
+    return out
+
+
+def test_no_RECORD_FIELD_the_0_8_0_WHEEL_WROTE_has_been_renamed_away(tmp_path):
+    """The record IS the product, and until now nothing asserted its field names.
+
+    MEASURED 2026-10-16, which is why this exists: 89 key paths in the frozen 0.8.0 record,
+    `git_branch` named once in the whole suite — as a path INTO a record, not as a key set —
+    `git_commit_short` twice, and `cpu_count` not at all. A mutation renaming a field shipped a
+    record whose consumers all read `None`, which this package elsewhere goes to real trouble
+    to distinguish from a field that is legitimately empty.
+
+    THE SUBJECT IS MATCHED TO WHAT CAN BE COMPARED, and that took a measurement rather than an
+    assumption. A record produced by a `Run` in a unit test is MISSING 27 of the frozen key
+    paths — `environment.snapshot.*`, a directory input's `sha256_tree`, `steps[]`, `signals`,
+    `notes` — every one of them a branch this test does not exercise rather than a field that
+    was lost. So "the live record must carry every frozen key" is not the property: it would be
+    red on arrival, 27 times.
+
+    WHAT IS TOTAL is the other direction, over the SOURCE. Every leaf key name the released
+    wheel wrote is either a string literal in `runprov/` — the package still declares that
+    field — or it came from the CALLER and is declared below. Rename `cpu_count` and the
+    literal is gone and this fails, with no scenario to reproduce. Of 101 leaf names, 98 are
+    package fields and 3 are the scenario's own data.
+
+    AND THE EXEMPTIONS RETIRE FROM BOTH ENDS. A caller-supplied name that becomes a real field
+    is named here; an "added since 0.8.0" entry that turns up in the frozen record means the
+    corpus was regenerated and the entry is spent.
+    """
+    frozen = _frozen_record()
+    names = _leaf_key_names(frozen)
+    #: NON-ZERO CONTROL. A walk that returned nothing would agree with every package.
+    assert len(names) >= 50, (
+        f"the frozen 0.8.0 record yielded {len(names)} leaf key name(s); the walk has stopped "
+        f"reading it and this test now asserts nothing"
+    )
+
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((_repo_root() / "runprov").rglob("*.py"))
+    )
+    declares = {name for name in names if f'"{name}"' in source or f"'{name}'" in source}
+
+    unaccounted = sorted(names - declares - set(_RECORD_KEYS_FROM_THE_CALLER))
+    assert not unaccounted, (
+        f"the 0.8.0 wheel wrote these record fields and no string literal in `runprov/` names "
+        f"them any more: {unaccounted}. Either a field was renamed — in which case every "
+        f"consumer now reads None — or it is caller data and belongs in "
+        f"`_RECORD_KEYS_FROM_THE_CALLER` with a reason."
+    )
+
+    #: THE OTHER END. A caller-supplied name that has become a real field is a stale exemption.
+    became_real = sorted(name for name in _RECORD_KEYS_FROM_THE_CALLER if name in declares)
+    assert not became_real, (
+        f"these are declared as caller data and are now string literals in `runprov/`: "
+        f"{became_real}. They are package fields; delete the exemption so they are held."
+    )
+
+
+def test_a_RECORD_FIELD_ADDED_SINCE_0_8_0_IS_DECLARED_rather_than_appearing(tmp_path):
+    """The direction the source sweep cannot see: a field this tree writes and 0.8.0 did not.
+
+    0.9.0 adds two by decision (ADR-0022's `digested` and its `note`), so the release itself is
+    the reason this check exists rather than an argument against it: the mechanism that admits
+    an intended field is the one that names an unintended one.
+
+    THE LIVE SIDE IS A REAL RUN, minimal on purpose — the 27 keys it does not reach are branch
+    coverage, not schema, and this direction does not care about them.
+    """
+    frozen_paths = _record_key_paths(_frozen_record())
+
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl", auto_steps="off")
+    src = tmp_path / "in.txt"
+    src.write_text("x\n", encoding="utf-8")
+    run = runprov.Run("align", provenance=tmp_path / "p.json")
+    run.input(src)
+    out = tmp_path / "out.txt"
+    out.write_text("y\n", encoding="utf-8")
+    run.output(out)
+    run.write(tmp_path / "p.json")
+    live_paths = _record_key_paths(json.loads((tmp_path / "p.json").read_text(encoding="utf-8")))
+
+    assert len(live_paths) >= 50, (
+        f"the live record yielded {len(live_paths)} key path(s); the run or the walk produced "
+        f"nothing and this test asserts nothing"
+    )
+
+    #: THE NAMED DEFECT BEFORE THE CENSUS. A carve-out pointed at a path the record does not
+    #: have excuses nothing — and if the census below runs first it reports the keys that
+    #: carve-out should have covered, accusing the recorder instead of the declaration.
+    #: Measured as control 6: repointing it fired the undeclared-field assertion, not this one.
+    for parent in _RECORD_DATA_KEYED_MAPS:
+        assert parent in live_paths, (
+            f"`{parent}` is declared a data-keyed map and the live record has no such path; "
+            f"the carve-out now excuses nothing, or everything."
+        )
+
+    def under_a_data_map(path: str) -> bool:
+        return any(path.startswith(f"{parent}.") for parent in _RECORD_DATA_KEYED_MAPS)
+
+    added = sorted(
+        path
+        for path in live_paths - frozen_paths
+        if not under_a_data_map(path) and path not in _RECORD_KEYS_ADDED_SINCE_0_8_0
+    )
+    assert not added, (
+        f"this tree writes record fields the 0.8.0 wheel did not, and they are not declared: "
+        f"{added}. A new field is a change to the record consumers parse — declare it in "
+        f"`_RECORD_KEYS_ADDED_SINCE_0_8_0` with the reason, in the commit that adds it."
+    )
+
+    #: SELF-RETIRING. Once the corpus is regenerated at a release carrying these, the entry has
+    #: no subject left and must go, or it silently excuses a future field of the same name.
+    spent = sorted(name for name in _RECORD_KEYS_ADDED_SINCE_0_8_0 if name in frozen_paths)
+    assert not spent, (
+        f"these are declared as added since 0.8.0 and the frozen record now has them: "
+        f"{spent}. The corpus has moved on; delete the entries so the fields are held."
+    )
+
+
+def _record_key_paths(value, prefix: str = "") -> set[str]:
+    """Dotted key paths, with a list of dicts collapsed to `[]` so row count is not schema."""
+    out: set[str] = set()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            out.add(f"{prefix}{key}")
+            out |= _record_key_paths(child, f"{prefix}{key}.")
+    elif isinstance(value, list):
+        for child in value:
+            out |= _record_key_paths(child, f"{prefix}[].")
+    return out
+
+
+#: EVERY `source` THE TOOL BLOCK CAN BE TAGGED WITH, and what each one means. A HAND-WRITTEN
+#: CONSTANT ON PURPOSE: the KEY set below is derived, but the TAGS are a decision. A sixth one
+#: is a new install shape, and whoever adds it must come here and say what it is rather than
+#: have a derived set absorb it in silence.
+_TOOL_SOURCES = {
+    "unknown": "nothing answered -- no distribution, or metadata that would not parse",
+    "checkout": "a live git checkout that TRACKS this file; `identifies_code` is `not dirty`",
+    "index": "from an index -- a PyPI filename is never reused, so name+version identifies it",
+    "vcs": "pip recorded a `vcs_info.commit_id`",
+    "local": "a local path or wheel; PEP 610's `url` is the only trace it leaves",
+}
+
+
+def _tool_block_shape() -> tuple[set[str], set[str]]:
+    """Every key and every `source` value `tool_identity` can emit, READ FROM ITS SOURCE.
+
+    THE GAP THIS CLOSES, measured 2026-10-19 when gate C went red on `tool.url`.
+    `tool_identity` is a tagged union, and `_RECORD_KEYS_ADDED_SINCE_0_8_0` restated a SUBSET
+    of its keys by hand. `commit` and `dirty` belong to the CHECKOUT branch, which a
+    development tree takes, so they were declared; `url` belongs to LOCAL, which only a
+    clean-venv wheel takes, so it was not; and `index` adds no keys at all, so it could never
+    read as missing.
+
+    The declaration was therefore populated BY OBSERVATION FROM ONE ENVIRONMENT -- not wrong
+    in form, but its REACH depended on where it ran. Reading the function's own source has no
+    environment at all, which is the whole point of doing it this way.
+    """
+    source = (REPO / "runprov" / "environment.py").read_text(encoding="utf-8")
+    fn = next(
+        n
+        for n in ast.walk(ast.parse(source))
+        if isinstance(n, ast.FunctionDef) and n.name == "tool_identity"
+    )
+    keys: set[str] = set()
+    tags: set[str] = set()
+    for node in ast.walk(fn):
+        # `out.update(source=..., commit=...)` -- one call per branch.
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "update"
+        ):
+            for kw in node.keywords:
+                if kw.arg:
+                    keys.add(kw.arg)
+                if kw.arg == "source" and isinstance(kw.value, ast.Constant):
+                    tags.add(kw.value.value)
+        # The literal dict that seeds `out`: the base four, and the `unknown` tag.
+        if isinstance(node, ast.Dict):
+            # `strict` because a `**expansion` key is `None` and the lists still pair up;
+            # a silent truncation here would drop a branch's keys and read as clean.
+            for key, value in zip(node.keys, node.values, strict=True):
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    keys.add(key.value)
+                    if key.value == "source" and isinstance(value, ast.Constant):
+                        tags.add(value.value)
+    return keys, tags
+
+
+def test_every_TOOL_BLOCK_KEY_THE_UNION_CAN_EMIT_is_declared_or_already_frozen():
+    """U-01. The record-shape declaration is bound to what the union CAN emit, not to a run.
+
+    Gate C's red on `['tool.url']` came from the build check and NOT from the development
+    venv, because which keys appear depends on the install route. This reads the SOURCE, so it
+    holds in both, in every CI leg, and on an interpreter that has no runprov installed at all.
+
+    TWO INDEPENDENT SIDES: the keys come from `environment.py`'s AST, the already-public ones
+    from the record the RELEASED 0.8.0 wheel wrote in `tests/corpus/`. Neither side is this
+    file's opinion, which is what makes the equality load-bearing.
+    """
+    keys, tags = _tool_block_shape()
+    # NON-VACUITY FIRST. A walk that matches nothing agrees with every codebase, and both
+    # censuses below would then read clean.
+    assert keys, "no keys parsed out of `tool_identity` -- the walk has stopped matching"
+    assert tags, "no `source` values parsed out of `tool_identity`"
+
+    # THE NAMED DEFECT BEFORE ANY CENSUS. An undeclared key is what went red; reporting the
+    # tag table first would accuse the table and send a reader to the wrong file.
+    frozen = _record_key_paths(_frozen_record())
+    undeclared = sorted(
+        f"tool.{k}"
+        for k in keys
+        if f"tool.{k}" not in frozen and f"tool.{k}" not in _RECORD_KEYS_ADDED_SINCE_0_8_0
+    )
+    assert not undeclared, (
+        f"`tool_identity` can emit these and nothing declares them: {undeclared}. The block is "
+        f"a TAGGED UNION, so a key present on one install route and absent on another is "
+        f"correct -- declare it in `_RECORD_KEYS_ADDED_SINCE_0_8_0`, naming the branch it "
+        f"belongs to. Do NOT 'simplify' the union by emitting every key with `None`: a null "
+        f"`commit` on an index install asserts that a commit is a CONCEPT there, and it is not."
+    )
+
+    # AND THE OTHER END, because a declaration that only grows is the shape this suite
+    # refuses everywhere else. The sibling check retires an entry when the FROZEN record
+    # GAINS the field; this one retires it when the UNION STOPS EMITTING it. Found while
+    # designing this test's second control: deleting `url=` from the local branch made the
+    # census above read CLEAN, so without this half the guard had one end only.
+    orphaned = sorted(
+        name
+        for name in _RECORD_KEYS_ADDED_SINCE_0_8_0
+        if name.startswith("tool.") and name.removeprefix("tool.") not in keys
+    )
+    assert not orphaned, (
+        f"these are declared as tool-block fields added since 0.8.0 and `tool_identity` can "
+        f"no longer emit them: {orphaned}. The branch is gone, so the entry excuses nothing "
+        f"-- delete it, or it silently covers a future field of the same name."
+    )
+
+    # AND THE TAGS ARE A DECISION. Derived on the left, declared on the right, so a new
+    # install shape cannot arrive without someone saying what it means.
+    assert tags == set(_TOOL_SOURCES), (
+        f"`tool_identity`'s `source` values are {sorted(tags)} and `_TOOL_SOURCES` declares "
+        f"{sorted(_TOOL_SOURCES)}. A new install shape changes what every record's `tool` "
+        f"block can say about whether the code can be got back; name it and say what it means."
+    )
+
+
+def test_every_UNDIGESTED_NOTE_the_recorder_writes_goes_through_THE_ONE_DEFINITION():
+    """[ADR-0022]. The note is a RECORD field, and it was built twice.
+
+    `f"not digested: {why}"` appeared at two recording sites 1 088 lines apart — `input()`'s
+    entry and `write()`'s described output. A mutation run found both surviving: nothing in
+    the suite asserted the assembled note at all, only the reason inside it, so a mangled
+    prefix would have shipped `XXnot digested: XX<reason>` to every consumer that reads one.
+
+    THE POPULATION IS DERIVED FROM THE SOURCE, not listed here: every assignment to a `note`
+    key anywhere in `run.py`. A third recording site added tomorrow is covered on the day it
+    is written, which is the half a listed pair cannot do.
+    """
+    tree = ast.parse((_repo_root() / "runprov" / "run.py").read_text(encoding="utf-8"))
+    sites = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Subscript)
+        and isinstance(node.targets[0].slice, ast.Constant)
+        and node.targets[0].slice.value == "note"
+    ]
+    #: NON-ZERO CONTROL. A walk that found no site would agree with any recorder.
+    assert len(sites) >= 2, (
+        f"found {len(sites)} assignment(s) to a `note` key in run.py; the walk has stopped "
+        f"recognising them and this test asserts nothing"
+    )
+
+    direct = [
+        ast.unparse(node)
+        for node in sites
+        if not (
+            isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "_undigested_note"
+        )
+    ]
+    assert not direct, (
+        f"these build a record `note` without `_undigested_note`: {direct}. The prefix is a "
+        f"field consumers read; two copies of it agree the week they are typed."
+    )
+
+
+def test_the_UNDIGESTED_NOTE_READS_AS_THE_CHANGELOG_PROMISES(tmp_path):
+    """The other side: what the assembled note actually says in a record on disk.
+
+    The source guard above holds the two sites to one definition; it cannot say that the one
+    definition is right. This reads the note back out of a written record.
+    """
+    limit = 64
+    runprov.configure(
+        root=tmp_path, run_log=tmp_path / "runs.jsonl", auto_steps="off", digest_max_bytes=limit
+    )
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"x" * (limit * 3))
+    size = big.stat().st_size
+
+    run = runprov.Run("probe", provenance=tmp_path / "p.json")
+    run.input(big)
+    run.write(tmp_path / "p.json")
+
+    record = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    entries = [i for i in record["inputs"] if i.get("note")]
+    assert len(entries) == 1, (
+        f"expected exactly one undigested input to carry a note; got {len(entries)}. Without "
+        f"one this test asserts nothing about the note at all."
+    )
+    assert (
+        entries[0]["note"] == f"not digested: {size} bytes, at or over digest_max_bytes={limit}"
+    ), f"the note a consumer reads must be the prefix and the reason, whole: {entries[0]['note']!r}"
+
+
+def test_open_output_CREATES_A_NESTED_PARENT_rather_than_requiring_one(tmp_path):
+    """`open_output` does `p.parent.mkdir(parents=True, exist_ok=True)`, and both keywords
+    survived the mutation run: nothing opened an output whose parent did not already exist.
+
+    THE TWO KEYWORDS FAIL DIFFERENTLY and both are a real caller's path. Without
+    `parents=True` a two-deep destination raises `FileNotFoundError` on the intermediate
+    directory — `results/2026/out.tsv` is an ordinary thing for a pipeline to write. Without
+    `exist_ok=True` the SECOND output into a directory raises `FileExistsError`, so the defect
+    only appears on a run that writes twice, which is the harder one to notice.
+
+    THE STATIC MEASUREMENT THAT PROMPTED THIS WAS WRONG and is recorded as such: counting `/`
+    in the call sites counted the pathlib operator, not path depth, and reported 85 of 135
+    call sites as nested. The honest instrument for "does the suite cover this" was to write
+    the case and break the code.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl", auto_steps="off")
+    run = runprov.Run("deep", provenance=tmp_path / "p.json")
+    try:
+        nested = tmp_path / "results" / "2026" / "run-1"
+        assert not nested.exists(), "the destination must not exist, or this proves nothing"
+
+        with run.open_output(nested / "out.tsv") as handle:
+            handle.write("a\tb\n")
+        assert (nested / "out.tsv").is_file(), (
+            "open_output must create every missing parent of its destination; a pipeline "
+            "writing results/<year>/<run>/ should not have to mkdir first"
+        )
+
+        #: AND A SECOND OUTPUT INTO THE SAME DIRECTORY, which is the `exist_ok` half. A run
+        #: that writes one file would never reach it.
+        with run.open_output(nested / "second.tsv") as handle:
+            handle.write("c\td\n")
+        assert (nested / "second.tsv").is_file(), (
+            "the second write into a directory that now exists must not raise; without "
+            "`exist_ok=True` only a run with two outputs in one directory would show it"
+        )
+    finally:
+        run.write(tmp_path / "p.json")
+
+
+def test_NEGATIVE_infinity_records_as_its_own_value_and_not_the_positive_one(tmp_path):
+    """A non-finite metric becomes a STRING in the record, and the sign is part of the value.
+
+    THE SUITE TESTED ONE SIDE. `"Infinity"` is asserted twice and `-Infinity` nowhere, so the
+    negative branch's literal was never produced and a mutation of it survived.
+
+    AND ONE OF THAT LINE'S SURVIVORS IS AN EQUIVALENCE, NOT A GAP — measured, not assumed.
+    Widening `obj > 0` to `obj >= 0` was planted and this test stayed GREEN, because the
+    branch is reached only under `if obj in (float("inf"), float("-inf"))` two lines above: no
+    input can be zero there, so no test can distinguish the two comparisons. That survivor is
+    unkillable by construction and is recorded rather than chased. What this test does hold is
+    the LITERAL — mangle `"-Infinity"` and it fires.
+
+    WHY IT MATTERS MORE THAN A MISSING TEST. `_jsonable` feeds `json.dumps(_jsonable(record))`,
+    so this is not a diagnostic — it is the VALUE a provenance record carries for a diverged
+    loss or an undefined metric. A sign that flips writes a number that is wrong rather than
+    absent, and a reader has no way to tell.
+
+    BOTH IN ONE RECORD, so a single implementation cannot satisfy one and miss the other, and
+    read back with a STRICT parser, because a bare `-Infinity` is not JSON either.
+    """
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl", auto_steps="off")
+    run = runprov.Run("metrics", provenance=tmp_path / "p.json")
+    run.note("diverged", float("-inf"))
+    run.note("saturated", float("inf"))
+    run.write(tmp_path / "p.json")
+
+    text = (tmp_path / "p.json").read_text(encoding="utf-8")
+    assert "-Infinity," not in text and ": Infinity" not in text, (
+        "a bare Infinity or -Infinity is not JSON; every strict parser rejects the document"
+    )
+    record = json.loads(
+        text, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(f"non-JSON: {c}"))
+    )
+    notes = record["notes"]
+    assert notes["diverged"] == "-Infinity", (
+        f"negative infinity must keep its sign in the record; got {notes['diverged']!r}. A "
+        f"flipped comparison writes a value that is WRONG rather than missing."
+    )
+    assert notes["saturated"] == "Infinity", (
+        f"and the positive side is unchanged; got {notes['saturated']!r}"
+    )
+
+
+def test_the_PER_RUN_SIDECAR_NAME_keeps_the_three_properties_it_promises(tmp_path):
+    """`_sidecar_name`'s docstring names three properties and declines to promise the format.
+    This holds the three, and deliberately does not hold the spelling.
+
+    WHY NOT THE FORMAT. A mutation run left eight survivors across the two lines that build
+    the stamp, and freezing the exact name would kill all eight — by turning a generated
+    filename into a published API nobody decided to publish, after which every cosmetic
+    improvement goes red. Nothing reads the stamp back: every consumer takes `started_utc`
+    from the record. So `[:8]` becoming `[:7]` SURVIVES this guard, and that is the declared
+    outcome rather than an oversight.
+
+    WHAT A CONSUMER ACTUALLY DEPENDS ON, and each is measured here rather than described:
+    the `*.prov.json` glob keeps matching — the docstring records three files being written
+    and the glob returning nothing when this was last got wrong; two runs inside one second
+    get different names, which is the entire reason `run_uid` is in the name at all; and the
+    name is a function of the record, so the same run cannot land in two places.
+    """
+    runprov.configure(
+        root=tmp_path,
+        run_log=tmp_path / "runs.jsonl",
+        auto_steps="off",
+        sidecar_per_run=True,
+    )
+    destination = tmp_path / "out" / "summary.prov.json"
+
+    names: list[pathlib.Path] = []
+    for _ in range(3):
+        run = runprov.Run("summarise", provenance=destination)
+        try:
+            name = run._sidecar_name(destination)
+            names.append(name)
+            #: DETERMINISTIC: the same run, asked twice, answers the same.
+            assert run._sidecar_name(destination) == name, (
+                f"the sidecar name is a function of the record and must not vary between "
+                f"calls within one run: {name} then {run._sidecar_name(destination)}"
+            )
+        finally:
+            run.write(tmp_path / f"p{len(names)}.json")
+
+    #: NON-ZERO CONTROL. Three runs or this asserts nothing about collisions.
+    assert len(names) == 3, f"expected three names, got {len(names)}"
+
+    for name in names:
+        assert name.match("*.prov.json"), (
+            f"{name.name} no longer matches `*.prov.json`, the glob every tool and every "
+            f"reader uses to find a sidecar. Inserting the stamp before the LAST suffix "
+            f"rather than before the compound one is how this was got wrong before."
+        )
+        assert name.parent == destination.parent, (
+            f"the sidecar must stay beside the artifact it describes: {name}"
+        )
+
+    #: DIFFERENT, and these three runs are within the same second on any ordinary host —
+    #: which is exactly the case `run_uid` is in the name for.
+    assert len(set(names)) == 3, (
+        f"two runs produced the same sidecar path, so one record overwrites another: "
+        f"{[n.name for n in names]}. The run_uid is in the name precisely because two runs "
+        f"inside one second are still two runs."
+    )
