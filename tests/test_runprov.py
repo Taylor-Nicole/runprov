@@ -615,6 +615,21 @@ def test_run_records_a_registered_output_that_was_never_written(tmp_path):
     prov = run.write(tmp_path / "t_provenance.json")
     rec = json.loads(prov.read_text(encoding="utf-8"))
     assert rec["outputs"][0]["kind"] == "MISSING"
+    # THE `note` KEY AND ITS REASON, both of which a mutation run found unheld. The KEY half
+    # is not prose: it is a record FIELD NAME, so `"note"` -> `"XXnoteXX"` ships a record whose
+    # reader gets `None` from `.get("note")` while the key sits there under another spelling.
+    # ASSERT THE SUBJECT BEFORE SUBSCRIPTING IT. Measured: mutating the key to `XXnoteXX`
+    # made this fail as a bare `KeyError: 'note'`, which says a dict lookup missed rather
+    # than that the record stopped carrying the field.
+    assert "note" in rec["outputs"][0], (
+        f"the MISSING entry carries no `note` key at all, so the reason is gone from the "
+        f"record: {sorted(rec['outputs'][0])}"
+    )
+    assert rec["outputs"][0]["note"] == runprov.run._unwritten_note()
+    assert rec["outputs"][0]["note"] == "registered but never written", (
+        "the literal is asserted HERE and derived nowhere, because the helper and this test "
+        "must have two independent sources or the equality above says nothing"
+    )
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFO needed to make one")
@@ -653,6 +668,21 @@ def test_an_output_that_cannot_be_hashed_is_recorded_and_does_not_destroy_the_ru
     assert outs["real.tsv"]["sha256"], "the GOOD output must still be hashed and recorded"
     assert outs["stream.out"]["kind"] == "UNHASHABLE"
     assert "sha256" not in outs["stream.out"], "no digest may be invented for it"
+    # Same pair as the MISSING branch: the KEY, then the reason against an independent literal.
+    # `{exc}` is load-bearing -- it is the only place the OS error reaches the record at all --
+    # so the prefix is asserted rather than the whole string, which would bind the test to an
+    # errno message that differs between platforms.
+    assert "note" in outs["stream.out"], (
+        f"the UNHASHABLE entry carries no `note` key at all, so the one thing explaining the "
+        f"absent digest is gone: {sorted(outs['stream.out'])}"
+    )
+    assert outs["stream.out"]["note"].startswith("exists but could not be hashed: "), (
+        f"the reason's prefix reaches the RECORD, so a consumer reads it: "
+        f"{outs['stream.out']['note']!r}"
+    )
+    assert outs["stream.out"]["note"] != "exists but could not be hashed: ", (
+        "the reason must carry the exception, or the note explains nothing"
+    )
 
     history = [json.dumps(r) for r in _lines(tmp_path / "runs.jsonl")]
     assert len(history) == 1, "the run must reach the append-only history, not vanish from it"
@@ -55726,4 +55756,127 @@ def test_the_PER_RUN_SIDECAR_NAME_keeps_the_three_properties_it_promises(tmp_pat
         f"two runs produced the same sidecar path, so one record overwrites another: "
         f"{[n.name for n in names]}. The run_uid is in the name precisely because two runs "
         f"inside one second are still two runs."
+    )
+
+
+def _note_constants() -> list[tuple[str, int, str, ast.AST | None]]:
+    """Every `"note"` string constant in the package, each resolved to how it is USED.
+
+    Returns `(module, lineno, role, value_node)`. `role` is the decision for that occurrence
+    and `value_node` is the expression the field is being SET to, or `None` for a read.
+    """
+    found: list[tuple[str, int, str, ast.AST | None]] = []
+    for path in sorted(pathlib.Path(runprov.__file__).parent.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        parent: dict[int, ast.AST] = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                parent[id(child)] = node
+        #: THE KEYWORD FORM HAS NO `"note"` CONSTANT AT ALL, so collecting string constants
+        #: alone left `d.update(note="...")` and `dict(note="...")` invisible -- the input set
+        #: carrying the enumeration the matcher had deleted. Found by a control that PASSED
+        #: when it should have failed, which is the only way this shape shows up.
+        for node in ast.walk(tree):
+            if isinstance(node, ast.keyword) and node.arg == "note":
+                found.append((path.name, node.value.lineno, "keyword argument", node.value))
+                continue
+            if not (isinstance(node, ast.Constant) and node.value == "note"):
+                continue
+            up = parent.get(id(node))
+            role, value = "UNACCOUNTED", None
+            if isinstance(up, ast.Dict) and node in up.keys:
+                role, value = "dict-literal key", up.values[up.keys.index(node)]
+            elif isinstance(up, ast.Subscript) and up.slice is node:
+                sub_up = parent.get(id(up))
+                if isinstance(sub_up, ast.Assign) and up in sub_up.targets:
+                    role, value = "subscript assignment", sub_up.value
+                elif isinstance(sub_up, ast.AugAssign) and sub_up.target is up:
+                    role, value = "subscript augmented assignment", sub_up.value
+                else:
+                    role = "subscript read"
+            elif isinstance(up, ast.Call):
+                fn = up.func
+                name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                if name == "setdefault" and up.args and up.args[0] is node:
+                    role, value = "setdefault", up.args[1] if len(up.args) > 1 else None
+                elif name in {"get", "pop", "__contains__"}:
+                    role = "read via method"
+                else:
+                    role = f"argument to {name or '<expr>'}()"
+            elif isinstance(up, ast.Compare):
+                role = "membership or equality test"
+            found.append((path.name, node.lineno, role, value))
+    return found
+
+
+def _is_inline_text(node: ast.AST | None) -> bool:
+    """Is this expression a string spelled out HERE, rather than obtained from somewhere?
+
+    The forms the language offers for an inline string, enumerated rather than guessed: a
+    plain or implicitly-concatenated literal is one `Constant`; an f-string is a `JoinedStr`;
+    and `"a" + b` or `"a" "b" + c` is a `BinOp` with an inline operand. Anything else -- a
+    call, a name, an attribute, a subscript -- got its text from elsewhere.
+    """
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str)
+    if isinstance(node, ast.JoinedStr):
+        return True
+    if isinstance(node, ast.BinOp):
+        return _is_inline_text(node.left) or _is_inline_text(node.right)
+    if isinstance(node, ast.IfExp):  # `x if c else y` -- either arm counts
+        return _is_inline_text(node.body) or _is_inline_text(node.orelse)
+    return False
+
+
+def test_no_record_NOTE_is_spelled_INLINE_at_its_assignment_site():
+    """A record `note` is never spelled inline where it is assigned. ONE RULE, ONE DEFINITION.
+
+    THE CLAIM AND THE QUANTIFICATION, written out so they can be compared: *a record `note`
+    is never spelled inline at its assignment site*, and *for every `"note"` string constant
+    in the package that SETS a field -- including the `note=` KEYWORD form, which carries no
+    such constant and was invisible until a control passed that should not have -- the value
+    expression is not a literal, an f-string or a concatenation involving one*. Those are the
+    same sentence.
+
+    WHAT IT DOES NOT CLAIM, because the boundary matters more than the check: it says nothing
+    about text that reaches a note one level removed. `terminal.py` builds its note as
+    `"; ".join(notes)` from literals appended in three branches -- a `Call` here, and passing
+    -- and that is a decided design (ADR, "every caveat is collected and joined ONCE"), not an
+    oversight this guard is pretending to cover.
+
+    WHY IT EXISTS. `run.py` writes this one field at four sites. Two went through
+    `_undigested_note()` in `7072451`, whose docstring says a mutation run found both and
+    *"the prefix reaches the RECORD, so a mangled one ships `XXnot digested: XX<reason>` to
+    every consumer that reads a note"*. The other two stayed inline, and the campaign's
+    `run.py` leg duly reported `"note"` -> `"XXnoteXX"` and the text itself SURVIVING on both
+    the UNHASHABLE and the MISSING branch -- four mutants, one finding. The repair had been
+    scoped to the `not digested` FAMILY because that is what the triage had reached; the
+    subject was the FIELD. This guard is the denominator that repair lacked.
+    """
+    occurrences = _note_constants()
+    assert occurrences, (
+        'no `"note"` constant was found anywhere in the package, so this derivation is '
+        "vacuous -- the field was renamed, or the walk stopped reaching the sources"
+    )
+
+    unaccounted = [(m, ln, r) for m, ln, r, _ in occurrences if r == "UNACCOUNTED"]
+    assert not unaccounted, (
+        f'a `"note"` constant is used in a form this walk has no decision for, so it cannot '
+        f"say whether the field is spelled inline there: {unaccounted}"
+    )
+
+    setters = [(m, ln, r, v) for m, ln, r, v in occurrences if v is not None]
+    assert setters, (
+        'every `"note"` occurrence resolved to a READ, so nothing in this package sets the '
+        "field any more and the rule below is asserted over nothing"
+    )
+
+    inline = [f"{m}:{ln} ({r})" for m, ln, r, v in setters if _is_inline_text(v)]
+    assert not inline, (
+        f"a record `note` is spelled inline at its assignment site: {inline}. Give it one "
+        f"definition, as `_undigested_note`, `_unhashable_note` and `_unwritten_note` have: "
+        f"an inline note reaches the RECORD, so nothing holds its text and a consumer reading "
+        f"it cannot be told that the wording moved."
     )
