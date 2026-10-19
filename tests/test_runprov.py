@@ -8292,9 +8292,15 @@ class _FakeMsvcrt:
     LK_LOCK = "<LK_LOCK>"
     LK_UNLCK = "<LK_UNLCK>"
 
-    def __init__(self, fail_on_lock=False):
+    def __init__(self, fail_on_lock=False, lock_errno=None):
+        #: `lock_errno` EXISTS BECAUSE AN ERRNO-LESS FAILURE IS A CAPABILITY STATEMENT.
+        #: `_contended(None)` is `None`, so a plain `OSError` out of `locking` reaches the
+        #: "no file locking available" notice -- correct for a stub that stands in for an
+        #: absent lock, and wrong for one standing in for a CONTENDED one. The contention
+        #: half of T-47(B) needs a real errno, and it needs it on both platforms.
         self.calls: list[tuple] = []
         self._fail_on_lock = fail_on_lock
+        self._lock_errno = lock_errno
         self._fh = None
 
     def watch(self, fh):
@@ -8315,7 +8321,9 @@ class _FakeMsvcrt:
         #: shape this project refuses. Two surviving mutants moved exactly those seeks.
         self.calls.append((mode, nbytes, self._fh.tell() if self._fh is not None else None))
         if self._fail_on_lock and mode == self.LK_LOCK:
-            raise OSError("fake: the lock could not be taken")
+            if self._lock_errno is None:
+                raise OSError("fake: the lock could not be taken")
+            raise OSError(self._lock_errno, "fake: the lock could not be taken")
 
 
 def _force_msvcrt(monkeypatch, fake):
@@ -22823,6 +22831,175 @@ def test_nothing_evaluated_at_import_needs_a_posix_only_name():
     assert not unguarded, (
         "a test that reaches for a POSIX-only name must SKIP where the name is absent, not "
         f"fail there: {unguarded}"
+    )
+
+
+def _catches_import_error(node: ast.Try) -> bool:
+    """Does this `try` have a handler that catches an import failing?
+
+    `ModuleNotFoundError` is a subclass of `ImportError`, so either name is a real guard and
+    both spellings appear in this suite.
+    """
+    wanted = {"ImportError", "ModuleNotFoundError"}
+    for handler in node.handlers:
+        if handler.type is None:  # a bare `except:` catches it too
+            return True
+        for name in ast.walk(handler.type):
+            if isinstance(name, ast.Name) and name.id in wanted:
+                return True
+    return False
+
+
+def _imported_top_level(node: ast.AST) -> set[str]:
+    """Every top-level module name imported anywhere under `node`."""
+    found: set[str] = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Import):
+            found |= {alias.name.split(".")[0] for alias in sub.names}
+        elif isinstance(sub, ast.ImportFrom) and sub.level == 0 and sub.module:
+            found.add(sub.module.split(".")[0])
+    return found
+
+
+def _find_spec_subjects(node: ast.AST) -> set[str]:
+    """The module names this expression asks `find_spec` about."""
+    subjects: set[str] = set()
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        if name != "find_spec" or not call.args:
+            continue
+        first = call.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            subjects.add(first.value.split(".")[0])
+    return subjects
+
+
+def test_every_PLATFORM_CONDITIONAL_module_import_in_this_suite_is_GUARDED():
+    """T-48. A-02's third primitive: the module, after the decorator and the attribute.
+
+    `test_nothing_evaluated_at_import_needs_a_posix_only_name` says ATTRIBUTES ONLY in its own
+    comment, and its claim is *"a test that reaches for a POSIX-only name must SKIP where the
+    name is absent, not fail there"*. **A module name is such a name and was not quantified
+    over** -- the claim and the quantification were different sentences, which is the shape
+    this suite refuses everywhere else. Matrix run 39294199128 walked through the gap: two
+    tests written for T-47 opened with a bare `import fcntl`, passed the whole local gate at
+    100%, and failed in SETUP on `test (windows-latest, 3.12, off)` with
+    `ModuleNotFoundError`. One of them is named after the Windows defect it exists to hold, so
+    on the only platform that defect was ever observed it asserted nothing at all.
+
+    THE MODULE SET IS DERIVED AND THERE IS NO LIST IN THIS TEST. Python publishes no
+    machine-readable table of per-platform availability, so the second side is **this suite's
+    own declarations**: a module is platform-conditional if the suite already treats it as
+    possibly-absent, in either spelling it already uses --
+
+      * the subject of a `find_spec(...) is None` condition (how `requires_fcntl` is built), or
+      * imported inside a `try` that catches `ImportError`/`ModuleNotFoundError` (how
+        `_force_msvcrt` suppresses the POSIX lock only where there is one).
+
+    Then every OTHER import of that module must be guarded one of those two ways, and the
+    inconsistency is the defect. A module nobody has ever declared anywhere stays out of
+    scope, which is a genuine judgement rather than a list waiting to go stale.
+
+    `pytest.importorskip` IS DELIBERATELY NOT A DECLARING SPELLING, and that was measured
+    rather than assumed: counting it would pull in `yaml`, whose 32 `importorskip` sites sit
+    beside 6 bare `import yaml` -- so the check would raise **6 demands on a module present in
+    every matrix leg**, because PyYAML is installed by `.[test]` everywhere the suite runs.
+    `importorskip` means "may not be INSTALLED", a dependency question; `find_spec`-in-a-skipif
+    means "absent on a PLATFORM". Only the second is what this holds.
+
+    AND THE SCOPE IS ONE-DIRECTIONAL ON PURPOSE. A Windows-only module imported bare reds on
+    the first local run, so it needs no mechanism. A POSIX-only one passes five POSIX
+    interpreters and the whole local gate and reds eleven minutes later in CI. Only one of the
+    two directions is invisible from here, and it is the one this covers.
+    """
+    suite = sorted(p for p in (REPO / "tests").rglob("*.py") if "__pycache__" not in p.parts)
+    trees = {p: ast.parse(p.read_text(encoding="utf-8")) for p in suite}
+    assert len(trees) >= 2, (
+        f"the suite's own files are the population and only {len(trees)} were parsed; "
+        f"`conftest.py` and `test_runprov.py` are both expected"
+    )
+
+    declared: set[str] = set()
+    marker_declares: dict[str, set[str]] = {}
+    for tree in trees.values():
+        declared |= _find_spec_subjects(tree)  # it walks, so one call covers the whole file
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Try) and _catches_import_error(node):
+                declared |= _imported_top_level(node)
+        #: A MARKER NAME IS A GUARD FOR THE MODULE IT ASKS ABOUT, not for any module. Deriving
+        #: this from the assignment is what stops an unrelated `skipif` counting: the existing
+        #: attribute half tests `"skipif" in unparse(decorators)`, a substring, and a platform
+        #: skip for one reason would satisfy it for another.
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+                subjects = _find_spec_subjects(node.value)
+                if isinstance(target, ast.Name) and subjects:
+                    marker_declares.setdefault(target.id, set()).update(subjects)
+
+    assert declared, (
+        "NOTHING in this suite declares a module platform-conditional any more, so this check "
+        "is now vacuous. Either the two spellings it derives from have changed -- re-derive it "
+        "-- or no test touches such a module, in which case DELETE this test rather than "
+        "leaving a green check over an empty population."
+    )
+
+    accounted: list[str] = []
+    unaccounted: list[str] = []
+    for path, tree in trees.items():
+        functions = [
+            n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        guarding = [
+            n for n in ast.walk(tree) if isinstance(n, ast.Try) and _catches_import_error(n)
+        ]
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            hit = sorted(_imported_top_level(node) & declared)
+            if not hit:
+                continue
+            where = f"{path.name}:{node.lineno}"
+            # decision 1: the import itself is inside a try that catches the failure.
+            in_try = any(
+                any(b.lineno <= node.lineno <= (b.end_lineno or b.lineno) for b in t.body)
+                for t in guarding
+            )
+            if in_try:
+                accounted.append(f"{where} {','.join(hit)}: try/except ImportError")
+                continue
+            # decision 2: the INNERMOST enclosing function skips where the module is absent.
+            owners = [f for f in functions if f.lineno <= node.lineno <= (f.end_lineno or f.lineno)]
+            owner = min(owners, key=lambda f: (f.end_lineno or f.lineno) - f.lineno, default=None)
+            skipped: set[str] = set()
+            for deco in owner.decorator_list if owner else []:
+                skipped |= _find_spec_subjects(deco)
+                for name in ast.walk(deco):
+                    if isinstance(name, ast.Name):
+                        skipped |= marker_declares.get(name.id, set())
+            if set(hit) <= skipped:
+                accounted.append(f"{where} {','.join(hit)}: skipif on {owner.name}")
+                continue
+            unaccounted.append(
+                f"{where} imports {','.join(hit)} inside "
+                f"{owner.name if owner else 'MODULE SCOPE'} with neither guard"
+            )
+
+    assert not unaccounted, (
+        "these imports fail in SETUP on a platform without the module, so the test asserts "
+        "NOTHING there rather than skipping -- and a bare `import` of a POSIX-only module is "
+        "green on every local interpreter, so CI is the first thing that sees it. Put the "
+        "import in a `try` that catches `ImportError` where the test must still RUN on the "
+        "other platform, or skip the test where it genuinely cannot: "
+        f"{unaccounted}. For contrast, {len(accounted)} site(s) are accounted for: {accounted}"
+    )
+    assert accounted, (
+        f"no import site was classified at all, over declared modules {sorted(declared)} -- "
+        f"the collector has stopped matching the spelling it is looking for, which reads "
+        f"exactly like a clean sweep"
     )
 
 
@@ -56431,14 +56608,18 @@ def test_two_THREADS_cannot_be_inside_the_history_lock_at_once(tmp_path, monkeyp
     AND THE OS LOCK IS DISABLED HERE ON PURPOSE, which a control forced. On Linux `flock`
     already excludes two descriptors of the same process, so with it in place this passed
     with `_APPEND_LOCK` REMOVED -- a guard that could not fire for the property it names.
-    Raising from `flock` leaves the in-process lock as the only serialiser, which is also
+    Removing the OS lock leaves the in-process lock as the only serialiser, which is also
     exactly the state Windows reaches when its own lock is contended out.
-    """
-    import fcntl
 
-    monkeypatch.setattr(
-        fcntl, "flock", lambda *_a, **_k: (_ for _ in ()).throw(OSError(errno.ENOLCK, "nope"))
-    )
+    IT GOES THROUGH `_force_msvcrt` RATHER THAN TOUCHING `fcntl`, and that is T-48. The first
+    version opened with a bare `import fcntl`, so on Windows it failed in SETUP with
+    `ModuleNotFoundError` and asserted NOTHING -- a guard named after a Windows defect that
+    could not run on Windows. Matrix run 39294199128, red on one job of eight while the local
+    gate was green at 100%. The helper had carried the lesson in prose since the last time:
+    suppress the POSIX lock only where it exists. Calling it is what makes the lesson a
+    mechanism, and the same assertions now run on both platforms.
+    """
+    _force_msvcrt(monkeypatch, _FakeMsvcrt(fail_on_lock=True))
     inside = [0]
     peak = [0]
     guard = threading.Lock()
@@ -56510,12 +56691,13 @@ def test_a_CONTENDED_lock_is_not_reported_as_an_ABSENT_one(monkeypatch, tmp_path
     `EACCES` is used because it exists on every platform this runs on. On Windows the real
     arrival is `EDEADLOCK`, which `msvcrt.locking(.., LK_LOCK, ..)` raises after ten
     one-second attempts -- the exact path that cost a record in matrix run 39277901811.
-    """
-    import fcntl
 
-    monkeypatch.setattr(
-        fcntl, "flock", lambda *_a, **_k: (_ for _ in ()).throw(OSError(errno.EACCES, "busy"))
-    )
+    AND IT ARRIVES THROUGH THE FAKED `msvcrt`, not through `fcntl` -- T-48, the same repair as
+    its neighbour. Both lock attempts fail here, so `contended` is assigned twice and the
+    SECOND assignment is the one that decides the notice; that is why the errno has to be on
+    the msvcrt stub and not on the suppressed POSIX one.
+    """
+    _force_msvcrt(monkeypatch, _FakeMsvcrt(fail_on_lock=True, lock_errno=errno.EACCES))
     runprov.JsonlSink(tmp_path / "h.jsonl").append({"a": 1})
     err = capsys.readouterr().err
     assert "CONTENDED" in err, (
