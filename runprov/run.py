@@ -2279,6 +2279,16 @@ class Run:
         A SIZE THAT CANNOT BE READ DIGESTS. `stat` failing here means the real error is one line
         away in `describe`, which raises with the script name and the path; guessing *skip it*
         would turn an unreadable input into a silently undigested record.
+
+        THE REASON'S SHAPE IS PART OF THE RECORD, not a diagnostic. It is written to disk as
+        `note: not digested: <reason>` at both recording sites, and `CHANGELOG.md` promises a
+        note "giving the size and the limit, or naming the caller's choice". So the wording is
+        a contract and the rule is stated here rather than left to the f-string: **the
+        threshold reason LEADS WITH THE MEASURED SIZE and ends with the limit that rejected
+        it**, and the explicit-choice reason names the argument the caller passed. Decided
+        because a mutation run showed every DECISION on these lines killed and every REASON
+        surviving -- the existing assertion was `"digest_max_bytes" in why`, and a substring
+        test cannot kill a mutation that WRAPS the string rather than replacing it.
         """
         if asked is not None:
             return asked, "" if asked else "the caller passed digest=False"
