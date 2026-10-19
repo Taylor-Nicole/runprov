@@ -854,6 +854,18 @@ def _steps_summary(*, declared: bool, observed: bool) -> str:
     return "none"
 
 
+def _undigested_note(why: str) -> str:
+    """The `note` an undigested entry carries. ONE DEFINITION, used by both recording sites.
+
+    It was written twice -- `input()`'s entry and `write()`'s described output -- as the same
+    f-string 1 088 lines apart. Two copies of one rule agree the week they are typed; this
+    project's most-repaired defect is the week after. A mutation run found both and neither
+    was held by anything: the prefix reaches the RECORD, so a mangled one ships
+    `XXnot digested: XX<reason>` to every consumer that reads a note.
+    """
+    return f"not digested: {why}"
+
+
 class Run:
     """Collects provenance for a single run.
 
@@ -2356,7 +2368,7 @@ class Run:
                 #: THE REASON TRAVELS WITH THE ENTRY. `describe` says *whether* it digested;
                 #: only this method knows *why not*, and a record that says `digested: false`
                 #: without saying why makes the reader guess between a policy and a failure.
-                entry["note"] = f"not digested: {why}"
+                entry["note"] = _undigested_note(why)
             self.record["inputs"].append(entry)
             self._say("read ", entry.get("path", ""), entry.get("content_sha256"))
         except OSError as exc:
@@ -3444,7 +3456,7 @@ class Run:
                     wanted, why = self._digest_decision(target, self._digest_asked.get(q))
                     described = describe(target, digest=wanted)
                     if not wanted:
-                        described["note"] = f"not digested: {why}"
+                        described["note"] = _undigested_note(why)
                 except (OSError, ValueError) as exc:
                     # AN OUTPUT THAT CANNOT BE HASHED IS A FINDING, NOT A REASON TO LOSE
                     # THE RUN. Unguarded, this raise left `write()`, left `_finish()`, and
