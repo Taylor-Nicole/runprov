@@ -537,6 +537,19 @@ def _holds(path: pathlib.Path, want: str) -> bool:
         return False
 
 
+def _git_archive_note() -> str:
+    """The `note` a lock file carries when git already holds its bytes. ONE DEFINITION.
+
+    Found 2026-10-19 by the package-wide sweep for `run.py`'s unheld record notes -- the
+    FIFTH site writing this field inline, and the only one outside the four modules the
+    mutation campaign covered, so nothing had measured it. Two tests do assert this exact
+    text, which is why it was a false demand rather than a defect; it is given a definition
+    anyway so the rule over the field is uniform and its guard needs no exemption list.
+    Those tests keep spelling the literal, and must: they are the independent second side.
+    """
+    return "git already stores it"
+
+
 def archive_lockfiles(root: pathlib.Path, directory: pathlib.Path) -> list[dict[str, typing.Any]]:
     """Copy each lock file into `directory`, named by its own digest — unless git has it.
 
@@ -560,7 +573,7 @@ def archive_lockfiles(root: pathlib.Path, directory: pathlib.Path) -> list[dict[
     for rec in lockfiles(root):
         blob = _already_in_git(root, root / rec["name"])
         if blob:
-            out.append(dict(rec, archived=False, git_blob=blob, note="git already stores it"))
+            out.append(dict(rec, archived=False, git_blob=blob, note=_git_archive_note()))
             continue
         target = directory / f"lock-{rec['sha256'][:16]}-{rec['name']}"
         # D-05 of Audit D, and C-11's sibling one function along — the remedy was already

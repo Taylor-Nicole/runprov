@@ -866,6 +866,28 @@ def _undigested_note(why: str) -> str:
     return f"not digested: {why}"
 
 
+def _unhashable_note(exc: BaseException) -> str:
+    """The `note` an output that EXISTS but could not be hashed carries. ONE DEFINITION.
+
+    Same argument as `_undigested_note`, and the same mutation run made it twice: the prefix
+    reaches the RECORD, so a mangled one ships `XXexists but could not be hashed: XX<exc>` to
+    every consumer that reads a note. That repair was scoped to the `not digested` family
+    because the triage had reached it; these two sites write the same FIELD and were left
+    inline, which is why `"note"` -> `"XXnoteXX"` and the text itself both survived on this
+    branch and on MISSING. The field is what needed sweeping, not the family.
+    """
+    return f"exists but could not be hashed: {exc}"
+
+
+def _unwritten_note() -> str:
+    """The `note` a registered output that was never written carries. ONE DEFINITION.
+
+    A no-argument function rather than a constant, so that every value under a `"note"` key
+    in this module has the same shape and the structural guard needs no list of exceptions.
+    """
+    return "registered but never written"
+
+
 class Run:
     """Collects provenance for a single run.
 
@@ -3497,7 +3519,7 @@ class Run:
                     described = {
                         "path": _posix(q),
                         "kind": "UNHASHABLE",
-                        "note": f"exists but could not be hashed: {exc}",
+                        "note": _unhashable_note(exc),
                     }
                     # Announced, unlike MISSING, because the two degrade differently: a
                     # MISSING output is a file the user can see is absent, while this one
@@ -3530,7 +3552,7 @@ class Run:
                 # omission. Dropping it here is how a stage reports success having
                 # produced nothing.
                 self.record["outputs"].append(
-                    {"path": _posix(q), "kind": "MISSING", "note": "registered but never written"}
+                    {"path": _posix(q), "kind": "MISSING", "note": _unwritten_note()}
                 )
         # OUTSIDE A BLOCK ONLY. Inside one, `__exit__` does this after the work, so a module
         # imported halfway through is still counted -- doing it here as well would hash every
