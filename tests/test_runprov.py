@@ -11144,18 +11144,41 @@ def _hist(tmp_path, rows):
     return p
 
 
-def _rec(uid, script, started, ins=(), outs=()):
-    return {
+#: A sentinel, because `finished=None` has to MEAN "this record carries no `finished_utc`" --
+#: the state a run that never finished leaves behind, and the only state in which `_lineage`'s
+#: fallback to `started_utc` is reachable at all.
+_SAME_AS_STARTED = object()
+
+
+def _rec(uid, script, started, finished=_SAME_AS_STARTED, ins=(), outs=()):
+    """A history row. `finished` DEFAULTS TO `started` and that default was a blind spot.
+
+    Every fixture in this file used to get `finished_utc == started_utc`, which makes
+    `_lineage`'s `r.get("finished_utc") or r.get("started_utc")` return the same value
+    whichever arm it reads -- so rule 2 ("only a producer that had FINISHED") and "started
+    before" were THE SAME RULE in every scenario the suite had. The test named
+    `test_a_producer_that_finished_after_the_consumer_started_is_not_one` could not test it:
+    its edges are byte-identical with and without `finished_utc`. A mutation run found both
+    reads surviving, and the fixture was the reason.
+
+    The default is UNCHANGED so no existing caller moves; all 14 call sites pass keywords
+    past the third argument, which is why the parameter can sit here at all.
+    """
+    record = {
         "schema": "runprov.history.v2",
         "run_uid": uid,
         "run_id": "r",
         "script": script,
         "started_utc": started,
-        "finished_utc": started,
         "status": "ok",
         "inputs": [{"path": p, "sha256": s, "content_sha256": s} for p, s in ins],
         "outputs": [{"path": p, "sha256": s, "content_sha256": s} for p, s in outs],
     }
+    if finished is _SAME_AS_STARTED:
+        record["finished_utc"] = started
+    elif finished is not None:
+        record["finished_utc"] = finished
+    return record
 
 
 def test_lineage_joins_on_the_digest_not_the_path(tmp_path):
@@ -56188,4 +56211,101 @@ def test_every_RECORD_FIELD_the_timeline_renderer_READS_must_REACH_the_page():
         f"depend on them: {dead}. Either the read is dead, or -- and this is what the mutation "
         f"campaign found -- the key it reads by no longer matches the field the record carries, "
         f"in which case every run renders a placeholder where a value belongs."
+    )
+
+
+def test_a_producer_that_started_before_but_FINISHED_after_the_consumer_is_not_one(tmp_path):
+    """Rule 2, asserted for the first time: *only a producer that had FINISHED*.
+
+    `_lineage` computes `when = str(r.get("finished_utc") or r.get("started_utc") or "")` and
+    admits a candidate when `when <= consumer's started`. The rule in the code's own comment
+    is about FINISHING, and until this test every fixture in this file got
+    `finished_utc == started_utc` from `_rec`'s default -- so rule 2 and "started before" were
+    THE SAME RULE and the neighbouring test named for rule 2 could not test it. Measured: that
+    fixture's edges are byte-identical with and without `finished_utc`.
+
+    THE SCENARIO IS THE ONE THE RULE EXISTS FOR, and it is ordinary: a long build that was
+    already running when a later run read the file. `SLOW` starts first and finishes last, so
+    at the moment `READER` started there was nothing of SLOW's to read. An edge here would
+    publish a dependency that could not have existed, in the graph `lineage --format json`
+    hands a consumer.
+    """
+    rows = [
+        _rec(
+            "SLOW",
+            "build",
+            "2026-01-01T00:00:00Z",
+            finished="2026-01-09T00:00:00Z",
+            outs=[("x", "c" * 64)],
+        ),
+        _rec("READER", "use", "2026-01-05T00:00:00Z", ins=[("x", "c" * 64)]),
+    ]
+    g = cli._lineage([json.loads(x) for x in _hist(tmp_path, rows).read_text().splitlines()])
+    assert ("SLOW", "READER") not in g["edges"], (
+        "SLOW had not finished when READER started, so READER cannot have read its bytes -- "
+        "this edge claims a dependency that could not have existed"
+    )
+    assert g["edges"] == [] and g["resolvable"] == 0
+    assert g["orphan"] == 1, (
+        "and the read is an ORPHAN rather than silently dropped: the history does not say "
+        "where those bytes came from, which is a finding and not an omission"
+    )
+
+
+def test_a_producer_with_no_finish_time_is_placed_by_its_START_not_by_nothing(tmp_path):
+    """The fallback arm, which is only reachable when `finished_utc` is ABSENT.
+
+    AN ORDERED FALLBACK'S LATER ARMS ARE UNREACHABLE WHILE THE EARLIER ONES ARE PRESENT, so
+    the previous test cannot exercise this one: with any `finished_utc` at all, the
+    `started_utc` arm is short-circuited. A run that was killed, or that crashed hard enough
+    not to record its own ending, leaves exactly this record.
+
+    WHAT GOES WRONG IF THE FALLBACK IS LOST: `when` becomes `""`, which sorts before every
+    timestamp and is therefore `<=` every consumer's start. So EVERY such producer becomes a
+    candidate for EVERY reader -- a record missing one field would start manufacturing edges
+    across the whole history.
+    """
+    rows = [
+        _rec("LATE", "build", "2026-01-07T00:00:00Z", finished=None, outs=[("x", "c" * 64)]),
+        _rec("READER", "use", "2026-01-05T00:00:00Z", ins=[("x", "c" * 64)]),
+    ]
+    history = [json.loads(x) for x in _hist(tmp_path, rows).read_text().splitlines()]
+    assert "finished_utc" not in history[0], (
+        "the fixture must really omit it, or this test exercises the first arm again and the "
+        "fallback stays unasserted"
+    )
+    g = cli._lineage(history)
+    assert ("LATE", "READER") not in g["edges"], (
+        "LATE started AFTER READER did, so placing it by its start time excludes it. An edge "
+        "here means `when` collapsed to the empty string, which precedes every timestamp"
+    )
+    assert g["edges"] == [] and g["orphan"] == 1
+
+
+def test_exporting_one_sidecar_names_the_crate_after_the_SCRIPT_that_ran(
+    tmp_path, monkeypatch, capsys
+):
+    """The single-sidecar export's title carries the step name, not the word `run`.
+
+    `_export` builds `f"{rec.get('script', 'run')} — one run"` and hands it to `render`. The
+    fallback exists for a sidecar that never recorded a script; a reader who gets a crate
+    titled `run — one run` cannot tell which of those two happened.
+
+    SCOPED TO ro-crate ON PURPOSE, and that is a measurement rather than an omission:
+    `render` passes `name` to `to_ro_crate` and `to_prov_json` IGNORES IT -- two different
+    names give byte-identical `prov` output. Asserting the title there would be a false
+    demand on a format that does not carry one.
+    """
+    monkeypatch.chdir(tmp_path)
+    _two_stage(tmp_path)
+    (tmp_path / "runs.jsonl").unlink()  # one sidecar, no history -- the single-run path
+    capsys.readouterr()
+    assert cli.main(["export", "out/step2.prov.json", "--format", "ro-crate"]) == 0
+    crate = json.loads(capsys.readouterr().out)
+    titles = [v for v in json.dumps(crate, ensure_ascii=False).split('"') if "one run" in v]
+    assert titles, "the crate carries no '— one run' title at all, so this test reads nothing"
+    assert titles == ["step2 — one run"], (
+        f"the crate is titled {titles} instead of after the script that ran. `run — one run` "
+        f"is the fallback for a sidecar with no `script`, and a reader cannot tell the two "
+        f"apart from the title alone."
     )
