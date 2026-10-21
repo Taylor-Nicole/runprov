@@ -8915,6 +8915,95 @@ def test_no_library_module_calls_bare_print():
     )
 
 
+def test_a_once_per_process_latch_is_declared_UNTRIPPED():
+    """Every module-level flag a function sets `True` must be initialised `False`.
+
+    THE MUTANTS THAT SURVIVED, and they are the whole reason this exists (tier-1 re-check,
+    2026-10-21): `_ATEXIT_REGISTERED = True`, `_IMPLICIT_WARNED = True` and
+    `_NO_REPO_WARNED = True` in `run.py`, and `_CONFIGURED = True` in `project.py`. A latch
+    that starts TRIPPED means the action it guards NEVER HAPPENS -- `atexit` never registers
+    `_warn_unpersisted`, so a run that was armed to record and never persisted exits in
+    silence, which is the one case that diagnostic exists for; and neither provenance
+    warning is ever printed by any process.
+
+    WHY 1 500 TESTS COULD NOT SEE IT, which is the half that generalises. Every test of
+    these warnings sets the latch to `False` first -- it has to, or it would depend on the
+    order the suite happens to run in -- so EVERY ONE OF THEM IS IMMUNE TO THE MODULE-LEVEL
+    VALUE BY CONSTRUCTION. `_IMPLICIT_WARNED` has three such tests and the mutant survived
+    all three. A FIXTURE THAT NORMALISES STATE HIDES A DEFECT IN THAT STATE, and the only
+    guard that can see it is one reading the DECLARATION instead of the behaviour.
+
+    THE POPULATION IS DERIVED, NOT LISTED: a name some function declares `global` and
+    assigns a bare `True`. A fifth latch is covered the day it is added and there is no list
+    to extend. Measured 2026-10-21 before this was written: four of them, in two modules,
+    every one already `False` -- so the assertion is satisfiable and needs no exemption.
+
+    `is False` RATHER THAN `not value`, deliberately. The `= None` variant of each of those
+    mutations is behaviourally IDENTICAL to `False`, both being falsy, so this line kills it
+    on the TYPE claim and not the behaviour claim -- which is the honest reading, because a
+    latch typed `None` is a defect only `mypy --strict` and this assertion can see.
+    """
+    census: dict[str, int] = {}
+    wrong: dict[str, str] = {}
+    for mod in sorted((REPO / "runprov").glob("*.py")):
+        tree = ast.parse(mod.read_text(encoding="utf-8"))
+        declared_at_module_level = {
+            node.targets[0].id: node.value
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        }
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            globals_here = {
+                name
+                for stmt in ast.walk(func)
+                if isinstance(stmt, ast.Global)
+                for name in stmt.names
+            }
+            for stmt in ast.walk(func):
+                if not (
+                    isinstance(stmt, ast.Assign)
+                    and len(stmt.targets) == 1
+                    and isinstance(stmt.targets[0], ast.Name)
+                    and stmt.targets[0].id in globals_here
+                    and isinstance(stmt.value, ast.Constant)
+                    and stmt.value.value is True
+                ):
+                    continue
+                name = stmt.targets[0].id
+                census[mod.name] = census.get(mod.name, 0) + 1
+                initial = declared_at_module_level.get(name)
+                if not (isinstance(initial, ast.Constant) and initial.value is False):
+                    wrong[f"{mod.name}:{name}"] = (
+                        ast.unparse(initial)
+                        if initial is not None
+                        else "<not assigned at module level at all>"
+                    )
+    #: THE NAMED DEFECT FIRST, THE CENSUS SECOND, and the order was the other way round
+    #: until it was tested. Planting a FIFTH latch that starts tripped reported *"the census
+    #: moved: {'check.py': 1, ...}"* -- red for the right reason and accusing the wrong
+    #: thing, sending the reader to update a number when a real latch was broken. An
+    #: ordered pair of assertions makes a defect unnameable whenever the census moves with
+    #: it, which for a NEW latch is always.
+    assert wrong == {}, (
+        "a once-per-process latch initialised to anything but False never lets the action "
+        f"it guards run at all: {wrong}"
+    )
+    #: PER MODULE, AND AN EQUALITY. A matcher that silently yields nothing passes forever,
+    #: and a floor over a mixed population is carried by whichever member still matches --
+    #: breaking the walk for `run.py`'s three while `project.py`'s one survived would keep
+    #: a `>= 1` green. Nothing else in this repository can compute this number, so the
+    #: constant IS the instrument: a human re-reads it when a latch is added, which is rare
+    #: and deliberate. It fires on a latch ADDED CORRECTLY, which is its whole job.
+    assert census == {"project.py": 1, "run.py": 3}, (
+        f"the once-per-process latch census moved: {census}. Adding or removing a latch is "
+        "a deliberate act; confirm the new one starts False and update this number."
+    )
+
+
 #: THE PACKAGE'S WHOLE WRITER SURFACE, DECLARED ONCE AND COMPARED BY EQUALITY
 #: [Audit N, writer-4 + writer-8]. `_report._write`'s docstring used to enumerate this in prose
 #: -- *"all 27 `diagnostic()` calls in `run.py`, all 3 in `sinks.py`"* -- which OMITTED
