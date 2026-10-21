@@ -35981,25 +35981,47 @@ def test_every_adr_is_listed_in_the_adr_index():
     # fresh-`[Unreleased]` trap does not bite: CONTRIBUTING step 2 says in bold not to open one
     # yet, so on the tag commit the first heading IS `[<version>] — <day>` and this fires exactly
     # then.
-    #: THE SIBLING'S OWN REACH, AND IT IS ONE REGEX [L-12, L-18]. This scan read
-    #: `**Status:**` strictly and saw **8 of 21 ADRs** — while `declared` thirty lines above,
-    #: which REQUIRES every ADR to have a status, is loose and case-insensitive and reads all
-    #: 21. Two instruments for one line, one directory over from K-37. The 13 it could not see
-    #: are ADR-0003 … ADR-0015, which use the inline house style
+    #: THE SIBLING'S OWN REACH, AND IT IS ONE REGEX [L-12, L-18].
+    #:
+    #: HISTORY, IN THE PAST TENSE BECAUSE IT IS OVER. When L-18 was filed this scan read
+    #: `**Status:**` strictly and saw **8 of the 21 ADRs that then existed** — while `declared`
+    #: thirty lines above, which REQUIRES every ADR to have a status, was loose and
+    #: case-insensitive and read all 21. Two instruments for one line, one directory over from
+    #: K-37. The 13 it could not see were ADR-0003 … ADR-0015, which used the inline house style
     #: `Date: … · Status: accepted · Ledger: …`, and five spellings the loose check accepts made
-    #: this one fail OPEN in silence — including a status with no trailing blank line, which
-    #: `\Z` is why the alternation is here.
+    #: this one fail OPEN in silence — including a status with no trailing blank line, which is
+    #: why `\Z` is in the alternation. L-12's BOUNDING CLAIM WAS WRONG and is recorded rather
+    #: than repeated: it said the next ADRs to be built were in the invisible set, when 0019,
+    #: 0020 and 0021 all used the covered spelling.
     #:
-    #: L-12's BOUNDING CLAIM WAS WRONG and is recorded rather than repeated: it said the next
-    #: ADRs to be built are in the invisible set. 0019, 0020 and 0021 all use the COVERED
-    #: spelling, and the 13 invisible are all shipped decisions none of which will need a
-    #: release-state status cleared again — so the live exposure is only a NEW ADR written in
-    #: the old house style, which is why the severity is low and the fix is still one line.
+    #: RE-MEASURED 2026-10-21, AND BOTH HALVES OF THE OLD GAP ARE GONE. There are now **22**
+    #: ADRs, not 21. `_status_block` reads **22 of 22**. And the documents have ALSO moved since
+    #: L-18: **every one of the 22 now carries `- **Status:**` at line start and NONE carries the
+    #: inline `· Status:` style**, so even a strict scan would miss nothing today. The sentence
+    #: that used to stand here — *"no ADR is reformatted; the regex moves, the documents do not"*
+    #: — was true of L-18's own edit and false about the world soon after, and a reader reaches
+    #: for a comment like this precisely when deciding whether the guard still applies. It cost
+    #: exactly that on 2026-10-21: this block was read as a LIVE gap, reported as one, and
+    #: Taylor asked for a one-line fix that had already been landed twice over.
     #:
-    #: NO ADR IS REFORMATTED, which is the half that makes this cheap: the regex moves, the
-    #: documents do not. The shared exposure is stated: like its sibling, this anchors on the
-    #: first `Status` in the file, and both would read an earlier prose "status" if one appeared
-    #: above the line. Measured on all 21 today, every match lands on the real status line.
+    #: WHAT PROTECTS THE REACH IS `assert m` ABOVE, AND **NOT** `unreadable` BELOW, WHICH
+    #: CANNOT FIRE [measured 2026-10-21]. Both regexes require the literal word `Status`, and
+    #: `_status_block`'s tail alternation ends at a blank line OR `\Z`, so once the word is
+    #: present it ALWAYS matches. There is therefore no text where `declared` matches and
+    #: `_status_block` returns `None`: the only ADR `unreadable` could name is one with no
+    #: `Status` at all, and `assert m` thirty lines above has already refused that. `unreadable`
+    #: is a correct decision behind an earlier guard on the same condition — dead weight with
+    #: an accurate label, which is the worst kind to audit because its prose argues for it.
+    #: Recorded rather than quietly deleted, because the assertion it SHOULD make is a
+    #: different one and is not yet written: `_status_block` stops at the first blank line, so
+    #: a status written as two paragraphs is TRUNCATED and a `not yet released` in the second
+    #: would be invisible while this guard stayed green. That is reachable today and is the
+    #: live gap; the spelling census never was. Filed for 0.10.0, out of 0.9.0's scope.
+    #:
+    #: The shared exposure is stated: like its sibling, this
+    #: anchors on the first `Status` in the file, and both would read an earlier prose "status"
+    #: if one appeared above the line. Measured on all 22 today, every match lands on the real
+    #: status line.
     def _status_block(text: str) -> str | None:
         found = re.search(r"Status[:*\s]*(.*?)(?:\n[ \t]*\n|\Z)", text, re.S | re.I)
         return found.group(1) if found else None
