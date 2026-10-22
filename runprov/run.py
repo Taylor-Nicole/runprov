@@ -1837,6 +1837,15 @@ class Run:
             # that bug were written and caught here -- a filter too broad reports nothing and
             # looks exactly like one that works.
             #
+            # AND THAT REASONING IS ABOUT THE PACKAGE'S OWN PATHS ONLY. It was applied to a
+            # second population it had never been reasoned about -- a registered directory
+            # INPUT -- where a tree hash genuinely does cover every file it read, so the files
+            # came back as unregistered reads and the warning said they were not in a pin that
+            # carried them [G8, 2026-10-22]. The repair is NOT a wider exclusion here: a tree
+            # digest covers the files that existed when it was taken, so excluding the subtree
+            # would hide a file created after registration and then read. It is `watch.our_reads`,
+            # which stops attributing the opens `hashing` makes on a caller's behalf.
+            #
             # The two directories below ARE dedicated to this package by construction (the
             # snapshot store and the terminal-capture store are paths the user hands us for
             # our own output), so they are excluded wholesale.

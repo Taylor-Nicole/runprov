@@ -52,6 +52,7 @@ from __future__ import annotations
 __all__ = ["content_digest", "describe", "sha256"]
 
 import datetime as dt
+import functools
 import gzip
 import hashlib
 import os
@@ -62,6 +63,11 @@ import tarfile
 import typing
 import zipfile
 import zlib
+
+# THE ONLY INTRA-PACKAGE IMPORT IN THIS MODULE, and it cannot cycle: `watch` imports nothing
+# from `runprov` at all (contextlib, os, pathlib, sys, threading, typing). Checked rather than
+# assumed, because `hashing` is imported early by almost everything here.
+from .watch import our_reads
 
 # Volatile stamps as HEADER COMMENTS.
 VOLATILE = re.compile(r"^#\s*(built_utc|generated_utc|run_utc|built_at)\b")
@@ -132,6 +138,35 @@ _ENTRY_WHOLE_MAX = 1 << 20
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
 
 
+_P = typing.ParamSpec("_P")
+_R = typing.TypeVar("_R")
+
+
+def _our_read(fn: typing.Callable[_P, _R]) -> typing.Callable[_P, _R]:
+    """Every file this function opens is opened BY THE PACKAGE, on a caller's behalf.
+
+    So the unregistered-read watch must not attribute those opens to the run; see
+    `watch.our_reads` for the defect this closes and for why the repair is here and not in
+    the filter.
+
+    A DECORATOR RATHER THAN A `with` AT EACH CALL SITE, because the call sites are a list and
+    a list drifts: `describe` reads a directory through a comprehension over `sha256` and a
+    single file through `sha256` plus `content_digest`, and the next read added to it would
+    be unguarded. Decorating the two readers covers every caller of them instead -- including
+    `content_digest`'s five fallbacks into `sha256`, which is why `our_reads` is re-entrant.
+    `test_every_public_reader_in_hashing_is_marked_as_the_packages_own` holds the claim that
+    these two are the only public functions here that open a file.
+    """
+
+    @functools.wraps(fn)
+    def reader(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with our_reads():
+            return fn(*args, **kwargs)
+
+    return reader
+
+
+@_our_read
 def sha256(path: str | pathlib.Path, chunk: int = 1 << 20) -> str:
     """Streamed, so multi-GB inputs are fine."""
     # COERCED ONCE, AT THE TOP, exactly as `Run._sidecar_name` does. Annotated
@@ -148,6 +183,7 @@ def sha256(path: str | pathlib.Path, chunk: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
+@_our_read
 def content_digest(path: str | pathlib.Path, chunk_lines: int = 8192) -> str | None:
     """SHA-256 with volatile stamps removed. Binary falls back to the raw hash.
 

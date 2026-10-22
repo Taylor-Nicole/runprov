@@ -128,6 +128,51 @@ Two implementation notes worth keeping, because both were bugs first:
   are described in `write()`. `_pending` has to be consulted too, or every correct output is
   reported as an unregistered read.
 
+## Amended 2026-10-22 — the observer must not attribute its own reads [G8]
+
+The second implementation note above is correct about the subject it was written for and was
+applied to a subject it was not. *"Exclude the package's own files as FILES, never as
+directories"* is about `run_log=` and `provenance=`, which routinely point at the project root;
+excluding a parent there would disable the whole check, and that is why the rule exists.
+
+A **registered directory input** is a different population. `run.input(DIR)` hashes the tree, so
+`hashing` opens every file under it — and the audit hook saw those opens and reported them as the
+caller's unregistered reads. Measured on 0.9.0:
+
+| | |
+|---|---|
+| the record said | `unregistered_reads: ["ckpt/config.json", …]` |
+| the pin said | `bb1a9a79e5328600  ckpt`, the `sha256_tree` over exactly those bytes |
+| the warning said | *"NOT in the record and NOT in the pin"* — **false** |
+| `no_unregistered_reads` said | **VIOLATED**, `GATE: VIOLATED (exit 1)`, for a correct run |
+| scope | a directory input **under the project root**, with digest on. Outside the root, clean; with `digest=False`, clean — the negative control that named the cause |
+
+Worse than a noisy warning: the remedy it offered was `warn_unregistered_reads=False`, which this
+ADR's own `blind` note records as the route to a vacuous green, and which is PROJECT-level. Taking
+the advice would trade one false VIOLATED for a permanent silent MET.
+
+**Decision: suppress attribution while the package itself is reading, and nowhere else.**
+`watch.our_reads()` is a re-entrant, per-thread depth counter; the audit hook returns early while
+it is raised; `hashing.sha256` and `hashing.content_digest` carry `@_our_read`, and those two are
+the only public functions in that module that open a file — asserted from the AST rather than
+listed, so a new public reader goes red on arrival.
+
+**The rejected repair, and why, because it is the one that looks obvious.** Excluding a registered
+directory's whole subtree in `unregistered`'s filter would have been unsound: a tree digest covers
+the files that existed **when it was taken**, so a file created after registration and then read
+is not in the pin, and a subtree exclusion would have hidden it. The test for this carries that
+exact case as its control and requires it to still be reported.
+
+**Per-thread, not per-process**, because a read is attributable to whoever made it: a module-level
+counter would blind the watch to another thread's genuine omissions for as long as a hash took,
+and this package already runs two pump threads during capture.
+
+**What this does not reach.** `sys.addaudithook` callbacks are invisible to `coverage.py`, so
+`tools/bench.py` returns **VOID** for a mutation inside the hook — neither control 6 (executed)
+nor control 6s (read) can fire. The red was demonstrated by hand instead, with the restore proved
+by digest, and the AST guard was benched normally and reported CAUGHT. That is a third entry
+beside the harness's known blind spots, a subprocess read and a docstring subject.
+
 ## Superseded recommendation, kept for the record
 
 Do **not** implement before 0.1.0. The package should ship doing one thing that it does

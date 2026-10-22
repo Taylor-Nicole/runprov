@@ -48,9 +48,11 @@ from __future__ import annotations
 # It is one week old, and freezing a surface on it now would freeze a first draft.
 __all__: list[str] = []
 
+import contextlib
 import os
 import pathlib
 import sys
+import threading
 import typing
 
 #: Suffixes that are CODE or bookkeeping rather than data. Reading these is not a provenance
@@ -132,7 +134,11 @@ class _Watcher:
             pass
 
     def _hook(self, event: str, args: tuple[typing.Any, ...]) -> None:
-        if event != "open" or not self._active:
+        # `_QUIET.depth` LAST OF THE THREE, because it is the only one that reads a
+        # thread-local and the two cheap checks reject almost every event. The docstring above
+        # promises this hook costs "an `is` check per open" when nothing is attached, and that
+        # stays true: the third term is not evaluated unless a run is listening.
+        if event != "open" or not self._active or _QUIET.depth:
             return
         try:
             path = args[0]
@@ -247,6 +253,64 @@ def own(*paths: str | pathlib.Path | None) -> None:
             _OURS.add(str(pathlib.Path(path).resolve()))
         except _UNRESOLVABLE:  # the same tuple, for the same reason; see its definition
             _OURS.add(str(path))
+
+
+#: PER THREAD, NOT PER PROCESS, and not a module-level int. A read is attributable to whoever
+#: made it, so suppressing attribution has to be scoped to the thread doing the hashing --
+#: otherwise one thread registering an input would blind the watch to another thread's genuine
+#: unregistered reads for as long as the hash took. A plain `int` would also not be safe to
+#: increment from two threads, and this package already runs two pump threads during capture.
+class _Quiet(threading.local):
+    """The per-thread suppression depth. A CLASS, so the attribute has a type.
+
+    `getattr(_QUIET, "depth", 0)` on a bare `threading.local` was the first version and
+    `mypy --strict` rejected it -- it resolves the attribute through `threading.local`'s own
+    `__getattribute__` and then objects to the default's type. A subclass with a class-level
+    default is the idiom: the class attribute is what every thread reads until that thread
+    writes its own, so the fallback is typed, per-thread and free of a `getattr` call in a hook
+    that runs on every `open` in the process.
+    """
+
+    depth: int = 0
+
+
+_QUIET = _Quiet()
+
+
+@contextlib.contextmanager
+def our_reads() -> typing.Iterator[None]:
+    """Inside this block, opens are the PACKAGE's own and are attributed to nobody.
+
+    THE DEFECT THIS CLOSES [G8, measured 2026-10-22 on 0.9.0]. `Run.input(DIR)` hashes the
+    tree, so `hashing` opens every file in it -- and the audit hook saw those opens and
+    reported them as the CALLER's unregistered reads. The warning then said the files were
+    *"NOT in the record and NOT in the pin"* while the pin carried the `sha256_tree` that
+    covers exactly those bytes, and `no_unregistered_reads` returned VIOLATED, exit 1, for a
+    run that had registered its input correctly.
+
+    THE OBSERVER MUST NOT ATTRIBUTE ITS OWN READS. That is the whole rule, and it is why the
+    repair sits here rather than in `unregistered`'s filter. Excluding a registered
+    directory's subtree instead would be UNSOUND: a tree digest covers the files that existed
+    when it was taken, so a file created after registration and then read is not in the pin,
+    and a subtree exclusion would hide it. Suppressing only while the package itself reads
+    leaves that case reported, which is what the test for this asserts.
+
+    `own()` is the sibling for the other direction -- a path the package WROTE -- and this is
+    deliberately not an addition to it: `_OURS` is a set of paths, and its own comment promises
+    it "does not grow with the number of READS, which is the thing that grows without limit
+    here". A 40 GB reference tree would have broken that promise. A depth counter is O(1).
+
+    RE-ENTRANT, so nesting is free: `content_digest` falls back to `sha256` on five different
+    exceptions, and both are decorated.
+    """
+    depth = _QUIET.depth
+    _QUIET.depth = depth + 1
+    try:
+        yield
+    finally:
+        # RESTORED, not decremented. An exception between the two assignments cannot leave the
+        # counter permanently raised, which would silence the watch for the rest of the thread.
+        _QUIET.depth = depth
 
 
 def unregistered(

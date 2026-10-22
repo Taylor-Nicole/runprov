@@ -9,6 +9,29 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed
+
+**A registered directory input is no longer reported as an unregistered read, and the policy
+gate no longer refuses a correct run.** ADR-0002, amended. `run.input(DIR)` hashes the tree, so
+the package opens every file under it — and the audit hook attributed those opens to the caller.
+Measured on 0.9.0: the record carried `unregistered_reads` naming the files while the pin carried
+the `sha256_tree` over exactly those bytes, the terminal warning said they were *"NOT in the
+record and NOT in the pin"*, and `no_unregistered_reads` returned **VIOLATED, exit 1**. Scoped by
+measurement to a directory input under the project root with digest on; outside the root and with
+`digest=False` it was already clean, which is the control that named the cause.
+
+`watch.our_reads()` now suppresses attribution while the package itself is reading — re-entrant,
+per thread — and `hashing.sha256` and `hashing.content_digest` carry `@_our_read`. Those two are
+the only public functions in that module that open a file, asserted from the AST rather than
+listed, so a new public reader goes red on arrival.
+
+**Not fixed by excluding the directory's subtree**, which is the obvious repair and is unsound: a
+tree digest covers the files that existed when it was taken, so a file created after registration
+and then read is not in the pin, and a subtree exclusion would have hidden it. The test carries
+that case as its control and requires it to still be reported. The old warning's remedy made it
+worse than noise — `warn_unregistered_reads=False` is project-level and is this ADR's own named
+route to a vacuous green, so taking the advice traded one false VIOLATED for a permanent MET.
+
 ### Added
 
 **Documentation: a local model's weights are an input like any other, and the two cases that
@@ -22,7 +45,10 @@ in the same size class as a reference genome.
 
 The section states what registration does **not** buy, in the same words the package uses
 about a declined digest: it names which weights ran, and it does not make a sampled step
-reproducible. A model that is not hosted locally has no file to digest and no stable served
+reproducible. (Written while the directory case under the project root still carried the defect
+the **Fixed** entry above describes; that is why the example places the weights in a cache
+directory. Both placements are now clean, and the example stays as it is because a cache
+directory is where a checkpoint actually lives.) A model that is not hosted locally has no file to digest and no stable served
 version, so the honest ceiling there is *what was asked and what came back*; an agent loop has
 no call site to register at all, and its transcript is recordable as an artifact rather than
 as a re-runnable step. **A digest may be declined but never invented, and reproducibility may

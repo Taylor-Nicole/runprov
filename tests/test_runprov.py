@@ -5433,6 +5433,135 @@ def test_the_watcher_can_be_turned_off(tmp_path, monkeypatch, capsys):
     assert "UNREGISTERED READ" not in capsys.readouterr().err
 
 
+def test_the_packages_own_hashing_reads_are_not_the_users_unregistered_reads(tmp_path, capsys):
+    """G8. Registering a DIRECTORY hashes every file in it, and those reads are the PACKAGE's.
+
+    The defect, measured 2026-10-22 on 0.9.0: `run.input(DIR)` walked the tree, the audit hook
+    saw the walk's own `open` calls, and the four files came back as `unregistered_reads` with a
+    terminal warning saying they were *"NOT in the record and NOT in the pin"* -- while the pin
+    carried the `sha256_tree` that covers exactly those bytes. One record asserting both halves
+    of a contradiction, and `no_unregistered_reads` then returned VIOLATED, exit 1, for a run
+    that registered its input correctly.
+
+    WHY THE OBSERVER AND NOT THE FILTER. The filter could have excluded a registered directory's
+    whole subtree, which is what the first draft of the repair did. It is unsound: a tree digest
+    covers the files that existed when it was taken, so a file CREATED after registration and
+    then read is not in the pin, and excluding the subtree would have hidden it. The second case
+    below is that exact read, and it must still be reported -- which is why the fix suppresses
+    attribution only while the package itself is doing the reading.
+
+    The general statement is bigger than directories: the hook sees every read `hashing` makes,
+    and those reads are invisible only when the hashed path happens to EQUAL the registered one.
+    A single file masks itself that way. A directory is where the two differ.
+    """
+    proj = _project(tmp_path)
+    tree = tmp_path / "ckpt"
+    tree.mkdir()
+    for name in ("config.json", "a.bin", "b.bin"):
+        (tree / name).write_bytes(b"x" * 64)
+
+    with runprov.Run("registers-a-tree", project=proj, provenance=tmp_path / "p.json") as run:
+        run.input(tree)
+
+    rec = _lines(tmp_path / "runs.jsonl")[0]
+    # ABSENT, not empty: the field follows the record's omit-when-clean rule, so asserting
+    # `== []` would pass on a version that stopped omitting it and tell us nothing.
+    assert "unregistered_reads" not in rec, (
+        f"the tree walk's own reads were blamed on the caller: {rec.get('unregistered_reads')}"
+    )
+    # `sha256`, NOT `sha256_tree`. The HISTORY projects both digests through one contract, so a
+    # directory's tree digest arrives under `sha256` with `content_sha256: null` beside it, while
+    # the sidecar record spells it `sha256_tree`. Asserting the sidecar's spelling here raised
+    # `KeyError` and is how this comment got written.
+    entry = rec["inputs"][0]
+    assert entry["kind"] == "directory" and entry["sha256"], (
+        "the subject of this test is a DIGESTED directory; without a tree hash the walk never "
+        f"read anything and the test would be vacuous: {entry}"
+    )
+    assert "UNREGISTERED READ" not in capsys.readouterr().err
+
+    # THE CONTROL, AND IT IS THE REASON FOR THE CHOSEN REPAIR. A file created after the
+    # directory was hashed is NOT in the tree digest, so reading it without registering it is a
+    # genuine omission and must still be reported. A subtree exclusion would have swallowed it.
+    with runprov.Run("reads-a-newcomer", project=proj, provenance=tmp_path / "q.json") as run:
+        run.input(tree)
+        later = tree / "arrived-after-the-hash.bin"
+        later.write_bytes(b"y" * 64)
+        later.read_bytes()
+
+    rec2 = _lines(tmp_path / "runs.jsonl")[1]
+    assert rec2["unregistered_reads"] == ["ckpt/arrived-after-the-hash.bin"], (
+        "suppressing the package's own reads must not suppress the user's: "
+        f"{rec2.get('unregistered_reads')}"
+    )
+
+
+def test_every_public_reader_in_hashing_is_marked_as_the_packages_own():
+    """`_our_read`'s docstring claims `sha256` and `content_digest` are the only PUBLIC
+    functions in `hashing` that open a file. That is a present-tense claim about the tree, so
+    it is asserted rather than written down -- `guard-the-instruments` 4: a claim like this
+    inside an instrument is a check waiting to be written.
+
+    DERIVED, NOT LISTED. The population is every `FunctionDef` in the module whose body
+    contains an opening call, computed from the AST; the decision is per function; and nothing
+    may be left over. A new public reader added without the decorator goes red by construction,
+    which a list of two names could not do.
+
+    WHAT IT DOES NOT HOLD, stated because the gap is real: a PRIVATE opener is accepted on the
+    grounds that it is reachable only from this module, and that reachability is not computed
+    here. `_gzip_digest`, `_zip_digest`, `_tar_digest` and `_stream_digest` are all reached from
+    `content_digest`, which is decorated; a private opener wired to a NEW public entry point
+    would be caught by that entry point's own row, not by this sentence.
+    """
+    import ast
+
+    src = (REPO / "runprov" / "hashing.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    #: The forms the language offers for "this opens a file", not the one form that came to
+    #: mind: a bare `open(...)`, a module's `open` (`gzip.open`, `tarfile.open`), a member's
+    #: `open` (`z.open`), and the `Path` one-shots. Enumerated because a matcher for `open(`
+    #: alone would have missed four of the module's own call sites.
+    opens = {"open", "read_bytes", "read_text"}
+
+    def body_opens(fn: ast.FunctionDef) -> bool:
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            f = node.func
+            if isinstance(f, ast.Name) and f.id in opens:
+                return True
+            if isinstance(f, ast.Attribute) and f.attr in opens:
+                return True
+        return False
+
+    readers = {
+        fn.name: {d.id for d in fn.decorator_list if isinstance(d, ast.Name)}
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef) and body_opens(fn)
+    }
+    # NON-VACUOUS FIRST. A matcher that silently stops matching makes every assertion below
+    # pass over an empty set, which is the shape this repository has been bitten by most.
+    assert len(readers) >= 4, (
+        f"the opener matcher found only {sorted(readers)} in hashing.py; it has stopped "
+        "matching a form the module uses, so nothing below is evidence"
+    )
+
+    public = {name for name in readers if not name.startswith("_")}
+    assert public == {"sha256", "content_digest"}, (
+        "a PUBLIC function in hashing.py opens a file and is not one of the two that carry "
+        f"`@_our_read`: {sorted(public)}. Either decorate it or make it private -- an "
+        "undecorated reader attributes its own reads to whichever run is active."
+    )
+    undecorated = sorted(n for n in public if "_our_read" not in readers[n])
+    assert not undecorated, (
+        f"these public readers open files without `@_our_read`: {undecorated}. The watch will "
+        "report their reads as the caller's unregistered reads [G8]."
+    )
+    leftover = sorted(n for n in readers if n not in public and n.startswith("_") is False)
+    assert not leftover, f"no decision covers these, so this derivation cannot answer: {leftover}"
+
+
 def test_the_unregistered_filter_excludes_what_is_not_data(tmp_path):
     """`watch.unregistered` is pure, so the filter is testable directly rather than through a
     run. Each exclusion below cost a false positive in an earlier version or would have."""
