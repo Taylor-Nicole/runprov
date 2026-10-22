@@ -23028,8 +23028,19 @@ def test_the_changelog_follows_keep_a_changelog_where_new_work_lands():
             f"{sorted(_CHANGELOG_SECTIONS)} as the first word -- a reader scanning for `Fixed` "
             f"should not have to read prose to find it."
         )
-        assert words, (
-            "`[Unreleased]` exists but carries no `###` section, so a change has been recorded "
+        #: AN EMPTY `[Unreleased]` IS CORRECT, AND THIS ASSERTION BLOCKED THE RELEASE IT WAS
+        #: WRITTEN DURING. CONTRIBUTING's step 7 opens the fresh section AFTER the release, and
+        #: it is empty until the next change lands -- so requiring a `###` outright made a
+        #: documented, mandatory state illegal. The defect it was reaching for is an entry
+        #: written under NO category: prose in the section with no heading above it. That is
+        #: what it asks now, and an empty section passes.
+        prose = [
+            line
+            for line in body.splitlines()[1:]
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        assert words or not prose, (
+            "`[Unreleased]` carries prose but no `###` section, so a change has been recorded "
             "under no category at all"
         )
     else:
