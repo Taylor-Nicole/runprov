@@ -13,11 +13,18 @@ is a fix nobody checked.
 
 **`ci.py matrix-check` no longer reports "no run" for a matrix that exists.** The step asks
 GitHub for runs filtered by head sha, and **that filter is eventually consistent**: measured
-2026-10-22 against one run that was `completed`/`success` with all eight legs green, asking with
-the full forty-character sha returned zero rows on **2 of 6** attempts via `gh run list
---commit`, and `total_count: 0` on **1 of 6** via the documented REST filter. Three consecutive
-runs of the step then answered `OK`, `no test.yml run`, `OK` about that same settled matrix — and
-the refusal told the reader to push a commit that was already pushed.
+2026-10-22 against runs that were `completed`/`success` with all eight legs green, asking with
+the full forty-character sha returns **an empty list a large fraction of the time** — 2 of 6 in
+one sample and 6 of 12 in another, with `total_count: 0` on 1 of 6 through the documented REST
+filter. **The direction is the finding and the rate is not quoted as one**, because three
+samples gave three different fractions. Three consecutive runs of the step then answered `OK`,
+`no test.yml run`, `OK` about one settled matrix — and the refusal told the reader to push a
+commit that was already pushed.
+
+**Verified end to end after the repair**, which is why the sample sizes above are worth having:
+across 12 consecutive calls against a settled green matrix the underlying filtered query came
+back **empty 6 times**, the confirming listing found the run **12 times**, and the step answered
+**`OK` 12 times**. The filter still goes stale; it no longer becomes a wrong verdict.
 
 An empty filtered answer now gets a second witness whose completeness the step can check, and
 the three outcomes are kept apart instead of collapsing into one: the listing **has** the sha, so
