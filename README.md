@@ -246,6 +246,53 @@ explicit form names the argument you passed.
 `output()` stays the path it has always been and no existing call changes meaning. The
 project-wide ceiling is read back as `Project.resolved_digest_max_bytes`.
 
+## A local model's weights are an input like any other
+
+A model you run locally is a file, so it registers like one — there is no separate
+mechanism and nothing to configure:
+
+```python
+WEIGHTS = pathlib.Path.home() / ".cache/models/qwen2.5-7b-instruct-q4_k_m.gguf"
+
+run.input(WEIGHTS)  # digested, like any other read
+run.input(WEIGHTS, digest=False)  # the stat fields and `digested: false`
+run.input(CHECKPOINT_DIR)  # a directory of shards, hashed as a tree
+```
+
+This is the case `digest_max_bytes` above was built for. A quantised checkpoint is in the
+same size class as a reference genome, and the ceiling is what keeps registering it from
+being the cost that makes someone stop registering anything.
+
+**What that buys, exactly: the record names which weights ran.** Two runs of the same script
+against two checkpoints are then distinguishable after the fact, and a checkpoint swapped
+under a result is detectable by `verify` rather than by memory. That is worth saying plainly
+because it is the ordinary failure — not a model behaving unexpectedly, but nobody being able
+to say later which model answered.
+
+**And what it does not buy, which matters more.** Registering the weights does not make the
+step reproducible, and this package will not imply that it does:
+
+* A sampled generation is not a function of its inputs. The digest says what was loaded; it
+  says nothing about whether a second run would answer the same way. Record the sampling
+  parameters and a seed yourself — `note()` is the place, and *Conventions worth keeping*
+  below suggests keys — and treat that as a description of the step, not a guarantee about it.
+* **A model you do not host cannot be covered at all.** There is no file to digest, the served
+  version moves underneath an alias, and no amount of recording changes either. For such a
+  step the honest ceiling is *what was asked, and what came back* — which is worth recording
+  and is not reproducibility. The package has no feature that claims otherwise, deliberately.
+
+The same posture as a declined digest, one domain over: **a digest may be declined but never
+invented, and reproducibility may be declined but never implied.**
+
+**An agent is a third case, and it is an open problem rather than a feature.** When a coding
+agent or a multi-step tool loop does the work, there is no call site to register: you do not
+own the loop, so the step boundary the rest of this package is built on is not yours to mark.
+What is registrable is whatever the session leaves on disk — a transcript is a file, so
+`run.input(transcript)` puts it in the record and in the pin like any other read. That records
+the session **as an artifact**, not as a reproducible step, and the difference is not a
+quibble: nothing here lets you re-run it. Saying so is the whole of what the package promises
+about that case today.
+
 ## Why this exists rather than the obvious thing
 
 The obvious thing already existed. `hcv_genotyping/src/utils/log_transformation.py`

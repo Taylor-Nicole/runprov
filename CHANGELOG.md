@@ -9,6 +9,25 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Added
+
+**Documentation: a local model's weights are an input like any other, and the two cases that
+are not.** `README.md`. No code changed — the point of the section is that none had to.
+Measured on 0.9.0 before it was written, because reading `input()`'s signature is not running
+it: a single-file GGUF registers with `sha256`/`content_sha256`; the same file over
+`digest_max_bytes` records `digested: false` with the measured size and the limit that
+rejected it; a checkpoint directory of shards records `kind: directory` with `sha256_tree` and
+its file counts. This is the case the 0.9.0 ceiling was built for — a quantised checkpoint is
+in the same size class as a reference genome.
+
+The section states what registration does **not** buy, in the same words the package uses
+about a declined digest: it names which weights ran, and it does not make a sampled step
+reproducible. A model that is not hosted locally has no file to digest and no stable served
+version, so the honest ceiling there is *what was asked and what came back*; an agent loop has
+no call site to register at all, and its transcript is recordable as an artifact rather than
+as a re-runnable step. **A digest may be declined but never invented, and reproducibility may
+be declined but never implied.**
+
 ## [0.9.0] — 2026-10-22
 
 ### Added — a cost escape for digesting, which may decline a hash but never invent one
