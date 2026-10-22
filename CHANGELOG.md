@@ -619,6 +619,33 @@ measured by none of the three controls, because control 5 deliberately strips do
 produced T-41 in the first place. The harness's control count is bound to its own enumeration,
 which nothing checked while it said seven and listed seven.
 
+### Tested — the CHANGELOG is maintained in the commit that earns the entry, and that is now enforced
+
+**Taylor's instruction, made a check rather than a habit.** Cutting this release found this file
+untouched since 2026-10-12 while 53 commits had landed in ten days, 10 of them changing the
+package — and **11 of the 16 commits touching `runprov/` since the 0.8.0 tag carried no CHANGELOG
+change, 69%.** The informal rule was *"eventually"*, and 69% is what *"eventually"* measured.
+
+`test_the_changelog_is_not_behind_the_package` goes red when any commit has changed `runprov/`
+since this file was last touched. It asks **topology**, not dates — `rev-list <last CHANGELOG
+commit>..HEAD -- runprov/` — because a rebase moves timestamps and this host's clock runs four
+minutes fast. It skips on a tree with no `.git`, which is the sdist the build leg tests from, and
+a sibling guard keeps `fetch-depth: 0` in every workflow so that skip is for a human's shallow
+clone rather than a hole in CI.
+
+`test_the_changelog_follows_keep_a_changelog_where_new_work_lands` holds `[Unreleased]`'s section
+headings to Keep a Changelog's six names plus `Tested`, this project's one declared addition.
+**Scoped to `[Unreleased]` by measurement rather than by taste:** a whole-file rule *cannot pass*
+— there are 22 headings across 12 non-standard spellings, every one in a released section, and
+rewriting those would make this file disagree with the sdists already published under those
+versions. `[Unreleased]` was already 30 for 30, so the rule is green the day it arrives. That
+count is itself asserted, in both the pre- and post-release states, so the exemption cannot
+quietly start covering nothing.
+
+**What neither check can do, stated:** tell whether an entry is *about* the change. A commit
+touching both files for unrelated reasons passes. The standard they enforce is that the author
+was in the file.
+
 ### Fixed — one pipe per descriptor, so a capture can no longer corrupt the caller's data channel
 
 **Taylor's call, and the asymmetry was the argument.** A single pipe sat over file descriptors 1

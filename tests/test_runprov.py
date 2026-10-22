@@ -22900,6 +22900,164 @@ def test_release_check_refuses_a_tag_that_disagrees_with_the_version(tmp_path):
     assert "does not match" in r.stdout + r.stderr
 
 
+#: KEEP A CHANGELOG'S SECTION VOCABULARY, plus the one word this project adds. The six are the
+#: published set; `Tested` is local and is declared here rather than tolerated, because a reader
+#: who knows the standard needs to be told where this file departs from it.
+_CHANGELOG_SECTIONS = frozenset(
+    {"Added", "Changed", "Deprecated", "Removed", "Fixed", "Security", "Tested"}
+)
+
+#: HISTORY IS EXEMPT, AND THE REASON IS NOT CONVENIENCE. A released section records what that
+#: release said; editing it would make this file disagree with the sdist that shipped under that
+#: version, and with the PyPI page frozen at upload. **Measured 2026-10-22 before the rule was
+#: written: 22 headings across 12 non-standard spellings, every one of them in a released
+#: section, and ZERO in `[Unreleased]`, which was already 30 for 30.** So the rule is enforced
+#: where new work lands and the past is left as the record it is.
+#:
+#: This is a FLOOR deliberately, not an exhaustiveness assertion, and it is the one place in this
+#: suite where that is the right shape: the subject is the entries a future commit will add, and
+#: there is no way to quantify over those.
+_CHANGELOG_HISTORY_NONCONFORMING = 22
+
+
+def _changelog_sections(text: str) -> tuple[str, list[str]]:
+    """The `[Unreleased]` section's body and its `###` heading first words.
+
+    Returns `("", [])` when there is no `[Unreleased]` section at all, which is the correct state
+    between dating a release heading and opening the next one -- see CONTRIBUTING's step 7.
+    """
+    import re
+
+    heads = list(re.finditer(r"^## \[([^\]]+)\]", text, re.M))
+    assert heads, "CHANGELOG.md has no `## [version]` heading at all; it is not a changelog"
+    if heads[0].group(1).lower() != "unreleased":
+        return "", []
+    end = heads[1].start() if len(heads) > 1 else len(text)
+    body = text[heads[0].start() : end]
+    return body, [m.group(1) for m in re.finditer(r"^### ([A-Za-z]+)", body, re.M)]
+
+
+def test_the_changelog_is_not_behind_the_package():
+    """Every package change is described in the CHANGELOG, in the commit that makes it.
+
+    MEASURED, WHICH IS WHY THIS EXISTS. On 2026-10-22, cutting 0.9.0, the CHANGELOG had not been
+    touched since 2026-10-12 while **53 commits had landed in ten days**, 10 of them changing the
+    package. Cross-tabulated over everything since the 0.8.0 tag: **11 of the 16 commits that
+    touched `runprov/` carried no CHANGELOG change** — 69%. Worse than the gap, one surviving
+    entry had become FALSE: it said the fd-capture stream merge was *"recorded and asserted
+    rather than changed"*, and the repair had landed the next day. **A CHANGELOG is what PyPI
+    serves, and a release cannot describe its own shipped behaviour wrongly.**
+
+    TOPOLOGY, NOT DATES. This asks `rev-list <last CHANGELOG commit>..HEAD -- runprov/`, so it is
+    indifferent to commit timestamps — which matters on a host whose clock is four minutes fast
+    and in any history that has been rebased.
+
+    WHY SAME-COMMIT AND NOT "EVENTUALLY". A looser rule is what was in force, informally, and it
+    produced the 69%. Same-commit coupling is also what this project already requires of the two
+    other release-critical pairings: a dated heading with its ADR statuses, and a version bump
+    with `CITATION.cff`'s date. The cost is a brief red while an entry is being written, and that
+    red is the demand working rather than a false alarm.
+
+    WHAT THIS CANNOT CHECK, stated: whether the entry is ABOUT the change. A commit that touches
+    both files for unrelated reasons satisfies it. That is the false-clean cell and it is not
+    closable by any check — the standard it enforces is that the author was in the file.
+    """
+    import subprocess
+
+    root = _repo_root()
+    if not (root / ".git").exists():  # pragma: no cover - not shipped in the sdist
+        pytest.skip("not a git checkout")
+
+    def git(*args):
+        done = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+        if done.returncode != 0:  # pragma: no cover - a shallow or broken checkout
+            pytest.skip(f"git could not answer `{' '.join(args)}`: {done.stderr.strip()[:120]}")
+        return done.stdout.strip()
+
+    last = git("log", "--format=%H", "-1", "--", "CHANGELOG.md")
+    assert last, "no commit in this history touches CHANGELOG.md, so it is not maintained at all"
+
+    after = [
+        line
+        for line in git("log", "--format=%H %s", f"{last}..HEAD", "--", "runprov/").splitlines()
+        if line
+    ]
+    assert not after, (
+        "the CHANGELOG is BEHIND THE PACKAGE: "
+        f"{len(after)} commit(s) have changed `runprov/` since CHANGELOG.md was last touched, so "
+        "the release they are part of does not describe them. Add the entry in the same commit as "
+        "the change — a CHANGELOG is what PyPI serves and it is frozen at upload.\n  "
+        + "\n  ".join(after[:10])
+    )
+
+
+def test_the_changelog_follows_keep_a_changelog_where_new_work_lands():
+    """`[Unreleased]`'s sections use the standard's vocabulary, and this project's one addition.
+
+    INDUSTRY PRACTICE MADE CHECKABLE rather than asserted in prose. Keep a Changelog publishes six
+    section names; this project adds `Tested`, which is declared in `_CHANGELOG_SECTIONS` so a
+    reader who knows the standard is told where this file departs from it.
+
+    SCOPED TO `[Unreleased]`, AND THE SCOPE WAS MEASURED BEFORE THE RULE WAS WRITTEN. A whole-file
+    assertion CANNOT PASS: there are 22 headings across 12 non-standard spellings in this file,
+    and every one of them is in a released section. Rewriting those would make this file disagree
+    with the sdists already published under those versions. `[Unreleased]` was already 30 for 30,
+    so the rule is green the day it arrives — which is the only kind of rule that can go in the
+    default gate.
+
+    A FLOOR, DELIBERATELY, and this is the one place in this suite where that is right: the
+    subject is the entries a FUTURE commit will add, and nothing can quantify over those.
+    """
+    text = (_repo_root() / "CHANGELOG.md").read_text(encoding="utf-8")
+    body, words = _changelog_sections(text)
+
+    #: THE NAMED DEFECT IS ASSERTED BEFORE THE CENSUS, and the first draft had it the other way
+    #: round. A `bench` control that renamed an `[Unreleased]` heading was CAUGHT -- by the
+    #: historical count, reporting *"the released sections now hold 23, not 22"* and telling the
+    #: reader that HISTORY had been edited. **The slice was not historical at all:**
+    #: `text.index("\n## [", 10)` finds the `[Unreleased]` heading itself, so the census covered
+    #: the whole file, and `22` was right only because `[Unreleased]` contributed zero to it.
+    #: Two wrongs agreeing is what hid it, and a red that accuses the wrong subject costs a real
+    #: investigation. The census now starts at the first DATED heading, and runs after the
+    #: offence it is not about.
+    if body:
+        offenders = sorted({w for w in words if w not in _CHANGELOG_SECTIONS})
+        assert not offenders, (
+            f"`[Unreleased]` carries section heading(s) outside Keep a Changelog's vocabulary "
+            f"plus this project's `Tested`: {offenders}. Use one of "
+            f"{sorted(_CHANGELOG_SECTIONS)} as the first word -- a reader scanning for `Fixed` "
+            f"should not have to read prose to find it."
+        )
+        assert words, (
+            "`[Unreleased]` exists but carries no `###` section, so a change has been recorded "
+            "under no category at all"
+        )
+    else:
+        #: BETWEEN A DATED HEADING AND THE NEXT `[Unreleased]`, which is a real state:
+        #: CONTRIBUTING forbids opening the fresh section until after the release, because
+        #: `build` reads the FIRST `## [...]` heading and an empty one above the dated section
+        #: makes the tagged build report the shipped version as unreleased.
+        assert re.search(r"^## \[\d[^\]]*\] . \d{4}-\d{2}-\d{2}", text, re.M), (
+            "CHANGELOG.md has no `[Unreleased]` section, which is only correct immediately "
+            "after a release -- and then the first heading must be a DATED version"
+        )
+
+    #: AND THE EXEMPTION'S SUBJECT IS ASSERTED IN BOTH STATES, so it cannot sit unchecked
+    #: through the whole post-release window.
+    dated = list(re.finditer(r"^## \[(\d[^\]]*)\]", text, re.M))
+    assert dated, "CHANGELOG.md holds no dated release section at all"
+    stale = sum(
+        1
+        for m in re.finditer(r"^### ([A-Za-z]+)", text[dated[0].start() :], re.M)
+        if m.group(1) not in _CHANGELOG_SECTIONS
+    )
+    assert stale == _CHANGELOG_HISTORY_NONCONFORMING, (
+        f"the RELEASED sections now hold {stale} non-standard heading(s), not "
+        f"{_CHANGELOG_HISTORY_NONCONFORMING}. If history was edited, that is a bigger question "
+        f"than this count: a released section must agree with the sdist that shipped under it."
+    )
+
+
 def test_release_check_refuses_a_tag_while_the_changelog_says_unreleased(tmp_path):
     """L-36. A tag means released; `[Unreleased]` means it is not. Publishing with both is
     how a version reaches PyPI with no dated section to attribute it to."""
