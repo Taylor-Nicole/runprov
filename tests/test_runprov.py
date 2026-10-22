@@ -98,9 +98,9 @@ _PACKAGE_MODULES = 24
 #: inside the repository satisfies it with 128 files that are not sources at all. The equality
 #: has something to say in both directions, which is why both sides read this now.
 #:
-#: 2 in `tests/`, `ci.py`, 6 in `tools/`, 2 in `examples/`. Re-read it when a file is added
+#: 2 in `tests/`, `ci.py`, 7 in `tools/`, 2 in `examples/`. Re-read it when a file is added
 #: outside `runprov/`; `_PACKAGE_MODULES` is the one number for a file added inside it.
-_NON_PACKAGE_SOURCES = 11
+_NON_PACKAGE_SOURCES = 12
 
 #: THE OBSERVER'S DECLARED CEILINGS AND ITS VENDORED NAMES, WRITTEN BY HAND, and the reason is
 #: the one `_PACKAGE_MODULES` above gives: the constant IS the instrument. A first version of
@@ -51266,6 +51266,7 @@ _INSTRUMENT_FILES = (
     "tools/claims.py",
     "tools/corpus.py",
     "tools/corpus_scenario.py",
+    "tools/survivors.py",
     "tools/torture.py",
 )
 
@@ -51961,6 +51962,99 @@ def test_attribution_check_LISTS_the_offending_commits_rather_than_only_counting
     assert "11 commit(s) carry a refused trailer" in eleven, eleven
     assert eleven.count("sha0") == 10, f"the cap listed {eleven.count('sha0')}: {eleven}"
     assert eleven.rstrip().endswith("…"), f"more than ten were found and nothing said so: {eleven}"
+
+
+@functools.cache
+def _survivors_module():
+    """`tools/survivors.py`, loaded ONCE — the single definition of what identifies a survivor.
+
+    REGISTERED IN `sys.modules` BEFORE EXECUTION, which the sibling loader above does not need
+    and this one does. `dataclasses` resolves a frozen dataclass's annotations through
+    `sys.modules[cls.__module__]`, so a spec-loaded module containing one raises
+    `AttributeError: 'NoneType' object has no attribute '__dict__'` at import — a failure that
+    names neither the dataclass nor the loader. Measured while writing this.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_survivors_under_test", _repo_root() / "tools" / "survivors.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["_survivors_under_test"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_every_accepted_survivor_still_has_a_subject_in_the_source():
+    """GATE E's CHEAP END, and it is in the default gate because it can be.
+
+    `docs/survivor-registry.jsonl` declares the mutation survivors this project ACCEPTS, each
+    with the reason. That is an exemption list, and an exemption list is normally a one-way
+    ratchet: entries go in when something cannot pass and stay long after it can, because nobody
+    re-runs the check on the exempt subject. **So it retires itself from both ends** — and the
+    two ends cost different amounts, which is the whole design:
+
+      * *the subject is gone* — the line an entry is about is no longer in the source, so the
+        entry covers nothing. A pure function of the source tree, milliseconds. THIS test.
+      * *the debt was paid* — the mutant is killable now. Needs a mutation run, so no test
+        inside the suite can compute it; `ci.py survivors` is that end.
+
+    The structural question for anything that wants to gate is *can a test recompute this
+    quantity, from scratch, while the suite is running?* For the first end the answer is yes, so
+    it runs on every commit instead of when somebody remembers — and whoever just deleted the
+    line is exactly the person who would not have remembered.
+
+    AN EMPTY REGISTRY IS A PASS, AND THERE IS NO FLOOR. A count would be a restatement: the
+    number's only other source is this file's own length, and an equality whose two sides share a
+    source says nothing. Growth requires editing a committed file under review.
+
+    IT CALLS THE TOOL RATHER THAN RE-IMPLEMENTING THE RULE. Re-deriving the occurrence ordinal
+    here would prove only that this test agrees with itself; the two sides that can actually
+    disagree are the committed registry and the live source.
+    """
+    survivors = _survivors_module()
+    entries, digest = survivors.load()
+
+    #: THE RULE DIGEST FIRST, because every objection below is only meaningful under the rule the
+    #: registry was written against. If the matching rule has moved, an entry that stops
+    #: resolving is NOT evidence that the code moved on, and reading it that way would retire
+    #: true exemptions. So a mismatch asks for a re-measurement instead of reporting a verdict.
+    if entries:
+        assert digest == survivors.rule_digest(), (
+            "the survivor-registry matching rule has changed since the registry was written, so "
+            "no entry's identity can be trusted. Re-verify the registry against the new rule and "
+            "update its `# rule-digest:` line — do NOT delete entries that stopped resolving."
+        )
+
+    objections = survivors.check(_repo_root(), entries)
+    assert not objections, (
+        f"{len(objections)} survivor-registry objection(s). Run `python tools/survivors.py` for "
+        f"the report.\n  " + "\n  ".join(objections)
+    )
+
+    #: AND THE EXEMPTION LIST'S OWN KEYS ARE QUANTIFIED OVER, which is the claim this file makes
+    #: that nothing else can check: that no entry means "we decided not to bother". Each declared
+    #: class is a reason a mutant is PERMANENTLY unkillable; an unpaid debt is a count, not an
+    #: accepted survivor, and the classes are what keeps the two apart.
+    assert {e.verdict for e in entries} <= set(survivors.CLASSES), (
+        "an entry carries a class that is not declared, so 'accepted' has quietly come to mean "
+        "something the registry does not define"
+    )
+
+
+def test_the_survivor_registry_check_fires_on_every_branch_it_claims():
+    """The instrument that enforces the registry, held to the bar it enforces.
+
+    A guard cannot notice its own absence, and this one has six branches that are all silent on a
+    healthy tree — so each is planted and the FIRING OBJECTION is asserted, not merely that
+    something went red. Measured while writing it: the first draft of the controls keyed on the
+    text `    pass`, which does not occur in `run.py` at all, so three of them were
+    unfalsifiable and the clean one was passing for the wrong reason. The selfcheck's own VOID
+    branch is what said so.
+    """
+    survivors = _survivors_module()
+    assert survivors.selfcheck(_repo_root()) == 0, (
+        "`python tools/survivors.py --selfcheck` does not pass, so the registry gate's verdicts "
+        "are unmeasured — run it for which control failed"
+    )
 
 
 def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():

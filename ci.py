@@ -1027,6 +1027,30 @@ def bench() -> None:
     run(PY, str(ROOT / "tools" / "bench.py"), "selfcheck", "--python", PY)
 
 
+def survivors() -> None:
+    """The survivor registry's report, and its EXPENSIVE retirement end.
+
+    `docs/survivor-registry.jsonl` declares the mutation survivors this project accepts. Its
+    cheap end -- *the line this entry is about is gone, so the entry covers nothing* -- is a pure
+    function of the source tree and is gated in the suite, by
+    `test_every_accepted_survivor_still_has_a_subject_in_the_source`, because a test can
+    recompute it while the suite runs.
+
+    ITS OTHER END CANNOT BE GATED AND THAT IS NOT A COMPROMISE. *Is this mutant killable now?*
+    needs mutmut, a copied tree and minutes per mutant; no test inside the suite can compute it
+    while the suite is what is running. A step whose cost is unmeasured must not go in a loop, so
+    this is a TIER-3 step -- before a release and after a batch of guards -- and it is the
+    documented place the debt-was-paid end is checked.
+
+    WHAT THIS DOES TODAY is the report plus the selfcheck. Re-benching each entry is the next
+    increment and is deliberately NOT faked here: a step that prints a green verdict it did not
+    measure is worse than a step that says what it covers. `tools/bench.py` is the harness it
+    will call, and the registry's key is already the shape `bench` needs.
+    """
+    run(PY, str(ROOT / "tools" / "survivors.py"), "--selfcheck")
+    run(PY, str(ROOT / "tools" / "survivors.py"))
+
+
 def claims() -> None:
     """Which README numbers are bound to something that measures them. NOT the gate over them.
 
@@ -1084,6 +1108,7 @@ STEPS: dict[str, abc.Callable[[], None]] = {
     #: NOT in the default gate: twelve tree copies and twelve pytest runs. See `bench`.
     "bench": bench,
     #: NOT in the default gate: a REPORT over a surface that is not closed. See `claims`.
+    "survivors": survivors,
     "claims": claims,
     #: NOT in the default gate: it WRITES the baseline the gate reads. See `claims_baseline`.
     "claims-baseline": claims_baseline,
