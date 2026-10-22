@@ -7,7 +7,7 @@ taking precedence over the Python API while this is `0.x`.
 Entries state what was **measured**, not what was improved. A fix with no number beside it
 is a fix nobody checked.
 
-## [Unreleased] — 0.9.0
+## [0.9.0] — 2026-10-22
 
 ### Added — a cost escape for digesting, which may decline a hash but never invent one
 

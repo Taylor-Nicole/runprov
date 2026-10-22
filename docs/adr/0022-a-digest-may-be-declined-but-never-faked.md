@@ -1,6 +1,6 @@
 # 22. A digest may be declined, but never faked
 
-- **Status:** Accepted — built 2026-10-11, **not yet released** (`[Unreleased]`). The last open item of the 2026-10-09 council. Decided by Taylor on 2026-10-11: both shapes — a project threshold **and** a per-call override — for 0.9.0, with 0.8.0 tagged first.
+- **Status:** Accepted — built 2026-10-11, **released in 0.9.0** (2026-10-22). The last open item of the 2026-10-09 council. Decided by Taylor on 2026-10-11: both shapes — a project threshold **and** a per-call override — for 0.9.0, with 0.8.0 tagged first.
 - **Applies to:** `runprov/project.py` (`digest_max_bytes`, `parse_size`), `runprov/run.py` (`input`, `output`, `_digest_decision`), `runprov/hashing.py` (`describe`)
 
 ## Context
