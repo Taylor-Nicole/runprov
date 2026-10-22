@@ -141,7 +141,7 @@ __all__ = [
     "sha256",
     "to_yaml",
 ]
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 
 def to_yaml(records: typing.Any) -> str:  # noqa: ANN401 - one record or an iterable of them
