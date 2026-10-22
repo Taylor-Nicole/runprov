@@ -41839,6 +41839,151 @@ _HOOKS_THAT_ONLY_READ = {
 }
 
 
+def _matrix_fakes(tmp_path, *, filtered, listing, jobs):
+    """A `subprocess.run` double for `matrix_check`, answering its two `gh run list` calls
+    DIFFERENTLY — which is the whole subject of G9 and which the older fakes cannot express,
+    because they return one string for every `gh run list`.
+    """
+    workflow = tmp_path / ".github" / "workflows"
+    workflow.mkdir(parents=True, exist_ok=True)
+    (workflow / "test.yml").write_text("on: [push]\n", encoding="utf-8")
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(list(argv))
+        if argv[0] == "git" and argv[1] == "rev-parse":
+            return subprocess.CompletedProcess(argv, 0, _MATRIX_HEAD + "\n", "")
+        if argv[0] == "git":
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[:3] == ["gh", "run", "list"]:
+            body = filtered if "--commit" in argv else listing
+            return subprocess.CompletedProcess(argv, 0, json.dumps(body), "")
+        return subprocess.CompletedProcess(argv, 0, json.dumps({"jobs": jobs}), "")
+
+    return fake_run, seen
+
+
+#: A full forty, because a short one makes `gh run list --commit` answer `[]` for a DIFFERENT
+#: reason and the test above holds that separately.
+_MATRIX_HEAD = "4ee4ae6" + "a" * 33
+
+_MATRIX_GREEN_JOBS = [
+    {"name": "lint", "conclusion": "success"},
+    {"name": "test (windows-latest, 3.12, off)", "conclusion": "success"},
+]
+
+
+def test_matrix_check_confirms_an_empty_filtered_answer_before_calling_it_no_run(tmp_path):
+    """G9. An empty head_sha-filtered answer is NOT evidence that no run exists.
+
+    MEASURED 2026-10-22 against run 39807978333, `completed`/`success`, eight legs green:
+    `gh run list --commit <full forty>` returned zero rows on **2 of 6** attempts, and the
+    documented REST filter `.../runs?head_sha=...` returned `total_count: 0` on **1 of 6**.
+    Three consecutive runs of this step then answered `OK`, `no test.yml run`, `OK` about that
+    one settled matrix. GitHub's filtered run listing is eventually consistent, and the step
+    read the empty list as *"no run exists -- push the commit"* about a commit already pushed.
+
+    THE 2026-10-14 FIX WAS RIGHT AND INCOMPLETE. A short sha also answers `[]`, which is why
+    the neighbouring test pins the full-sha query. This is a second cause with one symptom.
+
+    Here the filtered query is empty and the unfiltered listing HAS the run, so the step must
+    use it and must NOT refuse. The control is that it reaches the per-leg check at all: a
+    step that refused early would never ask for the jobs.
+    """
+    ci = _ci_module()
+    fake_run, seen = _matrix_fakes(
+        tmp_path,
+        filtered=[],
+        listing=[
+            {"databaseId": 7, "status": "completed", "conclusion": "success", "headSha": "b" * 40},
+            {
+                "databaseId": 39807978333,
+                "status": "completed",
+                "conclusion": "success",
+                "headSha": _MATRIX_HEAD,
+            },
+        ],
+        jobs=_MATRIX_GREEN_JOBS,
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ci, "ROOT", tmp_path)
+        patch.setattr(ci.subprocess, "run", fake_run)
+        ci.matrix_check()  # must NOT raise
+
+    views = [argv for argv in seen if argv[:3] == ["gh", "run", "view"]]
+    assert views, (
+        "the step never asked for the jobs, so it refused before the per-leg check and this "
+        f"test asserts nothing about which run it chose: {seen}"
+    )
+    assert str(39807978333) in views[0], (
+        f"the step asked about the wrong run; it must take the listing's entry for this head: "
+        f"{views[0]}"
+    )
+
+
+def test_matrix_check_says_CANNOT_DETERMINE_when_the_confirming_listing_is_full(tmp_path):
+    """A TRUNCATED VIEW IS NOT AN ABSENCE, and this is the arm that keeps them apart.
+
+    When the filtered query is empty and the confirming listing comes back FULL, the commit may
+    simply be older than the window — so the step must refuse WITHOUT claiming no run exists.
+    Reporting "no run" here would be the same conflation one layer out, and this repository's
+    own oldest instrument lesson is that *cannot determine* is not *zero*.
+
+    NO CLOCK IS CONSULTED, deliberately: this host's runs four minutes fast, and a full window
+    is a fact about the response rather than about time.
+    """
+    ci = _ci_module()
+    fake_run, _ = _matrix_fakes(
+        tmp_path,
+        filtered=[],
+        listing=[
+            {"databaseId": i, "status": "completed", "conclusion": "success", "headSha": "c" * 40}
+            for i in range(ci._MATRIX_LISTING_LIMIT)
+        ],
+        jobs=_MATRIX_GREEN_JOBS,
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ci, "ROOT", tmp_path)
+        patch.setattr(ci.subprocess, "run", fake_run)
+        with pytest.raises(SystemExit) as caught:
+            ci.matrix_check()
+
+    said = str(caught.value)
+    assert "CANNOT DETERMINE" in said, f"a truncated window must not read as a verdict: {said}"
+    assert "Push the commit" not in said, (
+        f"this is the message that was wrong about a pushed commit; a truncated window must "
+        f"not reuse it: {said}"
+    )
+
+
+def test_matrix_check_still_says_no_run_when_the_listing_is_complete_and_lacks_it(tmp_path):
+    """THE ARM THE FIX MUST NOT BREAK. A genuinely absent run still gets the old advice.
+
+    Without this, the repair could satisfy both tests above by never refusing at all -- which
+    is the shape this repository rates worst, because the step exists to refuse a tag.
+    """
+    ci = _ci_module()
+    fake_run, _ = _matrix_fakes(
+        tmp_path,
+        filtered=[],
+        listing=[
+            {"databaseId": 1, "status": "completed", "conclusion": "success", "headSha": "d" * 40}
+        ],
+        jobs=_MATRIX_GREEN_JOBS,
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ci, "ROOT", tmp_path)
+        patch.setattr(ci.subprocess, "run", fake_run)
+        with pytest.raises(SystemExit) as caught:
+            ci.matrix_check()
+
+    said = str(caught.value)
+    assert "no `test.yml` run" in said and "Push the commit" in said, (
+        f"a complete listing that lacks the sha IS an absence, and the advice to push is "
+        f"correct there: {said}"
+    )
+
+
 def test_every_byte_asserted_directory_is_excluded_from_every_hook_that_rewrites_files():
     """THE SAME RULE AS ABOVE, IN THE DIRECTION NOBODY GUARDED. `.gitattributes` stops git
     rewriting these bytes on CHECKOUT. Nothing stopped a hook rewriting them on COMMIT.

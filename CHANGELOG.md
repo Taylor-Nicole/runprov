@@ -11,6 +11,26 @@ is a fix nobody checked.
 
 ### Fixed
 
+**`ci.py matrix-check` no longer reports "no run" for a matrix that exists.** The step asks
+GitHub for runs filtered by head sha, and **that filter is eventually consistent**: measured
+2026-10-22 against one run that was `completed`/`success` with all eight legs green, asking with
+the full forty-character sha returned zero rows on **2 of 6** attempts via `gh run list
+--commit`, and `total_count: 0` on **1 of 6** via the documented REST filter. Three consecutive
+runs of the step then answered `OK`, `no test.yml run`, `OK` about that same settled matrix — and
+the refusal told the reader to push a commit that was already pushed.
+
+An empty filtered answer now gets a second witness whose completeness the step can check, and
+the three outcomes are kept apart instead of collapsing into one: the listing **has** the sha, so
+the filter was stale and the run is used; the listing is **complete** and lacks it, which is a
+real absence and keeps the old advice; the listing comes back **full**, so the commit may be
+older than the window and the step says **CANNOT DETERMINE** rather than issuing a verdict. No
+clock is consulted — this host's runs four minutes fast, and a full window is a fact about the
+response rather than about time.
+
+The 2026-10-14 fix for the same symptom — a *short* sha also answers `[]` — was right and
+incomplete; its guard still holds, and this is a second cause.
+
+
 **A registered directory input is no longer reported as an unregistered read, and the policy
 gate no longer refuses a correct run.** ADR-0002, amended. `run.input(DIR)` hashes the tree, so
 the package opens every file under it — and the audit hook attributed those opens to the caller.

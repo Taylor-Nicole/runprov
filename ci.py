@@ -568,6 +568,12 @@ def _gh_json(argv: list[str], about: str) -> object:
         ) from None
 
 
+#: How many recent `test.yml` runs the second witness asks for when the head_sha-filtered
+#: query comes back empty. Large enough that a full window is genuinely unusual, and the
+#: step reports CANNOT DETERMINE rather than guessing when it is full. [G9]
+_MATRIX_LISTING_LIMIT = 100
+
+
 def matrix_check() -> None:
     """Refuse a tag whose COMMIT has not been through the hosted matrix. Added 2026-10-01.
 
@@ -631,10 +637,66 @@ def matrix_check() -> None:
             f"matrix at all."
         )
     if not runs:
-        raise SystemExit(
-            f"no `test.yml` run for {head[:7]}. Push the commit and let the matrix finish "
-            "BEFORE tagging: a tag publishes to PyPI and a PyPI file can never be replaced."
+        #: AN EMPTY FILTERED ANSWER IS NOT EVIDENCE OF ABSENCE [G9, measured 2026-10-22].
+        #: GitHub's head_sha-filtered run listing is EVENTUALLY CONSISTENT. Against one run
+        #: that was `completed`/`success` with all eight legs green, asking with the FULL
+        #: forty-character sha returned zero rows on 2 of 6 attempts via
+        #: `gh run list --commit`, and `total_count: 0` on 1 of 6 via the documented REST
+        #: filter `.../runs?head_sha=...`. Three consecutive runs of this step then answered
+        #: `OK`, `no test.yml run`, `OK` about that same settled matrix.
+        #:
+        #: THE 2026-10-14 DIAGNOSIS WAS RIGHT AND INCOMPLETE. A short sha also answers `[]`,
+        #: and `test_matrix_check_asks_GitHub_about_the_FULL_sha_and_never_the_ABBREVIATION`
+        #: still holds that. This is a SECOND cause with the same symptom, which is why
+        #: fixing the first one did not retire it.
+        #:
+        #: So the empty answer gets a SECOND WITNESS whose completeness this step can check,
+        #: and the three outcomes are kept apart instead of collapsing into "no run":
+        #:   the listing HAS the sha      -> the filter was stale; use it
+        #:   the listing is COMPLETE      -> genuinely no run; the old message, which is right
+        #:   the listing is TRUNCATED     -> CANNOT DETERMINE, and say so
+        #: An unfiltered listing is not magic -- a very new run may be missing from it too --
+        #: but then "no run yet, push and wait" is the correct advice, which is exactly what
+        #: it was NOT for a commit whose run GitHub was already executing.
+        listed = _gh_json(
+            [
+                "gh",
+                "run",
+                "list",
+                "--limit",
+                str(_MATRIX_LISTING_LIMIT),
+                "--workflow",
+                "test.yml",
+                "--json",
+                "databaseId,status,conclusion,headSha",
+            ],
+            "for a listing of recent `test.yml` runs, to confirm an empty filtered answer",
         )
+        if not isinstance(listed, list):
+            raise SystemExit(
+                f"could not confirm the empty answer about {head[:7]} — `gh` answered with "
+                f"{type(listed).__name__} where this step expects a list of runs, so it CANNOT "
+                f"DETERMINE whether a matrix ran. Do not tag on this."
+            )
+        mine = [r for r in listed if r.get("headSha") == head]
+        if mine:
+            runs = mine
+        elif len(listed) >= _MATRIX_LISTING_LIMIT:
+            #: THE WINDOW IS FULL, so the sha may simply be older than it. Reporting "no run"
+            #: here would be the same conflation one layer out: a truncated view is not an
+            #: absence. No clock is consulted, deliberately -- this host's is four minutes
+            #: fast, and a full window is a fact about the response rather than about time.
+            raise SystemExit(
+                f"CANNOT DETERMINE whether a `test.yml` run exists for {head[:7]}: the filtered "
+                f"query returned nothing and the {_MATRIX_LISTING_LIMIT}-run listing that would "
+                f"confirm it came back full, so the commit may simply be older than the window. "
+                f"This is not a verdict. Do not tag on it."
+            )
+        else:
+            raise SystemExit(
+                f"no `test.yml` run for {head[:7]}. Push the commit and let the matrix finish "
+                "BEFORE tagging: a tag publishes to PyPI and a PyPI file can never be replaced."
+            )
     run = runs[0]
     if run["status"] != "completed":
         raise SystemExit(f"the matrix for {head[:7]} is still {run['status']} — wait for it")
