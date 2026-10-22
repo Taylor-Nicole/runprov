@@ -152,9 +152,9 @@ asserted by writing *after* the block and requiring it to be absent from the log
 catches a wrong key in the saved map. Both sinks are read back, because capture must tee and
 never divert.
 
-**And it recorded a limitation that was not written down anywhere.** One pipe sits over both
-descriptors, so the mirror thread cannot tell which stream a byte came from and sends everything
-to the saved **stdout**. Measured during a captured run:
+**And it recorded a limitation that was not written down anywhere.** One pipe sat over both
+descriptors, so the mirror thread could not tell which stream a byte came from and sent
+everything to the saved **stdout**. Measured during a captured run, before the repair below:
 
 | destination | received |
 |---|---|
@@ -162,13 +162,17 @@ to the saved **stdout**. Measured during a captured run:
 | the caller's stdout | stdout **and stderr** |
 | the caller's stderr | **nothing** |
 
-So `cmd > out 2> err` leaves `err` empty for the duration, and `cmd \| consumer` has the
-caller's stderr injected into the consumer's input. That is the shape this package guards
-against for its *own* diagnostics — `_report._write` exists because a run once put 725 bytes of
-provenance chatter into a caller's data channel — while fd capture routes the *caller's* stderr
-into it. **Recorded and asserted rather than changed**: separating the streams needs two pipes
-and two pumps, which is a design decision and not a test fix. The assertion is written so that a
-repair makes it fail and tells you to update the record.
+So `cmd > out 2> err` left `err` empty for the duration, and `cmd \| consumer` had the caller's
+stderr injected into the consumer's input. That is the shape this package guards against for its
+*own* diagnostics — `_report._write` exists because a run once put 725 bytes of provenance
+chatter into a caller's data channel — while fd capture routed the *caller's* stderr into it.
+
+**AND IT IS FIXED, not merely recorded — see *Fixed — one pipe per descriptor* below.** This
+entry originally ended *"recorded and asserted rather than changed … the assertion is written so
+that a repair makes it fail and tells you to update the record"*. The repair landed the next day.
+**The assertion did fail and was updated; this record was not**, and it sat for nine days saying
+a data-corruption defect had been left in place. Corrected 2026-10-22, before the tag, because a
+CHANGELOG is what PyPI serves and a release cannot describe its own shipped behaviour wrongly.
 
 ### Tested — a terminal capture could lose the REASON it failed, four different ways
 
@@ -614,6 +618,188 @@ measured by none of the three controls, because control 5 deliberately strips do
 `ci.py bench` now reproduces seven verdicts, up from six, and the new case is the experiment that
 produced T-41 in the first place. The harness's control count is bound to its own enumeration,
 which nothing checked while it said seven and listed seven.
+
+### Fixed — one pipe per descriptor, so a capture can no longer corrupt the caller's data channel
+
+**Taylor's call, and the asymmetry was the argument.** A single pipe sat over file descriptors 1
+and 2, so the pump could not tell which descriptor a byte came from and mirrored everything to
+the saved **stdout**. In the order the consequences bite:
+
+1. `script.py | gzip > out.gz` had its warnings injected into the gzip stream. That is **data
+   corruption caused by the observer**, which is the one thing this package exists to refuse.
+2. `cmd > out 2> err` left `err` empty for the duration, so a caller who separated the streams
+   for a reason stopped getting what they asked for.
+3. A supervisor watching stderr for warnings saw none while a run was captured.
+
+`_report._write` already returns silently when `sys.stderr is None`, precisely because a run once
+put 725 bytes of provenance chatter into a caller's data channel and none into stderr — and the
+same module then routed the caller's **entire** stderr into that channel. One of those was held
+by a test; the other was written down nowhere until the audit found it.
+
+There is **one pipe per descriptor now and one pump per pipe**, each mirroring to the saved copy
+of *its own* fd. Measured after: the caller's stdout receives only stdout, their stderr receives
+stderr including a child's, and the log still receives both.
+
+Three things the change needed beyond the second pipe, each a defect in its own right:
+
+* **A lock over the shared sink, and only that.** Two pumps reach one log file, so without it a
+  chunk can be split by the other's write, and `self._seen += len(chunk)` is a read, an add and a
+  store that can lose an increment — understating the byte count **in the record**, silently,
+  under load only. Scoped to the file write and the counter; the mirror writes stay outside it, so
+  a slow terminal on one stream cannot hold up the other.
+* **The failure path closes what it opened.** With one pipe nothing could leak. With two, the
+  second `os.pipe()` can raise after the first succeeded — `EMFILE` is exactly when — stranding a
+  descriptor pair for the life of the process, from the branch whose whole job is to degrade
+  cleanly.
+* **The join is per pump and the error names the stuck one.**
+
+**The cost, stated rather than discovered later: the log's ordering *between* the two streams is
+now approximate.** A detect-and-disclose alternative existed and lost, because a warning emitted
+into the stream it is about is not a remedy.
+
+### Fixed — the unlocked history append is made SAFE rather than removed
+
+A record was lost on Windows because `_exclusive` treated a **contended** lock as a filesystem
+that cannot lock, and then appended unlocked. **Taylor's decision:** correct the claim, then the
+in-process lock, then verification, then the `errno` split — and accept that refusing the append
+is the wrong default.
+
+Refusing is wrong because it loses the record *always* rather than *sometimes*, and
+`RecordSink.append` could not signal a refusal anyway: its contract is MUST NOT RAISE and it
+returns `None`. **So the fallback was not the defect. The defect was that the fallback was not
+safe.**
+
+And the rot ran the other way than expected. The notice said concurrent writers may *interleave*,
+which is the POSIX outcome and an understatement where a record can be destroyed — while `WHY.md`
+already had it right. When a runtime message and a shipped document disagree, find out which is
+right before assuming it is the document that rotted.
+
+### Fixed — the undigested note has ONE definition, at all four sites, and its reason is a contract
+
+The note an undigested entry carries was written **twice** as the same formatted string, a
+thousand and eighty-eight lines apart — then two more sites were found still inline. Four sites,
+one field.
+
+**This is a record value, not a diagnostic**, which is what decides it: the prefix reaches the
+record, so a mangled copy ships `XXnot digested: XX<reason>` to every consumer that reads a note.
+The key half is not prose either — it is a **field name**, so a consumer's `.get("note")` returns
+`None` while the record carries the key under another spelling. The mutation campaign reported
+the note key *and* the note text surviving on both the `UNHASHABLE` and the `MISSING` branch:
+four mutants, one finding. `path`, `kind` and the kind value were all held because a test asserts
+`kind == "UNHASHABLE"`; nothing held the note.
+
+The **reason's wording** is a contract too, because this document promises a note giving the size
+and the limit or naming the caller's choice. The assertion meant to hold it tested for a
+*substring*, and a substring test cannot kill a mutation that **wraps** a string rather than
+replacing it, so the wording was unguarded in practice. The rule now lives beside the code: the
+threshold reason leads with the measured size and ends with the limit that rejected it, and the
+explicit-choice reason names the argument the caller passed.
+
+### Fixed — the per-run sidecar name states which three properties are promised
+
+A mutation run left eight survivors on the two lines that build the name, and **deciding which of
+them matter had to come before asserting anything, because a guard over an unspecified behaviour
+guards nothing.**
+
+Three properties are the contract, because they are what a consumer depends on: the name still
+matches the glob every reader uses to find these files, two runs inside one second get different
+names, and the name is a function of the record, so the same run yields the same path. **The
+exact spelling of the stamp is explicitly not promised** — nothing reads it back and every
+consumer takes the start time from the record itself. Stating the boundary is what stops the
+unpromised half drifting into a contract by accident.
+
+### Changed — `guards-ok` is defined and enforced: silence is what must say why
+
+**Taylor's call: define and enforce.** The marker had been in use since 0.1.0, in ten modules, and
+was named in no test, no tool, no document and no lint config — so the bar was whatever the
+comments happened to say. No rule could be derived from its own usage either: it appeared on
+narrow handlers and on handlers that report, and was missing from most of the ones that swallowed.
+
+    a handler whose body is only `pass`, `continue`, `break` or `del`
+    must carry `# guards-ok:` and a reason.
+
+**Silence is what needs justifying, not breadth.** A rule keyed on `except Exception` would have
+missed every one of `terminal.py`'s fd-teardown handlers while demanding markers on handlers that
+already report. And it needs **no name list**, which is why this definition and not a
+better-sounding one: *"does it call something that reports"* requires enumerating reporting
+function names, and the syntactic form is total by construction.
+
+28 handlers, 12 newly marked, **no product defect found.** Five of the twelve already carried the
+reason in prose and lacked only the token, so those reuse the author's own words. One marker was
+**removed** rather than filled in: a bare `# guards-ok` on a handler that reports through
+`diagnostic` asserts nothing while reading as a justification, which the check now refuses.
+
+### Fixed — two comments that had stopped being true, in the places hardest to re-examine
+
+**The withheld-names comment.** The note explaining why the unsafe-suffix table is not exported
+said it was documentation rendered into a refusal message. It was, and that stopped: **25 of the
+40 binary suffixes are absent from the table** and fell to the refusal's default, so the message
+named the wrong cause for most of them. The comment now says what is true, the suffix set is held
+against the rendered table in the README, and the reasons reach no record and no message — which
+makes a change to their wording uncatchable *by design* rather than by oversight. **A stale claim
+inside a comment explaining a deliberate withholding is the hardest kind for a later reader to
+re-examine.**
+
+**The environment snapshot's manager-variable comment.** It read *"their values are paths … so
+only the fact that they are set is recorded"*. `HATCH_ENV_ACTIVE` is in the name table too, where
+Hatch sets it to an environment *name*, and that write lands second. **The behaviour is right; the
+sentence had been overtaken by a member added to the other table, and was false of that member
+from the day it joined.** Found by a test that asserted the comment rather than the contract.
+
+Also: `_TOOL_SOURCES` was declared and read by **nothing** — not the package, not the suite —
+while the vocabulary of `tool.source` was written three times. `_TOOL_SOURCES = None` changed
+nothing anywhere. It has a second side now: the set of `source=` values the module's own AST can
+assign, held by equality rather than containment.
+
+### Fixed — the git timeout is stated in seven files and was bound in two
+
+Four of the seven were bound by nothing, and three of those describe **current behaviour**:
+`SECURITY.md` tells a reader what this package runs on their machine and with what ceiling;
+`docs/adr/0003` quotes the same contract with status **Accepted**, so it is a claim about how
+this behaves today rather than a record of a decision since changed; and `runprov/__init__.py`
+repeats the contract sentence in a comment. This file is **exempted by name**, because a CHANGELOG
+states what a release did and that stays true after the bound moves — and the exemption retires
+itself if the entry ever stops carrying the figure.
+
+### Tested — the instruments, the declared tables, and the record chain: 40 commits with a denominator
+
+Three sweeps, reported together because individually they are one commit each and the shape is
+what matters.
+
+**The instruments were at 33% while the package was gated at 100%.** Roughly 4 700 lines of gate
+and harness code — `ci.py`, the bench harness, the torture harness, the corpus generator, the
+claims instrument — were type-checked by nothing and tested by nothing, in a project whose whole
+thesis is that an unmeasured guard is no guard. `--cov` **cannot** measure `ci.py`, because it is
+spec-loaded and the module name is never imported; `coverage run --include=` measures by path and
+can. Splitting the remainder by I/O was what made it actionable: of 842 unexecuted statements,
+**706 were hand-run harness code and 143 were pure decisions**, and closing the pure half moved
+35% → 47%. The **scope** of that out-of-band measurement is now held by a test even though its
+result is not, because what may not drift silently is the set of things the number is about.
+
+**Every declared table in the package is now held by equality, with nothing left over.** A table
+is only held when something *else* can compute its right-hand side; several had no second side at
+all and were restatements. The sweep that found them was itself defeated once — it could not see
+a **dotted wrapper**, so it swept 35 of 39 tables, and the mutation run is what found that. Along
+the way: the three constants that decide an outcome are held and five fixtures no longer move
+with the constants they test, and two display caps are sized by a literal while the two **floors**
+are deliberately left alone.
+
+**The record chain's own field set is asserted, on both sides.** `_append_history` projects
+`inputs` and `outputs` through byte-identical lines, and the re-check measured what a one-sided
+assertion costs: every digest mutant in the `inputs` block was killed and every one in `outputs`
+survived. The entry contract is now asserted **once and run over both lists**, with a directory
+registered on each side so the `sha256_tree` fallback is reachable rather than an equivalence. The
+start line and the in-flight marker — the only records a run killed by `SIGKILL` leaves — have
+their exact field sets held, which nothing did before: `START_SCHEMA` is named 22 times in the
+suite and its key set had never been the subject of an assertion.
+
+And **28 accepted mutation survivors are declared** in `docs/survivor-registry.jsonl`, each with
+the reason it can never be killed — 15 uncompilable, 10 annotations never evaluated under
+PEP 563, 2 provable equivalences, 1 mutmut does not generate. It retires itself from both ends:
+the cheap end (*the line this entry is about is gone*) is a pure function of the source tree and
+runs in the default gate; the expensive end (*the mutant is killable now*) needs a mutation run
+and is `python ci.py survivors`.
+
 
 ## [0.8.0] — 2026-10-11
 
