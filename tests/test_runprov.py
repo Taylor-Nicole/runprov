@@ -1793,6 +1793,185 @@ def test_the_history_carries_kind_when_it_is_a_finding(tmp_path):
     assert ok.name == "real.tsv"
 
 
+#: THE CHAINED RECORD'S OWN FIELD SET, which nothing asserted. The 2026-10-21 tier-1 re-check
+#: measured the consequence as an ASYMMETRY between two blocks of byte-identical code:
+#: `_append_history` projects `inputs` and `outputs` through the same three lines, and every
+#: digest mutant in the `inputs` block is `ok_killed` while every one in `outputs` SURVIVES --
+#: `o.get("XXsha256XX")`, `o.get("sha256") and o.get("sha256_tree")`, `o.get("XXcontent_sha256XX")`.
+#: The only assertion that existed compared `hist["inputs"][0]["content_sha256"]` against the
+#: sidecar, so the inputs side was held and the outputs side was not.
+#:
+#: SO THE ENTRY CONTRACT IS CHECKED ONCE, OVER BOTH LISTS. A list cannot be the weaker side if
+#: there is no second list to be weaker than -- the same reason the package's other sweeps
+#: quantify over a derived population instead of a hand-written pair.
+#:
+#: `kind` and `header` are the only OPTIONAL keys, and both are optional because absence is a
+#: statement: see `test_the_history_carries_kind_when_it_is_a_finding` directly above.
+_HISTORY_ENTRY_REQUIRED = {"path", "sha256", "content_sha256"}
+_HISTORY_ENTRY_OPTIONAL = {"kind", "header"}
+
+#: THE START LINE'S FIELDS, hand-written on purpose. `START_SCHEMA` is named 22 times in this
+#: suite and the start line's KEY SET was never once asserted, which is why renaming `run_id`,
+#: `generation`, `started_utc`, `command` or `cwd` in `_append_start` changed no test. The
+#: expectation is a constant a human must re-read when adding a field -- the code under test is
+#: the only other source for it, so DERIVING it here would make the assertion a tautology.
+_START_FIELDS = {
+    "schema",
+    "run_uid",
+    "run_id",
+    "script",
+    "generation",
+    "started_utc",
+    "command",
+    "cwd",
+    "pid",
+    "host",
+}
+
+#: `prev` IS NOT IN THAT DICT, and finding that out is why this assertion is over the line a
+#: consumer READS rather than over the dict `_append_start` builds. `chain.FIELD` is added by
+#: the sink on the way past, so a check written against the source would have declared a key
+#: set the file never holds -- and the chain field is the one a reader needs most.
+_START_FIELDS |= {"prev"}
+
+#: AND THE MARKER'S, for the same reason and with the same tripwire. `_mark_in_flight` is the
+#: only record a `SIGKILL`ed run leaves, so a field silently renamed here is a field no reader
+#: ever gets a second chance at. NO `prev`: the marker is written directly, not through the
+#: sink, so it is outside the chain -- which is itself a fact worth failing on if it changes.
+_MARKER_FIELDS = {"run_uid", "script", "started_utc", "pid", "host", "cwd", "history"}
+
+
+def _raw_lines(path):
+    """Every line of a history file, start lines INCLUDED. See `_completed`."""
+    return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+
+
+def test_the_start_line_carries_exactly_the_fields_it_declares(tmp_path):
+    """The start line is the ONLY thing a run killed by `SIGKILL` leaves in the history, and
+    its field set was unguarded: `run_id`, `generation`, `started_utc`, `command` and `cwd`
+    could all be renamed, and `command` and `cwd` made null, with the suite green.
+
+    Two sides, and neither is this test restating the other: the KEY SET is a constant above
+    that a human maintains, and every VALUE is checked against a source that is not
+    `_append_start` -- the project's injected `run_id`/`generation`, this process's own pid, or
+    the completed history line, which is a SECOND independent projection of the same record.
+    A start line and a record line that disagree about one run is the defect this holds shut.
+    """
+    proj = _project(tmp_path)
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.json"):
+        pass
+
+    raw = _raw_lines(tmp_path / "runs.jsonl")
+    start = [r for r in raw if r.get("schema") == runprov.run.START_SCHEMA]
+    assert len(start) == 1, "the premise: one run appends exactly one start line"
+    start, ended = start[0], _completed(raw)[0]
+
+    assert set(start) == _START_FIELDS, (
+        "the start line gained or lost a field; a consumer filtering on START_SCHEMA reads "
+        "this shape and nothing else tells it the shape moved"
+    )
+    #: THE INJECTED VALUES, not whatever the host supplies -- `_project` feeds both.
+    assert (start["run_id"], start["generation"]) == ("test_run", "test_gen")
+    assert start["script"] == "s" and start["schema"] == runprov.run.START_SCHEMA
+    assert start["pid"] == os.getpid()
+    #: THE SECOND PROJECTION. Not `is not None`: the two lines must AGREE.
+    for field in ("run_uid", "script", "started_utc", "command", "cwd"):
+        assert start[field] == ended[field], (
+            f"the start line and the record line disagree about {field!r} for one run"
+        )
+    assert start["command"] is not None and start["cwd"] is not None, (
+        "nulling either is what the mutation run did, and both lines would still agree"
+    )
+    #: THE CHAIN FIELD, by its SHAPE. A first line is `GENESIS`; anything else is the digest
+    #: of the line before it, and `chain` is the only reader that can say which.
+    assert start["prev"] == runprov.chain.GENESIS or re.fullmatch(r"[0-9a-f]{64}", start["prev"])
+
+
+def test_the_in_flight_marker_carries_exactly_the_fields_it_declares(tmp_path):
+    """Read INSIDE the block, because that is the only moment the marker exists. Same two
+    sides as the start line: a maintained key set, and values sourced from the injected
+    project, this process, or the record -- never from `_mark_in_flight` itself."""
+    proj = _project(tmp_path)
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.json") as run:
+        markers = list(proj.resolved_incomplete_dir().glob("*.json"))
+        assert len(markers) == 1, "the premise: an in-flight run leaves exactly one marker"
+        marker = json.loads(markers[0].read_text(encoding="utf-8"))
+        assert set(marker) == _MARKER_FIELDS, (
+            "the marker gained or lost a field, and it is the only record a SIGKILLed run leaves"
+        )
+        assert marker["run_uid"] == run.record["run_uid"] and marker["script"] == "s"
+        assert marker["pid"] == os.getpid() and marker["host"] == platform.node()
+        assert marker["started_utc"] == run.record["started_utc"]
+        assert marker["cwd"] == run.record.get("cwd") and marker["cwd"] is not None
+        assert marker["history"], "a marker that names no destination answers nothing"
+
+
+def test_the_history_projects_inputs_and_outputs_through_one_contract(tmp_path):
+    """L-23. `_append_history` builds `inputs` and `outputs` from the same three lines, and
+    the re-check measured that only the inputs side was held: `o.get("XXsha256XX")`,
+    `o.get("sha256") and o.get("sha256_tree")` and `o.get("XXcontent_sha256XX")` all survived
+    while their `i.`-spelled twins were killed. One block asserted, its identical twin not.
+
+    So this asserts the contract ONCE and runs it over BOTH lists, and the digests' second
+    side is `runprov.sha256` / `runprov.content_digest` / `describe` over the real bytes --
+    not the record, which is what the projection was built from.
+
+    A DIRECTORY ON EACH SIDE, deliberately: `"sha256"` is written
+    `o.get("sha256") or o.get("sha256_tree")`, and with only plain files registered the
+    fallback never evaluates, so mutating it is an equivalence no assertion can reach.
+    """
+    proj = _project(tmp_path)
+    src = tmp_path / "in.tsv"
+    src.write_text("id\n1\n", encoding="utf-8")
+    din = tmp_path / "din"
+    din.mkdir()
+    (din / "a.txt").write_text("a\n", encoding="utf-8")
+
+    with runprov.Run("s", project=proj, provenance=tmp_path / "p.json") as run:
+        run.input(src)
+        run.input(din)
+        pathlib.Path(run.output(tmp_path / "out.tsv")).write_text("x\n", encoding="utf-8")
+        dout = pathlib.Path(run.output(tmp_path / "dout"))
+        dout.mkdir()
+        (dout / "b.txt").write_text("b\n", encoding="utf-8")
+
+    rec = _lines(tmp_path / "runs.jsonl")[0]
+    entries = [("inputs", e) for e in rec["inputs"]] + [("outputs", e) for e in rec["outputs"]]
+    assert len(entries) == 4, "the premise: two files and two directories, one of each side"
+
+    seen = set()
+    for side, entry in entries:
+        where = f"{side} entry {entry['path']!r}"
+        extra = set(entry) - _HISTORY_ENTRY_REQUIRED - _HISTORY_ENTRY_OPTIONAL
+        assert not extra, f"{where} carries fields this contract does not account for: {extra}"
+        assert _HISTORY_ENTRY_REQUIRED <= set(entry), (
+            f"{where} is missing a required field; the history is what `show` and `log` read"
+        )
+        target = tmp_path / pathlib.Path(entry["path"]).name
+        assert target.exists(), f"{where} names something that is not there"
+        if target.is_dir():
+            #: THE FALLBACK ARM. `sha256` carries the TREE digest for a directory, and
+            #: `content_sha256` is absent from the record, so the key is present and null.
+            assert entry["sha256"] == runprov.describe(target)["sha256_tree"], (
+                f"{where}: a directory's `sha256` must be the tree digest, via the fallback"
+            )
+            assert entry["content_sha256"] is None
+            assert entry["kind"] == "directory"
+        else:
+            assert entry["sha256"] == runprov.sha256(target), f"{where}: wrong `sha256`"
+            assert entry["content_sha256"] == runprov.content_digest(target), (
+                f"{where}: wrong `content_sha256` -- the identity the pin joins on"
+            )
+            assert "kind" not in entry, f"{where}: a plain file adds no key to a forever file"
+        seen.add((side, target.is_dir()))
+
+    assert seen == {("inputs", True), ("inputs", False), ("outputs", True), ("outputs", False)}, (
+        "EVERY BRANCH ON BOTH SIDES was exercised; the asymmetry this closes was one side "
+        "of one branch going unasserted for the whole campaign"
+    )
+    assert run.record["run_uid"]
+
+
 def _run_thrice(tmp_path, **projkw):
     """Three real runs under one project. Returns the project."""
     proj = runprov.Project(
