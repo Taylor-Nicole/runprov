@@ -73,6 +73,14 @@ decorator: `sys.monitoring`, scoped to code under the project root, and bounded 
 observer stops itself after 50 000 calls and the record says when. `configure(
 auto_steps="arguments")` additionally digests the distinct argument sets each function saw.
 
+**A ceiling on hashing, for the files that are the reason people stop registering reads.**
+`configure(digest_max_bytes="1GiB")` declines a digest above the limit and *records that it
+declined*: the entry carries the path, the size and a note giving the measured size and the
+limit — never a placeholder digest, so every reader that joins on a digest sees an absence it
+can report rather than a value it would believe. `digest=` on `input()` and `output()` overrides
+it either way for one call. The default is `None`, which is the previous behaviour exactly: no
+ceiling, so no existing run changes meaning.
+
 Every record carries an `observation` block naming what the run was *able* to observe, so a
 record with no steps is distinguishable from one made where steps could not be observed.
 

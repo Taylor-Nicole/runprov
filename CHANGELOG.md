@@ -619,6 +619,39 @@ measured by none of the three controls, because control 5 deliberately strips do
 produced T-41 in the first place. The harness's control count is bound to its own enumeration,
 which nothing checked while it said seven and listed seven.
 
+### Added — `digest_max_bytes` is documented in both READMEs, which it was not
+
+0.9.0's one new public API shipped undocumented on the two pages a user reads. Measured before
+the tag: `digest_max_bytes` appears in `docs/public-surface.txt` — so it is a **promised** API,
+`Project:digest_max_bytes` and `Project.resolved_digest_max_bytes` — and **zero times** in
+`README.md` and `README-pypi.md`. The CHANGELOG entry above and ADR-0022 both ship, so it was
+not undiscoverable; it was absent from the discovery surface.
+
+**`README-pypi.md` is why this could not wait for 0.10.0.** PyPI freezes the description at
+upload and never lets it be replaced, so the 0.9.0 page would have described 0.8.0's feature set
+permanently — for the release whose only new public API is this one. `README.md` can be fixed in
+any later release; that page cannot be fixed for this version ever.
+
+Both additions keep their examples in fenced blocks and their figures in inline code, because
+the claims instrument skips fences and strips inline code before asking whether a line makes a
+numeric claim in prose. Verified rather than assumed: residue `121 of 418` before and after.
+
+**And `ruff format` reaches INTO a README's python fenced blocks**, which is worth knowing
+before writing one: the first version of this section aligned its trailing comments into a
+column, `ruff format --check` objected, and the gate went red in `lint` before any test ran. A
+README example is held to the same formatter as the package, so it cannot drift into a style the
+package would reject.
+
+**Two claims in the first draft were narrowed because nothing verified them.** It said
+*"`verify` and `chain` say cannot check for such an entry"* — `chain` is about the history's
+hash linkage and not about file digests at all, so it was simply the wrong subject, and
+`verify.py` contains no reference to the `digested` flag, so the other half was unestablished
+too. It also enumerated four consumers that would "see an absence". What replaced both is the
+mechanism actually read out of `hashing.py`: the entry carries `digested: false` and no digest
+keys, which is what `verify`'s *green must mean checked* rule rests on. **Shipping an
+unverified claim in the commit whose purpose is documenting truthfully would have been the
+defect this release spent its day removing.**
+
 ### Tested — the CHANGELOG is maintained in the commit that earns the entry, and that is now enforced
 
 **Taylor's instruction, made a check rather than a habit.** Cutting this release found this file

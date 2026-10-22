@@ -206,6 +206,46 @@ sometimes useful (a caller may want the record at a second path); the history is
 appended exactly once, at exit, with the true status. It is `write()` **instead of**
 `provenance=` that loses the run.
 
+## When a file is too big to hash: `digest_max_bytes`
+
+Registering a read hashes it, and on a reference genome or a multi-gigabyte BAM that cost is
+the reason someone stops registering reads at all — which loses the whole record rather than
+one digest. So there is a ceiling, and **declining a digest is recorded as declining it**:
+
+```python
+from runprov import configure
+
+configure(digest_max_bytes="1GiB")  # or an int; `None` (the default) means no ceiling
+
+run.input("ref/hg38.fa")  # over the limit -> recorded, NOT read
+run.input("critical.vcf", digest=True)  # override: hashed whatever the ceiling says
+run.output("out/big.bam", digest=False)  # override the other way, applied in write()
+```
+
+`None` is the default and is the previous behaviour exactly: everything is digested, whatever
+it costs, so **no existing run changes meaning** when you upgrade.
+
+| | what the entry says |
+|---|---|
+| under the ceiling | the digests, as before |
+| over the ceiling | the path, the size, and a `note` giving the measured size and the limit that rejected it |
+| `digest=False` | the path, the size, and a `note` naming the caller's own choice |
+| `digest=True` | the digests, whatever the ceiling says |
+
+**A declined digest is never an invented one.** The entry carries `digested: false` and no
+`sha256` or `content_sha256` at all, rather than a placeholder — so a reader that joins on
+either identity sees an absence it can report instead of a value it would believe. That is the
+same posture as `git_status_captured: false`: the record states what it was able to observe, and
+it is what lets `verify` keep its rule that **green must mean checked**.
+
+The `note`'s wording is part of the contract rather than a diagnostic, because it is written to
+disk and read back. The threshold form leads with the measured size and ends with the limit; the
+explicit form names the argument you passed.
+
+`digest=` is keyword-only on both methods, so the positional argument of `input()` and
+`output()` stays the path it has always been and no existing call changes meaning. The
+project-wide ceiling is read back as `Project.resolved_digest_max_bytes`.
+
 ## Why this exists rather than the obvious thing
 
 The obvious thing already existed. `hcv_genotyping/src/utils/log_transformation.py`
