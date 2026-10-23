@@ -113,6 +113,26 @@ def _files(records: typing.Iterable[dict[str, typing.Any]]) -> dict[str, dict[st
     return out
 
 
+def _snapshot_block(record: typing.Mapping[str, typing.Any]) -> dict[str, typing.Any]:
+    """The environment snapshot from EITHER record shape, in one place.
+
+    **WRITTEN TWICE AND FOUND BY THE MUTATION HARNESS.** Both readers below opened with the same
+    three lines, so a mutation anchored on them matched twice and `bench` refused the experiment
+    — control 1 earning its keep on a defect it was not looking for. Two copies of *find the
+    snapshot in either record shape* would have drifted by a whole case, which is what this
+    project has measured every duplicated rule doing, and `diff._snapshot_of` is a third copy
+    one module over that this one does not yet reach.
+
+    THE TWO SHAPES ARE RENAMED, NOT MERELY NESTED DIFFERENTLY: the history projection writes a
+    top-level `environment_snapshot` and the sidecar keeps `environment.snapshot`. `export`
+    renders both of ADR-0009's scopes, so a reader of one shape only would carry the environment
+    for a whole history and silently omit it for the single-run scope.
+    """
+    flat = record.get("environment_snapshot")
+    nested = (record.get("environment") or {}).get("snapshot")
+    return flat if isinstance(flat, dict) else nested if isinstance(nested, dict) else {}
+
+
 def _package_set(record: typing.Mapping[str, typing.Any]) -> tuple[str, str] | None:
     """The run's package-set digest and the algorithm that produced it, or None. ADR-0027.
 
@@ -122,15 +142,9 @@ def _package_set(record: typing.Mapping[str, typing.Any]) -> tuple[str, str] | N
     answer differently depending on the machine it was rendered on, and would make *recorded* and
     *recomputed* indistinguishable in the one artifact that leaves this machine.
 
-    BOTH SPELLINGS, because a record has two: the history projection writes a top-level
-    `environment_snapshot` and the sidecar keeps `environment.snapshot`. `export` renders both
-    scopes [ADR-0009], so a reader of one shape only would export the environment for a whole
-    history and silently omit it for the single-run scope — which is the scope a reviewer
-    holding a file and its sidecar has.
+    BOTH RECORD SHAPES, through `_snapshot_block` so that reasoning lives in one place.
     """
-    flat = record.get("environment_snapshot")
-    nested = (record.get("environment") or {}).get("snapshot")
-    snapshot = flat if isinstance(flat, dict) else nested if isinstance(nested, dict) else {}
+    snapshot = _snapshot_block(record)
     sets = snapshot.get("package_sets")
     if not isinstance(sets, dict):
         return None
@@ -147,9 +161,7 @@ def _package_set(record: typing.Mapping[str, typing.Any]) -> tuple[str, str] | N
 
 def _interpreter(record: typing.Mapping[str, typing.Any]) -> str | None:
     """The recorded interpreter version, kept apart from the package set. ADR-0027 R-7."""
-    flat = record.get("environment_snapshot")
-    nested = (record.get("environment") or {}).get("snapshot")
-    snapshot = flat if isinstance(flat, dict) else nested if isinstance(nested, dict) else {}
+    snapshot = _snapshot_block(record)
     found = snapshot.get("python") or (record.get("environment") or {}).get("python")
     return found if isinstance(found, str) and found else None
 

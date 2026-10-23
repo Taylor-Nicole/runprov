@@ -42175,6 +42175,16 @@ def test_prov_relates_the_environment_with_used_and_claims_no_causation():
     key = next(k for k in prov["entity"] if "pkgset" in k)
     assert prov["entity"][key]["prov:type"] == "runprov:PackageSet"
     assert prov["entity"][key]["runprov:algorithm"] == runprov.pkgset.ALGORITHM
+    #: THE DIGEST ITSELF, IN FULL, AND THIS ASSERTION IS A STAGE-3 FINDING. A mutation truncating
+    #: the exported value to eight characters **SURVIVED**: this test asserted the entity's type,
+    #: its algorithm, its relation and the absence of a causal claim, and never the one value an
+    #: external tool reads. The crate half asserted its `value` and the PROV half did not —
+    #: asymmetric coverage of two renderings of one fact, which is the shape ADR-0017's
+    #: one-builder rule exists to prevent and which a reading of the tests would not have shown.
+    assert prov["entity"][key]["runprov:package_set_sha256"] == "d" * 64, (
+        "the exported digest is not the recorded one, so an external tool reads a value it "
+        "cannot check against anything"
+    )
     assert any(rel["prov:entity"] == key for rel in prov["used"].values()), (
         "the package set is an entity nothing relates to the run, so a consumer cannot tell "
         "which activity it belongs to"

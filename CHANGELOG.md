@@ -117,6 +117,19 @@ the field.
 
 ### Fixed
 
+**The exported PROV digest is asserted, and a mutation proved it was not.** Truncating
+`runprov:package_set_sha256` to eight characters **survived the suite**: the test asserted the
+entity's type, its algorithm, its `used` relation and the absence of a causal claim, and never
+the one value an external tool reads — while the RO-Crate half of the same fact *did* assert its
+`value`. **Asymmetric coverage of two renderings of one fact**, which no reading of the tests
+would have shown, because both look thorough.
+
+**`export` finds the snapshot block in one place rather than two**, which a mutation control
+found rather than a reviewer: both readers opened with the same three lines, so an anchor on them
+matched twice and the experiment was refused. Two copies of *find the snapshot in either record
+shape* would have drifted by a whole case. **`diff._snapshot_of` is a third copy** one module
+over, recorded here and not reached by this change.
+
 **A typed truncation helper in `env`'s dimension renderer.** Two untyped lambdas in a conditional
 expression, which `mypy` over the derived scope rejects as a call to an untyped function in a
 typed context — and which reached `main` in a commit that should not have been green. The nested
