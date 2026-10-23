@@ -36331,9 +36331,28 @@ def test_every_accepted_decision_record_declares_what_it_GOVERNS_and_the_targets
 
     `proposed` IS EXEMPT FROM (1), AND THE STATUS IS WHAT LICENSES IT. A specification for a
     feature that is not built governs nothing, and a field naming files that do not exist yet would
-    be dangling by construction. Exactly the four proposed records are exempt; the exemption is
-    read from the document rather than from a list here, so a record that moves to `accepted` must
-    declare its targets in the same commit.
+    be dangling by construction. **The exempt set is read from the documents rather than counted
+    here**, so a record that moves to `accepted` must declare its targets in the same commit --
+    and no number in this docstring can go stale as the corpus grows, which an earlier version of
+    this sentence did within a fortnight by naming a count of proposed records.
+
+    A `proposed` RECORD MAY DECLARE THE FIELD ANYWAY, AND WHERE IT DOES, (3) IS WHAT FORCES THE
+    STATUS FLIP ON RELEASE DAY. This is the hole ADR-0017 fell through -- its status read *"a
+    feature that is not built"* through the release that shipped it -- and nothing above closes
+    it, because (1) exempts a proposed record and (3) skips a record that declares nothing.
+    ADR-0020 and ADR-0023 therefore declare `Applies to:` while still proposed, naming only a
+    file that already exists. **Measured 2026-10-23, both directions:** a module whose docstring
+    cited ADR-0020 was planted, and with the field present this test failed with *"runprov/env.py
+    names ADR-0020, which does not list it"*; with the field deleted and the same module planted,
+    **it passed**. So those two fields are load-bearing rather than decorative, and deleting one
+    as redundant would silently restore the ADR-0017 hole for that record.
+
+    WHY (3) STILL SKIPS A RECORD THAT DECLARES NOTHING, WHICH LOOKS LIKE A GAP AND IS NOT. The
+    tempting repair is *a module citing ADR-N means N is implemented, so refuse it when N
+    declares nothing*. **Refuted on the only instance available:** `runprov/impact.py` cites
+    ADR-0021 to say what that decision FORBIDS -- *"ADR-0021 forbids rewriting a history"* --
+    and ADR-0021 is proposed and declares nothing. A citation is not an implementation claim, so
+    that repair would have demanded a declaration from a record that governs nothing, on day one.
 
     READ FORMAT-AGNOSTICALLY, which is a finding and not laziness: the corpus writes these fields
     three ways — a `- **bullet**`, a `**bold:** line`, and inline after a `·`. A line-start anchor
@@ -40954,6 +40973,114 @@ def test_every_command_reads_a_history_written_by_a_released_version(
             )
         checked += 1
     assert checked >= 8, f"only {checked} commands were run against {version}"
+
+
+#: WHAT THE CORPUS CAN AND CANNOT SAY ABOUT A RENDERED ENVIRONMENT [ADR-0020]. The two counts
+#: below are the only honest way to report this: `runprov env` has four input shapes and the
+#: corpus exercises ONE of them nine times over. Reporting "nine releases covered" without the
+#: second number would conflate *unobserved* with *absent*, which is the failure the measurement
+#: this test was written from already made once.
+_CORPUS_ENV_KEYS_ENV_READS = ("python", "platform", "lockfiles", "manager", "snapshot")
+
+
+@pytest.mark.skipif(not CORPUS_VERSIONS, reason="no corpus — tools/corpus.py generate --all")
+def test_every_corpus_version_carries_the_environment_that_env_WILL_RENDER():
+    """The cross-version surface `runprov env` inherits, and — measured — the three branches it
+    does not.
+
+    WHY THIS IS THE TEST BED AND NOT A NICETY. Every other test of the environment block builds
+    a record with the same code that reads it. The corpus is the only thing here holding a record
+    written by a DIFFERENT version — nine of them, each produced by the real released wheel from
+    PyPI — so *"a snapshot written by 0.1.0 must still render under 0.10.0"* is a question only
+    this directory can ask. Audit C is why that matters: `sha256_tree` silently changed inside a
+    fix meant to make it machine-INdependent, so every directory input pinned by 0.1.0 through
+    0.4.0 would have verified STALE with nothing on disk touched, and the suite was green
+    throughout because it had no record older than itself.
+
+    WHAT IS ASSERTED, over every record in every version rather than a sample: the five keys the
+    renderer reads are present [ADR-0020 R-2, R-4, R-7, R-8]; the content-addressed snapshot file
+    is where the record says it is; its body hashes to the `sha256` the record carries; and its
+    FILENAME equals that digest's first sixteen characters, which is the property that makes the
+    file self-identifying and the one a CRLF translation broke once on Windows.
+
+    AND THE BODIES MUST DIFFER. Nine versions of one byte-identical file would satisfy every
+    assertion above while measuring a single writer. They differ by exactly the line naming
+    runprov's own version, which is also why the header format's nine-release stability is a
+    fact this test establishes rather than assumes.
+
+    THE THREE LIMITS ARE SELF-RETIRING, and that is the point of stating them as counts. The
+    scenario installs two packages into a bare venv with no lock file, so rank 1 (R-2's *the lock
+    is the answer*), the conda separator (R-7) and the unreadable-distribution path (R-5) have
+    **zero** corpus coverage and need synthetic fixtures. Each is asserted to be zero WITH the
+    instruction that reaching it is good news: the day the scenario gains a lock or a conda
+    prefix, this goes red and says which stated limit in ADR-0020 is now wrong. A limit recorded
+    as prose would simply become false; a limit recorded as a count announces its own retirement.
+    """
+    seen, bodies, with_lock, with_conda, with_unreadable = 0, set(), [], [], []
+    for version in CORPUS_VERSIONS:
+        tree = corpus_tool.CORPUS / version / "tree"
+        records = sorted(tree.rglob("*.prov.json"))
+        assert records, f"{version} has no provenance record, so this version measures nothing"
+        for path in records:
+            environment = json.loads(path.read_text(encoding="utf-8")).get("environment")
+            assert isinstance(environment, dict), (
+                f"{version}/{path.name} records no environment block, so the renderer has "
+                f"nothing to read and this version cannot be a regression surface for it"
+            )
+            missing = [k for k in _CORPUS_ENV_KEYS_ENV_READS if k not in environment]
+            assert not missing, f"{version}/{path.name} is missing {missing}"
+
+            snapshot = environment["snapshot"]
+            body_path = tree / snapshot["path"]
+            assert body_path.is_file(), (
+                f"{version}/{path.name} names {snapshot['path']}, which is not in the tree — "
+                f"the renderer reads a FILE and a record whose sidecar is gone is exit 2, not "
+                f"an empty render [ADR-0020 R-6]"
+            )
+            body = body_path.read_bytes().decode("utf-8")
+            digest = hashlib.sha256(body.encode()).hexdigest()
+            assert digest == snapshot["sha256"], (
+                f"{version}/{path.name}: the snapshot body hashes to {digest[:16]} and the "
+                f"record asserts {snapshot['sha256'][:16]}"
+            )
+            assert body_path.name == f"env-{digest[:16]}.txt", (
+                f"{version}: {body_path.name} does not hash to its own name, so the one digest "
+                f"whose whole job is to identify these bytes does not"
+            )
+            bodies.add(body)
+            seen += 1
+            if environment["lockfiles"]:
+                with_lock.append(version)
+            if "# --- conda-meta" in body:
+                with_conda.append(version)
+            if snapshot.get("n_unreadable"):
+                with_unreadable.append(version)
+
+    #: NOT VACUOUS, in both dimensions: nine versions each contributing nothing would pass every
+    #: assertion in the loop, and so would nine copies of one file.
+    assert len(CORPUS_VERSIONS) >= 8, f"only {len(CORPUS_VERSIONS)} version(s); the scope broke"
+    assert seen >= 2 * len(CORPUS_VERSIONS), f"only {seen} record(s) over {len(CORPUS_VERSIONS)}"
+    assert len(bodies) == len(CORPUS_VERSIONS), (
+        f"{seen} record(s) over {len(CORPUS_VERSIONS)} version(s) produced {len(bodies)} distinct "
+        f"snapshot bodies; one body per version is what makes this nine writers rather than one"
+    )
+
+    #: THE SELF-RETIRING LIMITS. Each failure here is a CAPABILITY GAINED, and says so.
+    assert not with_lock, (
+        f"the corpus now records a lock file ({sorted(set(with_lock))}), so rank 1 — ADR-0020 "
+        f"R-2, the lock is the answer and the package list is not — has cross-version coverage "
+        f"for the first time. Delete this assertion and strike the stated limit from ADR-0020"
+    )
+    assert not with_conda, (
+        f"the corpus now records conda packages ({sorted(set(with_conda))}), so ADR-0020 R-7's "
+        f"separator-driven classification has cross-version coverage. Delete this assertion and "
+        f"strike the stated limit from ADR-0020"
+    )
+    assert not with_unreadable, (
+        f"the corpus now records an unreadable distribution ({sorted(set(with_unreadable))}), so "
+        f"ADR-0020 R-5's named-and-counted path has cross-version coverage. Delete this "
+        f"assertion and strike the stated limit from ADR-0020"
+    )
 
 
 @pytest.mark.skipif(not CORPUS_VERSIONS, reason="no corpus — tools/corpus.py generate --all")

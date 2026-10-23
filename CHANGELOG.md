@@ -11,6 +11,31 @@ is a fix nobody checked.
 
 ### Changed
 
+**The cross-version corpus is now `env`'s test bed, with its three blind spots asserted as
+counts.** Measured over all 27 records in all 9 corpus versions: every record carries the full
+eight-key environment block, the content-addressed snapshot file is present at the recorded path
+27 of 27, its body hashes to the recorded digest 27 of 27, and its filename equals that digest's
+first sixteen characters 27 of 27 — with **nine distinct bodies**, so this is nine writers rather
+than one file counted nine times. Every assertion was proved reachable by planting the defect it
+is about and reading which assertion fired.
+
+**And what it cannot reach is stated rather than left to look like coverage.** The scenario
+installs two packages into a bare venv, so `lockfiles` is empty in 9 of 9, no body carries the
+conda separator, and `n_unreadable` is 0 in 9 of 9 — **zero cross-version coverage for ADR-0020's
+R-2 rank 1, R-7 and R-5.** Those three zeros are asserted as counts, so each announces its own
+retirement: the day the scenario gains a lock file or a conda prefix the test goes red and names
+the row of the ADR's table that has stopped being true. Nine green versions would otherwise read
+as coverage of a feature with three untested branches.
+
+**A documented hole in the decision-record guard is closed by declaration rather than by code.**
+ADR-0017's status said *"a feature that is not built"* through the release that shipped it, and
+the two-way GOVERNS check still cannot see that case: it exempts a `proposed` record from
+declaring what it governs, and skips a record that declares nothing. ADR-0020 and ADR-0023
+therefore declare `Applies to:` while still proposed, naming only a file that already exists —
+measured in both directions, a planted module citing ADR-0020 reddens the check with the field
+present and **passes with it deleted**. The reasoning is recorded at the guard, because the
+obvious tidy-up is to remove a field the guard's own docstring calls exempt.
+
 **ADR-0020 is rewritten and ADR-0023 is added: rendering a recorded environment and rebuilding
 one are now two decisions, not one.** ADR-0020's 2026-10-21 version both specified the renderer
 and **rejected** standing the environment up again. That rejection is reversed — the three

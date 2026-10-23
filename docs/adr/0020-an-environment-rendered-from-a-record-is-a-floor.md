@@ -104,6 +104,34 @@ description of an environment. It installs nothing, executes nothing, and makes 
 the numbers. **Re-run-and-verify remains a capability runprov does not have**, and ADR-0019's
 `rerun` still prints and never runs.
 
+## The cross-version test bed, and the three branches it does not reach
+
+`tests/corpus/` holds records written by **nine real released wheels**, installed from PyPI, each
+running one scenario. It is the only place in this project where a record is read by code that did
+not write it, which is the question this feature lives or dies by: *a snapshot written by 0.1.0
+must still render under 0.10.0.* **Measured 2026-10-23 over all 27 records in all 9 versions:**
+every record carries the full eight-key environment block; the content-addressed snapshot file is
+present at the path the record names in 27 of 27; its body hashes to the recorded `sha256` in 27
+of 27; and its filename equals that digest's first sixteen characters in 27 of 27. The nine bodies
+are **nine distinct files**, differing by the line naming runprov's own version, so this is nine
+writers rather than one file counted nine times.
+
+**And it reaches exactly one of this record's input shapes.** The scenario installs two packages
+into a bare venv, so — measured, not assumed:
+
+| branch | corpus coverage | how it is reached instead |
+|---|---|---|
+| **R-2 rank 1**, a lock file archived | **none** — `lockfiles: []` in 9 of 9 | a synthetic fixture |
+| **R-7**, the `# --- conda-meta …` separator | **none** — absent from 9 of 9 bodies | a synthetic fixture |
+| **R-5**, a distribution with no readable name | **none** — `n_unreadable: 0` in 9 of 9 | a synthetic fixture |
+
+Stating this is the point rather than a caveat: **nine green versions would otherwise read as
+coverage of a feature with three untested branches**, which is the shape of conflating *not
+observed* with *not there*. The three zeros are asserted as counts in
+`test_every_corpus_version_carries_the_environment_that_env_WILL_RENDER`, **so each one announces
+its own retirement** — the day the scenario gains a lock file or a conda prefix, that test goes
+red and names the row of this table that has stopped being true.
+
 ## Alternatives considered
 
 **Build the environment, not just describe it.** The 2026-10-21 version of this record
