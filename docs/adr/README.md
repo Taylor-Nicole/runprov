@@ -49,3 +49,4 @@ A *Proposed* ADR is the right place to think out loud. It is not a promise.
 | [0020](0020-an-environment-rendered-from-a-record-is-a-floor.md) | An environment rendered from a record is a floor | Proposed |
 | [0021](0021-many-histories-are-merged-at-read-time-never-rewritten.md) | Many histories are merged at read time, and never rewritten | Proposed |
 | [0022](0022-a-digest-may-be-declined-but-never-faked.md) | A digest may be declined, but never faked | Accepted |
+| [0023](0023-a-rebuild-names-its-rank-and-verifies-what-it-built.md) | A rebuild names its rank, and verifies what it built | Proposed |

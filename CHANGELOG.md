@@ -9,6 +9,33 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Changed
+
+**ADR-0020 is rewritten and ADR-0023 is added: rendering a recorded environment and rebuilding
+one are now two decisions, not one.** ADR-0020's 2026-10-21 version both specified the renderer
+and **rejected** standing the environment up again. That rejection is reversed — the three
+clauses it rested on are answered by requirement in ADR-0023, and the sentence that justified it,
+*"runprov records; the manager installs"*, is the sentence ADR-0023 R-6 preserves. The reversal
+is recorded in ADR-0020, the record that made the refusal.
+
+**Two records rather than one, because the citation guard partitions by declared status.** The
+feature ships across two releases, so a single record would either be `Accepted` while a dozen
+of its requirements had no code to cite them, or stay `Proposed` through the release that shipped
+half of it. The second is verbatim the defect ADR-0017's own status line records about itself.
+Each record now carries one status and enters the guard on the release that ships it.
+
+**One requirement came out of measuring the specification rather than writing it.**
+`_render_snapshot` puts `platform.platform()` inside the body that `write_snapshot` digests, so
+two identical package sets on two kernels produce different snapshot digests. A rebuild that
+verified by comparing body digests could therefore **never report equal on a different machine**
+— the only case that matters — and would answer *"it differs"* while listing no package
+differences. ADR-0023 R-11 compares the package set below the header and reports host drift
+separately; R-12 adds `packages_sha256` to the snapshot **record**, recomputed from the file for
+records written before it existed, because the body is content-addressed and nine releases of
+digests depend on its bytes.
+
+Both records are `Proposed`. No behaviour changes in this release.
+
 ### Fixed
 
 **`ci.py matrix-check` no longer reports "no run" for a matrix that exists.** The step asks
