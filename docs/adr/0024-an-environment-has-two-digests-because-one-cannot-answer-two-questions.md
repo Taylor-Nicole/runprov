@@ -1,12 +1,12 @@
 # 24. An environment has two digests, because one digest cannot answer two questions
 
-- **Status:** Proposed — T-36c. Specification for a feature that is not built. Asked for by Taylor
+- **Status:** Proposed — T-36c. Specification for a feature that is not built. **Six requirements were split out to ADR-0025 and BUILT on 2026-10-23** — the canonical form and its single implementation — because a module's docstring citing a record is a claim the record is implemented, and the gate refuses that against a `Proposed` one. Their numbers here are kept as pointers. What remains is the two-digest record model, the comparison and the preflight, none of it built. Asked for by Taylor
   on 2026-10-23: *"can we make it so that there is an environment digest per host and also per
   package set… one that can be recreated in a containerized environment for a reviewer,
   researcher, auditor etc, and the verification might not always be on the original host."*
   Depends on ADR-0010 for what a record may state, ADR-0007 for its exit codes, and ADR-0005 for
   how the record is written. ADR-0020 and ADR-0023 cite this record rather than restating it.
-- **Applies to:** `runprov/environment.py`, whose snapshot body this record forbids changing.
+- **Applies to:** `runprov/environment.py`, whose snapshot body this record forbids changing., `runprov/pkgset.py`
 
 ## Context
 
@@ -54,13 +54,9 @@ from the other:
 | field | over | answers |
 |---|---|---|
 | `snapshot.sha256` *(exists today, unchanged)* | the whole rendered body, header included | *has this environment changed **on this host**?* |
-| `snapshot.packages_sha256` *(new)* | the canonical package set, below | *are these **the same packages**?* |
+| `snapshot.package_sets` *(new; a map, see R-20)* | the canonical package set, below | *are these **the same packages**?* |
 
-**R-2.** **The interpreter is not in either package-set digest; it is compared as its own recorded
-field.** `environment.python` and `snapshot.python` already carry it. A digest bundling the
-package set with the interpreter cannot say which of them moved, which is the defect this record
-exists to repair — repeating it one level in would be the same mistake with a smaller blast
-radius. Measured: a `# python` header change moves `sha256` and leaves `packages_sha256` alone.
+**R-2.** **MOVED TO ADR-0025 R-5 on 2026-10-23** — the interpreter is excluded from the package-set digest. The number is kept rather than reclaimed so that a citation written against this record still resolves to the right requirement, and so the move is visible rather than inferred from a gap.
 
 **R-3.** **`snapshot.sha256` is NOT renamed and NOT redefined.** Its meaning is documented as
 host-bound. Renaming it would break every consumer and every corpus record for a gain of clarity
@@ -68,36 +64,18 @@ that a sentence buys instead.
 
 ### The canonical package set, specified so it can be recomputed without this package
 
-**R-4.** The canonical text is, in order, LF-separated with a trailing newline:
+**R-4.** **MOVED TO ADR-0025 R-1 on 2026-10-23** — the canonical text. The number is kept rather than reclaimed so that a citation written against this record still resolves to the right requirement, and so the move is visible rather than inferred from a gap.
 
-```
-runprov.pkgset.v1
-pip <name> <version>          # one line per pip distribution, sorted by name
-conda <name> <version> <build>  # one line per conda package, sorted by name
-```
+**R-5.** **MOVED TO ADR-0025 R-2 on 2026-10-23** — the total parse, and the refusal on an unclassifiable line. The number is kept rather than reclaimed so that a citation written against this record still resolves to the right requirement, and so the move is visible rather than inferred from a gap.
 
-`<name>` is **PEP 503 normalised** — runs of `-`, `_` and `.` collapsed to a single `-`, then
-lowercased. The first line is a **domain separator**, so this digest can never collide with a
-digest of anything else. `packages_sha256` is the SHA-256 of that text.
-
-**R-5.** **The parse is total, and an unclassifiable line is a refusal rather than a dropped
-line.** Every non-blank line of a snapshot body is exactly one of: the conda separator
-(`# --- conda-meta (conda / mamba / micromamba / pixi) ---`); a conda entry, after it; a pip
-entry, before it; or an **annotation**, which is any other line beginning with `#`. A line that
-matches none of these **refuses with exit 2**. A canonicaliser that silently drops a line it does
-not understand produces a digest that is confidently wrong, and nothing downstream can tell.
-
-**R-6.** `snapshot.packages_algo` **records the canonical form by name** — `runprov.pkgset.v1`.
-The name is **frozen on release**, like `runprov.gate.v1` and `runprov.policy.v1`. A change to the
-canonical text is `runprov.pkgset.v2`, both remain computable, and a record states which it used.
-**A digest whose algorithm is not named is a number nobody can reproduce in five years.**
+**R-6.** **MOVED TO ADR-0025 R-4 on 2026-10-23** — the algorithm's name and its freeze. The number is kept rather than reclaimed so that a citation written against this record still resolves to the right requirement, and so the move is visible rather than inferred from a gap.
 
 **R-7.** **For a record written before this field existed, the value is RECOMPUTED from the
 snapshot body, and the output says it was recomputed rather than read.** Every corpus version from
 0.1.0 onward is therefore comparable today. *Recomputed* and *recorded* are not the same evidence
 and are never printed as though they were.
 
-**R-8.** **The recorded `packages_sha256` is verifiable against the body**, exactly as `sha256` is,
+**R-8.** **The recorded package-set digest is verifiable against the body**, exactly as `sha256` is,
 so a record that disagrees with its own sidecar is detectable rather than believed.
 
 ### Verification where the reviewer actually stands
@@ -109,7 +87,7 @@ not be told the environment does not match because of it.
 **R-10.** **The exit code is keyed on the PACKAGE SET** and follows ADR-0007: **0** the package
 sets are equal · **1** they differ, and the differing packages are named · **2** the comparison
 could not be made — no snapshot file, an unclassifiable body, or a record whose
-`packages_sha256` disagrees with its body. **An interpreter or host difference is reported and
+recorded package-set digest disagrees with its body. **An interpreter or host difference is reported and
 does not by itself move the exit code**, because it is a fact about where the reviewer is
 standing, not about whether the environment was rebuilt correctly.
 
@@ -166,16 +144,33 @@ exactly one package, every time**, and will read a correct rebuild as a failure.
 which is the same defect as one whose only possible answer is *differs* — one level in, and found
 by measuring the corpus rather than by review.
 
-**R-18.** **There is ONE implementation of R-4, it ships in the distribution, and it depends on
-nothing but the standard library.** It is a single module an auditor can copy out of an installed
-runprov — or out of the sdist — and run anywhere, including a container that has no runprov in it.
-The rest of the package imports **that** module; there is no second copy to drift from it, because
-*"the same rule in two places differs by whole cases rather than by details"* and a canonical form
-is exactly the kind of rule that cannot afford it. **A guard asserts the module's imports are
-stdlib-only**, derived from its own AST rather than from a list of permitted names, so the property
-that makes it copyable cannot be lost by an ordinary refactor. The measurement below — that R-4 was
-reimplementable from this text alone — is evidence that the **specification** is sufficient, and is
-not a licence to keep two implementations.
+**R-18.** **MOVED TO ADR-0025 R-6 on 2026-10-23** — one stdlib-only implementation, copyable out of the distribution. The number is kept rather than reclaimed so that a citation written against this record still resolves to the right requirement, and so the move is visible rather than inferred from a gap.
+
+### Three requirements that came from reverifying this record before building it
+
+**R-19.** **MOVED TO ADR-0025 R-3 on 2026-10-23** — a collision of canonical names is refused, not merged. The number is kept rather than reclaimed so that a citation written against this record still resolves to the right requirement, and so the move is visible rather than inferred from a gap.
+
+**R-20.** **The record carries a MAP from algorithm name to digest, not a digest plus a separate
+algorithm field:** `snapshot.package_sets: {"runprov.pkgset.v1": "<64 hex>"}`. With two flat
+fields a reader that forgets to consult the algorithm name compares a v2 digest against a v1
+digest and reports a **false difference**; with a map the lookup is *by* the algorithm the reader
+understands, so getting the wrong one is impossible rather than merely discouraged. A record
+mid-transition may carry both, which is what R-6 promises and what two flat fields cannot express.
+**A reader finding no entry for its algorithm answers *incomparable* — ADR-0014's "an
+incomparability is a value, not a missing key" — never *different*.**
+
+**R-21.** **The field is written into BOTH record shapes, and `diff` stops being blocked where it
+is present.** Measured: the history projection writes a top-level `environment_snapshot` and the
+sidecar writes `environment.snapshot`, and both carry the same seven keys today — so a field added
+to one and not the other is invisible to every consumer fed history records, `diff` among them.
+And `diff.compare()` currently reports a differing snapshot digest as **`blocked`**, with the
+reason *"a snapshot digest covers the interpreter and the platform as well as the packages, so it
+cannot say which of them moved"* — **this record's own finding, already in the package, already
+reasoned about, and worked around by declining to answer.** With `package_sets` recorded, that
+dimension becomes answerable. The old path stays for records written before the field existed,
+because `compare()` is pure and never opens a snapshot file, so it cannot recompute what was not
+recorded — and *recorded* versus *recomputable* is exactly the split ADR-0014 exists to keep
+visible.
 
 ## The measurement this record rests on
 
@@ -196,6 +191,7 @@ Twelve properties, measured 2026-10-23 against `_render_snapshot` and all 27 cor
 | every line of all 27 corpus bodies classified, 0 unclassifiable | **27 / 27** |
 | **R-4 reimplemented from this text alone** — stdlib only, no runprov, no network — reproduced all nine corpus package-set digests | **9 / 9** |
 | nine corpus package-set digests, **excluding `runprov` itself** | **9 distinct become 1** — R-17 |
+| a body with two entries normalising to one name, in two orders | **two different digests** — R-19 |
 
 The last row is the one that matters for R-12, and it is the reason R-4 is written as bytes rather
 than as prose: a specification a reviewer cannot reimplement is a specification that makes them
@@ -216,7 +212,7 @@ other one trades a defect for a different defect.
 middle tier is the product of two independent facts and so cannot say which moved. Two digests
 plus a separately-compared field answers all three questions and attributes every difference.
 
-**Put `packages_sha256` in the snapshot body's header.** Rejected under R-3 and *Context*: the
+**Put the package-set digest in the snapshot body's header.** Rejected under R-3 and *Context*: the
 body is the thing being digested, so a digest of the body cannot be inside it, and any new header
 line moves every existing digest.
 

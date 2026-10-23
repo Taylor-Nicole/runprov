@@ -51,3 +51,4 @@ A *Proposed* ADR is the right place to think out loud. It is not a promise.
 | [0022](0022-a-digest-may-be-declined-but-never-faked.md) | A digest may be declined, but never faked | Accepted |
 | [0023](0023-a-rebuild-names-its-rank-and-verifies-what-it-built.md) | A rebuild names its rank, and verifies what it built | Proposed |
 | [0024](0024-an-environment-has-two-digests-because-one-cannot-answer-two-questions.md) | An environment has two digests, because one digest cannot answer two questions | Proposed |
+| [0025](0025-the-canonical-package-set-and-one-implementation-of-it.md) | The canonical package set, and exactly one implementation of it | Accepted |

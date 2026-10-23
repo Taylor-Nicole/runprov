@@ -9,6 +9,38 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Added
+
+**`runprov/pkgset.py` — the canonical package set of an environment, and its digest.** ADR-0025,
+accepted and built. One module, **importing nothing but the standard library**, so an auditor can
+copy it out of an installed runprov or an unpacked sdist and run it in a container that has no
+runprov in it: `python pkgset.py env-<digest>.txt` prints `runprov.pkgset.v1:<hex>`. The rest of
+the package imports that module rather than carrying a second copy of the form.
+
+**Three checks hold the property that makes it copyable**, because *copyable* is what an ordinary
+refactor removes silently: one derives its intra-package import edges with the same resolver the
+layering guard uses and requires none; one asks the interpreter whether every remaining import is
+in the standard library; and one copies the file to a temporary directory and runs it under `-I`
+with the repository nowhere on the path, because the static halves cannot see a package-level side
+effect and a subprocess can.
+
+**A collision of canonical names is refused rather than merged**, which was found by reverifying
+the specification before building it: PEP 503 normalisation maps `zope.interface` and
+`zope_interface` onto one name, `installed_packages()` keys its map by the raw metadata name, and
+**keeping the last of two colliding entries made the digest depend on line order** — one
+environment, two digests, contradicting the order-invariance the form promises. It refuses, naming
+both versions, because the two differing is exactly why neither may be chosen.
+
+**The form is frozen by nine committed digests**, one per released corpus version, so a change to
+a single byte of it moves nine rows at once and names itself. A deliberate change is
+`runprov.pkgset.v2` under its own key, never a new value for v1: a digest quoted in a paper cannot
+be recalled.
+
+**The no-bare-`print` guard gained a DERIVED exemption rather than a third name.** `pkgset.py` may
+print because it may not import `_report`, and *that* is computable: a module with no
+intra-package import edges cannot reach the reporter, so the exemption is derived from its cause
+and retires itself the day such a module gains a sibling import.
+
 ### Changed
 
 **The cross-version corpus is now `env`'s test bed, with its three blind spots asserted as

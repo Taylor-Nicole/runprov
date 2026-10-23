@@ -7,10 +7,14 @@
   because the requirement-citation guard partitions by declared status, so a single record would
   either be accepted with a dozen requirements no code can cite or stay `Proposed` through the
   release that ships it. Depends on ADR-0007 for its exit codes and ADR-0017 for its JSON.
-- **Applies to:** `runprov/environment.py`, read and never changed by this. The renderer's own
-  module does not exist yet; the commit that accepts this record names it here. **Amended
-  2026-10-23 with R-11 and R-12**, the comparison surface, on Taylor's request for a package-set
-  digest a reviewer can recompute off the original host; what a digest means is ADR-0024.
+- **Applies to:** `runprov/environment.py`, `runprov/pkgset.py`
+- **Note:** `environment.py` is read and never changed by this record; `pkgset.py` is where R-7's
+  body-driven pip/conda split lives. The renderer's own module does not exist yet, and the commit
+  that accepts this record names it above — the field is one line because the guard that resolves
+  these targets reads to the end of the line, so a wrapped value is a target nobody checks.
+  **Amended 2026-10-23 with R-11, R-12 and R-13** — the comparison surface and the preflight — on
+  Taylor's request for a package-set digest a reviewer can recompute off the original host. What a
+  digest means is ADR-0024; how the canonical set is computed is ADR-0025.
 
 ## Context
 
@@ -120,8 +124,21 @@ renderer rather than waiting for `rebuild`:** the reader, the canonicaliser and 
 are already here, and a reviewer who builds an environment by hand in a container needs the
 comparison and not the build.
 
-**What a digest means, and how the canonical package set is computed, is ADR-0024** and is not
-restated here. One rule, one definition.
+**R-13.** `runprov env --can-check` **says what can be answered from what is actually here,
+before anyone tries.** Per subject, three states and never two: the **record** present or absent;
+the **snapshot sidecar** present, absent, or present-and-not-hashing-to-its-recorded-digest; the
+**package-set digest** recorded, recomputable from the body, or neither; the **lock** archived or
+not, which decides whether rank 1 exists at all [R-2]. *Could not look* and *looked and found
+nothing* are different answers everywhere else in this package [ADR-0007], and a reviewer who
+discovers at the end of an afternoon that the sidecar was pruned has been told that by nothing.
+
+**Scoped to the environment on purpose.** The same question about artifacts belongs to `verify`
+and about a history to `show`, and a preflight spanning all three would be a fourth command's
+worth of subject inside this one. **What this flag answers is "what can `env` answer here"**, and
+a whole-record preflight is a separate decision rather than a wider version of this one.
+
+**What a digest means is ADR-0024; how the canonical package set is computed is ADR-0025.**
+Neither is restated here. One rule, one definition.
 
 ## The cross-version test bed, and the three branches it does not reach
 

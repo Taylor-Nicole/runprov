@@ -3,7 +3,7 @@
 - **Status:** accepted
 - **Date:** 2026-08-20
 - **Ledger:** L-44 (with L-24 one level up)
-- **Applies to:** `runprov/__init__.py`, `runprov/policy.py`, `runprov/project.py`, `runprov/sinks.py` (each module's `__all__`)
+- **Applies to:** `runprov/__init__.py`, `runprov/policy.py`, `runprov/project.py`, `runprov/sinks.py` (each module's `__all__`), `runprov/pkgset.py`
 
 ## Context
 

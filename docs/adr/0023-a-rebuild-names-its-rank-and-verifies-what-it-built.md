@@ -118,7 +118,7 @@ enforces.)*
 ### Verification, which is the point of the command
 
 **R-11.** **RE-SNAPSHOT THE NEW ENVIRONMENT AND COMPARE THE PACKAGE SET — never the body
-digest.** The comparison is over ADR-0024 R-4's canonical package set, and the interpreter and
+digest.** The comparison is over ADR-0025 R-1's canonical package set, and the interpreter and
 host differences are reported **separately and independently** [ADR-0024 R-9]. The measurement
 above is why: the digested body contains this host's platform string, so a body-digest comparison
 answers a question about the host when it was asked a question about the packages. A rebuild is
@@ -127,9 +127,10 @@ case rather than an edge of it.
 
 **R-12.** **The two digests, the canonical package set and the recomputation of it for older
 records are ADR-0024's, and are not restated here.** This record is a CONSUMER of them: it reads
-`snapshot.packages_sha256` where present [ADR-0024 R-1], recomputes it from the body where absent
+`snapshot.package_sets` by algorithm name where present [ADR-0024 R-1, R-20], recomputes it from
+the body where absent
 [ADR-0024 R-7], and refuses rather than guessing when the body carries a line it cannot classify
-[ADR-0024 R-5]. The rule ADR-0024 R-3 states — **the snapshot body is never changed; a field goes
+[ADR-0025 R-2]. The rule ADR-0024 R-3 states — **the snapshot body is never changed; a field goes
 into the record and is derived for older records by re-reading the file** — governs every future
 addition here, and a second copy of it in this record is exactly how two halves of one rule come
 to differ by a whole case.

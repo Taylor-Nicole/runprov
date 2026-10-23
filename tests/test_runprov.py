@@ -64,6 +64,7 @@ import runprov  # noqa: E402
 import runprov.__main__ as cli  # noqa: E402
 import runprov._report  # noqa: E402
 import runprov.environment  # noqa: E402
+import runprov.pkgset  # noqa: E402
 import runprov.policy  # noqa: E402
 import runprov.prune  # noqa: E402
 import runprov.terminal  # noqa: E402
@@ -84,7 +85,7 @@ import runprov.watch  # noqa: E402
 #: suite from, `rglob` finds 1 796 files with 1 764 of them inside `.venv`, and `runprov.__all__`
 #: is 18 against 24. THE CONSTANT IS THE INSTRUMENT: a human has to come here, and the one thing
 #: worth making a human do when a module is added is re-read which layer it belongs in.
-_PACKAGE_MODULES = 24
+_PACKAGE_MODULES = 25
 
 #: THE SOURCES OUTSIDE THE PACKAGE, AND IT IS ONE NUMBER WITH TWO READERS. Both the
 #: `open_output` sweep and the roots equality need "how many `.py` files this repository has",
@@ -9204,8 +9205,29 @@ def test_no_library_module_calls_bare_print():
     the explanations gets paid by deleting the explanations, so it reads the tree instead —
     strictly stronger, since a string or comment was never a call in the first place.
     """
+    #: THE THIRD EXEMPTION IS DERIVED FROM ITS CAUSE, NOT ADDED TO THE LIST [Audit, 2026-10-23].
+    #: `_report.py` and `__main__.py` are named because of what they ARE — the reporter, and a
+    #: CLI whose rendered log is its output. `pkgset.py` is exempt for a different reason: it may
+    #: not import `_report`, because ADR-0024 R-18 requires it to run as a file copied out of an
+    #: installed runprov into a container with no runprov in it. **That reason is computable**, so
+    #: it is computed: a module with NO intra-package import edges cannot reach the reporter, and
+    #: the day one of them gains a sibling import it loses this exemption and reddens here —
+    #: which is correct, because at that moment it could have imported `_report` instead.
+    #: Reusing `_package_import_edges` keeps "an import of this package" to one definition.
+    importers = {edge[0] for edge in _package_import_edges(REPO / "runprov")}
+    standalone = {
+        mod.name
+        for mod in (REPO / "runprov").glob("*.py")
+        if mod.stem not in importers and mod.stem != "__init__"
+    }
+    assert standalone, (
+        "no module of this package is free of intra-package imports, so the derived exemption "
+        "below covers nothing and a module that needs it would be refused instead"
+    )
     offenders = {}
     for mod in sorted((REPO / "runprov").glob("*.py")):
+        if mod.name in standalone:
+            continue  # cannot reach `_report`; see the derivation above
         if mod.name in ("_report.py", "__main__.py"):
             continue
         tree = ast.parse(mod.read_text(encoding="utf-8"))
@@ -40973,6 +40995,315 @@ def test_every_command_reads_a_history_written_by_a_released_version(
             )
         checked += 1
     assert checked >= 8, f"only {checked} commands were run against {version}"
+
+
+#: THE CANONICAL FORM, FROZEN BY NINE INDEPENDENTLY-WRITTEN BODIES [ADR-0024 R-6]. Each value is
+#: the package-set digest of the snapshot that THAT released wheel wrote, so a change to a single
+#: byte of `canonical_text` moves nine rows at once and names itself. **This is a CHANGE DETECTOR
+#: and not a proof of correctness** — correctness is the property tests below, which assert what
+#: the digest must and must not be sensitive to. The baseline says "and it has not moved".
+_PKGSET_BASELINE = {
+    "0.1.0": "8a10c4d3e33cd135",
+    "0.2.0": "9df10ff5ad72db4e",
+    "0.3.0": "182b09a26b449664",
+    "0.4.0": "82e1a188fbe7d286",
+    "0.5.0": "5b254452525d5d39",
+    "0.6.0": "eb345f56895e247d",
+    "0.7.0": "3685dc3fab845ea4",
+    "0.8.0": "cf624fbdab762df9",
+    "0.9.0": "14fefa37dd2cd3fb",
+}
+
+
+def _snapshot_body(version: str) -> str:
+    """The snapshot body that `version`'s released wheel wrote, read through its own record."""
+    tree = corpus_tool.CORPUS / version / "tree"
+    record = json.loads(sorted(tree.rglob("*.prov.json"))[0].read_text(encoding="utf-8"))
+    return (tree / record["environment"]["snapshot"]["path"]).read_text(encoding="utf-8")
+
+
+def test_the_package_set_canonicaliser_imports_NOTHING_from_this_package():
+    """The property that makes `pkgset.py` copyable, held rather than intended [ADR-0025 R-6].
+
+    An auditor verifies an environment where it was not recorded — a container, a cluster, a
+    laptop years later — so the file they run must come out of an installed runprov or an
+    unpacked sdist and work on its own. **That is a property an ordinary refactor removes
+    silently**: one `from .hashing import sha256` for tidiness and the module still passes every
+    other test in this file while no longer being copyable at all.
+
+    DERIVED ON BOTH SIDES, so neither can be satisfied by editing the other. The intra-package
+    half reuses `_package_import_edges` — the resolver that replaced a list of four import
+    spellings after it was measured to miss two — so "an import of this package" has ONE
+    definition here. The stdlib half asks the interpreter, through `sys.stdlib_module_names`,
+    rather than carrying a list of permitted names that a new import would quietly join.
+    """
+    module = REPO / "runprov" / "pkgset.py"
+    assert module.is_file(), "runprov/pkgset.py is gone; every claim below is about a missing file"
+
+    inside = [edge for edge in _package_import_edges(REPO / "runprov") if edge[0] == "pkgset"]
+    assert not inside, (
+        f"runprov/pkgset.py imports {[e[2] for e in inside]} from this package, so it can no "
+        f"longer be copied out and run on its own — which is the one property ADR-0024 R-18 asks "
+        f"of it, and the reason an auditor can check a record without installing anything"
+    )
+
+    tree = ast.parse(module.read_text(encoding="utf-8"))
+    tops = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            tops |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            #: `from __future__ import annotations` is a compiler directive, and a relative
+            #: import has `module is None` — which is exactly the spelling the resolver above
+            #: was rewritten to catch, so it is left to that half rather than guessed at here.
+            if node.level == 0 and node.module:
+                tops.add(node.module.split(".")[0])
+    assert tops, "no imports found at all; this sweep is reading nothing"
+    outside = sorted(t for t in tops if t not in sys.stdlib_module_names and t != "__future__")
+    assert not outside, (
+        f"runprov/pkgset.py imports {outside}, which this interpreter does not call part of the "
+        f"standard library. A third-party dependency is as fatal to copyability as a sibling "
+        f"import: the container the auditor runs it in has neither"
+    )
+
+
+def test_the_canonicaliser_runs_as_a_COPIED_OUT_FILE_with_no_package_around_it(tmp_path):
+    """The claim of [ADR-0025 R-6] proved across the process boundary, not inside it.
+
+    THE IMPORT SWEEP ABOVE IS STATIC AND THIS IS THE CONSEQUENCE. A module can pass an AST check
+    and still fail to run alone — a `__init__`-time constant it reads, a relative path it
+    resolves, a package-level side effect it depends on — and none of that is visible to a
+    sweep of its own import nodes. So the file is COPIED to a directory that is not the
+    repository, run by its path with the repository nowhere on the path, and asked for an answer
+    this test already knows.
+
+    `-I` IS WHAT MAKES IT A MEASUREMENT: it isolates the interpreter from the user's site
+    packages and from `PYTHONPATH`, so an installed runprov on this host cannot be what answered.
+    """
+    copied = tmp_path / "pkgset.py"
+    copied.write_bytes((REPO / "runprov" / "pkgset.py").read_bytes())
+    body = _snapshot_body(CORPUS_VERSIONS[-1])
+    (tmp_path / "env-sample.txt").write_text(body, encoding="utf-8")
+
+    done = subprocess.run(
+        [sys.executable, "-I", str(copied), "env-sample.txt"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, f"the copied file could not run alone: {done.stderr}"
+    expected = f"{runprov.pkgset.ALGORITHM}:{_PKGSET_BASELINE[CORPUS_VERSIONS[-1]]}"
+    assert expected in done.stdout, (
+        f"the copied file printed {done.stdout!r}, which does not carry {expected!r} — so an "
+        f"auditor running it in a container would not get the value the record claims"
+    )
+
+
+@pytest.mark.skipif(not CORPUS_VERSIONS, reason="no corpus — tools/corpus.py generate --all")
+def test_the_package_set_digest_of_every_RELEASED_snapshot_is_what_it_was():
+    """Nine bodies written by nine different wheels, against nine committed digests.
+
+    THIS IS THE FREEZE [ADR-0025 R-4] over the form [ADR-0025 R-1]: the algorithm is named, and a
+    change to a single byte of what it produces moves nine rows at once instead of one.
+
+    WHY THE BASELINE IS KEYED BY VERSION AND CHECKED FOR COMPLETENESS: a baseline that is a bare
+    list goes stale the quiet way, by a new corpus version simply not being in it. Asserting the
+    KEY SETS are equal makes capturing a new release force a row, so the freeze cannot be
+    silently narrowed to the versions somebody remembered.
+    """
+    assert set(_PKGSET_BASELINE) == set(CORPUS_VERSIONS), (
+        f"the frozen package-set digests cover {sorted(_PKGSET_BASELINE)} and the corpus holds "
+        f"{sorted(CORPUS_VERSIONS)}. A new corpus version needs a row here, computed once and "
+        f"committed; a version that is gone needs its row removed"
+    )
+    moved = {}
+    for version, expected in sorted(_PKGSET_BASELINE.items()):
+        actual = runprov.pkgset.package_set_digest(_snapshot_body(version))[:16]
+        if actual != expected:
+            moved[version] = f"{expected} -> {actual}"
+    assert not moved, (
+        f"the canonical form has changed for {len(moved)} of {len(_PKGSET_BASELINE)} released "
+        f"snapshots: {moved}. If that was deliberate it is `runprov.pkgset.v2` under its own key "
+        f"[ADR-0024 R-6], not a new value for v1 — a digest already quoted somewhere cannot be "
+        f"recalled"
+    )
+
+
+def test_the_package_set_digest_ignores_the_HOST_and_the_INTERPRETER_and_notices_a_PACKAGE(
+    monkeypatch,
+):
+    """The four sensitivities that define this digest, asserted together because they are one
+    claim: it answers *are these the same packages* and nothing else [ADR-0025 R-5].
+
+    THE HOST CASE IS THE WHOLE REASON THE FIELD EXISTS. `environment.digest` over the same two
+    bodies moves, because the body carries `# platform : …` — so this test asserts BOTH
+    directions on one pair of inputs, and a canonicaliser that started including the header
+    would fail here rather than quietly making every container comparison answer *differs*.
+    """
+    packages = {"numpy": "2.1.0", "pandas": "2.2.2"}
+    here = runprov.environment._render_snapshot(packages, 0, None)
+    monkeypatch.setattr(platform, "platform", lambda: "Linux-6.8.0-51-aarch64-with-glibc2.39")
+    elsewhere = runprov.environment._render_snapshot(packages, 0, None)
+    monkeypatch.undo()
+
+    digest = runprov.pkgset.package_set_digest
+    assert digest(here) == digest(elsewhere), (
+        "the package-set digest moved across architecture and libc, so it cannot answer the one "
+        "question a reviewer in a container has"
+    )
+    assert runprov.environment.digest(here) != runprov.environment.digest(elsewhere), (
+        "the HOST digest did not move across architecture and libc, so this pair of inputs is "
+        "not exercising the difference this whole record is about"
+    )
+
+    interpreter = here.replace(f"# python   : {sys.version.split()[0]}", "# python   : 3.13.2")
+    assert interpreter != here, "the python header was not found, so the next assertion is empty"
+    assert digest(interpreter) == digest(here), "the interpreter leaked into the package set"
+    assert runprov.environment.digest(interpreter) != runprov.environment.digest(here)
+
+    unreadable = runprov.environment._render_snapshot(packages, 3, None)
+    assert digest(unreadable) == digest(here), "an annotation leaked into the package set"
+
+    bumped = runprov.environment._render_snapshot({"numpy": "2.1.1", "pandas": "2.2.2"}, 0, None)
+    added = runprov.environment._render_snapshot({**packages, "scipy": "1.14.1"}, 0, None)
+    assert digest(bumped) != digest(here), "a version bump did not move the digest"
+    assert digest(added) != digest(here), "an added package did not move the digest"
+
+
+def test_the_package_set_digest_is_blind_to_LINE_ORDER_and_to_NAME_SPELLING():
+    """Two invariances that are the point of canonicalising rather than hashing the text, and
+    both are part of what [ADR-0025 R-1] specifies as the canonical form.
+
+    ORDER, because a body is not a protocol: a future renderer, a hand-edit or a different
+    platform's `importlib.metadata` iteration order must not change the answer. SPELLING,
+    because PEP 503 says `Foo_Bar` and `foo-bar` name one project, and a reviewer whose index
+    returns the other spelling has not got a different environment.
+    """
+    digest = runprov.pkgset.package_set_digest
+    body = runprov.environment._render_snapshot({"a": "1", "b": "2", "c": "3"}, 0, None)
+    head = [line for line in body.split("\n") if line.startswith("#")]
+    tail = [line for line in body.split("\n") if line and not line.startswith("#")]
+    assert len(tail) == 3, f"expected three entries, found {tail}"
+    assert digest("\n".join(head + tail[::-1]) + "\n") == digest(body), "line order mattered"
+
+    under = runprov.environment._render_snapshot({"Foo_Bar": "1.0"}, 0, None)
+    dashed = runprov.environment._render_snapshot({"foo-bar": "1.0"}, 0, None)
+    assert under != dashed, "the two spellings rendered identically; this proves nothing"
+    assert digest(under) == digest(dashed), "PEP 503 normalisation is not being applied"
+
+
+def test_a_conda_entry_is_a_package_and_the_separator_is_where_the_split_comes_from(monkeypatch):
+    """The conda half, which NO corpus version exercises — measured: 0 of 9 bodies carry the
+    separator — so it is synthetic here by necessity and said to be.
+
+    THE SPLIT IS TAKEN FROM THE BODY [ADR-0020 R-7]. A classifier that consulted this host's
+    `conda-meta` would answer differently in the container where the verification happens, which
+    is the one place it must not.
+    """
+    digest = runprov.pkgset.package_set_digest
+    packages = {"numpy": "2.1.0"}
+    conda = {"samtools": "1.21=h50ea8bc_0", "openssl": "3.3.2=hb9d3cd8_0"}
+    with_conda = runprov.environment._render_snapshot(packages, 0, conda)
+    pip_only = runprov.environment._render_snapshot(packages, 0, None)
+
+    parsed_pip, parsed_conda = runprov.pkgset.parse(with_conda)
+    assert set(parsed_pip) == {"numpy"} and set(parsed_conda) == {"samtools", "openssl"}
+    assert digest(with_conda) != digest(pip_only), "conda packages did not reach the digest"
+
+    monkeypatch.setattr(platform, "platform", lambda: "Linux-6.8.0-51-aarch64-with-glibc2.39")
+    same_set_other_host = runprov.environment._render_snapshot(packages, 0, conda)
+    assert digest(with_conda) == digest(same_set_other_host), (
+        "the conda half of the digest is host-dependent, so a conda environment could never be "
+        "verified anywhere but the machine that recorded it"
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "says"),
+    [
+        ("# h\nnot a package entry at all\n", "neither a package entry nor an annotation"),
+        ("# h\npip==1\n" + runprov.pkgset.CONDA_SEPARATOR + "\n#x\nnothing\n", "nor an annotation"),
+    ],
+    ids=["pip-half", "conda-half"],
+)
+def test_a_line_that_is_neither_a_package_nor_an_annotation_is_REFUSED_not_dropped(body, says):
+    """[ADR-0025 R-2], in both halves of the body, because the two halves are two matchers.
+
+    A canonicaliser that dropped the line would answer for a SMALLER environment than it was
+    given, and the answer would look exactly like a correct one — the failure this whole module
+    is a repair for, committed by the repair.
+    """
+    with pytest.raises(runprov.pkgset.PackageSetError, match=says):
+        runprov.pkgset.package_set_digest(body)
+
+
+@pytest.mark.parametrize(
+    ("body", "kind"),
+    [
+        ("# h\nzope.interface==7.0.1\nzope_interface==6.4\n", "pip"),
+        (
+            "# h\n" + runprov.pkgset.CONDA_SEPARATOR + "\nnum.py=1.0=h1\nnum_py=2.0=h2\n",
+            "conda",
+        ),
+    ],
+    ids=["pip", "conda"],
+)
+def test_two_entries_normalising_to_ONE_name_are_REFUSED_in_either_half(body, kind):
+    """[ADR-0025 R-3], and it was found by reverifying the specification, not the code.
+
+    MEASURED BEFORE THE MODULE EXISTED: keeping the last of the two colliding entries made the
+    digest depend on **line order** — the same environment hashed two ways — which contradicts
+    the order-invariance asserted two tests above. `installed_packages()` keys its map by the raw
+    metadata `Name`, so a body carrying both spellings is something capture can produce rather
+    than something only a hand-edit could.
+
+    AND THE REFUSAL NAMES BOTH VERSIONS, because the reason it is a refusal is that they differ:
+    a message carrying only the name would leave a reader thinking a duplicate was the problem.
+    """
+    with pytest.raises(runprov.pkgset.PackageSetError) as caught:
+        runprov.pkgset.package_set_digest(body)
+    message = str(caught.value)
+    assert kind in message and "order" in message
+    first, second = ("7.0.1", "6.4") if kind == "pip" else ("1.0", "2.0")
+    assert first in message and second in message, (
+        f"the refusal does not name both versions, so it reads as a complaint about a duplicate "
+        f"rather than about two different answers: {message}"
+    )
+
+
+def test_the_canonicaliser_as_a_COMMAND_classifies_by_exit_code(tmp_path, capsys, monkeypatch):
+    """0 reduced it, 2 could not look, and NEVER 1 — ADR-0007.
+
+    THE ABSENCE OF A 1 IS ASSERTED RATHER THAN ASSUMED: this command compares nothing, so it has
+    no finding to report, and every caller in this project reads exit 1 as *a real difference was
+    found*. The three refusals are a missing file, a body it cannot reduce, and no arguments at
+    all — which is a usage error and still `2`, because the instrument's own failures must not
+    collide with a verdict.
+    """
+    good = tmp_path / "env-good.txt"
+    good.write_text(_snapshot_body(CORPUS_VERSIONS[0]), encoding="utf-8")
+
+    assert runprov.pkgset.main([str(good)]) == 0
+    printed = capsys.readouterr().out
+    expected = f"{runprov.pkgset.ALGORITHM}:{_PKGSET_BASELINE[CORPUS_VERSIONS[0]]}"
+    assert expected in printed, f"the command printed {printed!r}, which lacks {expected!r}"
+
+    assert runprov.pkgset.main([]) == 2, "no arguments is a usage refusal, not a success"
+    assert "usage" in capsys.readouterr().err
+
+    assert runprov.pkgset.main([str(tmp_path / "absent.txt")]) == 2, "a missing file must refuse"
+    assert "absent.txt" in capsys.readouterr().err, "the refusal does not name the file"
+
+    broken = tmp_path / "env-broken.txt"
+    broken.write_text("# h\nnot a package entry\n", encoding="utf-8")
+    assert runprov.pkgset.main([str(broken)]) == 2, "an unreducible body must refuse"
+    assert "annotation" in capsys.readouterr().err
+
+    #: `argv is None` IS A SEPARATE PATH and reads `sys.argv`, which is how the copied-out file
+    #: is invoked. The subprocess test above exercises it for real; this covers the branch.
+    monkeypatch.setattr(sys, "argv", ["pkgset.py", str(good)])
+    assert runprov.pkgset.main() == 0
+    assert expected in capsys.readouterr().out
 
 
 #: WHAT THE CORPUS CAN AND CANNOT SAY ABOUT A RENDERED ENVIRONMENT [ADR-0020]. The two counts
