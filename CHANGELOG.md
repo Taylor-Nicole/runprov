@@ -11,6 +11,35 @@ is a fix nobody checked.
 
 ### Added
 
+**Both export vocabularies now carry the environment, which neither did.** ADR-0027, accepted.
+Measured before it was built: `export.py` mentioned the environment **nowhere**, so a record
+deposited at Zenodo or handed to a reviewer through RO-Crate or PROV said what was read and
+written and nothing about whether the environment could be checked. This was scheduled as
+*"nearly free — put the digest into export"*; there was no environment there to put a digest
+into, and neither vocabulary has an environment concept.
+
+**In RO-Crate it is a `PropertyValue` referenced through `additionalProperty`** — a property of
+`Thing`, so nothing is invented. Inventing a `SoftwareEnvironment` type would be the well-formed
+lie: a validator accepts it and no consumer can resolve it. It is **not** `sha256`, which on a
+crate entity is a promise a validator checks against bytes on disk, and this digest is over a
+canonical rendering rather than over a file.
+
+**In PROV it is an entity related by `prov:used`**, which the standard defines as the beginning
+of utilizing an entity by an activity — and a run utilizes the environment it ran in. The
+narrower gloss in `to_prov_json`'s docstring, *"`used` (a run read a file)"*, was true of the only
+entities that existed when it was written and is **widened in the same commit** rather than worked
+around.
+
+**Deduplicated by digest, and that is a feature:** two runs in one environment share one node, so
+an export now **shows which runs shared an environment** — the capture-once-per-distinct-environment
+property, legible to an outside tool for the first time.
+
+**What is deliberately refused:** the package list, which lives in the content-addressed sidecar
+rather than in the record; recomputation for a record written before the digest existed, because a
+derived view that recomputed would answer differently depending on the machine it was rendered on;
+and any claim that the environment *caused* the outputs, which PROV would allow and the record
+cannot support.
+
 **`runprov env` — can someone else check this environment?** ADR-0026, accepted and built. Three
 questions of one object: `--digest` prints the quotable `runprov.pkgset.v1:<hex>` identity for a
 methods section, `--compare` answers whether two environments hold the same packages, and the
@@ -62,6 +91,14 @@ can tell apart: the digest, the reason there is none, or neither — which means
 the field.
 
 ### Fixed
+
+**A typed truncation helper in `env`'s dimension renderer.** Two untyped lambdas in a conditional
+expression, which `mypy` over the derived scope rejects as a call to an untyped function in a
+typed context — and which reached `main` in a commit that should not have been green. The nested
+function that replaces them reads better than the lambdas did. **The CHANGELOG entry belongs in
+the same commit as the change and was not in that one either**, which is why this line is here
+rather than in that commit: the guard holding it is topological over git history, so gating a
+working tree cannot predict what the committed state will say.
 
 **`diff` answers the packages dimension where it used to refuse.** `compare` reported a differing
 snapshot digest as `blocked`, with the reason *"a snapshot digest covers the interpreter and the

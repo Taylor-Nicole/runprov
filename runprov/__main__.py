@@ -2999,8 +2999,11 @@ def main(argv: list[str] | None = None) -> int:
     #: it. A command no single argument can reach is a command no guard can attack.
     #:
     #: So the default is `--can-check`, which creates nothing and answers *what have I got*, and
-    #: the renderer arrives under `--format requirements|conda|uv` where ADR-0020 R-8 already puts
-    #: it. Bare `runprov env` therefore means the same thing before and after that lands.
+    #: the renderer arrives under `--render requirements|conda|uv`, which ADR-0020 R-8 keeps apart
+    #: from `--format text|json` on purpose: one flag names the QUESTION and the other names how
+    #: the answer is written, and overloading one of them would make `--compare --format
+    #: requirements` a combination needing its own refusal. Bare `runprov env` therefore means
+    #: the same thing before and after that lands.
     mode = ev.add_mutually_exclusive_group()
     mode.add_argument(
         "--compare",

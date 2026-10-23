@@ -113,6 +113,47 @@ def _files(records: typing.Iterable[dict[str, typing.Any]]) -> dict[str, dict[st
     return out
 
 
+def _package_set(record: typing.Mapping[str, typing.Any]) -> tuple[str, str] | None:
+    """The run's package-set digest and the algorithm that produced it, or None. ADR-0027.
+
+    FROM THE RECORD AND NEVER FROM A FILE [ADR-0027 R-5, R-6]. `export` is pure over records —
+    nothing here opens anything — so a record written before this field existed exports no
+    environment rather than one recomputed at render time. A derived view that recomputed would
+    answer differently depending on the machine it was rendered on, and would make *recorded* and
+    *recomputed* indistinguishable in the one artifact that leaves this machine.
+
+    BOTH SPELLINGS, because a record has two: the history projection writes a top-level
+    `environment_snapshot` and the sidecar keeps `environment.snapshot`. `export` renders both
+    scopes [ADR-0009], so a reader of one shape only would export the environment for a whole
+    history and silently omit it for the single-run scope — which is the scope a reviewer
+    holding a file and its sidecar has.
+    """
+    flat = record.get("environment_snapshot")
+    nested = (record.get("environment") or {}).get("snapshot")
+    snapshot = flat if isinstance(flat, dict) else nested if isinstance(nested, dict) else {}
+    sets = snapshot.get("package_sets")
+    if not isinstance(sets, dict):
+        return None
+    for algorithm in sorted(sets):
+        value = sets[algorithm]
+        if isinstance(value, str) and value:
+            #: THE ALGORITHM IS EXPORTED AS RECORDED, not filtered to the one this build
+            #: computes. A consumer reading a crate is not this build, and a digest under a form
+            #: this version cannot compute is still the digest the run asserted — dropping it
+            #: would make an export from an older runprov carry less than the record does.
+            return algorithm, value
+    return None
+
+
+def _interpreter(record: typing.Mapping[str, typing.Any]) -> str | None:
+    """The recorded interpreter version, kept apart from the package set. ADR-0027 R-7."""
+    flat = record.get("environment_snapshot")
+    nested = (record.get("environment") or {}).get("snapshot")
+    snapshot = flat if isinstance(flat, dict) else nested if isinstance(nested, dict) else {}
+    found = snapshot.get("python") or (record.get("environment") or {}).get("python")
+    return found if isinstance(found, str) and found else None
+
+
 def to_ro_crate(
     records: typing.Sequence[dict[str, typing.Any]], name: str = "runprov record"
 ) -> dict[str, typing.Any]:
@@ -172,12 +213,60 @@ def to_ro_crate(
     for i, rec in enumerate(records):
         script = rec.get("script", "?")
         instrument = f"#script-{script}"
+        #: THE ENVIRONMENT AS A `PropertyValue` THROUGH `additionalProperty` [ADR-0027 R-2].
+        #: RO-Crate 1.1 has no environment type, and inventing one is the well-formed lie: a
+        #: validator accepts it and no consumer can resolve it. `additionalProperty` is a
+        #: property of `Thing`, so this invents nothing, and `propertyID` carries the algorithm
+        #: so a reader knows which rules produced the value. NOT `sha256`, which on a crate
+        #: entity is a promise a validator checks against bytes on disk — and there are no bytes
+        #: here, the digest being over a canonical rendering rather than over a file.
+        extra: list[dict[str, typing.Any]] = []
+        found = _package_set(rec)
+        if found is not None:
+            algorithm, digest = found
+            #: DEDUPLICATED BY DIGEST [ADR-0027 R-4], which is a feature rather than a saving:
+            #: two runs in one environment share this node, so the crate SHOWS which runs shared
+            #: an environment. A repeated `@id` is invalid in a crate, so it is also required.
+            node_id = f"#pkgset-{digest[:16]}"
+            extra.append({"@id": node_id})
+            graph.append(
+                {
+                    "@id": node_id,
+                    "@type": "PropertyValue",
+                    "name": "package-set digest",
+                    "propertyID": algorithm,
+                    "value": digest,
+                    "description": (
+                        "runprov: a digest of the canonical package set this run ran in — names, "
+                        "versions and conda builds, and nothing else. It does not cover the "
+                        "resolved transitive graph, system libraries, or the interpreter, which "
+                        "is a separate property. Equal package sets are not equal environments."
+                    ),
+                }
+            )
+        interpreter = _interpreter(rec)
+        if interpreter is not None:
+            #: KEPT APART FROM THE PACKAGE SET [ADR-0027 R-7]: two independent facts in one node
+            #: cannot say which of them moved, and a consumer diffing two crates would see one
+            #: value change for two reasons.
+            node_id = f"#python-{interpreter}"
+            extra.append({"@id": node_id})
+            graph.append(
+                {
+                    "@id": node_id,
+                    "@type": "PropertyValue",
+                    "name": "interpreter version",
+                    "propertyID": "runprov.python",
+                    "value": interpreter,
+                }
+            )
         graph.append(
             _without_unknowns(
                 {
                     "@id": f"#run-{rec.get('run_uid', i)}",
                     "@type": "CreateAction",
                     "name": script,
+                    "additionalProperty": extra or None,
                     "startTime": rec.get("started_utc"),
                     "endTime": rec.get("finished_utc"),
                     "actionStatus": (
@@ -208,8 +297,20 @@ def to_prov_json(records: typing.Sequence[dict[str, typing.Any]]) -> dict[str, t
     """A PROV-JSON document: entities, activities, agents, and what relates them.
 
     FOUR RELATIONS AND NO MORE, because those four are what this package can honestly assert:
-    `used` (a run read a file), `wasGeneratedBy` (a run wrote one), `wasAssociatedWith` (a run
-    was run by something) and `wasDerivedFrom` (an output came from an input OF THAT RUN).
+    `used` (a run read a file, **or ran in a recorded package set**), `wasGeneratedBy` (a run
+    wrote one), `wasAssociatedWith` (a run was run by something) and `wasDerivedFrom` (an output
+    came from an input OF THAT RUN).
+
+    THE GLOSS ON `used` WAS WIDENED 2026-10-23 RATHER THAN WORKED AROUND [ADR-0027 R-3]. *"A run
+    read a file"* was true of the only entities that existed when it was written, and the
+    alternative — inventing a fifth relation so the sentence could stand — would have bought a
+    true docstring with a vocabulary nobody shares. PROV's `used` is the beginning of utilizing
+    an entity, and an environment is utilized. **A docstring that no longer describes the
+    function is a defect this project has measured in its own instruments four times.**
+
+    AND NOTHING HERE SAYS THE ENVIRONMENT CAUSED THE OUTPUTS [ADR-0027 R-8]. PROV allows that
+    claim; the record holds *this run ran in this environment* and never *this output came from
+    that package*. Same limit `wasDerivedFrom` carries, and the same reason.
 
     THE DERIVATION IS PER-RUN AND THAT IS THE LIMIT WORTH KNOWING. `wasDerivedFrom` here means
     "this output was produced by a run that read this input", not "this value came from that
@@ -248,6 +349,24 @@ def to_prov_json(records: typing.Sequence[dict[str, typing.Any]]) -> dict[str, t
         agent = f"runprov:script/{rec.get('script', '?')}"
         agents[agent] = {"prov:type": "prov:SoftwareAgent", "prov:label": rec.get("script", "?")}
         associated[f"{act}/assoc"] = {"prov:activity": act, "prov:agent": agent}
+        #: THE ENVIRONMENT AS AN ENTITY THE ACTIVITY `used` [ADR-0027 R-3]. PROV defines `used`
+        #: as the beginning of utilizing an entity by an activity, and a run utilizes the
+        #: environment it ran in — so the relation is the standard's, not a widening of it. The
+        #: docstring's narrower gloss is corrected in the same commit rather than worked around.
+        found = _package_set(rec)
+        if found is not None:
+            algorithm, digest = found
+            key = f"runprov:pkgset/{digest[:16]}"
+            entities[key] = {
+                "prov:type": "runprov:PackageSet",
+                "prov:label": f"{algorithm}:{digest[:16]}",
+                "runprov:algorithm": algorithm,
+                "runprov:package_set_sha256": digest,
+            }
+            used[f"{act}/used/env"] = {"prov:activity": act, "prov:entity": key}
+        interpreter = _interpreter(rec)
+        if interpreter is not None:
+            activities[act]["runprov:python"] = interpreter
         ins = [e["path"] for e in rec.get("inputs", []) or [] if e.get("path")]
         outs = [e["path"] for e in rec.get("outputs", []) or [] if e.get("path")]
         for n, path in enumerate(ins):

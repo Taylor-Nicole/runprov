@@ -53,3 +53,4 @@ A *Proposed* ADR is the right place to think out loud. It is not a promise.
 | [0024](0024-an-environment-has-two-digests-because-one-cannot-answer-two-questions.md) | An environment has two digests, because one digest cannot answer two questions | Proposed |
 | [0025](0025-the-canonical-package-set-and-one-implementation-of-it.md) | The canonical package set, and exactly one implementation of it | Accepted |
 | [0026](0026-one-environment-identity-and-one-comparison-over-two-of-them.md) | One environment identity, and one comparison over two of them | Accepted |
+| [0027](0027-an-environment-in-a-standard-vocabulary-says-only-what-the-record-supports.md) | An environment in a standard vocabulary says only what the record supports | Accepted |

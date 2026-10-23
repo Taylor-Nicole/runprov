@@ -70,7 +70,7 @@ behind the package. **A first mention is not a first release.**)
 ## Decision
 
 **R-1.** `runprov env [RUN]` writes the recorded environment to stdout, or to a path given by
-`--out`, **when a rendering `--format` asks for it** (R-8). `RUN` defaults to the most recent run,
+`--out`, **when `--render` asks for it** (R-8). `RUN` defaults to the most recent run,
 matching every other read command. **CORRECTED 2026-10-23: bare `runprov env` is the preflight
 (R-13), not the renderer**, and that is permanent rather than a placeholder. The first design made
 the mode required so that rendering could become the default later without changing any
@@ -79,7 +79,7 @@ single-argument invocation is a usage error**, which is how that leg attacks eac
 so the command was unreachable through every door it has and a whole safety check asserted
 nothing about it. **A command no single argument can reach is a command no guard can attack.** The
 default now creates nothing and answers *what have I got*, and the renderer is selected by
-`--format`, where R-8 already put it.
+`--render`, which R-8 keeps apart from `--format` for the reason recorded there.
 
 **R-2.** **Where a lock file was archived, the lock is the answer** and the package list is not.
 A list of installed packages and their versions is not a lock: it does not pin transitive
@@ -107,9 +107,21 @@ exit-code contract already distinguishes them.
 host's `conda-meta`. A classification that needs the original machine cannot run where it is
 needed.
 
-**R-8.** `--format` selects `requirements`, `conda`, `uv` or `json`, and **defaults to the format
-implied by the recorded manager** rather than to a fixed one. `json` follows ADR-0017: one
-builder, two renderings, so the JSON is the same answer rather than a second one.
+**R-8.** **`--render requirements|conda|uv` selects the rendering and is a MODE; `--format
+text|json` stays the serialisation of whichever mode ran.** The rendering **defaults to the form
+implied by the recorded manager** rather than to a fixed one, and `--format json` over a rendering
+emits the same answer as data — the lines, the form, and whether the list is a floor (R-3) as a
+field rather than only as a comment [ADR-0017].
+
+**CORRECTED 2026-10-23, found by reverifying before building.** This requirement was written when
+`env` was only a renderer, and said `--format` would select
+`requirements|conda|uv|json`. By the time the renderer is built `--format` already means
+`text|json` for the comparison — so one flag would have selected **both the question and the
+serialisation of its answer**, and `--compare --format requirements` would have been a
+meaningless combination needing its own refusal. `resources` may overload `--format` because
+`slurm`, `k8s`, `tsv` and `json` are four renderings of **one** answer; here they would be
+renderings of **different subjects**, which is the distinction that decides it. **One flag names
+the question, another names how the answer is written.**
 
 **R-9.** The renderer **never writes into the project** and never overwrites: `--out` refuses an
 existing path unless `--force`.

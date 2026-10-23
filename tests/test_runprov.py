@@ -65,6 +65,7 @@ import runprov.__main__ as cli  # noqa: E402
 import runprov._report  # noqa: E402
 import runprov.env  # noqa: E402
 import runprov.environment  # noqa: E402
+import runprov.export  # noqa: E402
 import runprov.pkgset  # noqa: E402
 import runprov.policy  # noqa: E402
 import runprov.prune  # noqa: E402
@@ -41708,6 +41709,259 @@ def test_an_IDENTICAL_snapshot_digest_still_answers_without_consulting_the_packa
     answer = runprov.diff._packages(_snapshot_record("aaa"), _snapshot_record("aaa"))
     assert answer.blocked is None and not answer.differences
     assert "snapshot aaa on both" in answer.examined
+
+
+def _export_record(uid: str, script: str, digest: str | None, python: str | None = "3.12.13"):
+    """A history-shaped record for the export renderers, with or without an environment."""
+    snapshot: dict[str, typing.Any] = {"sha256": "h" * 64}
+    if digest is not None:
+        snapshot["package_sets"] = {runprov.pkgset.ALGORITHM: digest}
+    if python is not None:
+        snapshot["python"] = python
+    return {
+        "run_uid": uid,
+        "script": script,
+        "status": "ok",
+        "environment_snapshot": snapshot,
+        "inputs": [{"path": "data/in.tsv", "sha256": "a" * 64}],
+        "outputs": [{"path": f"out/{script}.tsv", "sha256": "b" * 64}],
+    }
+
+
+def test_both_export_vocabularies_carry_the_environment_or_NEITHER_does():
+    """[ADR-0027 R-1]. Two derived views of one record that disagree are worse than one view.
+
+    MEASURED BEFORE THIS WAS BUILT: `export.py` mentioned the environment **nowhere**, so a
+    record deposited at Zenodo or handed to a reviewer through either standard vocabulary said
+    what was read and written and nothing about whether the environment could be checked. The
+    item was scheduled as *"nearly free — put the digest into export"*; there was no environment
+    there to put a digest into.
+
+    THE ASSERTION IS OVER BOTH RENDERERS WITH ONE RECORD, so a renderer that stops carrying it
+    cannot be the quiet one: a reader comparing two exports of one history and finding the
+    environment in one would conclude the records differ, which would be false.
+    """
+    records = [_export_record("r1", "align", "d" * 64)]
+    crate = runprov.export.to_ro_crate(records)
+    prov = runprov.export.to_prov_json(records)
+    in_crate = [n for n in crate["@graph"] if n["@id"].startswith("#pkgset-")]
+    in_prov = [k for k in prov.get("entity", {}) if "pkgset" in k]
+    assert len(in_crate) == 1 and len(in_prov) == 1, (
+        f"the environment reached {len(in_crate)} crate node(s) and {len(in_prov)} PROV "
+        f"entity(ies); it must reach both or neither"
+    )
+
+
+def test_the_crate_says_the_environment_with_a_PropertyValue_and_invents_no_type():
+    """[ADR-0027 R-2]. RO-Crate 1.1 has no environment type, and inventing one is the
+    well-formed lie — a validator accepts it and no consumer can resolve it.
+
+    `additionalProperty` IS A PROPERTY OF `Thing`, so this invents nothing, and `propertyID`
+    carries the algorithm so a reader knows which rules produced the value.
+
+    AND NOT `sha256`, WHICH IS THE INTERESTING REFUSAL. On a crate entity `sha256` is a promise a
+    validator checks against bytes on disk, and there are no bytes here: the digest is over a
+    canonical rendering, not over a file. `to_ro_crate` already refuses `content_digest` for the
+    same class of reason, one entity type over.
+    """
+    crate = runprov.export.to_ro_crate([_export_record("r1", "align", "d" * 64)])
+    node = next(n for n in crate["@graph"] if n["@id"].startswith("#pkgset-"))
+    assert node["@type"] == "PropertyValue", "a type RO-Crate does not define is being invented"
+    assert node["propertyID"] == runprov.pkgset.ALGORITHM
+    assert node["value"] == "d" * 64
+    assert "sha256" not in node, (
+        "`sha256` on a crate entity is a promise a validator checks against bytes on disk, and "
+        "this digest is over a canonical rendering rather than over a file"
+    )
+    action = next(n for n in crate["@graph"] if n.get("@type") == "CreateAction")
+    assert {"@id": node["@id"]} in action["additionalProperty"]
+    #: AND THE DESCRIPTION CARRIES THE LIMIT, because a consumer reading a bare digest would
+    #: reasonably assume it covers more than it does.
+    assert "transitive" in node["description"] and "not equal environments" in node["description"]
+
+
+def test_prov_relates_the_environment_with_used_and_claims_no_causation():
+    """[ADR-0027 R-3] and [ADR-0027 R-8]. PROV defines `used` as the beginning of utilizing an
+    entity by an activity, and a run utilizes the environment it ran in — so the relation is the
+    standard's, not a widening of it.
+
+    THE DOCSTRING'S NARROWER GLOSS WAS CORRECTED IN THE SAME COMMIT rather than worked around.
+    *"`used` (a run read a file)"* was true of the only entities that existed when it was
+    written; inventing a fifth relation so that sentence could stand would have bought a true
+    docstring with a vocabulary nobody shares.
+
+    AND NOTHING CLAIMS THE ENVIRONMENT CAUSED THE OUTPUTS. PROV allows that claim and the record
+    cannot support it, so `wasDerivedFrom` names only file-to-file derivation — asserted here
+    because a well-formed overclaim in a standard vocabulary is the failure this is a repair for.
+    """
+    prov = runprov.export.to_prov_json([_export_record("r1", "align", "d" * 64)])
+    key = next(k for k in prov["entity"] if "pkgset" in k)
+    assert prov["entity"][key]["prov:type"] == "runprov:PackageSet"
+    assert prov["entity"][key]["runprov:algorithm"] == runprov.pkgset.ALGORITHM
+    assert any(rel["prov:entity"] == key for rel in prov["used"].values()), (
+        "the package set is an entity nothing relates to the run, so a consumer cannot tell "
+        "which activity it belongs to"
+    )
+    for relation in prov.get("wasDerivedFrom", {}).values():
+        assert "pkgset" not in relation["prov:usedEntity"], (
+            "a derivation from the package set asserts that the environment produced the output, "
+            "which the record holds no evidence for [ADR-0027 R-8]"
+        )
+    doc = runprov.export.to_prov_json.__doc__ or ""
+    assert "ran in a recorded package set" in doc, (
+        "the docstring still says `used` means a run read a file, which it no longer does — a "
+        "docstring that stopped describing its function is the defect, not a tidy-up"
+    )
+
+
+def test_two_runs_in_ONE_environment_share_ONE_node_in_both_vocabularies():
+    """[ADR-0027 R-4]. Deduplication is a feature rather than a saving: the export SHOWS which
+    runs shared an environment, which is the capture-once-per-distinct-environment property
+    legible to an outside tool for the first time.
+
+    AND IN A CRATE IT IS ALSO REQUIRED: a repeated `@id` is invalid rather than merely redundant,
+    which is why `to_ro_crate` already deduplicates its instruments.
+    """
+    shared = [_export_record("r1", "align", "d" * 64), _export_record("r2", "genotype", "d" * 64)]
+    crate = runprov.export.to_ro_crate(shared)
+    nodes = [n for n in crate["@graph"] if n["@id"].startswith("#pkgset-")]
+    assert len(nodes) == 1, f"two runs in one environment produced {len(nodes)} crate nodes"
+    actions = [n for n in crate["@graph"] if n.get("@type") == "CreateAction"]
+    assert len(actions) == 2
+    assert all({"@id": nodes[0]["@id"]} in a["additionalProperty"] for a in actions)
+
+    prov = runprov.export.to_prov_json(shared)
+    assert len([k for k in prov["entity"] if "pkgset" in k]) == 1
+    assert len([k for k in prov["used"] if k.endswith("/used/env")]) == 2, (
+        "both activities must relate to the shared entity, or the crate shows a shared "
+        "environment and the PROV document does not"
+    )
+
+    #: AND TWO DIFFERENT ENVIRONMENTS ARE TWO NODES, which is the half that makes the above
+    #: mean something: one node could also be a renderer that only ever emits one.
+    apart = [_export_record("r1", "align", "d" * 64), _export_record("r2", "genotype", "e" * 64)]
+    assert (
+        len(
+            [
+                n
+                for n in runprov.export.to_ro_crate(apart)["@graph"]
+                if n["@id"].startswith("#pkgset-")
+            ]
+        )
+        == 2
+    )
+
+
+def test_the_interpreter_is_exported_APART_from_the_package_set():
+    """[ADR-0027 R-7]. Two independent facts in one node cannot say which of them moved, and a
+    consumer diffing two crates would see one value change for two reasons — ADR-0024 R-2, one
+    vocabulary further out.
+    """
+    crate = runprov.export.to_ro_crate([_export_record("r1", "align", "d" * 64, python="3.13.2")])
+    pkgset_node = next(n for n in crate["@graph"] if n["@id"].startswith("#pkgset-"))
+    python_node = next(n for n in crate["@graph"] if n["@id"].startswith("#python-"))
+    assert "3.13.2" not in json.dumps(pkgset_node), "the interpreter leaked into the package set"
+    assert python_node["value"] == "3.13.2" and python_node["propertyID"] == "runprov.python"
+
+    prov = runprov.export.to_prov_json([_export_record("r1", "align", "d" * 64, python="3.13.2")])
+    key = next(k for k in prov["entity"] if "pkgset" in k)
+    assert "3.13.2" not in json.dumps(prov["entity"][key])
+    assert prov["activity"]["runprov:run/r1"]["runprov:python"] == "3.13.2"
+
+
+@pytest.mark.parametrize(
+    ("record", "why"),
+    [
+        (lambda: _export_record("r0", "old", None), "predates the field"),
+        (lambda: {"run_uid": "r0", "script": "old"}, "has no environment block at all"),
+    ],
+    ids=["no-package-sets-key", "no-environment-block"],
+)
+def test_a_record_without_a_recorded_digest_exports_NO_environment_and_nothing_is_recomputed(
+    record, why
+):
+    """[ADR-0027 R-5] and [ADR-0027 R-6]. The honest export of nine released versions of
+    records is SILENCE.
+
+    `export` IS PURE OVER RECORDS and must stay so: a derived view that recomputed the digest
+    from a snapshot body would answer differently depending on the machine it was rendered on,
+    and would make *recorded* and *recomputed* indistinguishable in the one artifact that leaves
+    this machine. `diff` holds the same split for the same reason.
+
+    AND THE PACKAGE LIST IS NEVER EXPORTED EITHER: it lives in the content-addressed sidecar
+    rather than in the record, so a crate carrying it would duplicate a file the export does not
+    ship.
+    """
+    records = [record()]
+    crate = runprov.export.to_ro_crate(records)
+    prov = runprov.export.to_prov_json(records)
+    assert not [n for n in crate["@graph"] if n["@id"].startswith("#pkgset-")], why
+    assert not [k for k in prov.get("entity", {}) if "pkgset" in k], why
+    #: NOT VACUOUS: the renderers still produced a document about the run.
+    assert any(n.get("@type") == "CreateAction" for n in crate["@graph"])
+    assert "runprov:run/r0" in prov["activity"]
+
+
+def test_a_package_sets_MAP_CARRYING_NOTHING_USABLE_exports_no_environment():
+    """`package_sets: {}` and `package_sets: {"a": ""}` are not digests, and the honest export of
+    them is the same silence as a record that has no field at all.
+
+    THE LOOP IS WHY THIS IS ITS OWN CASE. `_package_set` walks the recorded algorithms in order
+    and returns the first with a usable value; a map whose every entry is empty must fall out of
+    that loop rather than return an entry whose value nothing can check. Measured as a coverage
+    gap — the loop's exhausted arm and the final refusal were both unreached, and a renderer that
+    emitted `"value": ""` would be well-formed and worthless.
+    """
+    for sets in ({}, {"runprov.pkgset.v1": ""}, {"runprov.pkgset.v1": None}):
+        record = _export_record("r1", "align", None)
+        record["environment_snapshot"]["package_sets"] = sets
+        crate = runprov.export.to_ro_crate([record])
+        assert not [n for n in crate["@graph"] if n["@id"].startswith("#pkgset-")], sets
+        assert runprov.export._package_set(record) is None, sets
+    #: AND THE SECOND ENTRY IS REACHED WHEN THE FIRST IS UNUSABLE, which is the loop's point: a
+    #: record mid-transition may carry one algorithm with a value and one without.
+    record = _export_record("r1", "align", None)
+    record["environment_snapshot"]["package_sets"] = {"a.v1": "", "b.v1": "d" * 64}
+    assert runprov.export._package_set(record) == ("b.v1", "d" * 64)
+
+
+def test_the_export_reads_BOTH_record_shapes_because_both_scopes_are_rendered():
+    """[ADR-0009's two scopes] over [ADR-0027 R-5]. The history projection writes a top-level
+    `environment_snapshot` and the sidecar keeps `environment.snapshot` — renamed, not merely
+    nested differently.
+
+    `export` RENDERS BOTH SCOPES, so a reader of one shape only would carry the environment for a
+    whole history and silently omit it for the single-run scope — which is the scope a reviewer
+    holding a file and its sidecar has, and the one ADR-0009 says *"is not a convenience."*
+    """
+    sidecar_shaped = {
+        "run_uid": "r1",
+        "script": "align",
+        "environment": {
+            "python": "3.12.13",
+            "snapshot": {"sha256": "h", "package_sets": {runprov.pkgset.ALGORITHM: "d" * 64}},
+        },
+    }
+    crate = runprov.export.to_ro_crate([sidecar_shaped])
+    assert [n["@id"] for n in crate["@graph"] if n["@id"].startswith("#pkgset-")] == [
+        "#pkgset-dddddddddddddddd"
+    ], "the sidecar shape exports no environment, so one of the two scopes is blind to it"
+    assert any(n["@id"].startswith("#python-") for n in crate["@graph"])
+
+
+def test_a_digest_recorded_under_a_form_THIS_BUILD_CANNOT_COMPUTE_is_still_exported():
+    """A consumer reading a crate is not this build [ADR-0027 R-5's comment].
+
+    A digest under a form this version cannot compute is still the digest the run asserted, and
+    dropping it would make an export from an older or newer runprov carry LESS than the record
+    does — which is the opposite of what a derived view is for. The algorithm travels with the
+    value, so the consumer decides what it can check.
+    """
+    future = _export_record("r1", "align", None)
+    future["environment_snapshot"]["package_sets"] = {"runprov.pkgset.v99": "f" * 64}
+    crate = runprov.export.to_ro_crate([future])
+    node = next(n for n in crate["@graph"] if n["@id"].startswith("#pkgset-"))
+    assert node["propertyID"] == "runprov.pkgset.v99" and node["value"] == "f" * 64
 
 
 def test_the_package_set_canonicaliser_imports_NOTHING_from_this_package():
