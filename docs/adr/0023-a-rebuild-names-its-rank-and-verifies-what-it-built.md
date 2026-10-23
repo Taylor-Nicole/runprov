@@ -6,7 +6,9 @@
   keeps `env` for 0.10.0 and this record carries `rebuild` for 0.11.0. Reverses the *"build the
   environment, not just describe it"* rejection ADR-0020 recorded on 2026-10-21, and answers each
   clause of it below. Depends on ADR-0020 for the rendering it installs, ADR-0007 for its exit
-  codes, ADR-0017 for its JSON, and ADR-0021 for the read that answers *"was this ever rebuilt"*.
+  codes, ADR-0017 for its JSON, ADR-0021 for the read that answers *"was this ever rebuilt"*,
+  and **ADR-0024 for what each digest means** — amended 2026-10-23 so R-11 and R-12 cite that
+  record instead of restating its canonical form.
 - **Applies to:** `runprov/environment.py`, read and extended only by R-12's record field. The
   rebuild's own module does not exist yet; the commit that accepts this record names it here.
 
@@ -116,17 +118,21 @@ enforces.)*
 ### Verification, which is the point of the command
 
 **R-11.** **RE-SNAPSHOT THE NEW ENVIRONMENT AND COMPARE THE PACKAGE SET — never the body
-digest.** The comparison is over the snapshot body **below its header**, and the header's host
-differences are reported **separately, as host drift.** The measurement above is why: the
-digested body contains this host's platform string, so a body-digest comparison answers a
-question about the host when it was asked a question about the packages.
+digest.** The comparison is over ADR-0024 R-4's canonical package set, and the interpreter and
+host differences are reported **separately and independently** [ADR-0024 R-9]. The measurement
+above is why: the digested body contains this host's platform string, so a body-digest comparison
+answers a question about the host when it was asked a question about the packages. A rebuild is
+by definition verified somewhere other than where the record was written, so this is the normal
+case rather than an edge of it.
 
-**R-12.** **The snapshot BODY is never changed; `packages_sha256` is added to the snapshot
-RECORD** — the digest of the body below the header — and for a record written before that field
-existed the rebuild **recomputes it from the snapshot file**, which R-11 makes it read anyway.
-The body is content-addressed and nine releases of digests depend on its bytes, so **a field goes
-into the record and is derived for older records by re-reading the file.** This is the rule for
-every future addition, not a one-off.
+**R-12.** **The two digests, the canonical package set and the recomputation of it for older
+records are ADR-0024's, and are not restated here.** This record is a CONSUMER of them: it reads
+`snapshot.packages_sha256` where present [ADR-0024 R-1], recomputes it from the body where absent
+[ADR-0024 R-7], and refuses rather than guessing when the body carries a line it cannot classify
+[ADR-0024 R-5]. The rule ADR-0024 R-3 states — **the snapshot body is never changed; a field goes
+into the record and is derived for older records by re-reading the file** — governs every future
+addition here, and a second copy of it in this record is exactly how two halves of one rule come
+to differ by a whole case.
 
 **R-13.** The exit code follows ADR-0007 and is never collapsed: **0** the rebuilt package set
 equals the recorded one · **1** it differs, and the differences are listed · **2** the rebuild

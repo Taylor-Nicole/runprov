@@ -8,7 +8,9 @@
   either be accepted with a dozen requirements no code can cite or stay `Proposed` through the
   release that ships it. Depends on ADR-0007 for its exit codes and ADR-0017 for its JSON.
 - **Applies to:** `runprov/environment.py`, read and never changed by this. The renderer's own
-  module does not exist yet; the commit that accepts this record names it here.
+  module does not exist yet; the commit that accepts this record names it here. **Amended
+  2026-10-23 with R-11 and R-12**, the comparison surface, on Taylor's request for a package-set
+  digest a reviewer can recompute off the original host; what a digest means is ADR-0024.
 
 ## Context
 
@@ -103,6 +105,23 @@ existing path unless `--force`.
 description of an environment. It installs nothing, executes nothing, and makes no claim about
 the numbers. **Re-run-and-verify remains a capability runprov does not have**, and ADR-0019's
 `rerun` still prints and never runs.
+
+### Verification, added 2026-10-23 and keyed on ADR-0024
+
+**R-11.** `runprov env --compare` **answers whether the environment standing here is the one the
+record names, and it is side-effect-free like the rest of this command.** It prints ADR-0024 R-9's
+three independent verdicts — package set, interpreter, host — and exits on ADR-0024 R-10's codes,
+keyed on the **package set**. A reviewer, a researcher or an auditor is **never on the original
+host**, so a host difference is reported and does not by itself decide the answer.
+
+**R-12.** The comparison **names the packages** per ADR-0024 R-11 — *only in the record*, *only
+here*, *different version* — never a pair of digests. **This is why verification ships with the
+renderer rather than waiting for `rebuild`:** the reader, the canonicaliser and the output format
+are already here, and a reviewer who builds an environment by hand in a container needs the
+comparison and not the build.
+
+**What a digest means, and how the canonical package set is computed, is ADR-0024** and is not
+restated here. One rule, one definition.
 
 ## The cross-version test bed, and the three branches it does not reach
 

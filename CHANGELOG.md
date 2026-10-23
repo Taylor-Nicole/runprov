@@ -36,6 +36,31 @@ measured in both directions, a planted module citing ADR-0020 reddens the check 
 present and **passes with it deleted**. The reasoning is recorded at the guard, because the
 obvious tidy-up is to remove a field the guard's own docstring calls exempt.
 
+**ADR-0024 is added: an environment now has two digests, because one digest cannot answer two
+questions.** The existing `snapshot.sha256` covers the whole rendered body — platform header
+included — so it answers *"has this environment changed on this host?"*. A new
+`snapshot.packages_sha256` covers a canonical package set and answers *"are these the same
+packages?"*. Measured: identical package sets on x86_64/glibc2.35 and aarch64/glibc2.39 move the
+first and leave the second alone. A reviewer, researcher or auditor is never on the original host,
+so the comparison that matters to them was the one the package could not make.
+
+**The snapshot body is not touched, and nothing already written moves.** The second digest lives
+in the record and is recomputed from the body for every record written before the field existed —
+all nine corpus versions included — because the body is content-addressed, its filename is its
+digest, and 27 of 27 corpus records hash to the value they carry.
+
+**The canonical form is specified as bytes so it can be recomputed without this package**, with a
+domain separator (`runprov.pkgset.v1`), PEP 503 name normalisation, and a total parse in which an
+unclassifiable line refuses rather than being dropped. **Reimplemented from the ADR text alone,
+stdlib only, no runprov and no network, it reproduced all nine corpus package-set digests.** The
+algorithm is named in the record, and the name freezes on release like `runprov.gate.v1`.
+
+**`runprov env --compare` is specified for 0.10.0**, reporting three independent verdicts —
+package set, interpreter, host — with the exit code keyed on the package set, so a container that
+differs from the recording machine is reported rather than failed. ADR-0020 gains R-11 and R-12
+for the surface; ADR-0023's R-11 and R-12 now cite ADR-0024 instead of restating its canonical
+form. Both remain `Proposed`; no behaviour changes in this release.
+
 **ADR-0020 is rewritten and ADR-0023 is added: rendering a recorded environment and rebuilding
 one are now two decisions, not one.** ADR-0020's 2026-10-21 version both specified the renderer
 and **rejected** standing the environment up again. That rejection is reversed — the three
