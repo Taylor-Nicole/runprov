@@ -3302,7 +3302,7 @@ The Windows leg skips roughly ten times what any other does, and it is the only 
 assert the coverage floor — skipped tests leave their lines unmeasured, so 100% is
 unreachable there by construction rather than by regression. No other leg may lower it.
 
-Coverage is **100%** of **about 5,500 statements and 2,100 branches**, and the gate is set
+Coverage is **100%** of **about 6,150 statements and 2,300 branches**, and the gate is set
 there with `--cov-branch`. Both figures are coverage's own, and `ci.py` compares this sentence
 with the totals of the run it just made.
 
