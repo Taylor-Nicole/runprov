@@ -415,7 +415,10 @@ def _simple_dimension(
     #: nothing else reads it; an interpreter version is a value a person compares by eye, and
     #: `3.13.0rc1+local` cut at sixteen would be a different version silently. The flag is
     #: per-dimension rather than a rule about lengths, because the two are different KINDS.
-    short = (lambda v: v[:16]) if digest else (lambda v: v)
+
+    def short(value: str) -> str:
+        return value[:16] if digest else value
+
     if a.value == b.value:
         return Dimension(name, [], f"{short(a.value)} on both", None)
     return Dimension(name, [f"{short(a.value)} -> {short(b.value)}"], "differs", None)
