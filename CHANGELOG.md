@@ -11,6 +11,31 @@ is a fix nobody checked.
 
 ### Added
 
+**`runprov env --render requirements|conda|uv` — the recorded environment as something you can
+install.** ADR-0020 R-1..R-10, the last of `env`'s work. Four of its requirements were corrected
+before a line was written, by reverifying the specification against what the record actually
+holds:
+
+* **R-5 claimed the record holds the names of distributions it could not identify. It does not,
+  and must not.** Only `len()` of that list is recorded, and what the list holds is a filesystem
+  path from the recording machine — exactly what the committed-identity guard refuses and the
+  corpus leak scanner exists to catch. The output states the count and says the names are
+  unavailable by design.
+* **R-2 did not say what happens when the caller asks for a form the archived lock is not.**
+  Rank 1 is the lock's own bytes when the forms agree; otherwise the list comes out with the lock
+  named, digested and located, declared a floor beneath it. Refusing was rejected — a reviewer
+  who needs a `requirements.txt` out of a `uv.lock` project has a real question.
+* **R-8's "the form the recorded manager implies" was not a function**: `manager.detected` is a
+  LIST, and `["uv", "venv"]` is the ordinary case. It is a precedence table now, and a recorded
+  manager with no entry in it refuses by name rather than falling through to a last `else`.
+* **R-9's "never writes into the project" would have refused your repository**, which is where a
+  `requirements.txt` belongs. The store is owned by containment and the history by identity, and
+  `--force` reaches neither.
+
+**`--render` carries its own schema**, `runprov.env.render.v1`, because a rendering answers a
+different question from a comparison — and because the refused shape of an invocation must match
+the shape it answers with. Both are built through one builder, so the key sets cannot drift.
+
 **Both export vocabularies now carry the environment, which neither did.** ADR-0027, accepted.
 Measured before it was built: `export.py` mentioned the environment **nowhere**, so a record
 deposited at Zenodo or handed to a reviewer through RO-Crate or PROV said what was read and

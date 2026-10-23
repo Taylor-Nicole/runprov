@@ -4,7 +4,7 @@
 - **Date:** 2026-09-04
 - **Ledger:** T-20
 - **Decided by:** the author, not the applier
-- **Applies to:** `runprov/export.py`
+- **Applies to:** `runprov/export.py`, `runprov/env.py`
 
 ## Context
 

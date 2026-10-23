@@ -787,6 +787,41 @@ versions the recorded package-set digests are nine distinct values and **exactly
 package every time. When the recorder is the whole difference the output says so and names
 `--ignore`; an ignore is printed, carried in the payload, and reported when it matched nothing.
 
+### `--render` — something you can install
+
+```
+$ runprov env --render                       # the form the recorded manager implies
+$ runprov env --render conda --out env.yml   # or name it, and write it out
+$ runprov env here --render requirements     # this environment, with no record at all
+```
+
+**An archived lock outranks the package list, and the output says which it gave you.** The
+better answer is the lock itself: those bytes pin the resolved graph. The weaker one is built
+from the recorded package list, which pins versions and not the graph — and the rendering says
+which of the two it is, as a `rank` field in the JSON and in words in the file. When a lock exists in a
+form you did not ask for, the list still comes out — **with the lock named, digested and
+located**, declared a floor beneath it. An archived lock whose bytes no longer hash to the
+recorded digest is exit 2, not a quiet fall back to the list: one of the two has been edited and
+nothing here can say which.
+
+**The interpreter is not negotiable.** A package set resolved against a different Python is a
+different environment, and it is the commonest way a "reproduced" run differs — so it is emitted
+in every form, as a comment where `requirements.txt` has no field for it, and a record naming no
+interpreter is refused rather than rendered.
+
+**Distributions whose metadata could not be read are counted in the output and cannot be named.**
+What capture collects for them is a filesystem path from the recording machine, and only its
+length is recorded: a record travels, and the build machine's directory layout must not travel
+with it. So the file says how many are missing from the list rather than presenting a partial
+list as a whole one.
+
+**`--out` protects the record and not your repository.** Writing a `requirements.txt` into your
+own tree is the point; writing one into the run history or the content-addressed snapshot store
+is refused, and `--force` does not reach that refusal — it covers overwriting *your* file.
+
+**And no rendering claims a re-run.** Every one carries the sentence saying so, from a single
+constant, because two wordings of one promise is one wording too many.
+
 **And the canonical form is specified so it can be recomputed without this package**:
 `runprov/pkgset.py` imports nothing but the standard library, so an auditor copies that one file
 into a container with no runprov in it and runs `python pkgset.py env-<digest>.txt`. The payload is

@@ -4,7 +4,7 @@
 - **Date:** 2026-09-04
 - **Ledger:** T-18
 - **Decided by:** the author, not the applier
-- **Applies to:** `runprov/__main__.py` (`gate`, and the exit-code contract every subcommand shares), `runprov/pkgset.py`
+- **Applies to:** `runprov/__main__.py` (`gate`, and the exit-code contract every subcommand shares), `runprov/pkgset.py`, `runprov/env.py`
 
 ## Context
 

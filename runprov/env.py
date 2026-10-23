@@ -33,6 +33,7 @@ correct rebuild as a failure.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import pathlib
 import sys
 import typing
@@ -47,6 +48,14 @@ __all__: list[str] = []
 #: shape it is holding is being promised nothing, and the version is in the name so a later key
 #: set is a new shape rather than a silent change to this one.
 SCHEMA = "runprov.env.v1"
+
+#: A SECOND SHAPE NEEDS A SECOND NAME [ADR-0017 R-5]. A rendering answers a different question
+#: from a comparison and carries different keys, so calling both `runprov.env.v1` would promise a
+#: consumer one shape and hand it two. `gate` has the same arrangement — its `--emit-policy`
+#: answer is `runprov.policy.v1` — and the guard over cannot-check pairs is why it matters: the
+#: refused shape of an invocation must match the shape that invocation ANSWERS with, or a
+#: consumer parsing the failure path is parsing a document it has never seen.
+RENDER_SCHEMA = "runprov.env.render.v1"
 
 #: THE RESERVED OPERAND NAMING THIS ENVIRONMENT [ADR-0026 R-5]. A bare word rather than a flag,
 #: because an operand must be passable as the VALUE of one — `--compare --here` is read by
@@ -108,6 +117,21 @@ class Identity:
     package_count: int | None = None
     packages: dict[str, str] | None = None
     algorithms: tuple[str, ...] = ()
+    #: WHAT A RENDERING NEEDS AND A COMPARISON DID NOT, which is why these arrived later and
+    #: not because they were forgotten. A comparison answers off the recorded digest alone; a
+    #: rendering must emit something installable, so it needs the conda half apart from the pip
+    #: half [ADR-0020 R-7], the count it cannot name [ADR-0020 R-5], the managers that decide
+    #: the default form [ADR-0020 R-8] and the archived lock that outranks the list [R-2].
+    conda: dict[str, tuple[str, str]] | None = None
+    #: WHERE THE RECORD SAYS ITS SNAPSHOT STORE IS, which is how R-9's refusal is DERIVED from
+    #: this invocation rather than from ambient configuration. Measured defect, 2026-10-23: the
+    #: first version took the owned paths from `active()`, so a caller reading a history with
+    #: `--log` elsewhere got a refusal computed for a different project's store — and a rendering
+    #: was written straight into the snapshot directory the record names.
+    snapshot_path: str | None = None
+    unreadable: int = 0
+    managers: tuple[str, ...] = ()
+    lockfiles: tuple[dict[str, typing.Any], ...] = ()
 
     def answerable(self) -> list[tuple[str, bool, str]]:
         """What can be checked from what is here: one row per subject, and never two states.
@@ -188,6 +212,18 @@ def _package_set_from_record(
     return Field(None, absent="recorded before a package-set digest was written"), algorithms
 
 
+def _managers(record: typing.Mapping[str, typing.Any]) -> tuple[str, ...]:
+    """The managers the run recorded detecting, in the order the record lists them.
+
+    A LIST AND NOT A NAME, which is the fact that shapes [ADR-0020 R-8]: the measured record
+    carries `detected: ["uv", "venv"]`, so "the form implied by the recorded manager" is not a
+    lookup until something says which of two wins.
+    """
+    manager = (record.get("environment") or {}).get("manager")
+    detected = manager.get("detected") if isinstance(manager, dict) else None
+    return tuple(m for m in detected if isinstance(m, str)) if isinstance(detected, list) else ()
+
+
 def from_record(
     record: typing.Mapping[str, typing.Any], label: str, root: pathlib.Path | None = None
 ) -> Identity:
@@ -215,10 +251,12 @@ def from_record(
             body = candidate.read_text(encoding="utf-8")
         except OSError:  # guards-ok: a pruned sidecar lowers the detail level, it is not an error
             body = None
+    conda_half: dict[str, tuple[str, str]] | None = None
     if body is not None:
         try:
             pip, conda = pkgset.parse(body)
             packages = {**pip, **{f"conda:{n}": v for n, (v, _) in conda.items()}}
+            conda_half = conda
         except pkgset.PackageSetError:  # guards-ok: the digest field below states the reason
             packages = None
     package_set, algorithms = _package_set_from_record(snapshot, body)
@@ -240,6 +278,19 @@ def from_record(
         package_count=snapshot.get("n_packages"),
         packages=packages,
         algorithms=algorithms,
+        conda=conda_half,
+        snapshot_path=where if isinstance(where, str) and where else None,
+        unreadable=snapshot.get("n_unreadable") or 0,
+        managers=_managers(record),
+        lockfiles=tuple(
+            entry
+            for entry in (
+                snapshot.get("lockfiles")
+                or (record.get("environment") or {}).get("lockfiles")
+                or []
+            )
+            if isinstance(entry, dict)
+        ),
     )
 
 
@@ -274,6 +325,9 @@ def from_here() -> Identity:
         package_count=len(pip_map),
         packages=packages,
         algorithms=(pkgset.ALGORITHM,),
+        conda=conda_parsed if packages is not None else None,
+        unreadable=len(bad),
+        managers=tuple(environment.manager().get("detected") or ()),
     )
 
 
@@ -580,3 +634,407 @@ def render_answerable(identity: Identity) -> list[str]:
     for subject, present, detail in identity.answerable():
         out.append(f"{subject:<16} {'yes' if present else 'NO ':<4} {detail}")
     return printable_lines(out)
+
+
+#: WHICH RENDERING A RECORDED MANAGER IMPLIES [ADR-0020 R-8]. A table and not an `else`: the
+#: record carries a LIST of detected managers, so this both chooses between known ones by a
+#: stated rule and refuses an unknown one. Ordered most specific first — a manager that owns a
+#: lock file outranks one that only owns a directory, because the lock is the better answer and
+#: R-8's default should land on the form that can carry it.
+_IMPLIED_RENDERING: tuple[tuple[str, str], ...] = (
+    ("uv", "uv"),
+    ("poetry", "uv"),
+    ("pixi", "conda"),
+    ("micromamba", "conda"),
+    ("mamba", "conda"),
+    ("conda", "conda"),
+    ("venv", "requirements"),
+    ("virtualenv", "requirements"),
+    ("pip", "requirements"),
+)
+
+RENDERINGS = ("requirements", "conda", "uv")
+
+#: THE SENTENCE NEITHER MODE MAY LEAVE OUT [ADR-0020 R-10, ADR-0026 R-2's neighbour]. It is a
+#: constant so that the renderer and anything later that emits a rendering cannot carry two
+#: wordings of one promise.
+NOT_REPRODUCTION = (
+    "runprov: this describes an environment. It does not re-run anything and makes no claim "
+    "about the numbers a re-run would produce."
+)
+
+
+class RenderRefusedError(Exception):
+    """A rendering this command will not emit, with the reason a caller should print.
+
+    EVERY RAISE IS A *COULD NOT LOOK* AND MAPS TO EXIT 2, never to 1: a rendering makes no
+    comparison, so it has no finding to report [ADR-0007]. The caller turns this into the payload
+    as well as the message, because exit 2 carries the shape [ADR-0017 R-15].
+    """
+
+
+def implied_rendering(managers: typing.Iterable[str]) -> str:
+    """The rendering the recorded managers imply. ADR-0020 R-8.
+
+    A MANAGER WITH NO ENTRY IN THE TABLE REFUSES, naming it. Falling through to a fixed default
+    would render an unclassified manager as whatever the last branch happened to be — and the
+    caller would never know a judgement had been made on their behalf. Resolving between KNOWN
+    managers by a stated table is a rule; falling back on an unknown one is a guess.
+    """
+    detected = list(managers)
+    if not detected:
+        return "requirements"
+    known = dict(_IMPLIED_RENDERING)
+    unknown = [m for m in detected if m not in known]
+    if unknown:
+        raise RenderRefusedError(
+            f"the record names manager(s) {sorted(unknown)} and this build has no rendering for "
+            f"them, so it will not guess one. Ask for a form with `--render "
+            f"{'|'.join(RENDERINGS)}`"
+        )
+    for name, rendering in _IMPLIED_RENDERING:
+        if name in detected:
+            return rendering
+    raise AssertionError("unreachable: every detected manager is in the table")  # pragma: no cover
+
+
+def _lock(identity: Identity) -> dict[str, typing.Any] | None:
+    """The archived lock that outranks the package list, or None. ADR-0020 R-2.
+
+    AN ENTRY THAT WAS NOT ARCHIVED IS NOT AN ANSWER HERE. `archive_lockfiles` records a lock it
+    found in git by blob id instead of copying it, which is the right record and not a file this
+    command can read — so it is reported in the header rather than emitted, and the list is what
+    gets rendered.
+    """
+    for entry in identity.lockfiles:
+        if entry.get("archived") and isinstance(entry.get("path"), str) and not entry.get("error"):
+            return entry
+    return None
+
+
+def _lock_kind(name: str) -> str | None:
+    """Which rendering an archived lock's own filename IS, or None if this build cannot tell."""
+    lowered = name.lower()
+    if lowered in ("uv.lock", "poetry.lock"):
+        return "uv"
+    if lowered.startswith("conda-lock") or lowered in ("conda-lock.yml", "environment.lock.yml"):
+        return "conda"
+    if lowered.startswith("requirements") and lowered.endswith((".txt", ".lock")):
+        return "requirements"
+    return None
+
+
+@dataclasses.dataclass(frozen=True)
+class Rendering:
+    """An environment rendered into something installable, and what it is not.
+
+    `rank` IS PART OF THE ANSWER AND NOT A DIAGNOSTIC [ADR-0020 R-2, R-3]. 1 means these bytes
+    are the archived lock, which pins the resolved graph; 2 means they were built from the
+    recorded package list, which pins versions and not the graph. A rendering that did not say
+    which one it is would let a reader install a floor believing it was exact.
+    """
+
+    lines: list[str]
+    form: str
+    rank: int
+    floor: bool
+    lock: dict[str, typing.Any] | None
+
+
+def _floor_header(
+    identity: Identity, comment: str, lock: dict[str, typing.Any] | None
+) -> list[str]:
+    """The header every rank-2 rendering carries. ADR-0020 R-3, R-5, R-10.
+
+    FOUR SENTENCES AND EACH IS A REQUIREMENT. That the list is a floor; how many distributions
+    could not be identified and therefore are **not in it**; where the exact answer is when a
+    lock exists in a form this rendering is not; and that none of this re-runs anything.
+    """
+    out = [
+        f"{comment} {NOT_REPRODUCTION}",
+        f"{comment} runprov: A FLOOR, NOT A LOCK. These are the versions that were installed; "
+        f"they do not pin transitive resolution, so an environment built from this satisfies the "
+        f"record without necessarily being the environment that ran.",
+    ]
+    if identity.unreadable:
+        #: [ADR-0020 R-5] THE COUNT, AND THE NAMES CANNOT BE GIVEN. The record holds `n_unreadable`
+        #: and no list, deliberately: what capture collected was a filesystem path from the
+        #: recording machine, and a record travels. Silence would present a partial list as whole.
+        out.append(
+            f"{comment} runprov: {identity.unreadable} distribution(s) had unreadable metadata "
+            f"and are NOT in this list. Their names are not recorded and cannot be."
+        )
+    if lock is not None:
+        out.append(
+            f"{comment} runprov: A LOCK EXISTS AND IS THE BETTER ANSWER — {lock.get('name')}, "
+            f"sha256 {str(lock.get('sha256'))[:16]}, archived at {lock.get('path')}. This list "
+            f"is a floor beneath it."
+        )
+    return out
+
+
+def _as_requirements(identity: Identity, lock: dict[str, typing.Any] | None) -> list[str]:
+    """pip's form. The interpreter is a comment because `requirements.txt` cannot carry it."""
+    out = _floor_header(identity, "#", lock)
+    #: [ADR-0020 R-4] EMITTED AND NOT NEGOTIABLE, even where the format can only comment it: a
+    #: package set resolved against a different Python is a different environment, and this is
+    #: the single commonest way a "reproduced" run differs.
+    out.append(f"# python: {identity.interpreter}")
+    out += [
+        f"{name}=={version}"
+        for name, version in sorted((identity.packages or {}).items())
+        if not name.startswith("conda:")
+    ]
+    if identity.conda:
+        out.append(
+            "# runprov: this environment also had "
+            f"{len(identity.conda)} conda package(s), which pip cannot install. "
+            "Use `--render conda` for those."
+        )
+    return out
+
+
+def _as_conda(identity: Identity, lock: dict[str, typing.Any] | None) -> list[str]:
+    """conda's environment YAML. The pip half goes under `pip:`, which conda itself supports."""
+    out = _floor_header(identity, "#", lock)
+    out += ["name: runprov-rendered", "dependencies:", f"  - python={identity.interpreter}"]
+    for name, (version, build) in sorted((identity.conda or {}).items()):
+        #: THE BUILD STRING IS KEPT WHERE IT WAS RECORDED. `name=version=build` is conda's own
+        #: `--export` spelling, and dropping the build would silently widen the pin.
+        out.append(f"  - {name}={version}={build}" if build else f"  - {name}={version}")
+    pip = [
+        f"{n}=={v}"
+        for n, v in sorted((identity.packages or {}).items())
+        if not n.startswith("conda:")
+    ]
+    if pip:
+        out += ["  - pip:"] + [f"    - {line}" for line in pip]
+    return out
+
+
+def _as_uv(identity: Identity, lock: dict[str, typing.Any] | None) -> list[str]:
+    """uv's form: a PEP 621 fragment, which is what `uv` reads and `pip` also accepts."""
+    out = _floor_header(identity, "#", lock)
+    out += [
+        "[project]",
+        'name = "runprov-rendered"',
+        'version = "0.0.0"',
+        f'requires-python = "=={identity.interpreter}"',
+        "dependencies = [",
+    ]
+    out += [
+        f'    "{name}=={version}",'
+        for name, version in sorted((identity.packages or {}).items())
+        if not name.startswith("conda:")
+    ]
+    out.append("]")
+    return out
+
+
+_RENDERERS = {"requirements": _as_requirements, "conda": _as_conda, "uv": _as_uv}
+
+
+def render_environment(
+    identity: Identity, form: str | None = None, lock_bytes: str | None = None
+) -> Rendering:
+    """Render a recorded environment into something installable. ADR-0020 R-1..R-8.
+
+    RANK 1 IS THE LOCK'S OWN BYTES, and it is reached only when the requested form IS the lock's
+    kind — R-8's default picks that form, so the ordinary invocation gets it. When the forms
+    differ the list is emitted with the lock named in the header: refusing instead was rejected,
+    because a reviewer who needs a `requirements.txt` out of a `uv.lock` project has a real
+    question and answering it while saying where the exact answer lives serves them better.
+
+    THE PACKAGES ARE REQUIRED HERE AND WERE NOT FOR A COMPARISON [ADR-0020 R-6]. A comparison
+    answers off the recorded digest; a rendering has to emit something installable, so a pruned
+    sidecar is a refusal here and still answerable there. **The same identity, two different
+    demands on it** — which is why the identity reports what it has rather than deciding.
+    """
+    wanted = form or implied_rendering(identity.managers)
+    if wanted not in _RENDERERS:
+        #: REACHABLE ONLY THROUGH THE API. argparse holds `--render` to `RENDERINGS`, and the
+        #: equality guard in the suite holds those three spellings to each other — so the CLI
+        #: cannot arrive here. A library caller can, and a `KeyError` from the table lookup
+        #: below would be a worse answer than a sentence naming the forms that exist.
+        raise RenderRefusedError(
+            f"no rendering named {wanted!r}; choose from {'|'.join(RENDERINGS)}"
+        )
+    lock = _lock(identity)
+    if lock is not None and lock_bytes is not None and _lock_kind(str(lock.get("name"))) == wanted:
+        return Rendering(lock_bytes.split("\n"), wanted, 1, False, lock)
+    if identity.packages is None:
+        raise RenderRefusedError(
+            f"{identity.package_set.absent or 'the package list is not available'} — a rendering "
+            f"needs the package list itself, not only its digest, so there is nothing to emit"
+        )
+    if identity.interpreter.value is None:
+        #: [ADR-0020 R-4] NON-NEGOTIABLE MEANS REFUSING WITHOUT IT. A rendering with no
+        #: interpreter would be installed against whatever the reader happens to have, which is
+        #: the commonest way a "reproduced" run differs — and it would look complete.
+        raise RenderRefusedError(
+            "the record names no interpreter version, and a package set resolved against a "
+            "different Python is a different environment, so this will not render without one"
+        )
+    return Rendering(_RENDERERS[wanted](identity, lock), wanted, 2, True, lock)
+
+
+def render_payload(rendering: Rendering, identity: Identity) -> dict[str, typing.Any]:
+    """A rendering as data. ADR-0017: one builder, two renderings, and the FLOOR AS A FIELD.
+
+    R-3 PUTS THE FLOOR IN A COMMENT BECAUSE A FILE HAS NOWHERE ELSE TO PUT IT. A consumer should
+    not have to parse a comment to learn the answer is not exact, so here it is a boolean beside
+    the rank that explains it.
+    """
+    return {
+        "schema": RENDER_SCHEMA,
+        "cannot_check": None,
+        "mode": "render",
+        "form": rendering.form,
+        "rank": rendering.rank,
+        "floor": rendering.floor,
+        "lock": (
+            {"name": rendering.lock.get("name"), "sha256": rendering.lock.get("sha256")}
+            if rendering.lock
+            else None
+        ),
+        #: ONE NAME, ONE SHAPE, ACROSS BOTH OF THIS COMMAND'S ANSWERS [ADR-0017 R-9/R-12's
+        #: cross-command rule]. The comparison carries `interpreter` as `{value, how}`; a bare
+        #: string here would make one key mean two things in one command, which is the collision
+        #: the cross-command guard caught — and the fix is the shape, not an exemption.
+        "interpreter": {"value": identity.interpreter.value, "how": identity.interpreter.how},
+        "unreadable": identity.unreadable,
+        #: `rendered` AND NOT `lines`, BECAUSE `chain` ALREADY OWNS `lines` AS AN INTEGER — the
+        #: number of history lines it verified. Two commands answering with one name and two
+        #: types is exactly what a consumer cannot defend against, and renaming the newcomer is
+        #: cheaper than teaching every reader which command they are holding.
+        "rendered": list(rendering.lines),
+        "not_reproduction": NOT_REPRODUCTION,
+    }
+
+
+def render_refused(reason: str) -> dict[str, typing.Any]:
+    """The payload for a rendering that could not be made. ADR-0017 R-15.
+
+    BUILT THROUGH THE REAL BUILDER, like the comparison's refusal and for the same reason: the
+    answered shape and the refused shape of one invocation must carry one key set, and two
+    hand-written dictionaries are free to disagree. `lineage` is in this corpus precisely because
+    a pair of them did.
+    """
+    empty = Identity(
+        "?", Field(None, absent=reason), Field(None, absent=reason), Field(None, absent=reason)
+    )
+    answer = render_payload(Rendering([], "?", 0, True, None), empty)
+    answer["cannot_check"] = reason
+    return answer
+
+
+def read_lock(identity: Identity, root: pathlib.Path | None) -> str | None:
+    """The archived lock's bytes, verified against the digest the record carries. ADR-0020 R-2.
+
+    A MISMATCH IS A REFUSAL AND NEVER A FALLBACK TO THE LIST. One of the two has been edited,
+    nothing here can say which, and quietly rendering the package list instead would answer a
+    question about the environment with evidence the reader did not ask for — the same rule
+    ADR-0026 R-8 holds for the package-set digest, one artifact over.
+
+    AN UNREADABLE ARCHIVED LOCK IS ALSO A REFUSAL, not a silent downgrade: the record says the
+    file is there, so its absence is a finding about the store rather than a reason to answer
+    differently.
+    """
+    lock = _lock(identity)
+    if lock is None:
+        return None
+    where = pathlib.Path(str(lock["path"]))
+    if root is not None and not where.is_absolute():
+        where = root / where
+    try:
+        body = where.read_bytes()
+    except OSError as exc:
+        raise RenderRefusedError(
+            f"the record names an archived lock at {lock['path']} and it cannot be read ({exc}), "
+            f"so the better answer is unavailable and the list is not offered in its place"
+        ) from exc
+    found = hashlib.sha256(body).hexdigest()
+    if found != lock.get("sha256"):
+        raise RenderRefusedError(
+            f"the archived lock {lock['path']} hashes to {found[:16]} and the record asserts "
+            f"{str(lock.get('sha256'))[:16]}, so neither is evidence. One of the two has been "
+            f"edited and nothing here can say which"
+        )
+    return body.decode("utf-8", "replace")
+
+
+def owned_by_the_record(
+    identity: Identity, log: pathlib.Path, root: pathlib.Path | None
+) -> list[pathlib.Path]:
+    """The directories this invocation must not write into, DERIVED from what it read.
+
+    **NOT FROM AMBIENT CONFIGURATION, and that was a measured defect.** The first version took
+    these from `active()`, so an invocation reading a history with `--log` elsewhere computed its
+    refusal for a different project's store — and a rendering went straight into the snapshot
+    directory the record named. The two facts that matter are the log this call actually read and
+    the store the RECORD itself points at, and both travel with the invocation.
+    """
+    owned = []
+    if identity.snapshot_path:
+        where = pathlib.Path(identity.snapshot_path)
+        if root is not None and not where.is_absolute():
+            where = root / where
+        owned.append(where.absolute().parent)
+    return owned
+
+
+def owned_files(log: pathlib.Path) -> list[pathlib.Path]:
+    """The individual files a rendering may never become, even with `--force`.
+
+    THE LOG'S PARENT IS NOT OWNED, AND THE FIRST VERSION GOT THAT WRONG. A history commonly sits
+    at the project root, so refusing its parent refused every `--out` anywhere in the
+    repository — and **writing a `requirements.txt` into your own repository is the point of this
+    command.** What may not be written is the history ITSELF and anything inside the
+    content-addressed snapshot store, where a hand-written file would sit among artifacts
+    addressed by their own digests.
+
+    THE RESIDUAL IS STATED RATHER THAN CHASED. A sidecar or a YAML twin lives wherever the
+    project put it, often beside the history, and this does not enumerate them: `--out` over an
+    existing path already needs `--force`, and a caller who forces a path they named is making
+    their own decision. Enumerating every artifact kind here would be a list to extend, and the
+    one artifact that cannot be re-derived from anywhere else is the history.
+    """
+    return [log.absolute()]
+
+
+def refuse_out_path(
+    out: pathlib.Path, project_paths: typing.Iterable[pathlib.Path], force: bool
+) -> None:
+    """Where a rendering may be written. ADR-0020 R-9.
+
+    THE RECORD OF TRUTH IS WHAT IS PROTECTED, NOT THE REPOSITORY. Writing a `requirements.txt`
+    into your own repository is the point of this command; writing one into the history, a
+    sidecar directory or the content-addressed snapshot store would put a hand-written file among
+    artifacts addressed by their own digests. ADR-0009 draws the same line for `export`:
+    *"writing nothing this package owns."* **`--force` does not reach this clause** — an
+    overwrite the caller asked for is their decision, and writing into the record is not.
+    """
+    resolved = out.absolute()
+    for owned in project_paths:
+        if owned.is_file() or owned.suffix:
+            #: AN OWNED FILE IS REFUSED BY IDENTITY, not by containment: the history is one path
+            #: and its directory is the user's.
+            if resolved == owned.absolute():
+                raise RenderRefusedError(
+                    f"{out} IS the run history, which is the record of truth this package owns. "
+                    f"`--force` does not reach this"
+                )
+            continue
+        try:
+            resolved.relative_to(owned.absolute())
+        except ValueError:  # guards-ok: not inside this owned directory, which is the ordinary
+            # case and not a failure — `relative_to` is how containment is ASKED here, so its
+            # refusal is the answer "no" rather than something going wrong.
+            continue
+        raise RenderRefusedError(
+            f"{out} is inside {owned}, which holds the record this package owns — a rendering "
+            f"written there would sit among artifacts addressed by their own digests. `--force` "
+            f"does not reach this: it covers overwriting YOUR file, not writing into the record"
+        )
+    if out.exists() and not force:
+        raise RenderRefusedError(f"{out} exists; pass --force to overwrite it")

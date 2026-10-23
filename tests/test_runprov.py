@@ -26113,6 +26113,15 @@ def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsy
         #: `here` AGAINST `here` NEEDS NO HISTORY and always answers, which is what these
         #: guards need: a comparison that blocked would carry the cannot-check key set.
         "env": ["env", "--compare", "here", "--against", "here"],
+        #: `env`'s SECOND ANSWERING SHAPE, like `show <target>` and `gate --emit-policy`: a
+        #: rendering answers a different question from a comparison and carries
+        #: `runprov.env.render.v1`, so a guard over COMMANDS rather than shapes would have seen
+        #: only one of the two.
+        #: `here` AS THE POSITIONAL, which is what makes this answer with no history and no
+        #: record — and it is also the invocation a reviewer in a container has: render the
+        #: environment I am standing in. The positional comes FIRST because `--render` takes an
+        #: optional value and would otherwise swallow it.
+        "env --render": ["env", "here", "--render", "requirements"],
         "show": ["show", "--log", str(log)],
         "show <target>": ["show", "demo", "--log", str(log)],
         "check": ["check", str(src)],
@@ -41104,6 +41113,374 @@ def _env_run(tmp_path, monkeypatch) -> runprov.Project:
     with runprov.Run("work.py", project=project, provenance=tmp_path / "p.json") as run:
         run.environment_snapshot()
     return project
+
+
+def _render_identity(**over: typing.Any) -> runprov.env.Identity:
+    """An identity with everything a RENDERING needs, which is more than a comparison needs."""
+    base: dict[str, typing.Any] = {
+        "label": "rec",
+        "package_set": runprov.env.Field("d" * 64, how=runprov.env.RECORDED),
+        "interpreter": runprov.env.Field("3.12.13", how=runprov.env.RECORDED),
+        "host_digest": runprov.env.Field("h", how=runprov.env.RECORDED),
+        "package_count": 2,
+        "packages": {"numpy": "2.1.0", "conda:samtools": "1.21"},
+        "conda": {"samtools": ("1.21", "h50ea8bc_0")},
+        "managers": ("venv",),
+    }
+    base.update(over)
+    return runprov.env.Identity(**base)
+
+
+def test_the_THREE_SPELLINGS_of_the_rendering_set_are_held_to_each_other():
+    """`RENDERINGS`, the renderer table, and argparse's `--render` choices. ADR-0020 R-8.
+
+    THREE PLACES NAME THE SAME SET and the suite would not notice a fourth form added to one of
+    them: a rendering with no entry in `_RENDERERS` raises `KeyError` at the table lookup, and one
+    missing from argparse's choices is unreachable from the CLI while passing every test that
+    calls the function directly. **Held by equality rather than by three floors**, which is what
+    the declared-table guard asks for and the reason it caught these two.
+
+    THE CLI'S SIDE IS READ FROM ITS OWN `--help` because the parser is built inside `main` and
+    there is no builder to call. A first draft of this test built a `choices` set through a
+    comprehension with `if False` in it — a shape that cannot fail, asserting nothing while
+    reading as a third side of the equality. It is replaced by a direct question of the CLI.
+    """
+    assert set(runprov.env._RENDERERS) == set(runprov.env.RENDERINGS), (
+        "a rendering is named in one place and not the other, so either a form is unreachable or "
+        "a lookup raises KeyError where a sentence was intended"
+    )
+    offered = subprocess.run(
+        [sys.executable, "-m", "runprov", "env", "--help"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    for form in runprov.env.RENDERINGS:
+        assert form in offered, f"--render does not offer {form!r}; it is unreachable from the CLI"
+    #: THE HELP IS WHERE A USER DISCOVERS THEM, and `metavar="FORM"` means argparse prints no
+    #: choice list — so a first version of this test looked for the forms in the usage line and
+    #: found none, which was a real defect rather than a bad assertion: the three forms were
+    #: unnameable from the command line unless you read the source.
+    assert "--render" in offered
+
+    #: EVERY FORM ACTUALLY RENDERS, which is the half an equality cannot assert: three names
+    #: agreeing is not three renderers working.
+    for form in runprov.env.RENDERINGS:
+        assert runprov.env.render_environment(_render_identity(), form).lines
+
+    #: AND A FORM THAT IS IN NEITHER REFUSES WITH A SENTENCE. Unreachable from the CLI, which
+    #: argparse holds to the three above — so this is the LIBRARY caller's path, and the
+    #: alternative there is a bare `KeyError` from the table lookup. Asserted because an
+    #: unreachable-from-one-door branch is still a branch somebody can arrive at.
+    with pytest.raises(runprov.env.RenderRefusedError, match="no rendering named"):
+        runprov.env.render_environment(_render_identity(), "pipenv")
+
+
+def test_the_default_rendering_comes_from_a_TABLE_and_an_unknown_manager_REFUSES():
+    """[ADR-0020 R-8]. The record carries a LIST of detected managers, so "the form the manager
+    implies" is not a lookup until something says which of two wins.
+
+    RESOLVING BETWEEN KNOWN MANAGERS BY A STATED TABLE IS A RULE; FALLING BACK ON AN UNKNOWN ONE
+    IS A GUESS, and only the second is forbidden. An unclassified manager rendered as whatever
+    the last branch happened to be would make a judgement on the caller's behalf that they could
+    never see — the same shape the rebuild's `--tool` rule refuses.
+    """
+    assert runprov.env.implied_rendering(["uv", "venv"]) == "uv", "a lock-capable manager wins"
+    assert runprov.env.implied_rendering(["conda", "pip"]) == "conda"
+    assert runprov.env.implied_rendering([]) == "requirements", (
+        "no manager recorded is not an error"
+    )
+    with pytest.raises(runprov.env.RenderRefusedError, match="no rendering for them"):
+        runprov.env.implied_rendering(["nix"])
+    #: AND ONE UNKNOWN AMONG KNOWN ONES STILL REFUSES: a table that answered from the known half
+    #: would silently drop the manager it could not classify.
+    with pytest.raises(runprov.env.RenderRefusedError, match=r"\['nix'\]"):
+        runprov.env.implied_rendering(["venv", "nix"])
+
+
+@pytest.mark.parametrize("form", ["requirements", "conda", "uv"])
+def test_every_rendering_emits_the_INTERPRETER_the_FLOOR_and_the_NOT_REPRODUCTION_sentence(form):
+    """[ADR-0020 R-3, R-4, R-10] over all three forms, because each writes them differently.
+
+    THE INTERPRETER IS NON-NEGOTIABLE EVEN WHERE THE FORMAT CANNOT CARRY IT: `requirements.txt`
+    has no field for it, so it is a comment there and a real dependency in the other two. A
+    package set resolved against a different Python is a different environment, and that is the
+    commonest way a "reproduced" run differs.
+    """
+    rendering = runprov.env.render_environment(_render_identity(), form)
+    body = "\n".join(rendering.lines)
+    assert "3.12.13" in body, "the interpreter is not in the rendering"
+    assert "A FLOOR, NOT A LOCK" in body, "a rank-2 rendering must say it is a floor"
+    assert runprov.env.NOT_REPRODUCTION in body, "the output does not refuse the claim it must"
+    assert rendering.rank == 2 and rendering.floor is True
+    assert "numpy==2.1.0" in body or '"numpy==2.1.0"' in body or "- numpy==2.1.0" in body
+
+
+def test_a_rendering_REFUSES_without_the_package_list_even_though_a_comparison_would_not():
+    """[ADR-0020 R-6]. The same identity, two different demands on it.
+
+    A comparison answers off the recorded digest alone; a rendering has to emit something
+    installable. So a pruned sidecar is a refusal HERE and still answerable THERE — and the
+    identity reports what it has rather than deciding, which is what lets one object serve both.
+    """
+    pruned = _render_identity(packages=None, conda=None)
+    #: THE COMPARISON STILL ANSWERS over the same identity, which is the half that makes this a
+    #: difference in demand rather than a difference in the record.
+    assert runprov.env.compare(pruned, pruned).exit_code() == 0
+    with pytest.raises(runprov.env.RenderRefusedError, match="not only its digest"):
+        runprov.env.render_environment(pruned, "requirements")
+
+    #: AND WITHOUT AN INTERPRETER IT REFUSES TOO [ADR-0020 R-4]: a rendering installed against
+    #: whatever the reader happens to have would look complete and be wrong.
+    headless = _render_identity(interpreter=runprov.env.Field(None, absent="not recorded"))
+    with pytest.raises(runprov.env.RenderRefusedError, match="different Python is a different"):
+        runprov.env.render_environment(headless, "requirements")
+
+
+def test_an_ARCHIVED_LOCK_outranks_the_list_and_is_emitted_when_the_forms_agree(tmp_path):
+    """[ADR-0020 R-2]. Rank 1 is the lock's own bytes; rank 2 is a list built from the record.
+
+    WHEN THE FORMS DIFFER THE LIST IS EMITTED WITH THE LOCK NAMED, and refusing instead was
+    rejected: a reviewer who needs a `requirements.txt` out of a `uv.lock` project has a real
+    question, and answering it while saying where the exact answer lives serves them better than
+    a refusal. What is forbidden is emitting the list as though it were the answer.
+    """
+    body = "version = 1\n# the archived lock\n"
+    lock = tmp_path / "lock-abc-uv.lock"
+    lock.write_text(body, encoding="utf-8")
+    entry = {
+        "name": "uv.lock",
+        "sha256": hashlib.sha256(body.encode()).hexdigest(),
+        "archived": True,
+        "path": lock.name,
+    }
+    identity = _render_identity(lockfiles=(entry,), managers=("uv",))
+    bytes_read = runprov.env.read_lock(identity, tmp_path)
+    assert bytes_read == body
+
+    #: AN ABSOLUTE RECORDED PATH IS TAKEN AS IT STANDS, the other arm of the same resolution:
+    #: a record written on another machine names a path this one may not have, and re-rooting it
+    #: would read a different file while reporting the recorded one.
+    absolute = _render_identity(lockfiles=({**entry, "path": str(lock)},), managers=("uv",))
+    assert runprov.env.read_lock(absolute, None) == body
+
+    exact = runprov.env.render_environment(identity, "uv", bytes_read)
+    assert exact.rank == 1 and exact.floor is False
+    assert "the archived lock" in "\n".join(exact.lines), "rank 1 must be the lock's own bytes"
+
+    floor = runprov.env.render_environment(identity, "requirements", bytes_read)
+    assert floor.rank == 2 and floor.floor is True
+    named = "\n".join(floor.lines)
+    assert "A LOCK EXISTS AND IS THE BETTER ANSWER" in named and "uv.lock" in named
+    assert "numpy==2.1.0" in named, "the list is still emitted; it is just not called the answer"
+
+    #: AND THE DEFAULT FORM LANDS ON RANK 1, which is the point of R-8 choosing by manager: the
+    #: ordinary invocation gets the lock without the caller knowing to ask.
+    assert runprov.env.implied_rendering(identity.managers) == "uv"
+
+
+def test_an_archived_lock_that_DISAGREES_WITH_ITS_DIGEST_refuses_rather_than_falling_back(
+    tmp_path,
+):
+    """[ADR-0020 R-2's last clause]. One of the two has been edited and nothing here can say
+    which, so quietly rendering the list instead would answer a question about the environment
+    with evidence the reader did not ask for. Same rule as ADR-0026 R-8, one artifact over.
+    """
+    lock = tmp_path / "lock-abc-uv.lock"
+    lock.write_text("version = 1\n", encoding="utf-8")
+    identity = _render_identity(
+        lockfiles=({"name": "uv.lock", "sha256": "0" * 64, "archived": True, "path": lock.name},)
+    )
+    with pytest.raises(runprov.env.RenderRefusedError, match="neither is evidence"):
+        runprov.env.read_lock(identity, tmp_path)
+
+    #: AN UNREADABLE ARCHIVED LOCK IS ALSO A REFUSAL, not a silent downgrade: the record says
+    #: the file is there, so its absence is a finding about the store.
+    gone = _render_identity(
+        lockfiles=({"name": "uv.lock", "sha256": "0" * 64, "archived": True, "path": "gone.lock"},)
+    )
+    with pytest.raises(runprov.env.RenderRefusedError, match="cannot be read"):
+        runprov.env.read_lock(gone, tmp_path)
+
+    #: A LOCK RECORDED BY GIT BLOB RATHER THAN ARCHIVED IS NOT A FILE THIS COMMAND CAN READ, so
+    #: it is not rank 1 and not a refusal either — the list is rendered and nothing is claimed.
+    by_blob = _render_identity(
+        lockfiles=({"name": "uv.lock", "sha256": "0" * 64, "archived": False, "git_blob": "abc"},)
+    )
+    assert runprov.env.read_lock(by_blob, tmp_path) is None
+    assert runprov.env.render_environment(by_blob, "requirements").rank == 2
+
+
+def test_the_count_of_UNIDENTIFIABLE_distributions_is_stated_and_the_names_are_not():
+    """[ADR-0020 R-5, corrected]. The record holds `n_unreadable` and NO list, deliberately.
+
+    WHAT CAPTURE COLLECTS IS `str(dist._path)` — a filesystem path from the recording machine —
+    and only its length is recorded. Recording the names would mean recording those paths, which
+    is exactly what `test_no_committed_file_carries_this_machines_identity` refuses and what the
+    corpus leak scanner exists to catch. **A record travels, and the build machine's directory
+    layout must not travel with it.** So the count is emitted and the incompleteness is explicit.
+    """
+    silent = runprov.env.render_environment(_render_identity(unreadable=0), "requirements")
+    assert "unreadable metadata" not in "\n".join(silent.lines), (
+        "a run with nothing unreadable must not carry a sentence about unreadable packages"
+    )
+    noisy = runprov.env.render_environment(_render_identity(unreadable=3), "requirements")
+    body = "\n".join(noisy.lines)
+    assert "3 distribution(s) had unreadable metadata" in body
+    assert "NOT in this list" in body, "silence would present a partial list as a whole one"
+    assert "cannot be" in body, "the output does not say the names are unavailable by design"
+
+
+@pytest.mark.parametrize(
+    ("filename", "kind"),
+    [
+        ("uv.lock", "uv"),
+        ("poetry.lock", "uv"),
+        ("conda-lock.yml", "conda"),
+        ("requirements.lock", "requirements"),
+        ("requirements.txt", "requirements"),
+        ("Pipfile.lock", None),
+        ("environment.yml", None),
+    ],
+)
+def test_which_rendering_an_archived_lock_IS_is_read_from_its_own_filename(filename, kind):
+    """ADR-0020 R-2 reaches rank 1 only when the requested form IS the lock's kind, so this
+    mapping decides whether a lock is emitted or merely named.
+
+    A LOCK THIS BUILD CANNOT CLASSIFY IS NOT RANK 1 AND NOT A REFUSAL. `Pipfile.lock` is a real
+    lock and nothing here knows which of the three forms it is, so the list is rendered and the
+    lock is named in the header — the same outcome as a form mismatch, and for the same reason:
+    answering while saying where the exact answer lives beats refusing.
+
+    `environment.yml` IS NOT A LOCK AT ALL, which is why it is here: a conda environment file
+    pins what somebody asked for, not what resolved, and treating it as rank 1 would present a
+    declaration as a resolution.
+    """
+    assert runprov.env._lock_kind(filename) == kind
+    assert runprov.env._lock_kind(filename.upper()) == kind, "the match must not be case-bound"
+
+
+def test_a_conda_rendering_with_NO_PIP_HALF_omits_the_pip_section(tmp_path):
+    """An empty `pip:` key is not valid conda input, and a section with nothing under it would
+    make a reader look for packages that are not there.
+
+    THE BRANCH EXISTS BECAUSE A CONDA-ONLY ENVIRONMENT IS ORDINARY in this package's stated
+    audience — samtools, blast and openssl with no Python dependency of their own.
+    """
+    only_conda = _render_identity(
+        packages={"conda:samtools": "1.21"}, conda={"samtools": ("1.21", "h50ea8bc_0")}
+    )
+    body = "\n".join(runprov.env.render_environment(only_conda, "conda").lines)
+    assert "- samtools=1.21=h50ea8bc_0" in body, "the build string is dropped, widening the pin"
+    assert "pip:" not in body, "an empty pip section is not valid conda input"
+
+    both = "\n".join(runprov.env.render_environment(_render_identity(), "conda").lines)
+    assert "  - pip:" in both and "    - numpy==2.1.0" in both
+
+
+def test_the_owned_set_is_EMPTY_when_the_record_names_no_snapshot_and_handles_an_absolute_one(
+    tmp_path,
+):
+    """Both arms of the path resolution, because a record carries either spelling.
+
+    A RELATIVE `snapshot.path` IS RESOLVED AGAINST THE PROJECT ROOT and an absolute one is taken
+    as it stands — and a record naming no snapshot at all owns nothing, which is the state nine
+    released corpus versions are NOT in but a record with snapshots switched off is.
+    """
+    log = tmp_path / "runs.jsonl"
+    none_named = runprov.env.owned_by_the_record(_render_identity(), log, tmp_path)
+    assert none_named == [], "a record naming no snapshot store cannot own a directory in it"
+
+    relative = runprov.env.owned_by_the_record(
+        _render_identity(snapshot_path="envs/env-abc.txt"), log, tmp_path
+    )
+    assert relative == [(tmp_path / "envs").absolute()]
+
+    absolute = runprov.env.owned_by_the_record(
+        _render_identity(snapshot_path=str(tmp_path / "elsewhere" / "env-abc.txt")), log, None
+    )
+    assert absolute == [(tmp_path / "elsewhere").absolute()], (
+        "an absolute recorded path must not be re-rooted; a record written on another machine "
+        "names a directory this one may not have, and guessing a prefix for it would be worse "
+        "than owning nothing"
+    )
+
+
+def test_a_rendering_may_not_be_written_INTO_THE_RECORD_even_with_force(tmp_path):
+    """[ADR-0020 R-9, clarified]. The record of truth is protected; the repository is not.
+
+    THE FIRST VERSION REFUSED THE WHOLE PROJECT and that was wrong — a history commonly sits at
+    the project root, so refusing its parent refused every `--out` anywhere in the repository,
+    and **writing a `requirements.txt` into your own repository is the point of this command.**
+    The store is owned by CONTAINMENT and the history by IDENTITY, and `--force` reaches neither.
+    """
+    store = tmp_path / "envs"
+    store.mkdir()
+    log = tmp_path / "runs.jsonl"
+    log.write_text("", encoding="utf-8")
+    identity = _render_identity(snapshot_path="envs/env-abc.txt")
+    owned = runprov.env.owned_by_the_record(identity, log, tmp_path) + runprov.env.owned_files(log)
+
+    #: THE ORDINARY CASE IS ALLOWED, and it is asserted FIRST because an over-refusal passes
+    #: every assertion about refusing.
+    runprov.env.refuse_out_path(tmp_path / "requirements.txt", owned, force=False)
+
+    with pytest.raises(runprov.env.RenderRefusedError, match="holds the record this package owns"):
+        runprov.env.refuse_out_path(store / "sneak.txt", owned, force=True)
+    with pytest.raises(runprov.env.RenderRefusedError, match="IS the run history"):
+        runprov.env.refuse_out_path(log, owned, force=True)
+
+    existing = tmp_path / "requirements.txt"
+    existing.write_text("old", encoding="utf-8")
+    with pytest.raises(runprov.env.RenderRefusedError, match="pass --force"):
+        runprov.env.refuse_out_path(existing, owned, force=False)
+    runprov.env.refuse_out_path(existing, owned, force=True)
+
+    #: AND THE OWNED SET IS DERIVED FROM THE INVOCATION, not from ambient configuration —
+    #: measured defect: the first version read `active()`, so a call reading a history elsewhere
+    #: computed its refusal for a different project's store and wrote into the real one.
+    assert store.absolute() in owned and log.absolute() in owned
+    assert tmp_path.absolute() not in owned, "the project root is the caller's, not the record's"
+
+
+def test_the_render_mode_answers_through_the_CLI_and_refuses_in_its_OWN_shape(
+    tmp_path, monkeypatch, capsys
+):
+    """End to end, and the refusal shape is the point of the second schema [ADR-0017 R-5, R-15].
+
+    A RENDERING THAT FAILED MUST NOT HAND A CONSUMER THE COMPARISON'S KEY SET. The failure path
+    is the one a consumer parses least often and can least afford to find unfamiliar, so the
+    refused shape of an invocation matches the shape that invocation answers with — built through
+    the real builder so the two cannot drift.
+    """
+    project = _env_run(tmp_path, monkeypatch)
+    log = str(project.run_log)
+
+    assert cli.main(["env", "--render", "--log", log]) == 0
+    body = capsys.readouterr().out
+    assert runprov.env.NOT_REPRODUCTION in body and "A FLOOR, NOT A LOCK" in body
+
+    assert cli.main(["env", "--render", "--format", "json", "--log", log]) == 0
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["schema"] == runprov.env.RENDER_SCHEMA
+    assert answer["rank"] == 2 and answer["floor"] is True and answer["cannot_check"] is None
+    assert answer["rendered"] and answer["interpreter"]["value"]
+
+    assert cli.main(["env", "--render", "--format", "json", "--log", "gone.jsonl"]) == 2
+    refused = json.loads(capsys.readouterr().out)
+    assert refused["schema"] == runprov.env.RENDER_SCHEMA, (
+        "the refusal is answering in the comparison's shape, so a consumer of `--render` sees a "
+        "document it has never seen on the one path it least expects"
+    )
+    assert set(refused) == set(answer), f"the two shapes differ: {set(refused) ^ set(answer)}"
+    assert refused["cannot_check"]
+
+    out = tmp_path / "requirements.txt"
+    assert cli.main(["env", "--render", "requirements", "--out", str(out), "--log", log]) == 0
+    assert "rank 2" in capsys.readouterr().out and out.is_file()
+    assert runprov.env.NOT_REPRODUCTION in out.read_text(encoding="utf-8")
+    assert cli.main(["env", "--render", "--out", str(out), "--log", log]) == 2
+    assert "pass --force" in capsys.readouterr().err
 
 
 def test_env_compares_TWO_RECORDS_with_NEITHER_environment_present():

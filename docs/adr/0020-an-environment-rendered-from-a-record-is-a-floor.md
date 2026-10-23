@@ -86,6 +86,20 @@ A list of installed packages and their versions is not a lock: it does not pin t
 resolution, and an environment built from it satisfies the record without being the environment
 that ran.
 
+**WHAT THAT MEANS WHEN A CALLER ASKED FOR ANOTHER FORM, settled 2026-10-23 before building.** The
+rendering **is the archived lock's own bytes** when the requested form matches the lock's kind —
+and R-8's default picks that form, so the ordinary invocation gets the lock. When the forms differ
+the list is emitted **with the lock named in the header**, with its digest and the command that
+installs from it, and with the list declared a floor beneath it. **Refusing the request outright
+was rejected:** a reviewer who needs a `requirements.txt` from a `uv.lock` project has a real
+question, and answering it while saying where the exact answer is serves them better than a
+refusal. What is forbidden is emitting the list as though it were the answer.
+
+**And an archived lock whose bytes do not hash to its recorded digest is exit 2, not a fallback to
+the list.** One of the two has been edited, nothing here can say which, and quietly rendering the
+list instead would answer a question about the environment with evidence the reader did not ask
+for. Same rule as ADR-0026 R-8, one artifact over.
+
 **R-3.** **Where only a list exists, the output says it is a floor**, in the emitted file, as a
 comment — the same discipline `resources` uses for a measurement that understates. A rendered
 environment presented as exact is a wrong record in a new file.
@@ -94,9 +108,19 @@ environment presented as exact is a wrong record in a new file.
 against a different Python is a different environment, and this is the single most common way a
 "reproduced" run differs.
 
-**R-5.** Packages the run could not identify — the `bad` list the environment block already
-records — are named in the output. Silence there would present a partial list as a whole one.
-Where they cannot be named, the snapshot header's `# UNREADABLE: N` count is stated instead.
+**R-5.** **The output states how many distributions could not be identified, and it cannot name
+them — because the record does not hold their names and MUST NOT.** Silence would present a
+partial list as a whole one, so the count is emitted in the rendered file.
+
+**CORRECTED 2026-10-23, and the original premise was false twice over.** This requirement said
+*"the `bad` list the environment block already records"*. Measured: `installed_packages` collects
+unreadable distributions into a local list and **only `len()` of it is recorded**, as
+`n_unreadable` — there is no list in the record to name. And what that list holds is
+`str(dist._path)`, **a filesystem path from the recording machine**, which is exactly what
+`test_no_committed_file_carries_this_machines_identity` refuses and what the corpus leak scanner
+exists to catch. So recording the names is not merely unimplemented, it is **forbidden**: a record
+travels, and the build machine's directory layout must not travel with it. A reader sent looking
+for a list that cannot exist is worse served than one told plainly that the count is all there is.
 
 **R-6.** The renderer reads the **content-addressed snapshot file**. When it is absent — pruned,
 or written on another machine — the command **refuses with exit 2 and names the digest it wanted
@@ -109,7 +133,13 @@ needed.
 
 **R-8.** **`--render requirements|conda|uv` selects the rendering and is a MODE; `--format
 text|json` stays the serialisation of whichever mode ran.** The rendering **defaults to the form
-implied by the recorded manager** rather than to a fixed one, and `--format json` over a rendering
+implied by the recorded manager** — through a **precedence table derived over the recorded
+`manager.detected` list**, because that field is a LIST and `["uv", "venv"]` is the ordinary case.
+**A recorded manager with no entry in that table is exit 2, naming it**, rather than falling
+through to a fixed default: the same shape the rebuild's `--tool` rule takes, and for the same
+reason — a manager nobody has classified would otherwise be rendered as whatever the last `else`
+happened to be. Resolving between KNOWN managers by a stated table is a rule; falling back on an
+unknown one is a guess, and only the second is forbidden. and `--format json` over a rendering
 emits the same answer as data — the lines, the form, and whether the list is a floor (R-3) as a
 field rather than only as a comment [ADR-0017].
 
@@ -123,8 +153,16 @@ meaningless combination needing its own refusal. `resources` may overload `--for
 renderings of **different subjects**, which is the distinction that decides it. **One flag names
 the question, another names how the answer is written.**
 
-**R-9.** The renderer **never writes into the project** and never overwrites: `--out` refuses an
-existing path unless `--force`.
+**R-9.** The renderer **never writes into the record** and never overwrites: `--out` refuses an
+existing path unless `--force`, and refuses any path inside the provenance directory or the
+snapshot store **even with `--force`**.
+
+**CLARIFIED 2026-10-23.** The original wording was *"never writes into the project"*, which would
+have been read as refusing the repository — and writing a `requirements.txt` into your own
+repository is the point of the command. What must be protected is **the record of truth**: the
+history, the sidecars and the content-addressed snapshot store, where a rendered file would sit
+among artifacts that are addressed by their own digests. ADR-0009 draws the same line for
+`export`: *"writing nothing this package owns."*
 
 **R-10.** **This command may not state or imply that the run will reproduce.** It renders a
 description of an environment. It installs nothing, executes nothing, and makes no claim about

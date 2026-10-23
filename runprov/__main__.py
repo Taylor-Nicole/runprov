@@ -2060,20 +2060,28 @@ def _env(args: argparse.Namespace) -> int:
     invocation written today keeps its meaning — an addition, not a change.
     """
 
-    def cannot(reason: str) -> int:
+    def cannot(reason: str, rendering: bool = False) -> int:
         #: [ADR-0017 R-15] AN ANSWER, NOT A BAD INVOCATION: it looked where it was told and there
         #: was nothing to read, so a consumer of `--format json` gets the shape with
         #: `cannot_check` set rather than an empty stdout and a message it is not reading.
         if args.format == "json":
-            print(json.dumps(env_mod.refused(reason), indent=2))
+            #: THE REFUSED SHAPE MATCHES THE SHAPE THIS INVOCATION WOULD HAVE ANSWERED WITH. A
+            #: rendering that failed must not hand a consumer the comparison's key set: the
+            #: failure path is the one a consumer parses least often and can least afford to
+            #: find unfamiliar.
+            builder = env_mod.render_refused if rendering else env_mod.refused
+            print(json.dumps(builder(reason), indent=2))
         print(f"env: {reason}", file=sys.stderr)
         return 2
 
+    project = active()
     first, why = _env_identity(args, args.compare if args.compare else (args.run or ""))
     if first is None:
-        return cannot(why or "the first operand could not be resolved")
+        return cannot(
+            why or "the first operand could not be resolved", rendering=args.render is not None
+        )
 
-    if args.can_check or not (args.digest or args.compare is not None):
+    if args.can_check or not (args.digest or args.compare is not None or args.render is not None):
         print("\n".join(env_mod.render_answerable(first)))
         return 0 if first.package_set.value else 2
 
@@ -2085,6 +2093,34 @@ def _env(args: argparse.Namespace) -> int:
             print(json.dumps({"identity": line, "how": first.package_set.how}, indent=2))
         else:
             print(line)
+        return 0
+
+    if args.render is not None:
+        try:
+            lock = env_mod.read_lock(first, project.root)
+            rendering = env_mod.render_environment(first, args.render or None, lock)
+            out = pathlib.Path(args.out) if args.out else None
+            if out is not None:
+                #: [ADR-0020 R-9] THE RECORD OF TRUTH IS WHAT IS PROTECTED. The two paths named
+                #: here are derived from the active project rather than spelled, so a project
+                #: that moves its store moves this refusal with it.
+                log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
+                env_mod.refuse_out_path(
+                    out,
+                    env_mod.owned_by_the_record(first, log, project.root)
+                    + env_mod.owned_files(log),
+                    args.force,
+                )
+        except env_mod.RenderRefusedError as exc:
+            return cannot(str(exc), rendering=True)
+        body = "\n".join(rendering.lines)
+        if args.format == "json":
+            print(json.dumps(env_mod.render_payload(rendering, first), indent=2))
+        elif out is not None:
+            atomic_write_text(out, body if body.endswith("\n") else body + "\n")
+            print(f"wrote {printable(str(out))} ({rendering.form}, rank {rendering.rank})")
+        else:
+            print(body)
         return 0
 
     second, why = _env_identity(args, args.against if args.against else env_mod.HERE)
@@ -3018,6 +3054,17 @@ def main(argv: list[str] | None = None) -> int:
         "--digest", action="store_true", help="print the quotable package-set identity and stop"
     )
     mode.add_argument(
+        "--render",
+        nargs="?",
+        const="",
+        default=None,
+        choices=("", *env_mod.RENDERINGS),
+        metavar="FORM",
+        help="render the recorded environment as something installable: requirements, conda or "
+        "uv. Omit the form to use the one the recorded manager implies. An archived lock "
+        "outranks the package list, and rank 1 means these bytes ARE the lock",
+    )
+    mode.add_argument(
         "--can-check",
         action="store_true",
         dest="can_check",
@@ -3038,6 +3085,10 @@ def main(argv: list[str] | None = None) -> int:
         help="exclude a distribution from the package-set comparison; always printed, and "
         "reported when it matched nothing. Nothing is excluded by default",
     )
+    ev.add_argument(
+        "--out", default=None, metavar="PATH", help="write a rendering here instead of stdout"
+    )
+    ev.add_argument("--force", action="store_true", help="overwrite an existing --out path")
     ev.add_argument("--format", choices=("text", "json"), default="text")
     ev.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     rs = sub.add_parser(
