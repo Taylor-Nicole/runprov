@@ -123,6 +123,60 @@ everything a reviewer needs to *build* one is in the output — the rendering, t
 version, and the digest to compare against — and that **the comparison does not require this
 package**, by R-4.
 
+### Where the comparison happens, and what must be present for it
+
+**R-13.** **Comparison is never mandatory.** `runprov env [RUN]` renders and compares nothing;
+every comparison is asked for. The renderer remains the default because the commonest use of this
+command is *"give me something I can install"*, and a command that verified by default would need
+an environment present in order to print a file.
+
+**R-14.** **A comparison of TWO RECORDS requires neither environment to be present.** This is the
+case a journal reviewer and an external auditor are actually in: two submissions, or a submission
+and a reference, on a laptop with neither environment installed. It is the record-to-record
+question — *do these two describe the same package set?* — and it needs only two records and their
+sidecars.
+
+**R-15.** **Each operand is named explicitly and an ambiguous operand refuses.** The operand kinds
+are: a run in a history; a path to a record or a snapshot body; a **published identity string**
+(R-16); and `--here`, meaning the environment this process is running in. **Nothing is inferred
+from the shape of an argument** — the same rule ADR-0023 R-7 applies to `--tool`, and for the same
+reason: a wrong guess here produces a confident comparison of the wrong two things.
+
+**R-16.** **`runprov.pkgset.v1:<16 hex characters>` is a first-class operand and the quotable
+form.** It is what goes in a methods section, a data-availability statement or a review report: one
+line, self-describing, naming its own algorithm so it can still be checked when the algorithm has
+moved on. A reviewer holding only a paper and the authors' record can answer the question with
+those two things.
+
+**R-17.** **THE RECORDER'S OWN VERSION IS THE EXPECTED DIFFERENCE, AND THE OUTPUT MUST SAY SO.**
+Measured 2026-10-23 over the nine corpus versions: their package-set digests are **9 distinct
+values, and exactly 1** once `runprov` itself is excluded — every other package is identical
+across all nine. **So a reviewer who installs runprov in order to check a record will differ by
+exactly one package, every time**, and will read a correct rebuild as a failure. Therefore:
+
+* nothing is **ever** excluded by default — `runprov` is in the environment and the digest says so;
+* when the differing set is **only the recorder**, the comparison says that in words, names the
+  recorded and the local version, and **names the flag** that answers the reviewer's actual
+  question;
+* `--ignore <name>` excludes named distributions, **the ignored set is always printed and recorded
+  in any record the comparison writes**, and an ignore that matched nothing is reported rather
+  than silently satisfied.
+
+**A verifier whose commonest correct outcome reads as a failure teaches its users to ignore it**,
+which is the same defect as one whose only possible answer is *differs* — one level in, and found
+by measuring the corpus rather than by review.
+
+**R-18.** **There is ONE implementation of R-4, it ships in the distribution, and it depends on
+nothing but the standard library.** It is a single module an auditor can copy out of an installed
+runprov — or out of the sdist — and run anywhere, including a container that has no runprov in it.
+The rest of the package imports **that** module; there is no second copy to drift from it, because
+*"the same rule in two places differs by whole cases rather than by details"* and a canonical form
+is exactly the kind of rule that cannot afford it. **A guard asserts the module's imports are
+stdlib-only**, derived from its own AST rather than from a list of permitted names, so the property
+that makes it copyable cannot be lost by an ordinary refactor. The measurement below — that R-4 was
+reimplementable from this text alone — is evidence that the **specification** is sufficient, and is
+not a licence to keep two implementations.
+
 ## The measurement this record rests on
 
 Twelve properties, measured 2026-10-23 against `_render_snapshot` and all 27 corpus records:
@@ -141,6 +195,7 @@ Twelve properties, measured 2026-10-23 against `_render_snapshot` and all 27 cor
 | conda package-set digest is host-invariant too | **yes** |
 | every line of all 27 corpus bodies classified, 0 unclassifiable | **27 / 27** |
 | **R-4 reimplemented from this text alone** — stdlib only, no runprov, no network — reproduced all nine corpus package-set digests | **9 / 9** |
+| nine corpus package-set digests, **excluding `runprov` itself** | **9 distinct become 1** — R-17 |
 
 The last row is the one that matters for R-12, and it is the reason R-4 is written as bytes rather
 than as prose: a specification a reviewer cannot reimplement is a specification that makes them

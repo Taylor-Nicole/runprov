@@ -55,6 +55,28 @@ unclassifiable line refuses rather than being dropped. **Reimplemented from the 
 stdlib only, no runprov and no network, it reproduced all nine corpus package-set digests.** The
 algorithm is named in the record, and the name freezes on release like `runprov.gate.v1`.
 
+**The comparison takes one operand or two, and is never mandatory.** With one it asks whether
+the environment standing here is the recorded one; with two it asks whether two records describe
+the same package set, **which needs neither environment present** — the case a journal reviewer or
+an external auditor is actually in, holding two submissions on a laptop with neither installed. A
+published `runprov.pkgset.v1:<hex>` identity is a first-class operand, so a reviewer with only a
+paper and the authors' record can answer the question. Operands are named explicitly and an
+ambiguous one refuses rather than being inferred from its shape.
+
+**The recorder's own version is the expected difference, and the output says so.** Measured over
+the nine corpus versions: their package-set digests are nine distinct values and **exactly one**
+once `runprov` itself is excluded — every other package is identical across all nine. So a
+reviewer who installs runprov in order to check a record differs by exactly one package, every
+time, and would read a correct rebuild as a failure. Nothing is excluded by default; when the
+differing set is only the recorder the comparison says so in words and names the flag; `--ignore`
+prints and records what it ignored, and reports an ignore that matched nothing.
+
+**One implementation of the canonical form, stdlib-only, shipped in the distribution.** It is a
+single module an auditor can copy out of an installed runprov or the sdist and run in a container
+with no runprov in it, and the rest of the package imports that module. A guard asserts its
+imports are stdlib-only, derived from its own AST. The earlier reimplementation-from-the-ADR
+measurement is evidence the specification is sufficient, not a licence to keep two copies.
+
 **`runprov env --compare` is specified for 0.10.0**, reporting three independent verdicts —
 package set, interpreter, host — with the exit code keyed on the package set, so a container that
 differs from the recording machine is reported rather than failed. ADR-0020 gains R-11 and R-12
