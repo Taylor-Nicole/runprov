@@ -11,6 +11,40 @@ is a fix nobody checked.
 
 ### Added
 
+**`runprov env` — can someone else check this environment?** ADR-0026, accepted and built. Three
+questions of one object: `--digest` prints the quotable `runprov.pkgset.v1:<hex>` identity for a
+methods section, `--compare` answers whether two environments hold the same packages, and the
+default `--can-check` says what can be answered from what is actually here before anyone tries.
+
+**A comparison of two records needs neither environment present** — the case a journal referee or
+an external auditor is in, holding two submissions on a laptop with neither installed. Operands
+are a run name or uid, the reserved word `here` for this environment, or a published identity
+string; **none is inferred from its shape**, and `here` colliding with a run actually called that
+is a refusal naming both readings rather than a silent choice.
+
+**Three independent verdicts — package set, interpreter, host — and the exit code is keyed on the
+package set alone.** A host difference is reported and is never the finding, because it is a fact
+about where the reader is standing rather than about whether the environment was rebuilt
+correctly. **`diff` reported this very pair as `blocked` until now.**
+
+**Nothing is excluded by default and the expected difference is named.** Across nine released
+versions the recorded package-set digests are nine distinct values and exactly one once `runprov`
+itself is excluded, so a reviewer who installs runprov to check a record differs by one package
+every time. When the recorder is the whole difference the output says so and names `--ignore`; an
+ignore is printed, carried in the payload, and reported when it matched nothing; and under an
+ignore **no recorded digest is quoted**, because a digest covers the excluded name too.
+
+**Where the packages cannot be named, that is declared rather than left to silence.** Naming them
+needs both snapshot bodies, and a record that travelled may have neither — so the comparison
+reports the digest pair, says which side it could not open, and says that whether the only
+difference is the recorder **cannot be determined**. Silence about an unavailable diagnosis is
+indistinguishable from that diagnosis coming back negative.
+
+**A record that disagrees with its own sidecar is neither believed**, and a digest absent from a
+record is **recomputed from the body and labelled as recomputed** — which is what makes all nine
+corpus versions comparable today, none of which wrote a digest. The corpus recipe exercises
+exactly that path, so it would redden the day the canonicaliser stopped reading an old body.
+
 **Capture records a host-independent package-set digest beside the host-bound one**, as
 `snapshot.package_sets`, a map keyed by the algorithm's name. A reader looks the digest up BY the
 form it implements, so being handed one computed under another form is impossible rather than

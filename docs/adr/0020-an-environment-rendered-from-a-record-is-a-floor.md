@@ -7,7 +7,7 @@
   because the requirement-citation guard partitions by declared status, so a single record would
   either be accepted with a dozen requirements no code can cite or stay `Proposed` through the
   release that ships it. Depends on ADR-0007 for its exit codes and ADR-0017 for its JSON.
-- **Applies to:** `runprov/environment.py`, `runprov/pkgset.py`
+- **Applies to:** `runprov/environment.py`, `runprov/pkgset.py`, `runprov/env.py`, `runprov/__main__.py`
 - **Note:** `environment.py` is read and never changed by this record; `pkgset.py` is where R-7's
   body-driven pip/conda split lives. The renderer's own module does not exist yet, and the commit
   that accepts this record names it above — the field is one line because the guard that resolves
@@ -70,7 +70,16 @@ behind the package. **A first mention is not a first release.**)
 ## Decision
 
 **R-1.** `runprov env [RUN]` writes the recorded environment to stdout, or to a path given by
-`--out`. `RUN` defaults to the most recent run, matching every other read command.
+`--out`, **when a rendering `--format` asks for it** (R-8). `RUN` defaults to the most recent run,
+matching every other read command. **CORRECTED 2026-10-23: bare `runprov env` is the preflight
+(R-13), not the renderer**, and that is permanent rather than a placeholder. The first design made
+the mode required so that rendering could become the default later without changing any
+invocation; the forgery leg measured the cost — with a required mode group **every
+single-argument invocation is a usage error**, which is how that leg attacks each declared slot,
+so the command was unreachable through every door it has and a whole safety check asserted
+nothing about it. **A command no single argument can reach is a command no guard can attack.** The
+default now creates nothing and answers *what have I got*, and the renderer is selected by
+`--format`, where R-8 already put it.
 
 **R-2.** **Where a lock file was archived, the lock is the answer** and the package list is not.
 A list of installed packages and their versions is not a lock: it does not pin transitive
@@ -131,6 +140,11 @@ the **snapshot sidecar** present, absent, or present-and-not-hashing-to-its-reco
 not, which decides whether rank 1 exists at all [R-2]. *Could not look* and *looked and found
 nothing* are different answers everywhere else in this package [ADR-0007], and a reviewer who
 discovers at the end of an afternoon that the sidecar was pruned has been told that by nothing.
+
+**Built as the identity describing itself** [ADR-0024 R-23], never as a second walk of the
+record: a preflight that measured the subject separately from the comparison could report that a
+question is answerable while the comparison refuses it, which is the two-instrument failure this
+project has already paid for once.
 
 **Scoped to the environment on purpose.** The same question about artifacts belongs to `verify`
 and about a history to `show`, and a preflight spanning all three would be a fourth command's

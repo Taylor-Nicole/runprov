@@ -6,7 +6,7 @@
   researcher, auditor etc, and the verification might not always be on the original host."*
   Depends on ADR-0010 for what a record may state, ADR-0007 for its exit codes, and ADR-0005 for
   how the record is written. ADR-0020 and ADR-0023 cite this record rather than restating it.
-- **Applies to:** `runprov/environment.py`, whose snapshot body this record forbids changing., `runprov/pkgset.py`
+- **Applies to:** `runprov/environment.py`, whose snapshot body this record forbids changing., `runprov/pkgset.py`, `runprov/env.py`, `runprov/__main__.py`
 
 ## Context
 
@@ -91,9 +91,15 @@ recorded package-set digest disagrees with its body. **An interpreter or host di
 does not by itself move the exit code**, because it is a fact about where the reviewer is
 standing, not about whether the environment was rebuilt correctly.
 
-**R-11.** A difference **names the packages**, in three sets — *only in the record*, *only here*,
-*different version* — never a digest pair alone. Two digests tell a reviewer that they failed; the
-three sets tell them what to install.
+**R-11.** A difference **names the packages WHERE BOTH BODIES ARE READABLE**, in three sets —
+*only in A*, *only in B*, *different version*. Two digests tell a reviewer that they failed; the
+three sets tell them what to install. **CORRECTED 2026-10-23, found by designing R-22's
+resolver:** the original clause said *"never a digest pair alone"*, which R-14's own case cannot
+satisfy — two records compared off-host may both have had their sidecars pruned, and then the
+digests are the only evidence that exists. So where a body cannot be read, the comparison reports
+the digest pair **and says which side it could not open and why**. An unqualified promise to name
+the packages would have been a requirement the feature's headline use case breaks on its first
+day.
 
 **R-12.** **No command emits a container recipe.** ADR-0020's rejection stands: the record
 describes a Python environment, not a system one. What this record guarantees instead is that
@@ -144,6 +150,14 @@ exactly one package, every time**, and will read a correct rebuild as a failure.
 which is the same defect as one whose only possible answer is *differs* — one level in, and found
 by measuring the corpus rather than by review.
 
+**AND THIS DIAGNOSIS NEEDS R-11's DETAIL LEVEL, so where it is unavailable it is declared and not
+omitted.** Deciding that *the only difference is the recorder* requires the named sets, which
+require both bodies. On digests alone the comparison **must say that it cannot tell** — *"the
+package sets differ and neither body is readable, so whether the only difference is runprov's own
+version cannot be determined here"* — rather than printing a bare difference that a reviewer will
+read as a real one. Silence about an unavailable diagnosis is indistinguishable from the diagnosis
+coming back negative.
+
 **R-18.** **MOVED TO ADR-0025 R-6 on 2026-10-23** — one stdlib-only implementation, copyable out of the distribution. The number is kept rather than reclaimed so that a citation written against this record still resolves to the right requirement, and so the move is visible rather than inferred from a gap.
 
 ### Three requirements that came from reverifying this record before building it
@@ -171,6 +185,36 @@ dimension becomes answerable. The old path stays for records written before the 
 because `compare()` is pure and never opens a snapshot file, so it cannot recompute what was not
 recorded — and *recorded* versus *recomputable* is exactly the split ADR-0014 exists to keep
 visible.
+
+### The shape, so that every later feature adds a SOURCE and not a second comparison
+
+**R-22.** **ONE environment identity, resolved from a source; ONE comparison, over two
+identities.** An identity carries, each with the provenance of how it was obtained — *recorded*,
+*recomputed*, *observed* or *absent, because* — the package-set digest by algorithm, the
+interpreter version, the host-bound snapshot digest, the platform string, the package count, and
+the parsed package map **when a body was readable**. Every feature named below is a **source of an
+identity**, never a new comparison:
+
+| source | feature |
+|---|---|
+| a run in a history, or a record file | `env --compare`, this release |
+| the environment this process is in | `--here`, this release |
+| a published `runprov.pkgset.v1:<hex>` string | R-16, this release |
+| a merged group of histories | the array-job homogeneity check, after ADR-0021 |
+| **the environment a rebuild just created** | **ADR-0023 R-11** |
+
+**That last row is the requirement.** ADR-0023 re-snapshots what a manager built and compares it
+with the record — and if it writes its own comparison, this project will hold two implementations
+of *are these the same packages*, which is the shape it has measured to drift by whole cases
+rather than by details. **ADR-0023 R-11 is a CONSUMER of this comparison.** A new source is a
+function returning an identity; nothing downstream of it changes.
+
+**R-23.** **The preflight is the identity DESCRIBING ITSELF, not a second traversal.** ADR-0020
+R-13's *"what can be answered from what is actually here"* is exactly the provenance R-22 already
+carries, rendered. A preflight that walked the record separately would be a second instrument
+measuring the same subject, and this project has already paid for a pair of those: one sentence
+bound to two quantities, both inside their tolerance, **green on both instruments while they
+disagreed by a hundred.** One object, three consumers — the digest, the comparison, the preflight.
 
 ## The measurement this record rests on
 

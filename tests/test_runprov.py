@@ -63,6 +63,7 @@ sys.path.insert(0, str(REPO))
 import runprov  # noqa: E402
 import runprov.__main__ as cli  # noqa: E402
 import runprov._report  # noqa: E402
+import runprov.env  # noqa: E402
 import runprov.environment  # noqa: E402
 import runprov.pkgset  # noqa: E402
 import runprov.policy  # noqa: E402
@@ -85,7 +86,7 @@ import runprov.watch  # noqa: E402
 #: suite from, `rglob` finds 1 796 files with 1 764 of them inside `.venv`, and `runprov.__all__`
 #: is 18 against 24. THE CONSTANT IS THE INSTRUMENT: a human has to come here, and the one thing
 #: worth making a human do when a module is added is re-read which layer it belongs in.
-_PACKAGE_MODULES = 25
+_PACKAGE_MODULES = 26
 
 #: THE SOURCES OUTSIDE THE PACKAGE, AND IT IS ONE NUMBER WITH TWO READERS. Both the
 #: `open_output` sweep and the roots equality need "how many `.py` files this repository has",
@@ -25531,6 +25532,10 @@ def test_a_cannot_check_payload_has_the_same_keys_as_a_real_one():
 #: but FALSE in three of the four states `verify` exits 2 in. It carries `cannot_check` now.
 _R16_INABILITY = {
     "impact": ("cannot_check",),
+    #: `env`'s INABILITY IS THE PACKAGE-SET DIMENSION'S OWN `blocked`, lifted to the top level
+    #: rather than restated: two spellings of one inability is how the pair this project already
+    #: measured came to disagree while both were inside their tolerance.
+    "env": ("cannot_check",),
     "diff": ("cannot_check",),
     "log": ("cannot_check",),
     "lineage": ("cannot_check",),
@@ -25846,6 +25851,11 @@ _PATH_SUBJECT = {
     "lineage": None,
     "diff": None,
     "resources": None,
+    #: `env`'s POSITIONAL IS A RUN NAME OR A RUN UID, never a path, and its operands are named
+    #: rather than inferred from their shape [ADR-0026 R-5] — so the clause about a command told
+    #: to READ a path has nothing here to govern. `--log` is the path it reads, and the first
+    #: clause governs that.
+    "env": None,
     #: NOT READERS. `capture` and `exec` RUN a script and `prune` deletes markers; the rule is
     #: about a command told to READ a path, and a script that is not there is argparse's or the
     #: interpreter's complaint rather than this package's answer. Named rather than omitted, so
@@ -26099,6 +26109,9 @@ def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsy
         "log": ["log", "--log", str(log)],
         "lineage": ["lineage", "--log", str(log)],
         "resources": ["resources", "--log", str(log)],
+        #: `here` AGAINST `here` NEEDS NO HISTORY and always answers, which is what these
+        #: guards need: a comparison that blocked would carry the cannot-check key set.
+        "env": ["env", "--compare", "here", "--against", "here"],
         "show": ["show", "--log", str(log)],
         "show <target>": ["show", "demo", "--log", str(log)],
         "check": ["check", str(src)],
@@ -26322,6 +26335,9 @@ def test_every_json_command_says_it_could_not_check_where_r16_says_it_does(tmp_p
         "log": ["log", "--log", str(log)],
         "lineage": ["lineage", "--log", str(log)],
         "resources": ["resources", "--log", str(log)],
+        #: `here` AGAINST `here` NEEDS NO HISTORY and always answers, which is what these
+        #: guards need: a comparison that blocked would carry the cannot-check key set.
+        "env": ["env", "--compare", "here", "--against", "here"],
         "show": ["show", "--log", str(log)],
         "check": ["check", str(src)],
         "report": ["report", str(artifact), "--log", str(log)],
@@ -26857,6 +26873,14 @@ def test_every_json_commands_two_shapes_carry_the_same_keys(tmp_path, capsys):
             ["resources", "--log", str(gone)],
         ),
         "show": (["show", "--log", str(log)], ["show", "--log", str(gone)]),
+        #: `env`'s TWO SHAPES COME FROM ONE BUILDER and differ only in `cannot_check` carrying a
+        #: reason — which is what makes it worth a pair rather than exempt: a property held by
+        #: construction is one a later refactor can lose with nothing saying so, which is exactly
+        #: what happened to `lineage`.
+        "env": (
+            ["env", "--compare", "here", "--against", "here"],
+            ["env", "--compare", "--log", str(gone)],
+        ),
         "check": (["check", str(src)], ["check", str(empty_dir)]),
         # T-34. `gate` HAS THE PROPERTY BY CONSTRUCTION — both shapes come from one `Assessment`
         # and `found` is a FIELD rather than the absence of one — and that is precisely why it
@@ -40730,6 +40754,16 @@ CORPUS_RECIPES: dict[str, list[str]] = {
     "report": ["report", "out/summarise.tsv", "--log", "prov/history.jsonl"],
     "impact": ["impact", "data/m.tsv", "--log", "prov/history.jsonl"],
     "resources": ["resources", "--log", "prov/history.jsonl"],
+    #: THE STRONGEST CROSS-VERSION ASSERTION THIS TABLE HOLDS, and it is not obvious from the
+    #: argv. No released wheel wrote a package-set digest, so `--can-check` against a corpus
+    #: record can only answer `yes` by RECOMPUTING the digest from the snapshot body that version
+    #: wrote [ADR-0026 R-9] — which exercises the whole reader against nine real writers, and
+    #: would go red the day the canonicaliser stopped being able to parse an old body.
+    #: `--compare` AND NOT `--can-check` FOR THE FORGERY LEG: the preflight prints the recorded
+    #: interpreter through `str(Field)`, and the comparison prints it through a dimension — two
+    #: different renderers, and the comparison is the one a reviewer runs on a stranger's record.
+    #: `here` as the second operand needs nothing from the tree.
+    "env": ["env", "--compare", "--against", "here", "--log", "prov/history.jsonl"],
     "diff": ["diff", "align", "genotype", "--log", "prov/history.jsonl"],
     "export": ["export", "prov/align.prov.json"],
     "check": ["check", "."],
@@ -41035,6 +41069,482 @@ def _snapshot_body(version: str) -> str:
     tree = corpus_tool.CORPUS / version / "tree"
     record = json.loads(sorted(tree.rglob("*.prov.json"))[0].read_text(encoding="utf-8"))
     return (tree / record["environment"]["snapshot"]["path"]).read_text(encoding="utf-8")
+
+
+def _env_identity(label: str, packages: dict[str, str] | None, *, host="h", python="3.12.13"):
+    """An identity built directly, for the comparison's own branches.
+
+    BUILT RATHER THAN RECORDED, because the comparison's cases — a recorder-only difference, a
+    digest pair with no body — are shapes a fixture would have to fake anyway, and faking them
+    through a record would test `from_record` twice and `compare` once.
+    """
+    return runprov.env.Identity(
+        label=label,
+        package_set=runprov.env.Field(f"set-{label}", how=runprov.env.RECORDED),
+        interpreter=runprov.env.Field(python, how=runprov.env.RECORDED),
+        host_digest=runprov.env.Field(host, how=runprov.env.RECORDED),
+        package_count=len(packages) if packages is not None else None,
+        packages=packages,
+        algorithms=(runprov.pkgset.ALGORITHM,),
+    )
+
+
+def _env_run(tmp_path, monkeypatch) -> runprov.Project:
+    """One recorded run with an environment snapshot, and the project that holds it."""
+    monkeypatch.chdir(tmp_path)
+    project = runprov.Project(
+        root=tmp_path,
+        run_log=tmp_path / "runs.jsonl",
+        env_snapshot_dir=tmp_path / "envs",
+        run_id=lambda: "test_run",
+        generation=lambda: "test_gen",
+    )
+    (tmp_path / "work.py").write_text("x = 1\n", encoding="utf-8")
+    with runprov.Run("work.py", project=project, provenance=tmp_path / "p.json") as run:
+        run.environment_snapshot()
+    return project
+
+
+def test_env_compares_TWO_RECORDS_with_NEITHER_environment_present():
+    """The reviewer's case, and the reason the comparison takes two operands
+    [ADR-0026 R-4], with the verdicts independent and the exit code keyed on one of them
+    [ADR-0026 R-2].
+
+    A journal referee or an external auditor holds two submissions on a laptop with neither
+    environment installed. **Two hosts, one package set, and the dimension answers SAME** — with
+    the host difference reported on its own line and the exit code not consulting it, because a
+    host difference is a fact about where the reviewer is standing and not about whether the
+    environment was rebuilt correctly [ADR-0024 R-9, R-10].
+
+    THE OLD ANSWER WAS *UNANSWERABLE*. `diff` reported this pair as blocked, correctly, because a
+    snapshot digest covers the platform too — and laptop-against-cluster is the pair ADR-0014's
+    own rejected alternatives call *"exactly the pair… Refusing would decline the case it is
+    for."*
+    """
+    a = _env_identity("A", {"numpy": "2.1.0"}, host="hostA")
+    b = _env_identity("B", {"numpy": "2.1.0"}, host="hostB")
+    #: THE DIGESTS ARE DIFFERENT STRINGS BY CONSTRUCTION, so agreement here can only come from
+    #: the named sets and never from the two digests happening to match.
+    assert a.package_set.value != b.package_set.value
+    comparison = runprov.env.compare(a, b)
+
+    assert comparison.exit_code() == 0, "same packages on two hosts must not be a finding"
+    assert comparison.packages.blocked is None and not comparison.packages.differences
+    host = next(d for d in comparison.dimensions if d.name == "host digest")
+    assert host.differences, "the host difference must still be REPORTED, just not decisive"
+
+
+def test_env_names_the_RECORDER_as_the_expected_difference_and_names_the_flag():
+    """[ADR-0026 R-6], which was found by measuring the corpus rather than by review.
+
+    Nine released versions' package-set digests are nine distinct values and **exactly one** once
+    `runprov` is excluded: every other package is identical across all nine. So a reviewer who
+    installs runprov in order to check a record differs by exactly one package, every time.
+
+    NOTHING IS EXCLUDED BY DEFAULT — runprov is in that environment and the digest says so — so
+    this is still a difference and still exit 1. What changes is that the output says WHICH case
+    it is and names the flag, because **a verifier whose commonest correct outcome reads as a
+    failure teaches its users to ignore it.**
+    """
+    a = _env_identity("record", {"numpy": "2.1.0", "runprov": "0.9.0"})
+    b = _env_identity("here", {"numpy": "2.1.0", "runprov": "0.10.0"})
+    comparison = runprov.env.compare(a, b)
+
+    assert comparison.exit_code() == 1, "nothing is excluded by default"
+    assert comparison.packages.differences == ["version     runprov  0.9.0 -> 0.10.0"]
+    assert "ONLY DIFFERENCE IS runprov ITSELF" in comparison.packages.examined
+    assert "--ignore runprov" in comparison.packages.examined, "the flag is not named"
+
+    #: AND A REAL DIFFERENCE BESIDE IT IS NOT GIVEN THAT SENTENCE, which is the half that makes
+    #: the hint trustworthy: it appears when the recorder is the WHOLE difference and not when it
+    #: is merely among them.
+    also = runprov.env.compare(a, _env_identity("here", {"numpy": "2.2.0", "runprov": "0.10.0"}))
+    assert "ONLY DIFFERENCE" not in also.packages.examined
+    assert len(also.packages.differences) == 2
+
+
+def test_an_IGNORE_is_printed_recorded_and_REPORTED_WHEN_IT_MATCHED_NOTHING():
+    """An exclusion that silently excluded nothing is the shape every selector failure here has
+    taken: it fails toward a clean-looking answer [ADR-0026 R-6].
+
+    AND THE DIGEST IS NOT QUOTED UNDER AN IGNORE. A recorded digest covers the whole set, the
+    ignored name with it, so printing it beside *"ignoring runprov"* would offer a value a reader
+    could quote as the agreed identity of two environments that disagree.
+    """
+    a = _env_identity("record", {"numpy": "2.1.0", "runprov": "0.9.0"})
+    b = _env_identity("here", {"numpy": "2.1.0", "runprov": "0.10.0"})
+
+    ignored = runprov.env.compare(a, b, ignore=["RunProv"])
+    assert ignored.exit_code() == 0, "the only difference was excluded, so the sets agree"
+    assert ignored.ignored == frozenset({"runprov"}), "the name is PEP 503 normalised"
+    assert not ignored.ignored_matched_nothing
+    assert "not quoted here" in ignored.packages.examined
+    assert "set-record" not in ignored.packages.examined, (
+        "a digest covering the ignored package is being offered as the agreed value"
+    )
+
+    missed = runprov.env.compare(a, b, ignore=["no-such-dist"])
+    assert missed.ignored_matched_nothing == frozenset({"no-such-dist"})
+    assert "matched no package" in "\n".join(runprov.env.render(missed))
+
+
+def test_env_DECLARES_the_detail_level_it_did_not_have_rather_than_going_quiet():
+    """[ADR-0026 R-7], and ADR-0024 R-11 was corrected to match it. The original clause promised
+    the packages would always be named; the feature's own headline case breaks that on day one.
+
+    Two records compared off-host may both have had their sidecars pruned, and then the digests
+    are the only evidence there is. So the comparison reports the digest pair, says **which side**
+    it could not open, and says that the recorder diagnosis **cannot be made** — because silence
+    about an unavailable diagnosis is indistinguishable from the diagnosis coming back negative.
+    """
+    comparison = runprov.env.compare(_env_identity("A", None), _env_identity("B", None))
+    assert comparison.exit_code() == 1
+    assert comparison.packages.differences == ["digest      set-A -> set-B"]
+    examined = comparison.packages.examined
+    assert "no readable snapshot body for A, B" in examined
+    assert "cannot be determined" in examined, (
+        "the unavailable recorder diagnosis is omitted rather than declared, which reads exactly "
+        "like the diagnosis coming back negative"
+    )
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "says"),
+    [
+        ({"sha256": "h", "python": "3.12.13"}, "recorded before a package-set digest"),
+        (
+            {"sha256": "h", "python": "3.12.13", "package_sets_unavailable": "two entries x"},
+            "capture could not compute one",
+        ),
+        (
+            {"sha256": "h", "python": "3.12.13", "package_sets": {"runprov.pkgset.v99": "later"}},
+            "this build computes",
+        ),
+    ],
+    ids=["predates-the-field", "capture-refused", "a-form-we-do-not-implement"],
+)
+def test_an_identity_from_a_record_names_WHICH_absence_it_is_carrying(snapshot, says):
+    """Three absences, three repairs, and the third is why the field is a map [ADR-0024 R-20].
+    The identity carries each with the reason it is missing [ADR-0026 R-1], and the preflight is
+    that same object describing itself [ADR-0026 R-10].
+
+    Re-record; fix the environment, quoting capture's own reason; or upgrade the reader. A flat
+    digest field would have handed this reader a value computed under another form and compared
+    it as though it were this one, turning a version skew into a reported package difference.
+    """
+    identity = runprov.env.from_record({"environment_snapshot": snapshot}, "A")
+    assert identity.package_set.value is None
+    assert says in (identity.package_set.absent or "")
+    #: AND THE PREFLIGHT SAYS SO TOO, from the same object [ADR-0024 R-23]. A preflight that
+    #: walked the record separately could call a question answerable while the comparison refuses
+    #: it, which is the two-instrument failure this project has already paid for once.
+    rows = {subject: present for subject, present, _ in identity.answerable()}
+    assert rows["package set"] is False and rows["interpreter"] is True
+
+
+def test_a_record_that_DISAGREES_WITH_ITS_OWN_SIDECAR_is_neither_believed(tmp_path):
+    """[ADR-0026 R-8]. Where both the recorded digest and the body are in hand they must agree.
+
+    SAYING WHICH ONE TO BELIEVE WOULD BE AN INVENTION. The record is what the run asserted and
+    the body is what the file still says; when they disagree, one of the two has been edited and
+    nothing here can tell which. So neither is offered, and the reason names both values.
+    """
+    body = runprov.environment._render_snapshot({"numpy": "2.1.0"}, 0, None)
+    (tmp_path / "env.txt").write_text(body, encoding="utf-8")
+    record = {
+        "environment_snapshot": {
+            "path": "env.txt",
+            "sha256": "h",
+            "python": "3.12.13",
+            "package_sets": {runprov.pkgset.ALGORITHM: "0" * 64},
+        }
+    }
+    identity = runprov.env.from_record(record, "A", root=tmp_path)
+    assert identity.package_set.value is None
+    assert "so neither is evidence" in (identity.package_set.absent or "")
+    assert "0000000000000000" in (identity.package_set.absent or "")
+
+
+def test_an_identity_is_RECOMPUTED_from_the_body_when_the_record_predates_the_field(tmp_path):
+    """[ADR-0026 R-9], and this is the caller it was waiting for.
+
+    EVERY CORPUS VERSION IS COMPARABLE TODAY because of this path: nine releases wrote the
+    snapshot and none of them wrote a package-set digest. **`recomputed` and `recorded` are kept
+    apart** — the first is what the file still says, the second is what the run asserted — and a
+    reader that cannot tell them apart cannot tell what the answer is evidence of.
+    """
+    body = runprov.environment._render_snapshot({"numpy": "2.1.0"}, 0, None)
+    (tmp_path / "env.txt").write_text(body, encoding="utf-8")
+    identity = runprov.env.from_record(
+        {"environment_snapshot": {"path": "env.txt", "sha256": "h", "python": "3.12.13"}},
+        "A",
+        root=tmp_path,
+    )
+    assert identity.package_set.value == runprov.pkgset.package_set_digest(body)
+    assert identity.package_set.how == runprov.env.RECOMPUTED
+    assert identity.packages == {"numpy": "2.1.0"}, "the body was parsed, so packages are nameable"
+
+
+def test_an_UNREDUCIBLE_snapshot_body_lowers_the_detail_level_and_names_the_reason(tmp_path):
+    """A body the canonicaliser refuses, read by the READER rather than written by capture.
+
+    THE SAME BODY FAILS TWO WAYS AND BOTH ARE REPORTED. The digest cannot be computed, so the
+    package-set field carries the reason; and the body cannot be parsed, so the packages cannot be
+    named and the detail level drops. Neither is an exception out of `from_record`: a reader
+    handed a damaged record answers about the damage [ADR-0026 R-1], because a traceback tells a
+    reviewer nothing they can act on.
+    """
+    (tmp_path / "env.txt").write_text("# h\nnot a package entry at all\n", encoding="utf-8")
+    identity = runprov.env.from_record(
+        {"environment_snapshot": {"path": "env.txt", "sha256": "h", "python": "3.12.13"}},
+        "A",
+        root=tmp_path,
+    )
+    assert identity.package_set.value is None
+    assert "cannot be reduced" in (identity.package_set.absent or "")
+    assert identity.packages is None, "an unparseable body must not yield a package map"
+    rows = {subject: present for subject, present, _ in identity.answerable()}
+    assert rows["named packages"] is False and rows["host digest"] is True
+
+
+def test_a_PRUNED_sidecar_lowers_the_detail_level_and_is_not_an_error(tmp_path):
+    """A record naming a snapshot that is no longer on disk. ADR-0026 R-7.
+
+    A PRUNED SIDECAR IS THE ORDINARY CASE, not a damaged record: `prune` exists, disks get
+    cleaned, and a record that travels rarely brings its sidecar. So the digest the record itself
+    carries is still the answer, and only the NAMING of packages is lost — which is exactly the
+    degradation R-7 requires to be declared rather than inferred from silence.
+    """
+    identity = runprov.env.from_record(
+        {
+            "environment_snapshot": {
+                "path": "gone/env.txt",
+                "sha256": "h",
+                "python": "3.12.13",
+                "package_sets": {runprov.pkgset.ALGORITHM: "d" * 64},
+            }
+        },
+        "A",
+        root=tmp_path,
+    )
+    assert identity.package_set.value == "d" * 64, "the recorded digest survives a pruned sidecar"
+    assert identity.package_set.how == runprov.env.RECORDED
+    assert identity.packages is None
+
+
+def test_THIS_environment_that_cannot_be_reduced_is_reported_not_raised(monkeypatch):
+    """`from_here` carries the same refusal as `from_record`, for the same reason.
+
+    THE COLLIDING PAIR IS PLANTED WHERE IT COMES FROM: `installed_packages` keys its map by the
+    raw metadata `Name`, so two distributions whose names differ only in `-`, `_` or `.` give one
+    canonical name and the digest would depend on line order [ADR-0025 R-3]. A reviewer standing
+    in such an environment must be told which packages collide, not handed a traceback.
+    """
+    monkeypatch.setattr(
+        runprov.environment,
+        "installed_packages",
+        lambda bad=None: {"zope.interface": "7.0.1", "zope_interface": "6.4"},
+    )
+    identity = runprov.env.from_here()
+    assert identity.package_set.value is None
+    assert "cannot be reduced" in (identity.package_set.absent or "")
+    assert identity.packages is None
+    #: AND THE HOST DIGEST STILL ANSWERS, because it is over the rendered body and does not care
+    #: whether two names normalise together. One dimension lost is not three.
+    assert identity.host_digest.value and identity.interpreter.value
+
+
+def test_a_package_PRESENT_ON_ONE_SIDE_ONLY_is_named_in_the_direction_it_is_missing():
+    """Both directions, because they are two lines of code and a reviewer acts on them
+    differently: one is *install this*, the other is *you have something the record did not*.
+    """
+    comparison = runprov.env.compare(
+        _env_identity("A", {"shared": "1", "only-in-a": "2"}),
+        _env_identity("B", {"shared": "1", "only-in-b": "3"}),
+    )
+    assert comparison.packages.differences == [
+        "only in A   only-in-a 2",
+        "only in B   only-in-b 3",
+    ], comparison.packages.differences
+
+
+def test_a_PUBLISHED_IDENTITY_STRING_is_an_operand_and_answers_one_dimension():
+    """[ADR-0026 R-5] and ADR-0024 R-16: the journal reviewer holds a paper and a record.
+
+    AN IDENTITY STRING ASSERTS ONE THING, so the comparison answers one dimension and says
+    plainly that the other two had nothing to compare — rather than reporting them as agreeing,
+    which is what an absent value compared against an absent value would otherwise look like.
+    """
+    quoted = runprov.env.from_identity_string(f"{runprov.pkgset.ALGORITHM}:abc123")
+    comparison = runprov.env.compare(_env_identity("record", {"numpy": "2.1.0"}), quoted)
+    assert comparison.packages.blocked is None
+    interpreter = next(d for d in comparison.dimensions if d.name == "interpreter")
+    assert interpreter.blocked and "carries no interpreter version" in interpreter.blocked
+
+    with pytest.raises(ValueError, match="not a published identity this build can read"):
+        runprov.env.from_identity_string("runprov.pkgset.v99:abc")
+    with pytest.raises(ValueError, match="not a published identity"):
+        runprov.env.from_identity_string(f"{runprov.pkgset.ALGORITHM}:")
+
+
+def test_a_field_may_not_carry_BOTH_a_value_and_a_reason_it_is_absent():
+    """The two states are exclusive by construction, not by convention.
+
+    A field carrying both would let a reader believe either one, and the reader that believed the
+    wrong one would have no way to find out.
+    """
+    with pytest.raises(ValueError, match="states a value with its provenance"):
+        runprov.env.Field("x", absent="and also missing")
+    with pytest.raises(ValueError, match="states a value with its provenance"):
+        runprov.env.Field(None)
+    assert str(runprov.env.Field(None, absent="pruned")) == "<pruned>"
+
+
+def test_the_env_COMMAND_answers_all_three_questions_and_classifies_by_exit_code(
+    tmp_path, monkeypatch, capsys
+):
+    """End to end through `main`, because the engine above is reached by the CLI and not by a
+    reader — and ADR-0007's contract is the CLI's, not the engine's.
+
+    0 the package sets agree · 1 they differ · 2 the question could not be put [ADR-0026 R-2].
+    **A mode is REQUIRED in this release** [ADR-0026 R-3] and becomes the default when
+    ADR-0020 R-1's renderer lands, which
+    is an addition rather than a change to any invocation written today.
+    """
+    project = _env_run(tmp_path, monkeypatch)
+    log = str(project.run_log)
+
+    assert cli.main(["env", "--digest", "--log", log]) == 0
+    printed = capsys.readouterr().out.strip()
+    assert printed.startswith(f"{runprov.pkgset.ALGORITHM}:") and len(printed.split(":")[1]) == 16
+
+    assert cli.main(["env", "--can-check", "--log", log]) == 0
+    rows = capsys.readouterr().out
+    assert "package set" in rows and "named packages" in rows
+
+    #: AGAINST THIS ENVIRONMENT, which is the environment that recorded it, so they agree.
+    assert cli.main(["env", "--compare", "--log", log]) == 0
+    assert "SAME" in capsys.readouterr().out
+
+    #: AGAINST A PUBLISHED IDENTITY THAT IS NOT THIS ONE: a finding, exit 1.
+    assert (
+        cli.main(
+            [
+                "env",
+                "--compare",
+                "--against",
+                f"{runprov.pkgset.ALGORITHM}:{'0' * 16}",
+                "--log",
+                log,
+            ]
+        )
+        == 1
+    )
+    assert "DIFFERS" in capsys.readouterr().out
+
+    #: AND A QUESTION THAT COULD NOT BE PUT IS 2, NEVER 1.
+    assert cli.main(["env", "--compare", "nosuchscript", "--log", log]) == 2
+    assert "no run" in capsys.readouterr().err
+    assert cli.main(["env", "--digest", "--log", str(tmp_path / "absent.jsonl")]) == 2
+    assert "no run history" in capsys.readouterr().err
+
+
+def test_the_env_command_refuses_every_OPERAND_it_cannot_resolve_and_says_which(
+    tmp_path, monkeypatch, capsys
+):
+    """Every door into this command, and each refusal names the operand rather than the command.
+
+    THE FORGERY LEG IS WHY THESE ARE ENUMERATED. It attacks each declared slot with one argument,
+    so each of them is a path a hostile or merely wrong value takes — and a refusal that said only
+    *"env: could not resolve"* would leave a reviewer with a record, a paper and no idea which of
+    the two they mistyped.
+
+    `here` IS RESERVED AND ITS COLLISION IS MEASURED [ADR-0026 R-5]. Forbidding an inferred
+    operand and then reserving a word without checking whether a run is called it would be the
+    same defect the rule exists to prevent, so a history holding a run named `here` makes the
+    command refuse and name both readings.
+    """
+    project = _env_run(tmp_path, monkeypatch)
+    log = str(project.run_log)
+
+    #: A PUBLISHED IDENTITY UNDER A FORM THIS BUILD DOES NOT READ: refused by the parser, with
+    #: the algorithm named, because that is the part the reader cannot do anything about.
+    assert cli.main(["env", "--compare", "runprov.pkgset.v99:abc", "--log", log]) == 2
+    refused = capsys.readouterr().err
+    assert "not a published identity" in refused, (
+        "a near-miss identity is being read as a run name, so a reviewer who pasted a digest "
+        "under a form this build cannot read is told there is no run by that name"
+    )
+    assert "runprov.pkgset.v1" in refused, "the refusal does not name the form it does read"
+
+    #: THE SECOND OPERAND, which is a different code path from the first and had its own branch.
+    assert cli.main(["env", "--compare", "--against", "nosuchrun", "--log", log]) == 2
+    assert "no run for 'nosuchrun'" in capsys.readouterr().err
+
+    #: `here` WITH NO HISTORY AT ALL IS NOT AN ERROR: it is the container case, and it needs no
+    #: record. This is the one operand that answers where every other refuses.
+    assert cli.main(["env", "--compare", "here", "--against", "here", "--log", "gone.jsonl"]) == 0
+    assert "SAME" in capsys.readouterr().out
+
+    #: A RUN CALLED `here` MAKES THE WORD MEAN TWO THINGS.
+    collision = tmp_path / "collision.jsonl"
+    collision.write_text(
+        json.dumps({"script": "here", "environment_snapshot": {"sha256": "h"}}) + "\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["env", "--compare", "here", "--log", str(collision)]) == 2
+    refusal = capsys.readouterr().err
+    assert "means this environment" in refusal and "also holds a run called" in refusal
+
+    #: A TORN LINE IS SKIPPED AND A NON-OBJECT LINE IS SKIPPED, because one damaged line is not a
+    #: reason to abandon a history — the same rule `resources` and `log` already follow.
+    torn = tmp_path / "torn.jsonl"
+    torn.write_text('{"script": "a"\n[1, 2]\n\n', encoding="utf-8")
+    assert cli.main(["env", "--digest", "--log", str(torn)]) == 2
+    assert "no run" in capsys.readouterr().err
+
+    #: AND A RECORD WITH NO PACKAGE-SET DIGEST REFUSES `--digest` WITH A PAYLOAD, not a bare
+    #: message: exit 2 carries the shape [ADR-0017 R-15].
+    bare = tmp_path / "bare.jsonl"
+    bare.write_text(
+        json.dumps({"script": "x", "environment_snapshot": {"sha256": "h"}}) + "\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["env", "--digest", "--format", "json", "--log", str(bare)]) == 2
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["cannot_check"] and answer["schema"] == runprov.env.SCHEMA
+
+
+def test_the_env_command_renders_ONE_ANSWER_in_TWO_FORMS(tmp_path, monkeypatch, capsys):
+    """[ADR-0026 R-11] over ADR-0017: one builder, two renderings, and the JSON is the same
+    answer rather than a second one. The provenance of every field travels with it, because a
+    consumer that cannot tell a
+    recorded digest from a recomputed one cannot tell what the answer is evidence of.
+    """
+    project = _env_run(tmp_path, monkeypatch)
+    log = str(project.run_log)
+
+    assert cli.main(["env", "--compare", "--format", "json", "--log", log]) == 0
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["schema"] == runprov.env.SCHEMA == "runprov.env.v1", (
+        "the payload does not name its own shape, so a consumer cannot tell which one it is being "
+        "promised anything about [ADR-0017 R-5]"
+    )
+    assert [d["name"] for d in answer["dimensions"]] == [
+        "package set",
+        "interpreter",
+        "host digest",
+    ]
+    assert answer["exit_code"] == 0
+    assert answer["a"]["package_set"]["algorithm"] == runprov.pkgset.ALGORITHM
+    assert answer["a"]["package_set"]["how"] in (
+        runprov.env.RECORDED,
+        runprov.env.RECOMPUTED,
+    ), "the JSON does not say how the digest was obtained"
+    assert answer["b"]["package_set"]["how"] == runprov.env.OBSERVED
+
+    assert cli.main(["env", "--digest", "--format", "json", "--log", log]) == 0
+    assert "identity" in json.loads(capsys.readouterr().out)
 
 
 def _snapshot_record(host: str, sets: dict[str, str] | None = None, **extra):
@@ -49109,6 +49619,20 @@ _FORGE_INTO = (
     ("code", "git_branch"),
     ("code", "script_file"),
     ("environment", "manager"),
+    #: THE ONE STRING IN `env`'s OUTPUT THAT A HOSTILE RECORD CONTROLS. Capture writes
+    #: `package_sets_unavailable` as the reason a digest could not be computed, and `env` quotes
+    #: it so a reader knows the environment is what to fix — but a record is a file that travels,
+    #: by email, in a supplement, from a collaborator's repository, and `env` is the one command
+    #: a reviewer runs against a stranger's record. Added as a SLOT rather than exempting the
+    #: command, because an exemption declares the channel unreachable and this proves the
+    #: escaping instead.
+    ("environment", "snapshot", "package_sets_unavailable"),
+    #: AND THE ONE IT PRINTS WITH A READABLE BODY: the recorded interpreter version, quoted whole
+    #: because a version truncated to sixteen characters would be a different version silently.
+    #: The slot above is only consulted when a digest is ABSENT, so with a corpus record — whose
+    #: body is always readable — it is unreachable, and a channel unreachable by the recipe is a
+    #: channel this leg asserts nothing about.
+    ("environment", "snapshot", "python"),
     ("failure", "type"),
     ("failure", "message"),
 )

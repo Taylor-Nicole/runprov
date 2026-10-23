@@ -755,6 +755,45 @@ above: a field's meaning does not change without a new schema value.
 `--format tsv` emits **Snakemake's benchmark columns**, so existing tooling reads it without
 being told anything; `--format k8s` renders `requests`/`limits`.
 
+## `runprov env` — can someone else check this environment?
+
+An environment's recorded digest covers the **whole** rendered snapshot body, platform header
+included, so it answers *has this environment changed on this host* and cannot answer *are these
+the same packages*. Measured: identical package sets on `x86_64`/`glibc2.35` and
+`aarch64`/`glibc2.39` digest differently, with the platform line as the only difference. A
+reviewer, a referee or an auditor is **never on the original host**, so the second question is the
+one they have, and `runprov env` is where it is answered.
+
+```
+$ runprov env --digest                      # the quotable identity, for a methods section
+runprov.pkgset.v1:14fefa37dd2cd3fb
+
+$ runprov env --can-check                    # what can be answered from what is actually here
+$ runprov env --compare                      # against this environment
+$ runprov env --compare A --against B        # two records, NEITHER environment present
+$ runprov env --compare --against runprov.pkgset.v1:14fefa37dd2cd3fb
+```
+
+**Three independent verdicts** — package set, interpreter, host — and **the exit code is keyed
+on the package set alone.**
+The exit code is 0 when the sets agree, 1 when they differ with the packages named, and 2 when
+the question could not be put. A host difference is reported and is never the finding, because it is a fact
+about where the reader is standing rather than about whether the environment was rebuilt
+correctly.
+
+**Nothing is excluded by default, and the expected difference is named.** Across nine released
+versions the recorded package-set digests are nine distinct values and **exactly one** once
+`runprov` itself is excluded — so a reviewer who installs runprov to check a record differs by one
+package every time. When the recorder is the whole difference the output says so and names
+`--ignore`; an ignore is printed, carried in the payload, and reported when it matched nothing.
+
+**And the canonical form is specified so it can be recomputed without this package**:
+`runprov/pkgset.py` imports nothing but the standard library, so an auditor copies that one file
+into a container with no runprov in it and runs `python pkgset.py env-<digest>.txt`. The payload is
+versioned by `"schema": "runprov.env.v1"`, and its shape follows the record-format promise
+above: a field's meaning does not change without a new schema value. Exit 2 carries the payload
+too, with `cannot_check` saying why the question could not be put.
+
 ### It is a floor, and the record says so
 
 **The number a scheduler enforces is not the number `getrusage` reports**, and the difference

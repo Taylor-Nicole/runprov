@@ -153,6 +153,13 @@ $ runprov resources --format slurm
 #SBATCH --cpus-per-task=3
 ```
 
+**`runprov env`** — can someone else check this environment? A recorded snapshot digest covers
+the platform as well as the packages, so it cannot answer *are these the same packages* anywhere
+but the machine that wrote it. `runprov env` answers that one: a quotable
+`runprov.pkgset.v1:<hex>` identity, a comparison of **two records with neither environment
+present**, and three independent verdicts whose exit code is keyed on the package set — so a
+reviewer in a container is told the host differs rather than that the environment does not match.
+
 **`runprov diff <a> <b>`** — why is today different from last month. Everything needed was
 already recorded; what is new is that **a difference and an incomparability are not the same
 answer**. A run on 3.11 could not see what a run on 3.12 saw, and a dirty tree's commit does

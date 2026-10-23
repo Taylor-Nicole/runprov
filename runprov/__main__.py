@@ -67,7 +67,8 @@ import typing
 from . import chain as chain_mod
 from . import check as check_mod
 from . import diff as diff_mod
-from . import hashing, policy
+from . import env as env_mod
+from . import hashing, pkgset, policy
 from . import impact as impact_mod
 from . import prune as prune_mod
 from . import report as report_mod
@@ -1984,6 +1985,119 @@ def _diff(args: argparse.Namespace) -> int:
     return 0 if comparison.settled else 1
 
 
+def _env_identity(
+    args: argparse.Namespace, which: str
+) -> tuple[env_mod.Identity | None, str | None]:
+    """Resolve ONE operand to an identity, or None having said why. ADR-0024 R-15, R-22.
+
+    NO OPERAND IS INFERRED FROM ITS SHAPE. `--here` is a flag, a published identity is recognised
+    by the algorithm prefix it is required to carry, and anything else is a run in the history.
+    The same rule the rebuild's `--tool` will follow: a wrong guess here compares the wrong
+    two things and reports it with the confidence of a right one.
+
+    EVERY FUTURE SOURCE ENTERS HERE AND NOWHERE ELSE — a merged group of histories, a record
+    file, the environment a rebuild has just created. None of them is a second comparison.
+    """
+    if which.startswith(env_mod.IDENTITY_FAMILY) and ":" in which:
+        try:
+            return env_mod.from_identity_string(which), None
+        except ValueError as exc:
+            #: THE REASON IS RETURNED, NOT PRINTED. One caller decides whether the answer is a
+            #: page or a payload, so the two renderings cannot disagree about what happened.
+            return None, str(exc)
+    project = active()
+    log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
+    if which == env_mod.HERE and not log.is_file():
+        #: `here` NEEDS NO HISTORY, which is the whole point of it: a reviewer in a container has
+        #: an environment and no record. The ambiguity check below runs only when there IS a
+        #: history to be ambiguous with.
+        return env_mod.from_here(), None
+    if not log.is_file():
+        return None, f"no run history at {printable(str(log))}"
+    found = None
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:  # guards-ok: one torn line is not a reason to abandon the history
+            continue
+        if not isinstance(record, dict):
+            continue
+        if which and record.get("script") != which and record.get("run_uid") != which:
+            continue
+        found = record  # the LAST match: the most recent run is the one asked about
+    if which == env_mod.HERE:
+        #: A RESERVED OPERAND WITH A MEASURED COLLISION REFUSAL [ADR-0026 R-5]. `here` means the
+        #: environment this process is in, and a run actually CALLED `here` would make the word
+        #: mean two things — so the command refuses and names both readings rather than choosing
+        #: one silently. Forbidding ambiguity and then reserving a word without checking for it
+        #: would be the same defect the rule exists to prevent.
+        if found is not None:
+            return None, (
+                f"`{env_mod.HERE}` means this environment, and {printable(str(log))} also holds a "
+                f"run called {env_mod.HERE!r}, so the operand means two things. Compare the run "
+                f"by its run uid, or rename it"
+            )
+        return env_mod.from_here(), None
+    if found is None:
+        name = f" for {which!r}" if which else ""
+        return None, f"no run{name} in {printable(str(log))}"
+    label = str(found.get("script") or found.get("run_uid") or which or "the most recent run")
+    return env_mod.from_record(found, label, root=project.root), None
+
+
+def _env(args: argparse.Namespace) -> int:
+    """ADR-0020 R-11..R-13, ADR-0024. One identity, three questions asked of it.
+
+    EXIT 2 WHENEVER THE QUESTION COULD NOT BE PUT, and never 1 for that — ADR-0007. A missing
+    history, an unreadable operand and an environment that cannot be reduced are all *could not
+    look*; only a package-set difference is a finding.
+
+    THE MODE IS REQUIRED IN THIS RELEASE AND WILL NOT BE LATER, which is why it is a required
+    mutually-exclusive group rather than a default: `env`'s rendering half (ADR-0020 R-1) is not
+    built, so there is no honest default yet. When it lands it becomes the default and every
+    invocation written today keeps its meaning — an addition, not a change.
+    """
+
+    def cannot(reason: str) -> int:
+        #: [ADR-0017 R-15] AN ANSWER, NOT A BAD INVOCATION: it looked where it was told and there
+        #: was nothing to read, so a consumer of `--format json` gets the shape with
+        #: `cannot_check` set rather than an empty stdout and a message it is not reading.
+        if args.format == "json":
+            print(json.dumps(env_mod.refused(reason), indent=2))
+        print(f"env: {reason}", file=sys.stderr)
+        return 2
+
+    first, why = _env_identity(args, args.compare if args.compare else (args.run or ""))
+    if first is None:
+        return cannot(why or "the first operand could not be resolved")
+
+    if args.can_check or not (args.digest or args.compare is not None):
+        print("\n".join(env_mod.render_answerable(first)))
+        return 0 if first.package_set.value else 2
+
+    if args.digest:
+        if first.package_set.value is None:
+            return cannot(first.package_set.absent or "no package-set digest")
+        line = f"{pkgset.ALGORITHM}:{first.package_set.value[:16]}"
+        if args.format == "json":
+            print(json.dumps({"identity": line, "how": first.package_set.how}, indent=2))
+        else:
+            print(line)
+        return 0
+
+    second, why = _env_identity(args, args.against if args.against else env_mod.HERE)
+    if second is None:
+        return cannot(why or "the second operand could not be resolved")
+    comparison = env_mod.compare(first, second, ignore=args.ignore or ())
+    if args.format == "json":
+        print(json.dumps(env_mod.payload(comparison), indent=2))
+    else:
+        print("\n".join(env_mod.render(comparison)))
+    return comparison.exit_code()
+
+
 def _resources(args: argparse.Namespace) -> int:
     """ADR-0013. What a run consumed, in the syntax of wherever it is going next.
 
@@ -2872,6 +2986,57 @@ def main(argv: list[str] | None = None) -> int:
     )
     df.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     df.add_argument("--format", choices=("text", "json"), default="text")
+    ev = sub.add_parser(
+        "env", help="what environment a run recorded, what can be checked, and whether it matches"
+    )
+    ev.add_argument("run", nargs="?", default=None, help="a script name or run uid; omit for last")
+    #: THE PREFLIGHT IS THE DEFAULT, AND IT STAYS THE DEFAULT [ADR-0026 R-3]. A first draft made
+    #: the mode REQUIRED, reasoning that ADR-0020 R-1's renderer would become the default later
+    #: and that a placeholder default would be the thing that had to change. **The forgery leg
+    #: measured the cost of that**: with a required group, every single-argument invocation —
+    #: which is how that leg attacks each slot — is an argparse usage error, so the command was
+    #: unreachable through every door it declares and a whole safety check asserted nothing about
+    #: it. A command no single argument can reach is a command no guard can attack.
+    #:
+    #: So the default is `--can-check`, which creates nothing and answers *what have I got*, and
+    #: the renderer arrives under `--format requirements|conda|uv` where ADR-0020 R-8 already puts
+    #: it. Bare `runprov env` therefore means the same thing before and after that lands.
+    mode = ev.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--compare",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="A",
+        help="compare an environment against another; the operand is a run name or uid, `here` "
+        "for this environment, or a published runprov.pkgset.v1:<hex> identity",
+    )
+    mode.add_argument(
+        "--digest", action="store_true", help="print the quotable package-set identity and stop"
+    )
+    mode.add_argument(
+        "--can-check",
+        action="store_true",
+        dest="can_check",
+        help="say what can be answered from what is actually here, before trying",
+    )
+    ev.add_argument(
+        "--against",
+        default=None,
+        metavar="B",
+        help="the second operand of a comparison (default `here`); a run, `here`, or a published "
+        "identity. TWO RECORDS NEED NEITHER ENVIRONMENT PRESENT",
+    )
+    ev.add_argument(
+        "--ignore",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="exclude a distribution from the package-set comparison; always printed, and "
+        "reported when it matched nothing. Nothing is excluded by default",
+    )
+    ev.add_argument("--format", choices=("text", "json"), default="text")
+    ev.add_argument("--log", default=None, help="path to runs.jsonl (default: the project's)")
     rs = sub.add_parser(
         "resources", help="what a run consumed, as a request you can size a cluster job with"
     )
@@ -3055,6 +3220,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "report":
         return _report(args)
+
+    if args.cmd == "env":
+        return _env(args)
 
     if args.cmd == "resources":
         return _resources(args)
