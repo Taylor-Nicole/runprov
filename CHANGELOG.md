@@ -11,6 +11,42 @@ is a fix nobody checked.
 
 ### Added
 
+**Capture records a host-independent package-set digest beside the host-bound one**, as
+`snapshot.package_sets`, a map keyed by the algorithm's name. A reader looks the digest up BY the
+form it implements, so being handed one computed under another form is impossible rather than
+merely discouraged, and a record written during a transition can carry both. It reaches the
+history projection too without a second edit, because `run.py` projects the snapshot record
+wholesale rather than re-listing its keys.
+
+**A body the canonicaliser refuses is recorded as a REASON and breaks nothing.** `pkgset` refuses
+a body it cannot reduce, because a verifier that guesses is worse than one that stops — but a
+recorder must not stop. Left to propagate, that refusal reached `environment_snapshot`'s
+`except Exception` and would have **collapsed the whole block to `{"error": …}`**, losing the
+path, the host digest and the package count over a field that did not exist last week. So
+`package_sets_unavailable` carries the reason and everything else survives. Three states a reader
+can tell apart: the digest, the reason there is none, or neither — which means the record predates
+the field.
+
+### Fixed
+
+**`diff` answers the packages dimension where it used to refuse.** `compare` reported a differing
+snapshot digest as `blocked`, with the reason *"a snapshot digest covers the interpreter and the
+platform as well as the packages, so it cannot say which of them moved"* — correct, and it meant
+that **laptop-against-cluster, the pair ADR-0014's rejected alternatives name as "exactly the pair
+this is for", answered *unanswerable*.** With a package-set digest on both sides the dimension now
+reports `unchanged` for one package set on two hosts, naming in `examined` why the snapshot
+digests differ, and reports a real package difference as a difference.
+
+**And where it still blocks, it names which side cannot answer, in three distinguishable forms:**
+the record predates the field and is repaired by re-recording; capture refused the body and the
+writer's own reason is quoted, so the environment is what to fix; or the record carries a digest
+only under a form this build does not implement, which is a version skew. **The third case is why
+the field is a map** — a flat field would have handed this reader a digest computed under other
+rules and compared it as though it were this one, turning a skew into a reported package
+difference.
+
+### Added
+
 **`runprov/pkgset.py` — the canonical package set of an environment, and its digest.** ADR-0025,
 accepted and built. One module, **importing nothing but the standard library**, so an auditor can
 copy it out of an installed runprov or an unpacked sdist and run it in a container that has no

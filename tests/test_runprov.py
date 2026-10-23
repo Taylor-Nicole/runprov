@@ -13853,7 +13853,22 @@ def test_the_snapshot_RECORD_names_every_FIGURE_the_file_itself_carries(tmp_path
     """
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "plain-venv"))
     rec = runprov.environment.write_snapshot(tmp_path / "deep" / "store")
-    assert set(rec) == {"path", "sha256", "n_packages", "n_unreadable", "python", "reused"}
+    #: `package_sets` JOINED THIS SET BY A DELIBERATE EDIT, 2026-10-23, which is what an equality
+    #: is for: the field reaches `environment_snapshot` as well, because `run.py` projects the
+    #: snapshot record WHOLESALE rather than re-listing its keys, so one addition publishes it in
+    #: both record shapes and this one assertion covers both. Its mutually exclusive sibling,
+    #: `package_sets_unavailable`, is asserted by
+    #: `test_a_body_the_canonicaliser_REFUSES_is_recorded_as_a_REASON_and_breaks_nothing` —
+    #: the success shape and the refusal shape are two key sets and neither may drift.
+    assert set(rec) == {
+        "path",
+        "sha256",
+        "package_sets",
+        "n_packages",
+        "n_unreadable",
+        "python",
+        "reused",
+    }
     header, pip, conda = _snapshot_sections(pathlib.Path(rec["path"]).read_text(encoding="utf-8"))
     assert rec["n_packages"] == len(pip) == int(header["packages"])
     stated = int(header["UNREADABLE"].split()[0]) if "UNREADABLE" in header else 0
@@ -41020,6 +41035,169 @@ def _snapshot_body(version: str) -> str:
     tree = corpus_tool.CORPUS / version / "tree"
     record = json.loads(sorted(tree.rglob("*.prov.json"))[0].read_text(encoding="utf-8"))
     return (tree / record["environment"]["snapshot"]["path"]).read_text(encoding="utf-8")
+
+
+def _snapshot_record(host: str, sets: dict[str, str] | None = None, **extra):
+    """A history-shaped record carrying a snapshot and no tracked packages.
+
+    SHAPED LIKE WHAT `run.py` WRITES, not like what `compare` finds convenient: `packages: {}`
+    with `packages_recorded: "snapshot"` is the combination a snapshot run legitimately produces,
+    and it is the one that once made two genuinely different environments compare as `settled`.
+    """
+    snapshot: dict[str, typing.Any] = {"sha256": host, "n_packages": 53, **extra}
+    if sets is not None:
+        snapshot["package_sets"] = sets
+    return {
+        "packages": {},
+        "observation": {"packages_recorded": "snapshot"},
+        "environment_snapshot": snapshot,
+    }
+
+
+def test_capture_records_a_HOST_INDEPENDENT_package_set_digest_beside_the_host_one(tmp_path):
+    """[ADR-0025 R-1] written by capture, and both digests present in one record.
+
+    THE TWO ARE NOT DERIVABLE FROM EACH OTHER and the record carries both, because they answer
+    different questions: `sha256` covers the rendered body and so the platform with it, and the
+    package-set digest covers the packages alone. A record with only the first cannot be checked
+    anywhere but the machine that wrote it.
+
+    FILED UNDER THE ALGORITHM'S NAME, not beside a separate field naming it, so a reader looks
+    the digest up BY the form it implements and cannot be handed one computed under another.
+    """
+    record = runprov.environment.write_snapshot(tmp_path)
+    assert record["sha256"] and record["package_sets"], record
+    assert list(record["package_sets"]) == [runprov.pkgset.ALGORITHM]
+
+    body = (tmp_path / pathlib.Path(record["path"]).name).read_text(encoding="utf-8")
+    assert record["package_sets"][runprov.pkgset.ALGORITHM] == (
+        runprov.pkgset.package_set_digest(body)
+    ), "the recorded digest is not the digest of the body it was recorded beside"
+    assert record["sha256"] == runprov.environment.digest(body)
+    assert "package_sets_unavailable" not in record, "a successful record claims no reason"
+
+
+def test_a_body_the_canonicaliser_REFUSES_is_recorded_as_a_REASON_and_breaks_nothing(
+    tmp_path, monkeypatch
+):
+    """A RECORDER MUST NOT STOP [ADR-0010], and this is the one place that rule and
+    [ADR-0025 R-3] pull in opposite directions.
+
+    `pkgset` refuses a body it cannot reduce — two names normalising to one, a line it cannot
+    classify — because a verifier that guesses is worse than one that stops. Capture cannot adopt
+    that: left to propagate, the refusal reaches `environment_snapshot`'s `except Exception` and
+    **collapses the whole block to `{"error": ...}`**, losing the path, the host digest and the
+    package count over a field that did not exist last week. So the reason is recorded and
+    everything else survives.
+
+    THE COLLISION IS PLANTED IN `installed_packages`, WHICH IS WHERE IT COMES FROM IN REALITY:
+    the map is keyed by the raw metadata `Name`, so two distributions whose names differ only in
+    `-`, `_` or `.` give two keys, two body lines and one canonical name.
+    """
+    monkeypatch.setattr(
+        runprov.environment,
+        "installed_packages",
+        lambda bad=None: {"zope.interface": "7.0.1", "zope_interface": "6.4"},
+    )
+    record = runprov.environment.write_snapshot(tmp_path)
+
+    assert "package_sets" not in record, "a refused body must not also claim a digest"
+    assert "zope-interface" in record["package_sets_unavailable"]
+    assert "order" in record["package_sets_unavailable"], (
+        "the reason does not say why it refused, so a reader cannot tell a reparable environment "
+        "from a broken runprov"
+    )
+    #: AND EVERYTHING ELSE SURVIVED, which is the whole point: the three assertions above would
+    #: all hold over a record that had lost its path and its count as well.
+    assert record["sha256"] and record["path"] and record["n_packages"] == 2
+    assert (tmp_path / pathlib.Path(record["path"]).name).is_file()
+
+
+def test_diff_ANSWERS_the_packages_dimension_where_the_package_set_digest_is_recorded():
+    """The incomparability this package already carried, resolved — ADR-0014, ADR-0024 R-21.
+
+    WHAT IT USED TO SAY. `compare` reported a differing snapshot digest as `blocked`, with the
+    reason *"a snapshot digest covers the interpreter and the platform as well as the packages,
+    so it cannot say which of them moved."* That was correct and it is the shape ADR-0014's
+    rejected alternatives already refused by name: laptop-against-cluster *"is exactly the pair…
+    Refusing would decline the case it is for."* So the commonest comparison in this package's
+    stated audience answered *unanswerable*.
+
+    WHAT IT SAYS NOW, and the first case is the one that matters: two hosts, one package set, and
+    the dimension supports `unchanged` — with `examined` naming WHY the snapshot digests differ,
+    so nothing is hidden. A real package difference is a difference. An older record still blocks,
+    and **the reason now names which side cannot answer**, in three distinguishable forms.
+    """
+    same = runprov.diff._packages(
+        _snapshot_record("aaa", {runprov.pkgset.ALGORITHM: "p1"}),
+        _snapshot_record("bbb", {runprov.pkgset.ALGORITHM: "p1"}),
+    )
+    assert same.blocked is None, "identical package sets on two hosts must not block"
+    assert not same.differences
+    assert "on both" in same.examined and "not the packages" in same.examined
+
+    moved = runprov.diff._packages(
+        _snapshot_record("aaa", {runprov.pkgset.ALGORITHM: "p1"}),
+        _snapshot_record("bbb", {runprov.pkgset.ALGORITHM: "p2"}, n_packages=54),
+    )
+    assert moved.blocked is None and moved.differences, "a real difference must be reported"
+    assert any("package set" in line for line in moved.differences)
+    assert any("package count  53 -> 54" in line for line in moved.differences)
+
+    #: A VERSION BUMP IS THE COMMON DIFFERENCE AND THE COUNT DOES NOT MOVE FOR IT. Measured as a
+    #: coverage gap on the first run of this test: asserting only the count-also-moved case left
+    #: the branch where the counts agree unexercised, and that branch is the one a real upgrade
+    #: takes. A dimension that reported nothing here would say *unchanged* over a moved package.
+    bumped = runprov.diff._packages(
+        _snapshot_record("aaa", {runprov.pkgset.ALGORITHM: "p1"}),
+        _snapshot_record("bbb", {runprov.pkgset.ALGORITHM: "p2"}),
+    )
+    assert bumped.blocked is None and bumped.differences == ["package set  p1 -> p2"], (
+        "with equal package counts the package-set difference is the only evidence there is, so "
+        "it must be reported on its own"
+    )
+
+
+@pytest.mark.parametrize(
+    ("second", "says"),
+    [
+        (lambda: _snapshot_record("bbb"), "recorded before a package-set digest"),
+        (
+            lambda: _snapshot_record("bbb", package_sets_unavailable="two pip entries x"),
+            "could not be computed",
+        ),
+        (lambda: _snapshot_record("bbb", {"runprov.pkgset.v99": "later"}), "this build computes"),
+    ],
+    ids=["predates-the-field", "capture-refused", "a-form-we-do-not-implement"],
+)
+def test_diff_still_BLOCKS_without_a_comparable_digest_and_names_WHICH_absence(second, says):
+    """Three absences, three sentences, because they call for three different actions.
+
+    A record that predates the field is repaired by re-recording. A body capture refused is
+    repaired by fixing the environment — and quoting the writer's own reason says so. A digest
+    under a form this build does not implement is a version skew and repaired by upgrading the
+    reader. **The map is what makes the third case distinguishable at all:** a flat field would
+    have handed this reader a digest computed under other rules and been compared as though it
+    were this one, turning a skew into a reported difference in the packages.
+    """
+    answer = runprov.diff._packages(
+        _snapshot_record("aaa", {runprov.pkgset.ALGORITHM: "p1"}), second()
+    )
+    assert answer.blocked is not None, "an unanswerable dimension must not support `unchanged`"
+    assert says in answer.blocked, answer.blocked
+    assert "B" in answer.blocked, "the reason does not say which of the two records cannot answer"
+
+
+def test_an_IDENTICAL_snapshot_digest_still_answers_without_consulting_the_package_set():
+    """The cheap path is unchanged, and that is deliberate rather than overlooked.
+
+    Equal rendered bodies mean equal package sets by construction, so the older branch is both
+    correct and sufficient — and it still answers for a record written before the new field
+    existed, which is the common case for every history already on disk.
+    """
+    answer = runprov.diff._packages(_snapshot_record("aaa"), _snapshot_record("aaa"))
+    assert answer.blocked is None and not answer.differences
+    assert "snapshot aaa on both" in answer.examined
 
 
 def test_the_package_set_canonicaliser_imports_NOTHING_from_this_package():

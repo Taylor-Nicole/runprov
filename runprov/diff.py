@@ -37,6 +37,7 @@ __all__: list[str] = []
 
 import typing
 
+from . import pkgset
 from ._report import printable_lines
 
 #: The dimensions, in the order a reader wants them: whether it finished, what went in, what
@@ -488,18 +489,96 @@ def _packages(a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.
     digest_a, digest_b = snap_a.get("sha256"), snap_b.get("sha256")
     if not left and not right and digest_a and digest_b:
         count_a, count_b = snap_a.get("n_packages"), snap_b.get("n_packages")
+        set_a, set_b = _package_set_of(snap_a), _package_set_of(snap_b)
         if digest_a == digest_b:
             examined = f"snapshot {str(digest_a)[:12]} on both"
+        elif set_a and set_b:
+            #: THE INCOMPARABILITY BELOW, NOW ANSWERED. A host-independent package-set digest
+            #: is recorded, so the question the snapshot digest could not answer has its own
+            #: value and this dimension stops being `blocked`. ADR-0014's clause is satisfied
+            #: in the direction it was meant to be: an incomparability is reported until the
+            #: record carries what would resolve it, and then it is resolved.
+            examined = f"package set {set_a[:12]} vs {set_b[:12]}"
+            if set_a == set_b:
+                #: THE LAPTOP-AGAINST-CLUSTER PAIR, AND IT IS NOT A DIFFERENCE. The snapshot
+                #: digests differ and the packages do not, which is the commonest shape of this
+                #: comparison and used to be reported as unanswerable.
+                examined = (
+                    f"package set {set_a[:12]} on both; the snapshot digests differ, which is "
+                    f"the interpreter or the host and not the packages"
+                )
+            else:
+                lines.append(f"package set  {set_a[:12]} -> {set_b[:12]}")
+                if count_a != count_b:
+                    lines.append(f"package count  {count_a} -> {count_b}")
         else:
             examined = f"snapshot {str(digest_a)[:12]} vs {str(digest_b)[:12]}"
             if count_a != count_b:
                 lines.append(f"package count  {count_a} -> {count_b}")
+            #: WHICH RECORD CANNOT ANSWER, AND WHY, RATHER THAN A SENTENCE ABOUT BOTH. A record
+            #: written before the package-set digest existed and one whose canonicaliser refused
+            #: the body are different facts, and a reader deciding whether to re-record knows
+            #: which of the two they are holding.
             blocked = blocked or (
                 "the two runs recorded different environment snapshots, and a snapshot digest "
                 "covers the interpreter and the platform as well as the packages, so it cannot "
-                "say which of them moved"
+                "say which of them moved. " + _why_no_package_set(snap_a, snap_b)
             )
     return Dimension("packages", lines, examined, blocked)
+
+
+def _package_set_of(snapshot: typing.Mapping[str, typing.Any]) -> str | None:
+    """This reader's own package-set digest from a snapshot record, or None.
+
+    LOOKED UP **BY ALGORITHM NAME**, which is why the record holds a map rather than a digest
+    beside a separate algorithm field: a record carrying only a future form answers None here
+    and the comparison stays honestly blocked, where a flat field would have handed this reader
+    a digest computed under rules it does not implement and been compared as though it were
+    this one. `pkgset.ALGORITHM` is the single source for which form this build speaks.
+
+    NO FILE IS OPENED, and that is `compare()`'s standing promise: the answer depends on what
+    was RECORDED, never on what is still on disk. A record that predates the field cannot be
+    repaired from here, and saying so is the honest outcome rather than a silent recomputation
+    that would make this function's answer depend on the reader's filesystem.
+    """
+    sets = snapshot.get("package_sets")
+    if not isinstance(sets, dict):
+        return None
+    found = sets.get(pkgset.ALGORITHM)
+    return found if isinstance(found, str) and found else None
+
+
+def _why_no_package_set(
+    a: typing.Mapping[str, typing.Any], b: typing.Mapping[str, typing.Any]
+) -> str:
+    """Which side cannot answer and why, for the blocked message above.
+
+    A REASON RECORDED BY THE WRITER BEATS ONE INFERRED BY THE READER. Where capture refused the
+    body — two names normalising to one, or a line it could not classify — it wrote that reason
+    down, and quoting it tells a reader the record is reparable by fixing the environment rather
+    than by upgrading runprov. Where the key is simply absent the record predates the field, and
+    that is the other sentence.
+    """
+    parts = []
+    for label, snapshot in (("A", a), ("B", b)):
+        if _package_set_of(snapshot):
+            continue
+        why = snapshot.get("package_sets_unavailable")
+        offered = snapshot.get("package_sets")
+        if isinstance(why, str) and why:
+            parts.append(f"{label}'s package-set digest could not be computed ({why})")
+        elif isinstance(offered, dict) and offered:
+            #: THE THIRD ABSENCE, AND IT IS NOT THE OTHER TWO. The record carries a package-set
+            #: digest under a form this build does not implement, which is the case the map was
+            #: chosen for: a flat field would have been read as this form and compared, turning
+            #: a version skew into a reported difference in the packages.
+            parts.append(
+                f"{label} records a package set only as {sorted(offered)}, and this build "
+                f"computes {pkgset.ALGORITHM}"
+            )
+        else:
+            parts.append(f"{label} was recorded before a package-set digest was written")
+    return "; ".join(parts)
 
 
 def _steps_of(

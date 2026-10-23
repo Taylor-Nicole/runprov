@@ -58,6 +58,7 @@ import platform
 import sys
 import typing
 
+from . import pkgset
 from ._atomic import atomic_write_bytes
 from .hashing import _posix
 
@@ -315,6 +316,36 @@ def digest(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def _package_sets(text: str) -> dict[str, typing.Any]:
+    """The host-INDEPENDENT digest of this body's package set, or the reason there is none.
+
+    TWO KEYS, NEVER BOTH, AND THE THIRD STATE IS NEITHER OF THEM [ADR-0010]. `package_sets`
+    carries the digest under its algorithm's name; `package_sets_unavailable` carries the reason
+    one could not be computed; a record with neither was written before this field existed. Those
+    are three different facts and a reader must be able to tell them apart — the same distinction
+    `_observed_packages` draws between `snapshot`, `tracked` and `none`, because *"an empty map
+    cannot be told apart from nobody asked"*.
+
+    A MAP KEYED BY ALGORITHM AND NOT A DIGEST BESIDE AN ALGORITHM FIELD. A reader looks the
+    digest up BY the form it understands, so handing it a `runprov.pkgset.v2` digest where it
+    expected v1 is impossible rather than merely discouraged — with two flat fields, a reader
+    that forgot to consult the name would compare across forms and report a false difference. A
+    record written during a transition may carry both.
+
+    AND THE CANONICALISER'S REFUSAL IS CAUGHT HERE, WHICH IS THE WHOLE POINT OF THIS FUNCTION.
+    `pkgset` refuses a body it cannot reduce — an unclassifiable line, or two names that normalise
+    to one — because a verifier that guesses is worse than one that stops. **A RECORDER MUST NOT
+    STOP.** Left to propagate, the refusal would reach `environment_snapshot`'s `except Exception`
+    and collapse the whole block to `{"error": ...}`, losing the path, the digest and the package
+    count over a field that did not exist last week. So it is recorded as a reason and everything
+    else survives.
+    """
+    try:
+        return {"package_sets": {pkgset.ALGORITHM: pkgset.package_set_digest(text)}}
+    except pkgset.PackageSetError as exc:  # guards-ok: recorded as the reason, never raised
+        return {"package_sets_unavailable": str(exc)}
+
+
 def write_snapshot(directory: pathlib.Path) -> dict[str, typing.Any]:
     """Write `env-<sha16>.txt` into `directory` if it is not already there.
 
@@ -352,6 +383,7 @@ def write_snapshot(directory: pathlib.Path) -> dict[str, typing.Any]:
     rec: dict[str, typing.Any] = {
         "path": _posix(path),
         "sha256": d,
+        **_package_sets(text),
         "n_packages": len(pkgs),
         "n_unreadable": len(bad),
         "python": sys.version.split()[0],
