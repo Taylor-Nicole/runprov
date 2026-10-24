@@ -104,12 +104,19 @@ the list won silently: **exit 0, nothing named, nothing blocked** — a real dif
 agreement. Refusing the disagreement outright, the obvious reading of R-8, then accused that
 ordinary pair of being corrupt. **Restoring the build is the repair; refusing is what is left.**
 
-**NO SHIPPED SOURCE CAN REACH THE REFUSAL TODAY, AND THAT IS STATED RATHER THAN IMPLIED.** R-8
-covers `from_record`, `from_here` takes both halves from one rendered body, and an identity string
-names no packages. What the refusal holds is the invariant **between two fields of a constructible
-identity** — including the further operand source R-4's framing leaves room for, which will not
-re-derive it. The failure mode it covers is a silent exit 0, which is the one this feature cannot
-afford.
+**IT WAS WRITTEN HERE THAT NO SHIPPED SOURCE COULD REACH THE REFUSAL, AND THAT WAS MEASURED FALSE
+ON 2026-10-24** (`skeptic-3`, open). The argument — R-8 covers `from_record`, `from_here` takes
+both halves from one rendered body, and an identity string names no packages — is true of each
+operand on its own, and the contradiction this refuses is **between two of them**. Two ordinary
+records reach it: a conda build string differing by a trailing space gives **agreeing** maps,
+because `_comparable` rstrips, and **differing** digests, because `canonical_text` does not. Each
+operand is self-consistent; the pair is not.
+
+No replacement unreachability claim is made. The same sentence stood in three places — here, in
+`env.py` and in the test — and a reader reaches for it exactly when deciding whether it still
+applies. What the refusal holds is the invariant **between two fields of a constructible
+identity**, including the further operand source R-4's framing leaves room for; the failure mode
+it covers is a silent exit 0, which is the one this feature cannot afford.
 
 ## Alternatives considered
 

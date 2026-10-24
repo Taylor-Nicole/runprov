@@ -422,8 +422,16 @@ def _package_dimension(a: Identity, b: Identity, ignore: frozenset[str]) -> Dime
         return Dimension("package set", [], "nothing to compare", why)
 
     named = a.packages is not None and b.packages is not None
-    left = {n: v for n, v in _comparable(a).items() if n not in ignore}
-    right = {n: v for n, v in _comparable(b).items() if n not in ignore}
+    whole_a, whole_b = _comparable(a), _comparable(b)
+    left = {n: v for n, v in whole_a.items() if n not in ignore}
+    right = {n: v for n, v in whole_b.items() if n not in ignore}
+    #: AN IGNORE IS ONLY "IN PLAY" WHERE IT EXCLUDES A DIFFERENCE [Audit, W-3, 2026-10-25]. A
+    #: name identical on both sides — or absent from both — changes neither map, so the digests
+    #: still answer the question the maps answer and a disagreement between them is still a
+    #: contradiction. `not ignore` stood in the refusal below, so ANY `--ignore` disabled it,
+    #: including one matching nothing on either side: a flag that excludes nothing bought a
+    #: verdict, and the state it bought was the silent exit 0 the refusal exists to prevent.
+    effective = {n for n in ignore if whole_a.get(n) != whole_b.get(n)} if named else set()
     if ignore and named:
         #: AN IGNORE RECOMPUTES THE DIGEST OVER WHAT IS LEFT rather than comparing the recorded
         #: digests and subtracting: a digest covers the whole set, so there is nothing to
@@ -432,8 +440,12 @@ def _package_dimension(a: Identity, b: Identity, ignore: frozenset[str]) -> Dime
         same = left == right
     else:
         same = a.package_set.value == b.package_set.value
+    #: RECOMPUTED, AND THE CONDITION BELOW DOES NOT USE `same` [Audit, W-3, 2026-10-25]. Under an
+    #: ignore `same` IS `left == right`, so a contradiction test written against `same` is
+    #: vacuous — it can never fire on the very invocations this repair is about.
+    digests_agree = a.package_set.value == b.package_set.value
 
-    if not ignore and named and same != (left == right):
+    if named and not effective and digests_agree != (left == right):
         #: THE TWO SOURCES CONTRADICT EACH OTHER ABOUT ONE ENVIRONMENT, AND THAT IS NOT A
         #: VERDICT. The digest is what was recorded or observed; the map is what the body parses
         #: to. Where no `--ignore` is in play the two answer the same question — `_comparable`
@@ -447,18 +459,32 @@ def _package_dimension(a: Identity, b: Identity, ignore: frozenset[str]) -> Dime
         #: package-set digest with the HOST digest survived on exactly that path, which is how
         #: this was found: a wrong digest was invisible because the maps still agreed.
         #:
-        #: NO SHIPPED SOURCE CAN REACH IT TODAY, and that is stated rather than implied.
-        #: `from_record` refuses a record that disagrees with its own sidecar [ADR-0026 R-8],
-        #: `from_here` takes both from one rendered body, and `from_identity_string` names no
-        #: packages at all. What this holds is the invariant BETWEEN TWO FIELDS OF A DATACLASS
-        #: anyone may construct — including the fourth operand source ADR-0026 R-4 leaves room
-        #: for, which will not re-derive it. The failure mode it covers is a silent exit 0.
+        #: **IT WAS CLAIMED HERE THAT NO SHIPPED SOURCE COULD REACH THIS, AND THAT WAS MEASURED
+        #: FALSE ON 2026-10-24** (`skeptic-3`, open). The argument was that `from_record` refuses
+        #: a record disagreeing with its own sidecar [ADR-0026 R-8], `from_here` takes both
+        #: halves from one rendered body, and `from_identity_string` names no packages — all
+        #: true, and all about ONE identity. The contradiction this refuses is BETWEEN TWO, and
+        #: two ordinary records reach it: a conda build string differing by a trailing space
+        #: gives AGREEING maps, because `_comparable` rstrips, and DIFFERING digests, because
+        #: `canonical_text` does not. Each operand is self-consistent and the pair is not.
+        #:
+        #: No replacement unreachability claim is written here. A reader reaches for such a
+        #: sentence exactly when deciding whether it still applies, and this one was read that
+        #: way three times — the same claim stood in ADR-0026 and in the test as well. What this
+        #: holds is the invariant BETWEEN TWO FIELDS OF A DATACLASS anyone may construct, and
+        #: the failure mode it covers is a silent exit 0.
         return Dimension(
             "package set",
             [],
             f"{a.package_set.value[:16]} vs {b.package_set.value[:16]}",
+            #: `digests_agree` AND NOT `same`, FOR THE REASON `same` IS NOT IN THE CONDITION
+            #: EITHER [Audit, W-3, 2026-10-25]. Under an ignore `same` IS `left == right`, so a
+            #: sentence about the DIGESTS written against it reported *"their package-set
+            #: digests agree and their package lists agree"* while refusing the pair for
+            #: disagreeing — measured on the first inert-`--ignore` pair this repair makes
+            #: reachable. On the no-ignore path the two are the same value and this is a no-op.
             f"{a.label} and {b.label} disagree with themselves: their package-set digests "
-            f"{'agree' if same else 'differ'} and their package lists "
+            f"{'agree' if digests_agree else 'differ'} and their package lists "
             f"{'agree' if left == right else 'differ'}. One of the two sources is wrong about "
             f"its own environment, and nothing here can say which",
         )

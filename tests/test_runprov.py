@@ -41662,11 +41662,18 @@ def test_two_operands_that_DISAGREE_WITH_THEMSELVES_are_a_refusal_and_not_a_verd
     FOUND BY MUTATION: replacing `from_here`'s package-set digest with the HOST digest survived
     the suite, because the maps still agreed and nothing read the digest it had corrupted.
 
-    NO SHIPPED SOURCE CAN REACH THIS, and the test says so rather than implying otherwise.
-    `from_record` refuses a record that disagrees with its own sidecar, `from_here` takes both
-    from one rendered body, and `from_identity_string` names no packages. What is held is the
-    invariant between two fields of a dataclass anyone may construct — including the fourth
-    operand source ADR-0026 R-4 leaves room for, which will not re-derive it.
+    **THIS DOCSTRING CLAIMED NO SHIPPED SOURCE COULD REACH IT, AND THAT WAS MEASURED FALSE ON
+    2026-10-24** (`skeptic-3`, open). The argument — `from_record` refuses a record that
+    disagrees with its own sidecar, `from_here` takes both halves from one rendered body,
+    `from_identity_string` names no packages — holds of each operand alone, and what is refused
+    here is a contradiction BETWEEN TWO. Two ordinary records reach it: a conda build string
+    differing by a trailing space gives agreeing maps, because `_comparable` rstrips, and
+    differing digests, because `canonical_text` does not.
+
+    No replacement unreachability claim is written. The same sentence stood in three places —
+    here, in `env.py` and in ADR-0026 — and a reader reaches for it exactly when deciding whether
+    it still applies. What is held is the invariant between two fields of a dataclass anyone may
+    construct, including the fourth operand source ADR-0026 R-4 leaves room for.
     """
     head = runprov.pkgset.CONDA_SEPARATOR
     body = f"numpy==2.1.0\n{head}\nsamtools=1.21=h50ea8bc_0\n"
@@ -41693,10 +41700,20 @@ def test_two_operands_that_DISAGREE_WITH_THEMSELVES_are_a_refusal_and_not_a_verd
     both = runprov.env.compare(honest, twin)
     assert both.exit_code() == 2 and both.packages.blocked is not None
 
-    #: AND AN `--ignore` IS EXEMPT BY DESIGN. It recomputes agreement over what is left, so the
-    #: recorded digests legitimately cover a name the comparison no longer does.
-    under = runprov.env.compare(honest, lying, ignore=["nothing-matches-this"])
-    assert under.exit_code() == 0 and under.packages.blocked is None
+    #: AN INERT `--ignore` NO LONGER DISABLES THE REFUSAL [Audit, W-3, 2026-10-25]. The rule was
+    #: `not ignore`, so ANY `--ignore` bought exit 0 over this pair — including one matching
+    #: nothing on either side, which excludes no difference and therefore changes neither map.
+    inert = runprov.env.compare(honest, lying, ignore=["nothing-matches-this"])
+    assert inert.exit_code() == 2 and inert.packages.blocked is not None
+    assert "digests differ and their package lists agree" in inert.packages.blocked, (
+        f"the refusal must report the DIGESTS' verdict and not the maps': {inert.packages.blocked}"
+    )
+
+    #: AND AN `--ignore` THAT ACTUALLY EXCLUDES A DIFFERENCE IS STILL EXEMPT, which is the half
+    #: that keeps the rule honest: there the recorded digests legitimately cover a name the
+    #: comparison no longer does, so the two sources are not being asked the same question.
+    effective = runprov.env.compare(honest, twin, ignore=["numpy"])
+    assert effective.exit_code() == 0 and effective.packages.blocked is None
 
 
 def test_env_names_the_RECORDER_as_the_expected_difference_and_names_the_flag():

@@ -155,9 +155,23 @@ version to two builds carry **two digests over one map** and neither is wrong. M
 list before, and a false refusal after. The compared map now carries the build, so *the digests
 agree* and *the maps agree* are the same question — and the residual disagreement is a refusal
 (exit 2) naming the contradiction, the rule ADR-0026 R-8 already held for one identity against
-its own sidecar and nothing held across two. **No shipped source can reach it today**, and the
-code and its test both say so rather than implying a live hazard. **ADR-0026 R-12 is added** to
+its own sidecar and nothing held across two. **It was written here, and in the code, and in the
+test, and in ADR-0026, that no shipped source could reach the refusal; that was measured false on
+2026-10-24.** The argument holds of each operand alone and the contradiction is between two: a
+conda build string differing by a trailing space gives agreeing maps, because `_comparable`
+rstrips, and differing digests, because `canonical_text` does not. All four sentences are now in
+the past tense and no replacement claim is made in any of them. **ADR-0026 R-12 is added** to
 specify both halves, and it records the wrong first repair beside the right one.
+
+**And an `--ignore` that excludes nothing no longer buys that verdict.** The refusal was guarded
+by `not ignore`, so **any** `--ignore` disabled it — `--ignore nothing-matches-this` over two
+identities whose digests differ and whose maps agree returned exit 0 with nothing blocked, the
+exact pair the refusal exists for. An ignore is now *in play* only where it excludes a real
+difference: a name identical on both sides, or absent from both, changes neither map, so the
+digests still answer the question the maps answer. An `--ignore` that does exclude a difference
+is still exempt, because there the recorded digests legitimately cover a name the comparison no
+longer does. The refusal reports the **digests'** verdict rather than `same`, which under an
+ignore is the maps' verdict and made the sentence contradict itself.
 
 **The two-way ADR guard caught the citation that paid for this, and its own prose was wrong.** It
 said it read *"a module's top docstring"*; it has always read the whole module file, which is the
