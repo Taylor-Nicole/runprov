@@ -117,6 +117,14 @@ the field.
 
 ### Fixed
 
+**`env`'s own docstring claimed three things that are no longer true.** That the mode group is
+`required`, that `env`'s rendering half is not built, and that no honest default exists yet --
+all three falsified by **this project's own next two commits**, none of them by a change to that
+function. `--can-check` is the default and bare `runprov env` describes what can be answered from
+what is here. A present-tense claim about the build, written inside the build, is a check waiting
+to be written, and a reader reaches for a function's docstring precisely when deciding whether it
+still applies.
+
 **`env --compare` could answer SAME while the two package-set digests differed.** `same` was
 decided by the DIGESTS and the difference list was built from the MAPS, so where the two
 disagreed the list won silently: no difference named, nothing blocked, **exit 0**. Found by

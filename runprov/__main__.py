@@ -2054,10 +2054,17 @@ def _env(args: argparse.Namespace) -> int:
     history, an unreadable operand and an environment that cannot be reduced are all *could not
     look*; only a package-set difference is a finding.
 
-    THE MODE IS REQUIRED IN THIS RELEASE AND WILL NOT BE LATER, which is why it is a required
-    mutually-exclusive group rather than a default: `env`'s rendering half (ADR-0020 R-1) is not
-    built, so there is no honest default yet. When it lands it becomes the default and every
-    invocation written today keeps its meaning — an addition, not a change.
+    THE MODE IS NOT REQUIRED, AND THIS PARAGRAPH SAID THE OPPOSITE UNTIL 2026-10-24. It claimed
+    the group was `required`, that `env`'s rendering half was not built, and that no honest
+    default existed yet — three sentences falsified by this project's own next two commits, and
+    none of them by a change to this function. `--can-check` IS the default: bare `runprov env`
+    describes what can be answered from what is here [ADR-0020 R-13, ADR-0024 R-23], which is the
+    one mode that needs nothing but the operand.
+
+    **A PRESENT-TENSE CLAIM ABOUT THE BUILD, WRITTEN INSIDE THE BUILD, IS A CHECK WAITING TO BE
+    WRITTEN** — and a reader reaches for a function's docstring precisely when deciding whether
+    it still applies. The claim here is now about the parser two files down, which `RENDERINGS`
+    and the three-spellings equality guard already hold to this module.
     """
 
     def cannot(reason: str, rendering: bool = False) -> int:
