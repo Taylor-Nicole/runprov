@@ -244,10 +244,18 @@ canonical text does not move**: a build-less `samtools=1.21` still renders `cond
 and still digests to `2b27745f94ef5cf7`, because the optional group yields `None` where it used
 to yield `''` and that is restored at the one place it is read.
 
-**The no-bare-`print` guard gained a DERIVED exemption rather than a third name.** `pkgset.py` may
-print because it may not import `_report`, and *that* is computable: a module with no
-intra-package import edges cannot reach the reporter, so the exemption is derived from its cause
-and retires itself the day such a module gains a sibling import.
+**The no-bare-`print` guard's exemption is DERIVED, and it is the CONJUNCTION of two properties
+rather than one.** `pkgset.py` may print because it has no reporter to emit through: ADR-0025 R-6
+requires it to be copyable out of an installed runprov and run as a file where no runprov is
+installed, so it may not import `_report`. Both halves of that are computable — and **one of them
+alone is wider than the cause.** *No intra-package import edge* qualified **seven** modules where
+one earned it; five of those are ordinary library modules free to import the reporter whenever
+they need it, and a bare `print` planted in `export.py` was not caught. The exemption is now
+*runs as a file* **and** *has no intra-package import edge*, which is `pkgset.py` and nothing
+else. The run-as-a-file census is held by an **equality** against the modules whose `__all__` is
+`["main"]` — two independent spellings of one property — so a module cannot join the exempt
+population by acquiring one of the two and not the other, which a non-emptiness assertion was
+green for.
 
 ### Changed
 

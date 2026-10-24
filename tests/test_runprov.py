@@ -9211,10 +9211,17 @@ def test_no_library_module_calls_bare_print():
     #: `_report.py` and `__main__.py` are named because of what they ARE — the reporter, and a
     #: CLI whose rendered log is its output. `pkgset.py` is exempt for a different reason: it may
     #: not import `_report`, because ADR-0024 R-18 requires it to run as a file copied out of an
-    #: installed runprov into a container with no runprov in it. **That reason is computable**, so
-    #: it is computed: a module with NO intra-package import edges cannot reach the reporter, and
-    #: the day one of them gains a sibling import it loses this exemption and reddens here —
-    #: which is correct, because at that moment it could have imported `_report` instead.
+    #: installed runprov into a container with no runprov in it.
+    #:
+    #: **AND THE DERIVATION IS THE CONJUNCTION OF ADR-0025 R-6's TWO PROPERTIES, BECAUSE ONE OF
+    #: THEM IS WIDER THAN THE CAUSE** [Audit, W-2, 2026-10-25]. *No intra-package import edge*
+    #: qualified SEVEN modules where one earned it — `_atomic`, `_report`, `export`,
+    #: `heartbeat`, `pkgset`, `resources`, `watch` — and five of those are ordinary library
+    #: modules that may import `_report` whenever they need it. A plant in `export.py` went
+    #: uncaught here. What earns the exemption is having NO REPORTER TO EMIT THROUGH, and a
+    #: module that is never run as a file always has one, whatever it imports. So the subject
+    #: is *runs as a file* AND *has no intra-package import edge*, which is `pkgset.py` and
+    #: nothing else. The matcher was already derived; it was the INPUT SET that was a list.
     #: Reusing `_package_import_edges` keeps "an import of this package" to one definition.
     importers = {edge[0] for edge in _package_import_edges(REPO / "runprov")}
     standalone = {
@@ -9222,14 +9229,56 @@ def test_no_library_module_calls_bare_print():
         for mod in (REPO / "runprov").glob("*.py")
         if mod.stem not in importers and mod.stem != "__init__"
     }
-    assert standalone, (
-        "no module of this package is free of intra-package imports, so the derived exemption "
-        "below covers nothing and a module that needs it would be refused instead"
+    runs_as_a_file, entry_point_api = set(), set()
+    for mod in (REPO / "runprov").glob("*.py"):
+        for node in ast.parse(mod.read_text(encoding="utf-8")).body:
+            if (
+                isinstance(node, ast.If)
+                and isinstance(node.test, ast.Compare)
+                and isinstance(node.test.left, ast.Name)
+                and node.test.left.id == "__name__"
+                and [c.value for c in node.test.comparators if isinstance(c, ast.Constant)]
+                == ["__main__"]
+            ):
+                runs_as_a_file.add(mod.name)
+            #: BOTH BINDING FORMS, because this package uses both: `pkgset` and `__main__` write
+            #: `__all__ = ["main"]` (an `Assign`) and the other twenty-two write
+            #: `__all__: list[str] = []` (an `AnnAssign`). Matching only the first would make the
+            #: right-hand side blind to the very spelling twenty-two modules would widen through.
+            bound = (
+                node.targets
+                if isinstance(node, ast.Assign)
+                else [node.target]
+                if isinstance(node, ast.AnnAssign)
+                else []
+            )
+            if (
+                any(isinstance(t, ast.Name) and t.id == "__all__" for t in bound)
+                and isinstance(getattr(node, "value", None), (ast.List, ast.Tuple))
+                and ast.literal_eval(node.value) == ["main"]
+            ):
+                entry_point_api.add(mod.name)
+    #: AN EQUALITY AND NOT A FLOOR, AND THAT IS THE HALF THAT MAKES THIS HOLD. `assert standalone`
+    #: stood here and was green for one member and for seven alike: a non-emptiness assertion
+    #: cannot fire in the WIDENING direction, which is the direction this guard was defeated in.
+    #: The right-hand side is a SECOND, INDEPENDENT property of the same modules — a module whose
+    #: `__all__` is `["main"]` declares that its one public name is an entry point — so the two
+    #: sides are computed from different lines and a module acquiring one without the other
+    #: reddens here instead of joining the exempt population in silence.
+    #:
+    #: `runprov.check.is_entry_point` asks a NEARBY question about a USER's script, by `ast.walk`
+    #: and without reading the comparator; measured 2026-10-25 the two censuses agree exactly on
+    #: this package. This one is module-level on purpose and is not that function.
+    assert runs_as_a_file == entry_point_api, (
+        "a module runs as a file and does not promise `main`, or promises it and does not run: "
+        f"{sorted(runs_as_a_file ^ entry_point_api)}. These are two independent spellings of "
+        f"one property, and the exemption below is only derived from its cause while they agree"
     )
+    exempt = runs_as_a_file & standalone
     offenders = {}
     for mod in sorted((REPO / "runprov").glob("*.py")):
-        if mod.name in standalone:
-            continue  # cannot reach `_report`; see the derivation above
+        if mod.name in exempt:
+            continue  # runs as a file AND cannot reach `_report`; see the derivation above
         if mod.name in ("_report.py", "__main__.py"):
             continue
         tree = ast.parse(mod.read_text(encoding="utf-8"))
