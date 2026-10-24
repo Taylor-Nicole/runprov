@@ -42063,6 +42063,310 @@ def test_the_env_command_renders_ONE_ANSWER_in_TWO_FORMS(tmp_path, monkeypatch, 
     assert "identity" in json.loads(capsys.readouterr().out)
 
 
+def test_a_DIGEST_is_truncated_and_a_VERSION_is_not_which_is_a_claim_about_KINDS():
+    """`_simple_dimension`'s `digest=` flag, asserted by nothing until 2026-10-24.
+
+    THE DISTINCTION WAS ARGUED FOR AND THEN LEFT UNHELD: sixteen characters identify a digest
+    and nothing else reads it, while `3.13.0rc1+local.1` cut at sixteen is **a different version,
+    silently**. A mutation collapsing the flag survived twenty-one tests, because every recorded
+    interpreter version in the corpus is shorter than the cut.
+
+    THIS IS THE SHAPE `guard-shapes` CALLS AN UNSPECIFIED BEHAVIOUR ONE STEP ON: the rule was
+    specified, in a comment, at the code — and a comment is not a contract until something checks
+    it. The fixture is what was missing, not the reasoning.
+    """
+    long_host = "h" * 40
+    long_python = "3.13.0rc1+local.1"
+    assert len(long_python) > 16, "the premise is a version the truncation would cut"
+
+    a = _env_identity("A", {"numpy": "2.1.0"}, host=long_host, python=long_python)
+    b = _env_identity("B", {"numpy": "2.1.0"}, host="g" * 40, python="3.12.13")
+    comparison = runprov.env.compare(a, b)
+
+    host = next(d for d in comparison.dimensions if d.name == "host digest")
+    assert host.differences == [f"{'h' * 16} -> {'g' * 16}"], host.differences
+
+    interpreter = next(d for d in comparison.dimensions if d.name == "interpreter")
+    assert interpreter.differences == [f"{long_python} -> 3.12.13"], (
+        "the interpreter was truncated, so two different versions can print identically"
+    )
+
+    #: AND THE AGREEING BRANCH TRUNCATES TOO, which is the other half of the same flag and the
+    #: one a reader sees most often.
+    same_host = runprov.env.compare(a, _env_identity("B", {"numpy": "2.1.0"}, host=long_host))
+    agreed = next(d for d in same_host.dimensions if d.name == "host digest")
+    assert agreed.examined == f"{'h' * 16} on both"
+
+
+def test_an_IGNORE_that_leaves_a_REAL_DIFFERENCE_BEHIND_is_still_a_finding():
+    """The `--ignore` arm recomputes agreement over what is LEFT, and `left == right` is the
+    whole of that [ADR-0026 R-6].
+
+    ONE TEST EXECUTED THIS LINE AND IT COULD NOT DISTINGUISH: every existing `--ignore` case
+    excluded the *only* difference, so replacing `same = left == right` with `same = True`
+    changed nothing. An exclusion that silently turns every comparison into agreement is the
+    worst possible failure of this flag — it is the flag a reviewer reaches for precisely when
+    they expect the answer to still mean something.
+    """
+    a = _env_identity("record", {"numpy": "2.1.0", "runprov": "0.9.0"})
+    b = _env_identity("here", {"numpy": "2.2.0", "runprov": "0.10.0"})
+
+    still = runprov.env.compare(a, b, ignore=["runprov"])
+    assert still.exit_code() == 1, (
+        "the recorder was excluded and numpy still moved, so this is a finding and not agreement"
+    )
+    assert still.packages.differences == ["version     numpy  2.1.0 -> 2.2.0"]
+    assert "runprov" not in "\n".join(still.packages.differences), "the exclusion did not apply"
+
+
+def test_the_MANAGER_A_RECORD_DETECTED_reaches_the_rendering_it_implies(tmp_path):
+    """[ADR-0020 R-8] end to end: `_managers` reads the record, `implied_rendering` decides, and
+    nothing joined the two.
+
+    `_managers` RETURNING `()` SURVIVED TWENTY-ONE TESTS. An empty list is not a refusal — it is
+    `requirements`, the first branch of `implied_rendering` — so a record that detected `uv`
+    rendered a `requirements.txt` and said nothing about it. The two halves were each tested on
+    hand-made input and never on a record, which is where the list actually comes from.
+    """
+    body = "numpy==2.1.0\n"
+    snap = tmp_path / "env-x.txt"
+    snap.write_text(body, encoding="utf-8")
+    record = {
+        "script": "x",
+        "environment": {"manager": {"detected": ["uv", "venv"]}},
+        "environment_snapshot": {
+            "sha256": "h",
+            "python": "3.12.13",
+            "path": str(snap),
+            "package_sets": {runprov.pkgset.ALGORITHM: runprov.pkgset.package_set_digest(body)},
+        },
+    }
+    identity = runprov.env.from_record(record, "x")
+    assert identity.managers == ("uv", "venv"), (
+        f"the detected managers did not survive the read: {identity.managers}"
+    )
+
+    #: NO FORM ASKED FOR, so the recorded manager is what chooses — and `uv` outranks `venv`
+    #: because it owns a lock file, which is the stated rule rather than list order.
+    assert runprov.env.render_environment(identity).form == "uv"
+
+    #: AND A RECORD THAT DETECTED NOTHING STILL RENDERS, at the stated default. Without this the
+    #: assertion above is satisfied by a build that always answers `uv`.
+    plain = runprov.env.from_record({**record, "environment": {}}, "x")
+    assert plain.managers == () and runprov.env.render_environment(plain).form == "requirements"
+
+
+def test_bare_runprov_env_IS_the_preflight_AND_EXITS_2_WHEN_IT_CANNOT_LOOK(
+    tmp_path, monkeypatch, capsys
+):
+    """The invocation a user types first, exercised by nothing until 2026-10-24.
+
+    **EIGHTEEN CLI INVOCATIONS OF `env` IN THIS SUITE AND EVERY ONE NAMED A MODE.** `--can-check`
+    had a test; bare `runprov env`, which means the same thing, had none — so the branch choosing
+    the default was held by nothing and a mutation collapsing it to `if args.can_check:` survived.
+    The default is the one form a reader reaches for before they know the flags exist.
+
+    AND EXIT 2 IS HALF THE CONTRACT [ADR-0007, ADR-0026 R-2]. The preflight's answer is *what can
+    be checked*, so a record it can say nothing about is **could not look** and never 0. One test
+    reached that return and its record had a digest, so `return 0 if ... else 2` collapsed to
+    `return 0` with the suite green: the arm that distinguishes a usable record from an unusable
+    one was the unmeasured one, which is the direction that fails toward clean.
+    """
+    project = _env_run(tmp_path, monkeypatch)
+    log = str(project.run_log)
+
+    assert cli.main(["env", "--log", log]) == 0, "bare `env` is the preflight and this one is fine"
+    rows = capsys.readouterr().out
+    assert "package set" in rows and "named packages" in rows
+    assert "yes" in rows
+
+    #: THE SAME RECORD SHAPE THE `--digest` REFUSAL USES, so the two modes are measured against
+    #: one subject: a snapshot digest and no package-set digest is a record this build cannot
+    #: reduce, whatever is asked of it.
+    bare = tmp_path / "bare.jsonl"
+    bare.write_text(
+        json.dumps({"script": "x", "environment_snapshot": {"sha256": "h"}}) + "\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["env", "--log", str(bare)]) == 2, (
+        "a preflight that cannot name a package set has answered `could not look`, and 0 would "
+        "tell a script the environment is checkable"
+    )
+    #: AND THE PAGE STILL PRINTS. Exit 2 is the verdict, not a refusal to answer: the reader is
+    #: told WHICH subjects are unavailable, which is the entire purpose of the mode.
+    assert "NO" in capsys.readouterr().out
+
+
+def test_the_preflight_says_NO_for_WHAT_IS_MISSING_and_not_only_yes_for_what_is_there():
+    """The half of `render_answerable` that carries the information [ADR-0020 R-13].
+
+    A MUTATION MAKING EVERY ROW READ `yes` SURVIVED, on one test. The preflight exists to say
+    what **cannot** be answered before a reader tries, so a renderer that only ever prints `yes`
+    inverts the feature while passing a test that asserts the subjects are listed. Listing the
+    subjects is not the claim; their states are.
+    """
+    rows = runprov.env.render_answerable(_env_identity("A", None))
+    page = "\n".join(rows)
+    assert "package set" in page and "named packages" in page
+
+    named = next(line for line in rows if line.startswith("named packages"))
+    assert "NO" in named, f"a pruned sidecar is reported as present: {named!r}"
+    assert "no readable snapshot body" in named, "the reason is omitted, so NO is unactionable"
+
+    present = next(line for line in rows if line.startswith("package set"))
+    assert "yes" in present and "NO" not in present, (
+        "both states must be reachable in one page, or the renderer is asserted by neither"
+    )
+
+
+def test_the_comparison_PAYLOAD_carries_the_inability_and_the_detail_level_AS_VALUES():
+    """[ADR-0017 R-16] and [ADR-0026 R-7], and the SECOND instance of one shape this sitting.
+
+    THE KEY SET IS GUARDED AND THE VALUES WERE NOT. The cross-command declaration table asserts
+    `env` publishes `cannot_check`, and the key-set guards assert it is present — so replacing
+    `comparison.packages.blocked` with `None` left every one of them green. A consumer tests this
+    field to learn whether it was answered at all; `null` is what it reads when it WAS.
+
+    **The same asymmetry the PROV-digest mutation found last sitting**: a fact rendered twice,
+    with one rendering asserting its value and the other only its presence. Two instances in two
+    sittings makes it a class rather than an oversight, and the cheap detector is a mutation that
+    changes a value without changing a key.
+    """
+    head = runprov.pkgset.CONDA_SEPARATOR
+    body = f"numpy==2.1.0\n{head}\nsamtools=1.21=h50ea8bc_0\n"
+    blocked = runprov.env.compare(
+        _body_identity("A", body), _body_identity("B", body, package_set="f" * 64)
+    )
+    answer = runprov.env.payload(blocked)
+    assert answer["cannot_check"] == blocked.packages.blocked, (
+        "the payload does not carry the inability, so a consumer cannot tell a refusal from an "
+        "answer of `no difference`"
+    )
+    assert answer["cannot_check"] is not None and answer["exit_code"] == 2
+
+    #: AND `null` ON A COMPARISON THAT HAPPENED, which is the half that makes the field readable:
+    #: a value that is never null and a value that is always null are equally uninformative.
+    fine = runprov.env.payload(
+        runprov.env.compare(_body_identity("A", body), _body_identity("B", body))
+    )
+    assert fine["cannot_check"] is None
+
+    #: THE DETAIL LEVEL IS A FIELD AND NOT ONLY A SENTENCE [ADR-0026 R-7]. The page says the
+    #: packages could not be named; a consumer of the payload must not have to parse that prose.
+    pruned = runprov.env.payload(
+        runprov.env.compare(_env_identity("A", None), _env_identity("B", {"numpy": "2.1.0"}))
+    )
+    assert pruned["a"]["packages_named"] is False and pruned["b"]["packages_named"] is True
+
+
+def test_an_operand_containing_a_COLON_is_still_a_RUN_and_not_a_published_identity(
+    tmp_path, monkeypatch, capsys
+):
+    """[ADR-0026 R-5]: no operand is inferred from its shape, and the guard holding it was held
+    by nothing.
+
+    THE ONLY TEST REACHING THE IDENTITY-STRING PATH USED A STRING THAT CARRIES THE FAMILY PREFIX
+    (`runprov.pkgset.v99:abc`), so dropping `startswith(IDENTITY_FAMILY)` changed nothing it
+    could see — while turning **every operand containing a colon** into a published identity.
+    A run whose script name holds one would be refused as a malformed digest rather than compared.
+
+    THE RULE IS THE WHOLE POINT OF R-5. A wrong guess here compares the wrong two things, or
+    refuses the right ones, and reports it with the confidence of a right answer.
+    """
+    monkeypatch.chdir(tmp_path)
+    body = "numpy==2.1.0\n"
+    snap = tmp_path / "env-x.txt"
+    snap.write_text(body, encoding="utf-8")
+    log = tmp_path / "odd.jsonl"
+    log.write_text(
+        json.dumps(
+            {
+                "script": "pipeline:stage2",
+                "environment_snapshot": {
+                    "sha256": "h",
+                    "python": "3.12.13",
+                    "path": str(snap),
+                    "package_sets": {
+                        runprov.pkgset.ALGORITHM: runprov.pkgset.package_set_digest(body)
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    code = cli.main(["env", "--compare", "pipeline:stage2", "--log", str(log)])
+    out, err = capsys.readouterr()
+    assert "not a published identity" not in err, (
+        f"a colon in a run name was read as a published identity: {err!r}"
+    )
+    assert code == 1, "the recorded set differs from this environment, which is a finding"
+    assert "pipeline:stage2" in out, "the run was not resolved by name"
+
+
+def test_a_lockfile_entry_recorded_with_an_ERROR_is_not_offered_as_the_better_answer():
+    """`_lock` reports the archived lock that outranks the package list [ADR-0020 R-2], and an
+    entry capture could not handle is not one.
+
+    DROPPING `not entry.get("error")` SURVIVED. The clause exists because `archive_lockfiles`
+    records what it attempted, errors included — so an entry marked `archived` with an error
+    beside it would be named in the header as *the better answer* and, where the forms agree,
+    returned as rank 1. The record would be quoting a file it could not read.
+    """
+    broken = {"archived": True, "path": "p/uv.lock", "name": "uv.lock", "error": "unreadable"}
+    assert runprov.env._lock(_render_identity(lockfiles=(broken,))) is None
+
+    #: THE SAME ENTRY WITHOUT THE ERROR IS THE ANSWER, which is what makes the clause above the
+    #: load-bearing half rather than the shape of the dictionary.
+    fine = {k: v for k, v in broken.items() if k != "error"}
+    assert runprov.env._lock(_render_identity(lockfiles=(fine,))) == fine
+
+
+def test_a_pip_rendering_SAYS_the_conda_half_exists_because_pip_cannot_install_it():
+    """[ADR-0020 R-3]'s floor, for the one case where the floor is not merely about versions.
+
+    `if identity.conda:` COLLAPSED TO `if False:` AND SEVEN TESTS DID NOT NOTICE. A
+    `requirements.txt` rendered from a conda environment is not a floor beneath the recorded
+    environment, it is a floor beneath HALF of it — and silence there presents a partial list as
+    whole, which is the defect R-5 forbids for unreadable distributions and the same defect here.
+    """
+    lines = runprov.env.render_environment(_render_identity(), "requirements").lines
+    page = "\n".join(lines)
+    assert "conda package(s), which pip cannot install" in page, (
+        "the pip rendering of a conda environment does not say what it left out"
+    )
+    assert "--render conda" in page, "the form that can carry them is not named"
+
+    #: AND A PURE-PIP ENVIRONMENT IS NOT GIVEN THAT SENTENCE, which is the half that makes it
+    #: trustworthy: a note that always appears carries no information.
+    pure = runprov.env.render_environment(
+        _render_identity(packages={"numpy": "2.1.0"}, conda=None), "requirements"
+    )
+    assert "cannot install" not in "\n".join(pure.lines)
+
+
+def test_the_HISTORY_PATH_is_refused_as_an_out_path_even_before_the_history_EXISTS(tmp_path):
+    """[ADR-0020 R-9], and the clause that was held by nothing is the one about a path that is
+    not there yet.
+
+    `owned.is_file() or owned.suffix` COLLAPSED TO `owned.is_file()` AND SURVIVED, because every
+    test writing to a protected path had already created it. A history that does not exist yet is
+    the ordinary case for a fresh project — and without the suffix arm the path falls through to
+    the containment clause, where `relative_to` answers *not inside* and the write is ALLOWED.
+    **`--force` does not reach this**, so the gap was reachable with no flag at all.
+    """
+    missing = tmp_path / "runs.jsonl"
+    assert not missing.exists(), "the premise is a history that has not been written yet"
+
+    with pytest.raises(runprov.env.RenderRefusedError, match="IS the run history"):
+        runprov.env.refuse_out_path(missing, [missing], force=True)
+
+    #: AND THE DIRECTORY AROUND IT STAYS THE USER'S, which is why this is refused by identity
+    #: rather than by containment: writing a rendering beside your history is the point.
+    runprov.env.refuse_out_path(tmp_path / "requirements.txt", [missing], force=False)
+
+
 def _snapshot_record(host: str, sets: dict[str, str] | None = None, **extra):
     """A history-shaped record carrying a snapshot and no tracked packages.
 

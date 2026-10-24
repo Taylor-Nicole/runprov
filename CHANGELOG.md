@@ -117,6 +117,22 @@ the field.
 
 ### Fixed
 
+**Stage 3's mutation run over `env` closed twelve gaps, nine of them in one sitting.** Eighty-five
+units derived from the diff; **84 CAUGHT and one verified equivalent**, after the twelve that
+survived were given the tests they were missing. What survived has a shape: the feature was
+tested on its happy paths and its key sets, and almost nowhere on its refusals. Among them --
+bare `runprov env`, exercised by **no CLI test at all** while eighteen named a mode explicitly;
+ADR-0007's *could not look* arm of the preflight; ADR-0026 R-5's rule that no operand is inferred
+from its shape, whose only test used a string that carries the family prefix it was meant to
+check for; a `--ignore` that could have turned every comparison into agreement; and an archived
+lock recorded **with an error** being quoted as the better answer.
+
+**And one class now has two instances in two sittings: a fact rendered twice, with one rendering
+asserting its VALUE and the other only its PRESENCE.** Last time the PROV digest; this time
+`cannot_check`, whose key is in the cross-command declaration table and whose value was in no
+assertion. The detector is a mutation that changes a value without changing a key -- every
+key-set guard stays green by construction, so nothing else can see it.
+
 **`env`'s own docstring claimed three things that are no longer true.** That the mode group is
 `required`, that `env`'s rendering half is not built, and that no honest default exists yet --
 all three falsified by **this project's own next two commits**, none of them by a change to that
