@@ -36461,9 +36461,17 @@ def test_every_accepted_decision_record_declares_what_it_GOVERNS_and_the_targets
     #: NOT VACUOUS: no declarations would make both assertions above trivially true.
     assert len(declared) >= 15, f"only {len(declared)} record(s) declare a target set"
 
-    #: (3) THE TWO-WAY CHECK. A module's top docstring naming `ADR-NNNN` is the code's own claim
-    #: about which decision it implements; the record's field is the document's. They must agree,
-    #: and because each side is derived, neither can be satisfied by editing the other.
+    #: (3) THE TWO-WAY CHECK. A module CITING `ADR-NNNN` ANYWHERE IN ITS TEXT is the code's own
+    #: claim about which decision it implements; the record's field is the document's. They must
+    #: agree, and because each side is derived, neither can be satisfied by editing the other.
+    #:
+    #: THIS SENTENCE SAID *"top docstring"* UNTIL 2026-10-24 and the code below has always read the
+    #: WHOLE FILE, which is the stronger claim and the one that fired: a comment deep inside
+    #: `env.py` cited ADR-0025 and this test named it. **The prose is corrected rather than the
+    #: scope narrowed** -- a claim and its quantification have to be the same sentence, and where
+    #: they differ the guard is what to believe. The consequence is worth stating: a module may not
+    #: mention a declaring record it is not governed by, even in passing, so a citation across that
+    #: line has to move to a requirement in the record that does govern it.
     disagree = []
     for module in sorted((_repo_root() / "runprov").glob("*.py")):
         text = module.read_text(encoding="utf-8")
@@ -41087,10 +41095,26 @@ def _env_identity(label: str, packages: dict[str, str] | None, *, host="h", pyth
     BUILT RATHER THAN RECORDED, because the comparison's cases — a recorder-only difference, a
     digest pair with no body — are shapes a fixture would have to fake anyway, and faking them
     through a record would test `from_record` twice and `compare` once.
+
+    THE DIGEST IS DERIVED FROM THE PACKAGES, and it was not. An earlier draft named it after the
+    LABEL, so every pair this helper built carried two different digests whatever their packages
+    were — a state no source can produce, because the package-set digest is a pure function of
+    the package set [ADR-0025 R-1]. One test then asserted that impossibility as its premise and
+    read the comparison's agreement as proof that the named sets were consulted; what it actually
+    proved is that a wrong digest changes nothing, which is the defect `_package_dimension` was
+    found to have. A helper that can build an impossible state will have tests written against it.
+
+    WHERE THERE ARE NO PACKAGES the label is still used, because a digest pair with no body is a
+    real shape — two pruned sidecars — and nothing there can contradict anything.
     """
+    digest = (
+        f"set-{label}"
+        if packages is None
+        else "set-" + hashlib.sha256(repr(sorted(packages.items())).encode()).hexdigest()[:12]
+    )
     return runprov.env.Identity(
         label=label,
-        package_set=runprov.env.Field(f"set-{label}", how=runprov.env.RECORDED),
+        package_set=runprov.env.Field(digest, how=runprov.env.RECORDED),
         interpreter=runprov.env.Field(python, how=runprov.env.RECORDED),
         host_digest=runprov.env.Field(host, how=runprov.env.RECORDED),
         package_count=len(packages) if packages is not None else None,
@@ -41501,15 +41525,129 @@ def test_env_compares_TWO_RECORDS_with_NEITHER_environment_present():
     """
     a = _env_identity("A", {"numpy": "2.1.0"}, host="hostA")
     b = _env_identity("B", {"numpy": "2.1.0"}, host="hostB")
-    #: THE DIGESTS ARE DIFFERENT STRINGS BY CONSTRUCTION, so agreement here can only come from
-    #: the named sets and never from the two digests happening to match.
-    assert a.package_set.value != b.package_set.value
+    #: ONE PACKAGE SET IS ONE DIGEST, and the host digests are what differ. This assertion read
+    #: `!=` until 2026-10-24, on the reasoning that two different strings proved the named sets
+    #: were what agreed — but a package-set digest is a pure function of the package set, so two
+    #: identical sets CANNOT carry two digests and the premise described no reachable world.
+    assert a.package_set.value == b.package_set.value
+    assert a.host_digest.value != b.host_digest.value
     comparison = runprov.env.compare(a, b)
 
     assert comparison.exit_code() == 0, "same packages on two hosts must not be a finding"
     assert comparison.packages.blocked is None and not comparison.packages.differences
     host = next(d for d in comparison.dimensions if d.name == "host digest")
     assert host.differences, "the host difference must still be REPORTED, just not decisive"
+
+
+def _body_identity(label: str, body: str, *, package_set: str | None = None):
+    """An identity from a snapshot BODY, the way the three shipped sources build one.
+
+    `_env_identity` above derives its digest from a name-to-version map and so cannot express a
+    conda BUILD at all, which is the half of the package set the map drops.
+    """
+    pip, conda = runprov.pkgset.parse(body)
+    return runprov.env.Identity(
+        label=label,
+        package_set=runprov.env.Field(
+            package_set or runprov.pkgset.package_set_digest(body), how=runprov.env.RECORDED
+        ),
+        interpreter=runprov.env.Field("3.12.13", how=runprov.env.RECORDED),
+        host_digest=runprov.env.Field("h", how=runprov.env.RECORDED),
+        package_count=len(pip) + len(conda),
+        packages={**pip, **{f"conda:{n}": v for n, (v, _) in conda.items()}},
+        algorithms=(runprov.pkgset.ALGORITHM,),
+        conda=conda,
+    )
+
+
+def test_a_conda_BUILD_is_a_difference_because_the_digest_says_it_is():
+    """The compared map must answer the same question the digest answers [ADR-0026 R-12].
+
+    `Identity.packages` is a name-to-VERSION map and the canonical form is
+    `conda <name> <version> <build>`, so the map is LOSSY exactly where conda is. Two hosts
+    resolving one version to two builds is not an exotic case — it is what conda does — and it
+    produced **two digests over one map**.
+
+    MEASURED BEFORE THE REPAIR, 2026-10-24: `samtools=1.21=h50ea8bc_0` against
+    `samtools=1.21=hAAAAAAA_9` gave an empty difference list and **exit 0**. A real difference,
+    reported as agreement. The repair restores the build into the compared map rather than
+    teaching the comparison to distrust its digests, because making the two sources answer the
+    SAME question is what lets a residual disagreement mean something.
+    """
+    head = runprov.pkgset.CONDA_SEPARATOR
+    a = _body_identity("A", f"numpy==2.1.0\n{head}\nsamtools=1.21=h50ea8bc_0\n")
+    b = _body_identity("B", f"numpy==2.1.0\n{head}\nsamtools=1.21=hAAAAAAA_9\n")
+    assert a.package_set.value != b.package_set.value, "the digests differ, which is the premise"
+    assert a.packages == b.packages, "and the MAP does not, which is what made this invisible"
+
+    comparison = runprov.env.compare(a, b)
+    assert comparison.exit_code() == 1
+    assert comparison.packages.blocked is None, (
+        "a build difference is a DIFFERENCE, not an inability — both sources are right"
+    )
+    assert comparison.packages.differences == [
+        "version     conda:samtools  1.21 h50ea8bc_0 -> 1.21 hAAAAAAA_9"
+    ], comparison.packages.differences
+
+    #: AND A PIP PACKAGE IS UNTOUCHED BY THE REPAIR, which is the other arm: only a `conda:`
+    #: name reaches the build lookup, so a version-only difference still reads as one.
+    moved = runprov.env.compare(
+        a, _body_identity("B", f"numpy==2.2.0\n{head}\nsamtools=1.21=h50ea8bc_0\n")
+    )
+    assert moved.packages.differences == ["version     numpy  2.1.0 -> 2.2.0"]
+
+    #: AND A CONDA ENTRY WITH NO BUILD STILL PRINTS AS A BARE VERSION, because the canonical
+    #: form allows an empty build and a trailing space in a reviewer-facing line is noise.
+    bare = _body_identity("C", f"{head}\nsamtools=1.21\n")
+    assert runprov.env._comparable(bare) == {"conda:samtools": "1.21"}
+
+
+def test_two_operands_that_DISAGREE_WITH_THEMSELVES_are_a_refusal_and_not_a_verdict():
+    """A digest that does not match its own package list is not evidence [ADR-0007 exit 2].
+
+    ADR-0026 R-8 already holds this for ONE identity against its own sidecar. Across TWO it was
+    missing, and the gap was silent in the worst direction: `same` was decided by the digests
+    while the difference list was built from the maps, so two differing digests over identical
+    maps gave an empty list, no `blocked`, and **exit 0**.
+
+    FOUND BY MUTATION: replacing `from_here`'s package-set digest with the HOST digest survived
+    the suite, because the maps still agreed and nothing read the digest it had corrupted.
+
+    NO SHIPPED SOURCE CAN REACH THIS, and the test says so rather than implying otherwise.
+    `from_record` refuses a record that disagrees with its own sidecar, `from_here` takes both
+    from one rendered body, and `from_identity_string` names no packages. What is held is the
+    invariant between two fields of a dataclass anyone may construct — including the fourth
+    operand source ADR-0026 R-4 leaves room for, which will not re-derive it.
+    """
+    head = runprov.pkgset.CONDA_SEPARATOR
+    body = f"numpy==2.1.0\n{head}\nsamtools=1.21=h50ea8bc_0\n"
+    honest = _body_identity("A", body)
+    lying = _body_identity("B", body, package_set="f" * 64)
+
+    comparison = runprov.env.compare(honest, lying)
+    assert comparison.exit_code() == 2, "could not look is not the same answer as no difference"
+    assert comparison.packages.blocked is not None
+    assert "disagree with themselves" in comparison.packages.blocked
+    assert "nothing here can say which" in comparison.packages.blocked
+    assert not comparison.packages.differences, (
+        "naming a difference would assert the maps are the trustworthy half, and they are not"
+    )
+
+    #: THE OTHER DIRECTION IS THE SAME REFUSAL: agreeing digests over differing maps. Only one
+    #: of the two was reachable by the mutation, and a rule that holds in one direction only is
+    #: a rule about where the bug happened to be.
+    twin = _body_identity(
+        "C",
+        f"numpy==2.2.0\n{head}\nsamtools=1.21=h50ea8bc_0\n",
+        package_set=honest.package_set.value,
+    )
+    both = runprov.env.compare(honest, twin)
+    assert both.exit_code() == 2 and both.packages.blocked is not None
+
+    #: AND AN `--ignore` IS EXEMPT BY DESIGN. It recomputes agreement over what is left, so the
+    #: recorded digests legitimately cover a name the comparison no longer does.
+    under = runprov.env.compare(honest, lying, ignore=["nothing-matches-this"])
+    assert under.exit_code() == 0 and under.packages.blocked is None
 
 
 def test_env_names_the_RECORDER_as_the_expected_difference_and_names_the_flag():

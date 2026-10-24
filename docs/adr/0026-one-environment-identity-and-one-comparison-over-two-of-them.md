@@ -88,6 +88,29 @@ with it** into both. A consumer that cannot tell a recorded digest from one reco
 reading machine cannot tell what the answer is evidence of, and that is a property of the data
 rather than of the prose beside it.
 
+**R-12.** **The named view the comparison reads must carry everything the canonical form carries,
+and a residual disagreement between the digest and the named view is a REFUSAL.** The package-set
+digest is taken over `pip <name> <version>` and `conda <name> <version> <build>` (ADR-0025 R-1),
+so a comparison whose named view is a name-to-version map is **lossy exactly where conda is** —
+and then two sources disagree about one environment for a reason neither of them is wrong about.
+*The digests agree* and *the named sets agree* must be the same question. Where they are not, the
+comparison reports exit 2 and names the contradiction: this is R-8's rule, which held for one
+identity against its own sidecar and did not hold across two.
+
+**MEASURED, 2026-10-24, and this requirement exists because the first repair was wrong.**
+`samtools=1.21=h50ea8bc_0` against `samtools=1.21=hAAAAAAA_9` is two digests over one map. The
+shipped behaviour decided *same* from the digests and built the difference list from the maps, so
+the list won silently: **exit 0, nothing named, nothing blocked** — a real difference reported as
+agreement. Refusing the disagreement outright, the obvious reading of R-8, then accused that
+ordinary pair of being corrupt. **Restoring the build is the repair; refusing is what is left.**
+
+**NO SHIPPED SOURCE CAN REACH THE REFUSAL TODAY, AND THAT IS STATED RATHER THAN IMPLIED.** R-8
+covers `from_record`, `from_here` takes both halves from one rendered body, and an identity string
+names no packages. What the refusal holds is the invariant **between two fields of a constructible
+identity** — including the further operand source R-4's framing leaves room for, which will not
+re-derive it. The failure mode it covers is a silent exit 0, which is the one this feature cannot
+afford.
+
 ## Alternatives considered
 
 **A comparison function taking two records.** Rejected: `--here` has no record, a published

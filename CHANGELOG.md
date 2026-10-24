@@ -117,6 +117,35 @@ the field.
 
 ### Fixed
 
+**`env --compare` could answer SAME while the two package-set digests differed.** `same` was
+decided by the DIGESTS and the difference list was built from the MAPS, so where the two
+disagreed the list won silently: no difference named, nothing blocked, **exit 0**. Found by
+mutation — replacing `from_here`'s package-set digest with the HOST digest survived the suite,
+because the maps still agreed and nothing read the digest it had corrupted.
+
+**And the first repair was wrong, which measuring it is what showed.** Refusing the disagreement
+outright accused an ordinary case: `Identity.packages` is a name-to-VERSION map while the
+canonical form the digest covers is `conda <name> <version> <build>`, so two hosts resolving one
+version to two builds carry **two digests over one map** and neither is wrong. Measured:
+`samtools=1.21=h50ea8bc_0` against `samtools=1.21=hAAAAAAA_9` was exit 0 with an empty difference
+list before, and a false refusal after. The compared map now carries the build, so *the digests
+agree* and *the maps agree* are the same question — and the residual disagreement is a refusal
+(exit 2) naming the contradiction, the rule ADR-0026 R-8 already held for one identity against
+its own sidecar and nothing held across two. **No shipped source can reach it today**, and the
+code and its test both say so rather than implying a live hazard. **ADR-0026 R-12 is added** to
+specify both halves, and it records the wrong first repair beside the right one.
+
+**The two-way ADR guard caught the citation that paid for this, and its own prose was wrong.** It
+said it read *"a module's top docstring"*; it has always read the whole module file, which is the
+stronger claim and the one that fired on a comment deep inside `env.py`. The prose is corrected
+rather than the scope narrowed -- a claim and its quantification have to be the same sentence.
+
+**A test helper that could build an impossible state had a test written against it.**
+`_env_identity` named its package-set digest after the LABEL, so every pair it built carried two
+different digests whatever their packages were — a state no source can produce. One test asserted
+that as its premise and read the resulting agreement as proof the named sets were consulted; what
+it proved is that a wrong digest changes nothing. The digest is derived from the packages now.
+
 **The exported PROV digest is asserted, and a mutation proved it was not.** Truncating
 `runprov:package_set_sha256` to eight characters **survived the suite**: the test asserted the
 entity's type, its algorithm, its `used` relation and the absence of a causal claim, and never

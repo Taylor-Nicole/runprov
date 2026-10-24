@@ -386,6 +386,31 @@ def _named_difference(
     return lines, moved
 
 
+def _comparable(identity: Identity) -> dict[str, str]:
+    """The package map the comparison reads: `packages`, with the conda BUILD put back.
+
+    `Identity.packages` is a name-to-VERSION map and the canonical form the digest is taken over
+    carries `conda <name> <version> <build>` [ADR-0026 R-12], so the map is LOSSY exactly where
+    conda is. Two environments holding one conda package at one version built differently have
+    IDENTICAL maps and DIFFERENT digests — and then the comparison holds two sources that
+    disagree for a reason neither of them is wrong about.
+
+    MEASURED, 2026-10-24: `samtools=1.21=h50ea8bc_0` against `samtools=1.21=hAAAAAAA_9` gave two
+    digests, one map, an empty difference list and **exit 0** — a real difference, reported as
+    agreement, on a pair conda produces whenever two hosts resolve the same version differently.
+    Restoring the build makes *the digests agree* and *the maps agree* the same question, which
+    is what lets a residual disagreement below be read as a contradiction rather than as this.
+    """
+    builds = identity.conda or {}
+    restored: dict[str, str] = {}
+    for name, version in (identity.packages or {}).items():
+        if name.startswith("conda:"):
+            restored[name] = f"{version} {builds.get(name[len('conda:') :], ('', ''))[1]}".rstrip()
+        else:
+            restored[name] = version
+    return restored
+
+
 def _package_dimension(a: Identity, b: Identity, ignore: frozenset[str]) -> Dimension:
     """The one dimension the exit code is keyed on [ADR-0024 R-10]."""
     if a.package_set.value is None or b.package_set.value is None:
@@ -397,8 +422,8 @@ def _package_dimension(a: Identity, b: Identity, ignore: frozenset[str]) -> Dime
         return Dimension("package set", [], "nothing to compare", why)
 
     named = a.packages is not None and b.packages is not None
-    left = {n: v for n, v in (a.packages or {}).items() if n not in ignore}
-    right = {n: v for n, v in (b.packages or {}).items() if n not in ignore}
+    left = {n: v for n, v in _comparable(a).items() if n not in ignore}
+    right = {n: v for n, v in _comparable(b).items() if n not in ignore}
     if ignore and named:
         #: AN IGNORE RECOMPUTES THE DIGEST OVER WHAT IS LEFT rather than comparing the recorded
         #: digests and subtracting: a digest covers the whole set, so there is nothing to
@@ -407,6 +432,36 @@ def _package_dimension(a: Identity, b: Identity, ignore: frozenset[str]) -> Dime
         same = left == right
     else:
         same = a.package_set.value == b.package_set.value
+
+    if not ignore and named and same != (left == right):
+        #: THE TWO SOURCES CONTRADICT EACH OTHER ABOUT ONE ENVIRONMENT, AND THAT IS NOT A
+        #: VERDICT. The digest is what was recorded or observed; the map is what the body parses
+        #: to. Where no `--ignore` is in play the two answer the same question — `_comparable`
+        #: above is what makes that true — so if they disagree, one of them is wrong, and saying
+        #: which would be an invention.
+        #:
+        #: **IT USED TO ANSWER `SAME`.** `same` was decided by the digests and the difference
+        #: list was built from the maps, so two differing digests over identical maps produced an
+        #: empty list, no `blocked`, and exit 0 — the contradiction resolved silently in favour
+        #: of whichever source the next line happened to read. A mutation replacing `from_here`'s
+        #: package-set digest with the HOST digest survived on exactly that path, which is how
+        #: this was found: a wrong digest was invisible because the maps still agreed.
+        #:
+        #: NO SHIPPED SOURCE CAN REACH IT TODAY, and that is stated rather than implied.
+        #: `from_record` refuses a record that disagrees with its own sidecar [ADR-0026 R-8],
+        #: `from_here` takes both from one rendered body, and `from_identity_string` names no
+        #: packages at all. What this holds is the invariant BETWEEN TWO FIELDS OF A DATACLASS
+        #: anyone may construct — including the fourth operand source ADR-0026 R-4 leaves room
+        #: for, which will not re-derive it. The failure mode it covers is a silent exit 0.
+        return Dimension(
+            "package set",
+            [],
+            f"{a.package_set.value[:16]} vs {b.package_set.value[:16]}",
+            f"{a.label} and {b.label} disagree with themselves: their package-set digests "
+            f"{'agree' if same else 'differ'} and their package lists "
+            f"{'agree' if left == right else 'differ'}. One of the two sources is wrong about "
+            f"its own environment, and nothing here can say which",
+        )
 
     if same:
         if ignore and named:
