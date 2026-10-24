@@ -61,7 +61,7 @@ CONDA_SEPARATOR = "# --- conda-meta (conda / mamba / micromamba / pixi) ---"
 _PIP_ENTRY = re.compile(r"^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)==(.+)$")
 
 #: `name=version=build`, conda's own `--export` spelling, with the build optional.
-_CONDA_ENTRY = re.compile(r"^([^#\s=]+)=([^=]*)=?(.*)$")
+_CONDA_ENTRY = re.compile(r"^([^#\s=]+)=([^=]+)(?:=(.*))?$")
 
 #: PEP 503: runs of `-`, `_` and `.` collapse to one `-`, then the whole name lowercases.
 _SEPARATORS = re.compile(r"[-_.]+")
@@ -119,7 +119,7 @@ def parse(body: str) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
         name = normalise(found.group(1))
         if in_conda:
             _refuse_collision("conda", name, conda.get(name), found.group(2), conda)
-            conda[name] = (found.group(2), found.group(3))
+            conda[name] = (found.group(2), found.group(3) or "")
         else:
             _refuse_collision("pip", name, pip.get(name), found.group(2), pip)
             pip[name] = found.group(2)
