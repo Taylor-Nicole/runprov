@@ -234,6 +234,16 @@ a single byte of it moves nine rows at once and names itself. A deliberate chang
 `runprov.pkgset.v2` under its own key, never a new value for v1: a digest quoted in a paper cannot
 be recalled.
 
+**A pip entry written below the conda separator is now REFUSED rather than digested.** The conda
+pattern matched `name==version` as a name, an empty version and a build, so `scipy==1.14.0`
+appearing in the conda half parsed to `('scipy', '', '1.14.0')` and the digest then described a
+package set that is not the one the body carries — the failure this module exists to prevent,
+reachable through ADR-0025 R-6's auditor path for any externally produced or merged snapshot. The
+build group is optional now, so such a line matches nothing and `parse` raises, naming it. **The
+canonical text does not move**: a build-less `samtools=1.21` still renders `conda samtools 1.21 `
+and still digests to `2b27745f94ef5cf7`, because the optional group yields `None` where it used
+to yield `''` and that is restored at the one place it is read.
+
 **The no-bare-`print` guard gained a DERIVED exemption rather than a third name.** `pkgset.py` may
 print because it may not import `_report`, and *that* is computable: a module with no
 intra-package import edges cannot reach the reporter, so the exemption is derived from its cause
