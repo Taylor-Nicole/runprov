@@ -43062,6 +43062,137 @@ def test_the_package_set_canonicaliser_imports_NOTHING_from_this_package():
     )
 
 
+def test_every_IDENTIFIABLE_package_set_digest_TRUNCATION_reads_the_one_width():
+    """No site this sweep can identify as printing a cut package-set digest spells the number.
+
+    WHY A RENAME NEEDS A GUARD AT ALL. Binding the width to `pkgset.DIGEST_CHARS` cannot fail:
+    the value did not move, so every test that passed before passes after, and the commit is
+    decoration unless something can go red when a site drifts back to a literal. This is that
+    something. It is written the day the binding lands, because the width itself is about to be
+    decided and the decision is worth one edit only while no second spelling exists.
+
+    THE CLAIM, IN ONE SENTENCE: every slice of a package-set digest that this sweep can
+    IDENTIFY as one reads `pkgset.DIGEST_CHARS` rather than a number.
+
+    THE QUANTIFICATION, IN ONE SENTENCE: over every `ast.Slice` in every `*.py` under
+    `runprov/`, those whose sliced expression NAMES the package set, plus those inside an
+    f-string that also interpolates an `algorithm`, must have `DIGEST_CHARS` as the upper bound.
+
+    Those are the same sentence only because the claim says IDENTIFIABLE, and that word is
+    load-bearing. **What the sweep cannot see, measured 2026-10-25 rather than assumed:**
+
+      * A digest held in a local named for neither the subject nor the algorithm. `export`
+        builds its crate `@id` and its PROV entity key from a bare `digest`, and those two are
+        byte-identical in the AST to the `prov:label` beside them that this sweep DOES hold —
+        the only thing separating them is that the label interpolates the algorithm. That is
+        not an oversight to be widened away: the two must NOT move, because both are
+        deduplicated by digest and a repeated `@id` is an invalid crate, so a sweep that caught
+        them would be a sweep demanding they change. Deciding between them needs to know what
+        the value FLOWS INTO, which is dataflow and not something an AST walk settles.
+      * For the same reason, `env`'s refusal message for a record that disagrees with its own
+        snapshot body prints two package-set digests through locals called `recorded` and
+        `recomputed`, and this sweep is silent about both. They were left as literals when the
+        binding landed, deliberately and under the specification, and the honest statement is
+        that nothing here holds them.
+
+    So the EXCLUSION is derived and not listed: a site is out of the population because of what
+    its own source says, never because of a path written down here. The cost of deriving it is
+    the two gaps above, and they are stated rather than implied by a green.
+
+    ONE SPELLING, THREE REFERENCES. `width_name` is read by the `getattr` (so renaming the
+    product's constant reddens this instead of silently emptying the sweep), by the offender
+    test, and by the reverse sweep. A literal in three places would be the defect this guard
+    exists to stop, one level up.
+    """
+    width_name = "DIGEST_CHARS"
+    assert isinstance(getattr(runprov.pkgset, width_name, None), int), (
+        f"runprov.pkgset.{width_name} is not a number on the module, so every sweep below is "
+        f"hunting a name nothing defines and would be green over a tree with no bound width "
+        f"in it at all"
+    )
+
+    def last(node):
+        """The name a reference ends in: `DIGEST_CHARS` for both spellings of the import."""
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        return None
+
+    #: TWO CLASSIFIERS, COUNTED APART. A union is satisfied by one contributor doing all the
+    #: work, so a classifier that silently stops matching anything would leave the other
+    #: carrying the population and this test green — the floor-versus-exhaustiveness rule
+    #: applied to the sweep's own input set.
+    names_the_set: dict[str, ast.expr | None] = {}
+    inside_an_identity: dict[str, ast.expr | None] = {}
+    references, slice_uppers = {}, set()
+    for mod in sorted((REPO / "runprov").rglob("*.py")):
+        tree = ast.parse(mod.read_text(encoding="utf-8"))
+        identity_slices = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.JoinedStr):
+                continue
+            parts = [v.value for v in node.values if isinstance(v, ast.FormattedValue)]
+            if any((last(p) or "").lower() == "algorithm" for p in parts):
+                identity_slices |= {
+                    id(inner)
+                    for p in parts
+                    for inner in ast.walk(p)
+                    if isinstance(inner, ast.Subscript) and isinstance(inner.slice, ast.Slice)
+                }
+        for node in ast.walk(tree):
+            if last(node) == width_name and isinstance(getattr(node, "ctx", None), ast.Load):
+                references[f"{mod.name}:{node.lineno}"] = id(node)
+            if not (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice)):
+                continue
+            slice_uppers.add(id(node.slice.upper))
+            where = f"{mod.name}:{node.lineno}  {ast.unparse(node)}"
+            if "package_set" in ast.unparse(node.value):
+                names_the_set[where] = node.slice.upper
+            if id(node) in identity_slices:
+                inside_an_identity[where] = node.slice.upper
+
+    assert names_the_set, (
+        "no slice anywhere under runprov/ has a sliced expression naming the package set, so "
+        "this classifier read nothing and whatever the assertions below say is about an empty "
+        "set"
+    )
+    assert inside_an_identity, (
+        "no slice anywhere under runprov/ sits in an f-string that also interpolates an "
+        "algorithm, so the identity-string classifier read nothing — and it is the only one "
+        "that reaches the width inside `export`"
+    )
+    assert any(where.startswith("pkgset.py:") for where in names_the_set), (
+        f"the sweep did not reach pkgset.py, which both DEFINES {width_name} and prints a cut "
+        f"digest from the auditor's entry point; whatever it read is not the subject"
+    )
+
+    #: A SET, because a site both classifiers reach would otherwise be NAMED TWICE in the
+    #: failure and read as two defects.
+    spelled_out = sorted(
+        {
+            where
+            for group in (names_the_set, inside_an_identity)
+            for where, upper in group.items()
+            if last(upper) != width_name
+        }
+    )
+    assert not spelled_out, (
+        f"these print a cut package-set digest and spell the width themselves instead of "
+        f"reading pkgset.{width_name}, so deciding the width is no longer one edit: {spelled_out}"
+    )
+
+    #: THE OTHER DIRECTION, which catches what the first cannot: the constant being read for
+    #: something that is not a truncation at all. A display width borrowed as a field size or a
+    #: loop bound would make the next change to it move something nobody meant to move.
+    assert references, f"nothing under runprov/ reads {width_name}; the binding has been undone"
+    borrowed = sorted(w for w, ident in references.items() if ident not in slice_uppers)
+    assert not borrowed, (
+        f"pkgset.{width_name} is the width a package-set digest is CUT to, and these read it "
+        f"somewhere that is not the upper bound of a slice: {borrowed}"
+    )
+
+
 def test_the_canonicaliser_runs_as_a_COPIED_OUT_FILE_with_no_package_around_it(tmp_path):
     """The claim of [ADR-0025 R-6] proved across the process boundary, not inside it.
 

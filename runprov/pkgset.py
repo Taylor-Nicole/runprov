@@ -42,6 +42,35 @@ import typing
 #: and the record both say which algorithm they mean.
 ALGORITHM = "runprov.pkgset.v1"
 
+#: HOW MANY CHARACTERS OF THIS DIGEST A RENDERED LINE SHOWS, so that the width is one decision
+#: and not one per site [Audit, 2026-10-25]. Every place that printed a truncated package-set
+#: digest spelled the number itself, which made a change to the width a sweep rather than an
+#: edit — and a sweep for the literal cannot tell this digest from the four others this package
+#: also truncates, so the sweep is not even a safe way to do it. Here rather than in `env` or
+#: `export` because this module owns the digest, and it costs those two nothing: both already
+#: name this module to read `ALGORITHM`.
+#:
+#: **NOT `hashing.PIN_DIGEST_CHARS`, WHICH IS A DIFFERENT QUANTITY THAT HAPPENS TO BE EQUAL.**
+#: That one is the width of a PIN digest — `policy` states `pin_digest(describe(f))` is exactly
+#: the content digest cut to it, five modules read it, and `verify` compiles it into a regular
+#: expression that parses pins already written to disk. One name for both would mean a decision
+#: about how wide a package-set digest PRINTS silently re-widths every pin in the project, and
+#: the reader of the ones already on disk with it. The two are free to be equal and nothing
+#: asserts that they are: an assertion holding two constants equal defers the drift instead of
+#: closing it, which is the argument that deleted `show.SHORT`.
+#:
+#: **A DISPLAY WIDTH, NEVER AN IDENTIFIER WIDTH, AND THAT DISTINCTION IS WHAT BOUNDS IT.** Four
+#: other sites truncate this same digest to build a NAME, and none of them may read this
+#: constant: `environment.write_snapshot`'s `env-<...>.txt` filename, which the records of every
+#: released version in `tests/corpus` name; `environment`'s archived `lock-<...>-<name>`, whose
+#: filename IS the key that decides whether a lock is reused; and `export`'s crate `@id` and its
+#: PROV entity key, which are deduplicated by digest, so for them the width is a collision
+#: surface and a repeat is an invalid crate. Changing a display width is a presentation
+#: decision. Changing any of those four orphans files that exist and merges nodes that must
+#: not merge, and the suite stays green while it happens, because the tests that look like they
+#: hold the snapshot filename recompute the same expression the writer uses.
+DIGEST_CHARS = 16
+
 #: `__all__` RATIFIES THE PACKAGE PROMISE AND NEVER MAKES ONE [ADR-0003]. The canonicaliser's
 #: functions are reachable as `runprov.pkgset.<name>` and are INTERNAL by that decision's own
 #: definition — *"cross-module use inside `runprov/` is internal"* — so none of them is listed
@@ -188,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     for path in paths:
         try:
             with open(path, encoding="utf-8") as handle:
-                print(f"{ALGORITHM}:{package_set_digest(handle.read())[:16]}  {path}")
+                print(f"{ALGORITHM}:{package_set_digest(handle.read())[:DIGEST_CHARS]}  {path}")
         except (OSError, PackageSetError, UnicodeDecodeError) as exc:
             print(f"{path}: {exc}", file=sys.stderr)
             return 2

@@ -42,6 +42,13 @@ __all__: list[str] = []
 import json
 import typing
 
+#: THE ONLY IMPORT OF THIS PACKAGE THIS MODULE MAKES, and it is for the display width of the
+#: package-set digest alone. `pkgset` is the stdlib-only canonicaliser, so this adds no
+#: dependency to a module whose docstring promises none. The crate `@id` and the PROV entity
+#: key below truncate the SAME digest and deliberately do NOT read it: for them the width is a
+#: collision surface, not a presentation choice. See `pkgset.DIGEST_CHARS`.
+from . import pkgset
+
 #: The RO-Crate version this conforms to, named rather than implied. A crate that does not
 #: say which version it follows is one a validator has to guess about.
 RO_CRATE_CONTEXT = "https://w3id.org/ro/crate/1.1/context"
@@ -371,7 +378,7 @@ def to_prov_json(records: typing.Sequence[dict[str, typing.Any]]) -> dict[str, t
             key = f"runprov:pkgset/{digest[:16]}"
             entities[key] = {
                 "prov:type": "runprov:PackageSet",
-                "prov:label": f"{algorithm}:{digest[:16]}",
+                "prov:label": f"{algorithm}:{digest[: pkgset.DIGEST_CHARS]}",
                 "runprov:algorithm": algorithm,
                 "runprov:package_set_sha256": digest,
             }

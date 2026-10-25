@@ -484,7 +484,8 @@ def _package_dimension(a: Identity, b: Identity, ignore: frozenset[str]) -> Dime
         return Dimension(
             "package set",
             [],
-            f"{a.package_set.value[:16]} vs {b.package_set.value[:16]}",
+            f"{a.package_set.value[: pkgset.DIGEST_CHARS]} vs "
+            f"{b.package_set.value[: pkgset.DIGEST_CHARS]}",
             #: `digests_agree` AND NOT `same`, FOR THE REASON `same` IS NOT IN THE CONDITION
             #: EITHER [Audit, W-3, 2026-10-25]. Under an ignore `same` IS `left == right`, so a
             #: sentence about the DIGESTS written against it reported *"their package-set
@@ -512,7 +513,9 @@ def _package_dimension(a: Identity, b: Identity, ignore: frozenset[str]) -> Dime
                 f"cover the ignored name and so are not quoted here",
                 None,
             )
-        return Dimension("package set", [], f"{a.package_set.value[:16]} on both", None)
+        return Dimension(
+            "package set", [], f"{a.package_set.value[: pkgset.DIGEST_CHARS]} on both", None
+        )
 
     if not named:
         #: THE DETAIL LEVEL IS DECLARED, NOT OMITTED [ADR-0024 R-11, R-17]. Without both bodies
@@ -521,7 +524,10 @@ def _package_dimension(a: Identity, b: Identity, ignore: frozenset[str]) -> Dime
         missing = ", ".join(side.label for side in (a, b) if side.packages is None)
         return Dimension(
             "package set",
-            [f"digest      {a.package_set.value[:16]} -> {b.package_set.value[:16]}"],
+            [
+                f"digest      {a.package_set.value[: pkgset.DIGEST_CHARS]} -> "
+                f"{b.package_set.value[: pkgset.DIGEST_CHARS]}"
+            ],
             f"digests only; no readable snapshot body for {missing}, so the packages cannot be "
             f"named and whether the only difference is {RECORDER} itself cannot be determined",
             None,
@@ -1020,7 +1026,9 @@ def digest_payload(identity: Identity) -> dict[str, typing.Any]:
     return {
         "schema": DIGEST_SCHEMA,
         "cannot_check": None,
-        "identity": f"{pkgset.ALGORITHM}:{(identity.package_set.value or '')[:16]}",
+        "identity": (
+            f"{pkgset.ALGORITHM}:{(identity.package_set.value or '')[: pkgset.DIGEST_CHARS]}"
+        ),
         "how": identity.package_set.how,
     }
 
