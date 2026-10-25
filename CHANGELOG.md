@@ -127,6 +127,74 @@ the field.
 
 ### Fixed
 
+**`env`'s compared map was a SECOND, hand-written definition of what a canonical package entry
+carries, and it was lossier than the digest it is checked against.** `pkgset.canonical_text`
+writes `conda <name> <version> <build>`; `env._comparable` re-joined the version and the build
+by hand and rstripped the result, so the named view inherited neither the canonical form's
+equivalence classes nor its collisions. *The digests agree* and *the named sets agree* were one
+question by **maintenance** rather than by construction, and ADR-0026 R-12's first sentence is
+the claim that rested on it. Measured through `compare`, on two records each of which is
+self-consistent: a conda half of `('1.21', 'x')` against one of `('1.21 x', '')` digested
+differently and rejoined identically — **exit 2, *could not look***. So did `('0.7.17', ' ')`
+against `('0.7.17', '')`. Both are **exit 1, an ordinary difference**, now.
+
+**The repair is one definition — `pkgset.canonical_entry`, called by `canonical_text` and by
+`_comparable`.** Byte-identity is by string algebra rather than by sampling, `" ".join((v, b))`
+being `f"{v} {b}"`, and it was measured anyway: over 45 synthetic bodies spanning every awkward
+spacing of a version and a build, the released `canonical_text` and the new one moved **0**, and
+the nine frozen released-snapshot digests are unchanged. Dropping that function's last field
+moves **all nine at once**, which is what shows the freeze reads it.
+
+**Comparing a `(canonical, display)` pair instead was measured and refused.** Pair equality is
+the intersection of two kernels and so is strictly finer than canonical equality: conda halves
+of `('1.21 h5', '')` and `('1.21', 'h5 ')` render **one** canonical line, so the digests agree,
+and the pair form returns exit 2 where the shipped code returns 0 — a new false contradiction in
+place of the one being removed. The display is derived one layer out, in `_named_difference`,
+and **per manager**: `_PIP_ENTRY`'s version group is `(.+)`, so `numpy==1.0 ` parses to `'1.0 '`
+and a uniform `rstrip` would have moved the pip half's display to suit the conda half's.
+
+**Disclosed, because it is what this was decided on.** No conda-produced input distinguishes the
+two forms — conda's version grammar admits no spaces, so every discriminating input needs an
+anomalous `conda-meta`. This is one definition and a future-proofing, not a reachable bug. **And
+it retires the reachability example** `119a078` put into four places: this file, ADR-0026,
+`env.py` and the test. All four say the example is retired and none of them replaces it with a
+claim in either direction.
+
+**The first form of this repair made a real difference print as no difference, and the display
+now has two rules rather than none.** Carrying the canonical entry into the comparison means
+`_shown` drops, for display, three things the comparison DID compare: the manager, the canonical
+name and conda's empty build. Measured: the pair above printed
+`version     conda:samtools  1.21 x -> 1.21 x` — exit 1, and a line telling a reviewer to change
+nothing. **Rule 1**, tested first: where the two shown halves are EQUAL, the line falls back to
+the two canonical ENTRIES, quoted, because quoting equal halves discloses nothing. **Rule 2**:
+where either half begins or ends with whitespace, both are quoted — `numpy==1.0 ` parses to
+`'1.0 '`, and `1.0  -> 2.0` offers a difference a reader cannot see. The same one-value test
+quotes an `only in` line.
+
+**Neither rule subsumes the other, which is why there are two, and it was measured rather than
+argued.** The conda collision carries no edge whitespace once `_shown` has rstripped it, so rule
+2 alone does not fire on it; the pip look-alike is not a collision, because its halves differ, so
+rule 1 alone does not fire on it. **The trigger is the SHOWN value and never the entry's tail**:
+an empty conda build is common and its entry ends in a space, so keying on that would quote
+`1.21 -> 1.21 h5`, an ordinary line. The three ordinary rows are byte-identical to what shipped,
+and so are the suite's eight pre-existing difference-line assertions.
+
+**A derived guard holds the property rather than the cases.** Over a product of awkward spacings
+— 25 conda halves and 5 pip versions, **310 pairs, 307 difference lines** — every pair the
+comparison calls different must print two halves that are not equal. Measured distribution: 175
+ordinary, 17 through rule 1, 115 through rule 2, and **3 pairs print nothing at all** because
+their two halves render ONE canonical entry, which is the equivalence class the comparison now
+inherits from the digest. An independent recount from the raw halves finds **20** pairs that
+could lose their difference to the display, and 17 + 3 closes against it.
+
+**One residual, declared and deliberately not repaired.** A pair differing in BOTH the build text
+and its trailing whitespace — `('1.21', 'h5 ')` against `('1.21', 'h9')` — fires neither rule and
+prints `1.21 h5 -> 1.21 h9`. That is **truthful but incomplete**: it names the `h5`/`h9`
+difference and not the space, so a reviewer who repairs only what the line names still gets exit
+1. Understatement is not contradiction, and widening the matcher to reach it would quote ordinary
+lines for a case nobody has met. It is stated at the guard and pinned by an assertion, so
+widening it later is a deliberate edit rather than a silent one.
+
 **`env`'s recorded-against-recomputed refusal was the last package-set display width spelled as
 a number, and the guard that landed with the binding could not see it.** That message prints two
 package-set digests through locals called `recorded` and `recomputed`, both cut by a literal
@@ -191,9 +259,10 @@ agree* and *the maps agree* are the same question — and the residual disagreem
 its own sidecar and nothing held across two. **It was written here, and in the code, and in the
 test, and in ADR-0026, that no shipped source could reach the refusal; that was measured false on
 2026-10-24.** The argument holds of each operand alone and the contradiction is between two: a
-conda build string differing by a trailing space gives agreeing maps, because `_comparable`
-rstrips, and differing digests, because `canonical_text` does not. All four sentences are now in
-the past tense and no replacement claim is made in any of them. **ADR-0026 R-12 is added** to
+conda build string differing by a trailing space gave agreeing maps, because `_comparable`
+rstripped, and differing digests, because `canonical_text` does not. All four sentences are now
+in the past tense and no replacement claim is made in any of them. **That example is itself
+retired as of 2026-10-25** — see the `[Unreleased]` entry above — and all four places say so. **ADR-0026 R-12 is added** to
 specify both halves, and it records the wrong first repair beside the right one.
 
 **And an `--ignore` that excludes nothing no longer buys that verdict.** The refusal was guarded

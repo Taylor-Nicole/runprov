@@ -41724,8 +41724,187 @@ def test_a_conda_BUILD_is_a_difference_because_the_digest_says_it_is():
 
     #: AND A CONDA ENTRY WITH NO BUILD STILL PRINTS AS A BARE VERSION, because the canonical
     #: form allows an empty build and a trailing space in a reviewer-facing line is noise.
+    #:
+    #: THAT IS NOW TWO CLAIMS AND THEY NEED TWO ASSERTIONS [Audit, R-D3, 2026-10-25]. What is
+    #: COMPARED is `pkgset.canonical_entry`'s output — the digested line itself, trailing space
+    #: and all — so that the map and the digest cannot answer different questions; what is
+    #: SHOWN is derived from it by `_named_difference`, which is the only place the empty
+    #: build's space may be dropped. The second assertion below reads the canonical TEXT, so
+    #: the expected value has a source other than the code under test and the equality is not
+    #: a restatement of it.
     bare = _body_identity("C", f"{head}\nsamtools=1.21\n")
-    assert runprov.env._comparable(bare) == {"conda:samtools": "1.21"}
+    assert runprov.env._comparable(bare) == {"conda:samtools": "conda samtools 1.21 "}
+    assert runprov.pkgset.canonical_text(f"{head}\nsamtools=1.21\n").endswith(
+        "\nconda samtools 1.21 \n"
+    ), "the compared value is not the digested line, so the two are free to drift apart again"
+
+    shown = runprov.env.compare(bare, _body_identity("D", f"{head}\nsamtools=1.21=h5\n"))
+    assert shown.packages.differences == ["version     conda:samtools  1.21 -> 1.21 h5"], (
+        f"the reviewer-facing line must still read as a bare version: {shown.packages.differences}"
+    )
+
+
+def test_a_difference_LINE_discloses_what_the_DISPLAY_would_otherwise_lose():
+    """Two rules in `_named_difference`, in this order, and three ordinary lines that must not
+    move [Audit, R-D3, 2026-10-25].
+
+    `_shown` drops the manager, the canonical name and conda's empty build, and each of those is
+    something the comparison DID compare. MEASURED BEFORE THE RULES, 2026-10-25: the conda halves
+    `('1.21', 'x')` and `('1.21 x', '')` compared as exit 1 — a real difference — and printed
+    `version     conda:samtools  1.21 x -> 1.21 x`, a line stating no difference at all.
+
+    WHY TWO RULES AND NOT ONE. Those collided halves carry no edge whitespace once `_shown` has
+    rstripped them, so a whitespace trigger alone cannot see them; and the pip look-alike below
+    is not a collision, because `'1.0 '` and `'1.0'` differ, so a collision trigger alone cannot
+    see that. Measured both ways; neither rule subsumes the other, and rule 1 is tested first.
+
+    THE THREE ORDINARY ROWS ARE THE CONTROL AND ARE BYTE-IDENTICAL TO WHAT SHIPPED. The
+    empty-build row is the one at risk: it is COMMON and its canonical entry ends in a space, so
+    a rule keyed on the ENTRY rather than on the SHOWN value would quote it and move output
+    nobody asked to move.
+    """
+    head = runprov.pkgset.CONDA_SEPARATOR
+
+    def conda_diff(left, right):
+        """The difference lines for two conda halves, with the fixture's own parse asserted."""
+        ba = f"{head}\nsamtools={left[0]}={left[1]}\n"
+        bb = f"{head}\nsamtools={right[0]}={right[1]}\n"
+        assert runprov.pkgset.parse(ba)[1]["samtools"] == left, "the fixture misstates its half"
+        assert runprov.pkgset.parse(bb)[1]["samtools"] == right, "the fixture misstates its half"
+        a, b = _body_identity("A", ba), _body_identity("B", bb)
+        return runprov.env.compare(a, b).packages.differences
+
+    def pip_diff(left, right):
+        ba, bb = f"numpy=={left}\n", f"numpy=={right}\n"
+        assert runprov.pkgset.parse(ba)[0]["numpy"] == left, "the fixture misstates its half"
+        assert runprov.pkgset.parse(bb)[0]["numpy"] == right, "the fixture misstates its half"
+        a, b = _body_identity("A", ba), _body_identity("B", bb)
+        return runprov.env.compare(a, b).packages.differences
+
+    #: (1) ORDINARY. Three lines a reviewer sees every day, byte-identical to what shipped.
+    assert conda_diff(("1.21", "h5"), ("1.21", "h9")) == [
+        "version     conda:samtools  1.21 h5 -> 1.21 h9"
+    ]
+    assert conda_diff(("1.21", ""), ("1.21", "h5")) == [
+        "version     conda:samtools  1.21 -> 1.21 h5"
+    ]
+    assert pip_diff("2.1.0", "2.2.0") == ["version     numpy  2.1.0 -> 2.2.0"]
+
+    #: (2) RULE 1 — the display LOST the difference, so the line falls back to the canonical
+    #: ENTRIES. Quoting the shown halves would disclose nothing: they are equal.
+    assert conda_diff(("1.21", "x"), ("1.21 x", "")) == [
+        "version     conda:samtools  'conda samtools 1.21 x' -> 'conda samtools 1.21 x '"
+    ]
+    assert conda_diff(("0.7.17", " "), ("0.7.17", "")) == [
+        "version     conda:samtools  'conda samtools 0.7.17  ' -> 'conda samtools 0.7.17 '"
+    ]
+
+    #: (3) RULE 2 — the halves differ and read alike. **THIS IS THE ONE ASSERTION THAT SEPARATES
+    #: a per-manager `_shown` from a uniform `rstrip`**, and until the rules existed there was
+    #: none: under a uniform rstrip these halves COLLIDE, rule 1 fires instead, and the line
+    #: reads `'pip numpy 1.0 ' -> 'pip numpy 1.0'`. `_PIP_ENTRY`'s version group is `(.+)`, so
+    #: `numpy==1.0 ` really does parse to `'1.0 '`.
+    assert pip_diff("1.0 ", "1.0") == ["version     numpy  '1.0 ' -> '1.0'"]
+
+    #: (4) THE ONE-VALUE FORM, on the `only in` arms, which carry one value and cannot collide.
+    #: The second line is the control: an ordinary value is NOT quoted.
+    arms = runprov.env.compare(
+        _body_identity("A", "numpy==1.0 \n"), _body_identity("B", "scipy==2.0\n")
+    )
+    assert arms.packages.differences == ["only in A   numpy '1.0 '", "only in B   scipy 2.0"]
+
+    #: (5) THE DECLARED RESIDUAL, held as what it IS rather than left to the docstring alone. A
+    #: pair differing in BOTH the build text and its trailing whitespace fires neither rule: the
+    #: halves differ, and neither carries edge whitespace after `_shown`. The line is TRUTHFUL
+    #: BUT INCOMPLETE — it names `h5`/`h9` and not the space — which is understatement rather
+    #: than contradiction, and widening the matcher to reach it would quote ordinary lines.
+    #: Pinned here so that widening it later is a deliberate edit in this file.
+    assert conda_diff(("1.21", "h5 "), ("1.21", "h9")) == [
+        "version     conda:samtools  1.21 h5 -> 1.21 h9"
+    ]
+
+
+def test_no_version_LINE_prints_two_halves_that_READ_as_equal_over_a_derived_population():
+    """The claim and the quantification, one sentence each, and they are the same sentence.
+
+    FOR EVERY PAIR OF PACKAGE HALVES THIS COMPARISON CALLS DIFFERENT, THE TWO HALVES ITS
+    DIFFERENCE LINE PRINTS MUST NOT BE EQUAL. Quantified over the comparison's own verdict, so
+    it cannot be satisfied by listing the pairs somebody thought of; the population is a PRODUCT
+    of awkward spacings, so a disclosure rule that stops covering a SHAPE is caught by the shape.
+
+    THREE NON-VACUITY LEGS, because a sweep that reaches only the ordinary path is green and
+    says nothing. The population must contain a pair that CAN lose its difference — counted here
+    from the raw halves rather than read back from `_shown`, so the expectation and the
+    behaviour do not come from one function — and the sweep must reach all three display paths.
+
+    PAIRS THAT PRODUCE NO LINE ARE NOT A GAP. Two halves can render ONE canonical entry —
+    `('1.21 x', '')` and `('1.21', 'x ')` both give `conda samtools 1.21 x ` — and then the
+    digests agree, the maps agree and there is nothing to print. That is the equivalence class
+    the comparison inherits from the digest, which is the whole point of R-D3.
+    """
+    import itertools
+
+    head = runprov.pkgset.CONDA_SEPARATOR
+    versions = ("1.21", "1.21 ", " 1.21", "1.21 x", "0.7.17")
+    builds = ("", " ", "x", "x ", " x")
+    conda_halves = list(itertools.product(versions, builds))
+    pip_versions = ("1.0", "1.0 ", " 1.0", "1.0 2", "1.0  2")
+
+    #: THE SECOND SOURCE for "this pair could lose its difference", recomputed from the raw
+    #: halves. `_shown` is what it is checking, so reading the count back out of `_shown` would
+    #: make this leg agree with the code about everything, including a mistake.
+    could_lose_it = [
+        (left, right)
+        for left, right in itertools.combinations(conda_halves, 2)
+        if f"{left[0]} {left[1]}".rstrip() == f"{right[0]} {right[1]}".rstrip()
+    ]
+    assert could_lose_it, (
+        "no pair in this population can lose its difference to the display, so rule 1 is not "
+        "exercised here and this sweep cannot fail for the reason it exists"
+    )
+
+    cases = [
+        (
+            "conda:samtools",
+            f"{head}\nsamtools={left[0]}={left[1]}\n",
+            f"{head}\nsamtools={right[0]}={right[1]}\n",
+        )
+        for left, right in itertools.combinations(conda_halves, 2)
+    ] + [
+        ("numpy", f"numpy=={left}\n", f"numpy=={right}\n")
+        for left, right in itertools.combinations(pip_versions, 2)
+    ]
+
+    ordinary, by_entry, by_half, seen = 0, 0, 0, 0
+    for name, body_a, body_b in cases:
+        a, b = _body_identity("A", body_a), _body_identity("B", body_b)
+        prefix = f"version     {name}  "
+        for text in runprov.env.compare(a, b).packages.differences:
+            assert text.startswith(prefix), f"an unexpected difference line shape: {text!r}"
+            seen += 1
+            rest = text[len(prefix) :]
+            assert rest.count(" -> ") == 1, (
+                f"this line cannot be split into its two halves, so the assertion below would "
+                f"be measuring the wrong thing: {text!r}"
+            )
+            left_half, _, right_half = rest.partition(" -> ")
+            assert left_half != right_half, (
+                f"the comparison calls these two different and prints two halves that read the "
+                f"same, so the line tells a reviewer to change nothing: {text!r}"
+            )
+            if not (left_half.startswith("'") and right_half.startswith("'")):
+                ordinary += 1
+            elif left_half.startswith(("'conda ", "'pip ")):
+                by_entry += 1  # rule 1 fell back to the canonical entries
+            else:
+                by_half += 1  # rule 2 quoted the shown halves
+
+    assert seen, "the sweep produced no difference line at all, so it asserted nothing"
+    assert ordinary and by_entry and by_half, (
+        f"the sweep reached {ordinary} ordinary line(s), {by_entry} by rule 1 and {by_half} by "
+        f"rule 2 over {len(cases)} pair(s); a path with no line through it could be dead and "
+        f"this test would still be green"
+    )
 
 
 def test_two_operands_that_DISAGREE_WITH_THEMSELVES_are_a_refusal_and_not_a_verdict():
@@ -41743,14 +41922,20 @@ def test_two_operands_that_DISAGREE_WITH_THEMSELVES_are_a_refusal_and_not_a_verd
     2026-10-24** (`skeptic-3`, open). The argument — `from_record` refuses a record that
     disagrees with its own sidecar, `from_here` takes both halves from one rendered body,
     `from_identity_string` names no packages — holds of each operand alone, and what is refused
-    here is a contradiction BETWEEN TWO. Two ordinary records reach it: a conda build string
-    differing by a trailing space gives agreeing maps, because `_comparable` rstrips, and
-    differing digests, because `canonical_text` does not.
+    here is a contradiction BETWEEN TWO.
 
-    No replacement unreachability claim is written. The same sentence stood in three places —
-    here, in `env.py` and in ADR-0026 — and a reader reaches for it exactly when deciding whether
-    it still applies. What is held is the invariant between two fields of a dataclass anyone may
-    construct, including the fourth operand source ADR-0026 R-4 leaves room for.
+    **AND THE EXAMPLE THAT REFUTED IT IS RETIRED, 2026-10-25.** It was a conda build string
+    differing by a trailing space, which gave agreeing maps because `_comparable` rstripped and
+    differing digests because `canonical_text` does not; `_comparable` now carries
+    `pkgset.canonical_entry`'s own output, so that pair moves the map and the digest together
+    and compares as the ordinary difference it is. Measured through `compare`: exit 2 before,
+    exit 1 after.
+
+    No replacement claim in either direction is written. The same sentence stood in three
+    places — here, in `env.py` and in ADR-0026 — and a reader reaches for it exactly when
+    deciding whether it still applies. What is held is the invariant between two fields of a
+    dataclass anyone may construct, including the fourth operand source ADR-0026 R-4 leaves
+    room for, and the fixtures below construct exactly that.
     """
     head = runprov.pkgset.CONDA_SEPARATOR
     body = f"numpy==2.1.0\n{head}\nsamtools=1.21=h50ea8bc_0\n"

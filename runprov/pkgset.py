@@ -177,6 +177,33 @@ def _refuse_collision(
     )
 
 
+def canonical_entry(manager: str, name: str, *fields: str) -> str:
+    """One canonical package line: the manager, the canonical name, then the manager's fields.
+
+    ONE DEFINITION OF WHAT AN ENTRY CARRIES, AND `env._comparable` IS THE SECOND CALLER [Audit,
+    R-D3, 2026-10-25]. The comparison in `env` reads a name-to-VERSION map and had to re-join the
+    conda build by hand to answer the question this digest answers. A rule written twice is the
+    shape that drifts, and the drift here has a direction: the hand-written join inherits neither
+    this form's equivalence classes nor its collisions, so the named view can be — and was —
+    lossier than the digested text, and `env` then refuses two self-consistent records for
+    disagreeing. Rendering both through one function makes *the digests agree* and *the named
+    sets agree* one question by construction rather than by maintenance.
+
+    THE REQUIREMENT THAT THEY BE ONE QUESTION IS `env`'S AND IS CITED THERE, NOT HERE. A
+    citation in this file is a claim about what governs this file, and a guard holds the two
+    directions against each other; what this module owes is the form, which ADR-0025 R-4 freezes.
+
+    THE FIELDS ARE THE MANAGER'S AND NOT THIS FUNCTION'S: pip carries a version, conda carries a
+    version and a build, and an empty build is written as nothing after the separating space
+    rather than dropped. The form is frozen [ADR-0025 R-4], that trailing space is part of it,
+    and dropping it here would move every conda row of the baseline at once.
+
+    NO IMPORT AND NO DEPENDENCY [ADR-0025 R-6]. A new function in this file is still a file an
+    auditor can copy out and run alone; a new import would not be.
+    """
+    return f"{manager} {name} " + " ".join(fields)
+
+
 def canonical_text(body: str) -> str:
     """The canonical text of a snapshot body's package set. ADR-0024 R-4.
 
@@ -191,8 +218,8 @@ def canonical_text(body: str) -> str:
     """
     pip, conda = parse(body)
     lines = [ALGORITHM]
-    lines += [f"pip {name} {version}" for name, version in sorted(pip.items())]
-    lines += [f"conda {name} {v} {b}" for name, (v, b) in sorted(conda.items())]
+    lines += [canonical_entry("pip", name, version) for name, version in sorted(pip.items())]
+    lines += [canonical_entry("conda", name, v, b) for name, (v, b) in sorted(conda.items())]
     return "\n".join(lines) + "\n"
 
 

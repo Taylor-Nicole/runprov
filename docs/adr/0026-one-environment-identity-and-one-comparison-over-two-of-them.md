@@ -107,14 +107,22 @@ ordinary pair of being corrupt. **Restoring the build is the repair; refusing is
 **IT WAS WRITTEN HERE THAT NO SHIPPED SOURCE COULD REACH THE REFUSAL, AND THAT WAS MEASURED FALSE
 ON 2026-10-24** (`skeptic-3`, open). The argument — R-8 covers `from_record`, `from_here` takes
 both halves from one rendered body, and an identity string names no packages — is true of each
-operand on its own, and the contradiction this refuses is **between two of them**. Two ordinary
-records reach it: a conda build string differing by a trailing space gives **agreeing** maps,
-because `_comparable` rstrips, and **differing** digests, because `canonical_text` does not. Each
-operand is self-consistent; the pair is not.
+operand on its own, and the contradiction this refuses is **between two of them**.
 
-No replacement unreachability claim is made. The same sentence stood in three places — here, in
-`env.py` and in the test — and a reader reaches for it exactly when deciding whether it still
-applies. What the refusal holds is the invariant **between two fields of a constructible
+**AND THE EXAMPLE THAT REFUTED IT IS RETIRED, 2026-10-25.** It was a conda build string
+differing by a trailing space, which gave **agreeing** maps because `_comparable` rstripped and
+**differing** digests because `canonical_text` does not. R-12's first sentence held by
+MAINTENANCE: a named view re-joined by hand inherits neither the canonical form's equivalence
+classes nor its collisions. The named view now carries `pkgset.canonical_entry`'s own output —
+one definition of what an entry is, called by `canonical_text` and by `_comparable` — so that
+pair moves the map and the digest together and compares as the ordinary difference it is.
+Measured through `compare`: exit 2 before, exit 1 after; and a pair whose conda halves are
+`('1.21 h5', '')` and `('1.21', 'h5 ')` renders one canonical line and still agrees, which is
+what rules out comparing a `(canonical, display)` pair instead.
+
+No replacement claim in either direction is made. The same sentence stood in three places —
+here, in `env.py` and in the test — and a reader reaches for it exactly when deciding whether it
+still applies. What the refusal holds is the invariant **between two fields of a constructible
 identity**, including the further operand source R-4's framing leaves room for; the failure mode
 it covers is a silent exit 0, which is the one this feature cannot afford.
 

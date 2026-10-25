@@ -372,6 +372,44 @@ def from_identity_string(text: str) -> Identity:
 RECORDER = "runprov"
 
 
+def _shown(entry: str) -> str:
+    r"""The reviewer-facing half of a canonical entry, PER MANAGER [Audit, R-D3, 2026-10-25].
+
+    `_comparable` below carries `pkgset.canonical_entry`'s output so that the comparison and the
+    digest answer one question; a line a human reads carries neither the manager nor the
+    canonical name, which the surrounding line already states. Dropping them is a display rule
+    and it lives here, because the compared value may not be weakened to suit a printed line.
+
+    AND THE `rstrip` IS CONDA'S ALONE, NOT A UNIFORM ONE. The canonical form writes an empty
+    conda build as nothing after a separating space, and a trailing space in a reviewer-facing
+    line is noise. The pip arm has no such space to drop: `_PIP_ENTRY`'s version group is `(.+)`,
+    so `numpy==1.0 ` parses to `'1.0 '`, and a uniform `rstrip` would silently change what the
+    pip half of a difference prints — a display decision taken by the conda half's convenience.
+
+    THE SPLIT IS SAFE BECAUSE NEITHER NAME REGEX ADMITS WHITESPACE — `_PIP_ENTRY`'s name class
+    and `_CONDA_ENTRY`'s `[^#\s=]+` — and `canonical_entry` always writes both separators, so
+    the third field exists even when it is empty.
+    """
+    manager, _, rest = entry.split(" ", 2)
+    return rest.rstrip() if manager == "conda" else rest
+
+
+def _edge_ws(text: str) -> bool:
+    """Whether a value begins or ends with whitespace, which a reviewer cannot see that it does."""
+    return text != text.strip()
+
+
+def _quote_if_edge_ws(shown: str) -> str:
+    """One shown value, quoted only when its edges are whitespace [Audit, R-D3, 2026-10-25].
+
+    THE ONE-VALUE FORM OF RULE 2 BELOW, used by the `only in` lines, which carry a single value
+    and so cannot collide. Rule 1 has nothing to say there. The predicate is `_edge_ws` in both
+    places so the rule has ONE definition and the two call shapes differ only in how many values
+    they must quote together.
+    """
+    return repr(shown) if _edge_ws(shown) else shown
+
+
 def _named_difference(
     a: typing.Mapping[str, str], b: typing.Mapping[str, str]
 ) -> tuple[list[str], set[str]]:
@@ -379,6 +417,43 @@ def _named_difference(
 
     THREE SETS AND NOT A DIGEST PAIR [ADR-0024 R-11]: *only in A*, *only in B*, and *a different
     version*. Two digests tell a reader that they failed; these tell them what to install.
+
+    THE VALUES ARRIVE AS CANONICAL ENTRIES AND ARE SHOWN THROUGH `_shown`. Narrowing by
+    INDEXING rather than by `assert` is what satisfies `mypy --strict` here: `Mapping.get`
+    returns `str | None`, and an `assert` would put a run-time check in a branch whose
+    impossibility the two `is None` arms above it already establish.
+
+    TWO DISCLOSURE RULES, IN THIS ORDER [Audit, R-D3, 2026-10-25]. `_shown` drops the manager,
+    the canonical name and conda's empty build so that an ordinary line reads as a reviewer
+    expects; each of those is information the comparison DID compare, so a display that drops
+    one can print a real difference as a line that states no difference.
+
+    **RULE 1 — THE DISPLAY LOST THE DIFFERENCE.** Where the two shown halves are EQUAL and the
+    comparison nevertheless called this name moved, the line falls back to the two canonical
+    ENTRIES, quoted. Quoting the halves would disclose nothing: `_shown` has already destroyed
+    the difference, and the entries are what still carry it. Measured, 2026-10-25: a conda half
+    of `('1.21', 'x')` against one of `('1.21 x', '')` printed `1.21 x -> 1.21 x`.
+
+    **RULE 2 — THE HALVES DIFFER BUT LOOK ALIKE.** Where either shown half begins or ends with
+    whitespace, both are quoted. `_PIP_ENTRY`'s version group is `(.+)`, so `numpy==1.0 ` parses
+    to `'1.0 '`, and `1.0  -> 2.0` offers a reviewer a difference they cannot see.
+
+    RULE 1 IS TESTED FIRST AND RULE 2 CANNOT SUBSUME IT. Collided halves need not carry edge
+    whitespace — after `_shown` rstrips a conda entry, the collision above leaves `'1.21 x'` on
+    both sides, which is clean — and the pip look-alike is not a collision, because its halves
+    differ. Neither rule alone covers both, which is why there are two.
+
+    THE TRIGGER IS THE SHOWN VALUE AND NEVER THE ENTRY'S TAIL. An empty conda build is COMMON
+    and its entry ends in a space; keying rule 2 on that would quote `1.21 -> 1.21 h5`, an
+    ordinary line, and move output nobody asked to move.
+
+    WHAT THESE DO NOT COVER, DECLARED RATHER THAN MATCHED. A pair differing in BOTH the build
+    text and its trailing whitespace — `('1.21', 'h5 ')` against `('1.21', 'h9')` — prints
+    `1.21 h5 -> 1.21 h9`. Neither rule fires: the halves differ, and neither carries edge
+    whitespace once `_shown` has rstripped them. That line is TRUTHFUL BUT INCOMPLETE — it
+    discloses the `h5`/`h9` difference and not the trailing space, so a reviewer who repairs
+    only what it names still gets exit 1. Understatement is not contradiction, and widening the
+    matcher to catch it would quote ordinary lines to cover a case nobody has met.
     """
     lines, moved = [], set()
     for name in sorted(set(a) | set(b)):
@@ -387,16 +462,21 @@ def _named_difference(
             continue
         moved.add(name)
         if left is None:
-            lines.append(f"only in B   {name} {right}")
+            lines.append(f"only in B   {name} {_quote_if_edge_ws(_shown(b[name]))}")
         elif right is None:
-            lines.append(f"only in A   {name} {left}")
+            lines.append(f"only in A   {name} {_quote_if_edge_ws(_shown(a[name]))}")
         else:
-            lines.append(f"version     {name}  {left} -> {right}")
+            shown_left, shown_right = _shown(left), _shown(right)
+            if shown_left == shown_right:
+                shown_left, shown_right = repr(left), repr(right)
+            elif _edge_ws(shown_left) or _edge_ws(shown_right):
+                shown_left, shown_right = repr(shown_left), repr(shown_right)
+            lines.append(f"version     {name}  {shown_left} -> {shown_right}")
     return lines, moved
 
 
 def _comparable(identity: Identity) -> dict[str, str]:
-    """The package map the comparison reads: `packages`, with the conda BUILD put back.
+    """The package map the comparison reads: one `pkgset.canonical_entry` per name.
 
     `Identity.packages` is a name-to-VERSION map and the canonical form the digest is taken over
     carries `conda <name> <version> <build>` [ADR-0026 R-12], so the map is LOSSY exactly where
@@ -407,16 +487,30 @@ def _comparable(identity: Identity) -> dict[str, str]:
     MEASURED, 2026-10-24: `samtools=1.21=h50ea8bc_0` against `samtools=1.21=hAAAAAAA_9` gave two
     digests, one map, an empty difference list and **exit 0** — a real difference, reported as
     agreement, on a pair conda produces whenever two hosts resolve the same version differently.
-    Restoring the build makes *the digests agree* and *the maps agree* the same question, which
-    is what lets a residual disagreement below be read as a contradiction rather than as this.
+
+    THE VALUE IS THE DIGESTED LINE ITSELF AND NOT A SECOND SPELLING OF IT [Audit, R-D3,
+    2026-10-25]. The first repair re-joined the version and the build here by hand, which made
+    *the digests agree* and *the named sets agree* one question by MAINTENANCE: a hand-written
+    join inherits neither the canonical form's equivalence classes nor its collisions. Measured
+    through `compare`: a conda half of `('1.21', 'x')` against one of `('1.21 x', '')` digests
+    differently and rejoined identically, so the refusal below fired — **exit 2, could not
+    look** — on two records each of which is self-consistent. Rendering `pkgset`'s own line is
+    what makes the two one question by CONSTRUCTION, collisions and all.
+
+    THE DISPLAY IS NOT DECIDED HERE. `_shown` above drops the manager and the name for a
+    reviewer; this value may not be weakened to suit a printed line, which is how the conda
+    `rstrip` came to sit in the compared map in the first place.
     """
     builds = identity.conda or {}
     restored: dict[str, str] = {}
     for name, version in (identity.packages or {}).items():
         if name.startswith("conda:"):
-            restored[name] = f"{version} {builds.get(name[len('conda:') :], ('', ''))[1]}".rstrip()
+            bare = name[len("conda:") :]
+            restored[name] = pkgset.canonical_entry(
+                "conda", bare, version, builds.get(bare, ("", ""))[1]
+            )
         else:
-            restored[name] = version
+            restored[name] = pkgset.canonical_entry("pip", name, version)
     return restored
 
 
@@ -472,12 +566,15 @@ def _package_dimension(a: Identity, b: Identity, ignore: frozenset[str]) -> Dime
         #: FALSE ON 2026-10-24** (`skeptic-3`, open). The argument was that `from_record` refuses
         #: a record disagreeing with its own sidecar [ADR-0026 R-8], `from_here` takes both
         #: halves from one rendered body, and `from_identity_string` names no packages — all
-        #: true, and all about ONE identity. The contradiction this refuses is BETWEEN TWO, and
-        #: two ordinary records reach it: a conda build string differing by a trailing space
-        #: gives AGREEING maps, because `_comparable` rstrips, and DIFFERING digests, because
-        #: `canonical_text` does not. Each operand is self-consistent and the pair is not.
+        #: true, and all about ONE identity. The contradiction this refuses is BETWEEN TWO.
         #:
-        #: No replacement unreachability claim is written here. A reader reaches for such a
+        #: **THE EXAMPLE THAT REFUTED IT IS RETIRED, 2026-10-25.** It was a conda build string
+        #: differing by a trailing space: AGREEING maps because `_comparable` rstripped, and
+        #: DIFFERING digests because `canonical_text` does not. `_comparable` now carries
+        #: `pkgset.canonical_entry`'s own output, so that pair moves both together and compares
+        #: as the ordinary difference it is — measured, exit 2 before and exit 1 after.
+        #:
+        #: No replacement claim in either direction is written here. A reader reaches for such a
         #: sentence exactly when deciding whether it still applies, and this one was read that
         #: way three times — the same claim stood in ADR-0026 and in the test as well. What this
         #: holds is the invariant BETWEEN TWO FIELDS OF A DATACLASS anyone may construct, and
