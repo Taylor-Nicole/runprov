@@ -452,6 +452,30 @@ no call site to register at all, and its transcript is recordable as an artifact
 as a re-runnable step. **A digest may be declined but never invented, and reproducibility may
 be declined but never implied.**
 
+### Fixed
+
+**`runprov env X --compare Y` named two environments and compared one of them.** The first
+operand was `args.compare if args.compare else (args.run or "")`, so a positional run name was
+discarded outright whenever `--compare` carried a value: `env no-such-run-name --compare here
+--against here` was **exit 0 and SAME on all three dimensions** about an environment the caller
+never named, with a run name that does not exist accepted in silence. It is a refusal now —
+exit 2, nothing on stdout, both operands named and the invocation that asks the question they
+describe spelled out. Written inline rather than through `env`'s `cannot()`, because that helper
+emits the comparison's own shape on the `--format json` path and a bad invocation must not be
+handed the key set of an answer.
+
+**The predicate is `args.compare and args.run`, and the obvious `args.compare is not None` is
+wrong.** `--compare` is declared `nargs="?", const=""`, so `is not None` is true for a BARE
+`--compare` — the one case in which the positional IS the first operand and nothing is
+discarded. Measured over the four invocations, exit codes in order: the truthiness form gives
+2, 0, 0, 0 and the `is not None` form gives 2, 0, 0, **2**, the last being
+`env <run> --compare --against here`, which answers today. **The whole suite is green over that
+regression** — measured on this tree with the new test deselected — because nothing in it paired
+the positional with a bare `--compare`. One test does now, and it carries a second bare-`--compare`
+leg with a run name that cannot resolve, because the first one is exit 0 whether the positional
+is used or discarded. Every path that still answers is byte-identical before and after,
+`--format json` included.
+
 ## [0.9.0] — 2026-10-22
 
 ### Added — a cost escape for digesting, which may decline a hash but never invent one

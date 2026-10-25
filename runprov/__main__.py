@@ -2081,6 +2081,36 @@ def _env(args: argparse.Namespace) -> int:
         print(f"env: {reason}", file=sys.stderr)
         return 2
 
+    #: TWO OPERANDS NAMED, ONE OF THEM SILENTLY DISCARDED [Audit M-2, api-4]. The call below
+    #: takes `--compare`'s value when it has one and the positional otherwise, so
+    #: `env X --compare Y --against Z` answered about Y and never looked at X: exit 0 and SAME
+    #: about an environment the caller never named, with a nonexistent X accepted in silence.
+    #: Refused BEFORE anything is resolved, and INLINE rather than through `cannot()` below --
+    #: that helper emits `env_mod.refused(...)` on the `--format json` path, and a bad
+    #: invocation must not be handed the key set of an answer.
+    #:
+    #: THE PREDICATE IS TRUTHINESS AND NOT `is not None`, AND THAT IS THE WHOLE OF IT.
+    #: `--compare` is declared `nargs="?", const=""`, so `args.compare is not None` is TRUE for
+    #: a bare `--compare` -- the ONE case in which the positional IS the first operand and
+    #: nothing is discarded. Measured: the `is not None` form refuses
+    #: `env <run> --compare --against here`, which answers today, and the whole suite was rc=0
+    #: over that regression because no test paired the positional with a bare `--compare`.
+    #: `test_env_REFUSES_two_first_operands_and_a_bare_compare_is_not_one` pairs them now.
+    #:
+    #: THE OPERANDS GO THROUGH `!r`, which is what every other operand refusal in this module
+    #: uses -- `printable` is for paths -- and which escapes a newline, so an argv value cannot
+    #: forge a line here. The sentence is ASCII for a separate reason: nothing in it needs more,
+    #: and a refusal is the worst place to meet a console that cannot encode a character.
+    if args.compare and args.run:
+        print(
+            f"env: two environments are named as the first operand: the positional "
+            f"{args.run!r} and the value of `--compare`, {args.compare!r}. Only one of them "
+            f"can be compared, so ask for the pair you mean with `runprov env --compare "
+            f"{args.run!r} --against {args.compare!r}`, or drop one of them",
+            file=sys.stderr,
+        )
+        return 2
+
     project = active()
     first, why = _env_identity(args, args.compare if args.compare else (args.run or ""))
     if first is None:

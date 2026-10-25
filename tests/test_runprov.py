@@ -42174,6 +42174,87 @@ def test_the_env_command_refuses_every_OPERAND_it_cannot_resolve_and_says_which(
     assert answer["cannot_check"] and answer["schema"] == runprov.env.SCHEMA
 
 
+def test_env_REFUSES_two_first_operands_and_a_bare_compare_is_not_one(
+    tmp_path, monkeypatch, capsys
+):
+    """[Audit M-2, api-4]. `env X --compare Y` named two environments and compared one of them.
+
+    `args.compare if args.compare else (args.run or "")` discards the positional whenever
+    `--compare` carries a value, so `env no-such-run-name --compare here --against here` was
+    **exit 0 and SAME on all three dimensions**, about an environment the caller never named,
+    with a run name that does not exist accepted in silence. Measured with the refusal removed
+    from this tree, the leg below is exit 0 and SAME in the same way.
+
+    **THE PREDICATE IS THE WHOLE OF THIS TEST, AND THE FIRST ONE WRITTEN WAS WRONG.** The
+    remedy as filed refused where `args.compare is not None`; `--compare` is declared
+    `nargs="?", const=""`, so that is TRUE for a bare `--compare` -- the one case in which the
+    positional IS the first operand and nothing is discarded. Measured on this tree: with that
+    over-refusal in place and this test deselected, the whole suite is **rc=0**, because no
+    other test here pairs the positional with a bare `--compare`. The pairing is the test.
+
+    **AND THE BARE-`--compare` LEG IS NOT SELF-DISCRIMINATING**, which is why there are two of
+    them. `env here --compare --against here` is exit 0 whether the positional is used or
+    discarded: discarding it leaves `""`, which resolves to the most recent run, which agrees
+    with `here` in this fixture as well. The leg that separates the two readings names a run
+    that does NOT exist -- used, that is `no run for ...` at exit 2; discarded, it is SAME at
+    exit 0.
+
+    The two operands are spelled DIFFERENTLY in the refusal leg on purpose: with one string in
+    both slots, *"the message names both operands"* is satisfied by naming either one.
+    """
+    project = _env_run(tmp_path, monkeypatch)
+    log = str(project.run_log)
+
+    #: THE DEFECT, NOW A REFUSAL: two names went in, one comparison came out. THE `--compare`
+    #: OPERAND MUST RESOLVE, and the first draft of this leg used one that did not: a name with
+    #: no run behind it refuses at exit 2 through `cannot()` ANYWAY, so the exit code asserted
+    #: nothing and only the message was holding the leg. `work.py` is the run `_env_run`
+    #: recorded in this very environment, so without the refusal this invocation is SAME at
+    #: exit 0 -- which is the defect, reproduced, rather than described.
+    assert (
+        cli.main(["env", "alpha-run", "--compare", "work.py", "--against", "here", "--log", log])
+        == 2
+    )
+    cap = capsys.readouterr()
+    assert cap.out == "", f"a refused invocation must put nothing on stdout: {cap.out!r}"
+    assert "'alpha-run'" in cap.err and "'work.py'" in cap.err, (
+        f"the refusal must name BOTH operands -- naming one is what the command already did by "
+        f"acting on one of them: {cap.err!r}"
+    )
+    assert "--compare 'alpha-run' --against 'work.py'" in cap.err, (
+        f"the refusal does not say how to ask the question it refused, so a reader who gave two "
+        f"names is told only that two names are too many: {cap.err!r}"
+    )
+    #: AND IT REFUSES BEFORE ANYTHING IS RESOLVED, which is what makes the message about the
+    #: INVOCATION: neither name exists in this history and neither is looked for.
+    assert "no run" not in cap.err, (
+        f"an operand was resolved before the ambiguity was refused, so the reader is told about "
+        f"a lookup for a question that was never askable: {cap.err!r}"
+    )
+
+    #: THE THREE THAT MUST NOT MOVE. A refusal is cheap to write too wide, and two of these
+    #: three are the invocations a wider one takes with it.
+    assert cli.main(["env", "here", "--against", "here", "--log", log]) == 0
+    assert "package set" in capsys.readouterr().out
+
+    assert cli.main(["env", "--compare", "here", "--against", "here", "--log", log]) == 0
+    assert "SAME" in capsys.readouterr().out
+
+    assert cli.main(["env", "here", "--compare", "--against", "here", "--log", log]) == 0
+    assert "SAME" in capsys.readouterr().out, (
+        "a bare `--compare` carries no operand, so the positional is the first one and this "
+        "invocation still answers"
+    )
+
+    #: THE DISCRIMINATOR for the leg above: a positional that cannot resolve. If a bare
+    #: `--compare` ever starts discarding it, `""` resolves to the most recent run and this
+    #: becomes SAME at exit 0 instead of a refusal naming the operand.
+    assert (
+        cli.main(["env", "no-such-run-name", "--compare", "--against", "here", "--log", log]) == 2
+    )
+    assert "no run for 'no-such-run-name'" in capsys.readouterr().err
+
+
 def test_the_env_command_renders_ONE_ANSWER_in_TWO_FORMS(tmp_path, monkeypatch, capsys):
     """[ADR-0026 R-11] over ADR-0017: one builder, two renderings, and the JSON is the same
     answer rather than a second one. The provenance of every field travels with it, because a
