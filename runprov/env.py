@@ -196,8 +196,9 @@ def _package_set_from_record(
                 Field(
                     None,
                     absent=(
-                        f"the record claims {recorded[:16]} and its own snapshot body hashes to "
-                        f"{recomputed[:16]}, so neither is evidence"
+                        f"the record claims {recorded[: pkgset.DIGEST_CHARS]} and its own "
+                        f"snapshot body hashes to {recomputed[: pkgset.DIGEST_CHARS]}, so "
+                        f"neither is evidence"
                     ),
                 ),
                 algorithms,

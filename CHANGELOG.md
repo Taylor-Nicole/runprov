@@ -127,6 +127,29 @@ the field.
 
 ### Fixed
 
+**`env`'s recorded-against-recomputed refusal was the last package-set display width spelled as
+a number, and the guard that landed with the binding could not see it.** That message prints two
+package-set digests through locals called `recorded` and `recomputed`, both cut by a literal
+`[:16]`; the sweep holding every other such site classifies a slice by its sliced expression
+naming the package set, or by an `algorithm` standing beside it in the same f-string, and
+neither reaches a local called `recorded`. Both now read `pkgset.DIGEST_CHARS`. **Measured: the
+rendered message is byte-identical, and loses a character under `DIGEST_CHARS = 15`** — so the
+constant is read rather than decorative. `runprov/env.py` falls from 6 literal `[:16]` to 4, and
+the four left are an archived lock's sha256 and the host digest, which are different quantities.
+
+**The sweep gains a third classifier, and the general form of it is refused by measurement.** A
+slice inside an f-string handed as `Field(absent=…)` is a reason a person reads; `export`'s
+crate `@id` and PROV entity key bind their f-string to a local used as an identifier, are
+deduplicated by digest, and must never move. That is the whole discriminator, and it needs no
+dataflow. **Keying on "any keyword argument" instead — or on "any reason-bearing keyword" —
+turns the guard red naming `__main__.py`'s `cannot_check=`, which cuts a `run_uid` to 12**: a
+different quantity at a different width that the widened guard would demand be respelled. So
+the keyword is one name, held against `runprov.env.Field`'s own dataclass fields rather than
+against a second copy of the string, and renaming the field reddens this instead of silently
+emptying the classifier. What it identifies is a POSITION and not a subject, and the guard says
+so: of the 12 `absent=` arguments under `runprov/`, exactly 2 carry a slice and both are this
+digest.
+
 **Stage 3's mutation run over `env` closed twelve gaps, nine of them in one sitting.** Eighty-five
 units derived from the diff; **84 CAUGHT and one verified equivalent**, after the twelve that
 survived were given the tests they were missing. What survived has a shape: the feature was

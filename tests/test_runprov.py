@@ -43076,7 +43076,8 @@ def test_every_IDENTIFIABLE_package_set_digest_TRUNCATION_reads_the_one_width():
 
     THE QUANTIFICATION, IN ONE SENTENCE: over every `ast.Slice` in every `*.py` under
     `runprov/`, those whose sliced expression NAMES the package set, plus those inside an
-    f-string that also interpolates an `algorithm`, must have `DIGEST_CHARS` as the upper bound.
+    f-string that also interpolates an `algorithm`, plus those inside an f-string handed to a
+    `Field` as its `absent` reason, must have `DIGEST_CHARS` as the upper bound.
 
     Those are the same sentence only because the claim says IDENTIFIABLE, and that word is
     load-bearing. **What the sweep cannot see, measured 2026-10-25 rather than assumed:**
@@ -43089,26 +43090,45 @@ def test_every_IDENTIFIABLE_package_set_digest_TRUNCATION_reads_the_one_width():
         deduplicated by digest and a repeated `@id` is an invalid crate, so a sweep that caught
         them would be a sweep demanding they change. Deciding between them needs to know what
         the value FLOWS INTO, which is dataflow and not something an AST walk settles.
-      * For the same reason, `env`'s refusal message for a record that disagrees with its own
-        snapshot body prints two package-set digests through locals called `recorded` and
-        `recomputed`, and this sweep is silent about both. They were left as literals when the
-        binding landed, deliberately and under the specification, and the honest statement is
-        that nothing here holds them.
+      * The third classifier identifies a site by POSITION, not by subject. `env`'s refusal
+        message for a record that disagrees with its own snapshot body cuts two package-set
+        digests through locals called `recorded` and `recomputed` — names that say nothing
+        about what they hold — and what marks them is that the string they build is a `Field`
+        absence reason, prose a person reads, rather than a value bound to a name and used as
+        an identifier. That separates them from `export`'s two without any dataflow, and it
+        buys the separation by asserting over a position in which a NON-package-set digest
+        would also be caught and wrongly required to move. Measured 2026-10-25, which is the
+        only thing that makes it safe: of the 12 `absent=` arguments under `runprov/`, exactly
+        2 carry a slice and both are this digest.
+
+      * THE SAME MEASUREMENT REFUTES THE OBVIOUS WIDENING. "Any keyword argument", and equally
+        "any reason-bearing keyword", admits `__main__.py`'s `cannot_check=`, which cuts a
+        `run_uid` to 12 — a different quantity at a different width, which this guard would
+        then demand be re-spelled as a package-set width. So the keyword is ONE name and not a
+        category, and the name is held against `Field`'s own dataclass fields so that renaming
+        it reddens this instead of silently emptying the classifier.
 
     So the EXCLUSION is derived and not listed: a site is out of the population because of what
     its own source says, never because of a path written down here. The cost of deriving it is
-    the two gaps above, and they are stated rather than implied by a green.
+    the gap above, and it is stated rather than implied by a green.
 
     ONE SPELLING, THREE REFERENCES. `width_name` is read by the `getattr` (so renaming the
     product's constant reddens this instead of silently emptying the sweep), by the offender
     test, and by the reverse sweep. A literal in three places would be the defect this guard
-    exists to stop, one level up.
+    exists to stop, one level up. `reason_keyword` is held the same way, against the runtime
+    dataclass rather than against a second copy of the string.
     """
     width_name = "DIGEST_CHARS"
+    reason_keyword = "absent"
     assert isinstance(getattr(runprov.pkgset, width_name, None), int), (
         f"runprov.pkgset.{width_name} is not a number on the module, so every sweep below is "
         f"hunting a name nothing defines and would be green over a tree with no bound width "
         f"in it at all"
+    )
+    assert reason_keyword in {f.name for f in dataclasses.fields(runprov.env.Field)}, (
+        f"`{reason_keyword}` is not a field of runprov.env.Field, so the reason-string "
+        f"classifier below is keyed on a keyword nothing in this package passes and would be "
+        f"green over a tree that had drifted back to a literal everywhere it reaches"
     )
 
     def last(node):
@@ -43125,21 +43145,33 @@ def test_every_IDENTIFIABLE_package_set_digest_TRUNCATION_reads_the_one_width():
     #: applied to the sweep's own input set.
     names_the_set: dict[str, ast.expr | None] = {}
     inside_an_identity: dict[str, ast.expr | None] = {}
+    states_a_reason: dict[str, ast.expr | None] = {}
     references, slice_uppers = {}, set()
+
+    def cut(node):
+        """Every slice nested anywhere inside one expression, by identity."""
+        return {
+            id(inner)
+            for inner in ast.walk(node)
+            if isinstance(inner, ast.Subscript) and isinstance(inner.slice, ast.Slice)
+        }
+
     for mod in sorted((REPO / "runprov").rglob("*.py")):
         tree = ast.parse(mod.read_text(encoding="utf-8"))
-        identity_slices = set()
+        identity_slices, reason_slices = set(), set()
         for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                reason_slices |= {
+                    ident
+                    for kw in node.keywords
+                    if kw.arg == reason_keyword and isinstance(kw.value, ast.JoinedStr)
+                    for ident in cut(kw.value)
+                }
             if not isinstance(node, ast.JoinedStr):
                 continue
             parts = [v.value for v in node.values if isinstance(v, ast.FormattedValue)]
             if any((last(p) or "").lower() == "algorithm" for p in parts):
-                identity_slices |= {
-                    id(inner)
-                    for p in parts
-                    for inner in ast.walk(p)
-                    if isinstance(inner, ast.Subscript) and isinstance(inner.slice, ast.Slice)
-                }
+                identity_slices |= {ident for p in parts for ident in cut(p)}
         for node in ast.walk(tree):
             if last(node) == width_name and isinstance(getattr(node, "ctx", None), ast.Load):
                 references[f"{mod.name}:{node.lineno}"] = id(node)
@@ -43151,6 +43183,8 @@ def test_every_IDENTIFIABLE_package_set_digest_TRUNCATION_reads_the_one_width():
                 names_the_set[where] = node.slice.upper
             if id(node) in identity_slices:
                 inside_an_identity[where] = node.slice.upper
+            if id(node) in reason_slices:
+                states_a_reason[where] = node.slice.upper
 
     assert names_the_set, (
         "no slice anywhere under runprov/ has a sliced expression naming the package set, so "
@@ -43162,6 +43196,12 @@ def test_every_IDENTIFIABLE_package_set_digest_TRUNCATION_reads_the_one_width():
         "algorithm, so the identity-string classifier read nothing — and it is the only one "
         "that reaches the width inside `export`"
     )
+    assert states_a_reason, (
+        f"no slice anywhere under runprov/ sits in an f-string handed as `{reason_keyword}=`, "
+        f"so the reason-string classifier read nothing — and it is the only one that reaches "
+        f"`env`'s recorded-against-recomputed refusal, whose two locals name neither the "
+        f"subject nor the algorithm"
+    )
     assert any(where.startswith("pkgset.py:") for where in names_the_set), (
         f"the sweep did not reach pkgset.py, which both DEFINES {width_name} and prints a cut "
         f"digest from the auditor's entry point; whatever it read is not the subject"
@@ -43172,7 +43212,7 @@ def test_every_IDENTIFIABLE_package_set_digest_TRUNCATION_reads_the_one_width():
     spelled_out = sorted(
         {
             where
-            for group in (names_the_set, inside_an_identity)
+            for group in (names_the_set, inside_an_identity, states_a_reason)
             for where, upper in group.items()
             if last(upper) != width_name
         }
