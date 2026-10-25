@@ -68,7 +68,7 @@ from . import chain as chain_mod
 from . import check as check_mod
 from . import diff as diff_mod
 from . import env as env_mod
-from . import hashing, pkgset, policy
+from . import hashing, policy
 from . import impact as impact_mod
 from . import prune as prune_mod
 from . import report as report_mod
@@ -2095,11 +2095,16 @@ def _env(args: argparse.Namespace) -> int:
     if args.digest:
         if first.package_set.value is None:
             return cannot(first.package_set.absent or "no package-set digest")
-        line = f"{pkgset.ALGORITHM}:{first.package_set.value[:16]}"
+        #: BUILT BY `env_mod`, NOT HERE [ADR-0017 R-5, Audit W-4]. The dict literal that stood
+        #: here declared no `schema`, and both the payload-schema guard and the cross-command
+        #: collision guard find shapes by collecting module-level `*SCHEMA` constants — so this
+        #: answer was invisible to them by construction. The text line is read back out of the
+        #: payload so the two renderings cannot spell the identity differently.
+        answer = env_mod.digest_payload(first)
         if args.format == "json":
-            print(json.dumps({"identity": line, "how": first.package_set.how}, indent=2))
+            print(json.dumps(answer, indent=2))
         else:
-            print(line)
+            print(answer["identity"])
         return 0
 
     if args.render is not None:

@@ -57,6 +57,14 @@ SCHEMA = "runprov.env.v1"
 #: consumer parsing the failure path is parsing a document it has never seen.
 RENDER_SCHEMA = "runprov.env.render.v1"
 
+#: AND A THIRD ANSWER NEEDS A THIRD NAME [ADR-0017 R-5]. `--digest` answers *what is this
+#: environment called*, which is neither a comparison nor a rendering, and it was emitted as a
+#: dict literal built at the `__main__` call site with no `schema` key at all. Both the
+#: payload-schema guard and the cross-command collision guard collect module-level `*SCHEMA`
+#: constants by AST, so a shape declaring none was invisible to them BY CONSTRUCTION — about to
+#: freeze at 0.10.0 with no check able to see its key set [Audit, W-4, 2026-10-25].
+DIGEST_SCHEMA = "runprov.env.digest.v1"
+
 #: THE RESERVED OPERAND NAMING THIS ENVIRONMENT [ADR-0026 R-5]. A bare word rather than a flag,
 #: because an operand must be passable as the VALUE of one — `--compare --here` is read by
 #: argparse as a flag with no value, which is the kind of wart that becomes permanent. A run
@@ -990,6 +998,30 @@ def render_payload(rendering: Rendering, identity: Identity) -> dict[str, typing
         #: cheaper than teaching every reader which command they are holding.
         "rendered": list(rendering.lines),
         "not_reproduction": NOT_REPRODUCTION,
+    }
+
+
+def digest_payload(identity: Identity) -> dict[str, typing.Any]:
+    """The quotable package-set identity as data. ADR-0017: one builder, two renderings.
+
+    BESIDE THE OTHER TWO AND NOT AT THE EMISSION SITE, which is the whole row. A payload
+    assembled from a dict literal inside `__main__` declares no schema, and every guard this
+    project has over answer shapes finds them by collecting module-level `*SCHEMA` constants —
+    so a shape built that way is not weakly checked, it is **unreachable by the checks**.
+
+    `cannot_check` IS PRESENT AND NULL [ADR-0017 R-16]. A field that appears only when something
+    went wrong is a field a consumer cannot test for; the comparison and the rendering both
+    carry it in their answering shape and this one does too.
+
+    THE CALLER HAS ALREADY REFUSED A MISSING DIGEST, so `package_set.value` is not None on any
+    path that reaches here; the `or ""` is what lets that be stated without a branch nothing can
+    exercise.
+    """
+    return {
+        "schema": DIGEST_SCHEMA,
+        "cannot_check": None,
+        "identity": f"{pkgset.ALGORITHM}:{(identity.package_set.value or '')[:16]}",
+        "how": identity.package_set.how,
     }
 
 

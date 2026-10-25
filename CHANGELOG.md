@@ -36,6 +36,16 @@ holds:
 different question from a comparison — and because the refused shape of an invocation must match
 the shape it answers with. Both are built through one builder, so the key sets cannot drift.
 
+**And `--digest --format json` carries one too**, `runprov.env.digest.v1`, built by
+`env.digest_payload` beside the other two and carrying `cannot_check: null` like them. It was a
+dict literal assembled at the emission site in `__main__.py` with **no `schema` key at all** —
+and that is not a weakly-checked shape but an **unreachable** one, because every guard this
+project has over answer shapes finds them by collecting module-level `*SCHEMA` constants. It was
+about to freeze at 0.10.0 with nothing able to see its key set. A new floor asserts that no
+`json.dumps` call in `__main__.py` is handed a dict or list literal; the docstring says what that
+floor does **not** cover, which is assembly rather than emission, one file rather than the
+package, and the `json.dumps` spelling rather than every route to JSON.
+
 **Both export vocabularies now carry the environment, which neither did.** ADR-0027, accepted.
 Measured before it was built: `export.py` mentioned the environment **nowhere**, so a record
 deposited at Zenodo or handed to a reviewer through RO-Crate or PROV said what was read and

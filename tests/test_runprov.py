@@ -26171,6 +26171,13 @@ def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsy
         #: environment I am standing in. The positional comes FIRST because `--render` takes an
         #: optional value and would otherwise swallow it.
         "env --render": ["env", "here", "--render", "requirements"],
+        #: `env`'s THIRD ANSWERING SHAPE [Audit, W-4, 2026-10-25]. It was a dict literal built at
+        #: the emission site in `__main__` with no `schema` key, so it was invisible to this
+        #: guard and to the payload-schema equality below BY CONSTRUCTION: both find shapes by
+        #: collecting module-level `*SCHEMA` constants, and a payload that declares none is not
+        #: weakly checked, it is unreachable. `here` as the positional for the same reason the
+        #: rendering row gives — it answers with no history and no record.
+        "env --digest": ["env", "here", "--digest"],
         "show": ["show", "--log", str(log)],
         "show <target>": ["show", "demo", "--log", str(log)],
         "check": ["check", str(src)],
@@ -26355,6 +26362,70 @@ def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsy
         "A window reported without what it narrowed FROM is the defect both times, so a command "
         "carries both or neither and a third one growing `--limit` is held to it on the day it "
         f"does: {sorted(windows ^ denominators)}"
+    )
+
+
+def test_no_json_payload_is_ASSEMBLED_AT_THE_EMISSION_SITE_in_main():
+    """**THIS IS A FLOOR AND IT IS NAMED ONE** [Audit, W-4, 2026-10-25].
+
+    WHAT IT HOLDS, exactly: no `json.dumps(...)` call written in `runprov/__main__.py` is given
+    a dict or list LITERAL as its first argument. A payload assembled from a literal at the
+    place it is printed declares no `schema`, and every check this project has over answer
+    shapes — the cross-command collision guard above, and the `*SCHEMA` equality inside it —
+    finds shapes by collecting module-level `*SCHEMA` constants by AST. A payload built that way
+    is therefore not weakly checked; it is **unreachable by the checks**. `env --digest` was
+    emitted that way and was about to freeze at 0.10.0.
+
+    **WHAT IT DOES NOT HOLD, DECLARED, because a residue that is not declared is a claim that is
+    quietly false.** The remedy as first filed was *a guard over every JSON payload this CLI can
+    emit*, and that was refused on measurement: there is no total primitive. `print(json.dumps`
+    sees 12 sites and misses two shipped payloads emitted through
+    `sys.stdout.write(json.dumps(...))`, one of which shipped in 0.6.0; a sweep over all 43
+    `json.dumps` calls in the package needs about 27 exclusions, every one a judgement.
+
+    So, specifically:
+
+    * it is about ASSEMBLY, not EMISSION — a payload built correctly and then printed through
+      any route passes, and a payload built elsewhere and mangled before printing passes too;
+    * its subject is `__main__.py` ALONE. Twenty-two other modules call `json.dumps`;
+    * the three `sys.stdout.write(json.dumps(...))` sites in this file are outside it, because
+      what it reads is the argument and not the sink;
+    * it matches the `json.dumps` SPELLING. A `from json import dumps` would not be seen, and
+      this package does not use that form.
+
+    Measured 2026-10-25: 27 `json.dumps` call sites in this file, exactly one of them with a
+    literal first argument, and that one is the row this guard came from.
+    """
+    source = REPO / "runprov" / "__main__.py"
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "dumps"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "json"
+    ]
+    #: THE SWEEP MUST PROVE IT READ ITS SUBJECT. A walk that matched nothing passes the
+    #: assertion below for free, and that is how a renamed import or a moved emitter turns this
+    #: guard silently green. The count is not pinned — it moves with every new `--format json`
+    #: answer and would be a second thing to maintain — but zero is a broken sweep.
+    assert calls, (
+        f"no `json.dumps(...)` call was found in {source.name} at all, so this guard read "
+        f"nothing. Either the emitters moved out of this file or the spelling changed, and "
+        f"either way the floor described in this docstring is no longer held anywhere"
+    )
+    assembled = [
+        f"{source.name}:{node.lineno}"
+        for node in calls
+        if node.args and isinstance(node.args[0], (ast.Dict, ast.List))
+    ]
+    assert not assembled, (
+        f"a JSON payload is assembled from a literal at the point it is printed: {assembled}. "
+        f"Such a shape carries no `schema` and is invisible to every guard this project has "
+        f"over answer shapes, because they all collect module-level `*SCHEMA` constants. Build "
+        f"it in the command's own module beside the other payload builders, give the shape a "
+        f"`*SCHEMA` constant, and add an invocation to the shapes table above"
     )
 
 
@@ -51212,6 +51283,23 @@ _SERIALISERS = {
     #: table exists to make impossible. `snakemake_row` interpolates only numbers today, so
     #: there is no live forging channel through it; this is a derivation defect, not a forgery.
     ("resources", "snakemake_row"): "Snakemake's benchmark TSV, parsed by Snakemake itself",
+    #: `env --digest`'s ANSWER, `runprov.env.digest.v1`, WRITTEN THROUGH `json.dumps` [Audit,
+    #: W-4, 2026-10-25]. Escaping its fields would hand a consumer values that are not the ones
+    #: in the record, which is the same line the entries above state.
+    #:
+    #: THE TEXT PATH PRINTS ONE FIELD OF IT, `identity`, and that is said here rather than left
+    #: to be discovered: it is `runprov.pkgset.v1:` followed by the first sixteen characters of
+    #: the recorded digest, so the only forging channel through it is a recorded package-set
+    #: digest that is not a digest. That exposure is unchanged by W-4 — the same f-string was
+    #: built and printed at the call site before — but it was invisible to this derivation
+    #: there, because an f-string bound to a name resolves to no renderer.
+    #:
+    #: AND `env.payload` AND `env.render_payload` ARE THE SAME KIND OF PAGE AND ARE NOT HERE,
+    #: because this derivation cannot see them: they are written inline as
+    #: `print(json.dumps(env_mod.payload(...), indent=2))`, with no binding for `_PAGE_BINDERS`
+    #: to catch. That is the Snakemake case above one more time — a page in neither the derived
+    #: set nor this table — and it is recorded, not fixed, here.
+    ("env", "digest_payload"): "`runprov.env.digest.v1`, written through json.dumps",
 }
 
 
