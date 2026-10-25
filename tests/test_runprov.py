@@ -41391,7 +41391,13 @@ def test_an_ARCHIVED_LOCK_outranks_the_list_and_is_emitted_when_the_forms_agree(
     """
     body = "version = 1\n# the archived lock\n"
     lock = tmp_path / "lock-abc-uv.lock"
-    lock.write_text(body, encoding="utf-8")
+    #: BYTES, NOT TEXT [Audit M-1, 2026-10-25]. `write_text` opens with `newline=None`, so on
+    #: Windows every `\n` became `\r\n` on disk while the `sha256` below stayed the digest of
+    #: the LF string -- and `read_lock` reads with `read_bytes()` and does not translate, so it
+    #: refused the pair and this test was RED on `windows-latest` for two days while all five
+    #: POSIX legs were green. The product never writes a lock this way: `archive_lockfiles`
+    #: copies with `atomic_write_bytes(target, source.read_bytes())`, byte for byte.
+    lock.write_bytes(body.encode())
     entry = {
         "name": "uv.lock",
         "sha256": hashlib.sha256(body.encode()).hexdigest(),
