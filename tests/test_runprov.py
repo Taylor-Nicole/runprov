@@ -43110,7 +43110,9 @@ def test_every_IDENTIFIABLE_package_set_digest_TRUNCATION_reads_the_one_width():
 
     So the EXCLUSION is derived and not listed: a site is out of the population because of what
     its own source says, never because of a path written down here. The cost of deriving it is
-    the gap above, and it is stated rather than implied by a green.
+    the TWO gaps above — `export`'s pair, which no classifier may reach, and the third
+    classifier's reach over a position rather than a subject — and both are stated here rather
+    than implied by a green.
 
     ONE SPELLING, THREE REFERENCES. `width_name` is read by the `getattr` (so renaming the
     product's constant reddens this instead of silently emptying the sweep), by the offender
