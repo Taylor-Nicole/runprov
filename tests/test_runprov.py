@@ -43576,8 +43576,12 @@ def test_a_conda_entry_is_a_package_and_the_separator_is_where_the_split_comes_f
     [
         ("# h\nnot a package entry at all\n", "neither a package entry nor an annotation"),
         ("# h\npip==1\n" + runprov.pkgset.CONDA_SEPARATOR + "\n#x\nnothing\n", "nor an annotation"),
+        (
+            "# h\nnumpy==2.1.0\n" + runprov.pkgset.CONDA_SEPARATOR + "\nscipy==1.14.0\n",
+            r"neither a package entry nor an annotation.*'scipy==1\.14\.0'",
+        ),
     ],
-    ids=["pip-half", "conda-half"],
+    ids=["pip-half", "conda-half", "conda-half-PIP-SPELLING"],
 )
 def test_a_line_that_is_neither_a_package_nor_an_annotation_is_REFUSED_not_dropped(body, says):
     """[ADR-0025 R-2], in both halves of the body, because the two halves are two matchers.
@@ -43585,6 +43589,16 @@ def test_a_line_that_is_neither_a_package_nor_an_annotation_is_REFUSED_not_dropp
     A canonicaliser that dropped the line would answer for a SMALLER environment than it was
     given, and the answer would look exactly like a correct one — the failure this whole module
     is a repair for, committed by the repair.
+
+    THE THIRD ROW IS NOT A DUPLICATE OF THE SECOND, and it is here because W-1 (`07e45ff`)
+    tightened `_CONDA_ENTRY` so a pip spelling after the separator is refused instead of parsed
+    as a conda entry with an EMPTY version — and it shipped with no test. Measured 2026-10-26: a
+    single-variable mutation of `_CONDA_ENTRY` back to its pre-W-1 form passed the whole suite.
+    `conda-half` uses `nothing`, which no matcher was ever going to accept, so it proves the
+    classification is TOTAL; this row uses an input that LOOKS like a valid entry, so it proves
+    the two matchers do not OVERLAP. The body therefore carries no valid conda entry — any entry
+    sitting after the offender would raise in its place — and `says` names the offending line, so
+    narrowing the pip arm cannot let `numpy==2.1.0` supply the refusal instead.
     """
     with pytest.raises(runprov.pkgset.PackageSetError, match=says):
         runprov.pkgset.package_set_digest(body)

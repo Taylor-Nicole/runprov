@@ -568,6 +568,36 @@ leg with a run name that cannot resolve, because the first one is exit 0 whether
 is used or discarded. Every path that still answers is byte-identical before and after,
 `--format json` included.
 
+### Tested — W-1's narrowing of the conda matcher, which nothing in the suite could see undone
+
+**`07e45ff` tightened `_CONDA_ENTRY` so a pip spelling after the conda separator is refused
+instead of parsed as a conda entry with an EMPTY version, and it shipped as `runprov/pkgset.py |
+4 ++--` with no test.** Measured 2026-10-26 on `14298a7`: putting that one regex back to its
+pre-W-1 form, `([^=]+)` to `([^=]*)=?`, left the suite GREEN — 1631 selected, 1603 passed, 28
+skipped — verdict **SURVIVED**, with the bench harness's controls 6, 6s and 6c all firing, so the
+mutated statement was reached and its one reader ran. The two neighbouring mutations are caught,
+which is what made this one easy to miss.
+
+**`test_a_line_that_is_neither_a_package_nor_an_annotation_is_REFUSED_not_dropped` gains a third
+row, `conda-half-PIP-SPELLING`.** The same mutation is now **CAUGHT**: 1632 selected, exactly one
+failing node, `Failed: DID NOT RAISE PackageSetError`. In that run `conda-half` and `pip-half`
+both pass, which is the point — `conda-half` feeds `nothing`, a line no matcher was ever going to
+accept, so it shows the classification is TOTAL; this row feeds `scipy==1.14.0`, which looks like
+a valid entry, so it shows the two matchers do not OVERLAP.
+
+**The body carries no valid conda entry and the expected message NAMES the offending line, and
+both of those are load-bearing.** A valid entry anywhere in the body raises in the offender's
+place, so the row would pass while W-1's property was violated: under
+`^([^#\s=]+)==([^=]+)()$` the pip spelling is accepted as conda and something else supplies the
+refusal. Naming the line closes the mirror case, where narrowing the pip arm makes `numpy==2.1.0`
+the refuser. Both halves were broken on purpose: that `==` form is **CAUGHT** too, and dropping
+`{line!r}` from the refusal message reds this row alone, `Regex pattern did not match`.
+
+**What it does not hold, stated rather than repaired.** A conda-arm edit keyed on `_` —
+`a==h50ea8bc_0` — violates the same property and this row does not catch it; `or ""` is held only
+by `" ".join` refusing a `None`, which is a crash and not a pin. No corpus body can see any of
+this: 0 of the 9 carry the separator.
+
 ## [0.9.0] — 2026-10-22
 
 ### Added — a cost escape for digesting, which may decline a hash but never invent one
