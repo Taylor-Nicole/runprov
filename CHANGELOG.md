@@ -9,6 +9,43 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed
+
+**The identity `env --digest` prints could not be fed back to `env --compare`.** It printed
+`<algorithm>:<digest cut to the display width>` — the form ADR-0024 R-16 calls quotable, *"what
+goes in a methods section, a data-availability statement or a review report"* — and that value
+returned **DIFFERS at exit 1 while printing the two digests as identical**, because the
+comparison was `==` over the full digest and the operand carried the cut one. The one value this
+package tells a reader to quote was the one value that could never match itself, and the failure
+direction is the one R-17 exists to prevent: **a reviewer reads a correct rebuild as a failure.**
+
+* **A published quote is now a PREFIX CLAIM, and the width comes from the operand.** Twenty
+  characters compare over twenty, sixty-four over sixty-four — so two full digests still compare
+  exactly, and nothing here widens or narrows what a digest is.
+* **`pkgset.MIN_IDENTIFYING_CHARS` is a floor, and it is deliberately NOT `DIGEST_CHARS`.** That
+  module's own rule is *"a display width, never an identifier width"*; binding the two would let
+  a decision about how wide a digest PRINTS silently re-decide which published citations are
+  still accepted. The two are free to be equal and **nothing asserts that they are** — what holds
+  them compatible is a round-trip test, which is a measurement rather than an assertion between
+  two constants and so cannot be satisfied by both drifting together.
+* **A quote too short to identify anything is refused by name**, rather than reported as a
+  difference: *"this is not enough of a digest to tell"* and *"these environments differ"* are
+  different answers and only one of them is true.
+* **And the display says when it cannot show the difference.** Two digests agreeing over the
+  shown width printed one value twice beside a verdict of DIFFERS — the verdict and the evidence
+  contradicting each other, with the evidence being the half a reader can check. The width stays
+  one decision; a sentence is added, only when it is true.
+
+**The guard is a ROUND TRIP, and it had to be**: every existing test constructed its own operand,
+so each agreed with itself and none could see this. The new one takes the string from the
+producer and compares it against the identity that produced it — and it carries a vacuity
+assertion, because an earlier draft used the test helper's fake digest, which is built at the
+display width, and compared sixteen characters against sixteen while the defect was live.
+Measured both ways with `tools/bench.py`: reverting the prefix comparison and deleting the
+disclosure sentence are each CAUGHT, with control 6 confirming the changed statement ran.
+
+Found by a reviewer attacking the article's prose rather than the code.
+
 ### Added
 
 **`runprov env --render requirements|conda|uv` — the recorded environment as something you can

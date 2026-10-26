@@ -349,6 +349,17 @@ def from_identity_string(text: str) -> Identity:
     that the other two had nothing to compare.
     """
     algorithm, _, value = text.partition(":")
+    if algorithm == pkgset.ALGORITHM and 0 < len(value) < pkgset.MIN_IDENTIFYING_CHARS:
+        #: REFUSED HERE RATHER THAN LEFT TO FAIL AS A MISMATCH. A quote shorter than the
+        #: shortest form this package prints was never produced by it, and reporting it as
+        #: DIFFERS would answer a question the reader did not ask: they would read "these
+        #: environments differ" where the truth is "this is not enough of a digest to tell".
+        raise ValueError(
+            f"{text!r} carries {len(value)} character(s) of digest, and a published identity "
+            f"is read as a prefix of one, so at least {pkgset.MIN_IDENTIFYING_CHARS} are needed "
+            f"before it identifies anything. A value copied from this build's own output is "
+            f"always long enough"
+        )
     if algorithm != pkgset.ALGORITHM or not value:
         raise ValueError(
             f"{text!r} is not a published identity this build can read: it must be "
@@ -542,11 +553,14 @@ def _package_dimension(a: Identity, b: Identity, ignore: frozenset[str]) -> Dime
         #: ignore nothing at all.
         same = left == right
     else:
-        same = a.package_set.value == b.package_set.value
+        #: A PREFIX CLAIM, NOT A STRING COMPARE [`pkgset.identifies`, 2026-10-26]. `==` here is
+        #: what made the identity this package tells a reader to quote the one value that could
+        #: never match itself.
+        same = pkgset.identifies(a.package_set.value, b.package_set.value)
     #: RECOMPUTED, AND THE CONDITION BELOW DOES NOT USE `same` [Audit, W-3, 2026-10-25]. Under an
     #: ignore `same` IS `left == right`, so a contradiction test written against `same` is
     #: vacuous — it can never fire on the very invocations this repair is about.
-    digests_agree = a.package_set.value == b.package_set.value
+    digests_agree = pkgset.identifies(a.package_set.value, b.package_set.value)
 
     if named and not effective and digests_agree != (left == right):
         #: THE TWO SOURCES CONTRADICT EACH OTHER ABOUT ONE ENVIRONMENT, AND THAT IS NOT A
@@ -623,8 +637,19 @@ def _package_dimension(a: Identity, b: Identity, ignore: frozenset[str]) -> Dime
         return Dimension(
             "package set",
             [
+                #: THE SHOWN WIDTH CAN HIDE THE DIFFERENCE, AND THEN IT SAYS SO. Two digests
+                #: differing after the display width printed one value twice beside a verdict of
+                #: DIFFERS -- the verdict and the evidence contradicting each other, and the
+                #: evidence is the half a reader can check. The width stays ONE decision; what is
+                #: added is a sentence, and only when it is true.
                 f"digest      {a.package_set.value[: pkgset.DIGEST_CHARS]} -> "
                 f"{b.package_set.value[: pkgset.DIGEST_CHARS]}"
+                + (
+                    "  (equal at the width shown; they differ further in)"
+                    if a.package_set.value[: pkgset.DIGEST_CHARS]
+                    == b.package_set.value[: pkgset.DIGEST_CHARS]
+                    else ""
+                )
             ],
             f"digests only; no readable snapshot body for {missing}, so the packages cannot be "
             f"named and whether the only difference is {RECORDER} itself cannot be determined",

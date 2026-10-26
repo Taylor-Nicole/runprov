@@ -71,6 +71,19 @@ ALGORITHM = "runprov.pkgset.v1"
 #: hold the snapshot filename recompute the same expression the writer uses.
 DIGEST_CHARS = 16
 
+#: THE FEWEST CHARACTERS OF THIS DIGEST THAT IDENTIFY IT, which is a different quantity from the
+#: width above and is kept apart from it for the reason that comment gives: **a display width is
+#: never an identifier width.** Binding the two would mean a decision about how wide a digest
+#: PRINTS silently re-decides which published quotes are still accepted as operands — a change to
+#: presentation quietly changing what a reader's citation means.
+#:
+#: SIXTEEN BECAUSE A PREFIX CLAIM IS EVIDENCE AT 64 BITS, not because that is what the line
+#: shows. The two are free to be equal and nothing asserts that they are; what holds them
+#: COMPATIBLE is a round-trip test — the identity this build prints, fed back as an operand, must
+#: compare SAME — which is a measurement rather than an assertion between two constants, and so
+#: cannot be satisfied by both drifting together.
+MIN_IDENTIFYING_CHARS = 16
+
 #: `__all__` RATIFIES THE PACKAGE PROMISE AND NEVER MAKES ONE [ADR-0003]. The canonicaliser's
 #: functions are reachable as `runprov.pkgset.<name>` and are INTERNAL by that decision's own
 #: definition — *"cross-module use inside `runprov/` is internal"* — so none of them is listed
@@ -221,6 +234,27 @@ def canonical_text(body: str) -> str:
     lines += [canonical_entry("pip", name, version) for name, version in sorted(pip.items())]
     lines += [canonical_entry("conda", name, v, b) for name, (v, b) in sorted(conda.items())]
     return "\n".join(lines) + "\n"
+
+
+def identifies(quoted: str, full: str) -> bool:
+    """Does a PUBLISHED value identify this digest? A quote is a PREFIX CLAIM, not a string.
+
+    WHY THIS EXISTS, MEASURED 2026-10-26. `env --digest` prints a cut digest and ADR-0024 R-16
+    calls that the quotable form — "what goes in a methods section, a data-availability statement
+    or a review report". Fed straight back to `env --compare` it reported DIFFERS at exit 1 while
+    printing the two digests as identical, because the comparison was `==` over the full value and
+    the operand carried the cut one. **The one value this package tells a reader to quote was the
+    one value that could never match**, and the failure direction is the one R-17 exists to
+    prevent: *a reviewer will read a correct rebuild as a failure.*
+
+    THE WIDTH COMES FROM THE OPERAND. A quote of 20 characters is compared over 20, one of 64
+    over 64, so two full digests still compare exactly and nothing here widens or narrows what a
+    digest IS. `MIN_IDENTIFYING_CHARS` is a floor and not a width.
+    """
+    if len(quoted) < MIN_IDENTIFYING_CHARS or len(full) < MIN_IDENTIFYING_CHARS:
+        return False
+    width = min(len(quoted), len(full))
+    return quoted[:width] == full[:width]
 
 
 def package_set_digest(body: str) -> str:

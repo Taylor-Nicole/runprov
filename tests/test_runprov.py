@@ -42219,7 +42219,7 @@ def test_a_PUBLISHED_IDENTITY_STRING_is_an_operand_and_answers_one_dimension():
     plainly that the other two had nothing to compare — rather than reporting them as agreeing,
     which is what an absent value compared against an absent value would otherwise look like.
     """
-    quoted = runprov.env.from_identity_string(f"{runprov.pkgset.ALGORITHM}:abc123")
+    quoted = runprov.env.from_identity_string(f"{runprov.pkgset.ALGORITHM}:{'a' * 32}")
     comparison = runprov.env.compare(_env_identity("record", {"numpy": "2.1.0"}), quoted)
     assert comparison.packages.blocked is None
     interpreter = next(d for d in comparison.dimensions if d.name == "interpreter")
@@ -42229,6 +42229,81 @@ def test_a_PUBLISHED_IDENTITY_STRING_is_an_operand_and_answers_one_dimension():
         runprov.env.from_identity_string("runprov.pkgset.v99:abc")
     with pytest.raises(ValueError, match="not a published identity"):
         runprov.env.from_identity_string(f"{runprov.pkgset.ALGORITHM}:")
+
+
+def test_the_identity_this_build_PRINTS_round_trips_as_an_operand():
+    """THE OPERAND IS TAKEN FROM THE PRODUCER, WHICH IS THE WHOLE POINT OF THIS TEST.
+
+    Measured 2026-10-26: `env --digest` printed `<algorithm>:<digest[:16]>` — the form ADR-0024
+    R-16 calls quotable, "what goes in a methods section" — and feeding it back to `env --compare`
+    returned DIFFERS at exit 1 **while printing the two digests as identical**, because the
+    comparison was `==` over 64 characters and the operand carried 16.
+
+    **EVERY TEST AROUND THIS ONE CONSTRUCTED ITS OWN OPERAND**, so every one of them agreed with
+    itself and none could see it. This one builds the string the way `digest_payload` builds it
+    and compares against the identity that produced it: a round trip, not a comparison of two
+    things the test wrote. Narrow the producer or widen the comparison and it reds.
+    """
+    #: A REAL DIGEST FROM THE REAL PRODUCER. `_env_identity` fakes one at the DISPLAY width, so
+    #: an earlier draft of this test compared 16 characters against 16 and passed while the
+    #: defect was live — caught here only by the vacuity assertion below, which is why it is
+    #: written before the round trip rather than after it.
+    body = "numpy==2.1.0\nscipy==1.14.0\n"
+    identity = dataclasses.replace(
+        _env_identity("record", {"numpy": "2.1.0", "scipy": "1.14.0"}),
+        package_set=runprov.env.Field(runprov.pkgset.package_set_digest(body), how="recorded"),
+    )
+    printed = runprov.env.digest_payload(identity)["identity"]
+
+    assert printed == f"{runprov.pkgset.ALGORITHM}:{identity.package_set.value[:16]}", printed
+    assert len(printed.partition(":")[2]) < len(identity.package_set.value), (
+        "this test is vacuous unless the printed form is SHORTER than the digest it names"
+    )
+
+    comparison = runprov.env.compare(identity, runprov.env.from_identity_string(printed))
+    assert comparison.packages.differences == [], comparison.packages
+    assert "on both" in (comparison.packages.examined or ""), comparison.packages.examined
+
+
+def test_a_quoted_digest_is_a_PREFIX_CLAIM_and_too_short_a_quote_is_REFUSED():
+    """The width comes from the OPERAND, so a display width never becomes an identifier width.
+
+    THE FLOOR IS DERIVED FROM WHAT THIS BUILD PRINTS, not chosen: a quote shorter than the
+    shortest form it emits was never produced here, and accepting one would spend collision space
+    to buy nothing. A too-short quote is refused by NAME rather than reported as a difference,
+    because "this is not enough of a digest to tell" and "these environments differ" are
+    different answers and only one of them is true.
+    """
+    floor = runprov.pkgset.MIN_IDENTIFYING_CHARS
+    full = "f85e6858425cfe89" + "d" * 48
+    near = "f85e6858425cfe89" + "0" * 48
+    assert runprov.pkgset.identifies(full[:floor], full), "the printed width must identify"
+    assert runprov.pkgset.identifies(full, full)
+    assert not runprov.pkgset.identifies(near, full), "differing later must still differ"
+    assert not runprov.pkgset.identifies(full[: floor - 1], full), "below the floor, nothing"
+
+    #: AND THE DISPLAY SAYS WHEN IT CANNOT SHOW THE DIFFERENCE. These two agree over the width a
+    #: line shows, so printing them alone would put one value twice beside a verdict of DIFFERS.
+    quoted = runprov.env.from_identity_string(f"{runprov.pkgset.ALGORITHM}:{near}")
+    identity = dataclasses.replace(
+        _env_identity("record", None),
+        package_set=runprov.env.Field(full, how="recorded"),
+    )
+    shown = runprov.env.compare(identity, quoted).packages.differences
+    assert len(shown) == 1, shown
+    assert full[: runprov.pkgset.DIGEST_CHARS] in shown[0]
+    assert "they differ further in" in shown[0], shown[0]
+
+    #: AND IT SAYS IT ONLY WHEN IT IS TRUE — a sentence that is always printed carries nothing.
+    other = "0000000000000000" + "d" * 48
+    visible = runprov.env.compare(
+        identity,
+        runprov.env.from_identity_string(f"{runprov.pkgset.ALGORITHM}:{other}"),
+    ).packages.differences
+    assert "they differ further in" not in visible[0], visible[0]
+
+    with pytest.raises(ValueError, match="before it identifies anything"):
+        runprov.env.from_identity_string(f"{runprov.pkgset.ALGORITHM}:f85e68")
 
 
 def test_a_field_may_not_carry_BOTH_a_value_and_a_reason_it_is_absent():
