@@ -428,11 +428,17 @@ _HISTORICAL: tuple[tuple[str, str, str], ...] = (
     (
         r"on disk that is \*\*\d+ files, \d+ scripts",
         "other-tree",
-        "one pipeline's environment snapshots -- RE-MEASURED 2026-10-28, and the figure it "
-        "used to carry was WRONG: `ls $D | wc -l` -> 87; stems normalised by stripping the "
-        "version and timestamp -> 27; `comm -12` against the 55 distinct `^- step:` names in "
-        "transformation_log.yml sha f2e84bd3 -> 16. The superseded sentence said `32 of 55 "
-        "steps covered`, which joined 32 filename stems to 55 step names by nothing",
+        "one pipeline's environment snapshots -- RE-MEASURED 2026-10-28, and the figure it used "
+        "to carry was WRONG. THE RULE IS THE RECORD, because this one is rule-dependent: in "
+        "flaviviridae_audit/hcv_genotyping/requirements/mamba_envs/hcv_genotyping_env (named in "
+        "full: a second directory on that disk also holds 87 entries), `ls | wc -l` -> 87, and "
+        "`sed -E 's/^requirements_//; s/\\.txt$//; s/_v[0-9]+_[0-9]{8}_[0-9]{4}$//; "
+        "s/_[0-9]{8}_[0-9]{4}$//; s/[0-9]{8}_[0-9]{4}$//; s/_$//' | sort -u | wc -l` -> 27, "
+        "then `comm -12` against the 55 distinct `^- step:` names in transformation_log.yml "
+        "sha f2e84bd3 (the 2026-10-12 re-measurement in README.md's correction table) -> 16. "
+        "DROPPING ANY CLAUSE OF THAT sed CHANGES THE ANSWER: 26 and 32 are both reachable from "
+        "looser readings, and an earlier version of this entry recorded a recipe that admitted "
+        "all three. 16 is the figure stable under every rule tried; 27 is not",
     ),
     (
         r"median [\d,]+ bytes, max [\d,]+",
@@ -571,7 +577,18 @@ def historical_lines(text: str) -> tuple[dict[int, str], list[str]]:
 
 
 def dead_historical_entries() -> list[str]:
-    """Entries matching no line in ANY audited document — an excuse outliving its subject."""
+    """Entries matching no line in ANY audited document — an excuse outliving its subject.
+
+    THIS IS THE DIAGNOSTIC, NOT THE DETECTOR, and the distinction decides whether a future
+    simplification deletes it. The enforced half of the self-retirement lives in the suite, at
+    `test_the_unaccounted_claim_count_is_exactly_the_committed_baseline`: that test refuses an
+    entry which explains nothing anywhere — PER ENTRY, deliberately, and its own comment records
+    why the per-LINE form was rejected. Neutering this function therefore still goes red, but the
+    red then says the entry *"explain[s] lines that something else already accounts for"* when in
+    fact it matches no line at all. That message is a contradiction, and this function is what
+    turns it back into a sentence a reader can act on. Nothing else in this file says the enforced
+    check exists, which is why it is said here.
+    """
     #: PER LINE, THE SAME UNIT `historical_lines` USES. This searched whole documents, so an
     #: anchored pattern -- `^| **...` for a table row -- could never match here and would be
     #: reported dead for ever while matching perfectly well where it is applied. No entry is
