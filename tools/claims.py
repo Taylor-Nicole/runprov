@@ -368,6 +368,16 @@ def superseded_lines(text: str) -> set[int]:
 
 #: WHY A FIGURE CAN NEVER BE RE-MEASURED. Each category is a general reason; each entry names the
 #: specific subject. Both are required, because a category alone is an excuse with a label on it.
+#: WHAT THE `historical` BUCKET HOLDS, SAID ONCE. Two print sites describe this bucket, and on
+#: 2026-10-28 a repair changed one of them and missed the other, so a single run printed
+#: *"NOT CHECKABLE BY ANYTHING IN THIS REPOSITORY"* at one end and *"permanently unverifiable"* at
+#: the other, 131 lines apart. **A phrase grep could not find the second, because the phrase is
+#: split across two source lines** — `"examined and permanently "` then `"unverifiable."` — and
+#: the repair's own explanatory quotations then camouflaged the site it had missed. This file's
+#: own rule covers it: a claim stated once and relied on in N places is N unguarded claims. So it
+#: is stated here and referenced, and a future rewording cannot reach one site only.
+_HISTORICAL_MEANS = "examined and found NOT CHECKABLE BY ANYTHING IN THIS REPOSITORY"
+
 _WHY_HISTORICAL = {
     "fixed": "it measured a defect since repaired, so the condition cannot be recreated",
     "other-tree": "it was measured on a file or repository that is not this one",
@@ -383,8 +393,24 @@ _WHY_HISTORICAL = {
 #: THIS IS A WORK LIST, NOT AN EXEMPTION LIST, and the distinction is in the arithmetic: these
 #: lines are counted SEPARATELY and are never added to the accounted-for total. `unaccounted` is
 #: the residue nobody has looked at; `historical` is the residue somebody examined and found
-#: permanently unverifiable. Both are ratcheted. Moving a line from the first to the second is a
-#: judgement recorded, not a check gained, and the report says so.
+#: NOT CHECKABLE BY ANYTHING IN THIS REPOSITORY. Both are ratcheted. Moving a line from the first
+#: to the second is a judgement recorded, not a check gained, and the report says so.
+#:
+#: THAT CLAIM WAS NARROWED 2026-10-28, AND THE NARROWING IS A REPAIR. It read *"examined and found
+#: permanently unverifiable"*, which is false: figures in this bucket were re-measured against
+#: the trees they name in about two minutes each. **AND THE FIRST DRAFT OF THIS NOTE CITED A
+#: FIGURE THAT IS NOT IN THE BUCKET** — *"32 of 55 steps covered"*, which was wrong and had
+#: shipped in the 0.9.0 wheel, but which lived in `runprov/environment.py`'s docstring, while this
+#: bucket classifies lines of AUDITED MARKDOWN only. Claim and quantification were different
+#: sentences, in a note about that very defect. What this bucket actually holds are figures like
+#: the predecessor log's entry counts, which are dated measurements of PINNED, SUPERSEDED bytes
+#: and are stated in the present tense beneath that pin. A bucket nothing can fail is one nobody
+#: re-opens, so the false word was doing the work of a check.
+#:
+#: The repository already held the true sentence, in `README.md`: *"Nothing in this
+#: repository's gate can check a path outside it, so these figures are permanently unverifiable
+#: HERE and are dated rather than asserted."* The qualifier is what makes it true, and this file
+#: had dropped it. Renaming a claim to what it actually holds is a repair, not a retreat.
 #:
 #: WHAT IS DELIBERATELY ABSENT. A figure that COULD be checked does not belong here however
 #: inconvenient it is to check. *"it reports an edit to line 3 as line 4 breaking"*,
@@ -553,7 +579,7 @@ _HISTORICAL: tuple[tuple[str, str, str], ...] = (
 
 
 def historical_lines(text: str) -> tuple[dict[int, str], list[str]]:
-    """Which README lines are permanently unverifiable, and which entries no longer apply.
+    """Which README lines nothing here can check, and which entries no longer apply.
 
     A DEAD ENTRY IS REPORTED, never ignored: an exemption whose sentence has gone is an excuse
     outliving its subject, and this file has already shipped one decoration that checked nothing.
@@ -1235,8 +1261,8 @@ def report() -> int:
         print(f"  {len(buckets[name]):>4}  {name:<12} {reason}")
     historical = buckets["historical"]
     print(
-        f"\n=== HISTORICAL — {len(historical)} line(s) examined and found permanently "
-        f"unverifiable. A WORK LIST, NOT A CLEARANCE ==="
+        f"\n=== HISTORICAL — {len(historical)} line(s) {_HISTORICAL_MEANS}. "
+        f"A WORK LIST, NOT A CLEARANCE ==="
     )
     for category, why in _WHY_HISTORICAL.items():
         #: NOT `rows`. It was, and it SHADOWED the registry verdicts computed above, so the exit
@@ -1262,8 +1288,8 @@ def report() -> int:
         return 1
     print(
         f"\nevery bound claim holds. The residue is {len(unaccounted) + len(historical)} line(s): "
-        f"{len(unaccounted)} nobody has examined and {len(historical)} examined and permanently "
-        f"unverifiable. Recording a reason is NOT a check gained, so the two are counted apart "
+        f"{len(unaccounted)} nobody has examined and {len(historical)} {_HISTORICAL_MEANS}. "
+        f"Recording a reason is NOT a check gained, so the two are counted apart "
         f"and the sum is what has to fall. This exits 0: it reports, it does not gate."
     )
     #: THE DENOMINATOR MOVES WHEN THE DETECTION RULE MOVES, and saying so is the difference

@@ -11,6 +11,59 @@ is a fix nobody checked.
 
 ### Fixed
 
+**The claims report called a bucket *"permanently unverifiable"* and it is not — the word was
+doing the work of a check.** `tools/claims.py` sorts every documented number into BOUND,
+CLASSIFIED, HISTORICAL or UNACCOUNTED, and anything in HISTORICAL cannot fail. Measured
+2026-10-28: figures in that bucket were re-measured against the trees they name, in about two
+minutes each. A bucket nothing can fail is one nobody re-opens, so the claim is narrowed to
+**"examined and found NOT CHECKABLE BY ANYTHING IN THIS REPOSITORY"**.
+
+**It is now stated ONCE, as `_HISTORICAL_MEANS`, and referenced** — because the first attempt
+changed three of four sites and missed the closing summary, so a single run described one bucket
+two contradictory ways, 131 lines apart. **A phrase grep could not find the fourth site, because
+the phrase is split across two source lines** (`"examined and permanently "` then
+`"unverifiable."`), and the repair's own explanatory quotations then camouflaged the miss. Sweep
+by the family word, never by a phrase; and this file's own rule — *a claim stated once and relied
+on in N places is N unguarded claims* — is what removes the class rather than the instance.
+
+**And the first draft cited a figure that is not in the bucket.** It named *"32 of 55 steps
+covered"*, which was wrong and had shipped — but which lived in `runprov/environment.py`'s
+docstring, while this bucket classifies lines of audited markdown only. Claim and quantification
+were different sentences, in a note about that very defect.
+
+**The repository already held the true sentence** and this file had dropped its qualifier.
+`README.md` says: *"Nothing in this repository's gate can check a path outside it, so these
+figures are permanently unverifiable **here** and are dated rather than asserted."* Renaming a
+claim to what it actually holds is a repair, not a retreat; the arithmetic is untouched, and both
+digests and all three ratcheted counts are unmoved.
+
+**And a category with no declared reason was unguarded, in both directions.** `_HISTORICAL`'s own
+docstring requires a category *and* a subject, *"because a category alone is an excuse with a
+label on it"* — but nothing held the categories to `_WHY_HISTORICAL`. `report()` prints its
+per-category summary by iterating the declarations, so an entry carrying an undeclared category
+is **silently dropped from the summary while still lowering the residue**, and the reason it
+gives is printed nowhere. Measured by planting one against a real README line: full suite 1608
+passed, 27 skipped, rc=0 — nothing noticed.
+
+Both directions are now asserted, quantified over the two tables' own keys rather than over any
+list, **and never over a count — which is what makes them survive a baseline regeneration.** The
+shape that matters: an undeclared category on an unaccounted line *does* go red on the old tree,
+but on the COUNT assertion, naming the number instead of the category — and doing what that red
+tells you to do (`ci.py claims-baseline`) turns it green with the undeclared category still live.
+The documented remedy laundered it.
+
+**Two more assertions beside them, because the key sets cannot see every shape.** An entry with a
+category but an empty SUBJECT makes the report print a label with nothing after it, closing the
+other half of the docstring the guard quotes. And `report()` selects a category's rows by the
+substring `f"{category} —"`, so a category whose name is a suffix of another counts its
+neighbour's rows: planted, the summary accounts for **88 rows under a header saying 68**, and both
+key-set assertions stay green. The summary's arithmetic is now held against `survey()`, the same
+source `report()` and `counts()` both read. The real repair is for the summary to carry the
+category as a field rather than match it as a substring.
+
+Every assertion was shown to fail before it was kept: each plant rc=1 naming its own offender,
+beside a void control rc=0 and a byte-verified revert.
+
 **`environment.py`'s module docstring made three claims about the predecessor corpus and all
 three were wrong — and they shipped, in the 0.9.0 wheel and sdist.** The docstring justifies
 content-addressing by citing a measurement of the sibling pipeline's pip-freeze corpus.

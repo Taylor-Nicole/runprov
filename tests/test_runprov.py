@@ -55445,9 +55445,13 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
     down means regenerate the baseline, up means a claim arrived that nothing accounts for.
 
     TWO RESIDUES, AND THE SUM IS THE HEADLINE. `unaccounted` is what nobody has examined;
-    `historical` is what somebody examined and found permanently unverifiable — a bug since
-    repaired, another tree, this host, a library not installed. **Recording a reason is not a check
-    gained**, so the two are counted apart and their SUM is asserted as well: moving a line from
+    `historical` is what somebody examined and found NOT CHECKABLE BY ANYTHING IN THIS
+    REPOSITORY — a bug since repaired, another tree, this host, a library not installed. (That
+    claim read "permanently unverifiable" until 2026-10-28, which is false and was measured to be
+    false: four of those figures were re-measured against the trees they name, and one was wrong
+    and had shipped. The qualifier is what makes the sentence true.) **Recording a reason is not
+    a check gained**, so the two are counted apart and their SUM is asserted as well: moving a
+    line from
     one to the other lowers a number and raises another by the same one, and a reader watching
     only the first would read bookkeeping as progress. Only a binding, a test, or a deleted
     sentence moves the sum.
@@ -55510,6 +55514,85 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
 
     population, live, known = claims.counts()
 
+    #: AND EVERY CATEGORY MUST BE DECLARED, BOTH DIRECTIONS, QUANTIFIED OVER THE TABLES' OWN
+    #: KEYS. `_HISTORICAL`'s own docstring requires a category AND a subject, *"because a category
+    #: alone is an excuse with a label on it"* — but nothing held the categories to their
+    #: declarations. `report()` prints its per-category summary by iterating `_WHY_HISTORICAL`, so
+    #: an entry carrying a category nobody declared loses its PER-CATEGORY LINE and the category's
+    #: declared general reason, and the summary then sums to one less than the header it sits
+    #: under. The entry's own row is still printed and the counts are untouched — so what this
+    #: prevents is a degraded, self-inconsistent report rather than a wrong verdict, and an
+    #: earlier draft of this comment overstated it as *"the reason it gives is printed nowhere"*.
+    #: Measured 2026-10-28 by planting one such entry on a line ALREADY covered by another entry,
+    #: so the counts did not move: the target node passed, rc=0 — nothing noticed.
+    #:
+    #: AND THE PLANT SHAPE IS PART OF THE RECORD, because only one of two shapes was silent. An
+    #: undeclared category on an UNACCOUNTED line does go red on the pre-fix tree — but on
+    #: `known == recorded_known`, naming the COUNT and not the category, and **doing what that red
+    #: tells you to do (`ci.py claims-baseline`) turns it green with the undeclared category still
+    #: live.** The documented remedy launders that shape into the silent one. These assertions are
+    #: keyed on the two tables' KEYS and never on a count, so regeneration cannot defeat them;
+    #: that non-defeasibility is the point, and it is why they sit above every count assertion.
+    #:
+    #: BOTH DIRECTIONS, because each fails differently and neither implies the other. An
+    #: undeclared category is an excuse with no stated reason. A declaration used by no entry is a
+    #: reason with no subject — the same shape as a dead entry, one level up, and it rots the same
+    #: way. Today both sets are empty, so this passes on arrival and can still fail, which is the
+    #: only combination worth shipping.
+    used_categories = {category for _pattern, category, _subject in claims._HISTORICAL}
+    declared_categories = set(claims._WHY_HISTORICAL)
+    #: `!r` ON BOTH JOINS. A category differing only by whitespace is caught, and without the repr
+    #: the red prints `residue:  fixed` — indistinguishable from `fixed`, so the reader is told
+    #: something is wrong and cannot see what.
+    assert not used_categories - declared_categories, (
+        "these `_HISTORICAL` categories are used by an entry but declared nowhere in "
+        "`_WHY_HISTORICAL`, so `report()` drops them from its per-category summary while the "
+        "entries still lower the residue: "
+        + "; ".join(repr(c) for c in sorted(used_categories - declared_categories))
+    )
+    assert not declared_categories - used_categories, (
+        "these `_WHY_HISTORICAL` declarations are used by no entry in `_HISTORICAL`, so each is a "
+        "recorded reason with nothing to explain. Delete it, or add the entry you declared it "
+        "for — a half-finished edit lands here too: "
+        + "; ".join(repr(c) for c in sorted(declared_categories - used_categories))
+    )
+
+    #: AND THE SUBJECT HALF OF THE SAME DOCSTRING, which the category assertions do not cover.
+    #: `_HISTORICAL` requires a category AND a subject *"because a category alone is an excuse
+    #: with a label on it"* — and an entry with `""` for a subject makes the report print exactly
+    #: that, a bare `README.md:146: fixed — ` with nothing after the dash. Measured: counts
+    #: unmoved, every claims-related test green, rc=0.
+    subjectless = sorted(
+        f"{category}: {pattern!r}"
+        for pattern, category, subject in claims._HISTORICAL
+        if not subject.strip()
+    )
+    assert not subjectless, (
+        "these `_HISTORICAL` entries carry a category but no subject, so the report prints a "
+        "label with no reason after it: " + "; ".join(subjectless)
+    )
+
+    #: AND THE SUMMARY MUST ACCOUNT FOR EVERY ROW IT SUMMARISES. `report()` selects a category's
+    #: rows by the SUBSTRING `f"{category} —"` over the whole row, so the assertions above miss
+    #: two shapes they look like they cover: a category whose name is a suffix of another counts
+    #: its neighbour's rows twice, and a SUBJECT containing `"fixed —"` is counted under `fixed`.
+    #: Neither moves a key, so neither set difference sees it. This is complementary, not a
+    #: replacement — measured both ways, each catches what the other does not. **The real repair
+    #: is for the summary to carry the category as a FIELD rather than match it as a substring**;
+    #: until it does, this holds the arithmetic the header asserts.
+    #: `survey()` IS THE SOURCE `report()` AND `counts()` BOTH READ, so this compares the summary
+    #: against the same rows rather than restating how they are built.
+    historical_rows = claims.survey()[0]["historical"]
+    summarised = sum(
+        len([h for h in historical_rows if f"{category} —" in h])
+        for category in claims._WHY_HISTORICAL
+    )
+    assert summarised == known, (
+        f"`report()`'s per-category summary accounts for {summarised} row(s) under a header that "
+        f"says {known}. A category name that is a suffix of another, or a subject containing "
+        f"`<category> —`, is counted twice or under the wrong heading"
+    )
+
     #: A DEAD HISTORICAL ENTRY IS AN EXCUSE OUTLIVING ITS SUBJECT. An exemption whose sentence has
     #: gone from the README explains nothing and still lowers a number; this file has already
     #: shipped one decoration that checked nothing, and `scale_drift` exists because of another.
@@ -55567,7 +55650,7 @@ def test_the_unaccounted_claim_count_is_exactly_the_committed_baseline():
     #: NOT VACUOUS: a rule that matched nothing would make the comparison below trivially true,
     #: and a baseline of 0 would agree with it forever.
     assert known == recorded_known, (
-        f"{known} line(s) are recorded as permanently unverifiable and the baseline says "
+        f"{known} line(s) are recorded as not checkable by anything here, and the baseline says "
         f"{recorded_known}. A rise here is a judgement somebody recorded — regenerate with "
         f"`python ci.py claims-baseline` — and a fall means one became checkable, which is the "
         f"direction this list exists to move in"
