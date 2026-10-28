@@ -68,7 +68,7 @@ from . import chain as chain_mod
 from . import check as check_mod
 from . import diff as diff_mod
 from . import env as env_mod
-from . import hashing, policy
+from . import hashing, pkgset, policy
 from . import impact as impact_mod
 from . import prune as prune_mod
 from . import report as report_mod
@@ -1736,8 +1736,19 @@ def _impact(args: argparse.Namespace) -> int:
         return 2
 
     target = str(args.target)
+    #: A QUOTED DIGEST IS A PREFIX CLAIM, NOT A STRING — the same rule `env --compare` was given
+    #: on 2026-10-26, and the same defect it was given it for. This command PRINTS a digest cut to
+    #: 16 characters; fed straight back, the cut value was compared with `==` against full
+    #: digests, matched nothing, and printed *"no recorded run read these bytes."* at exit 0 —
+    #: which `impact`'s own module docstring calls out by name as the one reading it must never
+    #: produce: *"a green light to overwrite a reference"*. The one value this command tells a
+    #: reader to quote was the one value that could never match.
+    quoted = False
     if re.fullmatch(r"[0-9a-f]{16,64}", target):
         digest = target
+        #: NOT a magic 64: digest-shaped but not FULL width, said with the pattern that is
+        #: already the definition of digest-shaped two lines up.
+        quoted = re.fullmatch(r"[0-9a-f]{64}", target) is None
     else:
         path = pathlib.Path(target)
         if not path.is_file():
@@ -1759,6 +1770,31 @@ def _impact(args: argparse.Namespace) -> int:
     # it and disclosed it.
     counted: list[int] = [0]
     graph = _lineage(log, counted, names, consumers, outputs_by)
+
+    #: RESOLVED AGAINST WHAT THE HISTORY KNOWS, and only now, because the index is what decides.
+    #: `pkgset.identifies` is the project's one definition of a prefix claim and the width comes
+    #: from the operand, so a full 64-character digest still compares exactly and nothing here
+    #: widens what a digest IS. A quote matching SEVERAL digests is REFUSED rather than resolved:
+    #: picking one would answer a question the reader did not ask, and this command's whole
+    #: hazard is an answer that looks complete. A quote matching NONE falls through unchanged and
+    #: reports what it has always reported -- that no recorded run read those bytes.
+    if quoted:
+        #: `consumers` ONLY, and this is not a narrowing for convenience. `outputs_by` is keyed
+        #: by RUN UID, not by digest — a first draft resolved against both, and a 16-character
+        #: hex quote would then have been free to prefix-match a run uid and answer about a run
+        #: instead of a file. The test that reaches the refusal branch is what found it. Nothing
+        #: is lost: this command asks which runs READ these bytes, so a digest absent from
+        #: `consumers` has the same answer whether it is resolved or not.
+        matches = sorted({d for d in consumers if pkgset.identifies(digest, d)})
+        if len(matches) > 1:
+            print(
+                f"impact: {printable(target)} identifies {len(matches)} different digests in "
+                f"{printable(str(log))}; quote more characters",
+                file=sys.stderr,
+            )
+            return 2
+        if matches:
+            digest = matches[0]
 
     unregistered = 0
     runs = 0

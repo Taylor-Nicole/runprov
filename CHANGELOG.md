@@ -11,6 +11,41 @@ is a fix nobody checked.
 
 ### Fixed
 
+**`impact` printed a digest it could not accept back, and said *"no recorded run read these
+bytes."* at exit 0 — the one reading its own docstring forbids.** The page heads itself with the
+digest cut to 16 characters. The operand pattern takes `[0-9a-f]{16,64}`, so the cut value was
+accepted as a digest and then compared with `==` against full 64-character keys. It matched
+nothing, and an empty result from this command is explicitly not allowed to read as *"a green
+light to overwrite a reference"*. **A quoted digest is now a PREFIX CLAIM**, resolved against the
+digests the history knows.
+
+**This is the SECOND INSTANCE OF A CLASS ALREADY REPAIRED, and the rule was reused rather than
+rewritten.** `env --compare` had the identical defect — found 2026-10-26, fixed by
+`pkgset.identifies`, whose docstring says *"a quote is a PREFIX CLAIM, not a string"* and *"the
+width comes from the operand"*. That repair landed at its own site and the class was never swept.
+The sweep is one pattern, `[0-9a-f]{` over the package: **exactly one command takes a
+digest-shaped ARGUMENT**, so the class has two members and both are now closed.
+
+**A quote identifying SEVERAL digests is refused at exit 2, never resolved** — picking one would
+answer a question the reader did not ask, which is the same failure direction as the empty result.
+A full 64-character digest still compares exactly, and nothing here widens what a digest is.
+
+**And the first draft of the repair resolved against run uids.** It matched the quote over
+`consumers` *and* `outputs_by`; `outputs_by` is keyed by **run uid**, which is also hex, so a
+16-character quote could have prefix-matched a run and answered about it instead of a file. The
+test written to reach the refusal branch is what found it — a branch that cannot be reached
+cannot be trusted to refuse.
+
+**AND THE OTHER HALF OF THE REPORT WAS DECLINED: `impact <path>` hashes the raw digest only, and
+that is correct.** It was reported alongside the
+above as a defect — a CRLF copy has an equal `content_sha256`, a different raw digest, and
+`impact` on it reports no reader. But the question this command asks is *"if I change the bytes
+that are there, what breaks?"*, and the copy is a different file that no recorded run read, so
+nothing breaks. The three-key index in `_lineage` exists *"because preferring one and falling back
+compares two different keys and invents orphans"* — **graph integrity across record shapes, not a
+claim that content-equivalent files are interchangeable.** Changing the path branch to fall back
+to the content digest would answer a different question without saying so.
+
 **The claims report called a bucket *"permanently unverifiable"* and it is not — the word was
 doing the work of a check.** `tools/claims.py` sorts every documented number into BOUND,
 CLASSIFIED, HISTORICAL or UNACCOUNTED, and anything in HISTORICAL cannot fail. Measured

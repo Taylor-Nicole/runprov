@@ -20600,6 +20600,127 @@ def test_diff_ignores_measurement_noise_but_not_a_real_move():
     assert runprov.diff._materially("wall_seconds", 0.0, 0.0) is False
 
 
+def test_the_digest_impact_prints_is_accepted_back_by_impact(tmp_path, capsys):
+    """THE ONE VALUE THIS COMMAND TELLS A READER TO QUOTE WAS THE ONE VALUE THAT COULD NEVER MATCH.
+
+    `impact` heads its page with the digest cut to 16 characters. The operand pattern accepts
+    `[0-9a-f]{16,64}`, so that cut value was taken as a digest and then compared with `==` against
+    full 64-character keys — matching nothing, and printing *"no recorded run read these bytes."*
+    at exit 0. `impact`'s own module docstring names that exact reading as the one it must never
+    produce: *"a green light to overwrite a reference."*
+
+    THE SECOND INSTANCE OF A REPAIRED CLASS. `env --compare` had the identical defect, found
+    2026-10-26 and fixed by `pkgset.identifies` — *"a quote is a PREFIX CLAIM, not a string"*. The
+    rule was written once and applied at one site; this is the other site. The sweep that found it
+    is `[0-9a-f]{` over the package: exactly one command takes a digest-shaped ARGUMENT, so the
+    class has two members and both are now closed.
+
+    ASSERTED AGAINST THE FULL DIGEST'S OWN ANSWER, not against a transcript: the quoted form must
+    agree with the unabbreviated one, which is the property, rather than merely print something.
+    """
+    log = _pipeline(tmp_path)
+    ref = tmp_path / "ref.fa"
+
+    assert runprov.__main__.main(["impact", str(ref), "--log", str(log)]) == 1
+    page = capsys.readouterr().out
+    quoted = page.splitlines()[0].strip()
+    assert len(quoted) == 16 and all(c in "0123456789abcdef" for c in quoted), quoted
+
+    full = runprov.hashing.sha256(ref)
+    assert runprov.__main__.main(["impact", full, "--log", str(log)]) == 1
+    by_full = capsys.readouterr().out
+
+    #: THE REGRESSION. Before the repair this returned 0 and said nothing read those bytes.
+    assert runprov.__main__.main(["impact", quoted, "--log", str(log)]) == 1
+    by_quote = capsys.readouterr().out
+    assert "3 artifact(s) derive from them" in by_quote
+    assert "no recorded run read these bytes" not in by_quote
+    assert by_quote == by_full, (
+        "a quote is a prefix claim, so it must answer as its full digest does"
+    )
+
+
+def test_a_quoted_digest_matching_several_is_refused_rather_than_resolved(tmp_path, capsys):
+    """A quote that identifies more than one digest is REFUSED, never picked.
+
+    Picking the first would answer a question the reader did not ask, and this command's whole
+    hazard is an answer that looks complete — the same failure direction as the empty result its
+    docstring forbids. Two SHA-256 digests sharing sixteen hex characters do not arise from real
+    data, so the history here is written by hand, with a reader for each; the branch exists for
+    the case the arithmetic does not forbid, and a branch that cannot be reached cannot be
+    trusted to refuse.
+    """
+    shared = "a" * 16
+    one, two = shared + "1" * 48, shared + "2" * 48
+    log = tmp_path / "h.jsonl"
+    rows = [
+        {
+            "schema": "runprov.run.v1",
+            "run_uid": "u1",
+            "script": "maker_one",
+            "status": "ok",
+            "started_utc": "2026-01-01T00:00:00Z",
+            "finished_utc": "2026-01-01T00:00:01Z",
+            "inputs": [],
+            "outputs": [{"path": "a.txt", "sha256": one, "content_sha256": one}],
+        },
+        {
+            "schema": "runprov.run.v1",
+            "run_uid": "u2",
+            "script": "maker_two",
+            "status": "ok",
+            "started_utc": "2026-01-01T00:00:02Z",
+            "finished_utc": "2026-01-01T00:00:03Z",
+            "inputs": [],
+            "outputs": [{"path": "b.txt", "sha256": two, "content_sha256": two}],
+        },
+        {
+            "schema": "runprov.run.v1",
+            "run_uid": "u3",
+            "script": "reader_one",
+            "status": "ok",
+            "started_utc": "2026-01-01T00:00:04Z",
+            "finished_utc": "2026-01-01T00:00:05Z",
+            "inputs": [{"path": "a.txt", "sha256": one, "content_sha256": one}],
+            "outputs": [],
+        },
+        {
+            "schema": "runprov.run.v1",
+            "run_uid": "u4",
+            "script": "reader_two",
+            "status": "ok",
+            "started_utc": "2026-01-01T00:00:06Z",
+            "finished_utc": "2026-01-01T00:00:07Z",
+            "inputs": [{"path": "b.txt", "sha256": two, "content_sha256": two}],
+            "outputs": [],
+        },
+    ]
+    log.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+    assert runprov.__main__.main(["impact", shared, "--log", str(log)]) == 2
+    err = capsys.readouterr().err
+    assert "identifies 2 different digests" in err, err
+    assert "quote more characters" in err
+
+
+def test_a_quoted_digest_matching_nothing_answers_as_it_always_did(tmp_path, capsys):
+    """A quote identifying NO digest must fall through unchanged — not refuse, and not crash.
+
+    The three outcomes of a quote are deliberately different and only one of them is new. Several
+    matches is a REFUSAL, because picking would answer a question nobody asked. One match is the
+    repair. **None is not an error at all**: the reader quoted a digest this history has no reader
+    for, which is exactly what `no recorded run read these bytes.` has always meant, and turning
+    it into a refusal would make a quoted digest answer differently from the full one it stands
+    for. The exit code stays 0 — `impact` reports 0 for "no work to do", and a digest nothing read
+    is no work to do.
+    """
+    log = _pipeline(tmp_path)
+    assert runprov.__main__.main(["impact", "f" * 16, "--log", str(log)]) == 0
+    captured = capsys.readouterr()
+    assert "no recorded run read these bytes." in captured.out
+    assert "identifies" not in captured.err, "nothing matched, so there is nothing to disambiguate"
+
+
 def test_impact_says_truncated_rather_than_no_recorded_run(tmp_path, capsys):
     """Audit B, A-09. `--depth 0` emptied `steps` while `seeds` was non-empty, and the page
     then printed the one sentence the module docstring says must never be false. A truncation
