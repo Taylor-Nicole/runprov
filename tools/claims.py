@@ -426,9 +426,13 @@ _HISTORICAL: tuple[tuple[str, str, str], ...] = (
         "a downstream project's history",
     ),
     (
-        r"on disk that is \*\*\d+ files, \d+ of \d+ steps covered",
+        r"on disk that is \*\*\d+ files, \d+ scripts",
         "other-tree",
-        "one pipeline's environment snapshots",
+        "one pipeline's environment snapshots -- RE-MEASURED 2026-10-28, and the figure it "
+        "used to carry was WRONG: `ls $D | wc -l` -> 87; stems normalised by stripping the "
+        "version and timestamp -> 27; `comm -12` against the 55 distinct `^- step:` names in "
+        "transformation_log.yml sha f2e84bd3 -> 16. The superseded sentence said `32 of 55 "
+        "steps covered`, which joined 32 filename stems to 55 step names by nothing",
     ),
     (
         r"median [\d,]+ bytes, max [\d,]+",

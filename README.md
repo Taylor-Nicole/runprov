@@ -2334,9 +2334,11 @@ body — so identical environments collapse to one file and the run record refer
 
 `reused: true` means the environment has not moved since some earlier run. That is the
 question the predecessor could not answer cheaply: it wrote one timestamped pip freeze per
-invocation, and on disk that is **87 files, 32 of 55 steps covered, 8 distinct contents,
-1.4 MB** — 79 byte-identical copies, and "did the environment change between these two
-runs?" answerable only by diffing across timestamped filenames.
+invocation, and on disk that is **87 files, 27 scripts, 8 distinct contents, 1.4 MB** — 79
+byte-identical copies, and "did the environment change between these two runs?" answerable
+only by diffing across timestamped filenames. **How much of the pipeline those scripts cover
+cannot be read off the filenames at all**; `runprov.environment`'s own docstring carries that
+measurement, its rule and the bound it supports.
 
 Two smaller differences. The set comes from `importlib.metadata`, so it describes the
 interpreter that is actually running — the sibling's shared helper shelled out to bare

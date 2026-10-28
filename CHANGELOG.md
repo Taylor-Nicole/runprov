@@ -11,6 +11,34 @@ is a fix nobody checked.
 
 ### Fixed
 
+**`environment.py`'s module docstring made three claims about the predecessor corpus and all
+three were wrong — and they shipped, in the 0.9.0 wheel and sdist.** The docstring justifies
+content-addressing by citing a measurement of the sibling pipeline's pip-freeze corpus.
+Re-measured 2026-10-28 against that corpus:
+
+* ***"32 of 55 steps covered"* joined two populations by a sentence neither supports.** 55 is the
+  distinct `- step:` names in that project's `transformation_log.yml`; 32 was the distinct
+  filename stems — and not even stems of SCRIPTS, because it keeps the `_vN_` token, so one
+  script at three versions counted as three. Under one normalisation rule that leaves no residue
+  the corpus holds **27 scripts, of which 16 are exactly a step name** and 11 are plotting or
+  repair scripts that are not steps at all. The honest form is a bound: **at most 27 of 55, and
+  16 demonstrably.** 16 is the figure stable under every rule tried, so 16 is the one printed.
+* **The filename pattern was stated as `requirements_<script>_v1_<timestamp>.txt`.** The literal
+  `_v1_` holds for **54 of the 87**; the rest carry v2, v3 or v4, and six carry no version token.
+* **And the worst, because it is the sentence the paragraph used to make its own argument:**
+  *"the per-script copies got this right with `sys.executable -m pip`; the shared one, the one
+  that was never called, did not."* **Five of the per-script copies run the same bare
+  `["pip", "freeze"]`**, and those scripts' snapshots are among the 87. A rationale that cites a
+  neighbour is the hardest kind to re-examine, because the neighbour sounds like it was
+  consulted. Nobody opened it.
+
+The log is now named **by digest**, because the denominator depends on which copy is read: one
+copy has 300 entries and 55 distinct steps, a sibling copy 295 and 50. The README carried the
+same sentence and is corrected with it; the forensics stay in the docstring and the README points
+at them, because an earlier draft put the full measurement in the README and **raised the
+unaccounted claim count by two** — one claim spanning four lines while an exemption matches one.
+Extending the exemption table to cover that prose would have been the wrong repair.
+
 **The identity `env --digest` prints could not be fed back to `env --compare`.** It printed
 `<algorithm>:<digest cut to the display width>` — the form ADR-0024 R-16 calls quotable, *"what
 goes in a methods section, a data-availability statement or a review report"* — and that value

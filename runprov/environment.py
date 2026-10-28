@@ -7,26 +7,47 @@
 What the old pipeline did, and what it cost
 -------------------------------------------
 The sibling project captured a pip freeze per script invocation into
-`requirements_<script>_v1_<timestamp>.txt`. Measured on disk:
+`requirements_<script>_<version>_<timestamp>.txt` — though the shape is not uniform: the
+literal `_v1_` holds for 54 of the 87, the rest carry v2, v3 or v4, and six carry no version
+token at all. Re-measured on disk 2026-10-28, in one directory,
+`hcv_genotyping/requirements/mamba_envs/hcv_genotyping_env`:
 
-    87 files   32 of 55 steps covered   8 DISTINCT CONTENTS   1.4 MB
+    87 files   27 scripts   8 DISTINCT CONTENTS   1.4 MB on disk (1,203,034 bytes of text)
 
 So 87 files hold 8 environments. 79 of them are byte-identical copies of a neighbour, and
 the question anyone actually has — *did the environment change between these two runs?* —
 takes a diff across 87 timestamped filenames to answer.
 
-Naming a snapshot by its own hash inverts that. Identical environments collapse to ONE
-file, every run references it, and "did it change?" is string equality on a digest that is
-already in the provenance record. Eight files, and a changed environment announces itself.
+AND HOW MUCH OF THE PIPELINE THEY COVER CANNOT BE READ OFF THOSE FILENAMES, which is the
+second half of the cost. The 27 scripts sit against the **55** distinct step names in that
+project's `transformation_log.yml` (sha256 `f2e84bd3…`, 300 entries — named by digest because
+a sibling copy of that file has 295 entries and 50 steps), and **16** of the 27 are exactly a
+step name. The other 11 are plotting scripts and `fix_transformation_log_*` repair scripts
+that are not steps at all. So **at most 27 of 55, and 16 demonstrably** — a bound rather than
+a count, because the two are different populations joined by nothing. 16 is the figure stable
+under every normalisation rule tried; 27 is not, and keeping the `_vN_` token gives 32, which
+counts script VERSIONS rather than scripts.
+
+That gap is not an accident of one pipeline. **A capture each script has to CALL covers the
+scripts whose authors remembered**, and nothing holds the step list and the filename list to
+each other, so nobody finds out which is which. Here the capture happens when the `Run` is
+constructed, so coverage is a property of the harness rather than of anyone's memory.
+
+Naming a snapshot by its own hash inverts the storage problem. Identical environments collapse
+to ONE file, every run references it, and "did it change?" is string equality on a digest that
+is already in the provenance record. Eight files, and a changed environment announces itself.
 
 Two further differences from the original, both deliberate
 ----------------------------------------------------------
 * **`importlib.metadata`, not `subprocess("pip freeze")`.** The dead shared helper in
   `log_transformation.py` ran bare `["pip", "freeze"]` — the pip on PATH, which in a
   mamba-plus-uv layout with several venvs is not reliably the interpreter running the
-  script. (The per-script copies got this right with `sys.executable -m pip`; the shared
-  one, the one that was never called, did not.) Reading the running interpreter's own
-  metadata cannot disagree with itself, needs no subprocess, and works where pip is absent.
+  script. **And the per-script copies were not uniformly better, which this paragraph used to
+  claim they were:** five of them run the same bare `["pip", "freeze"]` —
+  `fix_transformation_log_hybrid_heal_plus_env.py` with its three `_old_vN` siblings, and
+  `fix_transformation_log_verbatim_list.py` — and those scripts' snapshots are among the 87.
+  Reading the running interpreter's own metadata cannot disagree with itself, needs no
+  subprocess, and works where pip is absent.
 * **It records what it could not read.** A distribution with no version is reported, not
   skipped. A snapshot silently missing an entry is worse than one that says so.
 """
