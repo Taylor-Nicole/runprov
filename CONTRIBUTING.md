@@ -296,6 +296,46 @@ fails by reddening one instrument while the other stays green, and the number a 
 (The figures behind this are a measurement of one day and are deliberately not quoted here, for
 the reason the section above gives.)
 
+### A code block a shipped document tells the reader to RUN is executed, from the document
+
+**If a document prints a script and says it works, the suite runs THAT TEXT** — extracted from
+the document at test time, not retyped into the test. And it asserts what the script *prints*,
+not only that it detected something, because the message is the part that goes stale in silence.
+
+Why this is written down. ADR-0016's R-12 prints a seven-line `sh` loop that verifies the run
+history with `sha256sum` and nothing else; `README.md` and `runprov/chain.py`'s docstring print
+the same loop. Its break line ended by naming the line before the break as the one that changed —
+and R-10, three screens up in the same ADR, had been **amended twice to take exactly that clause
+out of the command**: once after Audit E (E-07), for naming a line that does not exist when the
+first line of a history is deleted, and once after Audit H (H1-4), for accusing lines that are
+byte-for-byte what the original held. Both corrections reached the command. Neither reached the
+recipe the same documents print, in three shipped places at once.
+
+**The mechanism is that nothing had ever executed the sentence.** R-12's test wrote its own loop
+with `echo "BREAK $n"` where the published line stands, so the recipe was checked for DETECTION
+and its message was read by nobody — while the test's own docstring said it *"runs the recipe
+printed in the ADR"*. Re-measured against histories built by the real sink, the old message
+reproduced both findings exactly. Both cases are now in the suite, in
+`test_the_published_recipe_accuses_no_line_it_cannot_see`, which asserts the message's **exact
+text** rather than that something was printed.
+
+**And `README.md` contradicted itself within one screen** — *"a break names the GAP between two
+lines, never a culprit line"*, then the recipe, naming a culprit line.
+
+Swept 2026-10-31 for the shape *a code block printed in two or more shipped documents, with
+nothing holding the copies to each other*, over every fenced block in the shipped `.md` files and
+every indented block in the package's docstrings, keyed **two independent ways** — identical
+normalised body, and shared first line, which is what finds a copy that has already drifted. The
+result is stated as **classes rather than as a count**, for the reason the section above gives: a
+figure over a growing set of documents is stale on the day it ships, and it teaches the next
+sweeper to update the number rather than re-take the measurement. Re-take it with
+`grep -c '^```' *.md docs/adr/*.md` as the control, then compare bodies. What it found: **one
+defect**, this one; **one block that says what it is**, ADR-0015's `impact` transcript, which sits
+under a heading reading `## Sketch`; and the rest, which are one record format illustrated with
+different content, or one historical snippet quoted at two lengths. So the class is small, it does
+not become a byte-identity rule across every pair, and the rule above is the one that would have
+caught the only instance that mattered.
+
 ### The instruments are outside the coverage gate, and the SCOPE of that is held
 
 The package is gated at full branch coverage. `ci.py` and `tools/` are not measured by the gate

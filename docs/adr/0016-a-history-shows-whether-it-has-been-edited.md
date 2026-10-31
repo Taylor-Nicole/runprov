@@ -224,12 +224,15 @@ such, and decisive under R-8.
 ADR carries the recipe. Measured before this was written: a nine-line `sh` loop using
 `sha256sum` and `sed` detects an edit to line 3 by reporting line 4 broken.
 
+**The recipe's message is bound by R-10, including R-10's amendments**, and the loop
+below is the text a test executes.
+
 ```sh
 n=0; prev="GENESIS"
 while IFS= read -r line; do
   n=$((n+1))
   claimed=$(printf '%s' "$line" | sed -n 's/.*"prev": *"\([^"]*\)".*/\1/p')
-  [ "$claimed" = "$prev" ] || echo "line $n breaks the chain (line $((n-1)) changed)"
+  [ "$claimed" = "$prev" ] || echo "line $n: prev does not match what precedes it"
   prev=$(printf '%s' "$line" | sha256sum | cut -d' ' -f1)
 done < history.jsonl
 ```
@@ -237,6 +240,32 @@ done < history.jsonl
 This requirement is why R-2 forbids canonicalisation and why `prev` is a plain top-level
 string. A chain that needed this package to check it would contradict the claim the README
 leads with, and would be worth less than no chain at all — because it would be believed.
+
+It reports by OUTPUT and never by status: the loop exits 0 whether or not it found a break,
+so `sh check.sh || abort` is a gate that cannot fail. That is a property of six lines of
+shell rather than a defect to fix here — the package's own command is the thing with an
+exit code (0 intact, 1 broken, 2 could not check) — but it has to be said where the recipe
+is printed, because the recipe looks exactly like something to wire into a pipeline.
+
+> **Amended 2026-10-31, under R-10's own escape clause, and the two amendments R-10 already
+> carries had never reached this block.** R-10 was corrected twice for naming a cause the
+> file cannot know — once after Audit E (E-07) for printing **"LINE 0 IS WHAT CHANGED"**
+> over a line that does not exist, once after Audit H (H1-4) for accusing lines that are
+> byte-for-byte what the original held. Both corrections were applied to the command and
+> neither to the recipe this requirement prints, which until today ended its break line
+> with **`(line $((n-1)) changed)`**.
+>
+> Re-measured over four histories built by the real sink, the old message reproduced both
+> findings exactly: delete the first line and it printed **`line 1 breaks the chain (line 0
+> changed)`**, which is E-07's sentence in lower case; swap lines 3 and 4 and it accused
+> **lines 2, 3 and 4 in turn**, which is H1-4's measurement, over the same three untouched
+> lines. The command, asked the same questions, said *one or more lines have been removed
+> from the front* and bracketed three gaps.
+>
+> **The mechanism is that nothing ever ran the sentence.** R-12's test wrote its own loop
+> with `echo "BREAK $n"` in place of the published line, so the recipe was checked for
+> DETECTION and its message was never executed by anything, in three shipped documents at
+> once. The test now extracts this block from this file and runs it unmodified.
 
 ## Legitimate discontinuities
 

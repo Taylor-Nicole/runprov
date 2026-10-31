@@ -46418,42 +46418,106 @@ def test_the_chain_survives_the_shapes_a_real_history_file_reaches(tmp_path, mon
     ], [e.status for e in report.edges]
 
 
+def _r12_recipe() -> str:
+    """[ADR-0016 R-12]'s shell recipe, lifted out of the ADR — the one definition of it.
+
+    THE RECIPE IS PRINTED IN THREE SHIPPED PLACES and executed, until today, in none: this
+    ADR, `README.md`, and `runprov/chain.py`'s module docstring. The test below used to write
+    its OWN loop with `echo "BREAK $n"` where the published break line stands, so the recipe
+    was checked for DETECTION while its MESSAGE was never run by anything.
+
+    What that message said, for as long as nothing ran it, was
+    `line $n breaks the chain (line $((n-1)) changed)` — which is the sentence R-10 was
+    amended twice to remove from the command: once after Audit E (E-07), for naming a line
+    that does not exist when the first line is deleted, and once after Audit H (H1-4), for
+    accusing lines that are byte-for-byte what the original held. Both corrections reached
+    the command and neither reached the recipe the same documents print.
+    """
+    adr = REPO / "docs" / "adr" / "0016-a-history-shows-whether-it-has-been-edited.md"
+    assert adr.is_file(), f"ADR-0016 must ship beside the tests: {adr}"
+    text = adr.read_text(encoding="utf-8")
+    opener = '```sh\nn=0; prev="GENESIS"\n'
+    assert text.count(opener) == 1, (
+        f"R-12's recipe block is not unique in the ADR: {text.count(opener)}"
+    )
+    body = text.split(opener, 1)[1]
+    assert "\n```" in body, "R-12's recipe block is unterminated"
+    return 'n=0; prev="GENESIS"\n' + body.split("\n```", 1)[0] + "\n"
+
+
+def test_the_published_recipe_is_one_text_in_all_three_places(tmp_path):
+    """[ADR-0016 R-12]. The ADR, the README and the module docstring print ONE loop.
+
+    Three copies of a seven-line script drift, and the one that drifted was the one nothing
+    ran. The WORK is held identical; the final `done < …` line is deliberately each site's
+    own, because the ADR reads `history.jsonl` and the README reads `runs.jsonl` — a reader
+    of either should see the filename that document is about. So this holds the six lines
+    that do the checking, and asserts separately that each site's last line reads a `.jsonl`.
+    """
+    recipe = _r12_recipe()
+    work, _, last = recipe.rstrip("\n").rpartition("\n")
+    assert last.startswith("done < "), f"the recipe's last line must be the redirect: {last!r}"
+    assert last.endswith(".jsonl"), last
+
+    readme = _readme()
+    assert work + "\n" in readme, "README.md does not print the ADR's recipe"
+
+    doc = runprov.chain.__doc__ or ""
+    flat = "\n".join(ln[4:] if ln.startswith("    ") else ln for ln in doc.splitlines())
+    assert work in flat, "runprov/chain.py's docstring does not print the ADR's recipe"
+
+    for where, text in (("README.md", readme), ("chain.py", flat)):
+        tail = text.split(work + "\n", 1)[1].splitlines()[0]
+        assert tail.strip().startswith("done < ") and tail.rstrip().endswith(".jsonl"), (
+            f"{where} does not redirect a .jsonl into the loop: {tail!r}"
+        )
+
+
+def _run_recipe(recipe: str, history: pathlib.Path):
+    """The recipe as published, run from the history's own directory.
+
+    THE BARE FILENAME, with the script run from its directory. A Windows path
+    (`C:\\Users\\…`) interpolated into a shell redirect has its backslashes eaten as
+    escapes, so the loop read nothing and this reported that the recipe had missed an edit it
+    was never shown.
+    """
+    old = recipe.rstrip("\n").rpartition("\n")[2]
+    assert recipe.count(old) == 1, f"the redirect is not unique: {old!r}"
+    script = history.parent / "check.sh"
+    script.write_text(recipe.replace(old, "done < " + history.name), encoding="utf-8")
+    assert "done < " + history.name in script.read_text(encoding="utf-8"), (
+        "the redirect did not move"
+    )
+    return subprocess.run(
+        ["sh", script.name], cwd=history.parent, capture_output=True, text=True, check=False
+    )
+
+
 def test_the_chain_is_verifiable_with_sha256sum_and_nothing_else(tmp_path):
-    """ADR-0016 [ADR-0016 R-12]. The claim the README leads with, applied to the chain.
+    """[ADR-0016 R-12]. The claim the README leads with, applied to the chain.
 
     A chain that needed this package to check it would be worth less than no chain, because it
-    would be believed. This runs the recipe printed in the ADR — `sha256sum`, `sed`, a shell
+    would be believed. This runs the recipe THE DOCUMENTS PRINT — `sha256sum`, `sed`, a shell
     loop — over a fully chained file, with the package's own module not involved at all.
 
     THE RECIPE IS FOR A FULLY CHAINED FILE and says so in the ADR. On a history with an
-    unchained prefix it reports those lines as breaks, which is the honest limit of a nine-line
+    unchained prefix it reports those lines as breaks, which is the honest limit of a six-line
     shell loop: it is a second opinion, not a second implementation, and the safe direction for
     a second opinion to err in is toward shouting.
+
+    AND IT REPORTS BY OUTPUT, NEVER BY STATUS — asserted here, because the recipe looks
+    exactly like something to wire into a pipeline and `sh check.sh || abort` is a gate that
+    cannot fail. Both documents now say so where they print it.
     """
     if not shutil.which("sha256sum"):  # pragma: no cover - not on this leg
         pytest.skip("sha256sum is not available here")
+    recipe = _r12_recipe()
     p = tmp_path / "h.jsonl"
     _chain_history(p, 5)
-    recipe = tmp_path / "check.sh"
-    recipe.write_text(
-        'n=0; prev="GENESIS"; bad=0\n'
-        "while IFS= read -r line; do\n"
-        "  n=$((n+1))\n"
-        '  claimed=$(printf \'%s\' "$line" | sed -n \'s/.*"prev": *"\\([^"]*\\)".*/\\1/p\')\n'
-        '  [ "$claimed" = "$prev" ] || { echo "BREAK $n"; bad=1; }\n'
-        "  prev=$(printf '%s' \"$line\" | sha256sum | cut -d' ' -f1)\n"
-        # THE BARE FILENAME, with the script run from its directory. A Windows path
-        # (`C:\\Users\\…`) interpolated into a shell redirect has its backslashes eaten
-        # as escapes, so the loop read nothing, `bad` stayed 0, and this reported that the
-        # recipe had missed an edit it was never shown. Twelfth host-dependent test today.
-        "done < " + p.name + "\n"
-        'echo "bad=$bad"\n',
-        encoding="utf-8",
-    )
-    clean = subprocess.run(
-        ["sh", recipe.name], cwd=tmp_path, capture_output=True, text=True, check=False
-    )
-    assert "bad=0" in clean.stdout, clean.stdout
+
+    clean = _run_recipe(recipe, p)
+    assert clean.stdout == "", f"a chained file must print nothing: {clean.stdout!r}"
+    assert clean.returncode == 0, clean.returncode
 
     lines = p.read_text(encoding="utf-8").splitlines()
     lines[2] = lines[2].replace('"run_id": "r2"', '"run_id": "rX"')
@@ -46461,11 +46525,58 @@ def test_the_chain_is_verifiable_with_sha256sum_and_nothing_else(tmp_path):
     # here was taken over LF bytes, and letting the rewrite change them would exercise R-21 by
     # accident instead of the edit this case is about.
     p.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
-    edited = subprocess.run(
-        ["sh", recipe.name], cwd=tmp_path, capture_output=True, text=True, check=False
+    edited = _run_recipe(recipe, p)
+    assert edited.stdout.splitlines() == ["line 4: prev does not match what precedes it"], (
+        f"the shell must catch it too, and say only what it knows: {edited.stdout!r}"
     )
-    assert "BREAK 4" in edited.stdout, f"the shell must catch it too: {edited.stdout}"
+    assert edited.returncode == 0, (
+        "R-12's loop reports by output and never by status — if this ever becomes non-zero, "
+        f"the sentence beside both copies of it is false: rc={edited.returncode}"
+    )
     assert runprov.chain.verify(p).status == runprov.chain.BROKEN, "and so must the package"
+
+
+def test_the_published_recipe_accuses_no_line_it_cannot_see(tmp_path):
+    """[ADR-0016 R-10] [ADR-0016 R-12]. R-10's two amendments, applied to the recipe.
+
+    R-10 says a break names the line number and NOT a cause, because an in-place edit, a
+    deletion, a reorder and an insertion leave the same bytes. It was amended twice to make
+    that true of the command, and the recipe printed in the same documents kept the sentence
+    both amendments removed. The two cases below are the measurements those amendments were
+    written from, re-taken against the shell:
+
+    * **E-07** — delete the first line, and the old message printed `line 1 breaks the chain
+      (line 0 changed)`: a line that does not exist. The command says *one or more lines have
+      been removed from the front*.
+    * **H1-4** — swap two lines, and the old message accused three lines in turn, every one of
+      them byte-for-byte what the original held.
+
+    So this asserts the message's text, not merely that something was printed: the recipe may
+    name the line whose claim is false, and nothing else.
+    """
+    if not shutil.which("sha256sum"):  # pragma: no cover - not on this leg
+        pytest.skip("sha256sum is not available here")
+    recipe = _r12_recipe()
+    base = tmp_path / "src.jsonl"
+    _chain_history(base, 6)
+    original = base.read_text(encoding="utf-8").splitlines()
+
+    front = tmp_path / "front" / "h.jsonl"
+    front.parent.mkdir()
+    front.write_text("\n".join(original[1:]) + "\n", encoding="utf-8", newline="")
+    out = _run_recipe(recipe, front).stdout
+    assert out.splitlines() == ["line 1: prev does not match what precedes it"], out
+    assert "line 0" not in out, f"E-07: the recipe named a line that does not exist: {out!r}"
+
+    swap = tmp_path / "swap" / "h.jsonl"
+    swap.parent.mkdir()
+    reordered = [*original[:2], original[3], original[2], *original[4:]]
+    swap.write_text("\n".join(reordered) + "\n", encoding="utf-8", newline="")
+    out = _run_recipe(recipe, swap).stdout
+    assert out.splitlines() == [
+        f"line {n}: prev does not match what precedes it" for n in (3, 4, 5)
+    ], out
+    assert "changed" not in out, f"H1-4: the recipe named a cause it cannot know: {out!r}"
 
 
 def test_nothing_in_the_package_removes_a_history_line(tmp_path, capsys):

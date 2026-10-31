@@ -20,18 +20,27 @@ authority or an append-only store, each rejected in the ADR with its reason.
 THE CHAIN IS VERIFIABLE WITH `sha256sum` AND NOTHING ELSE (R-12), which is why `prev` is a plain
 top-level string and why the digest is over the line's bytes AS WRITTEN rather than over any
 canonical form. Measured before the design was settled — this nine-line shell loop reports an
-edit to line 3 as line 4 breaking:
+edit to line 3 as line 4 breaking. Its break line is bound by R-10 like the command's, so it
+names the line whose claim is false and NO culprit; and it reports by output and never by status,
+so the loop exits 0 even when it finds a break:
 
     n=0; prev="GENESIS"
     while IFS= read -r line; do
       n=$((n+1))
       claimed=$(printf '%s' "$line" | sed -n 's/.*"prev": *"\\([^"]*\\)".*/\\1/p')
-      [ "$claimed" = "$prev" ] || echo "line $n breaks the chain (line $((n-1)) changed)"
+      [ "$claimed" = "$prev" ] || echo "line $n: prev does not match what precedes it"
       prev=$(printf '%s' "$line" | sha256sum | cut -d' ' -f1)
     done < history.jsonl
 
 A chain that needed this package to check it would contradict the claim the README leads with,
 and would be worth less than no chain — because it would be believed.
+
+THIS BLOCK IS THE TEXT A TEST EXTRACTS AND RUNS, from ADR-0016's copy of it, over four
+histories -- clean, one line edited, the first line deleted, two lines swapped. Until
+2026-10-31 nothing executed the message: the test wrote its own `echo "BREAK $n"` loop, so
+the recipe was checked for DETECTION while its sentence went unread in three shipped
+documents, still ending `(line $((n-1)) changed)` -- E-07's `line 0` over a deleted first
+line, H1-4's three untouched accused lines over a swap.
 Its `--format json` answer is ADR-0017, T-33: one builder, two renderings.
 """
 

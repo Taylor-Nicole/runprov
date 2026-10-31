@@ -1462,7 +1462,7 @@ n=0; prev="GENESIS"
 while IFS= read -r line; do
   n=$((n+1))
   claimed=$(printf '%s' "$line" | sed -n 's/.*"prev": *"\([^"]*\)".*/\1/p')
-  [ "$claimed" = "$prev" ] || echo "line $n breaks the chain (line $((n-1)) changed)"
+  [ "$claimed" = "$prev" ] || echo "line $n: prev does not match what precedes it"
   prev=$(printf '%s' "$line" | sha256sum | cut -d' ' -f1)
 done < runs.jsonl
 ```
@@ -1470,7 +1470,14 @@ done < runs.jsonl
 That loop is why `prev` is a plain top-level string and why the digest is over the line's bytes
 **as written** rather than over any canonical form. It was measured before the design was
 settled, and it reports an edit to line 3 as line 4 breaking — the same off-by-one the command
-explains in words above.
+explains in words above. Its message names the LINE WHOSE CLAIM IS FALSE and no culprit, under
+the same rule as the command: until 2026-10-31 it ended `(line $((n-1)) changed)`, which over a
+deleted first line printed `line 0` and over two swapped lines accused three untouched ones.
+
+**It reports by output and never by status**, so the loop exits 0 whether or not it found a
+break and `sh check.sh || abort` is a gate that cannot fail. Six lines of shell are a second
+opinion to read, not a check to wire into a pipeline; `runprov chain` is the one with an exit
+code.
 
 `runprov chain --format json` is the **same answer for a reader that is not a person** — the page
 and the payload are two renderings of one structure, so neither can state something the other
