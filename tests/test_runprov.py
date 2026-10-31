@@ -24535,6 +24535,127 @@ def test_every_subcommand_is_accounted_for_by_r3_and_the_partition_is_an_equalit
     )
 
 
+def test_a_json_payload_carries_markup_only_where_it_carries_prose(tmp_path, capsys):
+    """[ADR-0017 R-5]. The display convention may travel with a sentence; never with a token.
+
+    THE CONVENTION IS DELIBERATE AND IS KEPT. This package writes an API or CLI token in
+    backticks inside running prose -- what `rustc`, `cargo` and `pip` do -- and
+    `test_no_module_header_argues_for_a_name_it_no_longer_exports` already calls it "the codebase's
+    own convention". Measured 2026-10-31 across every non-docstring string constant in the
+    package: the backtick is the ONLY markdown form present. Bold, italic, underscore emphasis
+    and markdown links are all zero, so there is no wider "markdown in output" class to chase.
+
+    AND ONE OF THE TWO RENDERINGS IS MARKDOWN, which is what settles it rather than taste. A
+    policy rule's `blind` sentence is both a payload field and the README rule table's third
+    column -- `test_the_readme_rule_table_is_the_registry_and_not_a_copy_of_it` holds the cell
+    EQUAL to `blind.split(" — ")[0]` -- so the backticks in it render as code on the page they
+    are also published on. Most of the registered rules carry them. Stripping them at the JSON
+    boundary would degrade the README, and doing it per call site would be a list across every
+    `json.dumps` site in `__main__.py`, which is the shape this project deletes rather than
+    extends. No figure is quoted here: both counts are over sets that grow, and a number
+    recorded once and treated as standing is the defect the claims ratchet exists for.
+
+    SO THE RULE IS NARROWER AND TRUE. Markup may travel with PROSE, where a reader can see what
+    a delimiter is for. It may not appear in a KEY, which is a consumer's field name; it may not
+    appear in a leaf with no whitespace in it, which is an identifier -- a path, a digest, a
+    status, a schema name -- and a backtick there is part of a value a program compares; and it
+    may never be UNPAIRED, which is what a clipped message or an interpolation across the
+    delimiter looks like. All three are derived from the payload's own structure, so a field
+    nobody has written yet is covered on the day it arrives.
+
+    The population is the parser's, the fixture carries no backtick of its own, and a command
+    that cannot be made to answer is NAMED rather than skipped -- a payload check quietly
+    covering half the commands reads exactly like one covering all of them.
+    """
+    artifact, log = _reported_run(tmp_path)
+    policy = tmp_path / "policy.json"
+    policy.write_text(
+        '{"rules": [{"rule": "finished_ok", "why": "a filed result comes from a complete run"}]}',
+        encoding="utf-8",
+    )
+    argv = {
+        "chain": ["chain", str(log)],
+        "check": ["check", str(tmp_path)],
+        "diff": ["diff", "demo", "--log", str(log)],
+        # `--compare`, BECAUSE BARE `env` DOES NOT ANSWER IN JSON. Measured 2026-10-31:
+        # `--compare`, `--digest` and `--render` all branch on `args.format`; the fourth mode --
+        # `--can-check`, and the bare invocation that falls into it -- prints its page and never
+        # looks at the flag, so `env --format json` hands a consumer a human table. That is the
+        # shape `log --unreadable` was already corrected for, where the flag is REFUSED with a
+        # reason because "there is no honest ignored semantics to announce". Filed, not fixed
+        # here: what that mode should emit is a payload decision under [ADR-0017 R-5].
+        "env": ["env", "--compare", "--log", str(log)],
+        "gate": ["gate", "--policy", str(policy), "--log", str(log)],
+        "impact": ["impact", str(tmp_path / "in.tsv"), "--log", str(log)],
+        "lineage": ["lineage", "--log", str(log)],
+        "log": ["log", "--log", str(log)],
+        "report": ["report", str(artifact), "--log", str(log)],
+        "resources": ["resources", "--log", str(log)],
+        "show": ["show", "--log", str(log)],
+        "verify": ["verify", str(artifact), "--root", str(tmp_path)],
+    }
+    answering = _cli_json_commands()
+    assert set(argv) == answering, (
+        "this test drives every command the parser offers `--format json`, and the set it "
+        f"drives is held to the set the parser defines: {sorted(set(argv) ^ answering)}"
+    )
+    assert "`" not in str(tmp_path), "the fixture's own path must carry no backtick"
+
+    def walk(value, path=""):
+        """Every key and every string leaf of a payload, with where it sits."""
+        if isinstance(value, dict):
+            for key, item in value.items():
+                yield "key", f"{path}.{key}", key
+                yield from walk(item, f"{path}.{key}")
+        elif isinstance(value, list):
+            for i, item in enumerate(value):
+                yield from walk(item, f"{path}[{i}]")
+        elif isinstance(value, str):
+            yield "leaf", path, value
+
+    offenders, answered, silent, prose = [], [], [], 0
+    for command in sorted(argv):
+        capsys.readouterr()
+        runprov.__main__.main([*argv[command], "--format", "json"])
+        out = capsys.readouterr().out
+        if not out.strip():
+            silent.append(command)
+            continue
+        answered.append(command)
+        for kind, where, text in walk(json.loads(out)):
+            if "`" not in text:
+                continue
+            if kind == "key":
+                offenders.append(f"{command}{where}: a KEY carries markup: {text!r}")
+            elif not any(c.isspace() for c in text):
+                offenders.append(f"{command}{where}: an IDENTIFIER carries markup: {text!r}")
+            elif text.count("`") % 2:
+                offenders.append(f"{command}{where}: an UNPAIRED backtick: {text[:80]!r}")
+            else:
+                prose += 1
+
+    assert not offenders, (
+        "a `--format json` payload carried this package's display convention somewhere it is "
+        "not prose. A backtick may delimit a token inside a sentence a person reads; it may "
+        "not be part of a field name, part of a value a program compares, or left unclosed: "
+        f"{offenders}"
+    )
+    # NOT VACUOUS, IN BOTH DIRECTIONS. `silent` is not a pass -- under [ADR-0017 R-15] an empty
+    # stdout means the invocation was wrong, so a command landing there is this test failing to
+    # ask its question. And `prose` must be non-zero, or the three rules above are being
+    # asserted over payloads that contain no markup at all and would pass unchanged if every
+    # one of them were deleted.
+    assert not silent, (
+        "every command here must ANSWER over this fixture, or it contributes nothing and the "
+        f"coverage this test reports is larger than the coverage it has: {silent}"
+    )
+    assert len(answered) == len(answering), (sorted(answered), sorted(answering))
+    assert prose, (
+        "no payload carried a backtick anywhere, so this test would pass with its three rules "
+        "removed. The fixture has stopped reaching the prose fields that carry the convention"
+    )
+
+
 def test_every_command_that_answers_in_json_documents_its_schema_and_the_promise():
     """[ADR-0017 R-11] I-23. The README clause, for all of them rather than some of them.
 

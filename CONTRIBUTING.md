@@ -296,6 +296,40 @@ fails by reddening one instrument while the other stays green, and the number a 
 (The figures behind this are a measurement of one day and are deliberately not quoted here, for
 the reason the section above gives.)
 
+### A backtick marks a token inside a sentence, and never anything a program reads
+
+**The convention: an API or CLI token written inside running prose is wrapped in backticks** —
+in source comments, in docstrings, and in the text this package prints for a person. It is what
+`rustc`, `cargo` and `pip` do, and
+`test_no_module_header_argues_for_a_name_it_no_longer_exports` already relies on it in those words.
+
+**Where it may NOT appear is anything a program reads**: a payload key, which is a consumer's
+field name; a payload leaf with no whitespace in it, which is an identifier — a path, a digest,
+a status, a schema name — and where the character would become part of a value something
+compares; and it may never be left **unpaired**, which is what a clipped message or an
+interpolation across the delimiter looks like.
+`test_a_json_payload_carries_markup_only_where_it_carries_prose` holds all three over every
+command the parser offers `--format json`, derived from the parser rather than listed, with a
+fixture carrying no backtick of its own and a non-vacuity assertion in both directions.
+
+Why this is a decision and not a tidy-up. It was raised as *markdown leaking into plain-text CLI
+output*, and the measurement says something narrower. Swept two independent ways — every
+non-docstring string constant in the package against seven markdown patterns, and every line the
+package actually emitted during a full suite run, recorded at all four of its emission paths
+(`printable_lines`, `diagnostic`, `print`, `sys.stdout.write`) — **the backtick is the only
+markdown form present**: bold, italic, underscore emphasis and markdown links are absent in both
+passes, and **no emitted line carries an unpaired backtick**.
+
+**And one of the two renderings is markdown**, which settles it rather than taste. A policy
+rule's `blind` sentence is both a payload field and the README rule table's third column —
+`test_the_readme_rule_table_is_the_registry_and_not_a_copy_of_it` holds the cell EQUAL to
+`blind.split(" — ")[0]` — so its backticks render as code on the page it is also published on.
+Stripping them at the JSON boundary would degrade the README, and doing it per call site would
+be a list across every `json.dumps` in `__main__.py`, which is the shape the section above
+deletes rather than extends. The delimiter also earns its place in the messages themselves:
+several end on a token, where a trailing full stop would otherwise fuse with it, and one
+interpolates a value that already contains quotes, which neither `'` nor `"` could delimit.
+
 ### A code block a shipped document tells the reader to RUN is executed, from the document
 
 **If a document prints a script and says it works, the suite runs THAT TEXT** — extracted from
