@@ -11,6 +11,30 @@ is a fix nobody checked.
 
 ### Fixed
 
+**ADR-0016 R-12's `sha256sum` recipe named a culprit its own evidence cannot identify, in
+three shipped places at once.** Its break line read `echo "line $n breaks the chain (line
+$((n-1)) changed)"` — in `README.md`, in the ADR, and in `runprov/chain.py`'s module docstring.
+R-10, three screens above R-12 in the same file, had been **amended twice to take exactly that
+clause out of the command**: once after Audit E (E-07), for naming a line that does not exist
+when the first line of a history is deleted, and once after Audit H (H1-4), for accusing lines
+that are byte-for-byte what the original held. Both corrections reached the command and neither
+reached the recipe. `README.md` also contradicted itself within one screen — *"a break names the
+GAP between two lines, never a culprit line"*, then the recipe, naming one.
+
+**Nothing had ever executed the sentence.** R-12's test wrote its own loop with `echo "BREAK
+$n"` where the published line stands, so the recipe was checked for DETECTION and its message
+was read by nobody, while the test's docstring said it ran the recipe printed in the ADR.
+Re-measured against histories built by the real sink, the old message reproduced both audit
+findings exactly. The break line now reads `line $n: prev does not match what precedes it`,
+which is true at *n* = 1 and names no cause, and all three copies carry it.
+
+**Three tests replace the one.** The recipe is extracted from the ADR and executed, its message
+asserted by exact text; R-10's two amendment cases are asserted against the shell; and the six
+working lines are held identical across the ADR, the README and the module docstring, with the
+`done < …` redirect left as each site's own. Both documents now also say, where they print the
+recipe, that it reports by output and never by status — it exits 0 whether or not it found a
+break, so `sh check.sh || abort` is a gate that cannot fail — and that property is asserted too.
+
 **`impact` printed a digest it could not accept back, and said *"no recorded run read these
 bytes."* at exit 0 — the one reading its own docstring forbids.** The page heads itself with the
 digest cut to 16 characters. The operand pattern takes `[0-9a-f]{16,64}`, so the cut value was
