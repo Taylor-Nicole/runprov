@@ -65,6 +65,19 @@ RENDER_SCHEMA = "runprov.env.render.v1"
 #: freeze at 0.10.0 with no check able to see its key set [Audit, W-4, 2026-10-25].
 DIGEST_SCHEMA = "runprov.env.digest.v1"
 
+#: AND A FOURTH ANSWER NEEDS A FOURTH NAME [ADR-0017 R-5]. `--can-check` answers *which facets of
+#: this environment can be compared at all*, which is none of a comparison, a rendering or an
+#: identity. **R-5's SECOND sentence is what decides it** — a consumer may not have to infer the
+#: shape from which keys happen to be present — and under `runprov.env.v1` the only way to tell a
+#: preflight from a comparison would be that `a` and `b` did not turn up.
+#:
+#: THE FOURTH MODE IS ALSO THE DEFAULT ONE, AND IT HAD NO PAYLOAD AT ALL [Audit, L1-2, 2026-10-24;
+#: T-58]. `runprov env <run> --format json` printed the human page verbatim at rc 0 — the only
+#: member of this package that answered in TEXT under `--format json`. Every guard over R-5 was
+#: green throughout, because their population is `_cli_json_commands()`: `env` answers in JSON in
+#: three of its four modes, and a guard quantified over COMMANDS cannot see a missing SHAPE.
+ANSWERABLE_SCHEMA = "runprov.env.answerable.v1"
+
 #: THE RESERVED OPERAND NAMING THIS ENVIRONMENT [ADR-0026 R-5]. A bare word rather than a flag,
 #: because an operand must be passable as the VALUE of one — `--compare --here` is read by
 #: argparse as a flag with no value, which is the kind of wart that becomes permanent. A run
@@ -106,6 +119,41 @@ class Field:
     def __str__(self) -> str:
         return self.value if self.value is not None else f"<{self.absent}>"
 
+    @property
+    def known(self) -> bool:
+        """Whether there is a value at all — the ONE predicate three callers may not spell apart.
+
+        THE PREFLIGHT AND THE EXIT CODE DISAGREED, in principle, until this existed. The page read
+        `value is not None` while `_env` returned `0 if value else 2`, so a `Field("")` would have
+        printed `yes` beside exit 2 — the two-instrument failure [ADR-0024 R-23] names, one
+        expression apart. No constructor produces an empty value today, which is exactly why it
+        would have been found by a reader rather than by a run.
+        """
+        return self.value is not None
+
+
+@dataclasses.dataclass(frozen=True)
+class Subject:
+    """One subject of the preflight: its stable name, its human label, and the FIELD itself.
+
+    THE FIELD AND NOT A BOOLEAN WITH A STRING BESIDE IT [ADR-0020 R-13, ADR-0024 R-22]. R-13 asks
+    for three states per subject and never two, and `Field` already enforces exactly that in its
+    `__post_init__` — a value with its provenance, or the reason there is none, never both. Reusing
+    it means the preflight cannot acquire a fourth state that the rest of the identity cannot hold.
+
+    `name` IS THE PAYLOAD'S AND `label` IS THE PAGE'S, which is the whole reason both exist. The
+    first spelling of this carried one string for both, so a payload key would have been derived
+    from a display label and a cosmetic edit to the page would have renamed a published field.
+    """
+
+    name: str
+    label: str
+    field: Field
+
+    @property
+    def answerable(self) -> bool:
+        return self.field.known
+
 
 @dataclasses.dataclass(frozen=True)
 class Identity:
@@ -141,27 +189,51 @@ class Identity:
     managers: tuple[str, ...] = ()
     lockfiles: tuple[dict[str, typing.Any], ...] = ()
 
-    def answerable(self) -> list[tuple[str, bool, str]]:
+    def answerable(self) -> list[Subject]:
         """What can be checked from what is here: one row per subject, and never two states.
 
         THIS IS THE PREFLIGHT [ADR-0020 R-13, ADR-0024 R-23], and it is this object describing
         itself rather than a second walk of the record. A preflight that measured the subject
         separately could report a question answerable while the comparison refuses it — one
         sentence bound to two instruments, which this project has already paid for once.
+
+        ONE BUILDER, TWO RENDERERS, AND THE ROWS ARE DATA [ADR-0017]. `render_answerable` formats
+        these and `answerable_payload` serialises them, so the page and the payload cannot come to
+        describe different subjects — which is the arrangement the other three modes already have
+        and this one did not, having no payload to disagree with.
+
+        **R-13's LOCK SUBJECT HAD NO ROW, for the eight days between this method and this
+        sentence.** R-13 names four subjects — the record, the snapshot sidecar, the package-set
+        digest, and *"the lock archived or not, which decides whether rank 1 exists at all [R-2]"*
+        — and the lock was simply absent, so a reviewer asking what could be answered here was not
+        told whether an exact rendering was available. It is answered through `_lock`, the same
+        predicate `--render` ranks by, rather than by a second reading of `lockfiles`: a preflight
+        promising rank 1 where the rendering declines it would be this rule's own failure mode.
         """
-        rows = [
-            ("package set", self.package_set.value is not None, str(self.package_set)),
-            ("interpreter", self.interpreter.value is not None, str(self.interpreter)),
-            ("host digest", self.host_digest.value is not None, str(self.host_digest)),
-            (
+        return [
+            Subject("package_set", "package set", self.package_set),
+            Subject("interpreter", "interpreter", self.interpreter),
+            Subject("host_digest", "host digest", self.host_digest),
+            Subject(
+                "named_packages",
                 "named packages",
-                self.packages is not None,
-                f"{len(self.packages)} entries"
+                Field(f"{len(self.packages)} entries")
                 if self.packages is not None
-                else "<no readable snapshot body, so a difference can be counted but not named>",
+                else Field(
+                    None,
+                    absent=(
+                        "no readable snapshot body, so a difference can be counted but not named"
+                    ),
+                ),
+            ),
+            Subject(
+                "archived_lock",
+                "archived lock",
+                Field(str(lock.get("name") or lock.get("path")), how=RECORDED)
+                if (lock := _lock(self)) is not None
+                else Field(None, absent="none archived, so a rendering is rank 2 at best"),
             ),
         ]
-        return rows
 
 
 def _package_set_from_record(
@@ -847,11 +919,71 @@ def render(comparison: Comparison) -> list[str]:
 
 
 def render_answerable(identity: Identity) -> list[str]:
-    """What can be checked from what is here. ADR-0020 R-13, ADR-0024 R-23."""
+    """What can be checked from what is here, as a page. ADR-0020 R-13, ADR-0024 R-23.
+
+    THE DISPLAY DECISIONS LIVE HERE AND THE FACTS DO NOT. The column width, the `yes`/`NO ` words
+    and the human label are this renderer's business; `Identity.answerable` holds the subjects and
+    `answerable_payload` renders the same ones as data.
+    """
     out = [f"{identity.label}", ""]
-    for subject, present, detail in identity.answerable():
-        out.append(f"{subject:<16} {'yes' if present else 'NO ':<4} {detail}")
+    for row in identity.answerable():
+        out.append(f"{row.label:<16} {'yes' if row.answerable else 'NO ':<4} {row.field}")
     return printable_lines(out)
+
+
+def answerable_payload(identity: Identity) -> dict[str, typing.Any]:
+    """The preflight as data. ADR-0017: one builder, two renderings, and the FOURTH shape.
+
+    THE PROVENANCE IS A FIELD AND NOT A SENTENCE TO PARSE. The page folds a subject's state into
+    one string through `Field.__str__`, which is right for a reader and wrong for a consumer: a
+    caller should not have to strip angle brackets to learn why a question cannot be answered. So
+    `answerable`, `value`, `how` and `absent` are separate keys here — the same lesson
+    `render_payload`'s `floor` records, where a boolean replaced a comment.
+
+    AND THE FOUR OF THEM ARE THIS COMMAND'S EXISTING WORDS, not a second vocabulary for one
+    subject. `value`, `how` and `absent` are what a comparison already calls the same three facts
+    [ADR-0017 R-9/R-12's cross-command rule], so only `subjects` and `answerable` are new names —
+    and the collision guard walks every leaf at every depth, where a fifth spelling of `value`
+    would have surfaced as this command disagreeing with itself one level apart.
+
+    `cannot_check` IS PRESENT AND NULL [ADR-0017 R-16], like the other three shapes: a field that
+    appears only when something went wrong is a field a consumer cannot test for.
+
+    THE EXIT CODE IS BUILT HERE AND READ BACK BY THE CALLER, which is `--digest`'s arrangement and
+    for the same reason — the text line and the payload must not be free to spell one answer two
+    ways. The verdict is the package set, because that is the one subject without which a
+    comparison cannot be put at all [ADR-0007]: *could not look* is 2 and never 1.
+    """
+    return {
+        "schema": ANSWERABLE_SCHEMA,
+        "cannot_check": None,
+        "label": identity.label,
+        "subjects": [
+            {
+                "name": row.name,
+                "answerable": row.answerable,
+                "value": row.field.value,
+                "how": row.field.how,
+                "absent": row.field.absent,
+            }
+            for row in identity.answerable()
+        ],
+        "exit_code": 0 if identity.package_set.known else 2,
+    }
+
+
+def answerable_refused(reason: str) -> dict[str, typing.Any]:
+    """The payload for a preflight that could not be taken at all. ADR-0017 R-15.
+
+    BUILT THROUGH THE REAL BUILDER, like the comparison's refusal and the rendering's, and held to
+    the answering shape by `set(refused) == set(answer)`. The fourth mode acquired a refusal path
+    the moment it acquired an answer: `cannot()` used to hand a failed `--can-check` the
+    COMPARISON's key set, which was harmless only while the mode had no key set of its own.
+    """
+    nothing = Field(None, absent=reason)
+    answer = answerable_payload(Identity("?", nothing, nothing, nothing))
+    answer["cannot_check"] = reason
+    return answer
 
 
 #: WHICH RENDERING A RECORDED MANAGER IMPLIES [ADR-0020 R-8]. A table and not an `else`: the
@@ -1168,6 +1300,27 @@ def render_refused(reason: str) -> dict[str, typing.Any]:
         "?", Field(None, absent=reason), Field(None, absent=reason), Field(None, absent=reason)
     )
     answer = render_payload(Rendering([], "?", 0, True, None), empty)
+    answer["cannot_check"] = reason
+    return answer
+
+
+def digest_refused(reason: str) -> dict[str, typing.Any]:
+    """The payload for an identity that could not be quoted. ADR-0017 R-15.
+
+    MEASURED, 2026-11-01, while building the fourth mode's payload: `--digest --format json` that
+    could not look answered in **`runprov.env.v1`** — the COMPARISON's key set — because `cannot()`
+    chose between two builders with a boolean over a FOUR-mode population. So the refused shape
+    matched the answering shape in two of this command's four modes, under a comment at the choice
+    site asserting that it always does.
+
+    The rule it breaks is the one `RENDER_SCHEMA` was introduced for: *"the refused shape of an
+    invocation must match the shape that invocation ANSWERS with, or a consumer parsing the failure
+    path is parsing a document it has never seen."* `--render` had the builder and `--digest` did
+    not, which is the shape of every finding in this module's audit — a rule applied where it was
+    noticed rather than everywhere it holds.
+    """
+    nothing = Field(None, absent=reason)
+    answer = digest_payload(Identity("?", nothing, nothing, nothing))
     answer["cannot_check"] = reason
     return answer
 

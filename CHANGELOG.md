@@ -9,6 +9,120 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Added — `env --can-check` answers in JSON, which it had never done
+
+**`runprov env --can-check --format json` now emits `runprov.env.answerable.v1`**, built by
+`env.answerable_payload` beside the other three. Until now the fourth mode had
+`render_answerable()` and **no payload builder at all**, so it printed the human page verbatim
+under `--format json` at rc 0 — the only member of this package that answered in TEXT under a JSON
+format flag. The mode is also the DEFAULT, so bare `runprov env <run> --format json` was the
+affected invocation. [T-58; Audit L1-2, 2026-10-24]
+
+**A FOURTH NAME AND NOT A VARIANT OF `runprov.env.v1`, and the finding's own ledger entry
+proposed the variant.** [ADR-0017 R-5]'s second sentence decides it — *a consumer must be able to
+tell which shape it has without inferring it from which keys happen to be present* — and under one
+name the only way to tell a preflight from a comparison would be that `a` and `b` did not turn up.
+The entry's supporting measurement was also wrong: it recorded `--digest` and `--render` as
+answering in `runprov.env.v1`, where they have carried `runprov.env.digest.v1` and
+`runprov.env.render.v1` since they were built, so `env` already had three names for three modes
+and a fourth mode continues the pattern rather than breaking it. Its second argument — that a
+variant is *"additive on a shipped payload"* — rests on a premise that is false: `runprov/env.py`
+was added 2026-10-23, **one day after v0.9.0**, so no `env` payload has ever shipped and there was
+nothing to be additive on.
+
+**The guards decided it independently of the rule.** A new `*SCHEMA` constant is collected by AST
+and held to an equality against the shapes the cross-command collision guard drives, so a fourth
+name **forces** a row into the only check policing cross-command field vocabulary. A variant under
+an existing name forces nothing — `answered.values()` is a set and the `env` row already yields
+that name — so the new key set would have been invisible to that guard by construction. Measured
+by removing the row: *"versioned and unexercised: runprov.env.answerable.v1"*.
+
+**And the payload states each subject as FIELDS rather than as a sentence to parse.** The page
+folds a subject into one string through `Field.__str__` (`<the sidecar was pruned>`), which is
+right for a reader and wrong for a consumer, so `answerable`, `value`, `how` and `absent` are four
+keys — `render_payload`'s `floor` lesson, where a boolean replaced a comment. Three of those four
+are what a comparison already calls the same facts, so only `subjects` and `answerable` are new
+names in the cross-command vocabulary.
+
+**[ADR-0020 R-13]'s LOCK SUBJECT HAD NO ROW, for the eight days between the preflight and this
+entry.** R-13 names four subjects and the last is *"the lock archived or not, which decides
+whether rank 1 exists at all"*; the preflight carried the package set, the interpreter, the host
+digest and the named packages. A reviewer asking what could be answered here was not told whether
+an exact rendering was available — the one subject of the four with a consequence for what they do
+next. It is answered through `_lock`, the same predicate `--render` ranks by, so a preflight cannot
+promise a rank-1 rendering the renderer then declines. The page gains the row too, because both
+renderings read one builder.
+
+### Fixed — a refusal answered in the wrong shape in two of `env`'s four modes
+
+**MEASURED 2026-11-01: `env <unresolvable> --digest --format json` answered in `runprov.env.v1`,
+the COMPARISON's key set**, where the mode answers in `runprov.env.digest.v1`. `_env` chose its
+refusal builder with `render_refused if rendering else refused` — a **two-way switch over a
+four-way population** — under a comment at the choice site asserting that the refused shape always
+matches the shape the invocation would have answered with.
+
+| mode | answers in | refused in | matched |
+|---|---|---|---|
+| `--compare` | `runprov.env.v1` | `runprov.env.v1` | yes |
+| `--render` | `runprov.env.render.v1` | `runprov.env.render.v1` | yes, and it was the one checked |
+| `--digest` | `runprov.env.digest.v1` | **`runprov.env.v1`** | no |
+| `--can-check` | nothing at all | `runprov.env.v1` | vacuously |
+
+**Two of four, and the two that passed are the two a reader would have sampled**: the mode with
+the dedicated builder, and the mode whose shape the boolean's `else` happens to name. The rule
+broken is the one `RENDER_SCHEMA` was introduced for — *"a consumer parsing the failure path is
+parsing a document it has never seen"* — and `--can-check` was harmless only while it had no key
+set of its own to be wrong about, which this release ends. The selector is now **derived from the
+argv** rather than passed in at each refusal, so a fifth mode cannot be added without choosing;
+`env.digest_refused` and `env.answerable_refused` join the other two, each built through the real
+builder. Four of four, measured.
+
+**And the preflight's verdict and its page were one expression apart from disagreeing.** `_env`
+returned `0 if first.package_set.value else 2` while the page asked `value is not None`, so a
+`Field("")` would have printed `yes` beside exit 2 — the two-instrument failure [ADR-0024 R-23]
+names. Both now read `Field.known`, and the exit code is built in the payload and read back out of
+it, which is `--digest`'s arrangement one branch down. No constructor produces an empty value
+today, which is exactly why it would have been found by a reader rather than by a run.
+
+### Tested — the refusal-shape rule now has a guard, over all four modes instead of one
+
+`test_every_env_answer_shape_REFUSES_in_its_own_shape_too` drives an answering and a refusing
+invocation for each of `env`'s four shapes and asserts the schema, the key-set equality and that
+the refusal says so. **Its population is the module's own `*SCHEMA` constants and the scope line is
+an EQUALITY**, so a fifth answer shape fails here by name on the day its constant appears — the
+previous guard named `--render` while the rule held for every mode, which is this project's most
+repeated defect shape. Three controls, each measured: restoring the `--digest` mismatch reds it
+with the schema diff; deleting one pair reds the scope line; and deleting the `env --can-check`
+shapes row reds the collision guard's `*SCHEMA` equality.
+
+`test_the_preflight_PAYLOAD_states_each_subject_AS_FIELDS_and_carries_R13s_LOCK` holds the new
+shape, both arms of the lock row — archived, absent, and an entry recorded by blob id that `_lock`
+declines — and an absent subject beside a present one, because *"a mutation making every row read
+`yes` SURVIVED, on one test"* and a payload whose rows all read the same way is that mutation
+again.
+
+**AND THE `--digest` MISMATCH WAS NOT UNGUARDED — IT WAS PINNED.** The fix came back RED from the
+gate, on a test that had asserted the defect:
+`test_the_env_command_refuses_every_OPERAND_it_cannot_resolve_and_says_which` ended
+`assert answer["cannot_check"] and answer["schema"] == runprov.env.SCHEMA` — the COMPARISON's
+shape — on a refused `--digest`. **The mechanism is visible in its own comment**, which names the
+subject as *"exit 2 carries the shape [ADR-0017 R-15]"*: R-15 is about a payload EXISTING, and the
+schema beside it was written as whatever the implementation emitted rather than as what the rule
+requires. **An expectation copied from the output under test cannot disagree with it** — it reads
+exactly like a verified one, and it is a regression test for the bug. Swept the population that
+shape lives in, all **30** `["schema"] ==` assertions in the suite: **one instance, that one.** The
+only pre-existing refusal-shape assertion that was right is `--render`'s, which is the mode that
+had the dedicated builder. `gate`'s two shapes are recorded as **unexamined, not clean** — its
+refusal path needs a policy and a history and emitted no payload in a bare directory.
+
+**Two guards disagreed about their population and that is why the fourth shape was invisible.**
+The markup-in-payload guard is keyed by COMMAND and allows `env` exactly one invocation, so three
+of its four shapes are unmeasured there; the collision guard carries a row per SHAPE and gained
+`env --can-check`. The markup guard's comment stated that `--can-check` *"prints its page and never
+looks at the flag … Filed, not fixed here"* — true when written on 2026-10-31, false the next day,
+and held by nothing. Rewritten to say which guard covers which shapes rather than to repeat a
+sentence about the build.
+
 ### Changed — the hosted matrix no longer runs on a label that can move without a commit
 
 **All eight `ubuntu-latest` sites now name `ubuntu-24.04`**, across `test.yml` (the `lint` job,

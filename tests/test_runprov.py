@@ -24748,13 +24748,19 @@ def test_a_json_payload_carries_markup_only_where_it_carries_prose(tmp_path, cap
         "chain": ["chain", str(log)],
         "check": ["check", str(tmp_path)],
         "diff": ["diff", "demo", "--log", str(log)],
-        # `--compare`, BECAUSE BARE `env` DOES NOT ANSWER IN JSON. Measured 2026-10-31:
-        # `--compare`, `--digest` and `--render` all branch on `args.format`; the fourth mode --
-        # `--can-check`, and the bare invocation that falls into it -- prints its page and never
-        # looks at the flag, so `env --format json` hands a consumer a human table. That is the
-        # shape `log --unreadable` was already corrected for, where the flag is REFUSED with a
-        # reason because "there is no honest ignored semantics to announce". Filed, not fixed
-        # here: what that mode should emit is a payload decision under [ADR-0017 R-5].
+        # `--compare`, AND THE REASON IS NO LONGER THE ONE WRITTEN HERE. This read "bare `env`
+        # does not answer in JSON ... prints its page and never looks at the flag ... Filed, not
+        # fixed here" from 2026-10-31 until T-58 was built on 2026-11-01. All four modes branch on
+        # `args.format` now, so the sentence that chose this row is false and the row is kept for a
+        # different reason: a COMPARISON is the env payload that carries PROSE, which is the only
+        # thing this guard measures. `--can-check` answers in fixed sentences and digests.
+        #
+        # AND THIS GUARD IS KEYED BY COMMAND WHERE ITS SUBJECT IS SHAPES, which is the defect class
+        # the collision guard's own table was widened for. `set(argv) == _cli_json_commands()`
+        # below allows `env` exactly one invocation, so three of its four shapes are unmeasured
+        # HERE -- they are walked by the collision guard, which carries a row per shape and gained
+        # `env --can-check` in the same commit. Stated rather than filed, because the two guards
+        # disagreeing about their population is what made the fourth shape invisible for a week.
         "env": ["env", "--compare", "--log", str(log)],
         "gate": ["gate", "--policy", str(policy), "--log", str(log)],
         "impact": ["impact", str(tmp_path / "in.tsv"), "--log", str(log)],
@@ -26591,6 +26597,14 @@ def test_no_undeclared_name_means_two_things_across_the_commands(tmp_path, capsy
         #: weakly checked, it is unreachable. `here` as the positional for the same reason the
         #: rendering row gives — it answers with no history and no record.
         "env --digest": ["env", "here", "--digest"],
+        #: `env`'s FOURTH ANSWERING SHAPE, AND IT IS THE DEFAULT MODE [T-58; Audit L1-2]. It had
+        #: no payload builder at all, so `--format json` printed the human page verbatim at rc 0
+        #: — the only member of this package that answered in TEXT under a JSON format flag. Every
+        #: guard over R-5 was green throughout, because their population is `_cli_json_commands()`
+        #: and `env` answers in JSON in three of its four modes: **a guard quantified over
+        #: COMMANDS cannot see a missing SHAPE**, which is the defect class this very dict is the
+        #: repair for. `here` as the positional for the same reason the two rows above give.
+        "env --can-check": ["env", "here", "--can-check"],
         "show": ["show", "--log", str(log)],
         "show <target>": ["show", "demo", "--log", str(log)],
         "check": ["check", str(src)],
@@ -42046,6 +42060,141 @@ def test_the_render_mode_answers_through_the_CLI_and_refuses_in_its_OWN_shape(
     assert "pass --force" in capsys.readouterr().err
 
 
+def test_the_preflight_PAYLOAD_states_each_subject_AS_FIELDS_and_carries_R13s_LOCK():
+    """[ADR-0017 R-16] [ADR-0020 R-13, ADR-0024 R-23] T-58. The fourth shape and its missing row.
+
+    THE PAGE FOLDS A SUBJECT'S STATE INTO ONE STRING AND A CONSUMER MAY NOT HAVE TO UNFOLD IT.
+    `Field.__str__` renders an absent subject as `<reason>`, which is right for a reader and wrong
+    for a parser — so `answerable`, `value`, `how` and `absent` are four keys here. It is
+    `render_payload`'s `floor` lesson: *"a consumer should not have to parse a comment to learn
+    the answer is not exact."*
+
+    **AND R-13's LOCK SUBJECT HAD NO ROW AT ALL.** R-13 names four subjects and the last is *"the
+    lock archived or not, which decides whether rank 1 exists at all"*; `Identity.answerable` had
+    the package set, the interpreter, the host digest and the named packages. A reviewer asking
+    what could be answered here was not told whether an exact rendering was available — the one
+    subject among the four with a consequence for what they do next.
+
+    BOTH ARMS, IN ONE PAYLOAD EACH, because a preflight whose rows all read the same way is the
+    mutation this feature has already survived once: *"a mutation making every row read `yes`
+    SURVIVED, on one test."* An absent subject beside a present one is what kills it.
+    """
+    identity = _env_identity("A", {"numpy": "2.1.0"})
+    answer = runprov.env.answerable_payload(identity)
+    assert answer["schema"] == runprov.env.ANSWERABLE_SCHEMA
+    assert answer["cannot_check"] is None and answer["exit_code"] == 0
+    assert answer["label"] == "A"
+
+    rows = {row["name"]: row for row in answer["subjects"]}
+    assert rows["package_set"]["answerable"] is True
+    assert rows["package_set"]["how"] == runprov.env.RECORDED, "the provenance travels [ADR-0010]"
+    assert rows["package_set"]["absent"] is None
+
+    #: THE SUBJECT WITH NO LOCK, which is every live environment and most records: `from_here`
+    #: populates no `lockfiles` at all, so this is the ordinary state and not a damaged one.
+    assert rows["archived_lock"]["answerable"] is False
+    assert rows["archived_lock"]["value"] is None
+    assert "rank 2" in (rows["archived_lock"]["absent"] or ""), (
+        "[ADR-0020 R-13] the lock row exists to say whether rank 1 is available, so NO without "
+        "the consequence is a row a reviewer cannot act on"
+    )
+    assert any(row["answerable"] for row in answer["subjects"]), "both states, in one payload"
+
+    #: AND THE ARM WITH ONE, THROUGH `_lock` — the same predicate `--render` ranks by, so a
+    #: preflight cannot promise an exact rendering the renderer then declines.
+    archived = {"name": "uv.lock", "sha256": "0" * 64, "archived": True, "path": "uv.lock"}
+    locked = runprov.env.answerable_payload(dataclasses.replace(identity, lockfiles=(archived,)))
+    lock_row = next(r for r in locked["subjects"] if r["name"] == "archived_lock")
+    assert lock_row["answerable"] is True and lock_row["value"] == "uv.lock"
+
+    #: AN ENTRY THAT WAS NOT ARCHIVED IS NOT AN ANSWER, which is `_lock`'s own rule and the
+    #: reason this row is not `bool(identity.lockfiles)`: a lock recorded by blob id is a real
+    #: record and not a file this command can read.
+    unarchived = runprov.env.answerable_payload(
+        dataclasses.replace(identity, lockfiles=({**archived, "archived": False},))
+    )
+    assert not next(r for r in unarchived["subjects"] if r["name"] == "archived_lock")["answerable"]
+
+    #: THE VERDICT IS THE PACKAGE SET [ADR-0007], and it is read out of the payload by `_env` so
+    #: the page and the exit code cannot disagree — they were one expression apart from it.
+    nothing = runprov.env.Field(None, absent="the sidecar was pruned")
+    blocked = runprov.env.answerable_payload(
+        dataclasses.replace(identity, package_set=nothing, packages=None)
+    )
+    assert blocked["exit_code"] == 2 and blocked["cannot_check"] is None, (
+        "could not look is 2 and never 1 — and `cannot_check` is about the INVOCATION, which "
+        "was answered here: the preflight's whole job is to report a subject it cannot reach"
+    )
+
+
+def test_every_env_answer_shape_REFUSES_in_its_own_shape_too(tmp_path, monkeypatch, capsys):
+    """[ADR-0017 R-5, R-15] T-58. The rule above, over ALL FOUR modes instead of the one.
+
+    THE TEST ABOVE HELD `--render` AND THE RULE HELD FOR EVERY MODE, which is this project's most
+    repeated defect shape: a rule applied where it was noticed. `_env` chose the refusal builder
+    with `render_refused if rendering else refused` — a TWO-way switch over a FOUR-way population
+    — so, MEASURED 2026-11-01:
+
+    | mode | answers in | refused in | matched |
+    |---|---|---|---|
+    | `--compare` | `runprov.env.v1` | `runprov.env.v1` | yes |
+    | `--render` | `runprov.env.render.v1` | `runprov.env.render.v1` | yes, the one checked |
+    | `--digest` | `runprov.env.digest.v1` | **`runprov.env.v1`** | NO |
+    | `--can-check` | *nothing at all* | `runprov.env.v1` | vacuously |
+
+    **Two of four, and the two that passed are the two a reader would have sampled**: the mode
+    with the dedicated builder, and the mode whose shape the boolean's `else` happens to name.
+
+    THE POPULATION IS THE MODULE'S OWN `*SCHEMA` CONSTANTS and the scope line is an EQUALITY, so a
+    fifth answer shape cannot be added without choosing its refusal path — it fails here, by name,
+    on the day the constant appears. A list of four invocations would have been a list.
+    """
+    monkeypatch.chdir(tmp_path)
+    declared = {
+        value
+        for name, value in vars(runprov.env).items()
+        if name.endswith("SCHEMA") and isinstance(value, str)
+    }
+    #: `here` ANSWERS WITH NO HISTORY AND NO RECORD, and `--log gone.jsonl` is what makes the
+    #: second column a *could not look* rather than a bad invocation [ADR-0017 R-15]: the operand
+    #: names a run and the history it would have been read from is not there.
+    pairs = {
+        runprov.env.SCHEMA: (
+            ["--compare", "here", "--against", "here"],
+            ["--compare", "nosuchrun", "--against", "here"],
+        ),
+        runprov.env.RENDER_SCHEMA: (
+            ["here", "--render", "requirements"],
+            ["nosuchrun", "--render", "requirements"],
+        ),
+        runprov.env.DIGEST_SCHEMA: (["here", "--digest"], ["nosuchrun", "--digest"]),
+        runprov.env.ANSWERABLE_SCHEMA: (["here", "--can-check"], ["nosuchrun", "--can-check"]),
+    }
+    assert set(pairs) == declared, (
+        "[ADR-0017 R-15] every shape `env` versions needs both an answering and a refusing "
+        f"invocation here, and only those: {sorted(set(pairs) ^ declared)}"
+    )
+
+    for schema, (answering, refusing) in pairs.items():
+        capsys.readouterr()
+        assert cli.main(["env", *answering, "--log", "gone.jsonl", "--format", "json"]) == 0
+        answer = json.loads(capsys.readouterr().out)
+        assert answer["schema"] == schema and answer["cannot_check"] is None
+
+        assert cli.main(["env", *refusing, "--log", "gone.jsonl", "--format", "json"]) == 2
+        refused = json.loads(capsys.readouterr().out)
+        assert refused["schema"] == schema, (
+            f"a refused `{' '.join(refusing)}` answers in {refused['schema']}, so a consumer of "
+            f"{schema} is handed a document it has never seen on the one path it least expects"
+        )
+        #: BUILT THROUGH THE REAL BUILDER OR NOT AT ALL. Equal key sets is what two hand-written
+        #: dictionaries are free to lose, and `lineage` is in the corpus because a pair did.
+        assert set(refused) == set(answer), (
+            f"{schema}'s two shapes differ: {sorted(set(refused) ^ set(answer))}"
+        )
+        assert refused["cannot_check"], "a refusal that does not say so is indistinguishable"
+
+
 def test_env_compares_TWO_RECORDS_with_NEITHER_environment_present():
     """The reviewer's case, and the reason the comparison takes two operands
     [ADR-0026 R-4], with the verdicts independent and the exit code keyed on one of them
@@ -42495,8 +42644,8 @@ def test_an_identity_from_a_record_names_WHICH_absence_it_is_carrying(snapshot, 
     #: AND THE PREFLIGHT SAYS SO TOO, from the same object [ADR-0024 R-23]. A preflight that
     #: walked the record separately could call a question answerable while the comparison refuses
     #: it, which is the two-instrument failure this project has already paid for once.
-    rows = {subject: present for subject, present, _ in identity.answerable()}
-    assert rows["package set"] is False and rows["interpreter"] is True
+    rows = {row.name: row.answerable for row in identity.answerable()}
+    assert rows["package_set"] is False and rows["interpreter"] is True
 
 
 def test_a_record_that_DISAGREES_WITH_ITS_OWN_SIDECAR_is_neither_believed(tmp_path):
@@ -42560,8 +42709,8 @@ def test_an_UNREDUCIBLE_snapshot_body_lowers_the_detail_level_and_names_the_reas
     assert identity.package_set.value is None
     assert "cannot be reduced" in (identity.package_set.absent or "")
     assert identity.packages is None, "an unparseable body must not yield a package map"
-    rows = {subject: present for subject, present, _ in identity.answerable()}
-    assert rows["named packages"] is False and rows["host digest"] is True
+    rows = {row.name: row.answerable for row in identity.answerable()}
+    assert rows["named_packages"] is False and rows["host_digest"] is True
 
 
 def test_a_PRUNED_sidecar_lowers_the_detail_level_and_is_not_an_error(tmp_path):
@@ -42844,7 +42993,14 @@ def test_the_env_command_refuses_every_OPERAND_it_cannot_resolve_and_says_which(
     )
     assert cli.main(["env", "--digest", "--format", "json", "--log", str(bare)]) == 2
     answer = json.loads(capsys.readouterr().out)
-    assert answer["cannot_check"] and answer["schema"] == runprov.env.SCHEMA
+    #: AND THE SHAPE IS `--digest`'s OWN, WHICH THIS LINE ASSERTED THE OPPOSITE OF UNTIL
+    #: 2026-11-01 [T-58]. It read `== runprov.env.SCHEMA` — the COMPARISON's shape — so the
+    #: refusal-shape defect was not merely unguarded, it was **pinned**: a test pointed at the
+    #: exact line and froze the wrong value. The reason is visible in the comment above, which
+    #: names the subject as *exit 2 carries a payload* [ADR-0017 R-15]; the schema beside it was
+    #: written as whatever the implementation emitted rather than as what the rule requires, and
+    #: an expectation copied from the output under test cannot disagree with it.
+    assert answer["cannot_check"] and answer["schema"] == runprov.env.DIGEST_SCHEMA
 
 
 def test_env_REFUSES_two_first_operands_and_a_bare_compare_is_not_one(

@@ -2084,7 +2084,11 @@ def _env_identity(
 
 
 def _env(args: argparse.Namespace) -> int:
-    """ADR-0020 R-11..R-13, ADR-0024. One identity, three questions asked of it.
+    """ADR-0020 R-11..R-13, ADR-0024. One identity, FOUR questions asked of it.
+
+    IT SAID THREE UNTIL 2026-11-01, and the fourth is the DEFAULT one. `--can-check` was the mode
+    with no payload builder, so a sentence counting the questions this function answers undercounted
+    exactly the mode that answered in the wrong format [T-58].
 
     EXIT 2 WHENEVER THE QUESTION COULD NOT BE PUT, and never 1 for that — ADR-0007. A missing
     history, an unreadable operand and an environment that cannot be reduced are all *could not
@@ -2103,7 +2107,37 @@ def _env(args: argparse.Namespace) -> int:
     and the three-spellings equality guard already hold to this module.
     """
 
-    def cannot(reason: str, rendering: bool = False) -> int:
+    #: WHICH OF THE FOUR MODES THIS IS, DECIDED ONCE. `--can-check` is also the DEFAULT, so the
+    #: condition is not `args.can_check` alone — and the branch below and the refusal above would
+    #: otherwise hold two copies of a four-term expression, free to disagree about which mode was
+    #: asked for.
+    can_check = args.can_check or not (
+        args.digest or args.compare is not None or args.render is not None
+    )
+
+    #: AND THE SHAPE THIS INVOCATION WOULD HAVE ANSWERED WITH [ADR-0017 R-15], DERIVED FROM THE
+    #: ARGV rather than passed in at each refusal. **It was a `rendering: bool` parameter — a
+    #: TWO-way switch over a FOUR-way population — under a comment asserting the shapes always
+    #: match.** Measured 2026-11-01: `env <unresolvable> --digest --format json` answered in
+    #: `runprov.env.v1`, the COMPARISON's key set, where the mode answers in
+    #: `runprov.env.digest.v1`; `--can-check` did the same and was harmless only because it had no
+    #: key set of its own to be wrong about. Two of four correct, and the one that was checked was
+    #: `--render`, which is the one that had the builder.
+    #:
+    #: A MAPPING AND NOT A FLAG, so the next mode cannot be added without choosing: the four arms
+    #: are the four `*SCHEMA` constants `env` declares, held to them by
+    #: `test_every_env_answer_shape_REFUSES_in_its_own_shape_too`.
+    refuse_with = (
+        env_mod.render_refused
+        if args.render is not None
+        else env_mod.digest_refused
+        if args.digest
+        else env_mod.answerable_refused
+        if can_check
+        else env_mod.refused
+    )
+
+    def cannot(reason: str) -> int:
         #: [ADR-0017 R-15] AN ANSWER, NOT A BAD INVOCATION: it looked where it was told and there
         #: was nothing to read, so a consumer of `--format json` gets the shape with
         #: `cannot_check` set rather than an empty stdout and a message it is not reading.
@@ -2112,8 +2146,7 @@ def _env(args: argparse.Namespace) -> int:
             #: rendering that failed must not hand a consumer the comparison's key set: the
             #: failure path is the one a consumer parses least often and can least afford to
             #: find unfamiliar.
-            builder = env_mod.render_refused if rendering else env_mod.refused
-            print(json.dumps(builder(reason), indent=2))
+            print(json.dumps(refuse_with(reason), indent=2))
         print(f"env: {reason}", file=sys.stderr)
         return 2
 
@@ -2150,13 +2183,20 @@ def _env(args: argparse.Namespace) -> int:
     project = active()
     first, why = _env_identity(args, args.compare if args.compare else (args.run or ""))
     if first is None:
-        return cannot(
-            why or "the first operand could not be resolved", rendering=args.render is not None
-        )
+        return cannot(why or "the first operand could not be resolved")
 
-    if args.can_check or not (args.digest or args.compare is not None or args.render is not None):
-        print("\n".join(env_mod.render_answerable(first)))
-        return 0 if first.package_set.value else 2
+    if can_check:
+        #: ONE BUILDER, TWO RENDERINGS, AND THE EXIT CODE READ BACK OUT OF IT [ADR-0017] — which
+        #: is `--digest`'s arrangement one branch down, for the same reason it gives: the two
+        #: renderings must not be free to spell one answer two ways. The code was
+        #: `0 if first.package_set.value else 2` here while the page asked `value is not None`, so
+        #: the verdict and the table it sits under were one expression apart from disagreeing.
+        answer = env_mod.answerable_payload(first)
+        if args.format == "json":
+            print(json.dumps(answer, indent=2))
+        else:
+            print("\n".join(env_mod.render_answerable(first)))
+        return int(answer["exit_code"])
 
     if args.digest:
         if first.package_set.value is None:
@@ -2190,7 +2230,7 @@ def _env(args: argparse.Namespace) -> int:
                     args.force,
                 )
         except env_mod.RenderRefusedError as exc:
-            return cannot(str(exc), rendering=True)
+            return cannot(str(exc))
         body = "\n".join(rendering.lines)
         if args.format == "json":
             print(json.dumps(env_mod.render_payload(rendering, first), indent=2))
