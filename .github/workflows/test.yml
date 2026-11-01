@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # FULL HISTORY. `actions/checkout` clones at depth 1 by default, and the suite
@@ -65,7 +65,37 @@ jobs:
     strategy:
       fail-fast: false        # one platform failing must not hide the others
       matrix:
-        os: [ubuntu-latest]
+        # PINNED, AND THE PIN IS THE IMAGE THIS MATRIX WAS MEASURED GREEN ON.
+        # `ubuntu-latest` is a moving label. GitHub announced its migration to Ubuntu 26
+        # over 2026-10-19 -> 2026-11-19 (actions/runner-images#14748), and inside that
+        # window the label's resolution is NOT readable from GitHub's own documentation,
+        # which still prints the pre-migration mapping. So it was read off this
+        # repository's own run instead: `dd27b7b`, job `test (ubuntu-latest, 3.12)`,
+        # `Image: ubuntu-24.04`, version `20261025.353.1`. This pin therefore changes
+        # nothing about today's behaviour -- it freezes what already ran.
+        #
+        # WHAT IT BUYS IS ATTRIBUTION. Every other input to CI here is pinned so that a
+        # red belongs to a commit: actions by SHA, `ruff` and `mypy` by version, the
+        # interpreter by `python-version`. A floating label was the one remaining input
+        # that could change with no commit, no diff and no author -- and `macos-latest`
+        # has already moved under this repository once, to macOS 26.
+        #
+        # IT PINS THE OS, NOT THE IMAGE, and that limit is stated rather than implied.
+        # Images are rebuilt weekly and no label can request an older build, so a new
+        # 24.04 build still arrives unannounced. This BOUNDS the environment; only a
+        # container image would reproduce it.
+        #
+        # IT DEGRADES LOUDLY, which is what makes it safe to set and leave. A retired
+        # label is "terminated with an error" after weeks of scheduled brownouts, never
+        # remapped to a newer image. The one way that could be absorbed quietly -- a
+        # self-hosted runner carrying the label -- does not apply here: this
+        # repository's runner is registered `[self-hosted, Linux, X64, local]` and
+        # matches no version label, so a dead pin fails at dispatch.
+        #
+        # REVISIT: 24.04 has no announced end date (`ubuntu-22.04`'s is 2027-04-17, for
+        # scale). The move to 26.04 should be a commit with a green run behind it rather
+        # than an ambient event.
+        os: [ubuntu-24.04]
         python: ["3.10", "3.11", "3.12", "3.13"]
         include:
           # 3.13 CANNOT REACH 100%, and it is not a regression. CPython 3.13 changed
@@ -80,7 +110,15 @@ jobs:
           # FOUND BY THE SELF-HOSTED RUNNER, on the first green-except-3.13 result in over a
           # hundred commits. This leg has been unpassable for as long as 3.13 has been in the
           # matrix and hosted billing has been down, and nothing said so.
-          - os: ubuntu-latest
+          # THIS `os` MUST MATCH THE AXIS ABOVE, not merely name Ubuntu. An `include`
+          # entry whose list-valued keys match an existing combination MODIFIES it; one
+          # that matches nothing ADDS a leg. Measured: pinning the axis and leaving this
+          # line on `ubuntu-latest` expands the matrix to SEVEN legs -- a real
+          # `ubuntu-24.04 / 3.13` leg with the floor ON, which cannot reach 100%, beside
+          # an orphan `ubuntu-latest / 3.13, off` that modifies nothing. Both floor
+          # guards stayed GREEN on that tree, which is why it is now held explicitly by
+          # `test_a_floor_override_MODIFIES_a_leg_the_matrix_actually_runs`.
+          - os: ubuntu-24.04
             python: "3.13"
             coverage_floor: "off"
           # macOS and Windows on one version each. Windows earns its place: the run-history
@@ -135,7 +173,7 @@ jobs:
   build:
     # On every push, not only on a tag. A README that PyPI refuses to render is unfixable
     # after upload, because a version can never be re-uploaded.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # FULL HISTORY. `actions/checkout` clones at depth 1 by default, and the suite

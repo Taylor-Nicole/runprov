@@ -9,6 +9,70 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Changed — the hosted matrix no longer runs on a label that can move without a commit
+
+**All eight `ubuntu-latest` sites now name `ubuntu-24.04`**, across `test.yml` (the `lint` job,
+the matrix axis, the `3.13` `include`, the `build` job), `publish.yml` (all three jobs) and
+`dco.yml`. **The target was not chosen from documentation** — GitHub's own docs and the
+`runner-images` README still printed the pre-migration mapping — but read off this repository's
+own green run: `dd27b7b`, job `test (ubuntu-latest, 3.12)`, `Image: ubuntu-24.04`, version
+`20261025.353.1`. The pin therefore freezes the image the matrix had already passed on and
+changes nothing about current behaviour. GitHub announced `ubuntu-latest`'s migration to Ubuntu
+26 across 2026-10-19 to 2026-11-19 (`actions/runner-images#14748`), and `macos-latest` has
+already moved under this repository once, to macOS 26.
+
+**Why a label and not a convenience.** Every other input to CI here is pinned so that a red
+belongs to a commit: actions by SHA, `ruff` and `mypy` by version, the interpreter by
+`python-version`, the build front-end by `build==1.6.1` and `twine==7.0.0`. A floating label was
+the one remaining input that could change with no commit, no diff and no author — and
+`publish.yml`'s `build` job is the one whose bytes PyPI freezes.
+
+**It pins the OS, not the image, and that limit is stated rather than implied.** Images are
+rebuilt weekly and no label can request an older build, so a new 24.04 build still arrives
+unannounced. This bounds the environment; only a container image would reproduce it.
+`macos-latest` and `windows-latest` still float.
+
+**The pin degrades loudly, which is what makes it safe to leave.** A retired label is terminated
+with an error after weeks of scheduled brownouts, never remapped to a newer image; and the one
+route by which that could be absorbed quietly — a self-hosted runner carrying the label — does
+not apply, because this repository's runner is registered `[self-hosted, Linux, X64, local]` and
+matches no version label.
+
+**A derivation had made the label's SPELLING load-bearing, and the naive pin would have left two
+guards unsatisfiable at once.** `test_the_ci_sections_legs_are_the_legs_the_workflow_ACTUALLY_DECLARES`
+mapped a leg to the README's prose with `removesuffix("-latest")`, which is a silent no-op on a
+pinned label — so it produced the expected string `ubuntu-24.04 3.10` against the README's
+`ubuntu 3.10`. **And the README could not have been edited to satisfy it**, because that test's
+row pattern captures `[A-Za-z]+`, so rewriting the rows makes them stop matching and fails the
+non-vacuity check instead. Measured over 8 labels GitHub actually serves, the suffix rule is
+wrong on 5 and right on 3 — all three of them floating. Three call sites now share one
+`_platform()` definition, held by
+`test_a_runner_label_resolves_to_its_PLATFORM_pinned_or_floating` with the superseded rule as
+its control. One consequence worth recording: the README's own description of that guard, which
+says it would name `ubuntu 3.14`, stays true under the general rule and would have become false
+under the suffix rule — and it sits in a correction blockquote, the one bucket `tools/claims.py`
+is instructed not to resolve.
+
+### Tested — an `include` whose label drifts from the axis ADDS a leg instead of modifying one
+
+**Measured on the half-finished edit, which every floor guard called clean.** Pinning
+`test.yml`'s `os:` axis while leaving the `3.13` `include` entry on `ubuntu-latest` expands the
+matrix to **seven** legs: a real `ubuntu-24.04 / 3.13` leg with the coverage floor ON, which
+cannot reach 100% and is therefore permanently red, beside an orphan `ubuntu-latest / 3.13, off`
+whose exemption modifies nothing. `include` is not append — an entry matching an existing
+combination modifies it, and one matching nothing adds a leg.
+
+`test_only_the_two_legs_that_cannot_reach_the_floor_turn_it_off` stayed green on that tree,
+because it reads the `include` entries and finds the exemption it expects.
+`test_every_leg_that_cannot_reach_the_floor_says_so` stayed green, because it flattens the
+matrix to a set of bare strings and never asks whether an entry matched anything. The only
+assertion that noticed was a leg-count non-vacuity line thirty thousand lines away, written for
+another purpose — **a side effect is not a guard**.
+`test_a_floor_override_MODIFIES_a_leg_the_matrix_actually_runs` now holds the mechanism
+directly, keyed on the platform so that adding a leg for a platform the axis does not carry,
+which is how macOS and Windows enter this matrix at all, stays legal. Demonstrated red on the
+partial edit and green on the finished one.
+
 ### Fixed
 
 **ADR-0016 R-12's `sha256sum` recipe named a culprit its own evidence cannot identify, in

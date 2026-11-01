@@ -585,7 +585,7 @@ def matrix_check() -> None:
     thirteen commits went by with the local gate green each time. `ci.py` runs ONE platform, so
     *the gate is green* and *CI is green* are different claims, and the second was being
     asserted from the first. **`publish.yml` does not cover it either** — that workflow gates
-    the upload on `needs: [build, test]`, but its own test job is `ubuntu-latest` only, so the
+    the upload on `needs: [build, test]`, but its own test job is LINUX only, so the
     sole Windows signal is `test.yml` on the commit being tagged.
 
     WHAT THE THREE FAILURES WERE, because the shape recurs: fixtures calling

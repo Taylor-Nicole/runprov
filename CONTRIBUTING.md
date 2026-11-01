@@ -571,7 +571,7 @@ The order matters, and every step below exists because skipping it cost somethin
    leg was red for two days and thirteen commits while the local gate came back green every
    time. **`ci.py` runs one platform**, so *the gate is green* and *CI is green* are different
    claims. `publish.yml` does not close the gap either — it gates the upload on
-   `needs: [build, test]`, but its own test job is `ubuntu-latest` only, so the sole Windows
+   `needs: [build, test]`, but its own test job is Linux only, so the sole Windows
    signal is `test.yml` on the commit you are about to tag. `matrix-check` reads every job **by
    name**, because a run can conclude `success` with a leg skipped, and skipped is not passed.
 5. **Tag and push it.** `git tag -a v<version>` then `git push origin v<version>`. The tag

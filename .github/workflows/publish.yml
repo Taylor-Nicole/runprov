@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # FULL HISTORY. `actions/checkout` clones at depth 1 by default, and the suite
@@ -50,6 +50,10 @@ jobs:
       # to be re-uploaded. Every action above is SHA-pinned and the backend is
       # constrained (`hatchling>=1.27,<2`); the front-end tooling was the gap. Same
       # argument as `ruff` and `mypy` in test.yml, and the versions are kept in the
+      # AND THE RUNNER IMAGE, since 2026-11-01: `runs-on` names `ubuntu-24.04`, not
+      # `ubuntu-latest`. This is the job whose bytes PyPI freezes, so it is the job
+      # that may least afford an input that changes with no commit. The measurement
+      # and the limits of the pin are in `test.yml`'s matrix.
       # `dev` extra so Dependabot raises them — it does not read `run:` lines.
       # NO `--upgrade`: it defeats a pin the moment one exists.
       # `comrak` IS NOT OPTIONAL HERE. It is readme_renderer's markdown backend, twine does
@@ -86,7 +90,7 @@ jobs:
 
   test:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13"]
@@ -130,7 +134,7 @@ jobs:
 
   publish:
     needs: [build, test]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Derived from the event, not chosen. See the header.
     environment: ${{ github.event_name == 'workflow_dispatch' && 'testpypi' || 'pypi' }}
     # A job-level block REPLACES the top-level one rather than adding to it, so

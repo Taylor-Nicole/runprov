@@ -23172,6 +23172,24 @@ def _workflows_dir() -> pathlib.Path:
     return path
 
 
+def _platform(label: str) -> str:
+    """The platform a `runs-on:` label names, whether it floats or is pinned to a version.
+
+    ONE DEFINITION FOR THREE CALLERS, which is the point. `ubuntu-latest`, `ubuntu-24.04`,
+    `macos-26-arm64` and `windows-2025` all name a platform and differ only in how the image
+    gets chosen. Every claim this suite makes about a leg -- which platform may lower the
+    coverage floor, which legs the README must name -- is a claim about the PLATFORM, so
+    reading the label made those claims depend on a spelling nobody meant to assert.
+
+    WHY NOT `removesuffix("-latest")`, which two of these callers used until 2026-11-01: it is
+    a SILENT NO-OP on a pinned label, so it yields a wrong value instead of an error. Over the
+    labels GitHub actually serves it is correct for every floating one and wrong for every
+    pinned one -- exactly the shape that passes until the day somebody pins, which is the day
+    `ubuntu-latest` was pinned to the image this matrix had been measured green on.
+    """
+    return label.split("-", 1)[0].lower()
+
+
 def _release_tree(
     tmp_path, *, version="0.1.0", citation_version=None, heading="Unreleased", date_released=False
 ):
@@ -23509,11 +23527,116 @@ def test_only_the_two_legs_that_cannot_reach_the_floor_turn_it_off():
     wf = _workflow("test.yml")
     matrix = yaml.safe_load(wf.read_text(encoding="utf-8"))["jobs"]["test"]["strategy"]["matrix"]
     off = [leg for leg in matrix["include"] if leg.get("coverage_floor") == "off"]
-    assert sorted((leg["os"], leg["python"]) for leg in off) == [
-        ("ubuntu-latest", "3.13"),
-        ("windows-latest", "3.12"),
+    #: KEYED ON THE PLATFORM, NOT THE LABEL [2026-11-01]. Both exemptions above are about a
+    #: platform and an interpreter -- Windows cannot build a FIFO, 3.13 cannot enter four
+    #: guards -- and neither reason mentions an image version. The label was only ever a proxy
+    #: for the platform, so pinning `ubuntu-latest` to `ubuntu-24.04` must not be able to red
+    #: this guard, and neither must a later move to 26.04.
+    assert sorted((_platform(leg["os"]), leg["python"]) for leg in off) == [
+        ("ubuntu", "3.13"),
+        ("windows", "3.12"),
     ], f"exactly these two legs may lower the floor, and only for the reasons above; got {off}"
-    assert matrix["os"] == ["ubuntu-latest"], "the base matrix must carry no floor override"
+    #: AND THE MESSAGE NOW DESCRIBES THE ASSERTION. It read "must carry no floor override",
+    #: which is not what this line checks -- `matrix["os"]` holds label strings and can carry
+    #: no override at all. What it checks is that the axis declares ONE platform and that it
+    #: is Linux, with every other platform arriving as an `include`.
+    assert [_platform(o) for o in matrix["os"]] == ["ubuntu"], (
+        f"the base matrix must declare exactly one platform and it must be Linux; got "
+        f"{matrix['os']}"
+    )
+
+
+def test_a_floor_override_MODIFIES_a_leg_the_matrix_actually_runs():
+    """An `include` that lowers the coverage floor must apply to a leg, never create one.
+
+    MEASURED, NOT IMAGINED, and it is one line away. `test.yml` declares `os: [ubuntu-24.04]`
+    and an `include` carrying `coverage_floor: "off"` for `os: ubuntu-24.04, python: "3.13"`.
+    Those two spellings must agree, because `include` is not "append": an entry whose
+    list-valued keys match an existing combination MODIFIES it, and one that matches nothing
+    ADDS a leg.
+
+    So pinning the axis and leaving the `include` on `ubuntu-latest` expands the matrix to
+    SEVEN legs -- a real `ubuntu-24.04 / 3.13` leg with the floor ON, which cannot reach 100%
+    and is therefore permanently red, beside an orphan `ubuntu-latest / 3.13, off` whose
+    exemption modifies nothing.
+
+    AND BOTH FLOOR GUARDS STAYED GREEN ON THAT TREE.
+    `test_only_the_two_legs_that_cannot_reach_the_floor_turn_it_off` reads the `include`
+    entries themselves, so it finds the exemption it expects;
+    `test_every_leg_that_cannot_reach_the_floor_says_so` flattens the matrix to a set of bare
+    strings and never asks whether an entry matched anything. The only assertion that noticed
+    was the leg-count non-vacuity line in
+    `test_the_ci_sections_legs_are_the_legs_the_workflow_ACTUALLY_DECLARES`, thirty thousand
+    lines away and written for another purpose. **A side effect is not a guard**, so the
+    mechanism is held here directly.
+
+    KEYED ON THE PLATFORM, so what is refused is the MISMATCH and not a spelling: adding a leg
+    for a platform the axis does not carry is how macOS and Windows enter this matrix at all,
+    and that stays legal.
+    """
+    yaml = pytest.importorskip("yaml")
+    doc = yaml.safe_load(_workflow("test.yml").read_text(encoding="utf-8"))
+    matrix = doc["jobs"]["test"]["strategy"]["matrix"]
+    axis = matrix["os"]
+    platforms = {_platform(o) for o in axis}
+    include = [inc for inc in matrix.get("include") or [] if "os" in inc]
+
+    offenders = [
+        inc for inc in include if _platform(inc["os"]) in platforms and inc["os"] not in axis
+    ]
+    assert not offenders, (
+        "an `include` entry names the same PLATFORM as the matrix axis but a DIFFERENT label, "
+        f"so it adds an orphan leg instead of modifying one. The axis is {axis} and the "
+        f"offending entrie(s) are {offenders}. Either spell the label exactly as the axis "
+        "does, or give the entry a platform the axis does not carry."
+    )
+
+    #: NON-VACUOUS, because an `include` list of only cross-platform additions would satisfy
+    #: the above while this guard read nothing of what it exists for.
+    assert [inc for inc in include if _platform(inc["os"]) in platforms], (
+        f"no `include` entry names a platform the axis carries ({sorted(platforms)}), so this "
+        f"guard checked none of its subject; the entries are {include}"
+    )
+
+
+def test_a_runner_label_resolves_to_its_PLATFORM_pinned_or_floating():
+    """`_platform` is the one definition three guards rest on, so it is checked on its own.
+
+    WHY A HELPER EARNS A TEST. Until 2026-11-01 two of those guards derived the platform with
+    `removesuffix("-latest")` — correct for every floating label and a silent no-op for every
+    pinned one. The rule was right about the three labels in the file and wrong about every
+    label the file could be changed to, and nothing could see it, because the wrong answer is
+    a string rather than an exception.
+
+    THE PAIRS ARE LABELS GITHUB ACTUALLY SERVES, not invented ones: the first three were read
+    off this repository's own green run (`Image: ubuntu-24.04`, `macos-26-arm64`,
+    `windows-2025-vs2026`) and the rest off the published label list.
+    """
+    for label, want in (
+        ("ubuntu-latest", "ubuntu"),
+        ("ubuntu-24.04", "ubuntu"),
+        ("ubuntu-26.04", "ubuntu"),
+        ("ubuntu-24.04-arm", "ubuntu"),
+        ("macos-latest", "macos"),
+        ("macos-15-large", "macos"),
+        ("windows-latest", "windows"),
+        ("windows-2025", "windows"),
+        ("windows-11-arm", "windows"),
+    ):
+        assert _platform(label) == want, (
+            f"{label!r} names the {want!r} platform, not {_platform(label)!r}"
+        )
+
+    #: THE CONTROL, without which the table above is satisfied by the rule this replaced. The
+    #: superseded rule must FAIL on every pinned label, or the two are interchangeable and
+    #: nothing was repaired.
+    pinned = ("ubuntu-24.04", "macos-15-large", "windows-2025")
+    wrong = [label for label in pinned if label.removesuffix("-latest") != _platform(label)]
+    assert len(wrong) == len(pinned), (
+        "`removesuffix('-latest')` must be wrong on all "
+        f"{len(pinned)} PINNED labels for `_platform` to be worth having; it is wrong on "
+        f"{len(wrong)} ({wrong}), so this control no longer shows why the helper exists"
+    )
 
 
 def test_nothing_evaluated_at_import_needs_a_posix_only_name():
@@ -54811,10 +54934,17 @@ def _matrix_legs(workflow: dict) -> list[dict[str, str]]:
     """Every job GitHub expands the `test` matrix into, `include` semantics and all.
 
     `include` IS NOT "APPEND". An entry whose list-valued keys match an existing combination
-    ADDS PROPERTIES TO IT; one that matches nothing adds a new combination. Here `ubuntu-latest`
-    x `3.13` already exists, so the entry carrying `coverage_floor: off` modifies that leg rather
-    than making a seventh — and a test that read `include` as three more jobs would compute 9 and
-    call the README wrong. The expansion is 4 ubuntu legs plus macOS plus Windows, which is 6.
+    ADDS PROPERTIES TO IT; one that matches nothing adds a new combination. The Linux leg the
+    axis already carries at `3.13` is matched by the entry carrying `coverage_floor: off`, which
+    modifies that leg rather than making a seventh — and a test that read `include` as three
+    more jobs would compute 9 and call the README wrong. The expansion is 4 Linux legs plus
+    macOS plus Windows, which is 6.
+
+    THE MATCH IS BY LABEL AND GITHUB SPELLS IT EXACTLY, which is why the axis and that entry
+    must agree character for character. They are pinned to `ubuntu-24.04` rather than floating,
+    and changing one without the other silently expands this to seven legs — held by
+    `test_a_floor_override_MODIFIES_a_leg_the_matrix_actually_runs`, because every floor guard
+    stayed green on that tree.
     """
     matrix = workflow["jobs"]["test"]["strategy"]["matrix"]
     axes = {k: v for k, v in matrix.items() if k != "include" and isinstance(v, list)}
@@ -54862,9 +54992,14 @@ def test_the_ci_sections_legs_are_the_legs_the_workflow_ACTUALLY_DECLARES():
     workflow = yaml.safe_load(wf.read_text(encoding="utf-8"))
     legs = _matrix_legs(workflow)
 
-    #: THE OS NAMES AS A READER WRITES THEM. Not a per-leg list: the runner label is
-    #: `<platform>-latest` and the prose says the platform, so the mapping is the suffix rule.
-    expected = {f"{leg['os'].removesuffix('-latest')} {leg['python']}".lower() for leg in legs}
+    #: THE OS NAMES AS A READER WRITES THEM. Not a per-leg list: the prose says the platform,
+    #: so the mapping is `_platform`. IT USED TO BE `removesuffix("-latest")`, and that rule was
+    #: wrong the moment any label was pinned -- a no-op rather than an error, so `ubuntu-24.04`
+    #: produced the expected string `ubuntu-24.04 3.10` against the README's `ubuntu 3.10`.
+    #: WORSE, THE README COULD NOT BE EDITED TO SATISFY IT: the row pattern below captures
+    #: `[A-Za-z]+`, so rewriting the rows to `ubuntu-24.04 3.10` makes them stop matching and
+    #: fails the non-vacuity check instead. Both sides unsatisfiable at once, from a pin.
+    expected = {f"{_platform(leg['os'])} {leg['python']}".lower() for leg in legs}
     #: THE PER-LEG TABLE ONLY, FOUND BY ITS OWN HEADER, and that scoping is a correction. Reading
     #: the whole section let the STATE table satisfy this: deleting the macOS row from the per-leg
     #: table left `| macOS 3.12 | **green at ...** |` above it, `claimed` was unchanged, and the
