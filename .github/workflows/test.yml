@@ -125,9 +125,46 @@ jobs:
           # append takes an advisory flock, and fcntl does not exist there — this is the
           # job that proves the documented fallback actually works rather than merely
           # being written down.
-          - os: macos-latest
+          #
+          # PINNED FOR THE SAME REASON AS THE AXIS, off the same green run (`dd27b7b`):
+          # `Image: macos-26-arm64` version `20261026.0455.2`, and
+          # `Image: windows-2025-vs2026` version `20261021.278.1`. These two were the last
+          # CI inputs here that could change with no commit, no diff and no author.
+          #
+          # THE IMAGE NAME IS NOT THE LABEL, which is the trap this pin had to avoid and
+          # the axis above did not. `ubuntu-24.04` happens to be spelled identically as an
+          # image and as a label; neither of these is. `macos-26-arm64` is not a label at
+          # all — the arm64 macOS 26 label is `macos-26` — so pinning to the measured
+          # image name would have failed at dispatch. `windows-2025-vs2026` IS a label,
+          # which is the worse case: GitHub's migration changelog says it "is meant for
+          # testing only" and that after the June 2026 migration it points at the
+          # `windows-2025` image, so pinning to it would have frozen a transitional alias
+          # instead of the OS. Both labels were confirmed against two independently-keyed
+          # sources: the `runner-images` README table and GitHub's hosted-runners
+          # reference.
+          #
+          # macOS CARRIES AN ARCHITECTURE IN THE LABEL, not only a version: `macos-26` is
+          # arm64, and the x64 macOS 26 images are the separate labels `macos-26-intel`
+          # and `macos-26-large`. So `macos-latest` moving under this repository could
+          # move the ISA, which is a larger unattributed change than a version bump.
+          # `macos-26` preserves the architecture that was measured green.
+          #
+          # ONE BIT WAS NOT MEASURED BEFORE THIS COMMIT, named rather than glossed: the
+          # run above resolved `windows-latest`, not `windows-2025`. GitHub's changelog
+          # states both labels migrated to the VS2026 image by 2026-06-15, but `win25` and
+          # `win25-vs2026` are STILL both rebuilt weekly — four releases each in the last
+          # month — so the two labels carrying different images is not impossible. It is
+          # harmless either way here: no step invokes a C toolchain. This pin's own run
+          # reports the image it was given, which is where that bit gets settled.
+          #
+          # REVISIT: neither macOS 26 nor Windows Server 2025 has an announced end date.
+          # For scale, GitHub keeps two GA images per family and retires the older — and
+          # macOS 14 is retired on 2026-11-02 after EIGHT scheduled brownout windows
+          # across October, which is this month's demonstration that a dying label is
+          # failed rather than quietly remapped.
+          - os: macos-26
             python: "3.12"
-          - os: windows-latest
+          - os: windows-2025
             python: "3.12"
             # THIS IS THE ONE PLACE THE COUNT IS STATED [Audit N]. `ci.py`'s own floor
             # comment used to carry a second, different figure for the same set of tests —

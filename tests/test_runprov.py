@@ -143,7 +143,7 @@ _PRUNE_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
 # ------------------------------------------------- what the platform can be asked to build
 #
-# L-26. `test.yml` runs this suite on windows-latest, and 22 tests here build a fixture
+# L-26. `test.yml` runs this suite on Windows, and 22 tests here build a fixture
 # Windows cannot build: a FIFO (`os.mkfifo` does not exist), a symlink (blocked without
 # Developer Mode or admin, which a GitHub runner does not grant), an unreadable file
 # (`chmod(0o000)` clears the read-only bit and nothing more, so the file stays readable),
@@ -7750,7 +7750,24 @@ def test_every_leg_that_cannot_reach_the_floor_says_so():
     yaml = pytest.importorskip("yaml")
     root = _workflows_dir()
 
-    exempt_needed = {"3.13", "windows-latest"}
+    # THE WINDOWS MEMBER IS A PLATFORM, NOT A LABEL. It read `windows-latest` until
+    # 2026-11-01, which made this guard's SCOPE depend on a spelling nobody meant to assert:
+    # pinning the label to `windows-2025` would have emptied `legs & exempt_needed` of its
+    # Windows half, and the guard would have gone on checking the 3.13 half alone, green and
+    # half blind. `tokens` reads an `os` value through `_platform` so the rule is written in
+    # the vocabulary it actually means.
+    exempt_needed = {"3.13", "windows"}
+
+    def tokens(entry: dict) -> set[str]:
+        """A matrix entry's values as the tokens the exemption rule is written in: an `os`
+        contributes its PLATFORM, every other key its value verbatim."""
+        return {
+            _platform(str(v)) if k == "os" else str(v)
+            for k, v in entry.items()
+            if k != "coverage_floor"
+        }
+
+    seen: set[str] = set()
     checked = 0
     for wf in sorted(root.glob("*.yml")):
         spec = yaml.safe_load(wf.read_text(encoding="utf-8"))
@@ -7760,20 +7777,24 @@ def test_every_leg_that_cannot_reach_the_floor_says_so():
             if not runs_suite:
                 continue
             matrix = ((job.get("strategy") or {}).get("matrix")) or {}
-            legs = {str(v) for key in ("python", "os") for v in (matrix.get(key) or [])}
-            legs |= {str(v) for inc in (matrix.get("include") or []) for v in inc.values()}
+            legs = {
+                _platform(str(v)) if key == "os" else str(v)
+                for key in ("python", "os")
+                for v in (matrix.get(key) or [])
+            }
+            legs |= {t for inc in (matrix.get("include") or []) for t in tokens(inc)}
             if not legs & exempt_needed:
                 continue
             checked += 1
+            seen |= legs & exempt_needed
             # EVERY value of an exempt include, not one key of it. The Windows exemption is
             # keyed on `os` AND `python` together, so reading a single key found "3.12" and
             # reported windows-latest as unexempted — the guard's own first false alarm.
             off = {
-                str(v)
+                t
                 for inc in (matrix.get("include") or [])
                 if inc.get("coverage_floor") == "off"
-                for k, v in inc.items()
-                if k != "coverage_floor"
+                for t in tokens(inc)
             }
             missing = sorted((legs & exempt_needed) - off)
             assert not missing, (
@@ -7794,6 +7815,14 @@ def test_every_leg_that_cannot_reach_the_floor_says_so():
     # NON-VACUITY: a parser that stopped finding jobs, or a glob that matched nothing, would
     # pass this test in silence. Two workflows run the suite today.
     assert checked >= 2, f"expected at least two workflows running the suite, examined {checked}"
+    # AND EACH EXEMPTION MUST BE EXERCISED, which `checked` cannot tell you: a member of
+    # `exempt_needed` that no leg carries is a clause of this guard that examined nothing,
+    # and the count above stays satisfied by the other clause. That is exactly how a label
+    # pin would have silenced the Windows half without reddening anything.
+    assert seen == exempt_needed, (
+        f"every exemption must be carried by a real leg somewhere, or its clause here "
+        f"checked nothing; never seen: {sorted(exempt_needed - seen)}"
+    )
 
 
 def test_the_two_readmes_open_with_the_same_words():
@@ -23508,7 +23537,7 @@ def test_only_the_two_legs_that_cannot_reach_the_floor_turn_it_off():
     casually would leave the gate gone on Linux with the suite still green. What changed is
     that a Linux leg now qualifies, for a measured reason:
 
-        windows-latest   22 tests build a fixture Windows cannot build — a FIFO, a symlink,
+        windows, 3.12    22 tests build a fixture Windows cannot build — a FIFO, a symlink,
                          a file `chmod(0o000)` genuinely makes unreadable — and a skipped
                          test leaves its lines unmeasured.
         ubuntu, 3.13     CPython 3.13 stopped raising `RuntimeError` from `Path.resolve()`
@@ -23608,9 +23637,12 @@ def test_a_runner_label_resolves_to_its_PLATFORM_pinned_or_floating():
     label the file could be changed to, and nothing could see it, because the wrong answer is
     a string rather than an exception.
 
-    THE PAIRS ARE LABELS GITHUB ACTUALLY SERVES, not invented ones: the first three were read
-    off this repository's own green run (`Image: ubuntu-24.04`, `macos-26-arm64`,
-    `windows-2025-vs2026`) and the rest off the published label list.
+    THE PAIRS ARE LABELS GITHUB ACTUALLY SERVES, not invented ones: the published label list,
+    plus the three IMAGE names this repository's own green run reported (`ubuntu-24.04`,
+    `macos-26-arm64`, `windows-2025-vs2026`). Two of those three are not labels as spelled —
+    `macos-26-arm64` is no label at all and `windows-2025-vs2026` is a testing-only alias —
+    which is why the image names appear here beside the labels they were resolved to rather
+    than in place of them.
     """
     for label, want in (
         ("ubuntu-latest", "ubuntu"),
@@ -23618,9 +23650,12 @@ def test_a_runner_label_resolves_to_its_PLATFORM_pinned_or_floating():
         ("ubuntu-26.04", "ubuntu"),
         ("ubuntu-24.04-arm", "ubuntu"),
         ("macos-latest", "macos"),
+        ("macos-26", "macos"),
+        ("macos-26-intel", "macos"),
         ("macos-15-large", "macos"),
         ("windows-latest", "windows"),
         ("windows-2025", "windows"),
+        ("windows-2025-vs2026", "windows"),
         ("windows-11-arm", "windows"),
     ):
         assert _platform(label) == want, (
@@ -23630,7 +23665,9 @@ def test_a_runner_label_resolves_to_its_PLATFORM_pinned_or_floating():
     #: THE CONTROL, without which the table above is satisfied by the rule this replaced. The
     #: superseded rule must FAIL on every pinned label, or the two are interchangeable and
     #: nothing was repaired.
-    pinned = ("ubuntu-24.04", "macos-15-large", "windows-2025")
+    #: THE THREE THIS REPOSITORY NOW USES, so the control is about its own pins rather than
+    #: about invented ones.
+    pinned = ("ubuntu-24.04", "macos-26", "windows-2025")
     wrong = [label for label in pinned if label.removesuffix("-latest") != _platform(label)]
     assert len(wrong) == len(pinned), (
         "`removesuffix('-latest')` must be wrong on all "
@@ -24014,7 +24051,7 @@ def _workflow_files() -> list[pathlib.Path]:
     return sorted(wf_dir.glob("*.yml")) + sorted(wf_dir.glob("*.yaml"))
 
 
-def test_no_workflow_anywhere_lowers_the_coverage_floor_except_the_windows_leg():
+def test_no_workflow_anywhere_lowers_the_coverage_floor_outside_the_stated_exemptions():
     """The generalisation of the test above, and the reason it needed one: that test reads
     `test.yml` and nothing else, so a SECOND workflow file could turn the floor off on Linux
     and the suite would stay green — which is the exact failure its docstring warns about,
@@ -24028,7 +24065,7 @@ def test_no_workflow_anywhere_lowers_the_coverage_floor_except_the_windows_leg()
     # TWO EXEMPTIONS, EACH NAMED, so a third cannot arrive quietly. Both are "unreachable by
     # construction, not by regression", and both were measured:
     #
-    #   windows-latest   22 tests build a fixture Windows cannot build — a FIFO, a symlink,
+    #   windows          22 tests build a fixture Windows cannot build — a FIFO, a symlink,
     #                    a file `chmod(0o000)` genuinely makes unreadable — and a skipped
     #                    test leaves its lines unmeasured.
     #   python 3.13      CPython 3.13 stopped raising `RuntimeError` from `Path.resolve()`
@@ -24036,8 +24073,19 @@ def test_no_workflow_anywhere_lowers_the_coverage_floor_except_the_windows_leg()
     #                    cannot be entered there. Measured on 3.13.15: `resolve()` raises
     #                    for none of a loop, a 5,000-character component, or a directory
     #                    with no execute permission.
-    allowed = ({"os": "windows-latest"}, {"python": "3.13"})
+    # KEYED ON THE PLATFORM, NOT THE LABEL, for the reason `_platform` exists. This read
+    # `windows-latest` until 2026-11-01, so pinning the label would have turned the Windows
+    # floor-off leg into an OFFENDER. Note which way each sibling failed: here a stale
+    # spelling is LOUD (a red), and in
+    # `test_every_leg_that_cannot_reach_the_floor_says_so` it was SILENT (a clause that
+    # examined nothing). One hardcoded string, two failure directions.
+    allowed = ({"os": "windows"}, {"python": "3.13"})
     offenders = []
+
+    def leg_token(leg: dict, key: str) -> str:
+        """A leg's value for `key` in the rule's vocabulary: an `os` is its PLATFORM."""
+        value = str(leg.get(key))
+        return _platform(value) if key == "os" else value
 
     def bad(floor: object) -> bool:
         """An expression is allowed only if it names 3.13 as the sole exemption."""
@@ -24058,7 +24106,7 @@ def test_no_workflow_anywhere_lowers_the_coverage_floor_except_the_windows_leg()
             for leg in legs:
                 if leg.get("coverage_floor") != "off":
                     continue
-                if not any(all(leg.get(k) == v for k, v in a.items()) for a in allowed):
+                if not any(all(leg_token(leg, k) == v for k, v in a.items()) for a in allowed):
                     offenders.append(f"{wf.name}:{job_name} {leg}")
             # JOB-LEVEL `env:` TOO, for the same reason one level up.
             if bad((job.get("env") or {}).get("RUNPROV_COVERAGE_FLOOR", "")):

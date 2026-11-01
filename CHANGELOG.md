@@ -30,7 +30,32 @@ the one remaining input that could change with no commit, no diff and no author 
 **It pins the OS, not the image, and that limit is stated rather than implied.** Images are
 rebuilt weekly and no label can request an older build, so a new 24.04 build still arrives
 unannounced. This bounds the environment; only a container image would reproduce it.
-`macos-latest` and `windows-latest` still float.
+
+**`macos-latest` and `windows-latest` are pinned too, to `macos-26` and `windows-2025`**, off
+the same green run: `Image: macos-26-arm64` version `20261026.0455.2`, and
+`Image: windows-2025-vs2026` version `20261021.278.1`. No label in any workflow now floats, so
+the section heading above is a statement rather than an aspiration.
+
+**The image name is not the label, and for these two that mattered.** `ubuntu-24.04` happens to
+be spelled identically as an image and as a label; neither of the others is. `macos-26-arm64` is
+not a label at all — the arm64 macOS 26 label is `macos-26` — so pinning to the measured image
+name would have failed at dispatch. `windows-2025-vs2026` IS a label, which is the worse case:
+GitHub's migration changelog calls it "meant for testing only" and says that after the June 2026
+migration it points at the `windows-2025` image, so pinning to it would have frozen a
+transitional alias instead of an OS. Both labels were confirmed against two independently-keyed
+sources, the `runner-images` README table and GitHub's hosted-runners reference.
+
+**macOS carries an architecture in the label, not only a version.** `macos-26` is arm64; the x64
+macOS 26 images are the separate labels `macos-26-intel` and `macos-26-large`. So `macos-latest`
+moving could move the ISA, which is a larger unattributed change than a version bump, and
+`macos-26` holds the architecture that was measured green.
+
+**One bit was not measured before the commit, and is named rather than glossed.** The green run
+resolved `windows-latest`, not `windows-2025`. GitHub's changelog states both migrated to the
+VS2026 image by 2026-06-15, but `win25` and `win25-vs2026` are still both rebuilt weekly — four
+releases each in the last month — so the two labels carrying different images is not impossible.
+It is harmless either way here, since no step invokes a C toolchain, and the pin's own run
+reports the image it was given.
 
 **The pin degrades loudly, which is what makes it safe to leave.** A retired label is terminated
 with an error after weeks of scheduled brownouts, never remapped to a newer image; and the one
@@ -72,6 +97,33 @@ another purpose — **a side effect is not a guard**.
 directly, keyed on the platform so that adding a leg for a platform the axis does not carry,
 which is how macOS and Windows enter this matrix at all, stays legal. Demonstrated red on the
 partial edit and green on the finished one.
+
+**Two more guards had the label's spelling load-bearing, and they failed in opposite
+directions.** `test_no_workflow_anywhere_lowers_the_coverage_floor_outside_the_stated_exemptions`
+allowed `{"os": "windows-latest"}`, so pinning the label would have turned the Windows leg into
+an offender — **loud**. `test_every_leg_that_cannot_reach_the_floor_says_so` gated its own scope
+on `legs & {"3.13", "windows-latest"}`, so pinning would have emptied the Windows half of that
+intersection and left the guard checking the 3.13 clause alone — **silent**, and its existing
+`checked >= 2` non-vacuity line stays satisfied by the other clause. Both are keyed on the
+platform now, and the silent one gained `seen == exempt_needed`: an exemption no leg carries is
+a clause that examined nothing. Four controls, each measured: the old spelling on the pinned
+tree now reds with `never seen: ['windows-latest']`; a token no leg carries at all reds the new
+assertion on its own; deleting the Windows leg's `coverage_floor` still reds the primary
+assertion; and the stale allowlist reds loudly. The tree was restored byte-identically after
+each.
+
+**That guard was renamed in the same pass**, from
+`..._except_the_windows_leg` to `..._outside_the_stated_exemptions`: its name named one
+exemption where its rule allows two, and the rule is the line this change edits — leaving the
+name narrow beside a corrected rule is the "fixed in one place and never swept" shape this
+repository keeps meeting. The new name carries no count, because a numeral there would need
+maintaining by hand while the rule already refuses a third. Swept for the shape two
+independently-keyed ways, since a name-keyed sweep finds only the names someone phrased
+carefully: **names carrying an exception clause (10 of 1505 tests) and literal multi-case
+collections under a bounding name (4 of 1505)**. Nine of the first ten use "but" in ordinary
+English rather than to enumerate cases, and three of the four hold accumulators or probe tables
+their names do not enumerate — so both passes converge on this one instance, which is the only
+one either found.
 
 ### Fixed
 
