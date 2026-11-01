@@ -54,8 +54,18 @@ moving could move the ISA, which is a larger unattributed change than a version 
 resolved `windows-latest`, not `windows-2025`. GitHub's changelog states both migrated to the
 VS2026 image by 2026-06-15, but `win25` and `win25-vs2026` are still both rebuilt weekly — four
 releases each in the last month — so the two labels carrying different images is not impossible.
-It is harmless either way here, since no step invokes a C toolchain, and the pin's own run
-reports the image it was given.
+It is harmless either way here, since no step invokes a C toolchain.
+
+**Settled by the pin's own first run, 41331118843, green on 8 of 8.** `windows-2025` resolved
+to `Image: windows-2025-vs2026` and `macos-26` to `Image: macos-26-arm64`, so neither label
+diverges from what `-latest` was serving and GitHub's changelog is accurate about both.
+
+**And that run demonstrated the OS-not-image limit within the day, rather than leaving it an
+argument.** The Windows image came back as build `20261030.294.1` against the `20261021.278.1`
+this pin was measured on — a newer weekly build of the same OS, arriving under a *pinned*
+label with no commit. That is precisely what the paragraph above says a label pin cannot stop,
+and it happened on the first run after the pin. `macos-26` came back on `20261026.0455.2`, the
+same build as the measurement.
 
 **The pin degrades loudly, which is what makes it safe to leave.** A retired label is terminated
 with an error after weeks of scheduled brownouts, never remapped to a newer image; and the one

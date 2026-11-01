@@ -154,8 +154,17 @@ jobs:
           # states both labels migrated to the VS2026 image by 2026-06-15, but `win25` and
           # `win25-vs2026` are STILL both rebuilt weekly — four releases each in the last
           # month — so the two labels carrying different images is not impossible. It is
-          # harmless either way here: no step invokes a C toolchain. This pin's own run
-          # reports the image it was given, which is where that bit gets settled.
+          # harmless either way here: no step invokes a C toolchain. SETTLED by this
+          # pin's own first run, 41331118843: `windows-2025` resolved to
+          # `Image: windows-2025-vs2026`, so the two labels do not diverge and the
+          # changelog is accurate about them.
+          #
+          # AND THAT RUN DEMONSTRATED THE OS-NOT-IMAGE LIMIT within the day rather than
+          # leaving it an argument. The Windows image came back as build
+          # `20261030.294.1` against the `20261021.278.1` this pin was measured on — a
+          # newer weekly build of the same OS, arriving under a PINNED label with no
+          # commit, which is exactly what the axis comment says a label pin cannot stop.
+          # `macos-26` came back on `20261026.0455.2`, the same build as the measurement.
           #
           # REVISIT: neither macOS 26 nor Windows Server 2025 has an announced end date.
           # For scale, GitHub keeps two GA images per family and retires the older — and
