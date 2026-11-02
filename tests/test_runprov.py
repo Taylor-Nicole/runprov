@@ -41742,6 +41742,119 @@ def _render_identity(**over: typing.Any) -> runprov.env.Identity:
     return runprov.env.Identity(**base)
 
 
+def test_NO_COMMAND_OFFERS_A_CONTAINER_FORM_and_no_module_emits_a_recipe_directive():
+    """[ADR-0024 R-12] *"No command emits a container recipe."* The record describes a PYTHON
+    environment, not a system one, and ADR-0020's rejection of container output stands.
+
+    WHY THIS NEEDED WRITING AT ALL. R-12 was the one requirement of ADR-0024 with no guard
+    anywhere -- found while bringing the record to `Accepted`, because the citation enforcer
+    demands a test per requirement and there was nothing honest to point at. The neighbouring
+    `_RENDERERS`/`RENDERINGS` equality stops a container form growing silently inside
+    `env --render`, but it is scoped to ONE flag of ONE command, where R-12 says *no command*.
+
+    TWO POPULATIONS, BOTH DERIVED, because "emits a recipe" has two routes. A form a caller can
+    ASK for is an argparse `choices` entry, so the first population is every `choices` of every
+    action of every subparser -- walked from the parser itself rather than from a list of flags,
+    so a new command or a new flag is covered on arrival. A recipe emitted without being offered
+    would have to be built from literals, so the second population is every string constant in
+    every shipped module.
+
+    AND THE CLAIM IS NARROWED TO WHAT THESE TWO CAN SEE, deliberately: they prove no form is
+    OFFERED and no module carries a recipe DIRECTIVE. A command that assembled `FROM` out of
+    pieces at runtime would pass both, and saying so here is cheaper than a guard that claims
+    totality it has not got.
+    """
+    #: BY AST, NOT BY INSTANTIATING THE PARSER, which is the approach `_cli_subcommands`
+    #: already takes one helper over and for the reason stated there: the parser is built
+    #: inside `main()` with no factory to call, and `_SubParsersAction.choices` is private
+    #: API that has changed shape between versions.
+    tree = ast.parse((REPO / "runprov" / "__main__.py").read_text(encoding="utf-8"))
+    offered: set[str] = set()
+    via_constant: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr != "add_argument":
+            continue
+        for kw in node.keywords:
+            if kw.arg != "choices":
+                continue
+            if isinstance(kw.value, (ast.List, ast.Tuple, ast.Set)):
+                offered |= {
+                    e.value
+                    for e in kw.value.elts
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str)
+                }
+            else:
+                #: a `choices=SOME_CONSTANT` spelling: resolved from the package below, so a
+                #: form offered through a constant is not invisible to this walk.
+                via_constant.add(ast.unparse(kw.value))
+
+    #: THE CONSTANTS THAT FEED `choices`, resolved at runtime so both spellings are covered.
+    for form in (*runprov.env.RENDERINGS, *runprov.export.FORMATS):
+        offered.add(form)
+
+    #: NOT VACUOUS, both halves: a walk that found no choices and a package with no commands
+    #: would each report no container form for the wrong reason, and that false clean reads
+    #: exactly like a pass.
+    assert len(offered) >= 8, (
+        f"the AST walk found only {len(offered)} offered form(s): {sorted(offered)}. A walk "
+        f"that sees nothing cannot report a container form"
+    )
+    assert len(_cli_subcommands()) >= 10, (
+        f"only {len(_cli_subcommands())} subcommand(s) found; R-12 is about every command"
+    )
+
+    #: THE VOCABULARY IS THE SUBJECT, not a list of today's forms: these are what a container
+    #: recipe is CALLED, and any of them offered as a form is R-12 broken.
+    container = {
+        "docker",
+        "dockerfile",
+        "containerfile",
+        "oci",
+        "podman",
+        "buildah",
+        "singularity",
+        "apptainer",
+        "charliecloud",
+        "shifter",
+    }
+    clash = {c for c in offered if c.lower() in container}
+    assert not clash, (
+        f"the CLI offers {sorted(clash)} as a form; ADR-0024 R-12 says no command emits a "
+        f"container recipe, because the record describes a Python environment and not a system "
+        f"one, and ADR-0020's rejection of container output stands"
+    )
+
+    #: AND THE SECOND ROUTE: a recipe built from literals rather than offered as a form. The
+    #: pattern set is MEASURED rather than guessed -- over 5 330 string literals in the shipped
+    #: modules these three match nothing, while a bare `FROM ` matches **56 times across 20
+    #: modules**, because this codebase SHOUTS words for emphasis and `SEPARATE FROM `_stream``
+    #: is ordinary prose here. A detector whose vocabulary collides with the house style reports
+    #: the style, so the `FROM` test is line-anchored with an image reference after it, and a
+    #: line-anchored `RUN` is excluded for the same reason: it matched two real docstrings.
+    directives = {
+        "a FROM line": re.compile(r"(?m)^\s*FROM\s+[\w./:@-]+\s*$"),
+        "a Singularity Bootstrap": re.compile(r"Bootstrap:"),
+        "a recipe filename": re.compile(r"Dockerfile|Containerfile"),
+    }
+    sources = sorted((REPO / "runprov").glob("*.py"))
+    assert len(sources) >= 20, f"only {len(sources)} shipped module(s) swept"
+    literals = 0
+    for source in sources:
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            literals += 1
+            for what, pattern in directives.items():
+                assert not pattern.search(node.value), (
+                    f"{source.name}:{node.lineno} carries {what} in a string literal; R-12 "
+                    f"forbids this package emitting a container recipe"
+                )
+    #: NOT VACUOUS: a walk that parsed nothing would report no directive for the wrong reason.
+    assert literals > 4000, f"only {literals} string literal(s) swept across {len(sources)} modules"
+
+
 def test_the_THREE_SPELLINGS_of_the_rendering_set_are_held_to_each_other():
     """`RENDERINGS`, the renderer table, and argparse's `--render` choices. ADR-0020 R-8.
 
@@ -41811,7 +41924,8 @@ def test_the_default_rendering_comes_from_a_TABLE_and_an_unknown_manager_REFUSES
 
 @pytest.mark.parametrize("form", ["requirements", "conda", "uv"])
 def test_every_rendering_emits_the_INTERPRETER_the_FLOOR_and_the_NOT_REPRODUCTION_sentence(form):
-    """[ADR-0020 R-3, R-4, R-10] over all three forms, because each writes them differently.
+    """[ADR-0020 R-3] [ADR-0020 R-4] [ADR-0020 R-10] over all three forms, because each
+    writes them differently.
 
     THE INTERPRETER IS NON-NEGOTIABLE EVEN WHERE THE FORMAT CANNOT CARRY IT: `requirements.txt`
     has no field for it, so it is a comment there and a real dependency in the other two. A
@@ -41929,7 +42043,7 @@ def test_an_archived_lock_that_DISAGREES_WITH_ITS_DIGEST_refuses_rather_than_fal
 
 
 def test_the_count_of_UNIDENTIFIABLE_distributions_is_stated_and_the_names_are_not():
-    """[ADR-0020 R-5, corrected]. The record holds `n_unreadable` and NO list, deliberately.
+    """[ADR-0020 R-5], corrected. The record holds `n_unreadable` and NO list, deliberately.
 
     WHAT CAPTURE COLLECTS IS `str(dist._path)` — a filesystem path from the recording machine —
     and only its length is recorded. Recording the names would mean recording those paths, which
@@ -42024,7 +42138,7 @@ def test_the_owned_set_is_EMPTY_when_the_record_names_no_snapshot_and_handles_an
 
 
 def test_a_rendering_may_not_be_written_INTO_THE_RECORD_even_with_force(tmp_path):
-    """[ADR-0020 R-9, clarified]. The record of truth is protected; the repository is not.
+    """[ADR-0020 R-9], clarified. The record of truth is protected; the repository is not.
 
     THE FIRST VERSION REFUSED THE WHOLE PROJECT and that was wrong — a history commonly sits at
     the project root, so refusing its parent refused every `--out` anywhere in the repository,
@@ -42065,6 +42179,8 @@ def test_the_render_mode_answers_through_the_CLI_and_refuses_in_its_OWN_shape(
 ):
     """End to end, and the refusal shape is the point of the second schema [ADR-0017 R-5, R-15].
 
+    [ADR-0020 R-1]
+
     A RENDERING THAT FAILED MUST NOT HAND A CONSUMER THE COMPARISON'S KEY SET. The failure path
     is the one a consumer parses least often and can least afford to find unfamiliar, so the
     refused shape of an invocation matches the shape that invocation answers with — built through
@@ -42101,7 +42217,7 @@ def test_the_render_mode_answers_through_the_CLI_and_refuses_in_its_OWN_shape(
 
 
 def test_the_preflight_PAYLOAD_states_each_subject_AS_FIELDS_and_carries_R13s_LOCK():
-    """[ADR-0017 R-16] [ADR-0020 R-13, ADR-0024 R-23] T-58. The fourth shape and its missing row.
+    """[ADR-0017 R-16] [ADR-0020 R-13] [ADR-0024 R-23] T-58. The fourth shape and its missing row.
 
     THE PAGE FOLDS A SUBJECT'S STATE INTO ONE STRING AND A CONSUMER MAY NOT HAVE TO UNFOLD IT.
     `Field.__str__` renders an absent subject as `<reason>`, which is right for a reader and wrong
@@ -42237,6 +42353,8 @@ def test_every_env_answer_shape_REFUSES_in_its_own_shape_too(tmp_path, monkeypat
 
 def test_env_compares_TWO_RECORDS_with_NEITHER_environment_present():
     """The reviewer's case, and the reason the comparison takes two operands
+
+    [ADR-0020 R-11] [ADR-0024 R-14]
     [ADR-0026 R-4], with the verdicts independent and the exit code keyed on one of them
     [ADR-0026 R-2].
 
@@ -42244,7 +42362,7 @@ def test_env_compares_TWO_RECORDS_with_NEITHER_environment_present():
     environment installed. **Two hosts, one package set, and the dimension answers SAME** — with
     the host difference reported on its own line and the exit code not consulting it, because a
     host difference is a fact about where the reviewer is standing and not about whether the
-    environment was rebuilt correctly [ADR-0024 R-9, R-10].
+    environment was rebuilt correctly [ADR-0024 R-10].
 
     THE OLD ANSWER WAS *UNANSWERABLE*. `diff` reported this pair as blocked, correctly, because a
     snapshot digest covers the platform too — and laptop-against-cluster is the pair ADR-0014's
@@ -42348,6 +42466,8 @@ def test_a_conda_BUILD_is_a_difference_because_the_digest_says_it_is():
 
 def test_a_difference_LINE_discloses_what_the_DISPLAY_would_otherwise_lose():
     """Two rules in `_named_difference`, in this order, and three ordinary lines that must not
+
+    [ADR-0020 R-12]
     move [Audit, R-D3, 2026-10-25].
 
     `_shown` drops the manager, the canonical name and conda's empty build, and each of those is
@@ -42583,6 +42703,8 @@ def test_two_operands_that_DISAGREE_WITH_THEMSELVES_are_a_refusal_and_not_a_verd
 def test_env_names_the_RECORDER_as_the_expected_difference_and_names_the_flag():
     """[ADR-0026 R-6], which was found by measuring the corpus rather than by review.
 
+    [ADR-0024 R-17]
+
     Nine released versions' package-set digests are nine distinct values and **exactly one** once
     `runprov` is excluded: every other package is identical across all nine. So a reviewer who
     installs runprov in order to check a record differs by exactly one package, every time.
@@ -42636,6 +42758,8 @@ def test_an_IGNORE_is_printed_recorded_and_REPORTED_WHEN_IT_MATCHED_NOTHING():
 
 def test_env_DECLARES_the_detail_level_it_did_not_have_rather_than_going_quiet():
     """[ADR-0026 R-7], and ADR-0024 R-11 was corrected to match it. The original clause promised
+
+    [ADR-0024 R-11]
     the packages would always be named; the feature's own headline case breaks that on day one.
 
     Two records compared off-host may both have had their sidecars pruned, and then the digests
@@ -42671,6 +42795,8 @@ def test_env_DECLARES_the_detail_level_it_did_not_have_rather_than_going_quiet()
 )
 def test_an_identity_from_a_record_names_WHICH_absence_it_is_carrying(snapshot, says):
     """Three absences, three repairs, and the third is why the field is a map [ADR-0024 R-20].
+
+    [ADR-0024 R-22]
     The identity carries each with the reason it is missing [ADR-0026 R-1], and the preflight is
     that same object describing itself [ADR-0026 R-10].
 
@@ -42690,6 +42816,8 @@ def test_an_identity_from_a_record_names_WHICH_absence_it_is_carrying(snapshot, 
 
 def test_a_record_that_DISAGREES_WITH_ITS_OWN_SIDECAR_is_neither_believed(tmp_path):
     """[ADR-0026 R-8]. Where both the recorded digest and the body are in hand they must agree.
+
+    [ADR-0024 R-8]
 
     SAYING WHICH ONE TO BELIEVE WOULD BE AN INVENTION. The record is what the run asserted and
     the body is what the file still says; when they disagree, one of the two has been edited and
@@ -42712,7 +42840,7 @@ def test_a_record_that_DISAGREES_WITH_ITS_OWN_SIDECAR_is_neither_believed(tmp_pa
 
 
 def test_an_identity_is_RECOMPUTED_from_the_body_when_the_record_predates_the_field(tmp_path):
-    """[ADR-0026 R-9], and this is the caller it was waiting for.
+    """[ADR-0024 R-7] [ADR-0026 R-9], and this is the caller it was waiting for.
 
     EVERY CORPUS VERSION IS COMPARABLE TODAY because of this path: nine releases wrote the
     snapshot and none of them wrote a package-set digest. **`recomputed` and `recorded` are kept
@@ -42835,6 +42963,8 @@ def test_a_PUBLISHED_IDENTITY_STRING_is_an_operand_and_answers_one_dimension():
 
 def test_the_identity_this_build_PRINTS_round_trips_as_an_operand():
     """THE OPERAND IS TAKEN FROM THE PRODUCER, WHICH IS THE WHOLE POINT OF THIS TEST.
+
+    [ADR-0024 R-16]
 
     Measured 2026-10-26: `env --digest` printed `<algorithm>:<digest[:16]>` — the form ADR-0024
     R-16 calls quotable, "what goes in a methods section" — and feeding it back to `env --compare`
@@ -43126,6 +43256,8 @@ def test_env_REFUSES_two_first_operands_and_a_bare_compare_is_not_one(
 
 def test_the_env_command_renders_ONE_ANSWER_in_TWO_FORMS(tmp_path, monkeypatch, capsys):
     """[ADR-0026 R-11] over ADR-0017: one builder, two renderings, and the JSON is the same
+
+    [ADR-0024 R-9]
     answer rather than a second one. The provenance of every field travels with it, because a
     consumer that cannot tell a
     recorded digest from a recomputed one cannot tell what the answer is evidence of.
@@ -43254,6 +43386,8 @@ def test_bare_runprov_env_IS_the_preflight_AND_EXITS_2_WHEN_IT_CANNOT_LOOK(
 ):
     """The invocation a user types first, exercised by nothing until 2026-10-24.
 
+    [ADR-0020 R-1] [ADR-0024 R-13]
+
     **EIGHTEEN CLI INVOCATIONS OF `env` IN THIS SUITE AND EVERY ONE NAMED A MODE.** `--can-check`
     had a test; bare `runprov env`, which means the same thing, had none — so the branch choosing
     the default was held by nothing and a mutation collapsing it to `if args.can_check:` survived.
@@ -43356,6 +43490,8 @@ def test_an_operand_containing_a_COLON_is_still_a_RUN_and_not_a_published_identi
     tmp_path, monkeypatch, capsys
 ):
     """[ADR-0026 R-5]: no operand is inferred from its shape, and the guard holding it was held
+
+    [ADR-0024 R-15]
     by nothing.
 
     THE ONLY TEST REACHING THE IDENTITY-STRING PATH USED A STRING THAT CARRIES THE FAMILY PREFIX
@@ -43478,7 +43614,7 @@ def _snapshot_record(host: str, sets: dict[str, str] | None = None, **extra):
 
 
 def test_capture_records_a_HOST_INDEPENDENT_package_set_digest_beside_the_host_one(tmp_path):
-    """[ADR-0025 R-1] written by capture, and both digests present in one record.
+    """[ADR-0024 R-1] [ADR-0025 R-1] written by capture, and both digests present in one record.
 
     THE TWO ARE NOT DERIVABLE FROM EACH OTHER and the record carries both, because they answer
     different questions: `sha256` covers the rendered body and so the platform with it, and the
@@ -43538,6 +43674,8 @@ def test_a_body_the_canonicaliser_REFUSES_is_recorded_as_a_REASON_and_breaks_not
 
 def test_diff_ANSWERS_the_packages_dimension_where_the_package_set_digest_is_recorded():
     """The incomparability this package already carried, resolved — ADR-0014, ADR-0024 R-21.
+
+    [ADR-0024 R-21]
 
     WHAT IT USED TO SAY. `compare` reported a differing snapshot digest as `blocked`, with the
     reason *"a snapshot digest covers the interpreter and the platform as well as the packages,
@@ -44107,6 +44245,8 @@ def test_every_IDENTIFIABLE_package_set_digest_TRUNCATION_reads_the_one_width():
 def test_the_canonicaliser_runs_as_a_COPIED_OUT_FILE_with_no_package_around_it(tmp_path):
     """The claim of [ADR-0025 R-6] proved across the process boundary, not inside it.
 
+    [ADR-0024 R-18]
+
     THE IMPORT SWEEP ABOVE IS STATIC AND THIS IS THE CONSEQUENCE. A module can pass an AST check
     and still fail to run alone — a `__init__`-time constant it reads, a relative path it
     resolves, a package-level side effect it depends on — and none of that is visible to a
@@ -44170,6 +44310,8 @@ def test_the_package_set_digest_ignores_the_HOST_and_the_INTERPRETER_and_notices
     monkeypatch,
 ):
     """The four sensitivities that define this digest, asserted together because they are one
+
+    [ADR-0024 R-2]
     claim: it answers *are these the same packages* and nothing else [ADR-0025 R-5].
 
     THE HOST CASE IS THE WHOLE REASON THE FIELD EXISTS. `environment.digest` over the same two
@@ -44209,6 +44351,8 @@ def test_the_package_set_digest_ignores_the_HOST_and_the_INTERPRETER_and_notices
 
 def test_the_package_set_digest_is_blind_to_LINE_ORDER_and_to_NAME_SPELLING():
     """Two invariances that are the point of canonicalising rather than hashing the text, and
+
+    [ADR-0024 R-4]
     both are part of what [ADR-0025 R-1] specifies as the canonical form.
 
     ORDER, because a body is not a protocol: a future renderer, a hand-edit or a different
@@ -44270,6 +44414,8 @@ def test_a_conda_entry_is_a_package_and_the_separator_is_where_the_split_comes_f
 def test_a_line_that_is_neither_a_package_nor_an_annotation_is_REFUSED_not_dropped(body, says):
     """[ADR-0025 R-2], in both halves of the body, because the two halves are two matchers.
 
+    [ADR-0024 R-5]
+
     A canonicaliser that dropped the line would answer for a SMALLER environment than it was
     given, and the answer would look exactly like a correct one — the failure this whole module
     is a repair for, committed by the repair.
@@ -44301,6 +44447,8 @@ def test_a_line_that_is_neither_a_package_nor_an_annotation_is_REFUSED_not_dropp
 )
 def test_two_entries_normalising_to_ONE_name_are_REFUSED_in_either_half(body, kind):
     """[ADR-0025 R-3], and it was found by reverifying the specification, not the code.
+
+    [ADR-0024 R-19]
 
     MEASURED BEFORE THE MODULE EXISTED: keeping the last of the two colliding entries made the
     digest depend on **line order** — the same environment hashed two ways — which contradicts
@@ -44368,6 +44516,8 @@ _CORPUS_ENV_KEYS_ENV_READS = ("python", "platform", "lockfiles", "manager", "sna
 @pytest.mark.skipif(not CORPUS_VERSIONS, reason="no corpus — tools/corpus.py generate --all")
 def test_every_corpus_version_carries_the_environment_that_env_WILL_RENDER():
     """The cross-version surface `runprov env` inherits, and — measured — the three branches it
+
+    [ADR-0024 R-3]
     does not.
 
     WHY THIS IS THE TEST BED AND NOT A NICETY. Every other test of the environment block builds
@@ -44380,7 +44530,8 @@ def test_every_corpus_version_carries_the_environment_that_env_WILL_RENDER():
     throughout because it had no record older than itself.
 
     WHAT IS ASSERTED, over every record in every version rather than a sample: the five keys the
-    renderer reads are present [ADR-0020 R-2, R-4, R-7, R-8]; the content-addressed snapshot file
+    renderer reads are present [ADR-0020 R-2] [ADR-0020 R-4] [ADR-0020 R-7] [ADR-0020 R-8];
+    the content-addressed snapshot file
     is where the record says it is; its body hashes to the `sha256` the record carries; and its
     FILENAME equals that digest's first sixteen characters, which is the property that makes the
     file self-identifying and the one a CRLF translation broke once on Windows.

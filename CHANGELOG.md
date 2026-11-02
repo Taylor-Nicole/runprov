@@ -9,6 +9,55 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Tested — every requirement of ADR-0020 and ADR-0024 is now cited, and the last one got a guard
+
+**13 of 13 and 23 of 23, none missing and none stale.** The citation enforcer requires every
+requirement of an `Accepted` decision record to be cited by a test as the bracketed form
+`[ADR-nnnn R-n]`; both records were `Proposed` over built code, so this is what the flip needs.
+
+**SIX CITATIONS WERE ALREADY THERE AND INVISIBLE.** The enforcer's pattern needs `]` immediately
+after the requirement number, so `[ADR-0020 R-3, R-4, R-10]` and `[ADR-0020 R-5, corrected]`
+matched **nothing** — not even the requirements cited correctly elsewhere in the same bracket. Two
+of ADR-0020's five apparently-missing requirements already had their tests and were only
+mis-spelled. **It fails toward red**, so nothing was ever wrongly green on it.
+
+**ONE MAPPING WAS DELIBERATELY NOT TAKEN.** `[ADR-0024 R-9, R-10]` sat on a test asserting the host
+dimension is PRESENT; R-9 requires the dimension list to be exactly three, which that test does not
+assert. R-9 went to the test that pins the list by equality instead. **A citation on a near-miss
+test is precisely the false claim the enforcer cannot detect** — it checks that a citation exists,
+never that it is true.
+
+**THE FIVE POINTER REQUIREMENTS** — ADR-0024's R-2, R-4, R-5, R-18 and R-19, each reading *"MOVED
+TO ADR-0025 R-n … the number is kept rather than reclaimed so that a citation written against this
+record still resolves"* — are cited on the tests proving the ADR-0025 requirements they name, which
+is what that sentence asks for.
+
+### Added — a guard for "no command emits a container recipe", which had none
+
+ADR-0024 R-12 was the one requirement with nothing to point at. **Two derived populations, because
+the claim has two routes.** A form a caller can ASK for is an argparse `choices` entry, walked from
+the AST of `__main__.py` — the approach `_cli_subcommands` already takes, and for its stated reason:
+the parser is built inside `main()` with no factory, and `_SubParsersAction.choices` is private API
+that has changed shape between versions — plus the runtime constants that feed `choices`, so a form
+offered through a constant is not invisible. A recipe built from literals is the second route: every
+string constant in every shipped module.
+
+**THE FIRST VOCABULARY MEASURED THE HOUSE STYLE INSTEAD OF THE SUBJECT.** A bare `FROM ` matches
+**56 times across 20 modules**, because this codebase SHOUTS words for emphasis and
+*"SEPARATE FROM `_stream` ON PURPOSE"* is ordinary prose here. Measured over **5 330 string
+literals**: a line-anchored `FROM <image>`, `Bootstrap:` and `Dockerfile|Containerfile` match
+nothing, while a line-anchored `RUN` matches two real docstrings and is excluded. That measurement
+is recorded in the guard, because the next person widening it will reach for `RUN` first.
+
+**Both routes controlled.** A `dockerfile` rendering reds the offered-form half; a `FROM python:3.12`
+literal reds the directive half and names the line. **The directive control was VOID on its first
+run** and was re-run proving the probe is a `str` Constant in the module's AST *before* the verdict
+was trusted — which is what separates *the guard fired* from *the guard fired for this reason*.
+
+**And the claim is narrowed to what the two populations can see**, deliberately: they prove no form
+is OFFERED and no module carries a recipe DIRECTIVE. A command assembling `FROM` from pieces at
+runtime would pass both, and the guard says so rather than claiming a totality it has not got.
+
 ### Fixed — six requirements across three decision records that no longer described the build
 
 **`docs/adr/` ships in the sdist, so a requirement that has stopped being true is permanent in the
