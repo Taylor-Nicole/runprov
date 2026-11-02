@@ -9,6 +9,55 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Tested — two guards that could not fail, and what each one's control had to prove
+
+**T-60. A vocabulary guard searched the module that DECLARES the vocabulary.**
+`test_the_chain_VOCABULARIES_are_held_and_every_member_is_REACHABLE_in_the_module` promises that
+*"a member that appears in no literal anywhere in `chain.py` cannot be produced by it, so it is
+dead vocabulary telling a consumer to handle a case that never arrives."* It harvested **every**
+string literal in `chain.py` and asserted each member was among them — but `WRITERS`,
+`PREDECESSORS` and `AGREEMENTS` are declared in `chain.py`, so each member was in the haystack
+because its own declaration put it there. **Green on exactly the defect it names.** No product
+defect behind it: all nine members do appear outside their declaration, so what was broken was the
+instrument's ability to report, not the thing reported on.
+
+The declaring assignments are now excluded — **by VALUE, not by name**, which is where this departs
+from the `_SHARED_FIGURE_LINES` precedent one guard over: keying on the tuple means a renamed
+vocabulary carries its own exclusion and a fourth needs no edit here. **And the exclusion is held
+to its subject by an equality**: the literals removed must be the declared members and nothing
+else, because an exclusion that matches nothing silently restores the guard that could not fail,
+and a false clean reads exactly like a pass.
+
+**THE FIRST CONTROL WAS VOID AND IS RECORDED AS SUCH.** Adding `"NEVER_PRODUCED"` to `AGREEMENTS`
+reds the test — on its *first* assertion, the literal tuple pin, before execution reaches the
+reachability check at all. A control that fails for the wrong reason proves nothing. The valid
+control is the realistic defect: add the member **and update the pin**, as a developer would, and
+leave nothing producing it. Then **the repaired guard is RED** (*"'NEVER_PRODUCED' is declared
+vocabulary that no literal in chain.py produces"*) **and the pre-repair guard is GREEN over the
+identical tree** — the same defect caught after and missed before, which is the only pairing that
+shows a repair is the repair.
+
+**T-61. Half of a disclosure guard's conjunct was satisfied by source comments.**
+`test_the_self_hosted_workflow_says_what_it_cannot_prove` asserted `"Not covered" in text and
+"Windows" in text` over the **whole workflow file**. `"Windows"` occurs three times there: twice in
+source comments a reader of the run never sees, once in the echoed disclosure. So that half was
+dead, and only `"Not covered"` was load-bearing — by the accident of occurring once, in the right
+place. Measured: rewriting the echo to `**Not covered:** macOS` left the guard **green** while the
+summary had stopped naming the leg this test's own docstring calls *"the leg that proves the
+`msvcrt` fallback for `flock` and is the reason Windows is in the hosted matrix at all."*
+
+It now reads the summary **a reader of the run actually sees**, derived from the mechanism rather
+than from the job's name: whichever step writes to `$GITHUB_STEP_SUMMARY`. Keying on the job called
+`summary` would be a second spelling of the same fact. **Two controls**: dropping `Windows` from the
+echo is now red, and a file where no step writes a summary at all is red on its own message —
+because a derived population that matches nothing passes over a file that discloses nothing.
+
+**Both were found by T-59's sweep** (1 226 positive existence assertions over text, narrowed to 84
+with a document haystack and 53 with a non-distinctive needle). Neither is a product defect; both
+are instruments that could not report. **The shape they share is a haystack wider than the claim** —
+T-59's was a document section, T-60's is the module under test, T-61's is a source file standing in
+for a run's output.
+
 ### Fixed — `lineage` could report "produced by no recorded run" when a clock disagreed
 
 **The join's second rule is a comparison between two WALL CLOCKS, and nothing said so.** An edge

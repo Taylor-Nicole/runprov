@@ -24177,8 +24177,31 @@ def test_the_self_hosted_workflow_says_what_it_cannot_prove():
     assert doc["jobs"]["test"]["runs-on"] == ["self-hosted", "linux"]
     assert "windows" not in str(doc["jobs"]["test"]).lower(), "it cannot run Windows"
     assert "macos" not in str(doc["jobs"]["test"]).lower(), "nor macOS"
-    assert "Not covered" in text and "Windows" in text, (
-        "the run summary must state what it does not cover, where a reader of the run sees it"
+    #: THE SUMMARY A READER OF THE RUN SEES, NOT THE WHOLE FILE [T-61]. This read `text` --
+    #: the entire workflow source -- and `"Windows"` occurs three times in it: twice in SOURCE
+    #: COMMENTS a reader of the run never sees, and once in the echoed disclosure. So that half
+    #: of the conjunct was dead. Measured: rewriting the echo to `**Not covered:** macOS` left
+    #: this GREEN while the summary had stopped naming the leg this test's own docstring calls
+    #: the reason Windows is in the hosted matrix at all. Only `"Not covered"` was load-bearing,
+    #: because it happens to occur once and in the right place.
+    #:
+    #: DERIVED FROM THE MECHANISM, not from the job's name: the summary is whichever step writes
+    #: to `$GITHUB_STEP_SUMMARY`, which IS what puts text in front of a reader of the run.
+    #: Keying on the job called `summary` would be a second spelling of the same fact.
+    seen_by_a_reader = "\n".join(
+        str(step.get("run", ""))
+        for job in doc["jobs"].values()
+        for step in job.get("steps") or []
+        if "GITHUB_STEP_SUMMARY" in str(step.get("run", ""))
+    )
+    assert seen_by_a_reader, (
+        "no step in this workflow writes to $GITHUB_STEP_SUMMARY, so there is no run summary to "
+        "hold -- and a derived population that matches nothing passes over a file that discloses "
+        "nothing at all"
+    )
+    assert "Not covered" in seen_by_a_reader and "Windows" in seen_by_a_reader, (
+        "the run summary must state what it does not cover, where a reader of the run sees it "
+        "-- a source comment is not where a reader of the run looks"
     )
 
     # A-29. AND WHICH OF THE THREE GATES IT RAN, which the summary did not say. This file has
@@ -57634,11 +57657,58 @@ def test_the_chain_VOCABULARIES_are_held_and_every_member_is_REACHABLE_in_the_mo
     assert runprov.chain.AGREEMENTS == ("NA", "MATCHES", "DIFFERS")
 
     tree = ast.parse((REPO / "runprov" / "chain.py").read_text(encoding="utf-8"))
+    vocabularies = (
+        runprov.chain.WRITERS,
+        runprov.chain.PREDECESSORS,
+        runprov.chain.AGREEMENTS,
+    )
+
+    #: THE DECLARATION WAS INSIDE THE HAYSTACK, WHICH MADE THIS GUARD GREEN ON ITS OWN
+    #: SUBJECT [T-60]. `written` was every string literal in the module, and the three
+    #: vocabularies are DECLARED in this module -- so each member was in `written` because its
+    #: own declaration put it there. Measured by control: adding `"NEVER_PRODUCED"` to
+    #: `AGREEMENTS` left this GREEN over a member that no literal anywhere produces, which is
+    #: exactly the dead vocabulary the docstring above says it catches. Nothing was wrong with
+    #: the product -- all nine members do appear elsewhere -- what was broken was the
+    #: instrument's ability to report.
+    #:
+    #: EXCLUDED BY VALUE, NOT BY NAME, which is where this departs from the `_SHARED_FIGURE_LINES`
+    #: precedent one guard over: keying on the TUPLE means a renamed vocabulary carries its own
+    #: exclusion, and a fourth one needs no edit here.
+    def declares_a_vocabulary(node: ast.AST) -> bool:
+        if not isinstance(node, ast.Assign):
+            return False
+        try:
+            return ast.literal_eval(node.value) in vocabularies
+        except (ValueError, TypeError, SyntaxError):
+            return False
+
+    declared = {
+        id(child)
+        for node in ast.walk(tree)
+        if declares_a_vocabulary(node)
+        for child in ast.walk(node)
+    }
     written = {
         node.value
         for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in declared
     }
+
+    #: AND THE EXCLUSION IS HELD TO ITS SUBJECT, because an exclusion that matches nothing
+    #: silently restores the guard that could not fail -- a false clean reading exactly like a
+    #: pass. The literals removed must be the declared members and nothing else.
+    removed = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) in declared
+    }
+    assert removed == {m for v in vocabularies for m in v}, (
+        f"the declaration exclusion must remove exactly the declared members and no other "
+        f"literal; it removed {sorted(removed)}"
+    )
     for table in (runprov.chain.WRITERS, runprov.chain.PREDECESSORS, runprov.chain.AGREEMENTS):
         for member in table:
             assert member in written, (
