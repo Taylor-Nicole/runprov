@@ -9,6 +9,41 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Changed — one definition for "which history does this command read"
+
+**The expression `pathlib.Path(args.log) if args.log else <project>.resolved_run_log()` was
+spelled at ELEVEN call sites in `runprov/__main__.py`**, in two variants — six over a `project`
+already bound and five calling `active()` inline — with nothing holding them in agreement. It is
+now `_history(args, project=None)`, called once per site. **No behaviour changes**, and that is
+measured rather than asserted.
+
+**G-06 IS THE INSTANCE ALREADY PAID FOR, which is why eleven copies was not merely untidy.**
+`chain` was the one reader of the nine that resolved `active().run_log` rather than
+`resolved_run_log()` — `None` in any project that does not pass `run_log=` explicitly — so in the
+layout this package documents, `log` and `lineage` answered while `chain` said *"no history
+configured and none named"* and exited 2 **over an intact history**. A rule applied in eleven
+places drifts, and the halves differ by whole cases rather than by details.
+
+**`project` is optional because the resolution is LAZY, and that is load-bearing rather than
+stylistic.** At the five inline sites `active()` is reached only when `--log` is absent, because
+the conditional short-circuits; an eagerly evaluated argument would construct the `Project` where
+today nothing does. Passing it where it is already bound keeps the call count exactly what it was
+at all eleven sites.
+
+**MEASURED BYTE-IDENTICAL over 46 invocations** — eleven reading subcommands, each with and
+without `--log`, in `text` and `json`, over a two-run history plus the absent-history arms:
+19 exited 0, 4 exited 1, 23 exited 2, and every byte of stdout and stderr matched. **With the
+control, which is what makes that worth reading:** returning a path that cannot exist from the
+helper's default arm moves **527 lines and 22 exit codes**, so the probe demonstrably reaches the
+sites that changed. A byte-identical result over a probe that misses the code reads the same as
+one over a probe that hits it.
+
+**It is also the prerequisite for ADR-0021** (`Proposed`, T-37), which would accept a directory
+wherever `--log` takes a file: that becomes one edit instead of eleven. The collapse stands on its
+own either way — eleven copies with two spellings, one positional (`chain`), two
+accepted-and-ignored flags and eleven byte-identical help strings held in agreement by nothing is
+a drift surface, not a feature.
+
 ### Tested — the CI section's job total was asserted by a check that could not fail
 
 **The job-total half of `test_the_ci_sections_legs_are_the_legs_the_workflow_ACTUALLY_DECLARES`

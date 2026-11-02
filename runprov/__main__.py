@@ -117,6 +117,31 @@ from .watch import unregistered
 CANNOT_CHECK = 2
 
 
+def _history(args: argparse.Namespace, project: Project | None = None) -> pathlib.Path:
+    """The history this invocation reads: `--log` when given, else the project's own.
+
+    ONE DEFINITION, AND IT WAS ELEVEN. This expression was spelled at eleven call sites in
+    two variants -- six over a `project` already bound, five calling `active()` inline --
+    with nothing holding them in agreement, which is the scope shape this repository has
+    found a dozen times: a rule applied in eleven places drifts, and the halves differ by
+    whole cases rather than by details. G-06 is the instance already paid for: `chain` was
+    the one reader that resolved `active().run_log` instead, so it exited 2 over an intact
+    history in the layout the README documents while `log` and `lineage` answered.
+
+    `project` IS OPTIONAL BECAUSE THE RESOLUTION IS LAZY, and that is not a style choice.
+    At the five inline sites `active()` is reached only when `--log` is absent, because the
+    conditional short-circuits; an eagerly evaluated argument would construct the Project
+    where today nothing does. Passing it where it is already bound keeps the call count
+    exactly what it was at all eleven sites.
+
+    [ADR-0021 would widen `--log` to a directory. Collapsing the resolution first is what
+    makes that one edit instead of eleven, and it is worth doing whether or not that lands.]
+    """
+    if args.log:
+        return pathlib.Path(args.log)
+    return (project if project is not None else active()).resolved_run_log()
+
+
 def _stream(path: pathlib.Path) -> typing.Iterator[dict[str, typing.Any] | None]:
     """Every line of the history, parsed, one at a time. `None` marks a line that would not.
 
@@ -923,7 +948,7 @@ def _export(args: argparse.Namespace) -> int:
             return CANNOT_CHECK
         records, name = [rec], f"{rec.get('script', 'run')} — one run"
     else:
-        log = pathlib.Path(args.log) if args.log else active().resolved_run_log()
+        log = _history(args)
         if not log.is_file():
             print(
                 f"  runprov export: no run history at {printable(str(log))}\n"
@@ -1723,7 +1748,7 @@ def _impact(args: argparse.Namespace) -> int:
     not be asked at all: no history, or a path that is neither a file nor a digest.
     """
     project = active()
-    log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
+    log = _history(args, project)
     if not log.is_file():
         # [ADR-0017 R-15]. The question was formed and could not be carried out.
         if args.format == "json":
@@ -1891,7 +1916,7 @@ def _diff(args: argparse.Namespace) -> int:
         if value is not None and not str(value).strip():
             print(f"diff: the {which} run address is empty", file=sys.stderr)
             return 2
-    log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
+    log = _history(args, project)
     if not log.is_file():
         # [ADR-0017 R-15]. The question was formed and could not be carried out.
         if args.format == "json":
@@ -2042,7 +2067,7 @@ def _env_identity(
             #: page or a payload, so the two renderings cannot disagree about what happened.
             return None, str(exc)
     project = active()
-    log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
+    log = _history(args, project)
     if which == env_mod.HERE and not log.is_file():
         #: `here` NEEDS NO HISTORY, which is the whole point of it: a reviewer in a container has
         #: an environment and no record. The ambiguity check below runs only when there IS a
@@ -2222,7 +2247,7 @@ def _env(args: argparse.Namespace) -> int:
                 #: [ADR-0020 R-9] THE RECORD OF TRUTH IS WHAT IS PROTECTED. The two paths named
                 #: here are derived from the active project rather than spelled, so a project
                 #: that moves its store moves this refusal with it.
-                log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
+                log = _history(args, project)
                 env_mod.refuse_out_path(
                     out,
                     env_mod.owned_by_the_record(first, log, project.root)
@@ -2260,7 +2285,7 @@ def _resources(args: argparse.Namespace) -> int:
     the worst possible output, because it looks exactly like a measured one.
     """
     project = active()
-    log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
+    log = _history(args, project)
     if not log.is_file():
         # [ADR-0017 R-15]. AN ANSWER, not a bad invocation: it looked where it was told and
         # there is nothing to read. `resources` has its own guard rather than the shared one,
@@ -2394,7 +2419,7 @@ def _report(args: argparse.Namespace) -> int:
         print(f"report: {printable(str(artifact))} is not a file", file=sys.stderr)
         return 2
     project = active()
-    log = pathlib.Path(args.log) if args.log else project.resolved_run_log()
+    log = _history(args, project)
     if args.log and not log.is_file():
         # I-16, NARROWED. `report` was the only one of five commands reading a history that
         # accepted one that was not there — `impact`, `diff`, `chain` and `log` each exit 2 and
@@ -2526,7 +2551,7 @@ def _gate(args: argparse.Namespace) -> int:
         # this version can act on or it is not, and the `return 2` above is the second case.
         return 0
 
-    log = pathlib.Path(args.log) if args.log else active().resolved_run_log()
+    log = _history(args)
     records: list[dict[str, typing.Any]] = []
     bad = [0]
     unfinished = 0
@@ -2668,7 +2693,7 @@ def _prune(args: argparse.Namespace) -> int:
     `--dry-run` is there for a user who wants to look first, and what makes this safe is the
     containment check and the RUNNING skip, not a question nobody reads.
     """
-    path = pathlib.Path(args.log) if args.log else active().resolved_run_log()
+    path = _history(args)
     try:
         older = prune_mod.parse_age(args.older_than) if args.older_than else None
     except ValueError as exc:
@@ -2899,7 +2924,7 @@ def _chain(args: argparse.Namespace) -> int:
     # unreachable, and a path that does not exist is already answered one layer down —
     # `verify` catches the `OSError` and the report reads `CANNOT CHECK: no history to read.`
     # with exit 2, the same answer it gives for a directory or a file it may not open.
-    log = pathlib.Path(args.log) if args.log else active().resolved_run_log()
+    log = _history(args)
     report = chain_mod.verify(log)
     if args.format == "json":
         # ONE BUILDER, TWO RENDERERS (ADR-0017 R-1). This used to name every field here, so a
@@ -3413,7 +3438,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "gate":
         return _gate(args)
 
-    path = pathlib.Path(args.log) if args.log else active().resolved_run_log()
+    path = _history(args)
     if not path.is_file():
         # BEFORE "nothing recorded here", because a marker beside a MISSING history is not
         # nothing recorded — it is a run that started and never got to write one, which is
