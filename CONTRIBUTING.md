@@ -129,6 +129,17 @@ detection was broken — one total over two primitives is a floor wearing an equ
 `test_every_command_the_documentation_tells_you_to_run_actually_EXISTS` now counts each primitive
 separately for that reason.
 
+**A figure is bound to the noun it counts, and read from the table that claims it.** An existence
+check over a whole document region is satisfied by any region that happens to contain the value,
+and a page of measurements contains nearly all of them: the CI section's job total was asserted
+with `re.search` over that entire section, where all but one of the plausible totals were already
+supplied — by the per-leg table's own skipped counts, by the interpreter versions in a neighbouring
+sentence, and by a figure the section's own correction note had already withdrawn. Only one value
+could fail, so adding or removing a job — the one event the assertion existed for — left it green.
+`test_the_ci_sections_legs_are_the_legs_the_workflow_ACTUALLY_DECLARES` now reads the state table
+by that table's own header, requires the header to be unique, and asserts an equality against the
+matrix.
+
 **Stop stating a number: derive it, or state the property.** Do not correct a stale figure to a
 newer one — state the class, the direction or the property, which is what the reader needed anyway.
 Where a number genuinely must appear, bind it: `tools/claims.py` compares the README's figures to

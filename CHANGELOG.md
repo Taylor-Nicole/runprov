@@ -9,6 +9,66 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Tested — the CI section's job total was asserted by a check that could not fail
+
+**The job-total half of `test_the_ci_sections_legs_are_the_legs_the_workflow_ACTUALLY_DECLARES`
+read the whole of README.md's *"What has actually been run"* section**, which is eighty-one lines
+carrying two tables of measurements and a correction note. A bare `re.search` for the number, or
+its spelled form, over all of it therefore asked only whether the number appears SOMEWHERE on a
+page full of numbers. Measured
+across the nine plausible job totals: **eight were already satisfied** — 4 and 5 by the per-leg
+table's own skipped counts, 6 by *"six test legs"*, 10 to 12 by *"CPython 3.10, 3.11, 3.12"*, and 9
+by a figure the section's own correction note had already withdrawn. **Only 7 could fail**, so
+adding or removing a job — the one event the assertion exists for — left it green. [T-59]
+
+**It is now scoped to the state table by that table's own header and asserted as an EQUALITY**,
+which is the same correction the leg half of this test already carried and for the same reason: a
+comment there records that reading the whole section let a different table satisfy it. The claim
+is bound to the noun it counts, so *"six test legs"* in the very same row is not read as a job
+total. **Five controls**, each run against the real tree and each failing with a message naming
+the actual problem: breaking the live claim to *"six jobs"* (`{6} == {8}`), deleting the row
+(`set() == {8}`, reported as *"no job total at all"*), adding a ninth job to `test.yml`
+(`{8} == {9}`, which names `spare` as the new job), reformatting the header (*"no `| | state |`
+table"*), and adding a SECOND such header above it (*"2 headers … a second one silently moves its
+subject"*).
+
+**The anchor needed its own count, and that was the integration sweep's finding rather than
+mine.** An empty first header cell is a house convention in this README — **thirteen** tables open
+`| | ` — so `| | state |` is distinctive only in its second cell, and `split(..., 1)` takes the
+FIRST match. A second such header added above this one would have silently redirected the guard to
+the wrong table, which is this finding's own shape one layer inside its repair. The ledger entry
+had rejected this anchor as *"not distinctive"* on evidence from `ROADMAP-0.9.0.md`, a document in
+the other repository; in README.md the literal is unique, and the resolution was to do BOTH things
+the entry treated as alternatives — anchor on the table and bind to the noun.
+
+**And the two anchor failures needed two messages.** One count assertion covering both directions
+reported *"0 headers"* while advising which of the two to rename: a message written for the
+duplicate case cannot diagnose the missing one. Measured by control, and the redundant
+`len(state) == 2` assertion went with it, since one header or more always splits into two parts.
+
+**The equality catches three things the existence check cannot, and one the recommended repair
+could not either.** Binding the number to the noun was the remedy the ledger entry proposed, and
+measured alone it takes the assertion from eight of nine satisfied to one of nine — but the section
+says *"eight jobs"* **twice**, the second time inside the correction note, where it is a permanent
+historical sentence that must never be edited when the matrix changes. Dropping the note's lines
+via `claims.superseded_lines` repairs that and was built and measured, scoring **six of nine**
+controls: it stays green when a second row contradicts the first, and when the note loses its
+self-declaration *and* the live claim is wrong. The table-scoped equality scores **nine of nine**
+and needs no cross-module dependency at all, so what the note declares about itself can no longer
+widen what this guard ignores.
+
+**THE PATTERN IS ONE NAMED CONSTANT, AND THE GATE IS WHY.** Written as an f-string over the word
+list, the only thing left in the source was the fragment `\b(\d+|` — a literal that captures a
+number and does not compile — and `test_these_are_every_file_that_binds_a_FIGURE_in_a_shipped_document`
+went red naming the file and line. That collector refuses such a fragment rather than skipping it,
+because a pattern it cannot read is a pattern the double-binding sweep cannot check, and that
+sweep is what stopped README's test count meaning two different quantities to two instruments with
+neither red. **Its error branch carried `# pragma: no cover - no fragment exists today`; this is
+the first change in the repository's life to execute it, and it worked on first contact.** The
+tempting repair — reordering the alternation so no fragment holds `(\d` — would have silenced the
+detector while hiding a real number-capturing instrument from it, so the pattern is spelled in
+full instead and the closed word set is DERIVED from it, leaving one definition rather than two.
+
 ### Added — `env --can-check` answers in JSON, which it had never done
 
 **`runprov env --can-check --format json` now emits `runprov.env.answerable.v1`**, built by

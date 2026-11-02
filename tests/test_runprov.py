@@ -55164,6 +55164,19 @@ def _matrix_legs(workflow: dict) -> list[dict[str, str]]:
     return [{k: str(v) for k, v in c.items()} for c in combos]
 
 
+#: THE JOB TOTAL AS PROSE WRITES IT, ASSEMBLED ONCE AND SPELLED IN FULL -- because
+#: `_figure_patterns` reads string LITERALS, and a pattern built by interpolation leaves only
+#: the fragment `\b(\d+|` in the source: a literal that captures a number and does not
+#: compile, which the double-binding sweep must refuse rather than skip. Reordering the
+#: alternation so no fragment holds `(\d` would silence that detector while hiding a real
+#: number-capturing instrument from it, which is the blind spot its comment exists to prevent.
+#: ENGLISH NUMBER WORDS ARE A CLOSED SET, not a project list -- the section writes "eight"
+#: rather than "8" because it is prose, and either spelling satisfies this.
+_JOB_TOTAL_IN_PROSE = (
+    r"\b(\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+jobs?\b"
+)
+
+
 def test_the_ci_sections_legs_are_the_legs_the_workflow_ACTUALLY_DECLARES():
     """The README's CI table must name every matrix leg and no others.
 
@@ -55228,14 +55241,52 @@ def test_the_ci_sections_legs_are_the_legs_the_workflow_ACTUALLY_DECLARES():
     #: AND THE JOB TOTAL, which is the legs plus every job that is not the matrix.
     jobs = workflow["jobs"]
     total = len(legs) + len([name for name in jobs if name != "test"])
-    #: ENGLISH NUMBER WORDS ARE A CLOSED SET, not a project list — the section writes "eight"
-    #: rather than "8" because it is prose. Either spelling satisfies this.
-    words = "zero one two three four five six seven eight nine ten eleven twelve".split()
-    spelled = words[total] if total < len(words) else str(total)
-    assert re.search(rf"\b({total}|{spelled})\b", section, re.I), (
+    #: THE WORDS DERIVED FROM THE PATTERN, so the closed set has exactly one definition. A
+    #: misspelling in either is caught by the equality below: the README's own spelling then
+    #: matches nothing and `claimed_total` is empty.
+    words = _JOB_TOTAL_IN_PROSE.split("(", 1)[1].split(")", 1)[0].split("|")[1:]
+    #: THE STATE TABLE ONLY, FOUND BY ITS OWN HEADER, and this is the SAME scoping correction
+    #: the per-leg half above already carries, earned against a sharper failure [T-59]. Read
+    #: over the whole section this asserted only that the number appears SOMEWHERE on a page of
+    #: measurements, and of the nine plausible job totals EIGHT were already satisfied: 4 and 5
+    #: by the per-leg table's own skipped counts, 6 by "six test legs", 10 to 12 by `CPython
+    #: 3.10, 3.11, 3.12`, and 9 by a figure a correction note had already withdrawn. Only 7
+    #: could fail -- so adding or removing a job, the one event this exists for, left it green.
+    #: AND THE ANCHOR MUST BE UNIQUE, which is a second correction rather than a precaution.
+    #: An empty first header cell is a house convention in this README -- thirteen tables open
+    #: `| | `, so `| | state |` is distinctive only in its SECOND cell -- and `split(..., 1)`
+    #: takes the FIRST occurrence. A second such header added above this one would silently
+    #: redirect this guard to the wrong table, which is T-59's own shape one layer in. Counted,
+    #: so it is red rather than redirected.
+    #: TWO FAILURES, TWO MESSAGES, and that ordering is a correction. One count assertion
+    #: covering both directions reported ZERO headers while advising which of the two to
+    #: rename, because a message written for the duplicate case cannot diagnose the missing
+    #: one -- the same defect as a guard whose name outruns its scope, in the diagnostics.
+    headers = section.count("| | state |")
+    assert headers, (
+        "the CI section has no `| | state |` table; this guard reads that header to find the "
+        "job-total claim, and must not fall back to the whole section, which carries numbers "
+        "that satisfy it for unrelated reasons"
+    )
+    assert headers == 1, (
+        f"the CI section has {headers} `| | state |` headers; this guard reads that header to "
+        f"find the job-total claim and takes the first, so a second one silently moves its "
+        f"subject. Give one of them a distinctive first cell"
+    )
+    body = section.split("| | state |", 1)[1].split("\n\n", 1)[0]
+    #: AN EQUALITY, NOT AN EXISTENCE CHECK, for the reason the leg table above is an equality
+    #: rather than a floor [Audit P]: this fails when the claim is wrong, when it is deleted,
+    #: when the matrix grows, when it shrinks, AND when a second row contradicts the first --
+    #: none of which "the number is in here somewhere" can see. BOUND TO THE NOUN IT COUNTS,
+    #: so `six test legs` in this very row is not mistaken for a job total.
+    claimed_total = {
+        words.index(word.lower()) if word.lower() in words else int(word)
+        for word in re.findall(_JOB_TOTAL_IN_PROSE, body, re.I)
+    }
+    assert claimed_total == {total}, (
         f"`test.yml` defines {total} job(s) — {len(legs)} test leg(s) plus "
-        f"{sorted(n for n in jobs if n != 'test')} — and the CI section says neither "
-        f"{total!r} nor {spelled!r}"
+        f"{sorted(n for n in jobs if n != 'test')} — and the CI section's state table "
+        f"claims {sorted(claimed_total) or 'no job total at all'}"
     )
 
     #: NOT VACUOUS: the section must name legs at all, or the equality above is `set() == set()`.
