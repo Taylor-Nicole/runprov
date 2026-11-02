@@ -34234,11 +34234,21 @@ def test_lineage_does_not_hold_the_records_it_walks(tmp_path):
     assert held[0] <= 2, f"{held[0]} of {n} records held to join on digests"
 
 
-def test_the_lineage_json_gains_no_new_key(tmp_path):
+def test_the_lineage_json_gains_no_PER_RUN_key(tmp_path):
     """`lineage --format json` is a documented output somebody parses. The script-name map
     that replaced the records is an OUT-PARAMETER precisely so it does not land in that
     document — putting it there would trade a memory problem for a bigger file, adding one
-    entry per run to the thing a consumer reads."""
+    entry per run to the thing a consumer reads.
+
+    RENAMED AND NARROWED 2026-11-02 [T-62]. It was `..._gains_no_new_key` and spelled the key
+    set as a literal, which asserted a claim BROADER than the reason above: that no key may
+    ever be added at all. **The hazard named is SIZE, not novelty.** This payload has already
+    been extended additively after shipping — `path` and `unreadable`, under Taylor's ruling of
+    2026-09-30 — and a scalar counter is O(1) where the script map is O(runs). A guard whose
+    name outruns its reason is the defect T-59 is an instance of, so the claim is narrowed to
+    the one this test can defend. The key set is now DERIVED from `_LINEAGE_COUNTERS`, which
+    leaves the vocabulary to the counters test beside it and the SHAPE to this one.
+    """
     cli = runprov.__main__
     rows = [
         {
@@ -34257,7 +34267,14 @@ def test_the_lineage_json_gains_no_new_key(tmp_path):
     ]
     names: dict[str, str] = {}
     g = cli._lineage(rows, None, names)
-    assert set(g) == {"runs", "records_without_uid", "resolvable", "ambiguous", "orphan", "edges"}
+    assert set(g) == set(cli._LINEAGE_COUNTERS) | {"edges"}, (
+        "the payload's keys are the declared counters plus the edges, derived rather than "
+        f"spelled here, so adding a counter is one edit and not two: {sorted(g)}"
+    )
+    assert not [k for k, v in g.items() if isinstance(v, dict)], (
+        "NO PAYLOAD VALUE MAY BE A MAP KEYED BY RUN -- that is the one-entry-per-run growth "
+        f"this guard exists to keep out of a document a consumer parses: {sorted(g)}"
+    )
     assert g["edges"] == [("u1", "u2")] and g["resolvable"] == 1
     assert names == {"u1": "a", "u2": "b"}, "the names come back beside the graph, not inside it"
     assert "a [u1" in cli._render_lineage(g, names), "and the text view still names the scripts"
@@ -57515,12 +57532,73 @@ def test_the_lineage_COUNTERS_are_the_keys_the_lineage_payload_publishes():
         "resolvable",
         "ambiguous",
         "orphan",
+        "unsequenced",
     )
     built = runprov.__main__._lineage([])
     assert set(built) == set(runprov.__main__._LINEAGE_COUNTERS) | {"edges"}, (
         "the payload's keys ARE the declared counters plus the edge list, so a counter renamed "
         "here renames a published field and one removed deletes it"
     )
+
+
+def test_an_orphan_EXCLUDED_BY_TIME_ALONE_is_counted_apart_from_one_nothing_produced():
+    """[T-62] `orphan` merged two causes, and one of them is a false statement.
+
+    Rule 2 of the join -- the producer must have finished before the consumer started -- is a
+    comparison between two WALL CLOCKS at one-second resolution, over records that carry `host`
+    and no clock offset. Within one host it holds. Across hosts a producer whose clock runs fast
+    fails it, and the input fell into `orphan`, which the page reads out as *"produced by no
+    recorded run"* -- which `_lineage`'s own docstring calls a false statement about provenance
+    rather than a missing one.
+
+    `orphan` KEEPS ITS TOTAL; `unsequenced` is the subset where a run produced exactly those
+    bytes and was excluded by time alone. Three arms, because one of them passing proves nothing:
+    the skewed case must be DISCLOSED, the genuinely unproduced case must NOT be, and the ordered
+    case must still resolve -- so the new counter cannot be satisfied by always firing or never.
+    """
+    d = "a" * 64
+
+    def producer(uid: str, finished: str) -> dict[str, typing.Any]:
+        return {
+            "run_uid": uid,
+            "script": "make",
+            "started_utc": finished,
+            "finished_utc": finished,
+            "outputs": [{"path": "out.tsv", "sha256": d}],
+        }
+
+    def consumer(uid: str, started: str) -> dict[str, typing.Any]:
+        return {
+            "run_uid": uid,
+            "script": "use",
+            "started_utc": started,
+            "inputs": [{"path": "out.tsv", "sha256": d}],
+        }
+
+    #: THE SKEWED ARM. The producer of these exact bytes finished at :10 by its own clock and
+    #: the consumer started at :05 by another -- so rule 2 excludes the real producer.
+    skewed = runprov.__main__._lineage(
+        [producer("p", "2026-01-01T00:00:10Z"), consumer("c", "2026-01-01T00:00:05Z")]
+    )
+    assert (skewed["orphan"], skewed["unsequenced"], skewed["resolvable"]) == (1, 1, 0), skewed
+
+    #: CONTROL ONE: nothing produced the bytes at all. Still an orphan, and NOT disclosed as a
+    #: clock question, because it is not one.
+    nothing = runprov.__main__._lineage([consumer("c", "2026-01-01T00:00:05Z")])
+    assert (nothing["orphan"], nothing["unsequenced"], nothing["resolvable"]) == (1, 0, 0), nothing
+
+    #: CONTROL TWO: the ordinary ordered case still resolves, so the split did not narrow the
+    #: join. This is the arm that fails if `others` were used as the candidate set by mistake.
+    ordered = runprov.__main__._lineage(
+        [producer("p", "2026-01-01T00:00:01Z"), consumer("c", "2026-01-01T00:00:05Z")]
+    )
+    assert (ordered["orphan"], ordered["unsequenced"], ordered["resolvable"]) == (0, 0, 1), ordered
+    assert ordered["edges"] == [("p", "c")], ordered["edges"]
+
+    #: AND IT REACHES THE PAGE. A payload leaf that does not move the text is a leaf the
+    #: derived-leaves guard cannot see, so the renderer states it rather than only the payload.
+    page = runprov.__main__._render_lineage(skewed)
+    assert "unsequenced" in page and "not a total order" in page, page
 
 
 def test_the_commands_that_ANSWER_WITHOUT_A_HISTORY_are_the_ones_the_CLI_offers():
@@ -57860,6 +57938,7 @@ def test_the_lineage_text_view_shows_TWO_HUNDRED_edges_and_SAYS_how_many_it_with
         "resolvable": 205,
         "ambiguous": 0,
         "orphan": 0,
+        "unsequenced": 0,
         "records_without_uid": 0,
         "edges": [(f"produced{i:04d}", f"consumed{i:04d}") for i in range(205)],
     }

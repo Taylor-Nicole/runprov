@@ -9,6 +9,72 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — `lineage` could report "produced by no recorded run" when a clock disagreed
+
+**The join's second rule is a comparison between two WALL CLOCKS, and nothing said so.** An edge
+resolves when a producer of the same digest finished before the consumer started; `started_utc`
+and `finished_utc` are `strftime("%Y-%m-%dT%H:%M:%SZ")` at one-second resolution, and the record
+carries `host` but **no clock offset**. Within one host the rule holds. Across hosts a producer
+whose clock runs fast fails it, every candidate is excluded, and the input fell into `orphan` —
+which the page reads out as *"read, produced by no recorded run"*. `_lineage`'s own docstring
+names that sentence as **a false statement about provenance rather than a missing one**, so the
+count merged a fact with a falsehood. [T-62]
+
+**`orphan` keeps its total; a new counter `unsequenced` names the subset** where a run produced
+exactly those bytes and was excluded **by time alone**. A positive count is not a defect report —
+a rebuild on a second machine earns one legitimately — it is the disclosure that rule 2 was the
+thing that decided, and that its premise is a clock. **An incomparability is a VALUE and not a
+missing key** [ADR-0017 R-14], which is the same discipline as `CANNOT COMPARE` beside `SAME` and
+`DIFFERS`.
+
+**`ambiguous` STAYS 0 BY CONSTRUCTION and was NOT the place for this.** The first repair proposed
+in the ledger was to increment it; reading its reasoning refuted that. The digest join plus rule 2
+are deterministic, so `ambiguous` can only be zero and is reported anyway *"because a count that
+can only be zero is a count nobody should trust without seeing it"*. Overloading it would have
+destroyed that property to describe a different question. **The new counter is additive**: no
+existing field changes meaning.
+
+**MEASURED ADDITIVE, over the 46-invocation probe built for the resolution seam** — eleven reading
+subcommands, each with and without `--log`, in `text` and `json`. Every one of the 46 exit codes is
+identical and the only output change is **six added lines**: two page lines in each of the two
+`lineage` text views and one key in each of the two payloads. Nothing is removed or reworded.
+
+**The split is provably the same selection.** `before` filtered on both predicates at once; it now
+filters self out first and time second, which selects the identical set, and it is `sorted()`
+either way — so `resolvable`, `orphan` and `edges` are untouched. `others` is reused rather than
+re-derived, so the second cause is separated **without a second walk** [ADR-0015].
+
+**Three arms, because one of them passing proves nothing.** The skewed case must be disclosed
+(`orphan 1, unsequenced 1`), the genuinely unproduced case must **not** be (`orphan 1,
+unsequenced 0`), and the ordered case must still resolve (`resolvable 1`, edge present) — so the
+counter can be satisfied neither by always firing nor by never firing. The page is asserted too: a
+payload leaf that does not move the text is a leaf the derived-leaves guard cannot see.
+
+**AND THE GATE REFUSED IT, FROM A GUARD WHOSE NAME OUTRAN ITS REASON.** The guard on the lineage
+payload asserted its key set as a **literal**, under a name about NOVELTY — *gains no new key* —
+where its stated reason is about SIZE: *"the script-name map … is an OUT-PARAMETER precisely so it
+does not land in that document — putting it there would trade a memory problem for a bigger file,
+**adding one entry per run** to the thing a consumer reads."* **The hazard it names is SIZE, not
+novelty** — and this payload has already been extended additively after shipping (`path` and
+`unreadable`, under Taylor's ruling of 2026-09-30), while a scalar counter is O(1) where the script
+map is O(runs).
+
+So the guard is **narrowed to the claim it can defend** rather than worked around, and renamed
+`test_the_lineage_json_gains_no_PER_RUN_key`: the key set is now DERIVED from `_LINEAGE_COUNTERS`,
+leaving the vocabulary to the counters test beside it and the SHAPE to this one, which asserts that
+**no payload value is a map keyed by run**. That is the same defect class as T-59 — a guard whose
+name is broader than its subject — found this time by it refusing a correct change rather than by
+accepting a wrong one, which is the cheaper direction to find it in.
+
+**A SHIPPED DOCUMENT CANNOT NAME THE OLD TEST, and that is the right behaviour.** This paragraph
+first spelled the previous name and the gate red again, from
+`test_every_command_the_documentation_tells_you_to_run_actually_EXISTS`: every `test_*` in a root
+document is resolved against this suite's own `def` lines, so **a renamed test's old name is a red
+by construction**. A changelog is a log of the past, and for identifiers the past is unspellable —
+so a rename is DESCRIBED here rather than cited. Worth knowing before writing the next one: the
+guard caught a dead citation in the very entry explaining a rename, which is the same class as
+citing a test name reconstructed from its docstring.
+
 ### Changed — one definition for "which history does this command read"
 
 **The expression `pathlib.Path(args.log) if args.log else <project>.resolved_run_log()` was

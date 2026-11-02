@@ -446,7 +446,14 @@ def _show_no_history(
 
 #: The join's own counters, in the order `_lineage` returns them. ONE list, read by the one
 #: builder below — a second copy is what let `lineage`'s two shapes drift apart (J-21).
-_LINEAGE_COUNTERS = ("runs", "records_without_uid", "resolvable", "ambiguous", "orphan")
+_LINEAGE_COUNTERS = (
+    "runs",
+    "records_without_uid",
+    "resolvable",
+    "ambiguous",
+    "orphan",
+    "unsequenced",
+)
 
 
 def _lineage_answer(
@@ -667,6 +674,21 @@ def _lineage(
     luck. It is still REPORTED, because a count that can only be zero is a count nobody
     should trust without seeing it.
 
+    RULE 2 HAS AN UNSTATED PREMISE, AND `unsequenced` IS WHERE IT IS STATED [T-62]. The
+    comparison is between two WALL CLOCKS: `started_utc` and `finished_utc` are
+    `strftime("%Y-%m-%dT%H:%M:%SZ")` at one-second resolution, and the record carries `host`
+    but no clock offset. Within one host the rule holds. Across hosts it can exclude the real
+    producer -- one whose clock runs fast fails `c[0] <= started` -- and that input used to
+    fall into `orphan` alone, which the page reads out as *"produced by no recorded run"*: a
+    false statement about provenance rather than a missing one, which is the distinction this
+    module is built on.
+
+    So `orphan` KEEPS ITS TOTAL and `unsequenced` names the subset of it where a run produced
+    exactly those bytes and was excluded by time alone. A positive count is not a defect
+    report -- a rebuild on a second machine earns one legitimately -- it is the disclosure
+    that rule 2 was what decided, and that its premise is a clock. An incomparability is a
+    VALUE and not a missing key [ADR-0017 R-14].
+
     Records with no `run_uid` predate C8 and cannot be an endpoint; they are counted, not
     dropped. 1,310 entries in the real history already predate `run_id`, and a graph that
     silently excluded them would understate its own coverage.
@@ -776,7 +798,7 @@ def _lineage(
 
     # PASS TWO: resolve every input against the index built above.
     edges: list[tuple[str, str]] = []
-    resolvable = ambiguous = orphan = 0
+    resolvable = ambiguous = orphan = unsequenced = 0
     for r in records():
         started = str(r.get("started_utc") or "")
         for i in r.get("inputs") or []:
@@ -788,9 +810,16 @@ def _lineage(
                 if me not in read_by.setdefault(d, []):
                     read_by[d].append(me)
             candidates = [c for d in digests(i) for c in produced.get(d, [])]
-            before = sorted({c for c in candidates if c[0] <= started and c[1] != me})
+            others = {c for c in candidates if c[1] != me}
+            before = sorted({c for c in others if c[0] <= started})
             if not before:
                 orphan += 1
+                #: TWO CAUSES, ONE COUNTER, AND THEY ARE DIFFERENT ANSWERS [T-62]. Nothing
+                #: produced these bytes, OR something did and rule 2 excluded every candidate
+                #: on a comparison between two hosts' wall clocks. `others` separates them
+                #: without a second walk: it is already the candidate set minus self.
+                if others:
+                    unsequenced += 1
                 continue
             edges.append((before[-1][1], me))
             resolvable += 1
@@ -800,6 +829,7 @@ def _lineage(
         "resolvable": resolvable,
         "ambiguous": ambiguous,
         "orphan": orphan,
+        "unsequenced": unsequenced,
         "edges": edges,
     }
 
@@ -824,6 +854,9 @@ def _render_lineage(g: dict[str, typing.Any], scripts: dict[str, str] | None = N
         f"  resolvable edges : {g['resolvable']}",
         f"  ambiguous        : {g['ambiguous']}",
         f"  orphan inputs    : {g['orphan']}   (read, produced by no recorded run)",
+        f"  unsequenced      : {g['unsequenced']}   (of those, the bytes WERE produced and no",
+        "                       candidate finished first -- two hosts' clocks are not a"
+        " total order)",
         f"  derived addresses: {g['records_without_uid']}   (predate C8; addressed by "
         f"sidecar path + start time, not by a recorded uid)",
         "",
