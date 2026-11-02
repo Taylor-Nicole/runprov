@@ -9,6 +9,40 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — six requirements across three decision records that no longer described the build
+
+**`docs/adr/` ships in the sdist, so a requirement that has stopped being true is permanent in the
+release that shipped it.** Found while bringing ADR-0020 and ADR-0024 toward `Accepted`: the
+citation enforcer requires every requirement of an accepted record to be cited by a test, and
+**four of them could not be honestly cited because they were false of the code.** Two more were
+found by checking the authority the corrections were drawn from.
+
+| | said | the build |
+|---|---|---|
+| **0020 R-12** | *"never a pair of digests"* | reports the digest pair where a body is unreadable — and **ADR-0024 R-11, the requirement R-12 cites as its authority, was corrected to require exactly that** on 2026-10-23 |
+| **0024 R-13** | *"the renderer remains the default"* | bare `runprov env` is the **preflight** |
+| **0024 R-15** | four operand kinds, including a path and `--here` | **three**; no path operand exists and `here` is a reserved word |
+| **0024 R-22** | the identity carries *"the platform string"* | `env.py` contains `platform` **zero times**; `Identity` has no such field |
+| **0026 R-3** *(Accepted)* | *"a mode is required … the renderer is not built"* | the renderer landed 2026-10-23 and the mode group carries no `required=` |
+| **0026 R-5** *(Accepted)* | *"`--here` is a flag"* | **no such flag exists** — zero occurrences in the CLI |
+
+Each amendment **records its correction** rather than silently rewriting, so a reader who cited the
+old text can find out what happened to it, and **every requirement NUMBER is unchanged** — 13, 23
+and 12 before and after — so existing citations still resolve.
+
+**THE AUTHORITY WAS STALE IN THE CLAUSE IT WAS BEING CITED FOR.** ADR-0026 R-5 is the shipped form
+of ADR-0024 R-15 and was opened to supply the corrected wording; it said *"`--here` is a flag"* for
+a flag with no occurrences anywhere. Two of the six amendments exist only because the neighbour was
+checked instead of trusted — *a rationale that cites a neighbour is the hardest kind to
+re-examine*, and this is the second time that rule has paid for itself in this file.
+
+**AND ONE CROSS-REFERENCE WENT STALE INSIDE THE COMMIT THAT WROTE IT.** The note added to ADR-0024
+R-15 said ADR-0026 R-5 *"still says"* `--here` is a flag — true when drafted, false four edits
+later when R-5 was corrected. Fixed to past tense. **A live claim outside a requirement was also
+swept**: ADR-0026's *Alternatives considered* still argued *"`--here` has no record"*. Requirements
+are guarded; the prose around them is not, which is why a correction has to be swept rather than
+applied once.
+
 ### Tested — two guards that could not fail, and what each one's control had to prove
 
 **T-60. A vocabulary guard searched the module that DECLARES the vocabulary.**

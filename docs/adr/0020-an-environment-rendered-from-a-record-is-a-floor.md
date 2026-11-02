@@ -178,7 +178,14 @@ keyed on the **package set**. A reviewer, a researcher or an auditor is **never 
 host**, so a host difference is reported and does not by itself decide the answer.
 
 **R-12.** The comparison **names the packages** per ADR-0024 R-11 — *only in the record*, *only
-here*, *different version* — never a pair of digests. **This is why verification ships with the
+here*, *different version* — and **where both bodies are readable**, never a pair of digests.
+**CORRECTED 2026-11-02.** The clause was unqualified, and ADR-0024 R-11 — the requirement this one
+cites as its authority — was itself corrected on 2026-10-23 in the opposite direction: where a
+body cannot be read, two records compared off-host may both have had their sidecars pruned, and
+the digests are then the only evidence that exists, so the comparison reports the digest pair and
+says which side it could not open. Shipped behaviour does exactly that and the suite asserts it,
+so the unqualified form was **a requirement this project's own tests disprove** — the shape
+ADR-0016's R-12 recipe was found in, one record over. **This is why verification ships with the
 renderer rather than waiting for `rebuild`:** the reader, the canonicaliser and the output format
 are already here, and a reviewer who builds an environment by hand in a container needs the
 comparison and not the build.

@@ -110,9 +110,12 @@ package**, by R-4.
 ### Where the comparison happens, and what must be present for it
 
 **R-13.** **Comparison is never mandatory.** `runprov env [RUN]` renders and compares nothing;
-every comparison is asked for. The renderer remains the default because the commonest use of this
-command is *"give me something I can install"*, and a command that verified by default would need
-an environment present in order to print a file.
+every comparison is asked for. **CORRECTED 2026-11-02: the PREFLIGHT is the default, not the
+renderer.** Bare `runprov env [RUN]` answers what can be checked from what is actually here before
+anything is tried; the renderer is a mode, asked for by `--render`. The reasoning the original
+clause gave still holds against *verifying* by default — that would need an environment present in
+order to print a file — but it does not reach the preflight, which needs nothing present and
+refuses in its own shape when it cannot look.
 
 **R-14.** **A comparison of TWO RECORDS requires neither environment to be present.** This is the
 case a journal reviewer and an external auditor are actually in: two submissions, or a submission
@@ -121,8 +124,13 @@ question — *do these two describe the same package set?* — and it needs only
 sidecars.
 
 **R-15.** **Each operand is named explicitly and an ambiguous operand refuses.** The operand kinds
-are: a run in a history; a path to a record or a snapshot body; a **published identity string**
-(R-16); and `--here`, meaning the environment this process is running in. **Nothing is inferred
+are **three**: a **published identity string** (R-16), recognised by the algorithm prefix it is
+required to carry; the **reserved word** `here`, meaning the environment this process is running
+in; and **anything else is a run in the history**. **CORRECTED 2026-11-02**, and the list was wrong
+in two ways rather than one: **a path operand was never built** — nothing accepts a record or a
+snapshot body as an operand — and **`here` is a WORD, not a `--here` flag.** ADR-0026 R-5 is the
+shipped form of this rule and it **said** *"`--here` is a flag"*; it is corrected in the same pass,
+because the authority and the record citing it were stale in the same clause. **Nothing is inferred
 from the shape of an argument** — the same rule ADR-0023 R-7 applies to `--tool`, and for the same
 reason: a wrong guess here produces a confident comparison of the wrong two things.
 
@@ -191,14 +199,19 @@ visible.
 **R-22.** **ONE environment identity, resolved from a source; ONE comparison, over two
 identities.** An identity carries, each with the provenance of how it was obtained — *recorded*,
 *recomputed*, *observed* or *absent, because* — the package-set digest by algorithm, the
-interpreter version, the host-bound snapshot digest, the platform string, the package count, and
-the parsed package map **when a body was readable**. Every feature named below is a **source of an
+interpreter version, the host-bound snapshot digest, the package count, and the parsed package
+map **when a body was readable**. **CORRECTED 2026-11-02: the platform string is NOT carried and
+is struck from this enumeration.** Measured: `runprov/env.py` contains the word `platform` zero
+times and `Identity` has no such field; the platform string exists only inside the snapshot body.
+**ADR-0026 R-1 is the shipped form of this requirement and deliberately omits it**, so the
+enumeration here was a superset of what was built — and an `Accepted` record asserting a field the
+identity does not carry is a false claim in the place a reader checks first. Every feature named below is a **source of an
 identity**, never a new comparison:
 
 | source | feature |
 |---|---|
-| a run in a history, or a record file | `env --compare`, this release |
-| the environment this process is in | `--here`, this release |
+| a run in a history | `env --compare`, this release |
+| the environment this process is in | the reserved word `here`, this release |
 | a published `runprov.pkgset.v1:<hex>` string | R-16, this release |
 | a merged group of histories | the array-job homogeneity check, after ADR-0021 |
 | **the environment a rebuild just created** | **ADR-0023 R-11** |

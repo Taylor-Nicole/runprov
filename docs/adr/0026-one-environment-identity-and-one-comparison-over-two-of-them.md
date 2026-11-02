@@ -39,18 +39,27 @@ standing, not about whether the environment was rebuilt correctly. 0 the package
 they differ · 2 the question could not be put [ADR-0007].
 
 **R-3.** **Comparison is never mandatory.** The command renders, compares, prints an identity or
-describes what can be checked, and the caller says which. A mode is **required in this release**
+describes what can be checked, and the caller says which. **CORRECTED 2026-11-02, and both halves
+of what stood here were false of the build.** It read *"a mode is **required in this release**
 because ADR-0020 R-1's renderer is not built and there is therefore no honest default; when it
-lands it becomes the default and every invocation written today keeps its meaning — an addition,
-not a change.
+lands it becomes the default"*. The renderer **landed 2026-10-23**; the mode group carries no
+`required=`, so a mode is **not** required; and when the renderer landed it did **not** become the
+default — **the preflight did** (ADR-0024 R-13, corrected the same day). Every invocation written
+under the old rule keeps its meaning, which is what that clause was protecting. **This is a
+decision record that stopped describing the build**, found while bringing ADR-0020 and ADR-0024 to
+`Accepted`.
 
 **R-4.** **A comparison of two records requires neither environment to be present.** This is the
 case a journal referee and an external auditor are in: two submissions on a laptop with neither
 environment installed.
 
-**R-5.** **Operands are named and never inferred from their shape.** `--here` is a flag, a
-published identity is recognised by the algorithm prefix it is required to carry, and anything
-else is a run in the history. The same rule ADR-0023 R-7 applies to `--tool`: a wrong guess
+**R-5.** **Operands are named and never inferred from their shape.** The **reserved word** `here`
+means the environment this process is running in, a published identity is recognised by the
+algorithm prefix it is required to carry, and anything else is a run in the history. **CORRECTED
+2026-11-02: this said `--here` is a FLAG and no such flag exists** — measured, zero occurrences in
+the CLI. It was found by opening this requirement to use it as the corrected authority for
+ADR-0024 R-15, which is the reason it is worth recording: a rationale that cites a neighbour is
+the hardest kind to re-examine, and here the neighbour was stale in the same clause. The same rule ADR-0023 R-7 applies to `--tool`: a wrong guess
 compares the wrong two things and reports it with the confidence of a right one.
 
 **R-6.** **Nothing is excluded by default, and the expected difference is named with its flag.**
@@ -128,8 +137,9 @@ it covers is a silent exit 0, which is the one this feature cannot afford.
 
 ## Alternatives considered
 
-**A comparison function taking two records.** Rejected: `--here` has no record, a published
-identity string has no record, a merged group has many, and ADR-0023's rebuild compares an
+**A comparison function taking two records.** Rejected: the reserved word `here` has no record, a
+published
+identity has no record, a merged group has many, and ADR-0023's rebuild compares an
 environment it has just created. Four of the five sources are not records, so a record-shaped
 signature would have been replaced on the first addition.
 
