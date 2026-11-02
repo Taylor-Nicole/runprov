@@ -1,6 +1,7 @@
 # 20. An environment rendered from a record is a floor
 
-- **Status:** Proposed — T-36a. Specification for a feature that is not built. **Rewritten
+- **Status:** Accepted — T-36a, built 2026-10-23 as `runprov/env.py` over `runprov/pkgset.py`'s
+  canonical form, with the CLI in `runprov/__main__.py`. **Rewritten
   2026-10-23**, from the version of 2026-10-21 that also *rejected* building the environment:
   that rejection is reversed and the build is specified in ADR-0023, so this record keeps the
   renderer alone. Taylor ruled the split on 2026-10-23 — one ADR cannot span two releases,

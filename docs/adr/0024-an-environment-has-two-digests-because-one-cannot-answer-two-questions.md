@@ -1,12 +1,17 @@
 # 24. An environment has two digests, because one digest cannot answer two questions
 
-- **Status:** Proposed — T-36c. Specification for a feature that is not built. **Six requirements were split out to ADR-0025 and BUILT on 2026-10-23** — the canonical form and its single implementation — because a module's docstring citing a record is a claim the record is implemented, and the gate refuses that against a `Proposed` one. Their numbers here are kept as pointers. What remains is the two-digest record model, the comparison and the preflight, none of it built. Asked for by Taylor
+- **Status:** Accepted — T-36c, built 2026-10-23: the two-digest record model in
+  `runprov/environment.py`'s snapshot block, the identity and comparison in `runprov/env.py`,
+  and the preflight in `runprov/__main__.py`. **Six requirements were split out to ADR-0025 and BUILT on 2026-10-23** — the canonical form and its single implementation — because a module's docstring citing a record is a claim the record is implemented, and the gate refuses that against a `Proposed` one. Their numbers here are kept as pointers so a citation written against this record still resolves.
+  **The clause that stood here — *"what remains is the two-digest record model, the comparison and
+  the preflight, none of it built"* — was false from 2026-10-23 and is struck 2026-11-02:** all
+  three are built and cited. Asked for by Taylor
   on 2026-10-23: *"can we make it so that there is an environment digest per host and also per
   package set… one that can be recreated in a containerized environment for a reviewer,
   researcher, auditor etc, and the verification might not always be on the original host."*
   Depends on ADR-0010 for what a record may state, ADR-0007 for its exit codes, and ADR-0005 for
   how the record is written. ADR-0020 and ADR-0023 cite this record rather than restating it.
-- **Applies to:** `runprov/environment.py`, whose snapshot body this record forbids changing., `runprov/pkgset.py`, `runprov/env.py`, `runprov/__main__.py`
+- **Applies to:** `runprov/environment.py` (read, never changed — this record forbids altering its snapshot body), `runprov/pkgset.py`, `runprov/env.py`, `runprov/__main__.py`
 
 ## Context
 

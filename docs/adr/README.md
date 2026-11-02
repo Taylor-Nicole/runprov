@@ -46,11 +46,11 @@ A *Proposed* ADR is the right place to think out loud. It is not a promise.
 | [0017](0017-one-answer-two-renderings-and-the-table-is-derived.md) | One answer, two renderings, and the table is derived from the data | Accepted |
 | [0018](0018-a-policy-is-checked-against-the-history-not-remembered.md) | A policy is checked against the history, not remembered | Accepted |
 | [0019](0019-rerun-prints-and-never-runs.md) | `rerun` prints, and never runs | Proposed |
-| [0020](0020-an-environment-rendered-from-a-record-is-a-floor.md) | An environment rendered from a record is a floor | Proposed |
+| [0020](0020-an-environment-rendered-from-a-record-is-a-floor.md) | An environment rendered from a record is a floor | Accepted |
 | [0021](0021-many-histories-are-merged-at-read-time-never-rewritten.md) | Many histories are merged at read time, and never rewritten | Proposed |
 | [0022](0022-a-digest-may-be-declined-but-never-faked.md) | A digest may be declined, but never faked | Accepted |
 | [0023](0023-a-rebuild-names-its-rank-and-verifies-what-it-built.md) | A rebuild names its rank, and verifies what it built | Proposed |
-| [0024](0024-an-environment-has-two-digests-because-one-cannot-answer-two-questions.md) | An environment has two digests, because one digest cannot answer two questions | Proposed |
+| [0024](0024-an-environment-has-two-digests-because-one-cannot-answer-two-questions.md) | An environment has two digests, because one digest cannot answer two questions | Accepted |
 | [0025](0025-the-canonical-package-set-and-one-implementation-of-it.md) | The canonical package set, and exactly one implementation of it | Accepted |
 | [0026](0026-one-environment-identity-and-one-comparison-over-two-of-them.md) | One environment identity, and one comparison over two of them | Accepted |
 | [0027](0027-an-environment-in-a-standard-vocabulary-says-only-what-the-record-supports.md) | An environment in a standard vocabulary says only what the record supports | Accepted |

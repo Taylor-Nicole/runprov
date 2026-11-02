@@ -9,6 +9,29 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Changed — ADR-0020 and ADR-0024 are Accepted, over code built on 2026-10-23
+
+Both records described a feature that was **built** while their status still read *"Specification
+for a feature that is not built"*. `docs/adr/` ships in the sdist, so that sentence would have
+been permanent in the release that shipped the feature — the miss ADR-0017 already made, reading
+*a feature that is not built* through 0.7.0.
+
+The statuses now follow the form the three records built the same day already use — `Accepted`,
+naming what it was built as, **with no release-state phrase**. CONTRIBUTING step 2 has to clear
+*"not yet released"* statuses on tag day precisely because `docs/adr/` ships; not creating that
+obligation is cheaper than inheriting it.
+
+**A false clause inside ADR-0024's status is struck rather than quietly dropped:** it enumerated
+*"what remains is the two-digest record model, the comparison and the preflight, none of it
+built"*, which was false from 2026-10-23. All three are built and cited.
+
+**THE GOVERNS GUARD CAUGHT THE EDIT THAT MADE IT.** ADR-0024's `Applies to:` was rewrapped onto
+two lines while fixing a stray full stop in it — and **the parser's unit is the LINE, not the
+bullet**, so three of its four modules became invisible and the check correctly reported that
+`env.py`, `pkgset.py` and `__main__.py` name a record that does not list them. Restored to one
+line. The requirement-citation enforcer passes in both directions on both records: 13 of 13 and
+23 of 23, none missing and none stale.
+
 ### Tested — every requirement of ADR-0020 and ADR-0024 is now cited, and the last one got a guard
 
 **13 of 13 and 23 of 23, none missing and none stale.** The citation enforcer requires every
