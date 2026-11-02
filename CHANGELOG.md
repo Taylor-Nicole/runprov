@@ -9,6 +9,57 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Tested — the resolution seam had no guard, and the primitive it needs is wider than it looks
+
+`_history` collapsed *the flag when it is given, else the project's own history* into one helper,
+and **nothing then held it**: no test referenced the seam, so the next command spelling the
+expression out again — which is exactly how the copies arrived in the first place — would have
+been green. A seam without a guard is a convention.
+
+**And the obvious way to check that is wrong, which is worth the sentence.** `_history` occurs as
+a whole token **14 times** in the suite, every one of them a **test-local fixture of the same
+name**; as a bare substring it occurs 236 times, inside `_history_record` and `_chain_history`.
+The seam itself was referenced **0 times**. So a name collision stands between this seam and any
+grep for it, and tokenising is the difference between the two readings.
+
+`test_the_SEAM_is_the_only_place_a_run_history_is_RESOLVED` quantifies over **every one of the 60
+function definitions in `__main__.py`**, not over the call sites, and asserts nothing is left over.
+**4 touch a route to the history: the seam, and 3 that touch exactly one side** — `_capture` derives
+the `.prov.json` sibling, `_report` asks whether the flag was *given* to word an error, `_gate`
+discloses that `--emit-policy` does not read it. So the discriminator is the **conjunction**, and
+those 3 are a live negative control proving it discriminates rather than an assertion that it does.
+
+**THE ROUTE SET IS DERIVED FROM THREE DEFINERS, NOT LISTED**: the option the parser itself declares,
+so renaming the flag carries the guard with it; whatever `Project` exposes that **yields a path**,
+resolved by runtime identity against the exported class, so an alias or a new accessor is covered
+on the day it is written; and the history's own basename as `resolved_run_log` spells it.
+
+**THE PRIMITIVE WAS WRONG TWICE BEFORE IT WAS RIGHT, AND BOTH FAILURES ARE THE REUSABLE PART.**
+Two routes looked sufficient — the flag and the resolver. `resolved_run_log`'s body is
+`self.run_log or (self.root / "provenance" / "runs.jsonl")`, so **the raw attribute and the
+spelled-out construction are each a third route**, and the raw attribute is not hypothetical: two
+comments in `__main__.py` record `active().run_log` as a reader that **exited non-zero over an
+intact history**. A planted construction is caught only by the basename route, measured.
+
+Then the fixes themselves over-reached, in the two directions this project keeps meeting.
+**Matching every route name as a string constant reported 3 functions that do nothing wrong** —
+`main` compares `args.cmd` against the command *named* `"log"`, `_timeline_entry` reads
+`"history_destination"` as a key out of a past run's record. The same four letters mean different
+things in different syntactic positions. And **deriving the route set from a name pattern selected a
+method whose own docstring says it answers with a printable string and not a path**; asking what the
+member *returns* excludes it for a stated reason instead of by name. The basename is matched by
+equality and never containment, because 11 `help=` strings read *"path to runs.jsonl (default: the
+project's)"* — prose that happens to live in code.
+
+**9 CONTROLS, EACH FIRING AT ITS INTENDED ASSERTION.** A re-inlined resolution, a hand-built path
+and a raw-attribute read each go red and name the function; a plant deliberately *unlike* those,
+touching only the flag under an unrelated name, goes red too, so the population is not keyed on the
+seam's name. **Run with the plant removed it is green**, which is the control a negative leg is
+usually missing. Emptying the detector's route sets — the mutant that makes a guard accept
+everything — is caught by requiring the sweep to reach the seam itself; breaking the derivation is
+caught by its non-vacuity assertion. Deleting a declared exception, and declaring one for a function
+that touches nothing, are both red: the exemption retires itself from both ends.
+
 ### Changed — ADR-0020 and ADR-0024 are Accepted, over code built on 2026-10-23
 
 Both records described a feature that was **built** while their status still read *"Specification

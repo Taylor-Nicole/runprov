@@ -129,6 +129,19 @@ detection was broken — one total over two primitives is a floor wearing an equ
 `test_every_command_the_documentation_tells_you_to_run_actually_EXISTS` now counts each primitive
 separately for that reason.
 
+**A path expression every command needs belongs to one helper, and the helper then needs a guard of
+its own.** The expression *the flag when it is given, else the project's own history* was written out
+once per command, and the copies drifted: one reader resolved the raw attribute, which is unset in
+any project that never passed one, and exited non-zero over an intact history. Collapsing them into
+a single helper is not the repair by itself — nothing then stops the next command spelling the
+expression out again, which is exactly how the copies arrived, so a seam without a guard is only a
+convention. `test_the_SEAM_is_the_only_place_a_run_history_is_RESOLVED` quantifies over every
+function in `__main__.py`, derives the routes from the parser's own option and from whatever
+`Project` exposes that yields a path, and requires each function touching one to be the helper or to
+declare what else it does with it. **Derive such a route set from the definer, and ask what the
+member RETURNS rather than what it is called**: the first version of that guard read a name pattern,
+which selected a method whose own docstring says it answers with a printable string and not a path.
+
 **A figure is bound to the noun it counts, and read from the table that claims it.** An existence
 check over a whole document region is satisfied by any region that happens to contain the value,
 and a page of measurements contains nearly all of them: the CI section's job total was asserted

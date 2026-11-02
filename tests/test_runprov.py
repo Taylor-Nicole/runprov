@@ -24576,6 +24576,225 @@ def _cli_subcommands() -> list[str]:
     return found
 
 
+#: Why a function OTHER than the seam may touch a route to the run history. Each entry
+#: names the routes it may touch and the non-resolution thing it does with them. The
+#: guard fails in BOTH directions: an undeclared toucher, and an entry whose subject has
+#: stopped touching anything — so paying the debt down deletes the entry instead of
+#: leaving it as folklore.
+_HISTORY_ROUTE_EXCEPTIONS = {
+    "_capture": (
+        {"resolved_run_log"},
+        "derives the `.prov.json` SIBLING of the history from the same parent; it never "
+        "reads the history itself",
+    ),
+    "_report": (
+        {"log"},
+        "asks whether `--log` was GIVEN, to word the error for a path that is not a file; "
+        "the path it reports was already resolved by the seam",
+    ),
+    "_gate": (
+        {"log"},
+        "DISCLOSES that `--emit-policy` does not read `--log`, which is a statement about "
+        "the flag rather than a use of it",
+    ),
+}
+
+
+def _history_routes() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """Every route `__main__.py` could take to a run history, DERIVED from three definers.
+
+    Returned as (override attributes, default attributes, default literals), and the split
+    is the whole discriminator twice over.
+
+    FIRST, OVERRIDE AGAINST DEFAULT. Resolving a history means combining the two — the flag
+    when it is given, the project's own otherwise — and that is the one thing only the seam
+    may do. A function touching one side alone is doing something else.
+
+    SECOND, ATTRIBUTES AGAINST LITERALS, because the same four letters mean different things
+    in different syntactic positions and conflating them makes false demands. The first
+    version of this helper matched every route name as a string constant too, and it
+    reported three functions that do nothing wrong: `main` compares `args.cmd` against the
+    COMMAND NAMED `"log"`, and `_timeline_entry` reads `"history_destination"` as a KEY out
+    of a past run's record. Neither is a route to anything.
+
+    NOTHING HERE IS A LIST OF CALL SITES. The override side is the option the parser itself
+    declares, so renaming the flag carries the guard with it. The default side is whatever
+    `Project` exposes that YIELDS A PATH, resolved by runtime identity against the exported
+    class — which covers an alias, a rename and a newly added accessor on the day it is
+    written. `history_destination` is excluded by that test and not by name: it returns a
+    printable string, and its own docstring says so in those words, one of whose three
+    shapes is not a path at all.
+
+    THE LITERAL ROUTE IS THE CONSTRUCTION SPELLED OUT. `resolved_run_log`'s whole body is
+    `self.run_log or (self.root / "provenance" / "runs.jsonl")`, so a command could build
+    that path instead of calling the method and reach the history having touched neither
+    attribute. The basename comes from the method itself rather than from a literal here.
+    It is matched by EQUALITY, never containment: eleven `help=` strings in the parser read
+    "path to runs.jsonl (default: the project's)", which is prose that happens to live in
+    code, and a containment test makes every one of them a false demand. The route is the
+    basename used AS a path component, which equals it.
+    """
+    tree = ast.parse((_repo_root() / "runprov" / "__main__.py").read_text(encoding="utf-8"))
+    override = {
+        "log"  # argparse's dest for the option this call declares
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_argument"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "--log"
+    }
+
+    hints = typing.get_type_hints(runprov.Project)
+    default = set()
+    for name in dir(runprov.Project):
+        if not re.search(r"run_log|history", name):
+            continue
+        member = inspect.getattr_static(runprov.Project, name, None)
+        yields = (
+            typing.get_type_hints(member).get("return") if callable(member) else hints.get(name)
+        )
+        if "Path" in str(yields):
+            default.add(name)
+
+    with tempfile.TemporaryDirectory() as box:
+        literals = {runprov.Project(root=pathlib.Path(box)).resolved_run_log().name}
+
+    # NOT VACUOUS, the same guard `_cli_subcommands` carries: an AST walk or a dir() filter
+    # that quietly matches nothing would leave the conjunction below unsatisfiable and every
+    # claim built on it a pass.
+    assert override == {"log"}, override
+    assert default == {"run_log", "resolved_run_log"}, default
+    assert literals == {"runs.jsonl"}, literals
+    # AND THE NARROWING IS LOAD-BEARING, asserted rather than trusted: the member that fails
+    # the yields-a-path test must still be a member, or the exclusion covers nothing.
+    assert "history_destination" in dir(runprov.Project) and "history_destination" not in default
+    return frozenset(override), frozenset(default), frozenset(literals)
+
+
+def _history_route_touchers() -> dict[str, set[str]]:
+    """Each function in `__main__.py` against the history routes it touches IN CODE.
+
+    Docstrings are stripped before the walk and comments are not in the tree at all, so the
+    guard is neither satisfiable nor defeatable by prose. That is load-bearing here and not
+    a precaution: `__main__.py` carries two comments reading `active().run_log` — the
+    narrowest route of all — because that spelling WAS a defect once, and the sentences
+    recording it must not read as the defect returning.
+    """
+    override, default, literals = _history_routes()
+    attrs = override | default
+    tree = ast.parse((_repo_root() / "runprov" / "__main__.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            body = node.body
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                node.body = body[1:]
+
+    touched: dict[str, set[str]] = {}
+    for func in ast.walk(tree):
+        if not isinstance(func, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        hits = {
+            node.attr
+            for node in ast.walk(func)
+            if isinstance(node, ast.Attribute) and node.attr in attrs
+        } | {
+            node.value
+            for node in ast.walk(func)
+            if isinstance(node, ast.Constant) and node.value in literals
+        }
+        if hits:
+            touched[func.name] = hits
+    return touched
+
+
+def test_the_SEAM_is_the_only_place_a_run_history_is_RESOLVED():
+    """One helper resolves the history; nothing else combines `--log` with the default.
+
+    WHAT THIS HOLDS, in one sentence: every function in `__main__.py` that touches a route
+    to the run history either IS `_history`, or carries a declared reason for the one side
+    it touches. Quantified over every function definition in the file, with nothing left
+    over — not over the call sites, which is what the defect was made of.
+
+    WHY IT EXISTS. The path expression `--log if given, else the project's own` was written
+    out once per command, and the copies drifted: one reader resolved `active().run_log`,
+    which is `None` in any project that did not pass one, and exited 2 over an intact
+    history. The seam collapsed them into one helper — and nothing then stopped the next
+    command spelling the expression out again, which is exactly how the copies arrived in
+    the first place. A seam without a guard is a convention, and this file's own comments
+    are the record of what conventions do here.
+
+    THE DISCRIMINATOR IS THE CONJUNCTION, and it is PROVED rather than asserted: three
+    functions legitimately touch one side, and only the seam touches both. So a guard that
+    merely banned the words would be a false-demand machine, and one that bans the pair is
+    held load-bearing by those three — they are the live negative control, in the tree, and
+    they go red here if the pair ever stops discriminating.
+    """
+    override, default, literals = _history_routes()
+    other_side = default | literals
+    touched = _history_route_touchers()
+
+    seam = [
+        node.name
+        for node in ast.walk(
+            ast.parse((_repo_root() / "runprov" / "__main__.py").read_text(encoding="utf-8"))
+        )
+        if isinstance(node, ast.FunctionDef) and node.name == "_history"
+    ]
+    assert seam == ["_history"], (
+        f"the seam this guard is about is not uniquely defined: {seam}; a walk that takes "
+        "whichever definition it reaches first would measure one and report on the other"
+    )
+
+    # REACH. Without this the guard is satisfied by a detector that matches nothing: an
+    # empty route set leaves an empty population and nothing left over, which reads green.
+    assert "_history" in touched, (
+        "the sweep did not reach the seam itself, so whatever it read is not the subject"
+    )
+    assert touched["_history"] & override and touched["_history"] & other_side, (
+        f"`_history` no longer combines the two sides ({sorted(touched['_history'])}), so it "
+        "is not the resolution any more and this guard is about nothing"
+    )
+
+    resolvers = {name for name, hits in touched.items() if hits & override and hits & other_side}
+    assert resolvers == {"_history"}, (
+        f"these resolve a run history outside the seam: {sorted(resolvers - {'_history'})}. "
+        "Call `_history(args, project)` instead — it is the one place that decides what "
+        "`--log` means, and a second copy is how the first ones arrived"
+    )
+
+    others = {name: hits for name, hits in touched.items() if name != "_history"}
+    undeclared = set(others) - set(_HISTORY_ROUTE_EXCEPTIONS)
+    assert not undeclared, (
+        "these touch a route to the history with no declared reason: "
+        f"{ {n: sorted(others[n]) for n in sorted(undeclared)} }. Route through `_history`, "
+        "or declare what else the route is being used for"
+    )
+
+    # THE EXEMPTION RETIRES ITSELF, both ways: an entry whose subject stopped touching
+    # anything is named for deletion, and an entry that drifted onto a different route is
+    # named with the reason that no longer covers it.
+    for name, (declared, reason) in sorted(_HISTORY_ROUTE_EXCEPTIONS.items()):
+        assert name in others, (
+            f"`{name}` no longer touches a history route, so its exemption covers nothing "
+            f"— delete the entry, whose reason was: {reason}"
+        )
+        assert others[name] == declared, (
+            f"`{name}` touches {sorted(others[name])} where its entry declares "
+            f"{sorted(declared)}; the recorded reason is about the declared route: {reason}"
+        )
+        assert not (others[name] & override and others[name] & other_side), (
+            f"`{name}` now touches both sides, so it resolves a history and cannot be "
+            f"exempt on this reason: {reason}"
+        )
+
+
 def test_verify_answers_in_json_and_says_which_shape_it_is(tmp_path, capsys):
     """[ADR-0017 R-3] [ADR-0017 R-4] [ADR-0017 R-5] [ADR-0017 R-6] I-18.
 
