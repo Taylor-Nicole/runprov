@@ -9,6 +9,111 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — two recorded digests were properties of the environment, not of the value
+
+**This is a repair, not a one-time break, and the distinction is measurable.** A break presumes a
+correct prior value to preserve, and there was none: **the values that move are exactly those
+whose digest was a property of the value's CLASS rather than of the value** — two of them
+additionally varying by interpreter, the rest stable and forgeable. Everything that was already a
+function of its subject is byte-identical: verified against the previous commit's module over 30
+ordinary values, and independently over 67 by an adversarial pass that confirmed `Decimal`,
+`Fraction`, `IntEnum`, `IntFlag`, `StrEnum`, plain subclasses, `nan`, `-0.0`, subnormals, `10**40`,
+`bytes` and `bytearray` all unmoved. The nine committed corpus trees are unmoved, and so is the
+order of all 306 tracked filenames.
+
+An earlier draft of this entry said the moved population was *"exactly the population whose values
+were never reproducible"*. That was false and this entry contradicted it two paragraphs later: of
+the ten values measured moving, **eight were byte-identical on 3.10 through 3.14 and
+locale-independent**. Their old digests were perfectly reproducible — they were just answers about
+the class instead of about the value, which is a different complaint and the one that matters.
+
+**`_canonical` rendered through the INSTANCE's dunders where the claim is about the value.** The
+module's own rule sits four lines above it — *"Never a `repr`: it is unstable across runs and
+across versions, and recording it would present an unstable value as a stable one"* — and three of
+its branches reached the instance's rendering anyway, one of them with a literal `!r`. Measured on
+3.10 and 3.12, six cases, two distinct failures:
+
+| case | recorded | should be |
+|---|---|---|
+| `str`-subclass enum | `s:5:fasta` on 3.10, `s:5:SKind.A` on 3.11+ | `s:5:fasta` |
+| `int`-subclass enum | `i:7` on 3.10, `i:IKind.A` on 3.11+ | `i:7` |
+| `float`-subclass enum | `f:<FKind.A: 1.5>` on both | `f:1.5` |
+| subclass overriding `__format__` | `WeirdInt(3)` → `i:9999` | `i:3` |
+
+**The first two put one argument's digest at the mercy of the interpreter**, and `requires-python`
+admits both. **The fourth is not instability at all — it is a digest a caller can forge
+independently of the value it claims to describe.** Only the `str` row was reported; fixing it
+alone would have left four.
+
+**Then two more adversarial passes found nine sites in total, and the third pass found that the
+exemplar was wrong.** Fixing the three scalar branches left four in the containers — `list`,
+`tuple` and `dict` took their length from the instance, and `dict` took its ORDER from its keys'
+`__lt__`, so two mappings that compare EQUAL, whose rendered keys are identical, rendered in
+different orders and digested differently. Fixing *those* left five more: `list.__iter__`,
+`tuple.__iter__`, `dict.__iter__`, `dict.__getitem__` — a subclass could render `l:3:[i:99]` for
+a list it equals, with the length now correct and the CONTENTS still the instance's to choose —
+and `bytes.__bytes__`.
+
+**That last one falsified the claim this repair was being justified by.** `bytes` was held up as
+the branch that was already right, *"because `bytes(value).hex()` RECONSTRUCTS the base type, so no
+subclass method is reached."* `bytes()` consults `__bytes__`: `bytes(BS(b"ab")).hex()` is `ffff` on
+all five interpreters. `bytearray` has no `__bytes__` in `dir()` and honours one anyway — **so no
+enumeration of base members closes this class**, and the guard over it had to stop being a list.
+It now quantifies over every syntactic READ of `_canonical`'s own parameter, giving each a decision
+(a type test, an unbound base-type call, an identity test, or the truth test under the `bool`
+branch, which is safe only because `bool` cannot be subclassed — asserted, not assumed) and
+refusing anything left over. On the pre-repair tree it names five routes; after, none.
+
+Measured throughout: no plain value's rendering moves, `sorted()` agrees with the base-typed key
+over 2 000 random plain-key dicts, and `namedtuple`, `os.stat_result`, `OrderedDict`,
+`defaultdict`, `Counter`, NFC/NFD keys, non-BMP keys and a 10 000-key dict are all unmoved.
+
+A `str`-subclass enum now digests as its text, so `Kind.FASTA` and `"fasta"` agree — deliberately:
+they are the same string value. That is **not** the `bool`-before-`int` question, where `True` and
+`1` are different values that compare equal. It does mean `d(Kind.FASTA) == d("fasta")`, a real
+collision, accepted because 3.10 already behaved this way — the repair standardises on the older
+of the two renderings rather than inventing a third. Tagging by subclass name was the alternative
+and it is refused because a class name moves on a rename while the value does not; the sharper
+objection, that a class name is "as unstable as a `repr`", is dropped, since this module already
+writes `UNDIGESTIBLE:<type>` into records. The length prefix now agrees with its own payload, which
+is what `s:5:SKind.A` — five, over a seven-character payload — was telling us.
+
+**`sha256_tree` was a function of `LC_CTYPE`.** `_tree_stream` did `name.encode()` on a name
+`os.listdir` had decoded with the locale-dependent filesystem encoding, and that does not
+round-trip. One untouched directory holding `caf\xc3\xa9.fa` digested `079f8797b593ac01` under a
+UTF-8 locale and `540c2def05141e53` under ISO-8859-1 — **this is C-03, the finding the
+cross-version corpus was built after**, and the corpus cannot see it because all 81 of its names
+are ASCII, for which the two encodings agree byte for byte. A name the encoding could not
+represent **raised**, so `run.input()` on a directory died on one undecodable filename inside it.
+`os.fsencode` returns the original bytes, which is what the sort key and the NUL separator were
+always about, and the docstring above that line already reasoned entirely in bytes.
+
+**A migration field was considered and rejected — on cost, not on impossibility.** The first
+version of this paragraph claimed a field *could not* carry the old value. For the step digest that
+is wrong, and the correction is worth stating: `sha256_tree_casefolded` is written **at record
+time** by the recording process, and a legacy field here would be the same — computed by the very
+interpreter holding the very object whose dunders produced the old value, so it is trivially
+computable, and `environment.python` already records which side of the 3.11 enum change that
+interpreter was on. What carries the rejection is the second clause: it would keep an
+interpreter-conditional rendering path in the package forever, and make a record's own Python
+version load-bearing for verifying a digest.
+
+For the **tree** digest there is a true impossibility, and it is not the locale: the old value
+could not be computed even at record time, because `.encode()` **raised** for exactly the
+undecodable-name population such a field would exist to describe.
+
+**Nor is an encoding field being added to `environment`.** It was proposed to make a future
+divergence attributable — but the repair removes the dependence rather than disclosing it, and a
+field recording a dimension nothing reads any more is a cost with no reader.
+
+**What has reach on each, stated.** Both repairs are held locally where the property is local — a
+subclass cannot decide its own digest, quantified over every scalar branch `_canonical` declares,
+with `bool` and `NoneType` exempt because the language refuses to subclass them (asserted, not
+assumed); and the filename round-trips through `os.fs*`. Neither the cross-interpreter nor the
+cross-locale agreement can be witnessed by one process: four interpreters measured by hand agree
+on one digest, and **no matrix leg sets `LC_CTYPE`**, so the locale half rests on the round-trip
+property and not on a leg.
+
 ### Fixed — provenance could abort the program it observes, and a run could finish while lying
 
 Both found by a four-lens pre-release audit of `c7e13ad..b494d19` [T-69], neither reachable by

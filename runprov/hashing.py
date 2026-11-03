@@ -599,12 +599,43 @@ def describe(path: str | pathlib.Path, *, digest: bool = True) -> dict[str, typi
         # which left two keys that had to agree and nothing checking that they did. That sort
         # was dead the moment the stream started ordering its own input; a second key that
         # cannot drift is better than a second key that agrees today.
-        rec["sha256_tree"] = _tree_stream(pairs, _PARTS)
+        #: KEYED ON THE NAMES' OWN BYTES [T-69 env-2]. `os.fsencode` on what gets HASHED was
+        #: only half the repair: `_PARTS` runs on the DECODED `str`, and utf-8/surrogateescape
+        #: is not order-preserving -- a decodable multi-byte name decodes to U+00E9 while an
+        #: undecodable byte decodes to U+DCC2, so the two invert against raw byte order, while a
+        #: single-byte codec preserves it. Measured in ONE process, no locale touched, by
+        #: decoding `b"caf\xc2.fa"` and `b"caf\xc3\xa9.fa"` three ways and asking which order
+        #: `_PARTS` gives: TWO orders on the str, ONE on the bytes. So one untouched directory
+        #: still had two digests after the encode was fixed.
+        #:
+        #: PART-WISE, so C-03's repair is untouched: the separator must not compete with the
+        #: characters below it. Measured over 306 tracked names -- the corpus's 200 among them --
+        #: the byte key gives the identical order, so no committed digest moves.
+        rec["sha256_tree"] = _tree_stream(pairs, _BYTE_PARTS)
         # THE ORDER THE RELEASED VERSIONS USED ON WINDOWS, kept only when it DIFFERS. For the
         # ~80 % of trees whose names do not mix case the two orders coincide and no field is
         # added at all, so the record does not carry a migration aid it has no use for — and
         # where it IS present it states something true about the tree rather than about this
         # package's history. `verify` is its only reader.
+        #: AND THIS KEY IS DELIBERATELY LEFT ON THE DECODED `str`. It exists to reproduce the
+        #: order the RELEASED versions used on Windows, where `PurePath.__lt__` compared a
+        #: case-folded key -- a comparison over DECODED parts. `verify` recomputes this from a
+        #: FRESH `describe()` and compares it against the record's `sha256_tree` PIN, so what
+        #: has to match is an old version's order, not an old version's folded value: nothing
+        #: anywhere reads a STORED `sha256_tree_casefolded`. An earlier draft of this comment
+        #: said it did, which would have been a reason that could not be checked.
+        #:
+        #: SO FOLDING THE BYTES HERE IS REFUSED, but not on the grounds of symmetry: a byte fold
+        #: is ASCII-only, and reproducing `str.lower()`'s Unicode fold is the whole job.
+        #:
+        #: WHAT DID MOVE, stated because the line above moved it: both calls share the new
+        #: `os.fsencode(name)`, so this field's hashed BYTES are now locale-stable too. That is
+        #: safe for the population it describes -- `.encode()` RAISED for every name where the
+        #: two differ, so no released version ever recorded one. What remains locale-dependent
+        #: is this key, and it moves both the field's VALUE and its PRESENCE, since the field is
+        #: written only when the two orders differ. Measured, two locales, one directory: a
+        #: digest under utf-8 and the field ABSENT under ascii. The cost is bounded to a
+        #: pre-0.5.0 Windows pin getting a bare STALE instead of an explained one.
         folded = _tree_stream(pairs, lambda n: tuple(s.lower() for s in _PARTS(n)))
         if folded != rec["sha256_tree"]:
             rec["sha256_tree_casefolded"] = folded
@@ -710,7 +741,26 @@ def _PARTS(name: str) -> tuple[str, ...]:  # noqa: N802 - a constant-like key fu
     return pathlib.PurePosixPath(name).parts
 
 
-def _tree_stream(pairs: list[tuple[str, str]], key: typing.Callable[[str], tuple[str, ...]]) -> str:
+#: AND THE ARCHIVE-MEMBER SITES ARE NOT THIS. `_zip_names`/`_tar_names` encode member names as
+#: `utf-8/surrogateescape` because those names came out of an archive's own metadata, not out of
+#: this filesystem -- so `os.fsencode` would make a digest over ARCHIVE data depend on the reading
+#: machine's locale, which is the defect this file just removed, pointed the other way. The
+#: comment above invites that unification; this says not to.
+def _BYTE_PARTS(name: str) -> tuple[bytes, ...]:  # noqa: N802 - a constant-like key function
+    """`_PARTS`, resolved to the bytes each part came from, so the ORDER is locale-stable.
+
+    `os.listdir` decodes a filename with the filesystem encoding and `os.fsencode` encodes it
+    back with the same one, so this round-trips to the bytes on disk whatever that encoding is
+    -- which is what makes two machines agree. Ordering on the decoded `str` instead let the
+    decoding choose, because utf-8/surrogateescape is not order-preserving.
+    """
+    return tuple(os.fsencode(part) for part in _PARTS(name))
+
+
+def _tree_stream(
+    pairs: list[tuple[str, str]],
+    key: typing.Callable[[str], tuple[str, ...]] | typing.Callable[[str], tuple[bytes, ...]],
+) -> str:
     """`name\\0digest\\0` per file, in the order `key` puts the names. ADR-029 R9.
 
     `name || hex-digest` with no separator is not injective by construction. The review called
@@ -725,7 +775,20 @@ def _tree_stream(pairs: list[tuple[str, str]], key: typing.Callable[[str], tuple
     """
     h = hashlib.sha256()
     for name, digest in sorted(pairs, key=lambda kv: key(kv[0])):
-        h.update(name.encode() + b"\0")
+        #: `os.fsencode`, NOT `.encode()` [T-69 env-2]. The docstring above reasons entirely in
+        #: BYTES -- *"NUL because it is the one byte a POSIX filename cannot contain"* -- over a
+        #: line that worked in `str`. A POSIX filename IS bytes; `os.listdir` decodes it with
+        #: the filesystem encoding, which is locale-dependent on Linux, and re-encoding that
+        #: `str` as UTF-8 does not round-trip. Measured: one untouched directory holding
+        #: `caf\xc3\xa9.fa` digested 079f8797b593ac01 under a UTF-8 locale and 540c2def05141e53
+        #: under ISO-8859-1. And a name the encoding cannot represent RAISED, so
+        #: `run.input("a/directory")` died on an undecodable filename inside it.
+        #:
+        #: `os.fsencode` returns the ORIGINAL BYTES in both cases, which is what the sort key
+        #: and the NUL argument were always about. This is C-03 again -- the finding the
+        #: cross-version corpus was built after -- and the corpus could not see it, because all
+        #: 81 of its names are ASCII, for which these two are byte-identical.
+        h.update(os.fsencode(name) + b"\0")
         h.update(digest.encode() + b"\0")
     return h.hexdigest()
 
@@ -823,6 +886,39 @@ def _canonical(value: typing.Any, depth: int = 0) -> str:  # noqa: ANN401 - any 
     """
     if depth > _VALUE_MAX_DEPTH:
         raise TypeError(f"nested deeper than {_VALUE_MAX_DEPTH}")
+    # THROUGH THE BASE TYPE'S METHOD, NEVER THE INSTANCE'S. Every scalar branch below used to
+    # render with an f-string or `!r`, which calls the INSTANCE's `__format__`/`__repr__` -- so
+    # the recorded digest was a property of the value's CLASS and not of the value. Measured
+    # 2026-11-03 [T-69 env-1], six cases in three branches, two distinct failures:
+    #
+    #   interpreter-dependent      a `str`-subclass enum renders 'fasta' on 3.10 and 'SKind.A'
+    #                              on 3.11+; an `int`-subclass enum, '7' and 'IKind.A'. One
+    #                              argument, two digests, chosen by the interpreter -- and
+    #                              `requires-python` admits both.
+    #   caller-controlled          a subclass overriding `__format__` decides its own digest:
+    #                              `WeirdInt(3)` recorded `i:9999`. That is not instability,
+    #                              it is a digest a caller can forge independently of the value.
+    #
+    # A `float`-subclass enum rendered `<FKind.A: 1.5>` on all five interpreters measured:
+    # STABLE, and wrong on every one of them -- so the instability and the wrongness are two
+    # `bytes` was held up as the pattern the others were missing -- *"it RECONSTRUCTS the base
+    # type with `bytes(value).hex()`, so no subclass method is reached"* -- and THAT WAS FALSE:
+    # `bytes()` consults `__bytes__`, on all five interpreters, so `bytes(BS(b"ab")).hex()` is
+    # `ffff` for a subclass that says so. `bytearray` has no `__bytes__` in `dir()` and honours
+    # one anyway, which is why NO enumeration of base members closes this class and the guard
+    # over it quantifies over the reads of the PARAMETER instead.
+    #
+    # `str.__len__` too, not `len()`: the prefix exists to make the payload unambiguous, and
+    # `s:5:SKind.A` -- a length of 5 over a SEVEN-character payload -- was the symptom that said
+    # the two halves were being read off different objects.
+    #
+    # A str subclass therefore digests as its text, so `Kind.FASTA` and `"fasta"` agree. That
+    # is deliberate: they are the same string value. The `bool`-before-`int` ordering below is
+    # NOT the same question -- `True` and `1` are different values that compare equal, where
+    # these are one value spelled two ways. Tagging by subclass name was the alternative and it
+    # is refused on this module's own rule: the class name is as unstable as a `repr`, so
+    # renaming an enum would move every digest that mentions it.
+    #
     # BOOL BEFORE INT, and not by accident: `isinstance(True, int)` is true in Python, so the
     # obvious ordering digests `True` as the integer 1.
     if value is None:
@@ -830,27 +926,54 @@ def _canonical(value: typing.Any, depth: int = 0) -> str:  # noqa: ANN401 - any 
     if isinstance(value, bool):
         return f"b:{'1' if value else '0'}"
     if isinstance(value, int):
-        return f"i:{value}"
+        return f"i:{int.__repr__(value)}"
     if isinstance(value, float):
         # `repr` round-trips a float exactly and renders nan/inf deterministically.
-        return f"f:{value!r}"
+        return f"f:{float.__repr__(value)}"
     if isinstance(value, str):
-        return f"s:{len(value)}:{value}"
-    if isinstance(value, (bytes, bytearray)):
-        return f"y:{bytes(value).hex()}"
+        return f"s:{str.__len__(value)}:{str.__str__(value)}"
+    if isinstance(value, bytes):
+        return f"y:{bytes.hex(value)}"
+    if isinstance(value, bytearray):
+        return f"y:{bytearray.hex(value)}"
     if isinstance(value, (list, tuple)):
-        tag = "l" if isinstance(value, list) else "t"
-        inner = ",".join(_canonical(v, depth + 1) for v in value)
-        return f"{tag}:{len(value)}:[{inner}]"
+        #: ITERATED THROUGH THE BASE TYPE TOO. `for v in value` calls the INSTANCE's `__iter__`,
+        #: so a subclass yielding something else rendered `l:3:[i:99]` for a list it compares
+        #: EQUAL to -- the length was repaired and the CONTENTS were still the instance's to
+        #: choose. Found by the second adversarial pass, which is the point: the first repair
+        #: fixed what it had been shown.
+        members = list.__iter__(value) if isinstance(value, list) else tuple.__iter__(value)
+        inner = ",".join(_canonical(v, depth + 1) for v in members)
+        #: THE BASE TYPE'S `__len__`, for the reason the scalar branches give above. The first
+        #: repair of [T-69 env-1] fixed three scalar sites and left these four, and a skeptic
+        #: measured the result: `LenList([1,2,3])` with `__len__` returning 99 rendered
+        #: `l:99:[i:1,i:2,i:3]` and digested differently from the list it equals. Same symptom
+        #: the `str.__len__` change was for -- a prefix that contradicts its own payload --
+        #: surviving in the same function after the repair.
+        #: NARROWED BY `isinstance`, NOT BY `tag`. Two forms were wrong before this one:
+        #: `type(value).__mro__[-2]` picks `Mixin` for `class X(list, Mixin)`, and branching on
+        #: `tag == "l"` is a STRING standing in for a type decision -- which mypy refused,
+        #: correctly, and which is the very shape this whole repair is about.
+        if isinstance(value, list):
+            return f"l:{list.__len__(value)}:[{inner}]"
+        return f"t:{tuple.__len__(value)}:[{inner}]"
     if isinstance(value, dict):
         # STRING KEYS ONLY. Ordering `{1: ..., "1": ...}` requires deciding how an int sorts
         # against a str, and any answer to that is invented rather than derived.
-        if not all(isinstance(k, str) for k in value):
+        if not all(isinstance(k, str) for k in dict.__iter__(value)):
             raise TypeError("dict with non-string keys")
+        #: SORTED BY THE KEY'S OWN TEXT, not by `__lt__`. `sorted(value)` dispatches to the
+        #: KEYS' comparison, so a `str` subclass reversing `__lt__` reordered the rendering of a
+        #: dict it compares EQUAL to -- measured: `{"a":1,"b":2}` and the same mapping with such
+        #: keys render `d:2:{s:1:a=i:1,s:1:b=i:2}` and `d:2:{s:1:b=i:2,s:1:a=i:1}`, identical
+        #: keys in a different order, two digests. That falsifies this function's own first
+        #: line. `str.__str__` is the same order as `sorted()` for ordinary keys -- measured over
+        #: 400 random key sets, zero differences -- so no existing digest moves.
         items = ",".join(
-            f"{_canonical(k, depth + 1)}={_canonical(value[k], depth + 1)}" for k in sorted(value)
+            f"{_canonical(k, depth + 1)}={_canonical(dict.__getitem__(value, k), depth + 1)}"
+            for k in sorted(dict.__iter__(value), key=str.__str__)
         )
-        return f"d:{len(value)}:{{{items}}}"
+        return f"d:{dict.__len__(value)}:{{{items}}}"
     raise TypeError(type(value).__name__)
 
 

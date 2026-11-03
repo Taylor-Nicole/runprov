@@ -53,6 +53,7 @@ import threading
 import time
 import types
 import typing
+import unicodedata
 import zipfile
 
 import pytest
@@ -7719,6 +7720,445 @@ def test_every_canonical_FORM_still_digests_so_the_handler_is_not_a_catch_all():
     assert d(object()) == "UNDIGESTIBLE:object"
     assert d({1, 2}) == "UNDIGESTIBLE:set"
     assert d({1: "int key"}) == "UNDIGESTIBLE:dict"
+
+
+def test_a_tree_digest_is_a_function_of_the_filenames_BYTES_and_not_of_their_DECODING(tmp_path):
+    """[T-69 env-2] `_tree_stream` did `name.encode()` on a name `os.listdir` had decoded.
+
+    A POSIX filename IS bytes. `os.listdir` decodes it with the filesystem encoding, which is
+    locale-dependent on Linux, and re-encoding that `str` as UTF-8 does not round-trip -- so
+    one untouched directory digested two ways. MEASURED under a private locale: a tree holding
+    `caf\xc3\xa9.fa` gave 079f8797b593ac01 under UTF-8 and 540c2def05141e53 under ISO-8859-1.
+    This is C-03, the finding the cross-version corpus exists for, and the corpus cannot see it:
+    all 81 of its names are ASCII, for which the two encodings are byte-identical.
+
+    THE DOCSTRING ABOVE THE LINE REASONED ENTIRELY IN BYTES -- *"NUL because it is the one byte a
+    POSIX filename cannot contain"* -- over a statement that worked in `str`. That is the tell.
+
+    AND THE ENCODE WAS ONLY HALF OF IT. `_PARTS` runs on the DECODED name, so the ORDER was
+    still the decoding's to choose: utf-8/surrogateescape is not order-preserving, because a
+    decodable multi-byte name decodes to U+00E9 while an undecodable byte decodes to U+DCC2 and
+    the two invert against raw byte order, where a single-byte codec preserves it. One untouched
+    directory therefore still had two digests after `os.fsencode` landed.
+
+    THE LIMIT THIS TEST USED TO STATE WAS FALSE: *"one process has one filesystem encoding, so
+    no assertion here can see the locale divergence."* The key is a function and `_tree_stream`
+    takes the pairs as an ARGUMENT, so one process can decode the same bytes three ways and ask
+    which order comes out -- which is the arm below, and it fails on the str key and holds on
+    the byte key. No matrix leg sets `LC_CTYPE`, so this is the only thing that witnesses it.
+    """
+    #: THE ROUND TRIP IS THE PROPERTY. For any bytes a filesystem can hand over, decoding and
+    #: re-encoding through `os.fs*` returns those same bytes, whatever the locale does in
+    #: between -- and `.encode()` does not, which is the whole defect.
+    #: FROM THE `str` SIDE, which is the portable direction. The first version round-tripped
+    #: from BYTES -- `os.fsencode(os.fsdecode(b"bad\xff.fa"))` -- and that raises
+    #: `UnicodeDecodeError` on Windows, whose filesystem codec is utf-8/surrogatepass and which
+    #: has no such filename: the whole test died on its first line there, uncaught, so every
+    #: arm below it was absent on that leg. 23rd instance of this project's own Windows class.
+    for spelled in ("align.tsv", "caf\u00e9.fa", "caf\udcc2.fa"):
+        assert os.fsdecode(os.fsencode(spelled)) == spelled, spelled
+
+    #: THE ORDER IS DECIDED BY THE BYTES, measured in this one process over three filesystem
+    #: codecs. Each decode is paired with its own encode, which is what `os.listdir` and
+    #: `os.fsencode` do: the key must land on the name's own bytes however they were decoded.
+    raws = [b"caf\xc2.fa", b"caf\xc3\xa9.fa"]
+    codecs = (("utf-8", "surrogateescape"), ("latin-1", "strict"), ("ascii", "surrogateescape"))
+    byte_orders, str_orders = set(), set()
+    for codec, errors in codecs:
+        names = [raw.decode(codec, errors) for raw in raws]
+        origin = dict(zip(names, raws, strict=True))
+        byte_orders.add(
+            tuple(
+                origin[n]
+                for n in sorted(
+                    names,
+                    key=lambda n: tuple(p.encode(codec, errors) for p in runprov.hashing._PARTS(n)),
+                )
+            )
+        )
+        str_orders.add(tuple(origin[n] for n in sorted(names, key=runprov.hashing._PARTS)))
+    assert len(byte_orders) == 1, (
+        f"the byte-wise key puts one directory in {len(byte_orders)} orders, so the tree digest "
+        f"is still a function of the decoding: {byte_orders}"
+    )
+    #: AND THE STR KEY REALLY DOES DIVERGE, so the arm above is a difference and not a tautology
+    #: that any key would satisfy.
+    assert len(str_orders) == 2, (
+        f"the `str` key no longer diverges over these names, so this arm proves nothing about "
+        f"why the byte key is needed: {str_orders}"
+    )
+
+    #: AND ONE DIGEST IS PINNED BY VALUE. Everything above is a property, and a property can be
+    #: satisfied by a function that stopped hashing the names at all -- a skeptic put an encoding
+    #: transform straight back in and nothing in the suite saw it [T-69 G2].
+    #: THE PIN IS OVER SYNTHETIC PAIRS, NOT A DIRECTORY. `_tree_stream` takes its pairs as an
+    #: argument, so the framing, the ordering and the name-to-bytes mapping can all be pinned
+    #: without asking a filesystem to hold a name it cannot. That matters because the pin's
+    #: discriminating power REQUIRES a surrogate name -- UTF-8 is order-preserving over code
+    #: points, so two valid-UTF-8 names can never invert between the two keys -- and a surrogate
+    #: name is exactly what Windows cannot decode and APFS refuses to store. A filesystem
+    #: fixture here is therefore either blunt or unportable, with nothing in between.
+    spellings = ["a.tsv", "caf\u00e9.fa", "caf\udcc2.fa"]
+
+    def _explicit_byte_key(name):
+        return tuple(p.encode("utf-8", "surrogateescape") for p in runprov.hashing._PARTS(name))
+
+    assert sorted(spellings, key=runprov.hashing._PARTS) != sorted(
+        spellings, key=_explicit_byte_key
+    ), "these names no longer invert between the two keys, so the pins below are blunt"
+
+    #: NO DIGEST IS PINNED OVER THESE NAMES, and that is forced rather than chosen.
+    #: `_tree_stream` hashes `os.fsencode(name)`, so a pin over a surrogate name is a pin on the
+    #: PLATFORM'S CODEC: under Windows' utf-8/surrogatepass `caf\udcc2.fa` encodes to
+    #: `b"caf\xed\xb3\x82.fa"` and not `b"caf\xc2.fa"`. Measured -- a first version pinned it and
+    #: failed under a simulated Windows codec. So the surrogate names carry the ORDERING
+    #: property, which is portable, and the digest is pinned below over a name every platform
+    #: encodes identically.
+
+    #: THE PIN USES A NON-ASCII NAME WITH NO CANONICAL DECOMPOSITION. Non-ASCII, because an
+    #: all-ASCII pin cannot see an encoding transform put back into the hash -- `b"a.tsv"`
+    #: survives a latin-1 round trip unchanged while `"\u65e5.fa"` does not. And NFD-stable,
+    #: because APFS normalises some names and `\u00e9` would come back decomposed on macOS;
+    #: `\u65e5` is identical under NFC and NFD, and utf-8/surrogateescape and
+    #: utf-8/surrogatepass agree on its bytes, so the value holds on all eight legs.
+    whole = tmp_path / "whole" / "refs"
+    (whole / "sub").mkdir(parents=True)
+    (whole / "a.tsv").write_text("one\n", encoding="utf-8")
+    (whole / "b.tsv").write_text("two\n", encoding="utf-8")
+    (whole / "\u65e5.fa").write_text("three\n", encoding="utf-8")
+    (whole / "sub" / "c.tsv").write_text("four\n", encoding="utf-8")
+    assert unicodedata.normalize("NFD", "\u65e5") == "\u65e5", (
+        "the pinned name has acquired a decomposition, so this pin is no longer portable to a "
+        "normalising filesystem"
+    )
+    assert runprov.describe(whole)["sha256_tree"] == (
+        "4ccaf035c160e139f1b492cd15037056ef1fac20e1dda5a8eb296b49968de85c"
+    ), (
+        "the tree digest of a fixed tree moved. If that was deliberate the record format changed "
+        "for every tree with a non-ASCII name and the CHANGELOG must say so; if not, something "
+        "between the filename and the hash has started transforming it again"
+    )
+
+    #: AND A NAME THE ENCODING CANNOT REPRESENT NO LONGER ENDS THE CALL. `.encode()` raised
+    #: `UnicodeEncodeError` here, so `run.input("a/directory")` died on one undecodable
+    #: filename inside it -- a refusal, but of the whole run rather than of the name.
+    tree = tmp_path / "refs"
+    tree.mkdir()
+    (tree / "a.tsv").write_text("a\n", encoding="utf-8")
+    try:
+        #: THE DECODE IS INSIDE THE `try`, and this is the SECOND time in this work that a
+        #: raising statement of mine sat above its own handler. On Windows the filesystem codec
+        #: is utf-8/surrogatepass, under which `b"bad\xff.fa"` cannot be decoded at all, and
+        #: `UnicodeDecodeError` is a `ValueError` -- so from inside here it SKIPS, and from one
+        #: line higher it killed the whole test on that leg. Measured under a simulated Windows
+        #: codec, which is the only way to see it from this machine.
+        hard = tree / os.fsdecode(b"bad\xff.fa")
+        hard.write_text("c\n", encoding="utf-8")
+    except (OSError, ValueError):  # pragma: no cover - a filesystem that refuses such a name
+        pytest.skip("this filesystem cannot hold a name with an undecodable byte")
+    first = runprov.describe(tree)["sha256_tree"]
+    assert first and runprov.describe(tree)["sha256_tree"] == first, "the digest is not stable"
+
+    #: THE DIGEST IS TAKEN FROM `os.fsencode`, asserted structurally, because a value comparison
+    #: on this machine is green for both implementations: on a UTF-8 locale with no undecodable
+    #: name the two encodings agree byte for byte. Same shape as the record-digest guard, and
+    #: for the same reason -- the defect lives where this process cannot look.
+    #: OVER THE AST, NOT THE TEXT. The first version of this assertion swept the source for
+    #: `.encode()` and was satisfied by the explanatory comment three lines above the fix, which
+    #: names `.encode()` in prose -- a guard about CODE defeated by PROSE, in the guard written
+    #: to hold that very line. Comments are not in the tree, so the tree is the instrument.
+    tree_src = textwrap.dedent(inspect.getsource(runprov.hashing._tree_stream))
+    parsed = ast.parse(tree_src)
+
+    #: THE LOCAL IS DERIVED FROM THE LOOP, not written here. A first version hardcoded "name"
+    #: under a comment claiming it was read from the `for` target -- a false rationale, which is
+    #: the shape this whole batch is about. A rename now fails on the line below.
+    loops = [n for n in ast.walk(parsed) if isinstance(n, ast.For)]
+    assert len(loops) == 1, f"`_tree_stream` has {len(loops)} loops; which one binds the name?"
+    target = loops[0].target
+    assert isinstance(target, ast.Tuple) and len(target.elts) == 2, ast.unparse(target)
+    name_local, digest_local = (ast.unparse(e) for e in target.elts)
+
+    encoded: list[str] = []
+    for node in ast.walk(parsed):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr == "encode":
+            encoded.append(ast.unparse(node.func.value))
+        elif node.func.attr == "fsencode" and node.args:
+            encoded.append(f"fsencode({ast.unparse(node.args[0])})")
+
+    assert f"fsencode({name_local})" in encoded, (
+        f"the filename ({name_local!r}) is not encoded through `os.fsencode`, so the tree "
+        f"digest is a function of this machine's locale again. Encodings found: {encoded}"
+    )
+    assert name_local not in encoded, (
+        f"a bare `.encode()` is back on the NAME ({name_local!r}); only the digest may use it, "
+        f"because this module produced that itself as ASCII hex. Found: {encoded}"
+    )
+    #: AND `_BYTE_PARTS` IS HELD THE SAME WAY. It was not, and a hardcoded
+    #: `part.encode("utf-8", "surrogateescape")` in place of `os.fsencode` passed the entire
+    #: suite -- because on this host those are the same codec, so the pins and the inversion arm
+    #: are both blind to it, and the ordering arm above hand-rolls the key rather than calling
+    #: the function. Half the repair was structurally held and half was not held at all.
+    parts_src = textwrap.dedent(inspect.getsource(runprov.hashing._BYTE_PARTS))
+    parts_tree = ast.parse(parts_src)
+    comps = [n for n in ast.walk(parts_tree) if isinstance(n, ast.GeneratorExp)]
+    assert len(comps) == 1, f"`_BYTE_PARTS` is no longer one comprehension: {len(comps)}"
+    part_local = ast.unparse(comps[0].generators[0].target)
+    parts_encodes = [
+        f"fsencode({ast.unparse(n.args[0])})"
+        if isinstance(n.func, ast.Attribute) and n.func.attr == "fsencode" and n.args
+        else ast.unparse(n.func.value)
+        for n in ast.walk(parts_tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+    ]
+    assert f"fsencode({part_local})" in parts_encodes, (
+        f"`_BYTE_PARTS` does not encode its part ({part_local!r}) through `os.fsencode`, so the "
+        f"ORDER is a function of a hardcoded codec rather than of this filesystem's: "
+        f"{parts_encodes}"
+    )
+
+    #: And the digest half IS expected to use it, so the assertion above is not satisfied by a
+    #: function that stopped encoding anything at all.
+    assert digest_local in encoded, (
+        f"nothing encodes the digest ({digest_local!r}), so this guard is passing because the "
+        f"function changed shape rather than because the name goes through `os.fsencode`"
+    )
+
+
+def test_every_READ_of_the_canonical_FORMS_argument_goes_through_an_UNFORGEABLE_route():
+    """[T-69 env-1] The total form of the guard below it, because a dunder list is not total.
+
+    The sibling test forges one subclass per branch over a hand-written set of dunders, and that
+    set failed twice: first it held only `__format__`, so reverting `f"i:{v}"` to `!s` or `!r`
+    passed; then it held five, and `__iter__`, `__getitem__` and `__bytes__` were live. **No
+    enumeration of base members closes this** -- `dir(bytearray)` does not contain `__bytes__`
+    and `bytes()` honours one defined on a subclass anyway, measured on all five interpreters.
+
+    SO THIS QUANTIFIES OVER THE READS OF THE PARAMETER, which the language enumerates and nobody
+    here writes down, and gives every read a decision. A read that is none of them is a route a
+    subclass can intercept, and the assertion names it. That is the shape the project's own skill
+    calls deleting the list rather than extending it, and it is what caught `bytes(value)` --
+    a reconstruction that looks unforgeable and is not.
+    """
+    source = textwrap.dedent(inspect.getsource(runprov.hashing._canonical))
+    tree = ast.parse(source)
+    fn = tree.body[0]
+    assert isinstance(fn, ast.FunctionDef), type(fn)
+    param = fn.args.args[0].arg
+
+    parent = {}
+    for node in ast.walk(fn):
+        for child in ast.iter_child_nodes(node):
+            parent[child] = node
+
+    def _is_builtin_type(node):
+        return isinstance(node, ast.Name) and isinstance(getattr(builtins, node.id, None), type)
+
+    reads, unaccounted = 0, []
+    for node in ast.walk(fn):
+        if not (isinstance(node, ast.Name) and node.id == param):
+            continue
+        if not isinstance(node.ctx, ast.Load):
+            continue
+        reads += 1
+        up = parent.get(node)
+        #: A. a TYPE TEST -- reads the type slot, which a subclass cannot redirect.
+        if (
+            isinstance(up, ast.Call)
+            and isinstance(up.func, ast.Name)
+            and up.func.id
+            in {
+                "isinstance",
+                "type",
+            }
+        ):
+            continue
+        #: B. an UNBOUND BASE-TYPE METHOD with the value as its first argument --
+        #: `str.__len__(value)`, `bytes.hex(value)`, `dict.__getitem__(value, k)`. The receiver
+        #: must resolve to a builtin TYPE, so `value.hex()` does not qualify.
+        if (
+            isinstance(up, ast.Call)
+            and isinstance(up.func, ast.Attribute)
+            and _is_builtin_type(up.func.value)
+            and up.args
+            and up.args[0] is node
+        ):
+            continue
+        #: C. an IDENTITY comparison (`value is None`).
+        if isinstance(up, ast.Compare) and all(
+            isinstance(op, (ast.Is, ast.IsNot)) for op in up.ops
+        ):
+            continue
+        #: D. the TRUTH TEST under the `bool` branch. `bool` cannot be subclassed, so there is
+        #: no instance `__bool__` to reach -- asserted here rather than assumed, because that is
+        #: the only thing making this decision safe.
+        if isinstance(up, ast.IfExp) and up.test is node:
+            with pytest.raises(TypeError):
+                type("Impossible", (bool,), {})
+            continue
+        unaccounted.append(f"line {node.lineno}: {ast.unparse(up)[:72]}")
+
+    assert reads >= 10, (
+        f"only {reads} read(s) of {param!r} were found, so this sweep stopped reaching them and "
+        f"a clean result below would mean nothing"
+    )
+    assert not unaccounted, (
+        f"`_canonical` reads its argument by a route a subclass can intercept, so a caller can "
+        f"still decide the digest of a value it compares equal to. Each of these must become an "
+        f"unbound base-type call, a type test, or an identity test: {unaccounted}"
+    )
+
+
+def test_no_SUBCLASS_can_decide_its_own_digest_because_rendering_goes_through_the_BASE_type():
+    """[T-69 env-1] `_canonical` rendered with f-strings, which call the INSTANCE's dunders.
+
+    So the recorded digest was a property of the value's CLASS, not of the value, and that
+    failed two different ways. MEASURED across 3.10 and 3.12, six cases in three branches:
+
+        a `str`-subclass enum rendered 'fasta' on 3.10 and 'SKind.A' on 3.11+
+        an `int`-subclass enum rendered '7'     on 3.10 and 'IKind.A' on 3.11+
+        a `float`-subclass enum rendered '<FKind.A: 1.5>' on BOTH -- stable and wrong
+        a subclass overriding `__format__` chose its own payload: `WeirdInt(3)` -> `i:9999`
+
+    The last one is the sharpest and it is not instability: it is a digest a CALLER can forge
+    independently of the value it claims to describe. The first two put one argument's digest
+    at the mercy of the interpreter, and `requires-python` admits both.
+
+    THE REPORTED DEFECT WAS THE `str` BRANCH ALONE. Fixing that one would have left four, which
+    is why this quantifies over every scalar branch `_canonical` declares rather than over the
+    instances someone found. `bytes` was already right -- `bytes(value).hex()` reconstructs the
+    base type -- and is the pattern the others were missing.
+    """
+    d = runprov.hashing._value_digest
+
+    #: THE POPULATION IS `_canonical`'S SCALAR BRANCHES, resolved to types the same way
+    #: `test_every_canonical_FORM_still_digests...` does, so a branch added tomorrow is covered
+    #: or this test says it is not.
+    source = textwrap.dedent(inspect.getsource(runprov.hashing._canonical))
+    spelled: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "isinstance"
+            and len(node.args) == 2
+        ):
+            declared = node.args[1]
+            for element in declared.elts if isinstance(declared, ast.Tuple) else [declared]:
+                spelled.add(ast.unparse(element))
+
+    def _resolve(spelling):
+        parts = spelling.split(".")
+        found = vars(runprov.hashing).get(parts[0], getattr(builtins, parts[0], None))
+        for part in parts[1:]:
+            found = getattr(found, part, None)
+        return found
+
+    #: EVERY SPELLING MUST RESOLVE. A `kinds.discard(None)` sat here and silently dropped any
+    #: spelling `_resolve` could not handle, so the exhaustiveness arm below never saw it -- and
+    #: a branch declared through a module-level tuple constant was dropped by the
+    #: `isinstance(k, type)` filter the same way. A skeptic landed a forgeable `complex` branch
+    #: through exactly that hole and this test stayed green [T-69 G1].
+    resolved = {s: _resolve(s) for s in spelled}
+    kinds: set[type] = set()
+    for spelling, found in sorted(resolved.items()):
+        if isinstance(found, type):
+            kinds.add(found)
+        elif isinstance(found, tuple) and found and all(isinstance(m, type) for m in found):
+            kinds.update(found)  # a branch declared through a tuple constant
+        else:
+            raise AssertionError(
+                f"`_canonical` declares a branch this test cannot resolve to a type "
+                f"({spelling!r} -> {found!r}), so the population is not what its name says"
+            )
+    assert kinds, "no branch was found, so this test has no population"
+
+    #: ONE SUBCLASS PER BRANCH, EACH OVERRIDING EVERY RENDERING DUNDER AT ONCE. Overriding only
+    #: the one the current implementation happens to use makes this a test of that
+    #: implementation: a skeptic reverted `f"i:{value}"` to `f"i:{value!s}"` and to `!r`, and
+    #: both passed, because the forge only overrode `__format__`.
+    _loud = {
+        "__format__": lambda s, spec="": "FORGED",
+        "__repr__": lambda s: "FORGED",
+        "__str__": lambda s: "FORGED",
+        "hex": lambda s, *a, **k: "ff",
+    }
+
+    def _forge(base, *, length=None):
+        body = dict(_loud)
+        if length is not None:
+            body["__len__"] = lambda s: length
+        return type(f"Forged{base.__name__.title()}", (base,), body)
+
+    forged = {
+        str: (_forge(str, length=99), "x"),
+        int: (_forge(int), 3),
+        float: (_forge(float), 2.5),
+        bytes: (_forge(bytes), b"ab"),
+        bytearray: (_forge(bytearray), b"ab"),
+        #: THE CONTAINERS TOO. The first repair fixed three scalar branches and left these,
+        #: where `len()` and the dict's key comparison still dispatched to the instance.
+        list: (_forge(list, length=99), [1, 2, 3]),
+        tuple: (_forge(tuple, length=99), (1, 2, 3)),
+        dict: (_forge(dict, length=99), {"a": 1}),
+    }
+    scalars = kinds
+    #: `bool` CANNOT be subclassed, so it is exempt by the language rather than by this table's
+    #: judgement -- asserted, not assumed. `type(None)` was in this tuple and is NOT in the
+    #: population at all, because `None` is tested with `is` and not `isinstance`: a declared,
+    #: correct decision behind a walk that cannot reach it, which is a hole with a label on it.
+    assert type(None) not in kinds, (
+        "`_canonical` now reaches NoneType through `isinstance`, so it needs a decision here "
+        "rather than the `is None` branch's"
+    )
+    if bool in scalars:
+        with pytest.raises(TypeError):
+            type("Impossible", (bool,), {})
+        scalars.discard(bool)
+
+    uncovered = sorted(k.__name__ for k in scalars if k not in forged)
+    assert not uncovered, (
+        f"`_canonical` has a scalar branch this test cannot forge against, so the class is not "
+        f"closed for it: {uncovered}"
+    )
+
+    for kind in sorted(scalars, key=lambda k: k.__name__):
+        subclass, plain = forged[kind]
+        instance = subclass(plain)
+        assert d(instance) == d(kind(plain)), (
+            f"{kind.__name__}: the subclass decides its own digest, so the recorded value is a "
+            f"property of the CLASS and not of the value -- {d(instance)} vs {d(kind(plain))}"
+        )
+
+    #: AND A DICT'S ORDER MUST NOT COME FROM ITS KEYS' COMPARISON. This cannot be expressed as
+    #: a dict subclass: the forgery is in the KEY type. Two mappings that compare EQUAL, whose
+    #: rendered keys are identical, rendered in different orders and digested differently --
+    #: which falsifies `_canonical`'s own first line, *"A string that is the same for equal
+    #: values"*.
+    reverse = type(
+        "ReverseStr",
+        (str,),
+        {
+            "__lt__": lambda s, o: str.__gt__(s, o),
+            "__gt__": lambda s, o: str.__lt__(s, o),
+        },
+    )
+    plain_map = {"a": 1, "b": 2}
+    keyed_map = {reverse("a"): 1, reverse("b"): 2}
+    assert plain_map == keyed_map, "the two mappings must compare equal or this arm is void"
+    assert d(plain_map) == d(keyed_map), (
+        f"a key type's `__lt__` decided the rendering order of a mapping it compares equal to: "
+        f"{runprov.hashing._canonical(plain_map)!r} vs {runprov.hashing._canonical(keyed_map)!r}"
+    )
+
+    #: AND THE LENGTH PREFIX AGREES WITH ITS OWN PAYLOAD, which is the symptom that said the two
+    #: halves were being read off different objects: `s:5:SKind.A` counts 5 over a payload of
+    #: seven characters.
+    rendered = runprov.hashing._canonical(forged[str][0]("fasta"))
+    stated, _, payload = rendered[len("s:") :].partition(":")
+    assert int(stated) == len(payload), f"the prefix and the payload disagree: {rendered!r}"
 
 
 def test_value_digest_refuses_rather_than_guesses():
