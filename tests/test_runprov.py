@@ -7821,12 +7821,20 @@ def test_a_tree_digest_is_a_function_of_the_filenames_BYTES_and_not_of_their_DEC
     #: because APFS normalises some names and `\u00e9` would come back decomposed on macOS;
     #: `\u65e5` is identical under NFC and NFD, and utf-8/surrogateescape and
     #: utf-8/surrogatepass agree on its bytes, so the value holds on all eight legs.
+    #: WRITTEN AS BYTES, because this fixture's DIGEST is asserted. `write_text` opens with
+    #: `newline=None`, so on Windows every "\n" became "\r\n", the file CONTENTS changed, and
+    #: the tree digest moved with them -- 4ccaf035 here, 230ac746 there, nothing to do with the
+    #: filenames this test is about. Measured on the leg [T-69], and reproduced here by writing
+    #: CRLF deliberately. This is the rule the project widened the same day -- *any assertion
+    #: about a text-mode-written file's bytes, size or digest, product or fixture* -- met hours
+    #: later by the person who widened it. A simulated filesystem CODEC could not see it:
+    #: simulating a codec is not simulating a platform.
     whole = tmp_path / "whole" / "refs"
     (whole / "sub").mkdir(parents=True)
-    (whole / "a.tsv").write_text("one\n", encoding="utf-8")
-    (whole / "b.tsv").write_text("two\n", encoding="utf-8")
-    (whole / "\u65e5.fa").write_text("three\n", encoding="utf-8")
-    (whole / "sub" / "c.tsv").write_text("four\n", encoding="utf-8")
+    (whole / "a.tsv").write_bytes(b"one\n")
+    (whole / "b.tsv").write_bytes(b"two\n")
+    (whole / "\u65e5.fa").write_bytes(b"three\n")
+    (whole / "sub" / "c.tsv").write_bytes(b"four\n")
     assert unicodedata.normalize("NFD", "\u65e5") == "\u65e5", (
         "the pinned name has acquired a decomposition, so this pin is no longer portable to a "
         "normalising filesystem"
