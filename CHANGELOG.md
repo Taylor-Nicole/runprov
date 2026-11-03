@@ -11,6 +11,33 @@ is a fix nobody checked.
 
 ### Fixed — two defects the hosted matrix found in the six commits the local gate had cleared
 
+**The first was the THIRD instance of a class this project had already closed twice.** Swept after
+the repair: `atomic_write_text` opens with `newline=None`, so the string it is handed is not the
+bytes that land — and `environment.py` says so in a comment of its own, under **A-15**: *"the one
+digest whose whole job is to identify these bytes did not — and `sha256sum -c` on the recorded
+line failed for a file nobody had touched."* **C-11** is the same file again, and `tools/corpus.py`
+restates the rule a third time as *"the same rule as A-15 and C-11"*. A rule written down three
+times and enforced nowhere is a rule that leaves with whoever wrote it.
+
+So the guard is over the **relationship**, not the site: across a derived population of **7
+`atomic_write_text` call sites in 2 modules**, no digest may take as its subject a string that
+writer is handed in the same function. It refuses the implementation that shipped, naming it, and
+it reaches four sites the per-site guard could not see. Its limit is stated where it lives — a
+name within one function, not a dataflow pass — and `environment.py`'s own remedy, handing the
+writer bytes, is what makes the rule unnecessary rather than merely enforced.
+
+**And one arm was passing on Windows while measuring nothing.** `test_verify_treats_an_unreadable_file_as_unpinned`
+made a file unreadable with `chmod(0o000)` and asserted `read_pins` returned `[]`. MEASURED:
+`read_pins` answers `[]` for an unreadable file, for a readable file with no pin, and for a
+directory — three paths, one answer — so on Windows, where `chmod` leaves a file readable, the
+assertion was satisfied by the ordinary read and the handler under test was never reached. The
+subject now carries a pin, which makes the answer discriminating, and the arm skips rather than
+fails where the plant cannot apply — the shape the sibling arm in the same file already had. Of
+**19 chmod-using tests, 5 lacked a platform guard and 4 are sound by construction**: one skips on
+`os.access`, two use chmod to *enable* execution so a no-op fails loudly, and one asserts a mode
+that Windows would refuse.
+
+
 **Both were green on four consecutive local gates and red on a leg.** They are filed together
 because they are one shape: *a value computed from the representation in hand, where the claim is
 about a different representation.*

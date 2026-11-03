@@ -22355,11 +22355,28 @@ def test_verify_treats_an_undecodable_file_as_unpinned(tmp_path):
 @requires_unreadable_files
 def test_verify_treats_an_unreadable_file_as_unpinned(tmp_path):
     """The other half: an OSError on open is not an exception the caller should have to
-    handle, because a file we cannot read cannot be shown to carry a pin either way."""
-    locked = tmp_path / "locked.tsv"
-    locked.write_text("x\n", encoding="utf-8")
+    handle, because a file we cannot read cannot be shown to carry a pin either way.
+
+    THE SUBJECT CARRIES A PIN, and that is what makes this arm discriminating. MEASURED:
+    `read_pins` answers `[]` for an unreadable file, for a readable file with NO pin, and for a
+    directory -- three paths, one answer -- so with an unpinned subject the assertion is
+    satisfied by the ordinary read and the handler under test is never reached. On Windows
+    `chmod(0o000)` leaves a file readable, so that is exactly what this did: green on that leg
+    while measuring nothing, which is worse than the red its sibling arm produced elsewhere.
+
+    AND IT SKIPS RATHER THAN FAILS WHERE THE PLANT CANNOT APPLY, which is the shape
+    `test_verify_cli_names_an_unreadable_directory_on_stderr` in this same file already had: one
+    rule, two sites, written down at one of them.
+    """
+    locked = _pinned(tmp_path)
+    assert runprov.verify.read_pins(locked), (
+        "the fixture must carry a pin while readable, or the [] below is the no-pin answer and "
+        "this arm proves nothing about the unreadable one"
+    )
     locked.chmod(0o000)
     try:
+        if os.access(locked, os.R_OK):  # pragma: no cover - root, or a mode-less filesystem
+            pytest.skip("this user can read a 0o000 file, so the plant did not apply")
         assert runprov.verify.read_pins(locked) == []
     finally:
         locked.chmod(0o644)
@@ -31023,6 +31040,93 @@ def test_the_records_digest_is_ABSENT_when_the_sidecar_could_not_be_written(tmp_
     with runprov.Run("smoke2", project=_project(tmp_path), provenance=ok) as run:
         run.input(tmp_path / "in.tsv")
     assert "provenance_sha256" in _lines(tmp_path / "runs.jsonl")[-1]
+
+
+def test_no_digest_is_taken_from_a_STRING_THE_TEXT_MODE_WRITER_WAS_HANDED():
+    """The THIRD instance of one defect class, so the relationship gets the guard, not the site.
+
+    `atomic_write_text` opens with `newline=None` and `_atomic.py` keeps that deliberately,
+    because writing records in binary would change the bytes of every sidecar on Windows. The
+    consequence is that the string handed to it is NOT the bytes that land there, and a digest
+    computed from that string describes a file nobody will ever read.
+
+    THE PROJECT HAD ALREADY CLOSED THIS TWICE AND WRITTEN THE RULE DOWN THREE TIMES:
+
+        A-15   `environment.py` -- the content-addressed snapshot. Its comment: *"the one
+               digest whose whole job is to identify these bytes did not -- and `sha256sum -c`
+               on the recorded line failed for a file nobody had touched."*
+        C-11   the same file -- a PRE-FIX snapshot sits at the path the digest-derived name
+               would reuse, so presence was decided by NAME and every such file stayed wrong.
+        prose  `tools/corpus.py` restates it: *"the same rule as A-15 and C-11"*.
+
+    Then T-57 added `provenance_sha256` to a record written through that writer and computed it
+    from the string. Green on Linux, macOS and four local gates, red only on the Windows leg --
+    `b14510c54086cecd` recorded against `a0750385230bba1c` on disk. A rule stated in three
+    places and enforced in none is a rule that leaves with whoever wrote it down.
+
+    THE LIMIT, STATED: this resolves a digest's subject to a local NAME and only within the
+    FUNCTION that writes. A digest of the same text in another function, or of an expression
+    rather than a name, is outside it. That is narrower than the rule and it is what can be
+    checked without a dataflow pass; `environment.py`'s own remedy -- hand the writer bytes --
+    is what makes the rule unnecessary rather than merely enforced.
+    """
+
+    def root_name(node):
+        #: `text` and `text.encode("utf-8")` are the same subject for this question.
+        if isinstance(node, ast.Name):
+            return node.id
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "encode"
+            and isinstance(node.func.value, ast.Name)
+        ):
+            return node.func.value.id
+        return None
+
+    writes, offences = 0, []
+    for path in sorted(pathlib.Path(_repo_root() / "runprov").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            written = set()
+            for node in ast.walk(func):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "atomic_write_text"
+                    and len(node.args) >= 2
+                ):
+                    writes += 1
+                    if (name := root_name(node.args[1])) is not None:
+                        written.add(name)
+            if not written:
+                continue
+            for node in ast.walk(func):
+                if not (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in {"sha256", "blake2b", "sha1", "md5"}
+                    and node.args
+                ):
+                    continue
+                if (subject := root_name(node.args[0])) in written:
+                    offences.append(
+                        f"{path.name}:{node.lineno} digests {subject!r}, which "
+                        f"`atomic_write_text` is handed in {func.name}()"
+                    )
+
+    assert writes, (
+        "no `atomic_write_text` call was found in the package, so this guard has no population "
+        "and cannot refuse anything -- the writer was renamed or this sweep stopped reaching it"
+    )
+    assert not offences, (
+        f"a digest is taken from a string the text-mode writer is handed, so it describes bytes "
+        f"that are not on disk wherever newlines are translated. This is A-15 and C-11 again; "
+        f"the remedy is to digest a read of the file, or to hand the writer bytes as "
+        f"`environment.py` does: {offences}"
+    )
 
 
 def test_the_records_digest_is_taken_from_the_FILES_BYTES_and_not_from_the_STRING_written():
