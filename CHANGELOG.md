@@ -9,6 +9,86 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — provenance could abort the program it observes, and a run could finish while lying
+
+Both found by a four-lens pre-release audit of `c7e13ad..b494d19` [T-69], neither reachable by
+any gate this project runs.
+
+**A run could exit 0 having written a sidecar that said `status: "ok"` beside a history holding
+only a start line.** `_persist_yaml`'s docstring says NEVER RAISES and three other written
+statements rely on it; the enforcement was `except OSError`. But `render_yaml` does not escape a
+lone surrogate, and `UnicodeEncodeError` is a `ValueError` — so in a project whose own root path
+is not valid in the filesystem encoding the YAML write escaped that handler, escaped `_persist`,
+and left three artefacts disagreeing with the wrong one beside the artifact. That is verbatim the
+disagreement `write()`'s own comment says it exists to prevent. The YAML twin is now absent with
+a warning, which is what `_persist_yaml`'s own docstring asks for.
+
+**And that was one of four handlers on the write path, not one.** The first repair widened
+`_persist_yaml` alone, on the reasoning that *the JSON record was never at risk* because `_encode`
+dumps with `ensure_ascii` at its default. **That reasoning was about the record's CONTENT and the
+failure is in its PATH** — `resolve()` and `open()` must encode a name to ask the OS, so a lone
+high surrogate raises `UnicodeEncodeError` from the path itself. Found by an adversarial pass and
+then one at a time by re-running the same scenario after each repair:
+
+| site | its own prose | what it caught |
+|---|---|---|
+| `_persist_yaml` | *"NEVER raises"* | `OSError` |
+| `_persist` | *"NEVER raises"*, and `write()` relies on it | `OSError` |
+| `write()`'s resolve fallback | *"must not be what ends the run"* | `(OSError, RuntimeError)` |
+| `_wrote` | *"and OSError for the rest"* | `(OSError, RuntimeError)` |
+
+**The last two had each been repaired once already by adding a type to a list** — `_wrote`'s
+docstring names that repair as **L-01**, *"catching the obvious name alone … one exception family
+over"* — and both lists went short again, in the same direction, against the same new family.
+`_persist`'s whole body moved inside its handler too, which is where `text = self._encode()` had
+been sitting.
+
+**And the first repair of the two resolve sites was refused by this project's own ratchet**, which
+is the part worth keeping. Spelling them `except Exception` made a **sixth** spelling of one
+question the package answers five ways, and
+`test_the_package_does_not_grow_a_SIXTH_spelling_of_what_resolve_can_raise` said so, naming the
+remedy: *"a named constant the way `watch._UNRESOLVABLE` is, so the rule has one definition."*
+`watch.py` had already drawn the whole lesson — *"a rule with four copies drifts by a whole case,
+which is what it did"* — and its tuple, `(OSError, ValueError, RuntimeError)`, covers every case
+measured here, because `UnicodeEncodeError` is a `ValueError`. **All three** of `run.py`'s resolve
+guards now share it, including a pre-existing one with the same gap, so that module can no longer
+disagree with itself; `prune.py` is the only one left that does.
+
+The ratchet movement, decomposed: **13 guard sites unchanged, three moved from a divergent
+spelling onto the shared constant** — `_UNRESOLVABLE` 5 → 8, `(OSError, RuntimeError)` 4 → 1. No
+rule changed; three sites of work.
+
+Measured consequence before: `run.write()` on such a path **aborted the caller** — the statement
+after it never ran. After: the warning names the path, the record at the usable path is intact,
+and the history keeps its line, which is the rule `write()` is built on.
+
+**And `@run.step` aborted the step before its body ran.** `_value_digest` promised
+`UNDIGESTIBLE:<type>` for *everything else* and caught `(TypeError, RecursionError)`, while
+`entry["args"]` is built before `f(*args)`. Two measured cases escaped, **and they escaped
+differently**, which is why the obvious one-word widening would have closed one of them: a
+non-UTF-8 filename raises from the `.encode` *below* the `try`, and `10**5000` raises from inside
+it. The second is environmental — `-X int_max_str_digits=0` digests it, so the same argument
+aborted a run on a default interpreter and recorded a digest on a raised limit. The digest is now
+taken inside the `try` and the breadth is `except Exception`, which is what the
+`__runprov_digest__` branch twelve lines above already decided for the same reason in the same
+function. *Provenance must not change the program it observes* is stated in README.md, ADR-0010
+and this suite's own section header; it is now true.
+
+**The breadth that fixes it is also what could hide a bug**, so a control asserts that a
+representative of **every branch `_canonical` declares** still produces a digest — the population
+derived from that function's own `isinstance` arms, because the first version of this control was
+hand-written and wrong: it claimed `set` was digestible, which `_canonical` deliberately refuses
+since a set has no stable order.
+
+**And the pairing clause added in `0df05f7` was held by nothing.** Deleting it left all 1 677
+tests green while the history line carried a digest for a sidecar that was never written —
+breaking R-33's clause that absence means *runprov took no digest* and never *mismatch*, in the
+direction that accuses a reader running the field's own recipe. The state that discriminates is
+**one successful persist and one failed, in a single run**, which no test reached: the existing
+absence guard uses a fresh `Run`, so the absence came from the `is not None` half instead.
+
+Each repair was reverted in a copy and refused by exactly one guard and no others.
+
 ### Fixed — two defects the hosted matrix found in the six commits the local gate had cleared
 
 **The first was the THIRD instance of a class this project had already closed twice.** Swept after

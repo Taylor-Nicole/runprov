@@ -97,7 +97,7 @@ from .project import (
 from .resources import Meter
 from .show import render_yaml
 from .terminal import Capture
-from .watch import attach, detach, own, unregistered
+from .watch import _UNRESOLVABLE, attach, detach, own, unregistered
 
 # The record format, named and versioned. A consumer -- a script, a dashboard, an agent
 # reading the history -- can branch on this instead of guessing from which keys happen to
@@ -1933,13 +1933,27 @@ class Run:
         there is one.
 
         RuntimeError, not only OSError: `Path.resolve()` raises `RuntimeError("Symlink loop
-        from ...")` for a cyclic link — measured, `ln -s a b; ln -s b a` — and OSError for the
-        rest. Catching the obvious name alone is what L-01 was, one exception family over.
+        from ...")` for a cyclic link — measured, `ln -s a b; ln -s b a`. Catching the obvious
+        name alone is what L-01 was, one exception family over.
+
+        AND `watch._UNRESOLVABLE`, BECAUSE THE LIST WENT SHORT AGAIN. This docstring used to
+        end *"and OSError for the rest"*, which was false: `resolve()` must ENCODE the name to
+        ask the OS, so a lone high surrogate in the path raises `UnicodeEncodeError` — a
+        `ValueError`,
+        neither family named here. Measured [T-69]: it left `_wrote`, left `write()`, and
+        aborted the user's program; the statement after `write()` never ran. L-01's own repair
+        was to extend the list, and the list is what failed a second time — so this catches the
+        PROPERTY the handler's reason already states instead of enumerating the ways to fail.
+
+        That makes an unencodable path behave like every other unwritable one: `_persist`
+        returns False, a warning goes to stderr, the history keeps its line. A path that cannot
+        exist is a sidecar failure, and *a sidecar failure must not lose the history* is the
+        rule `write()` is built on.
         """
         try:
             resolved = p.resolve()
             return any(q.resolve() == resolved for q in self._written_paths)
-        except (OSError, RuntimeError):  # guards-ok: a path that cannot be resolved is not
+        except _UNRESOLVABLE:  # guards-ok: a path that cannot be resolved is not
             # one we can prove we have written, and saying "no" here costs at most one extra
             # write of the same record -- which `_persist` reports and does not raise from.
             return False
@@ -2169,7 +2183,7 @@ class Run:
             # into a digest whose whole purpose is to compare across machines.
             try:
                 resolved = pathlib.Path(path).resolve()
-            except (OSError, RuntimeError):  # guards-ok: unresolvable, see the walk above
+            except _UNRESOLVABLE:  # guards-ok: unresolvable, see the walk above
                 continue
             try:
                 rel = resolved.relative_to(root).as_posix()
@@ -3672,9 +3686,22 @@ class Run:
         # `_finish()`, and cost the entire record: no sidecar, no history line, exit 0, for a
         # warning about naming. Fall back to the spelling, which is a worse key and a fine
         # one: the warning is advisory, the record is not.
+        #: `_UNRESOLVABLE`, NOT A LIST WRITTEN HERE. The comment above states the rule as *any*
+        #: path it cannot resolve, and the list enumerated two kinds and missed a third: a lone
+        #: surrogate in the path raises `UnicodeEncodeError` here -- a `ValueError` -- because
+        #: `resolve()` must encode the name to ask the OS. Measured [T-69]: that aborted the
+        #: user's program, the statement after `write()` never ran, and the run was recorded
+        #: FAILED for a name this advisory warning only wanted as a dictionary key. The comment
+        #: above says this exact outcome had already happened once and been repaired; the repair
+        #: was a list, and the list was one type short. `watch.py` had already drawn the whole
+        #: lesson -- *"a rule with four copies drifts by a whole case, which is what it did"* --
+        #: so this is its tuple, not a sixth spelling of one question the package answers five
+        #: ways. All three of this module's resolve guards use it, so it cannot disagree with
+        #: itself either, and the guard that counts those spellings refused the first repair
+        #: here -- which spelled it `Exception` -- naming this constant as the remedy.
         try:
             resolved = str(pathlib.Path(p).resolve())
-        except (OSError, RuntimeError):  # guards-ok: see above
+        except _UNRESOLVABLE:  # guards-ok: see above -- the warning is advisory, the record is not
             resolved = str(p)
         with _SIDECARS_LOCK:
             prior = _SIDECARS.get(resolved)
@@ -3792,11 +3819,24 @@ class Run:
         the run" -- was never applied to the sidecar path. Measured before this: a
         RuntimeError from the user's code was replaced by NotADirectoryError from here.
         """
-        text = self._encode()
+        #: EVERY STATEMENT INSIDE THE HANDLER, because this method's docstring says NEVER
+        #: RAISES and `write()`'s own comment relies on it -- and the first repair of this
+        #: [T-69 env-3] widened only `_persist_yaml`, on a measurement of the record's CONTENT
+        #: when the failure is in its PATH. Measured on the repaired tree, called directly:
+        #:
+        #:   a lone HIGH surrogate `\ud800` in the name -> UnicodeEncodeError at _atomic.py:110
+        #:   a NUL byte in the name                     -> ValueError, same statement
+        #:   a `surrogateescape` `\udcff` name           -> returns True   <- the only case tested
+        #:
+        #: Through `write()` that ABORTED THE USER'S PROGRAM: the statement after `write()`
+        #: never ran. A surrogateescape name is what the filesystem and argv produce, which is
+        #: why the first measurement missed it; a lone HIGH surrogate comes from library data --
+        #: a JSON manifest, UTF-16, a database field -- and `json.loads(r'"a\ud800"')` yields one.
         try:
+            text = self._encode()
             p.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_text(p, text)
-        except OSError as exc:
+        except Exception as exc:
             diagnostic(f"  WARNING: could not write the provenance sidecar to {p}: {exc}")
             return False
         #: R-1 [T-57]: THE RECORD'S OWN sha256, READ BACK FROM THE FILE, because the claim is
@@ -3866,7 +3906,19 @@ class Run:
         try:
             own(self._yaml_twin(p))
             atomic_write_text(self._yaml_twin(p), render_yaml(_jsonable(self.record)))
-        except OSError as exc:  # guards-ok: a view is never the reason a record is lost
+        #: `Exception`, NOT `OSError`, because this method's docstring says NEVER RAISES and
+        #: three other written statements rely on that -- and it was false. `render_yaml` does
+        #: not escape a lone surrogate, so in a project whose own root path is not valid in the
+        #: filesystem encoding the write raised `UnicodeEncodeError`, which is a `ValueError`:
+        #: it escaped this handler, escaped `_persist`, and left the run having written a
+        #: sidecar reading `status: "ok"` beside a history holding only a start line, at rc 0.
+        #: That is the exact disagreement `write()`'s own comment says it exists to prevent.
+        #:
+        #: THE JSON RECORD IS NOT AT RISK and its handler stays narrow: `_encode` dumps with
+        #: `ensure_ascii` at its default, so a surrogate leaves as `\udcff` and the record
+        #: writes. Measured both paths on one payload -- JSON wrote, YAML raised -- so
+        #: widening `_persist` too would mask a real failure of the thing that IS the record.
+        except Exception as exc:  # guards-ok: a view is never the reason a record is lost
             diagnostic(f"  WARNING: could not write the YAML sidecar beside {p}: {exc}")
 
     def _append_history(self, prov_path: pathlib.Path) -> None:

@@ -872,16 +872,44 @@ def _value_digest(value: typing.Any) -> str:  # noqa: ANN401 - any value
     The last rule is what keeps this honest, and it is the same behaviour as the fifteen
     formats `open_output` refuses rather than pretending to pin.
     """
-    own = getattr(value, "__runprov_digest__", None)
-    if callable(own):
-        try:
-            answer = own()
-        except Exception:  # a broken hook must not break the run it is describing
-            return f"{_UNDIGESTIBLE}:{type(value).__name__}"
-        # A hook that returns a non-string is a hook that did not answer the question.
-        return answer if isinstance(answer, str) else f"{_UNDIGESTIBLE}:{type(value).__name__}"
+    #: THE LOOKUP IS INSIDE THE HANDLER TOO. Moving the `.encode` in was not enough: a
+    #: `__getattr__` that raises -- ordinary in a proxy, a lazy loader, a detached handle --
+    #: raised from THIS line, above the `try`, and the step's body still never ran. Measured on
+    #: the first repair: `_value_digest(Proxy())` -> RuntimeError, and the run recorded a
+    #: FAILURE blaming the user's code for an exception the provenance layer raised during an
+    #: attribute lookup. Fourth instance in one patch set of *the raising statement sits above
+    #: the try*, and three of the four were written while fixing the first [T-69].
     try:
-        canonical = _canonical(value)
-    except (TypeError, RecursionError):
+        own = getattr(value, "__runprov_digest__", None)
+        if callable(own):
+            try:
+                answer = own()
+            except Exception:  # a broken hook must not break the run it is describing
+                return f"{_UNDIGESTIBLE}:{type(value).__name__}"
+            # A hook that returns a non-string is a hook that did not answer the question.
+            return answer if isinstance(answer, str) else f"{_UNDIGESTIBLE}:{type(value).__name__}"
+        #: THE DIGEST IS TAKEN INSIDE THE `try`, AND THE BREADTH IS THE SIBLING'S. Two measured
+        #: cases escaped the old `(TypeError, RecursionError)` and each escaped DIFFERENTLY, which
+        #: is why the obvious one-word widening would have closed one of them:
+        #:
+        #:   os.fsdecode(b"bad\xff.tsv")  UnicodeEncodeError  from the `.encode` BELOW the try
+        #:   10**5000                     ValueError          from `_canonical` INSIDE the try
+        #:
+        #: AND THE COST OF NARROWNESS HERE IS THE USER'S WORK, not the record. `@run.step` builds
+        #: `entry["args"]` before it calls `f(*args)`, so a value this function cannot digest
+        #: aborted the step BEFORE its body ran -- and *provenance must not change the program it
+        #: observes* is stated in README.md, ADR-0010 and this suite's own section header.
+        #:
+        #: `except Exception` rather than a wider tuple, because the hook branch twelve lines above
+        #: already decided this question for the same reason in the same function (*"a broken hook
+        #: must not break the run it is describing"*), and a tuple is a list that the next
+        #: un-canonicalisable type arrives outside of. The docstring's third rule -- EVERYTHING
+        #: ELSE -> `_UNDIGESTIBLE:<type>` -- is then true of the handler and not only of the prose.
+        #:
+        #: The risk it buys is a real bug in `_canonical` reading as an undigestible value, so
+        #: `test_every_canonical_FORM_still_digests_so_the_handler_is_not_a_catch_all` asserts a
+        #: representative of every form the docstring lists still produces a digest.
+        digest = hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+    except Exception:
         return f"{_UNDIGESTIBLE}:{type(value).__name__}"
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:PIN_DIGEST_CHARS]
+    return digest[:PIN_DIGEST_CHARS]

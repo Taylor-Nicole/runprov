@@ -5218,9 +5218,16 @@ def test_unregistered_is_TOTAL_at_every_path_it_resolves(tmp_path, where):
 
 #: WHAT EVERY `resolve()` GUARD IN THE PACKAGE CATCHES TODAY, as a baseline that may only
 #: SHRINK. Five spellings of one question, and the measurement that produced them is below.
+#: MOVED 2026-11-03 [T-69]: `_UNRESOLVABLE` 5 -> 8 and `(OSError, RuntimeError)` 4 -> 1, which is
+#: THREE SITES OF WORK AND NO RULE CHANGE -- the population is still 13 and all three of
+#: `run.py`'s resolve guards now share `watch`'s tuple, so that module no longer disagrees with
+#: itself. The occasion was a repair that spelled two of them `except Exception`: a SIXTH spelling,
+#: which this guard refused, with a message naming the constant to use instead. The divergent
+#: spelling fell; the only remaining one outside `watch.py`'s tuple is `prune.py`'s pair, which is
+#: why `prune.py` stays in the inconsistent set below.
 _RESOLVE_GUARD_BASELINE = {
-    ("_UNRESOLVABLE",): 5,
-    ("OSError", "RuntimeError"): 4,
+    ("_UNRESOLVABLE",): 8,
+    ("OSError", "RuntimeError"): 1,
     ("OSError", "ValueError"): 2,
     ("OSError",): 1,
     ("OSError", "RuntimeError", "ValueError"): 1,
@@ -7522,6 +7529,198 @@ def test_value_digest_separates_values_that_json_would_confuse():
     assert d(b"ab") == d(bytearray(b"ab"))
 
 
+def _surrogate_name(tmp_path):
+    """A filesystem name the encoding cannot represent, or a skip saying why not.
+
+    A POSIX filename is bytes and Python decodes an invalid one with `surrogateescape`, so
+    `b"bad\xff.tsv"` becomes a `str` holding a lone surrogate. Windows has no such name and
+    `chmod`'s lesson from [T-69] applies: a plant that cannot be built must SKIP and say so,
+    never pass quietly and never red a leg for a reason unrelated to its subject.
+    """
+    try:
+        #: INSIDE THE `try`, and this is the fourth instance of that class in one patch set:
+        #: Windows decodes filesystem bytes with `surrogatepass`, under which
+        #: `b"bad\xff".decode` raises `UnicodeDecodeError` -- a `ValueError` -- so with the
+        #: decode one line higher this helper would have ERRORED on the windows leg instead of
+        #: skipping, reddening it for a reason unrelated to its subject. Which is precisely
+        #: what the sentence above forbids, in the helper written to enforce it.
+        name = os.fsdecode(b"bad\xff.tsv")
+        probe = tmp_path / name
+        probe.write_text("x\n", encoding="utf-8")
+        probe.unlink()
+    except (OSError, ValueError):  # pragma: no cover - Windows, or a strict filesystem
+        pytest.skip("this filesystem cannot hold a name with an undecodable byte")
+    return name
+
+
+def test_a_value_the_canonical_form_CANNOT_ENCODE_does_not_abort_the_step(tmp_path):
+    """[T-69 env-4] Provenance must not change the program it observes, and this did.
+
+    `@run.step` builds `entry["args"]` BEFORE it calls `f(*args)`, so a value `_value_digest`
+    could not digest raised out of the decorator and THE STEP'S OWN BODY NEVER RAN. The
+    property it broke is stated in three bound places -- README.md, ADR-0010, and this
+    suite's own section header -- which is what makes it a defect rather than a rough edge.
+
+    TWO MEASURED CASES THAT ESCAPED DIFFERENTLY, which is why the obvious widening of
+    `except (TypeError, RecursionError)` would have closed one of them:
+
+        os.fsdecode(b"bad\xff.tsv")   UnicodeEncodeError   from the `.encode` BELOW the try
+        10**5000                      ValueError           from `_canonical` INSIDE the try
+
+    THE SECOND ONE IS IN ITS OWN TEST, because its answer depends on an interpreter setting and
+    this one's does not. Asserting `UNDIGESTIBLE:int` here made this test unable to pass under
+    `-X int_max_str_digits=0` -- measured, it failed -- which is a guard red for a reason
+    unrelated to its subject, the thing `_surrogate_name` exists to avoid.
+    """
+    name = _surrogate_name(tmp_path)
+    d = runprov.hashing._value_digest
+    assert d(name) == "UNDIGESTIBLE:str", "the encode below the try still escapes"
+
+    #: AND THE CONSEQUENCE, which is the half worth having: the body runs and the record says
+    #: what it could not digest rather than the run not existing.
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    ran = []
+    with runprov.Run("step", project=_project(tmp_path), provenance=tmp_path / "p.json") as run:
+
+        @run.step
+        def load(path):
+            ran.append(path)
+            return len(path)
+
+        load(name)
+
+    assert ran == [name], "the step's body did not run, so provenance changed the program"
+    record = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
+    assert record["steps"][0]["args"] == ["UNDIGESTIBLE:str"], record["steps"][0]
+
+
+def test_an_integer_too_long_to_RENDER_does_not_abort_the_step_either(tmp_path):
+    """The other half of [T-69 env-4], split out because its answer is an interpreter setting.
+
+    `_canonical` renders an int with an f-string, and CPython refuses to render one longer than
+    `sys.get_int_max_str_digits()` -- 4300 by default on 3.10 through 3.13, measured. That
+    raise is a `ValueError` from INSIDE the `try`, where the surrogate case raises from the
+    `.encode` below it: one defect, two routes, which is why widening the tuple would have
+    closed one of them.
+
+    THE LIMIT IS PINNED HERE, BOTH WAYS, because it is a policy and not a property: an earlier
+    version of this assertion lived in the surrogate test and could not pass under
+    `-X int_max_str_digits=0`. Pinning it makes the arm measure the handler; asserting it
+    unpinned made the arm measure the interpreter.
+    """
+    d = runprov.hashing._value_digest
+    before = sys.get_int_max_str_digits()
+    try:
+        sys.set_int_max_str_digits(4300)
+        assert d(10**5000) == "UNDIGESTIBLE:int", "the raise from inside the try still escapes"
+        #: AND WITH THE LIMIT LIFTED IT DIGESTS, which proves the marker above is the refusal
+        #: of a value this interpreter cannot render and not a blanket refusal of large ints.
+        sys.set_int_max_str_digits(0)
+        lifted = d(10**5000)
+        assert not lifted.startswith("UNDIGESTIBLE"), lifted
+        assert lifted == d(10**5000), "the digest of one value moved between two calls"
+    finally:
+        sys.set_int_max_str_digits(before)
+
+
+def test_every_canonical_FORM_still_digests_so_the_handler_is_not_a_catch_all():
+    """The breadth bought by `except Exception` is also what could hide a real bug.
+
+    `_value_digest` now catches `Exception` around both the canonical form AND its encode,
+    on the authority of the `__runprov_digest__` branch twelve lines above it, which decided
+    the same question for the same reason. The risk that buys is specific: a genuine fault in
+    `_canonical` would read as *this value is undigestible* and record a marker instead of
+    crashing. So a representative of EVERY form the docstring promises to digest is asserted
+    to produce a digest, which makes the handler falsifiable rather than merely wide.
+    """
+    d = runprov.hashing._value_digest
+
+    #: THE POPULATION IS `_canonical`'S OWN BRANCHES, RESOLVED TO TYPES, not a list written
+    #: here and not a set of bare spellings. Two earlier versions of this control were wrong
+    #: and each was wrong in this project's recorded way:
+    #:
+    #:   v1  a hand-written table, which claimed `set` was digestible -- `_canonical` refuses
+    #:       it deliberately, because a set has no stable order
+    #:   v2  derived, but collecting only `ast.Name`, so EVERY DOTTED SPELLING was dropped.
+    #:       Measured [T-69 G2]: a real working `isinstance(value, pathlib.PurePath)` branch
+    #:       with no representative left this test GREEN. A new branch is usually a dotted
+    #:       name, so the derivation was blind to the normal case.
+    #:
+    #: So each `isinstance` argument is unparsed and RESOLVED against the module's own
+    #: namespace and builtins, and a representative must `isinstance`-match the resolved TYPE.
+    #: An unresolvable spelling fails too, rather than being skipped -- a spelling this cannot
+    #: resolve is a branch this cannot cover, and saying so is the whole point.
+    source = textwrap.dedent(inspect.getsource(runprov.hashing._canonical))
+    spellings: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "isinstance"
+            and len(node.args) == 2
+        ):
+            declared = node.args[1]
+            for element in declared.elts if isinstance(declared, ast.Tuple) else [declared]:
+                spellings.add(ast.unparse(element))
+    assert spellings, "no `isinstance` branch was found, so this control has no population"
+
+    def _resolve(spelling):
+        parts = spelling.split(".")
+        found = vars(runprov.hashing).get(parts[0], getattr(builtins, parts[0], None))
+        for part in parts[1:]:
+            found = getattr(found, part, None)
+        return found
+
+    resolved = {spelling: _resolve(spelling) for spelling in sorted(spellings)}
+    unresolvable = [s for s, found in resolved.items() if not isinstance(found, type)]
+    assert not unresolvable, (
+        f"a branch's type spelling could not be resolved, so this control cannot know whether "
+        f"it is covered: {unresolvable}"
+    )
+    #: `value is None` is a branch too, spelled as a comparison rather than a call.
+    if " is None" in source:
+        resolved["None"] = type(None)
+
+    representative = [
+        None,
+        True,
+        7,
+        1.5,
+        "fasta",
+        b"ab",
+        bytearray(b"ab"),
+        [1, "a"],
+        (1, "a"),
+        {"a": 1, "nested": [1, {"b": 2}]},
+    ]
+    uncovered = {
+        spelling: kind.__name__
+        for spelling, kind in resolved.items()
+        if not any(isinstance(value, kind) for value in representative)
+    }
+    assert not uncovered, (
+        f"`_canonical` declares a branch no representative here reaches, so this control no "
+        f"longer covers every form the contract names: {uncovered}"
+    )
+
+    undigestible = {
+        type(value).__name__: d(value)
+        for value in representative
+        if d(value).startswith("UNDIGESTIBLE")
+    }
+    assert not undigestible, (
+        f"a form `_canonical` claims to handle came back undigestible, so the widened handler "
+        f"is hiding a fault in `_canonical` rather than declining a value: {undigestible}"
+    )
+
+    #: AND THE REFUSALS STILL REFUSE, so this is not asserting that everything digests -- only
+    #: that everything the contract names does. `set` is the useful one: it has no branch, and
+    #: a widened handler must not start inventing an order for it.
+    assert d(object()) == "UNDIGESTIBLE:object"
+    assert d({1, 2}) == "UNDIGESTIBLE:set"
+    assert d({1: "int key"}) == "UNDIGESTIBLE:dict"
+
+
 def test_value_digest_refuses_rather_than_guesses():
     """`UNDIGESTIBLE:<type>` is the honest answer, and the type name is half of it.
 
@@ -9443,10 +9642,15 @@ def test_a_once_per_process_latch_is_declared_UNTRIPPED():
 #: the newline clause below holds. `checked >= 1668` was refused next door for rotting on every
 #: docstring edit; this cannot rot without a writer site moving.
 _WRITER_SURFACE = {
-    #: 27 -> 28 with T-57: the one notice that a SECOND `write()` to the same path has left the
-    #: history line's `provenance_sha256` describing the superseded version. The newline clause
-    #: above was read before adding it, and that call passes a single implicitly-concatenated
-    #: argument with no newline of its own.
+    #: 27 -> 29 with T-57, TWO notices and not one: the disclosure that a SECOND `write()` to
+    #: the same path has left the history line's `provenance_sha256` describing the superseded
+    #: version, and the warning that the record was written but could not be re-read to digest
+    #: it. The newline clause above was read for BOTH, and each passes a single
+    #: implicitly-concatenated argument with no newline of its own.
+    #:
+    #: The arithmetic here said `27 -> 28` over a value of 29 for half a day [T-69 guards-10]:
+    #: the count was corrected when the second notice landed and the sentence explaining it was
+    #: not, which is this project's rationale-rot shape inside the commit that caused it.
     "run.py": {"diagnostic": 29, "progress": 2, "summary": 2},
     #: 3 -> 7 with T-47: the in-process lock giving up, the two halves of the capability /
     #: contention split, and the two notices `_write_verified` emits on an unlocked write.
@@ -30991,6 +31195,177 @@ def test_the_history_carries_the_RECORDS_OWN_DIGEST_and_sha256sum_reproduces_it(
     #: contents include the hash has no fixed point. The field belongs to the history line
     #: ABOUT the record, which is why this is cheap.
     assert "provenance_sha256" not in json.loads(record.read_text(encoding="utf-8"))
+
+
+def test_a_sidecar_path_the_filesystem_CANNOT_HOLD_costs_a_warning_and_not_the_run(
+    tmp_path, capsys
+):
+    """[T-69] Four handlers on the write path promised more than they delivered.
+
+    A lone HIGH surrogate names a file that CANNOT EXIST -- `surrogateescape` encodes
+    `\\udc80`-`\\udcff` back to bytes but has nothing to encode `\\ud800` to, so the filesystem
+    refuses it exactly as it refuses a NUL byte. The question is what runprov does about it,
+    and the answer was: abort the user's program. Measured, the statement after `write()`
+    never ran.
+
+    FOUR SITES, EACH WITH ITS OWN PROSE PROMISING OTHERWISE, found one at a time by re-running
+    this scenario after each repair:
+
+        `_persist_yaml`   "NEVER raises"                        caught `OSError`
+        `_persist`        "NEVER raises", and `write()` relies on it   caught `OSError`
+        `write()`         "must not be what ends the run"       caught `(OSError, RuntimeError)`
+        `_wrote`          "and OSError for the rest"            caught `(OSError, RuntimeError)`
+
+    The last two are the sharper pair: each had already been repaired once by ADDING a type to
+    a list -- `_wrote`'s docstring names that repair as L-01 -- and each list went short again.
+    This asserts the PROPERTY all four prose claims share, over the one input that reaches all
+    four, so the next list that goes short is caught here rather than by a user's aborted run.
+    """
+    _surrogate_name(tmp_path)  # skips where such names are impossible to construct at all
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    impossible = tmp_path / "x\ud800.prov.json"
+
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    after = []
+    with runprov.Run(
+        "demo", project=_project(tmp_path), provenance=tmp_path / "a.prov.json"
+    ) as run:
+        run.input(tmp_path / "in.tsv")
+        run.write(impossible)
+        after.append("the statement after write() ran")
+
+    said = capsys.readouterr()
+    assert after == ["the statement after write() ran"], (
+        f"`write()` aborted the caller for a path it could not use: {said.out + said.err}"
+    )
+    #: THE RECORD AT THE USABLE PATH IS INTACT, which is the thing the four claims protect.
+    assert (tmp_path / "a.prov.json").is_file()
+    line = _lines(tmp_path / "runs.jsonl")[-1]
+    assert line["status"] == "ok", line
+    assert not impossible.exists(), "the plant is void: the filesystem accepted the path"
+
+    #: AND THE FAILURE IS DISCLOSED rather than swallowed silently -- `_persist`'s warning
+    #: names the path, so this is not asserting that nothing went wrong.
+    assert "could not write the provenance sidecar" in said.out + said.err, said.out + said.err
+
+
+def test_the_records_digest_is_PAIRED_WITH_ITS_PATH_when_one_write_SUCCEEDED_and_one_FAILED(
+    tmp_path, capsys
+):
+    """[T-69 guards-1] The pairing clause shipped at `0df05f7` with nothing holding it.
+
+    Deleting `and self._record_digest[0] == str(prov_path)` left the whole suite green, and
+    the history line then carried a digest for a sidecar that was never written -- measured:
+    `provenance_path` naming a file that does not exist, beside a `provenance_sha256`. That
+    breaks [ADR-0016 R-33]'s clause that absence means *runprov took no digest* and NEVER
+    *mismatch*, in the direction that accuses a person running the field's own recipe.
+
+    THE STATE THAT DISCRIMINATES IS ONE SUCCESSFUL PERSIST AND ONE FAILED, IN ONE RUN, and no
+    test reached it: `..._is_ABSENT_when_the_sidecar_could_not_be_written` uses a fresh `Run`,
+    so `_record_digest` is `None` and the absence comes from the `is not None` half instead.
+    Here `write()` persists a good path first, `__exit__` then persists the blocked one, and
+    only the comparison can tell them apart.
+    """
+    blocking = tmp_path / "blocker"
+    blocking.write_text("a file, so nothing can be created beneath it\n", encoding="utf-8")
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    blocked = blocking / "nested" / "bad.prov.json"
+    good = tmp_path / "good.prov.json"
+
+    runprov.configure(root=tmp_path, run_log=tmp_path / "runs.jsonl")
+    with runprov.Run("pair", project=_project(tmp_path), provenance=blocked) as run:
+        run.input(tmp_path / "in.tsv")
+        run.write(good)
+
+    said = capsys.readouterr()
+    #: NON-VACUITY, and it is the whole arm: the earlier persist must have SUCCEEDED, or the
+    #: absence below is the `is not None` half and this test duplicates its neighbour.
+    assert good.is_file(), (
+        f"the successful persist did not happen, so `_record_digest` is None and the pairing "
+        f"clause is not what this test is measuring: {said.out + said.err}"
+    )
+    assert not blocked.exists(), "the blocked sidecar was written, so this arm is void"
+
+    line = _lines(tmp_path / "runs.jsonl")[-1]
+    assert line["provenance_path"].endswith("bad.prov.json"), line
+    assert "provenance_sha256" not in line, (
+        f"the line names the sidecar that could not be written and still carries a digest -- "
+        f"the digest of a DIFFERENT file: {line.get('provenance_sha256')}"
+    )
+    #: AND THE ABSENCE COMES FROM THE COMPARISON, not from `_record_digest` being None. This
+    #: replaced an assertion that the good record's current digest was absent from the line,
+    #: which CANNOT FAIL [T-69 G3]: `good` is re-persisted on the way out, so the forged field
+    #: described a SUPERSEDED version of `good` and never matched the value being searched for.
+    #: The forgery is therefore worse than "the wrong file" -- it is a digest of bytes that no
+    #: longer exist anywhere.
+    assert run._record_digest is not None, "nothing was in hand, so the comparison never ran"
+    assert run._record_digest[0] == str(good), (
+        f"the digest in hand does not belong to the path that succeeded, so this test is not "
+        f"measuring the pairing: {run._record_digest[0]}"
+    )
+
+
+def test_a_record_whose_own_PATH_cannot_be_ENCODED_still_finishes_and_still_chains(
+    tmp_path, capsys
+):
+    """[T-69 env-3] `_persist_yaml` said NEVER RAISES, caught `OSError`, and raised.
+
+    `render_yaml` does not escape a lone surrogate, and `UnicodeEncodeError` is a `ValueError`,
+    so in a project whose own root path is not valid in the filesystem encoding the YAML write
+    escaped this handler, escaped `_persist`, and left the run having written a sidecar reading
+    `status: "ok"` beside a history holding ONLY A START LINE -- at exit code 0. Three
+    artefacts disagreed and the one beside the artifact was the wrong one, which is verbatim
+    the disagreement `write()`'s own comment says it exists to prevent.
+
+    THE JSON RECORD WAS NEVER AT RISK and its handler stays narrow. Measured on one payload:
+    `_encode` dumps with `ensure_ascii` at its default so the surrogate leaves as an escape and
+    the record writes, while `render_yaml` raised. Widening `_persist` too would mask a real
+    failure of the thing that IS the record.
+    """
+    name = _surrogate_name(tmp_path)
+    root = tmp_path / name.replace(".tsv", "")
+    root.mkdir()
+    (root / "in.tsv").write_text("a\n", encoding="utf-8")
+    record = root / "demo.prov.json"
+
+    runprov.configure(root=root, run_log=root / "runs.jsonl")
+    with runprov.Run("demo", project=_project(root), provenance=record) as run:
+        run.input(root / "in.tsv")
+
+    #: THE YAML WRITE WAS ATTEMPTED AND FAILED, which is the arm's whole subject and was
+    #: asserted by nothing: flipping `write_yaml_sidecar` to False made `_persist_yaml` return
+    #: at its first line and this test PASSED vacuously [T-69 G4]. `diagnostic` is stderr,
+    #: always, and unsilenceable, so the warning is a reliable witness.
+    said = capsys.readouterr()
+    assert "could not write the YAML sidecar" in said.out + said.err, (
+        f"this warning is the only witness that the YAML write was attempted AND handled. Its "
+        f"absence means one of two things and the stderr below says which: the write was never "
+        f"attempted (`write_yaml_sidecar` off, so the arm is void), or it was attempted and the "
+        f"handler did not catch it (look for `provenance capture failed during exit`, which is "
+        f"the defect this test exists for): {said.out + said.err}"
+    )
+
+    #: `_lines` is `_completed(...)`, so it filters the start line out: ONE element here means
+    #: the finish line was appended at all, which is exactly what was lost -- before this repair
+    #: the history held only the start line and `_completed` would have returned nothing.
+    raw = [x for x in (root / "runs.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+    lines = _lines(root / "runs.jsonl")
+    assert len(raw) == 2, f"expected a start and a finish line; the history has {len(raw)}"
+    assert len(lines) == 1, f"the run did not finish: no completed record in {len(raw)} line(s)"
+    assert lines[-1]["status"] == "ok", lines[-1]
+    assert record.is_file(), "the JSON record is the record and it must be on disk"
+
+    #: THE FIELD IS PRESENT AND REPRODUCIBLE, which is the half that was lost: the finish line
+    #: never got written at all, so [ADR-0016 R-33]'s digest was absent for every such run.
+    assert hashlib.sha256(record.read_bytes()).hexdigest() == lines[-1]["provenance_sha256"]
+
+    #: AND THE YAML TWIN IS ABSENT BY DESIGN, not by accident -- `_persist_yaml`'s own
+    #: docstring: *"A YAML view that could not be written is worth a line on stderr and
+    #: nothing more."* Asserted so that making the renderer surrogate-safe later shows up here
+    #: as a decision rather than as a silent change. Spelled with `_yaml_twin`, because
+    #: `with_suffix` is a SECOND definition of that name and the method's own docstring says
+    #: the two disagree for every documented non-`.json` path.
+    assert not run._yaml_twin(record).is_file()
 
 
 def test_the_records_digest_is_ABSENT_when_the_sidecar_could_not_be_written(tmp_path, capsys):
