@@ -9,6 +9,71 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — three more release-path checks, one of them refusing for a reason that was not true
+
+**`release_check` decided "released" by comparing one word.** The predicate was
+`heading.group(1).lower() == "unreleased"`, so any heading not spelled that way read as released
+whether or not it carried a date. Measured: all four copies at 0.9.1 under
+`## [0.9.1] — unreleased` with tag `v0.9.1` printed **`release-check ok`**; so did
+`## [0.10.0] — unreleased` above a section dated 2026-11-01 naming a version no copy mentions; and
+inserting a single `## [Yanked]` heading above `[Unreleased]` removed the refusal altogether,
+because the word stopped matching. The newest section is now read **once**, as a bracket and a
+trailer, and "released" means *the trailer is a calendar date*.
+
+**And the same refusal's message asserted something false, which is worth as much.** It read
+*"CHANGELOG.md still heads {version} as [Unreleased]"* — binding this read's subject, the newest
+heading of any kind, to `_VERSION_SOURCES`' subject, the newest heading starting with a **digit**.
+Those are two different sections of the file by design, and here they are `[Unreleased]` and
+`[0.9.0] — 2026-10-22`: the sentence called a dated section undated, on the tag-day path. **A
+false red there is what gets a guard edited under pressure rather than read**, so it is a defect
+and not a cosmetic complaint. It now names the heading it actually read.
+
+**`CITATION.cff`'s own comment says `date-released` is *"set in the SAME commit that dates the
+CHANGELOG section"* — a rule written in prose beside the field and enforced nowhere.** A tree at
+0.9.1 whose citation still carried 0.9.0's `2026-10-22` was cleared. The two dates must now agree.
+
+**`matrix-check` accepted any Windows-hosted job as the Windows test leg.** The predicate was
+`any("windows" in name for name in legs)`, and a job name is GitHub's rendering of
+`<job id> (<matrix values>)` — so a `lint (windows-2025)` satisfied it while the Windows **test**
+leg was absent. Measured: eight green jobs, no Windows test leg, and the step printed
+`windows included` and cleared the tag, over a step whose own docstring says *"this step exists
+for that leg"*. It now requires the job's identity to be `test`, and **prints which leg satisfied
+it**. The residual is stated rather than hidden: the label's spelling is still read, so a Windows
+leg under a label without that word reds this loudly — and that direction is held at the definer
+instead, by the guard that pins the floor-off legs keyed on the platform. The reported *"a skipped
+leg reads as passed"* half was **refuted**: the per-job conclusion loop two lines earlier already
+catches and names it.
+
+**`.coverage-scale.json`'s existence stood in for its freshness.** One writer, one reader, **zero
+deleters**, and the path is gitignored — so a developer's copy survives every branch switch and
+rebase while CI's fresh checkout never has one. pytest can exit 0 while pytest-cov declines to
+write a report at all. Measured end to end: a planted report dated **2026-08-01** carrying 5 700
+statements and 2 150 branches cleared `scale-check` against a README quoting about 6 150 and 2 300
+— both inside the 10% band — printing *"within 10% of coverage's own 5 700 statements"*. **The
+only thing standing in the way was `--cov-fail-under=100`, which two of the eight matrix legs
+deliberately remove.** The report is now deleted before the run, and the `meta.timestamp` coverage
+had been writing into the same document all along is read: an unlink is defeated by anything that
+recreates the path mid-run, a timestamp is defeated by a clock, and neither alone is the repair.
+
+**And two `git` calls in `matrix-check` ran with no `cwd`**, resolving against the caller's
+directory while `run()` two lines above uses `cwd or ROOT` — so `python /elsewhere/ci.py
+matrix-check` read one repository's HEAD and cleared another's tag.
+
+### Tested — and one of the five controls is recorded as VOID rather than red
+
+Three of the new guards were run against the pre-repair script and fail there for the right
+reason: *"an undated newest section cleared a tag"*, *"two different dates for one release
+cleared"*, and the Windows arm's `DID NOT RAISE SystemExit`. The scale guard **cannot be a red at
+all** — `_check_scale` took no argument before, so calling it the new way raises `TypeError` — so
+it is recorded as a **void control**, and the behaviour was demonstrated separately by handing the
+old function a stale report and watching it print `scale-check ok`.
+
+**The fixture was modelling a third wrong document.** `_release_tree` built its heading as
+`## [{heading}] — {version}`, so asking for a released section produced
+`## [0.1.0 — 2026-08-18] — 0.1.0` — the date inside the brackets and the version in the trailer,
+which is the released shape backwards. Every arm that believed it was testing the released path
+was testing the other one. The fixture now picks between the two shapes this file really uses.
+
 ### Fixed — three holes in the gate that stands in front of an irreversible PyPI upload
 
 `release_check` has five refusals and **all five are tested**, which is what made this look held.

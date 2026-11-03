@@ -4381,7 +4381,6 @@ def test_terminal_log_anchors_like_its_siblings(tmp_path, monkeypatch, capsys):
     The silence is asserted too, and it is the sharp end: because the cwd-moved notice is
     raised BY `_anchor`, a run that called only this method said nothing at all."""
     (tmp_path / "a").mkdir()
-    (tmp_path / "b").mkdir()
     (tmp_path / "a" / "step.log").write_text("LOG FROM A\n", encoding="utf-8")
     (tmp_path / "b" / "step.log").write_text("LOG FROM B\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path / "a")
@@ -6062,10 +6061,16 @@ def test_the_quoted_coverage_figures_are_coverages_own_and_not_a_proxys():
     #: running it: deleting the call is the whole regression.
     src = (_repo_root() / "ci.py").read_text(encoding="utf-8")
     assert re.search(
-        r'def test\(\) -> None:\n    run\(PY, "-m", "pytest", \*_coverage_args\(\)\)\n'
-        r"    _check_scale\(\)",
+        r"def test\(\) -> None:\n(?:[ \t]*#.*\n|\n)*"
+        r"    SCALE_REPORT\.unlink\(missing_ok=True\)\n"
+        r"    started = time\.time\(\)\n"
+        r'    run\(PY, "-m", "pytest", \*_coverage_args\(\)\)\n'
+        r"    _check_scale\(started\)",
         src,
-    ), "ci.py test must compare the README's scale figures with the run it just made"
+    ), (
+        "ci.py test must DELETE the stale report, note when the run began, and compare the "
+        "README's scale figures with the run it just made -- in that order [T-67]"
+    )
     assert any("--cov-report=json:" in flag for flag in ci._coverage_args()), (
         "and the totals have to be asked for, or `_check_scale` reads nothing"
     )
@@ -22358,7 +22363,6 @@ def test_verify_treats_an_unreadable_file_as_unpinned(tmp_path):
 def test_verify_collects_files_directories_and_neither(tmp_path):
     """Sorted and deduped: naming a file AND its parent must not check it twice, and two
     runs of the same check must report in the same order."""
-    (tmp_path / "d").mkdir()
     (tmp_path / "d" / "b.tsv").write_text("b\n", encoding="utf-8")
     (tmp_path / "a.tsv").write_text("a\n", encoding="utf-8")
     got, skipped = _walked(
@@ -23228,7 +23232,8 @@ def _release_tree(
     *,
     version="0.1.0",
     citation_version=None,
-    heading="Unreleased",
+    released_on=None,
+    changelog_text=None,
     date_released=False,
     tool_version=None,
     project_version=None,
@@ -23246,6 +23251,9 @@ def _release_tree(
     `[project]`) could not be expressed here. `tool_version` and `project_version` exist to
     express it: they are the plant and the thing the wheel actually carries.
     """
+    #: THE TREE MAKES ITS OWN DIRECTORY, so an arm can ask for several trees under one
+    #: `tmp_path` without each caller remembering to create the parent first.
+    tmp_path.mkdir(parents=True, exist_ok=True)
     shutil.copy(_repo_root() / "ci.py", tmp_path / "ci.py")
     (tmp_path / "runprov").mkdir()
     pyproject = ""
@@ -23256,9 +23264,24 @@ def _release_tree(
     (tmp_path / "runprov/__init__.py").write_text(f'__version__ = "{version}"\n', encoding="utf-8")
     cff = f"version: {citation_version or version}\n"
     if date_released:
-        cff += "date-released: 2026-08-18\n"
+        dated = date_released if isinstance(date_released, str) else (released_on or "2026-08-18")
+        cff += f"date-released: {dated}\n"
     (tmp_path / "CITATION.cff").write_text(cff, encoding="utf-8")
-    (tmp_path / "CHANGELOG.md").write_text(f"## [{heading}] — {version}\n", encoding="utf-8")
+    #: THE TWO HEADING SHAPES THIS FILE ACTUALLY USES, and the fixture wrote NEITHER. It
+    #: produced `## [{heading}] — {version}`, so asking for a released section gave
+    #: `## [0.1.0 — 2026-08-18] — 0.1.0` -- the date inside the brackets and the version in
+    #: the trailer, which is the released shape backwards. `release_check` now decides
+    #: "released" on the trailer being a calendar date, which that shape can never be, so
+    #: every arm would have been testing the unreleased path while claiming the other one.
+    #: `released_on` picks the shape; `changelog_text` is the escape hatch for the arms whose
+    #: whole subject is an odd heading.
+    if changelog_text is not None:
+        changelog = changelog_text
+    elif released_on:
+        changelog = f"## [{version}] — {released_on}\n"
+    else:
+        changelog = f"## [Unreleased] — {version}\n"
+    (tmp_path / "CHANGELOG.md").write_text(changelog, encoding="utf-8")
     return tmp_path
 
 
@@ -23480,7 +23503,7 @@ def test_the_changelog_follows_keep_a_changelog_where_new_work_lands():
 def test_release_check_refuses_a_tag_while_the_changelog_says_unreleased(tmp_path):
     """L-36. A tag means released; `[Unreleased]` means it is not. Publishing with both is
     how a version reaches PyPI with no dated section to attribute it to."""
-    r = _release_check(_release_tree(tmp_path, heading="Unreleased"), tag="v0.1.0")
+    r = _release_check(_release_tree(tmp_path), tag="v0.1.0")
     assert r.returncode != 0
     assert "[Unreleased]" in r.stdout + r.stderr
 
@@ -23488,7 +23511,7 @@ def test_release_check_refuses_a_tag_while_the_changelog_says_unreleased(tmp_pat
 def test_release_check_refuses_a_released_version_with_no_citation_year(tmp_path):
     """L-36. `CITATION.cff` exists so a reader does not have to guess a citation — and
     without `date-released` the citation it hands them has no year in it."""
-    tree = _release_tree(tmp_path, heading="0.1.0 — 2026-08-18", date_released=False)
+    tree = _release_tree(tmp_path, released_on="2026-08-18", date_released=False)
     r = _release_check(tree)
     assert r.returncode != 0
     assert "date-released" in r.stdout + r.stderr
@@ -23575,9 +23598,7 @@ def test_release_check_refuses_every_tag_shape_that_would_publish(tmp_path):
     Measured 2026-11-03 against the pre-repair script: `vv0.1.0`, `v.0.1.0` and
     `version-0.1.0` each printed `release-check ok -- 0.1.0, untagged build` and exited 0.
     """
-    tree = _release_tree(
-        tmp_path, version="0.1.0", heading="0.1.0 — 2026-08-18", date_released=True
-    )
+    tree = _release_tree(tmp_path, version="0.1.0", released_on="2026-08-18", date_released=True)
     for tag in ("v0.2.0", "vv0.1.0", "v.0.1.0", "version-0.1.0"):
         r = _release_check(tree, tag=tag)
         assert r.returncode != 0, f"{tag} fires the publish and was cleared: {r.stdout}"
@@ -23609,7 +23630,7 @@ def test_release_check_reads_the_version_the_WHEEL_carries_not_a_neighbouring_ta
     tree = _release_tree(
         tmp_path,
         version="0.1.0",
-        heading="0.1.0 — 2026-08-18",
+        released_on="2026-08-18",
         date_released=True,
         tool_version="0.1.0",
         project_version="0.2.0",
@@ -23624,11 +23645,10 @@ def test_release_check_reads_the_version_the_WHEEL_carries_not_a_neighbouring_ta
     #: the refusal above is the table's doing. The first arming of this experiment was VOID
     #: for want of exactly this: it also bumped a second copy, so the arms differed by two
     #: things and a red proved nothing.
-    (tmp_path / "control").mkdir()
     plantless = _release_tree(
         tmp_path / "control",
         version="0.1.0",
-        heading="0.1.0 — 2026-08-18",
+        released_on="2026-08-18",
         date_released=True,
     )
     ok = _release_check(plantless, tag="v0.1.0")
@@ -23644,7 +23664,7 @@ def test_release_check_requires_a_citation_DATE_and_not_merely_the_KEY(tmp_path)
     GitHub's *Cite this repository* parses this file and Zenodo reads it at release; this
     project's Zenodo records are closed, so a dateless citation is not corrected afterwards.
     """
-    tree = _release_tree(tmp_path, version="0.1.0", heading="0.1.0 — 2026-08-18")
+    tree = _release_tree(tmp_path, version="0.1.0", released_on="2026-08-18")
     for cff, why in [
         ("version: 0.1.0\n", "the line deleted"),
         ("version: 0.1.0\ndate-released:\n", "the key with nothing after it"),
@@ -23700,6 +23720,159 @@ def test_the_sdist_include_list_is_read_as_TOML_not_sliced_at_the_first_BRACKET(
         f"the slice this test exists to retire returned {truncated}, which is not a "
         f"truncation of {named} -- re-read the finding before trusting either"
     )
+
+
+def test_release_check_decides_RELEASED_on_a_DATE_and_not_on_the_word_unreleased(tmp_path):
+    """T-67. The predicate was `heading.group(1).lower() == "unreleased"` -- one word.
+
+    So ANY heading not spelled that way read as released whether or not it carried a date.
+    Measured 2026-11-03 against the pre-repair script: all four copies at 0.9.1 under the
+    heading `## [0.9.1] — unreleased` with tag `v0.9.1` printed `release-check ok`; so did
+    `## [0.10.0] — unreleased` above a section dated 2026-11-01 naming a version no copy
+    mentions; and inserting a single `## [Yanked]` heading above `[Unreleased]` removed the
+    refusal altogether, because the word stopped matching.
+
+    THE FALSE RED WAS WORTH AS MUCH AS THE FALSE GREENS, and it is why the message changed
+    too. It read "CHANGELOG.md still heads {version} as [Unreleased]", binding this read's
+    subject -- the newest heading of any kind -- to `_VERSION_SOURCES`' subject, the newest
+    heading starting with a DIGIT. Those are two different sections of the file by design,
+    and on this repository they are `[Unreleased]` and `[0.9.0] — 2026-10-22`: the sentence
+    called a dated section undated, on the tag-day path, which is where a guard gets edited
+    under pressure rather than read.
+    """
+    #: UNDATED, SPELLED AS A VERSION -- the arm that was green.
+    undated = _release_tree(
+        tmp_path / "a", changelog_text="## [0.1.0] — unreleased\n", date_released=True
+    )
+    r = _release_check(undated, tag="v0.1.0")
+    assert r.returncode != 0, f"an undated newest section cleared a tag: {r.stdout}"
+    assert "YYYY-MM-DD" in r.stdout + r.stderr, r.stdout + r.stderr
+
+    #: AN EXTRA HEADING ABOVE IT, which used to make the word stop matching.
+    yanked = _release_tree(
+        tmp_path / "b",
+        changelog_text="## [Yanked]\n\n## [0.1.0] — 2026-08-18\n",
+        date_released=True,
+    )
+    r = _release_check(yanked, tag="v0.1.0")
+    assert r.returncode != 0, f"an inserted heading cleared a tag: {r.stdout}"
+    assert "Yanked" in r.stdout + r.stderr, r.stdout + r.stderr
+
+    #: A DATED NEWEST SECTION THAT NAMES A DIFFERENT VERSION. `_VERSION_SOURCES` reads the
+    #: newest heading starting with a digit, so the two reads can disagree -- and the section
+    #: a reader attributes the release to is this one, not the one the version came from.
+    elsewhere = _release_tree(
+        tmp_path / "c",
+        changelog_text="## [Yanked] — 2026-11-01\n\n## [0.1.0] — 2026-08-18\n",
+        date_released=True,
+    )
+    r = _release_check(elsewhere, tag="v0.1.0")
+    assert r.returncode != 0, f"the newest section named another version: {r.stdout}"
+    assert "[Yanked]" in r.stdout + r.stderr and "[0.1.0]" in r.stdout + r.stderr, (
+        r.stdout + r.stderr
+    )
+
+    #: POSITIVE CONTROL: the real released shape clears the tag it names.
+    good = _release_tree(tmp_path / "d", released_on="2026-08-18", date_released=True)
+    ok = _release_check(good, tag="v0.1.0")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+
+    #: AND THE DEVELOPMENT STATE IS UNTOUCHED -- this repository's own shape, untagged, with
+    #: an `[Unreleased]` section above a dated one. Without this arm a predicate that simply
+    #: refused every tree would satisfy every assertion above.
+    dev = _release_tree(
+        tmp_path / "e",
+        changelog_text="## [Unreleased] — 0.1.0\n\n## [0.1.0] — 2026-08-18\n",
+        date_released=True,
+    )
+    quiet = _release_check(dev)
+    assert quiet.returncode == 0, quiet.stdout + quiet.stderr
+    assert "untagged" in quiet.stdout, quiet.stdout
+
+
+def test_release_check_pairs_the_citation_date_with_the_changelog_date(tmp_path):
+    """T-67. `CITATION.cff` says this of its own `date-released` field:
+
+    *"SET TO THE TAG DATE, YYYY-MM-DD, and set in the SAME commit that dates the CHANGELOG
+    section"* -- a rule written in prose beside the field and enforced nowhere. Measured
+    2026-11-03: a tree at 0.9.1 whose citation still carried 0.9.0's 2026-10-22 was cleared,
+    which ships a citation dating one release to another release's day, in a file GitHub's
+    *Cite this repository* parses and Zenodo reads at release.
+    """
+    stale = _release_tree(tmp_path / "a", released_on="2026-11-01", date_released="2026-10-22")
+    r = _release_check(stale, tag="v0.1.0")
+    assert r.returncode != 0, f"two different dates for one release cleared: {r.stdout}"
+    said = r.stdout + r.stderr
+    assert "2026-10-22" in said and "2026-11-01" in said, said
+
+    #: POSITIVE CONTROL: the same tree with the two dates agreeing is cleared, so the arm
+    #: above is about the pairing and not about either date on its own.
+    agreed = _release_tree(tmp_path / "b", released_on="2026-11-01", date_released=True)
+    ok = _release_check(agreed, tag="v0.1.0")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+
+
+def test_scale_check_refuses_a_coverage_report_THIS_RUN_DID_NOT_WRITE(tmp_path, monkeypatch):
+    """T-67. `is_file()` was the entire freshness predicate for a gitignored file nothing deleted.
+
+    MEASURED: one writer (`_coverage_args`), one reader (`_check_scale`), **zero deleters** --
+    so a developer's copy survives every branch switch and rebase while CI's fresh checkout
+    never has one. pytest can exit 0 while pytest-cov declines to write a report at all
+    (*"Failed to generate report: No data to report"*, observed on this venv's pytest-cov
+    7.1.0), and a planted report from 2026-08-01 carrying 5 700 statements and 2 150 branches
+    then cleared `scale-check` against a README quoting about 6 150 and 2 300 -- both inside
+    the 10% band, so another tree's numbers read as a measurement. The only thing standing in
+    the way was `--cov-fail-under=100`, which **two of the eight matrix legs deliberately
+    remove**, and those two are the ones whose coverage is unreachable by construction.
+
+    THE REPORT CARRIED THE EVIDENCE OF ITS OWN STALENESS. Coverage writes `meta.timestamp`
+    into the same document, and this step read `["totals"]` and nothing else.
+    """
+    ci = _ci_module()
+    report = tmp_path / ".coverage-scale.json"
+    #: THE PATH IS REDIRECTED, because the real one is `ROOT/.coverage-scale.json` and a test
+    #: that writes there dirties the tree `matrix-check` refuses to read.
+    monkeypatch.setattr(ci, "SCALE_REPORT", report)
+    readme = _readme()
+    stated = {
+        key: int(re.search(pattern, readme).group(1).replace(",", ""))
+        for pattern, key in ci._SCALE_FIGURES.values()
+    }
+    assert set(stated) == {"num_statements", "num_branches"}, stated
+
+    def write(meta, totals=None):
+        body = {"totals": totals if totals is not None else stated}
+        if meta is not None:
+            body["meta"] = meta
+        report.write_text(json.dumps(body), encoding="utf-8")
+
+    started = time.time()
+
+    #: POSITIVE CONTROL FIRST: a report written by this run, with the README's own figures,
+    #: passes -- so every refusal below is the freshness check and not a broken comparison.
+    write({"timestamp": dt.datetime.now().isoformat()})
+    ci._check_scale(started)
+
+    #: A REPORT FROM ANOTHER TREE. 5 700 and 2 150 are inside the 10% band of the README's
+    #: own figures, which is what made this silent rather than loud.
+    write({"timestamp": "2026-08-01T00:00:00"}, {"num_statements": 5700, "num_branches": 2150})
+    with pytest.raises(SystemExit) as stale:
+        ci._check_scale(started)
+    assert "BEFORE this run started" in str(stale.value), str(stale.value)
+
+    #: A DOCUMENT COVERAGE DID NOT WRITE has no `meta.timestamp`, and a step that cannot tell
+    #: whose report it is holding may not report ok about it.
+    write(None)
+    with pytest.raises(SystemExit) as nometa:
+        ci._check_scale(started)
+    assert "meta.timestamp" in str(nometa.value), str(nometa.value)
+
+    #: AND THE ABSENT CASE STILL REFUSES, which is the arm that already existed -- the unlink
+    #: in `test()` makes this the only reachable state, so it must not have been weakened.
+    report.unlink()
+    with pytest.raises(SystemExit) as gone:
+        ci._check_scale(started)
+    assert "was not written" in str(gone.value), str(gone.value)
 
 
 def _ci_module():
@@ -60293,6 +60466,27 @@ def test_matrix_check_NAMES_each_failing_leg_and_reads_SKIPPED_as_not_passed(
     monkeypatch.setattr(ci, "_gh_json", gh_for(green))
     ci.matrix_check()
     assert "5 job(s) green on cafe123, windows included" in capsys.readouterr().out
+
+    #: A WINDOWS-HOSTED JOB THAT IS NOT THE TEST LEG DOES NOT STAND IN FOR IT [T-67]. The
+    #: predicate was `any("windows" in name for name in legs)`, so a `lint (windows-2025)`
+    #: satisfied it while the windows TEST leg was absent -- measured 2026-11-03: five green
+    #: jobs, no windows test leg, and the step printed `windows included` and cleared the tag.
+    #: This step's own docstring says it exists for that leg.
+    lint_only = [
+        {"name": f"test (ubuntu, 3.{n})", "conclusion": "success"} for n in (9, 10, 11, 12)
+    ]
+    lint_only += [{"name": "lint (windows-2025)", "conclusion": "success"}]
+    monkeypatch.setattr(ci, "_gh_json", gh_for(lint_only))
+    with pytest.raises(SystemExit) as no_test_leg:
+        ci.matrix_check()
+    assert "windows TEST leg" in str(no_test_leg.value), str(no_test_leg.value)
+
+    #: AND THE NAME OF THE LEG IT ACCEPTED IS PRINTED, so a reader can see WHICH job satisfied
+    #: a check whose whole subject is that one leg. A step that says "windows included"
+    #: without naming it is the shape that let the arm above pass for two releases.
+    monkeypatch.setattr(ci, "_gh_json", gh_for(green))
+    ci.matrix_check()
+    assert "test (windows, 3.12)" in capsys.readouterr().out
 
 
 def test_console_script_is_spelled_per_PLATFORM_and_the_windows_one_carries_exe():

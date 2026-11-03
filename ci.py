@@ -46,6 +46,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import zipfile
 from collections import abc
 from pathlib import Path
@@ -464,15 +465,47 @@ def scale_drift(readme: str, totals: dict[str, int]) -> list[str]:
     return drifted
 
 
-def _check_scale() -> None:
-    """Hold the README's two quoted figures to the numbers the run just measured. K-37."""
+def _check_scale(started: float) -> None:
+    """Hold the README's two quoted figures to the numbers the run just measured. K-37.
+
+    `started` is when the run began, and it is a parameter because the question *is this the
+    report that run wrote* cannot be answered from the file's existence -- see `test()`.
+    """
     if not SCALE_REPORT.is_file():
         raise SystemExit(
             f"scale-check: {SCALE_REPORT.name} was not written, so the README's statement and "
             "branch figures were compared with nothing. `_coverage_args` asks pytest-cov for it; "
             "a missing file means the report flag went away, not that the figures are fine."
         )
-    totals = json.loads(SCALE_REPORT.read_text(encoding="utf-8"))["totals"]
+    report = json.loads(SCALE_REPORT.read_text(encoding="utf-8"))
+    #: FRESHNESS FROM THE EVIDENCE THE FILE ALREADY CARRIES. Coverage writes its own
+    #: `meta.timestamp` into this document and this step read `["totals"]` and nothing else --
+    #: so the instrument held the proof of its own staleness and discarded it. Deleting the
+    #: path in `test()` makes a stale file unreachable; this makes it unreadable, and the two
+    #: fail differently: an unlink is defeated by anything that recreates the path mid-run,
+    #: and a timestamp is defeated by a clock. Neither alone is the repair.
+    stamp = report.get("meta", {}).get("timestamp")
+    written = None
+    if isinstance(stamp, str):
+        try:
+            written = datetime.datetime.fromisoformat(stamp).timestamp()
+        except ValueError:
+            written = None
+    if written is None:
+        raise SystemExit(
+            f"scale-check: {SCALE_REPORT.name} carries no readable `meta.timestamp`, so this "
+            f"step cannot tell the report this run wrote from one left behind by another "
+            f"tree. Coverage writes that field; a document without it was not written by it."
+        )
+    #: A MINUTE OF SLACK, for clock granularity rather than for doubt: the gap this is meant
+    #: to catch is a report from another commit, which is hours or months old.
+    if written < started - 60:
+        raise SystemExit(
+            f"scale-check: {SCALE_REPORT.name} was written at {stamp}, BEFORE this run "
+            f"started, so the README's figures were compared against another tree's numbers. "
+            f"Delete it and run the suite again."
+        )
+    totals = report["totals"]
     drifted = scale_drift((ROOT / "README.md").read_text(encoding="utf-8"), totals)
     if drifted:
         raise SystemExit(
@@ -486,8 +519,22 @@ def _check_scale() -> None:
 
 
 def test() -> None:
+    #: THE REPORT IS DELETED BEFORE THE RUN, so *the file on disk* and *the file this run
+    #: produced* cannot be two different things [T-67]. Nothing deleted it before: one writer
+    #: (`_coverage_args`), one reader (`_check_scale`), zero deleters, and the path is
+    #: gitignored -- so a developer's copy survives every branch switch and rebase
+    #: indefinitely, while CI's fresh checkout never has one. `is_file()` was therefore the
+    #: whole freshness predicate, and pytest can exit 0 while pytest-cov declines to write a
+    #: report at all ("Failed to generate report: No data to report", measured on this venv's
+    #: pytest-cov 7.1.0). Measured end to end: a planted report from 2026-08-01 carrying
+    #: 5 700 statements and 2 150 branches cleared `scale-check` against a README quoting
+    #: 6 150 and 2 300 -- both inside the 10% band -- and the only thing that had been
+    #: standing in the way was `--cov-fail-under=100`, which TWO of the eight matrix legs
+    #: deliberately remove.
+    SCALE_REPORT.unlink(missing_ok=True)
+    started = time.time()
     run(PY, "-m", "pytest", *_coverage_args())
-    _check_scale()
+    _check_scale(started)
 
 
 #: Written and run inside the clean venv: the installed wheel must be able to RECORD a run,
@@ -711,10 +758,16 @@ def matrix_check() -> None:
             "there is no `.github/workflows/test.yml` in this tree, so there is no matrix to "
             "check and no Windows signal at all. This step cannot clear a tag without it."
         )
+    #: `cwd=ROOT` ON BOTH, because without it these two resolve against whatever directory
+    #: the caller happened to be in while `run()` two lines up uses `cwd or ROOT` -- so
+    #: `python /elsewhere/ci.py matrix-check` read one repository's HEAD and cleared another
+    #: repository's tag. Found 2026-11-03 while auditing the leg predicate below.
     head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, cwd=ROOT
     ).stdout.strip()
-    if subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True).stdout:
+    if subprocess.run(
+        ["git", "status", "--porcelain"], capture_output=True, text=True, cwd=ROOT
+    ).stdout:
         raise SystemExit(
             "the tree is dirty, so the matrix cannot have seen what you are about to tag"
         )
@@ -824,11 +877,29 @@ def matrix_check() -> None:
         listed = "\n".join(f"    {got:10} {name}" for name, got in sorted(bad.items()))
         raise SystemExit(f"the matrix for {head[:7]} is not green:\n{listed}")
     legs = sorted(j["name"] for j in jobs)
-    if not any("windows" in name for name in legs):
+    #: THE WINDOWS *TEST* LEG, NOT ANY WINDOWS-HOSTED JOB. This asked whether any job name
+    #: contained the characters `windows`, which a `lint (windows-2025)` satisfies while the
+    #: windows TEST leg is absent -- measured 2026-11-03: eight green jobs, no windows test
+    #: leg, and this step printed `windows included` and cleared the tag. A job name is
+    #: GitHub's rendering of `<job id> (<matrix values>)`, so the job's IDENTITY is the part
+    #: before the parenthesis and that is what decides whether this is the leg meant.
+    #:
+    #: THE RESIDUAL IS STATED RATHER THAN HIDDEN: `"windows" in name` still reads the
+    #: runner LABEL's spelling, so a windows test leg under a label without that word reds
+    #: this loudly. That direction is a false RED and it is held at the definer instead --
+    #: `test_only_the_two_legs_that_cannot_reach_the_floor_turn_it_off` pins the windows leg
+    #: in `test.yml` keyed on the platform rather than the label, so the label cannot change
+    #: without a guard firing. The false GREEN is the one that clears a tag, and it is this.
+    windows_tests = [name for name in legs if name.startswith("test (") and "windows" in name]
+    if not windows_tests:
         raise SystemExit(
-            f"no windows job in the matrix for {head[:7]} — this step exists for that leg: {legs}"
+            f"no windows TEST leg in the matrix for {head[:7]} — this step exists for that "
+            f"leg, and a windows-hosted job of any other kind does not stand in for it: {legs}"
         )
-    print(f"matrix-check ok — {len(jobs)} job(s) green on {head[:7]}, windows included")
+    print(
+        f"matrix-check ok — {len(jobs)} job(s) green on {head[:7]}, windows included "
+        f"({', '.join(windows_tests)})"
+    )
 
 
 def release_check() -> None:
@@ -869,12 +940,48 @@ def release_check() -> None:
         )
 
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    heading = re.search(r"^## \[([^\]]+)\]", changelog, re.M)
-    unreleased = heading is not None and heading.group(1).lower() == "unreleased"
-    if tagged and unreleased:
+    #: ONE READ OF THE NEWEST SECTION, AND "RELEASED" IS A PROPERTY RATHER THAN A WORD.
+    #:
+    #: This decided the question with `heading.group(1).lower() == "unreleased"`, a string
+    #: comparison against one word -- so ANY heading not spelled that way read as released,
+    #: whether or not it carried a date. Measured 2026-11-03, all four version copies at
+    #: 0.9.1 and the heading `## [0.9.1] — unreleased` under tag `v0.9.1`: `release-check ok`.
+    #: The same with `## [0.10.0] — unreleased` above a section dated 2026-11-01 naming a
+    #: version no copy mentions: `release-check ok`. And inserting one `## [Yanked]` heading
+    #: above `[Unreleased]` removed the refusal entirely, because the word stopped matching.
+    #:
+    #: AND THE MESSAGE USED TO ASSERT SOMETHING FALSE. It read "CHANGELOG.md still heads
+    #: {version} as [Unreleased]" -- binding this read's subject (the newest heading of any
+    #: kind) to `_VERSION_SOURCES`' subject (the newest heading starting with a DIGIT). Those
+    #: are two different sections of the file by design, and on this repository today they
+    #: are `[Unreleased]` and `[0.9.0] — 2026-10-22`: the sentence named a section as undated
+    #: that is dated. A false red on the tag-day path is what gets a guard edited under
+    #: pressure, so it is worth as much as the two false greens above.
+    #: THE DASH IS ESCAPED, not typed: an em dash, an en dash and a hyphen are three
+    #: characters a human cannot tell apart in a regex, and this file uses two of them.
+    head = re.search(
+        "^## \\[([^\\]]+)\\][ \\t]*(?:[-\\u2013\\u2014][ \\t]*(\\S+))?",
+        changelog,
+        re.M,
+    )
+    if head is None:
         raise SystemExit(
-            f"{tag} is a release tag, but CHANGELOG.md still heads {version} as "
-            f"[Unreleased]; date the section before tagging"
+            "CHANGELOG.md has no `## [...]` heading at all, so this step cannot read a "
+            "release state from it"
+        )
+    newest, trailer = head.group(1), head.group(2) or ""
+    released = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", trailer))
+    if tagged and not released:
+        shown = f"## [{newest}]" + (f" — {trailer}" if trailer else "")
+        raise SystemExit(
+            f"{tag} is a release tag, but CHANGELOG.md's newest section is `{shown}` and "
+            f"carries no YYYY-MM-DD date; date the section before tagging"
+        )
+    if tagged and newest != version:
+        raise SystemExit(
+            f"{tag} is a release tag and CHANGELOG.md's newest section is `[{newest}]`, not "
+            f"`[{version}]` — the section a reader would attribute this release to names a "
+            f"different version from the one being published"
         )
     #: THE VALUE, AND IT MUST BE A DATE. This read `re.search(r"^date-released:", ...)`
     #: until 2026-11-03 -- the KEY, never what follows it. MEASURED: deleting the line
@@ -887,7 +994,7 @@ def release_check() -> None:
     #:
     #: `fromisoformat` AS WELL AS THE SHAPE, because `2026-13-45` is the shape of a date and
     #: not a date, and the claim is about the year a reader can cite.
-    if not unreleased:
+    if released:
         released_on = re.search(
             r'^date-released:[ \t]*"?(\d{4}-\d{2}-\d{2})"?[ \t]*(?:#.*)?$',
             (ROOT / "CITATION.cff").read_text("utf-8"),
@@ -903,6 +1010,18 @@ def release_check() -> None:
                 f"CHANGELOG.md presents {version} as released, but CITATION.cff has no "
                 f"`date-released:` carrying a calendar date as YYYY-MM-DD, so the citation "
                 f"this project ships has no year in it"
+            )
+        #: AND THE TWO DATES MUST AGREE. `CITATION.cff`'s own comment says this field is
+        #: "SET TO THE TAG DATE, YYYY-MM-DD, and set in the SAME commit that dates the
+        #: CHANGELOG section" -- a rule written in prose beside the field and enforced
+        #: nowhere. Measured 2026-11-03: a tree at 0.9.1 with the citation's date left at
+        #: 0.9.0's 2026-10-22 was cleared, which ships a citation dating one release to
+        #: another's day, in a file GitHub parses and Zenodo reads.
+        if released_on.group(1) != trailer:
+            raise SystemExit(
+                f"CITATION.cff dates this release {released_on.group(1)} while CHANGELOG.md's "
+                f"newest section dates it {trailer}; they are set in the same commit, and a "
+                f"citation may not date a release to another release's day"
             )
     print(f"release-check ok — {version}" + (f", tag {tag}" if tagged else ", untagged build"))
 
