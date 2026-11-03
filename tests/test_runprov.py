@@ -45446,6 +45446,109 @@ def _plant_corpus(
     )
 
 
+def test_the_leak_scanners_positive_control_is_run_with_the_PLANT_REMOVED(tmp_path, capsys):
+    """T-67. The one automated check against a repeat of the 0.5.0 sdist could not fail.
+
+    It read `materialise(versions[0], planted)` and then `if not leaks(planted)`. But
+    `materialise` SUBSTITUTES the destination root into the records — that is its job — so the
+    materialised tree legitimately carries absolute paths. **Measured 2026-11-03: 8 hits with
+    no plant at all**, so the condition was already false and the *"positive control: a planted
+    absolute path IS found"* line printed whatever the scanner did. The plant contributed 1 of
+    9. **32 files carrying the generating machine's absolute path shipped in the published
+    0.5.0 sdist**, and this is the only automated check standing between the corpus and a
+    repeat of it.
+
+    The subject is `leaks`, so the plant now goes into a copy of the COMMITTED tree — which
+    carries the placeholder and no absolute path — and the needle must appear as a **new** hit.
+    """
+    corpus = _corpus_module()
+
+    #: THE DISCRIMINATOR: a scanner that answers the same non-empty list whatever it is handed
+    #: finds nothing and cannot say so. Under the old condition this passed.
+    blind = ["prov/whatever.json: /somewhere/else"]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(corpus, "leaks", lambda _tree: list(blind))
+        code = corpus.self_check()
+    said = capsys.readouterr().out
+    assert "THE SCANNER DOES NOT WORK" in said, (
+        f"a scanner blind to the plant reported a working positive control: {said[-900:]}"
+    )
+    assert code != 0, code
+
+    #: POSITIVE CONTROL: the real scanner over the real corpus reports the plant as a NEW hit,
+    #: so the arm above is about the difference and not about self_check refusing everything.
+    code = corpus.self_check()
+    said = capsys.readouterr().out
+    assert "the planted path IS found as a NEW hit" in said, said
+    assert "0 absolute path(s) before the plant" in said, (
+        f"the committed tree carries an absolute path before anything is planted, which makes "
+        f"this control's precondition false: {said[-900:]}"
+    )
+    assert code == 0, said
+
+
+def test_the_scrub_leaves_the_scenarios_own_ARTIFACTS_byte_identical(tmp_path):
+    """T-67. `tools/corpus.py`'s docstring calls the artifacts off limits; nothing enforced it.
+
+    *"The artifacts and the environment snapshot are copied BYTE FOR BYTE and never touched …
+    rewriting either would destroy the exact thing the corpus exists to check."* Both scrubs
+    selected every `.json`, `.jsonl` and `.yml` anywhere in the tree, `out/` included — and
+    the comment that claimed otherwise was false: measured over 37 names,
+    `name.endswith(RECORD_SUFFIXES)` and `PurePosixPath(name).suffix in RECORD_SUFFIXES`
+    select the same set, and **`artifact.json` is selected by both**. What kept the artifacts
+    intact was that every one of them happens to be `.tsv`.
+
+    The protected set is now read from the tree's own `scenario.json`, which the generator
+    fills from a glob of what it really wrote — so a scenario that starts producing a `.json`
+    artifact carries the protection with it instead of needing this file edited.
+    """
+    corpus = _corpus_module()
+    tree = tmp_path / "tree"
+    (tree / "out").mkdir(parents=True)
+    (tree / "prov").mkdir(parents=True)
+    root = tmp_path / "theroot"
+    root.mkdir()
+    needle = root.resolve().as_posix()
+
+    #: AN ARTIFACT THAT IS NOT A `.tsv`, carrying the very needle the scrub swaps. This is the
+    #: shape the hardcoded `out/*.tsv` population could not express.
+    artifact = tree / "out" / "result.json"
+    artifact.write_text(f'{{"from": "{needle}"}}', encoding="utf-8")
+    #: AND A REAL RECORD carrying the same needle, as the control: the scrub must still reach
+    #: it, or this test would pass against a scrub that had simply stopped working.
+    record = tree / "prov" / "step.prov.json"
+    record.write_text(f'{{"cwd": "{needle}"}}', encoding="utf-8")
+    (tree / "scenario.json").write_text(
+        json.dumps({"step": True, "python": "3.12", "artifacts": ["out/result.json"]}),
+        encoding="utf-8",
+    )
+    before = artifact.read_bytes()
+
+    corpus._normalise(tree, root, pathlib.Path("/nowhere/python"))
+
+    assert artifact.read_bytes() == before, (
+        "the scrub rewrote an artifact the scenario declares it produced; those bytes are what "
+        "the corpus exists to check"
+    )
+    assert corpus.ROOT_TOKEN in record.read_text(encoding="utf-8"), (
+        "the scrub did not reach a real record either, so the assertion above says nothing"
+    )
+
+
+def test_the_scrub_REFUSES_a_tree_that_does_not_say_what_it_produced(tmp_path):
+    """A scrub that cannot tell which bytes are off limits may not rewrite them anyway.
+
+    The alternative — defaulting to an empty protected set — reads exactly like a tree with no
+    artifacts, and would silently restore the behaviour the guard above exists to end.
+    """
+    corpus = _corpus_module()
+    tree = tmp_path / "tree"
+    (tree / "prov").mkdir(parents=True)
+    (tree / "scenario.json").write_text('{"step": true}', encoding="utf-8")
+    with pytest.raises(ValueError, match="artifacts"):
+        corpus._normalise(tree, tmp_path, pathlib.Path("/nowhere/python"))
+
+
 def _run_self_check(corpus, root, capsys):
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(corpus, "CORPUS", root)
@@ -45454,7 +45557,14 @@ def _run_self_check(corpus, root, capsys):
     return code, capsys.readouterr().out
 
 
-#: EVERY ARM THAT INCREMENTS `bad`, with the words it prints. Five arms, one counter.
+#: EVERY ARM THAT INCREMENTS `bad` FROM A PLANTED CORPUS, with the words it prints. FOUR arms,
+#: one counter -- this said "Five arms" over a table of four for as long as it has existed.
+#:
+#: THE FIFTH ARM IS NOT A CORPUS STATE AND SO IS NOT HERE: *"THE SCANNER DOES NOT WORK"* fires
+#: when the planted absolute path is not found as a NEW hit, which needs a broken `leaks` and
+#: not a broken tree, and `_plant_corpus` plants trees. It has a test of its own. Naming the
+#: boundary rather than leaving the count wrong, because a declared table whose own comment
+#: miscounts it is the shape this repository keeps finding.
 _SELF_CHECK_ARMS = (
     ("leak", {"leak": True}, "LEAKED PATHS"),
     ("no-artifacts", {"artifacts": False}, "no artifacts"),

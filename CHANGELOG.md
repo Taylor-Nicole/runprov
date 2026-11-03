@@ -9,6 +9,54 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — the corpus's leak control could not fail, and the artifacts it calls untouchable were not
+
+**The one automated check standing between this corpus and a repeat of the 0.5.0 sdist could not
+fail.** It ran `materialise(versions[0], planted)` and then asked `if not leaks(planted)` — but
+`materialise` substitutes the destination root into the records, because that is its job, so the
+materialised tree legitimately carries absolute paths. **Measured: 8 hits with no plant at all.**
+The condition was already false, the plant contributed 1 of 9, and the line *"positive control: a
+planted absolute path IS found"* printed whatever the scanner did. Demonstrated against the old
+code with a scanner that answers the same non-empty list whatever it is handed: it printed that
+the control worked. **32 files carrying the generating machine's absolute path shipped in the
+published 0.5.0 sdist**, and this is the only automated check against a repeat.
+
+The subject is `leaks`, and `leaks` is meant for a **committed** tree — one carrying the
+placeholder and no absolute path at all — so the plant now goes into a copy of that, and the
+needle must appear as a **new** hit. The before-arm is reported rather than counted: a committed
+tree that already leaks is the leak arm's finding, reported once per version in the loop above,
+and counting it again here would be one defect in two places.
+
+**And the artifacts this module calls untouchable were not protected by anything.** The docstring
+says *"the artifacts and the environment snapshot are copied BYTE FOR BYTE and never touched …
+rewriting either would destroy the exact thing the corpus exists to check"*, and both scrubs
+selected every `.json`, `.jsonl` and `.yml` anywhere in the tree, `out/` included. **The comment
+that claimed otherwise was false**: it said the matching form *"would silently include a
+hypothetical `artifact.json` output"*, and measured over 37 names — 28 real corpus filenames and
+9 hypotheticals — `name.endswith(RECORD_SUFFIXES)` and `PurePosixPath(name).suffix in
+RECORD_SUFFIXES` select **the same set**, differing on exactly one name, a dotfile literally
+called `.json`. **`artifact.json` is selected by both.** What kept the artifacts intact was that
+every one of them happens to be `.tsv`, and the artifact population was separately hardcoded as
+`out/*.tsv` in **three** places — one of them the oracle the suite compares against — so an
+`out/result.json` would have been rewritten here *and* invisible to the test that checks it.
+
+The protected set is now read from the tree's own `scenario.json`, which the generator fills from
+a glob of what it really wrote, so a scenario that starts producing a `.json` artifact carries the
+protection with it. A tree that does not say what it produced is **refused**: defaulting to an
+empty protected set reads exactly like a tree with no artifacts.
+
+### Tested — three guards, each red on the pre-repair module for its own reason
+
+*"a scanner blind to the plant reported a working positive control"*; *"the scrub rewrote an
+artifact the scenario declares it produced"*, with the bytes shown either way; and `DID NOT RAISE
+ValueError` for the refusal. The artifact guard carries the arm that keeps it honest — a real
+record carrying the same needle **must** still be rewritten, or the test would pass against a
+scrub that had simply stopped working.
+
+**And the table of self-check arms said five over a list of four**, and the fifth arm — *"THE
+SCANNER DOES NOT WORK"* — was never in it, because it needs a broken scanner rather than a broken
+tree and the planting helper plants trees. The boundary is named rather than the count left wrong.
+
 ### Fixed — the claims auditor's own haystacks, including a binding a withdrawn quote could satisfy
 
 **A binding resolved against the whole document, fences and correction notes included.** So any

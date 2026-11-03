@@ -67,9 +67,18 @@ MANIFEST = CORPUS / "MANIFEST.json"
 #: a test to assert against the placeholder rather than against the record.
 ROOT_TOKEN = "@@RUNPROV_CORPUS_ROOT@@"  # noqa: S105 - a path placeholder, not a secret
 
-#: Only these are rewritten. Matched on the full suffix rather than `Path.suffix`, which
-#: returns `.json` for `align.prov.json` and would silently include a hypothetical
-#: `artifact.json` output — the compound-suffix trap this package has already met twice.
+#: Only these are rewritten. Matched on the full suffix rather than `Path.suffix` so that the
+#: compound `.prov.json` is spelled the way a reader spells it.
+#:
+#: AND THE REASON THIS COMMENT USED TO GIVE WAS FALSE. It said the form chosen "would silently
+#: include a hypothetical `artifact.json` output — the compound-suffix trap this package has
+#: already met twice", i.e. that `endswith` protects the artifacts. It does not. Measured
+#: 2026-11-03 over 37 names, 28 real corpus filenames and 9 hypotheticals:
+#: `name.endswith(RECORD_SUFFIXES)` and `PurePosixPath(name).suffix in RECORD_SUFFIXES` select
+#: **the same set**, differing on exactly one name — a dotfile literally called `.json` — and
+#: **`artifact.json` is selected by both**. The module docstring calls the artifacts off limits
+#: ("copied BYTE FOR BYTE and never touched"), and what actually kept them that way was that
+#: every artifact happens to be `.tsv`. `_artifacts` now enforces it instead.
 RECORD_SUFFIXES = (".json", ".jsonl", ".yml")
 
 #: Leak shapes, checked ON TOP of the exact generation paths rather than instead of them. The
@@ -111,6 +120,32 @@ def _as_number(version: str) -> tuple[int, ...]:
     return tuple(int(part) if part.isdigit() else 0 for part in version.split("."))
 
 
+def _artifacts(tree: pathlib.Path) -> frozenset[str]:
+    """The relative paths the scenario says it PRODUCED — the bytes that may never be rewritten.
+
+    DERIVED FROM THE TREE'S OWN `scenario.json`, which `corpus_scenario.py` fills from a glob
+    of what it really wrote, so a scenario that starts producing a `.json` artifact carries the
+    protection with it rather than needing this file edited.
+
+    This module's docstring says the artifacts and the environment snapshot are *"copied BYTE
+    FOR BYTE and never touched … rewriting either would destroy the exact thing the corpus
+    exists to check"*, and **nothing enforced it**: both scrubs selected every `.json`,
+    `.jsonl` and `.yml` anywhere in the tree, `out/` included. It has never bitten, and the
+    reason is luck rather than design — every artifact today is `.tsv`, and none of the six
+    swap needles appears in one. The artifact population was also hardcoded as `out/*.tsv` in
+    three independent places, one of them the oracle the suite compares against, so a
+    `out/result.json` would have been rewritten here AND invisible to the test that checks it.
+    """
+    scenario = json.loads((tree / "scenario.json").read_text(encoding="utf-8"))
+    produced = scenario.get("artifacts")
+    if not isinstance(produced, list) or not all(isinstance(p, str) for p in produced):
+        raise ValueError(
+            f"{tree / 'scenario.json'} names no `artifacts` list, so this step cannot tell "
+            f"which bytes are off limits. It refuses rather than rewriting them."
+        )
+    return frozenset(produced)
+
+
 def materialise(version: str, dest: pathlib.Path) -> pathlib.Path:
     """Unpack one captured tree into `dest` and point its records at it. Returns `dest`.
 
@@ -125,11 +160,15 @@ def materialise(version: str, dest: pathlib.Path) -> pathlib.Path:
         raise FileNotFoundError(f"no corpus for {version}; run `python tools/corpus.py generate`")
     shutil.copytree(source, dest, dirs_exist_ok=True)
     here = dest.resolve().as_posix()
+    protected = _artifacts(dest)
     for path in sorted(dest.rglob("*")):
-        if path.is_file() and path.name.endswith(RECORD_SUFFIXES):
-            text = path.read_text(encoding="utf-8")
-            if ROOT_TOKEN in text:
-                path.write_text(text.replace(ROOT_TOKEN, here), encoding="utf-8", newline="")
+        if not (path.is_file() and path.name.endswith(RECORD_SUFFIXES)):
+            continue
+        if path.relative_to(dest).as_posix() in protected:
+            continue  # an artifact is copied byte for byte -- see `_artifacts`
+        text = path.read_text(encoding="utf-8")
+        if ROOT_TOKEN in text:
+            path.write_text(text.replace(ROOT_TOKEN, here), encoding="utf-8", newline="")
     return dest
 
 
@@ -270,9 +309,12 @@ def _normalise(tree: pathlib.Path, root: pathlib.Path, venv_python: pathlib.Path
         (SCENARIO.resolve().as_posix(), SCENARIO.name),
         (str(SCENARIO.resolve()), SCENARIO.name),
     ]
+    protected = _artifacts(tree)
     for path in sorted(tree.rglob("*")):
         if not (path.is_file() and path.name.endswith(RECORD_SUFFIXES)):
             continue
+        if path.relative_to(tree).as_posix() in protected:
+            continue  # an artifact is captured byte for byte -- see `_artifacts`
         text = path.read_text(encoding="utf-8")
         for needle, token in swaps:
             if needle:
@@ -403,15 +445,42 @@ def self_check() -> int:
             f"{'clean' if not found else 'LEAKS'}"
         )
 
+    #: THE POSITIVE CONTROL, RUN WITH THE PLANT REMOVED FIRST — which is the arm it did not
+    #: have. It used to `materialise` the tree and then ask `if not leaks(planted)`, and
+    #: materialising SUBSTITUTES the destination root into the records on purpose: measured
+    #: 2026-11-03, that left **8 absolute paths in the tree before anything was planted**, so
+    #: the condition was already false and the "IS found" line printed whatever the scanner
+    #: did. The plant contributed 1 hit of 9. This is the only automated check standing between
+    #: this corpus and a repeat of the **32 files carrying the generating machine's absolute
+    #: path that shipped in the published 0.5.0 sdist**, and it could not have failed.
+    #:
+    #: The subject is `leaks`, and `leaks` is meant for a COMMITTED tree — one carrying the
+    #: token and no absolute path at all. So the plant goes into a copy of the committed tree,
+    #: the before-arm must be EMPTY, and the planted path must be exactly what appears.
     with tempfile.TemporaryDirectory() as tmp:
         planted = pathlib.Path(tmp) / "planted"
-        materialise(versions[0], planted)
-        (planted / "prov" / "planted.json").write_text('{"cwd": "/home/someone/x"}', "utf-8")
-        if not leaks(planted):
+        shutil.copytree(CORPUS / versions[0] / "tree", planted)
+        before = sorted(leaks(planted))
+        #: `before` IS REPORTED AND NOT COUNTED. A committed tree that already leaks is
+        #: the LEAK arm's finding, reported once per version in the loop above; counting
+        #: it again here would be one defect in two places. What makes this control able
+        #: to fail is the DIFFERENCE below, which is unaffected by whatever `before` holds.
+        needle = "/home/someone/definitely-not-on-this-machine"
+        (planted / "prov" / "planted.json").write_text(
+            json.dumps({"cwd": needle}), encoding="utf-8"
+        )
+        gained = sorted(set(leaks(planted)) - set(before))
+        if not any(needle in hit for hit in gained):
             bad += 1
-            print("  THE SCANNER DOES NOT WORK: a planted absolute path was not found.")
+            print(
+                f"  THE SCANNER DOES NOT WORK: a planted absolute path was not found. "
+                f"New hits: {gained or 'none'}"
+            )
         else:
-            print("  positive control: a planted absolute path IS found")
+            print(
+                f"  positive control: the planted path IS found as a NEW hit "
+                f"({len(before)} absolute path(s) before the plant, {len(gained)} gained)"
+            )
 
     print(f"\n  {'OK' if not bad else f'{bad} PROBLEM(S)'} — {len(versions)} version(s)")
     return 1 if bad else 0
