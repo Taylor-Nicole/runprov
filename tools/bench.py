@@ -620,17 +620,103 @@ def _module_bindings(after: str, statements: set[int]) -> set[str]:
     return names
 
 
+def _dotted(node: ast.expr) -> str | None:
+    """A pure `a.b.c` chain as a dotted string, or `None` if it is anything else."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _spellings_of(tree: ast.Module, module: str) -> set[str]:
+    """Every dotted spelling in this file that names `module`, derived from its own imports.
+
+    So `obj.WIDTH` is only a reader of `WIDTH` when `obj` is this module -- see
+    `_consequence_lines`. `import a.b` binds `a` and makes `a.b` the usable spelling;
+    `import a.b as c`, `from a import b` and `from . import b` each bind one name.
+    """
+    package, _, tail = module.rpartition(".")
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == module:
+                    out.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == tail and (node.level or node.module == package):
+                    out.add(alias.asname or alias.name)
+    return out
+
+
+def _shadowed(function: ast.AST) -> set[str]:
+    """Names this function BINDS, so a load of them is a load of the local and not the module.
+
+    Over-approximating on purpose: `ast.walk` descends into nested functions, so a name bound
+    only in a nested scope also counts as shadowed here. That direction loses a reader and
+    pushes the control toward VOID, which is the safe error for a reach control to make.
+
+    `global name` un-shadows, because such a function really is talking about the module's.
+    """
+    bound: set[str] = set()
+    declared: set[str] = set()
+    for sub in ast.walk(function):
+        if isinstance(sub, ast.Global):
+            declared.update(sub.names)
+        elif isinstance(sub, ast.Name) and isinstance(sub.ctx, (ast.Store, ast.Del)):
+            bound.add(sub.id)
+        elif isinstance(sub, ast.arg):
+            bound.add(sub.arg)
+        elif isinstance(sub, (ast.Import, ast.ImportFrom)):
+            bound.update((a.asname or a.name).split(".")[0] for a in sub.names)
+        elif isinstance(sub, ast.ExceptHandler) and sub.name:
+            bound.add(sub.name)
+    return bound - declared
+
+
 def _consequence_lines(
-    root: pathlib.Path, files: list[str], names: set[str]
+    root: pathlib.Path, files: list[str], names: set[str], target: str
 ) -> dict[str, set[int]]:
-    """Every line INSIDE A FUNCTION BODY that loads one of `names`, per file.
+    """Every line INSIDE A FUNCTION BODY that loads one of `target`'s `names`, per file.
 
     NOT every reader, and the difference is the whole control. A load in a signature default
     (`def observe(max_calls = MAX_CALLS)`), in a decorator, in an annotation or at module level
     is evaluated when the module is IMPORTED -- exactly as the declaration is -- so it is no
     more evidence that the mutation's consequence was reached than the declaration was. Only a
     load the interpreter arrives at by CALLING something counts here.
+
+    AND NOT EVERY OCCURRENCE OF THE NAME, which is the 2026-11-03 repair [T-67]. This matched
+    any `ast.Name` whose `.id` equalled the constant -- **in any context, `Store` included** --
+    or any `ast.Attribute` whose `.attr` did, with no scope, import or receiver resolution. So
+    a dead local binding counted as a reader. Measured over 16 syntactic positions, it accepted
+    10, and **6 of those 10 are not reads of the constant at all**:
+
+        a local assignment `WIDTH = 3`            a parameter `def f(WIDTH)`
+        `self.WIDTH`                              `os.WIDTH`, an unrelated object
+        a comprehension or for-loop target        an attribute STORE `self.WIDTH = 9`
+
+    DEMONSTRATED END TO END on this harness's own 6c negative-control row. Planting one line --
+    `RESOURCE_NOISE = 0.0`, a local in a function that never reads the constant -- turned
+    `VOID: No line that READS it ran` into `CONTROL 6c (consequence): 1 of 2 reader(s) ran`
+    followed by `VERDICT: SURVIVED ... the guard did NOT notice this mutation`. The baseline
+    stayed green in both arms, so the flip is the plant's alone. **That converts *nothing was
+    measured* into *the guard is weak*, which is the exact failure 6c was built for**: this
+    file's own note records that eight constants were benched that way and all eight survived,
+    and not one of those verdicts was about a guard.
+
+    `check.py`'s `called_name` and `imported_names` use the same name-only shape and DOCUMENT
+    it as deliberately over-inclusive, because their error *"errs towards saying nothing"*.
+    6c's over-inclusion errs towards PRINTING A VERDICT, which is the worse of the two.
+
+    THE RESIDUAL, STATED: 0 live instances across a derived population of 250 module-level
+    bound names in `runprov/*.py`, `ci.py` and `tools/*.py`, so this repairs a mechanism rather
+    than a reported verdict.
     """
+    module = target.replace("\\", "/").removesuffix(".py").replace("/", ".")
     out: dict[str, set[int]] = {}
     for name in files:
         path = root / name
@@ -640,15 +726,22 @@ def _consequence_lines(
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:  # pragma: no cover - a tree that will not parse cannot be read
             continue
+        spellings = _spellings_of(tree, module)
         hit: set[int] = set()
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
+            shadowed = _shadowed(node)
             for statement in node.body:
                 for sub in ast.walk(statement):
-                    if isinstance(sub, ast.Name) and sub.id in names:
-                        hit.add(sub.lineno)
-                    elif isinstance(sub, ast.Attribute) and sub.attr in names:
+                    if not isinstance(sub, (ast.Name, ast.Attribute)):
+                        continue
+                    if not isinstance(sub.ctx, ast.Load):
+                        continue
+                    if isinstance(sub, ast.Name):
+                        if sub.id in names and sub.id not in shadowed:
+                            hit.add(sub.lineno)
+                    elif sub.attr in names and _dotted(sub.value) in spellings:
                         hit.add(sub.lineno)
         if hit:
             out[name.replace("\\", "/")] = hit
@@ -878,7 +971,7 @@ def bench(
     #: as a weaker claim.
     if cov is not None and executed and (bound := _module_bindings(after, changed_statements)):
         by_file = _executed_by_file(cov)
-        readers = _consequence_lines(mutant, sorted(by_file), bound)
+        readers = _consequence_lines(mutant, sorted(by_file), bound, target)
         reached = {
             f"{name}:{line}"
             for name, lines in readers.items()
@@ -1145,13 +1238,25 @@ _SELFCHECK = [
         "VOID",
         "is not a module Python executes",
     ),
+    #: THIS ROW SAID "control 7" AND MEASURED CONTROL 4 [T-67]. With a selector that collects
+    #: nothing, control 4 refuses on the UNMUTATED tree at `rc0 == 5` -- BEFORE the mutant is
+    #: ever run -- so `classify`, which IS control 7, is never called. Worse, the fragment that
+    #: is supposed to pin WHICH control fired, `"collected NOTHING"`, appears in BOTH messages,
+    #: so it could not discriminate between them.
+    #:
+    #: MEASURED 2026-11-03: with control 7's `rc == 5` branch changed from `raise Void` to
+    #: `return CAUGHT` and control 4 left intact, this row still reported `ok`. Removing
+    #: control 4's clause instead turned it `WRONG` -- which is what proves it was keyed to
+    #: control 4 all along. The label now says what it measures, and the fragment is the half
+    #: of control 4's sentence that control 7's message does not contain. Control 7 is asserted
+    #: directly in `selfcheck`, because no row in this table can reach it.
     (
-        "VOID control 7 -- the selector matches NOTHING (rc=5)",
+        "VOID control 4 -- the selector collects NOTHING on the UNMUTATED tree (rc=5)",
         "test_a_name_no_test_in_this_repository_has",
         "runprov/_report.py",
         None,
         "VOID",
-        "collected NOTHING",
+        "on the UNMUTATED tree",
     ),
 ]
 
@@ -1273,6 +1378,34 @@ def selfcheck(work: pathlib.Path, py: str) -> int:
     something checks it.
     """
     rows, bad = [], 0
+
+    #: CONTROL 7, ASSERTED DIRECTLY, BECAUSE NO ROW IN THE TABLE CAN REACH IT [T-67].
+    #:
+    #: `classify` is control 7 and it is a pure function of a return code, so it costs nothing
+    #: to exercise here -- and it has to be here, because every row that would reach its two
+    #: `raise Void` branches is refused by an EARLIER control first: a `rc=5` selector by
+    #: control 4 on the unmutated tree, and no row produces a pytest usage error at all. Of
+    #: the 13 rows, 4 expect CAUGHT (rc 1) and 2 expect SURVIVED (rc 0); the 7 VOID rows refuse
+    #: either before the mutant runs or after `classify` has already returned. So the table
+    #: could not see this function break, and one of its rows claimed to.
+    #:
+    #: `tools/survivors.py` asserts its controls' premise the same way, for the same reason.
+    for code, expected in ((0, SURVIVED), (1, CAUGHT)):
+        got = classify(code)
+        if got != expected:
+            bad += 1
+            print(f"CONTROL 7 BROKEN: pytest rc={code} reads as {got}, not {expected}")
+    for code in (5, 4):
+        try:
+            got = classify(code, "usage error")
+        except Void:
+            continue
+        bad += 1
+        print(
+            f"CONTROL 7 BROKEN: pytest rc={code} reads as {got} rather than VOID — a suite "
+            f"that never ran, or a usage error, would be reported as a verdict about the guard"
+        )
+
     for label, test, target, kind, expect, because in _SELFCHECK:
         try:
             code = bench(

@@ -9,6 +9,141 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — the harnesses' own controls: ownership by substring, a floor satisfied by a constant, a digest of prose
+
+**`torture.py`'s preload decided *is this write the package's* by a path component spelled
+`runprov`.** `os.sep + "runprov" + os.sep in inspect.stack()[1].filename` is satisfied by any
+path carrying such a component — a copy, a worktree, a venv's site-packages, an unrelated
+directory — and, **because this repository's own root directory is named `runprov`, by every file
+in it**, including `tests/`, `tools/` and `ci.py`. Measured over 7 real spellings: the substring
+form disagrees with the claim on **4**, resolved-path containment on **0**. A wrong `True`
+fabricates a finding attributed to this package (*"written by runprov"*); a wrong `False`
+**suppresses** a real torn-write finding, because `_not_atomic` returns nothing unless `ours` —
+and that is the false-green direction, made asymmetric by the repository's own name. Both sites
+now use the resolved-path shape `runprov/run.py` and `bench.py`'s read-proof plugin already used;
+this was the only place in either file spelling it as a substring.
+
+**It lived inside an embedded source string, which is why the previous sweep never saw it.** That
+audit's own note says *"my AST walk had a boundary and did not report it"*. The new guard walks
+`TORN`'s AST and requires **every** ownership verdict in it to be either the derived predicate or
+a declared literal, with nothing left over — and it reds on the old code naming both
+`UNDERIVED:Compare(...)` sites.
+
+**Part A's VOID floor could no longer notice a seam going blind.** It asked `if not mine` — one
+owned row from *any* seam — and **8 of the 8 owned rows come from the two `atomic` seams whose
+ownership verdict is a literal `True`**, which the pipeline guarantees by calling the package's own
+helper. Measured: with **both** `pathlib.Path` seams deleted from the preload, the census still
+reported `8 write site(s) … 8 of them runprov's`, the floor stayed green and the harness exited
+**0** — indistinguishable from an intact run. The floor's claim quantifies over *the package's
+writes*; its measurement quantified over one row from any seam. The preload now records which of
+its four seams actually installed, **measured by `is` against the functions it bound** rather than
+assumed, and part A refuses on an absent or incomplete record and prints the per-seam breakdown.
+The seventh write site in this package's history was found by *reading*, precisely because it was
+spelled `write_bytes` and that seam was unpatched.
+
+**A `--case` that selected nothing exited 0.** `main` returned `1 if found else 0` with no
+reference to `cases`, so a selector matching nothing printed `# 0 case(s), 0 finding(s)` and
+answered like a clean run — reachable by one typo, and reachable by following the harness's **own**
+printed instruction, because a VOID finding's case id selects nothing. It is now **rc 2**, which
+this file's header already declared for *the run is void*.
+
+**And two of the reproduce lines named a family rather than a case.** `_not_atomic` emits
+`a:{nth}` and part B's missing target emits `b:{target}`, while a full id carries four fields.
+Selection is `startswith`, so with ten census sites **`--case a:1` runs 6 cases where `a:1:` runs
+3** — measured. The trailing colon pins the field boundary, and a VOID finding now says plainly
+that no `--case` reproduces it.
+
+**A VOID finding was reported as a findings run.** Both of part A's VOID findings flow into
+`found`, and `main` ended `1 if found else 0` — so a run that measured **nothing** returned the
+exit code meaning *we found a problem with the package*, against a header declaring `2` for a void
+run. Found by the seam repair above: the new VOID fired and the harness still answered 1.
+
+**`__name__.startswith("runprov")` also matched an unrelated top-level module** — `runprov_extras`,
+`runprovtools` — whose `atomic_write_text` calls would then enter the census carrying this seam's
+ownership verdict. The package is the module `runprov` and its submodules, which is two
+comparisons rather than one prefix.
+
+**`survivors.py` hashed its matching rule's docstrings.** 81.4% of the 2 784 bytes it digested
+were docstring — `occurrence_of` 1 863 of 2 105, `locate` 404 of 679 — and **0 bytes of comment**,
+so a comment-oriented repair would have been a no-op. Measured, three arms, each one word or one
+character: untouched `da78e1e2…` rc 0; **a one-word docstring edit `7bf209f2…` rc 3**; a
+behavioural edit `280ddff5…` rc 3. The two are **indistinguishable** in verdict, exit code and
+message, and both reds reach two gates. A sha256 over source has no false negatives, so prose did
+not make this a weak witness — it made it an **unattributing** one, and the harm is second-order
+and specific: the REFUSE message offers *update the digest* as the remedy, so the cheap response to
+a false red is to re-stamp the line without re-verifying 28 entries, turning a false red into a
+future false green. It now digests the rule's code with docstrings stripped and layout normalised
+by `ast.unparse`, so a `ruff format` pass stops reading as a rule change. **Both arms are
+required, and both hold**: the prose edit is now green, the behavioural edit still refuses.
+
+**And the neighbour that digest cited does the opposite of what it was cited for.** `claims.py`
+hashes a sorted-JSON payload of its rule's *semantics*, splits detection from bindings, excludes
+the reasons because *"they are documentation for a reader and change no verdict"*, and says in
+terms: *"digesting the function would make every refactor of it read as a rule change."* Opening
+the cited neighbour was the whole lesson.
+
+**`bench.py`'s control 6c counted a same-named local as a reader.** It matched any `ast.Name`
+whose `.id` equalled the constant — **in any context, `Store` included** — or any `ast.Attribute`
+whose `.attr` did, with no scope, import or receiver resolution. Measured over 16 syntactic
+positions: **wrong on 10**, among them a local assignment, a parameter, `self.X`, an unrelated
+object's `X`, a comprehension target, a for-loop target, an `except … as` name and an attribute
+*store*. Demonstrated end to end on this harness's own 6c negative control: planting one line —
+a local named like the constant, in a function that never reads it — turned `VOID: No line that
+READS it ran` into `1 of 2 reader(s) ran` followed by `VERDICT: SURVIVED … the guard did NOT
+notice this mutation`, with the baseline green in both arms. **That converts *nothing was
+measured* into *the guard is weak*, which is the exact failure 6c was built for.** It now requires
+a `Load`, skips a name the function binds locally unless it declares `global`, and resolves an
+attribute's receiver through the file's own imports to the module the mutation was made in —
+wrong on **0 of 16**, with both genuine readers still accepted. 0 live instances across a derived
+population of 250 module-level names, so this repairs a mechanism rather than a reported verdict.
+
+**A selfcheck row named "control 7" was satisfied by control 4's refusal.** With a selector that
+collects nothing, control 4 refuses on the *unmutated* tree before the mutant is ever run, so
+`classify` — which **is** control 7 — is never called; and the fragment meant to pin which control
+fired, `"collected NOTHING"`, appears in **both** messages. Measured: with `classify`'s `rc == 5`
+branch changed from `raise Void` to `return CAUGHT` and control 4 intact, the row still reported
+`ok`; removing control 4's clause instead turned it `WRONG`. The row now says what it measures and
+is pinned by the half of control 4's sentence control 7 does not contain, and **control 7 is
+asserted directly** in `selfcheck`, because neither of `classify`'s refusals is reachable from any
+of the 13 rows. Swept rather than fixed in place: **19 numbered control rows across the
+instruments — bench's 13, `survivors.py`'s 6, and `corpus.py` has none — and exactly one fragment
+was ambiguous.** A guard now holds the property over the whole table.
+
+**And `ci.py`'s `bench` step described a table that had not existed for some time**: *"its own six
+cases — one CAUGHT, one SURVIVED and four VOID"* and *"twelve tree copies and twelve pytest
+runs"*, over a table of **13 rows, 4 CAUGHT, 2 SURVIVED, 7 VOID**. It now states no count at all —
+`len(bench._SELFCHECK)` is importable and the split is a `Counter` over its verdict column — and
+the corrected figures are written as a **dated measurement** rather than a live claim.
+
+### Tested — eight guards, two of them recorded as void controls
+
+Right-reason reds on the pre-repair modules: *"an ownership verdict in the preload is neither
+`_ours(...)` nor a declared literal"*, naming both substring sites; *"nothing may be tortured when
+a seam is missing"*; *"a selector that matched nothing reported the exit code of a clean run"*; *"a
+VOID finding is a void run, not a findings run"*; `{'collected NOTHING': 2}`; and *"`selfcheck`
+must exercise `classify` itself"*. The control-6c guard and the survivors-digest guard **cannot be
+reds** — the signature and the helper they call *are* the repairs — so both are recorded as **void
+controls**, and each was demonstrated separately by a matrix run against the old code.
+
+**One existing test was asserting the defect it was written beside.** The consequence-lines test
+used `cfg.MAX_CALLS` with `cfg` imported nowhere and expected it to count — which is the
+false-reader shape, not the feature. Its fixture now binds the target module under that alias and
+carries the two negative arms beside it: an unrelated object's attribute and a parameter shadowing
+the name, neither of which may count.
+
+**And a regression this group introduced is repaired here, because the previous commit shipped
+it.** While giving a new fixture its own directory, a bulk `str.replace` over the test file removed
+`(tmp_path / "b").mkdir()` and `(tmp_path / "d").mkdir()` **everywhere** — two of those lines
+belonged to `test_terminal_log_anchors_like_its_siblings` and
+`test_verify_collects_files_directories_and_neither`, which then failed on their own first
+statement. The rule this project already holds is *assert every `str.replace`, because a silent
+no-op reads as success*; the failure mode here is one step worse, a silent **over**-match, and the
+same assertion catches both. **The full gate found it**, which is the gate working: two of its
+three reds were these, and the third was a CHANGELOG paragraph citing a test name renamed in the
+same commit — the standing rule about resolving a cited identifier against its `def` rather than
+against prose, met again by the person who wrote the rule down. Every line the whole group removes
+was then swept and accounted for.
+
 ### Fixed — the corpus's leak control could not fail, and the artifacts it calls untouchable were not
 
 **The one automated check standing between this corpus and a repeat of the 0.5.0 sdist could not
@@ -115,16 +250,34 @@ old figure *"is not comparable"* — which is the correct attribution, and the b
 regenerated under the new rule. **Those 42 lines are not new claims; they are claims that were
 being exempted under a reason that did not describe them.**
 
-**One reported finding was split and half of it refuted.** The `version` kind's `.*`-bridged
-branches: no alternative is dead — all three match live lines, and every tool name inside them
-fires on its own — so the dead-branch half is **refuted**. The over-wide half is real and is
-**filed, not fixed**: 5 of 24 `version` lines carry a number that is no part of any version token,
-including `Machine: 8 cores, 15 GB RAM, CPython 3.12.13` exempted as *"a version of this or
-another tool"*. The general repair is a residue rule — blank the span a kind matched and re-test
-whether a number survives — and measured across all eight kinds it would reclassify **72 to 74**
-lines whose printed reason demonstrably does not describe the number it exempts. That is a change
-to the classifier's unit of exemption rather than a defect repair, and it needs the reclassified
-lines triaged rather than banked, so it is recorded for a decision instead of applied here.
+**One reported finding was split, half of it refuted, and the repair for the other half was
+BUILT, MEASURED AND WITHDRAWN.** The `version` kind's `.*`-bridged branches: no alternative is
+dead — all three match live lines, and every tool name inside them fires on its own — so the
+dead-branch half is **refuted**. The over-wide half is real: `classify`'s unit is the **line**, so
+one version token anywhere on it exempts every other number, and **5 of 24 `version` lines** plus
+**11 of 22 `reference` lines** carry a number that is no part of any such token — `Machine: 8
+cores, 15 GB RAM, CPython 3.12.13` exempted as *"a version of this or another tool"*, and
+*"Zenodo accepts exactly one — `release:released` returns 202"*, a live HTTP status, exempted as
+*"an identifier"*.
+
+**The residue rule that would catch them was implemented and then reversed, and the measurement is
+the reason.** Blanking the span a kind matched — grown to the token's edges, because `ADR-\d`
+otherwise matches `ADR-0` of `ADR-0005` and leaves `005` — and re-testing for a surviving number
+moves **25 lines**. Reading each one, **about ten are the probe's own artefacts rather than
+findings**: `[ADR-0015](docs/adr/0015-….md)` moves because the filename repeats the identifier the
+link text already explains; `BSD 3-Clause` moves because `3` survives `BSD`; and the whole
+`pkginfo` compatibility table (`| 1.8.0, 1.8.2 | pkginfo >=1.9.4,<2.0 | 1.12.1.2 |`) moves
+although **every number on it is a version** — the kind's pattern needs a tool name adjacent and
+there is only one on the line, so blanking it leaves the rest unexplained.
+
+**This bucket feeds a gated baseline, so that error rate would have become the project's.** A
+predicate good enough to report a split is not automatically good enough to enforce one. So the
+project's own documented third option is taken instead: **declare the narrow claim and name the
+loose examples.** Both reasons now say the exemption is about *a token somewhere on the line* and
+state in terms that it is **not** a claim that every number on that line is one, with the measured
+exceptions named beside the pattern. Nothing is gated on a predicate I could not make accurate,
+the counts and the detection digest are unmoved — reasons are deliberately not digested — and the
+measurement is written down where the next person to reach for the residue rule will find it.
 
 **Also corrected: a stale line citation inside the instrument.** `bound_lines`' docstring cited
 *"`README.md` line 1396"* for a sentence that is at line 1564 — in the paragraph that exists to
@@ -141,7 +294,7 @@ for the right reason (*"a fence satisfied the binding: ok"*; *"line 3 declares n
 different paragraph, yet it was withdrawn"*). The digest guard **cannot** be a red — the constant
 it reads is the repair — so it is recorded as a **void control**.
 
-**And `test_unexercised_branches_skips_a_FENCED_block_and_a_SINGLE_BRANCH_pattern` was asserting
+**And `test_unexercised_branches_skips_a_FENCED_block_and_TESTS_a_single_branch_pattern` was asserting
 the defect.** Its stated reason was that *"a lone branch is the pattern itself and reporting it
 dead would report the whole detection rule dead"* — but a kind that matches nothing **is** the
 finding. The test now asserts the single-branch pattern is tried, and keeps the property its old

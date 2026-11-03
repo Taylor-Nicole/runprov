@@ -4381,6 +4381,7 @@ def test_terminal_log_anchors_like_its_siblings(tmp_path, monkeypatch, capsys):
     The silence is asserted too, and it is the sharp end: because the cwd-moved notice is
     raised BY `_anchor`, a run that called only this method said nothing at all."""
     (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
     (tmp_path / "a" / "step.log").write_text("LOG FROM A\n", encoding="utf-8")
     (tmp_path / "b" / "step.log").write_text("LOG FROM B\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path / "a")
@@ -22363,6 +22364,7 @@ def test_verify_treats_an_unreadable_file_as_unpinned(tmp_path):
 def test_verify_collects_files_directories_and_neither(tmp_path):
     """Sorted and deduped: naming a file AND its parent must not check it twice, and two
     runs of the same check must report in the same order."""
+    (tmp_path / "d").mkdir()
     (tmp_path / "d" / "b.tsv").write_text("b\n", encoding="utf-8")
     (tmp_path / "a.tsv").write_text("a\n", encoding="utf-8")
     got, skipped = _walked(
@@ -59217,6 +59219,11 @@ def test_torture_part_a_is_VOID_when_the_census_finds_NONE_of_the_packages_write
     planted in a copied tree cannot produce "the instrument stopped seeing its subject".
     """
     torture = _torture_module()
+    #: THE SEAM RECORD IS COMPLETE ON PURPOSE, so the arm this test is about is the one that
+    #: fires. *A seam was not installed* and *the census saw no owned write* are two different
+    #: states with two different VOID findings, and a `_build` that builds nothing trips the
+    #: first; supplying the record isolates the second.
+    _torture_seams(tmp_path)
     with pytest.MonkeyPatch.context() as patch:
         #: `_build` that builds nothing: no census file, so no sites, so none of them ours.
         patch.setattr(torture, "_build", lambda tree, preload="": (0, ""))
@@ -59243,6 +59250,7 @@ def test_torture_part_a_reports_a_TEAR_THAT_DID_NOT_LAND_and_keeps_going(tmp_pat
         json.dumps([[1, "a.tsv", 40, True, "write_text"], [2, "b.tsv", 40, True, "write_text"]]),
         encoding="utf-8",
     )
+    _torture_seams(tmp_path)
 
     def build_without_tearing(tree, preload=""):
         #: writes the census the first call expects, and never the torn report
@@ -59865,30 +59873,150 @@ def test_executed_lines_REFUSES_an_absent_report_and_a_report_without_the_target
     assert (ran, every) == ({7}, {7, 8})
 
 
-def test_consequence_lines_skips_a_NON_PYTHON_file_and_counts_an_ATTRIBUTE_load(tmp_path):
+def test_every_selfcheck_rows_REASON_is_produced_by_exactly_ONE_control():
+    """T-67. A row named "control 7" reported `ok` while control 7's subject was broken.
+
+    The selfcheck pins each row by a verdict AND a fragment of its reason, because `expect`
+    alone was not enough. But the fragment only pins WHICH control fired if no other control
+    can produce it — and `"collected NOTHING"` appears in **two** messages: control 4's
+    refusal on the unmutated tree, and `classify`'s, which IS control 7. Control 4 runs first,
+    so with a selector that collects nothing it raises before the mutant is ever run and
+    `classify` is never called.
+
+    MEASURED 2026-11-03: with `classify`'s `rc == 5` branch changed from `raise Void` to
+    `return CAUGHT` and control 4 left intact, that row still reported `ok`. Removing control
+    4's clause instead turned it `WRONG` — which is what proves it was keyed to control 4.
+
+    SWEPT, not fixed in one place: 19 numbered control rows across the instruments — bench's
+    13, `survivors.py`'s 6, and `corpus.py` has no such table — and exactly **one** had an
+    ambiguous fragment. `survivors.py` is clean because each of its fragments is emitted at a
+    single site. This asserts the property over the whole table so the next one is red on
+    arrival.
+    """
+    bench = _bench_module()
+    source = ast.parse((_repo_root() / "tools" / "bench.py").read_text(encoding="utf-8"))
+
+    #: EVERY STRING THIS MODULE CAN PRINT OR RAISE, with docstrings excluded -- a docstring
+    #: quoting a fragment is documentation and emits nothing, and counting it would make every
+    #: row ambiguous by virtue of being explained.
+    docstrings = set()
+    for node in ast.walk(source):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            first = node.body[0] if node.body else None
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                docstrings.add(id(first.value))
+
+    #: AND THE TABLE ITSELF IS EXCLUDED, because a row's own `because` is written there.
+    table = next(
+        node
+        for node in source.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(x, ast.Name) and x.id == "_SELFCHECK" for x in node.targets)
+    )
+    in_table = {id(n) for n in ast.walk(table)}
+
+    emitted = [
+        node.value
+        for node in ast.walk(source)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+        and id(node) not in in_table
+    ]
+    assert len(emitted) > 50, f"this walk is not reading bench.py's strings: {len(emitted)}"
+
+    ambiguous = {}
+    for row in bench._SELFCHECK:
+        because = row[5]
+        if not because:
+            continue
+        sites = [text for text in emitted if because in text]
+        if len(sites) != 1:
+            ambiguous[because] = len(sites)
+    assert not ambiguous, (
+        f"a selfcheck row is pinned by a reason fragment that is not produced at exactly one "
+        f"site, so it cannot say WHICH control fired: {ambiguous}"
+    )
+
+
+def test_selfcheck_asserts_CONTROL_7_DIRECTLY_because_no_row_can_reach_it():
+    """T-67. `classify` is control 7, and every row that would reach its refusals is refused first.
+
+    Of the 13 rows, 4 expect CAUGHT (pytest rc 1) and 2 expect SURVIVED (rc 0); the 7 VOID rows
+    refuse either before the mutant runs (controls 4, 5, 5t) or after `classify` has already
+    returned (controls 6, 6a, 6b, 6c). So **neither of `classify`'s two `raise Void` branches
+    is reachable from any row**, and the table could not see this function break while one of
+    its rows claimed to cover it.
+
+    `classify` is a pure function of a return code, so asserting it costs nothing and belongs
+    where the table is checked. `tools/survivors.py` asserts its controls' premise the same way.
+    Read from the source rather than run, because `selfcheck` copies this tree 26 times.
+    """
+    source = (_repo_root() / "tools" / "bench.py").read_text(encoding="utf-8")
+    body = source[source.index("def selfcheck(") :]
+    body = body[: body.index("\ndef ", 1)] if "\ndef " in body[1:] else body
+    assert "classify(" in body, (
+        "`selfcheck` must exercise `classify` itself; no row in its table can reach either of "
+        "that function's refusals"
+    )
+    assert "CONTROL 7 BROKEN" in body, (
+        "the direct assertion of control 7 has gone from `selfcheck`, so the only thing left "
+        "watching it is a row that measures a different control"
+    )
+
+    #: AND THE FUNCTION REALLY DOES REFUSE BOTH CODES, asserted here too so this test is not
+    #: purely about wiring: rc 5 is a suite that never ran and rc 4 is a usage error, and
+    #: reading either as a verdict is the failure control 7 exists to prevent.
+    bench = _bench_module()
+    assert bench.classify(0) == bench.SURVIVED
+    assert bench.classify(1) == bench.CAUGHT
+    for code in (5, 4):
+        with pytest.raises(bench.Void):
+            bench.classify(code, "usage error")
+
+
+def test_consequence_lines_counts_only_a_LOAD_OF_THE_TARGETS_OWN_CONSTANT(tmp_path):
     """Only a load the interpreter reaches by CALLING something counts as a consequence.
 
     THE SKIPPED FILE COMES FIRST AND A REAL ONE FOLLOWS. A skip tested with the awkward entry
     last is indistinguishable from a stop: this loop's `continue` and a `break` differ only if
     something after the skipped entry must still appear in the result. `a.txt` sorts before
     `b.py` in the list passed here, so a `break` loses `b.py` entirely.
+
+    AND THE ATTRIBUTE ARM USED TO BE SATISFIED BY ANY RECEIVER [T-67]. This fixture wrote
+    `cfg.MAX_CALLS` with `cfg` imported nowhere, and the walk counted it — which is the defect,
+    not the feature: the matcher accepted any `ast.Attribute` whose `.attr` equalled the name,
+    in any context, with no receiver resolution, and any `ast.Name` with that `.id` including a
+    `Store`. Measured over 16 syntactic positions it was wrong on **10**; among them a local
+    assignment, a parameter, a `self.` attribute, an unrelated object's attribute, a
+    comprehension target and an attribute STORE. The receiver must now resolve, through the
+    file's own imports, to the module the mutation was made in.
     """
     bench = _bench_module()
     (tmp_path / "a.txt").write_text("MAX_CALLS\n", encoding="utf-8")
     (tmp_path / "b.py").write_text(
-        #: line 1 module level, line 2 a decorator, line 3 a default, line 5 the only
-        #: consequence -- a NAME load inside a body -- and line 6 an ATTRIBUTE load, which is
-        #: the second spelling and the arm this walk had never been given.
+        #: 1 binds the TARGET module under an alias; 2 module level, 3 a decorator, 4 a
+        #: default -- all evaluated at import. 6 is a NAME load in a body and 7 an ATTRIBUTE
+        #: load through that alias: those two are the consequences. 8 is an attribute of an
+        #: unrelated object and 11 is a parameter shadowing the name, and neither is a read of
+        #: the constant at all.
+        "import pkg.m as cfg\n"
         "TOP = MAX_CALLS\n"
         "@MAX_CALLS\n"
         "def observe(limit=MAX_CALLS):\n"
         "    del limit\n"
-        "    return MAX_CALLS\n"
-        "    return cfg.MAX_CALLS\n",
+        "    print(MAX_CALLS)\n"
+        "    print(cfg.MAX_CALLS)\n"
+        "    print(other.MAX_CALLS)\n"
+        "\n"
+        "def shadowed(MAX_CALLS):\n"
+        "    return MAX_CALLS\n",
         encoding="utf-8",
     )
 
-    hit = bench._consequence_lines(tmp_path, ["a.txt", "b.py", "gone.py"], {"MAX_CALLS"})
+    hit = bench._consequence_lines(
+        tmp_path, ["a.txt", "b.py", "gone.py"], {"MAX_CALLS"}, "pkg/m.py"
+    )
 
     assert "a.txt" not in hit, "a non-Python file was parsed as Python"
     assert "gone.py" not in hit, "a file that does not exist produced a result"
@@ -59896,9 +60024,11 @@ def test_consequence_lines_skips_a_NON_PYTHON_file_and_counts_an_ATTRIBUTE_load(
         "the Python file AFTER the skipped one is missing, which is what a `break` in place of "
         "that `continue` looks like"
     )
-    assert hit["b.py"] == {5, 6}, (
-        f"expected the in-body NAME load (5) and the ATTRIBUTE load (6) and nothing evaluated "
-        f"at import -- module level (1), decorator (2) and default (3): {sorted(hit['b.py'])}"
+    assert hit["b.py"] == {6, 7}, (
+        f"expected the in-body NAME load (6) and the ATTRIBUTE load through the target's own "
+        f"alias (7), and nothing else: not the import-time positions (2 module level, 3 "
+        f"decorator, 4 default), not an unrelated object's attribute (8), and not a parameter "
+        f"shadowing the name (11): {sorted(hit['b.py'])}"
     )
 
 
@@ -60550,6 +60680,267 @@ def test_leaks_does_not_report_the_NORMALISED_ROOT_TOKEN_and_still_reports_a_rea
     )
 
 
+def test_the_survivor_rule_digest_moves_on_the_RULE_and_not_on_the_PROSE():
+    """T-67. The digest hashed `inspect.getsource` verbatim, 81.4% of it docstring.
+
+    MEASURED over the 2 784 bytes it used to hash: `occurrence_of` 1 863 of 2 105 docstring
+    (88.5%), `locate` 404 of 679 (59.5%), and **0 bytes of comment** — so a comment-oriented
+    repair would have been a no-op. Three arms over a pristine copy, each one word or one
+    character, showed a prose edit and a behavioural edit as **indistinguishable**: both
+    `REFUSE: the matching rule has changed`, both rc 3, both reaching two gates.
+
+    A sha256 over source has no false negatives, so prose did not make this a weak witness —
+    it made it an UNATTRIBUTING one. The harm is second-order and specific: the REFUSE message
+    offers *update the digest* as the remedy, so the cheap response to a false red is to
+    re-stamp the line without re-verifying 28 entries, which converts it into a future false
+    green.
+
+    BOTH ARMS ARE REQUIRED. Green on the prose arm alone would also be satisfied by deleting
+    the guard, which is why the rule arm is asserted beside it.
+    """
+    survivors = _survivors_module()
+    before = survivors.rule_digest()
+
+    #: THE PROSE ARM: the digest must not see a docstring at all, so it is not enough to show
+    #: that one edit does not move it — the docstring must be absent from what is hashed.
+    hashed = survivors._rule_source(survivors.occurrence_of) + survivors._rule_source(
+        survivors.locate
+    )
+    doc = survivors.occurrence_of.__doc__ or ""
+    assert len(doc.split()) > 20, "this function's docstring is the subject; it has gone"
+    longest = max(doc.split("\n"), key=len).strip()
+    assert len(longest) > 30, longest
+    assert longest not in hashed, (
+        f"a line of docstring is inside what the rule digest hashes, so a prose edit still "
+        f"reads as a rule change: {longest!r}"
+    )
+
+    #: THE RULE ARM: a behavioural change MUST move it. Asserted by re-digesting a mutated
+    #: copy of the rule's own source rather than by editing the live module.
+    mutated = hashed.replace("out.append(seen[line])", "out.append(seen[line] + 1)")
+    assert mutated != hashed, (
+        "the line this arm mutates is no longer in the digested source; the arm is void and "
+        "proves nothing about whether a rule change still moves the digest"
+    )
+    assert survivors.hashlib.sha256(mutated.encode("utf-8")).hexdigest() != before
+
+    #: AND THE COMMITTED REGISTRY STILL AGREES, so the digest above is the one in force rather
+    #: than one nothing compares against.
+    recorded = pathlib.Path(_repo_root() / "docs" / "survivor-registry.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert f"# rule-digest: {before}" in recorded, (
+        "the registry records a different digest than the live rule computes, so every entry "
+        "is pending re-verification"
+    )
+
+
+def test_torture_main_is_VOID_when_a_case_selector_matched_NOTHING(monkeypatch, capsys):
+    """T-67. `main` returned `1 if found else 0` with no reference to `cases`.
+
+    So a `--case` that selected nothing printed `# 0 case(s), 0 finding(s)` and exited 0 — the
+    same code and the same shape of line as a run that tortured everything and found nothing.
+    Measured 2026-11-03: `--case definitely-no-such-case` against the real harness gave rc 0.
+
+    This file's own header already declares `2` for *the run is void (a control did not fire)*,
+    and `part_a` applies that reasoning a hundred lines earlier: *"a run that finds none of the
+    package's writes has lost sight of its subject, and prints what a run that found no problem
+    prints."* It is reachable by one typo, and reachable by following the harness's OWN printed
+    instruction, because a VOID finding's case id selects nothing.
+    """
+    torture = _torture_module()
+    monkeypatch.setattr(torture, "controls", lambda work: [])
+    monkeypatch.setattr(torture, "part_a", lambda work, fractions, case: ([], 0))
+    monkeypatch.setattr(torture, "part_b", lambda work, seed, case: ([], 0))
+
+    assert torture.main(["--case", "no-such-case"]) == 2, (
+        "a selector that matched nothing reported the exit code of a clean run"
+    )
+    page = capsys.readouterr().out
+    assert "VOID" in page and "no-such-case" in page, page
+
+    #: CONTROL: the same zero findings WITHOUT a selector is a genuinely clean run, and must
+    #: still be 0. Without this arm, returning 2 unconditionally would satisfy the assertion
+    #: above and turn every clean run into a void one.
+    monkeypatch.setattr(torture, "part_a", lambda work, fractions, case: ([], 30))
+    assert torture.main([]) == 0, "a clean run that measured 30 cases must still be 0"
+
+    #: AND A SELECTOR THAT DID SELECT SOMETHING is not void either, even with no findings.
+    assert torture.main(["--case", "a:1:"]) == 0
+
+
+def test_torture_main_reports_a_VOID_FINDING_as_a_VOID_RUN_and_not_as_a_finding(
+    monkeypatch, capsys
+):
+    """T-67. This file's header declares `2` for a void run, and VOID findings returned `1`.
+
+    Both of `part_a`'s VOID findings flow into `found`, and `main` ended `1 if found else 0` —
+    so a run that measured NOTHING reported the exit code meaning *we found a problem with the
+    package*. Found 2026-11-03 by the seam-record repair: with both `pathlib.Path` seams
+    deleted from the preload, the new VOID fired and the harness still answered 1.
+    """
+    torture = _torture_module()
+    void = torture.Finding(
+        case="a:seams", what="VOID: A SEAM THIS HARNESS PATCHES IS NOT INSTALLED", detail="d"
+    )
+    real = torture.Finding(case="a:1:x.tsv:0.5", what="NOT ATOMIC", detail="d")
+    monkeypatch.setattr(torture, "controls", lambda work: [])
+    monkeypatch.setattr(torture, "part_b", lambda work, seed, case: ([], 0))
+
+    monkeypatch.setattr(torture, "part_a", lambda work, fractions, case: ([void], 0))
+    assert torture.main([]) == 2, "a VOID finding is a void run, not a findings run"
+    page = capsys.readouterr().out
+    assert void.what in page, f"the void finding must still be PRINTED, not swallowed: {page}"
+    assert "the census itself is the subject" in page, (
+        f"a VOID finding has no case to re-run, and must not print one: {page}"
+    )
+
+    #: CONTROL: a REAL finding is still 1, and still carries a reproduce line. Without this the
+    #: repair could have turned every finding into a void run.
+    monkeypatch.setattr(torture, "part_a", lambda work, fractions, case: ([real], 3))
+    assert torture.main([]) == 1
+    assert "reproduce: --case a:1:x.tsv:0.5" in capsys.readouterr().out
+
+
+def test_torture_part_a_is_VOID_when_a_SEAM_IT_PATCHES_was_not_installed(tmp_path, capsys):
+    """T-67. The floor asked only whether ONE owned row had arrived from ANY seam.
+
+    And 8 of the 8 owned rows come from the two `atomic` seams whose ownership verdict is the
+    literal `True`, which the pipeline guarantees by calling the package's own helper.
+    MEASURED 2026-11-03: with **both** `pathlib.Path` seams deleted from the preload, the
+    census still reported `8 write site(s) … 8 of them runprov's`, this floor stayed green,
+    and the harness exited 0 — an answer indistinguishable from an intact run. The floor's
+    claim quantifies over THE PACKAGE'S WRITES; its measurement quantified over one row from
+    any seam, and those are different sentences.
+
+    The seventh write site in this package's history was found by READING, precisely because it
+    was spelled `write_bytes` and that seam was unpatched. An eighth spelling would be absent
+    from the census with no row of its own, which reads exactly like a seam nothing used.
+    """
+    torture = _torture_module()
+    census = _torture_census(tmp_path, [[1, "a.tsv", 40, True, "atomic"]], seams=False)
+    assert census.is_file()
+
+    def build_without_tearing(tree, preload=""):
+        return 0, ""
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(torture, "_build", build_without_tearing)
+        findings, n = torture.part_a(tmp_path, (0.5,), None)
+
+    assert n == 0, f"nothing may be tortured when a seam is missing: {n}"
+    assert [f.case for f in findings] == ["a:seams"], findings
+    assert "write_text" in findings[0].detail, findings[0]
+    page = capsys.readouterr().out
+    assert "write_text=NO" in page, f"the per-seam breakdown must name it: {page}"
+
+    #: CONTROL: the identical fixture with a COMPLETE record reaches the torture loop, so the
+    #: refusal above is the seam record and not part_a refusing everything.
+    _torture_census(tmp_path, [[1, "a.tsv", 40, True, "atomic"]], seams=True)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(torture, "_build", build_without_tearing)
+        _findings, n = torture.part_a(tmp_path, (0.5,), None)
+    assert n == 1, f"a complete seam record must let the run proceed: {n}"
+
+
+def test_every_ownership_verdict_in_the_PRELOAD_is_derived_or_declared():
+    """T-67. `TORN` decided *is this write the package's* by a path COMPONENT spelled `runprov`.
+
+    `os.sep + "runprov" + os.sep in inspect.stack()[1].filename` is satisfied by any path
+    carrying such a component — a copy, a worktree, a venv's site-packages, an unrelated
+    directory — and, because this repository's own root directory is named `runprov`, by every
+    file in it including `tests/`, `tools/` and `ci.py`. Measured over 7 real spellings, the
+    substring form disagrees with the claim on **4**; resolved-path containment on **0**.
+
+    THE WRONG-`True` DIRECTION FABRICATES a finding attributed to this package; the
+    wrong-`False` direction SUPPRESSES a real one, because `_not_atomic` returns nothing unless
+    `ours`. The second is the false-green direction, and the repository's own name is what makes
+    the pair asymmetric.
+
+    AND THIS IS AN AST WALK OVER THE EMBEDDED SOURCE, not a text search. The previous audit's
+    walk over `torture.py` could not see inside `TORN` at all, which is why two of the
+    highest-stakes classifiers in this file went unexamined: *"my AST walk had a boundary and
+    did not report it."*
+    """
+    torture = _torture_module()
+    body = ast.parse(torture.TORN)
+
+    #: EVERY VALUE EVER PASSED AS `_census`'s OWNERSHIP ARGUMENT, and every one must be either
+    #: the derived predicate or a declared literal. Nothing may be left over.
+    verdicts: list[str] = []
+    for node in ast.walk(body):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "mine" for t in node.targets
+        ):
+            call = node.value
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name):
+                verdicts.append(f"_ours:{call.func.id}")
+            else:
+                verdicts.append(f"UNDERIVED:{ast.dump(call)[:60]}")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "_census" and len(node.args) >= 4:
+                arg = node.args[3]
+                if isinstance(arg, ast.Name):
+                    verdicts.append(f"name:{arg.id}")
+                elif isinstance(arg, ast.Constant):
+                    verdicts.append(f"literal:{arg.value!r}")
+                else:
+                    verdicts.append(f"UNDERIVED:{ast.dump(arg)[:60]}")
+
+    assert verdicts, "no ownership verdict was found at all; this walk is not reading `TORN`"
+    left_over = sorted(v for v in verdicts if v.startswith("UNDERIVED"))
+    assert not left_over, (
+        f"an ownership verdict in the preload is neither `_ours(...)` nor a declared literal, "
+        f"so nothing here can say what it means: {left_over}"
+    )
+    assert all(v != "_ours:_census" for v in verdicts), verdicts
+    assert any(v == "_ours:_ours" for v in verdicts), (
+        f"no `mine = _ours(...)` anywhere in the preload — the derived predicate is gone: "
+        f"{sorted(set(verdicts))}"
+    )
+    #: THE LITERALS ARE DECLARED RATHER THAN DISCOVERED: the two `atomic` seams are reached
+    #: only through the package's own helper, so their ownership is not in question. Asserting
+    #: the COUNT is what makes a third literal arriving a red.
+    assert sorted(v for v in verdicts if v.startswith("literal")) == ["literal:True"] * 4, (
+        f"the set of hardcoded ownership verdicts moved: {sorted(verdicts)}"
+    )
+
+    #: AND THE PREDICATE ITSELF, executed — extracted by AST so that importing it cannot patch
+    #: `pathlib.Path.write_text` in this interpreter, which running `TORN` would.
+    wanted = ("_PKG", "_ours")
+    fragment = [
+        node
+        for node in body.body
+        if (isinstance(node, ast.FunctionDef) and node.name in wanted)
+        or (
+            isinstance(node, ast.Assign)
+            and any(isinstance(x, ast.Name) and x.id in wanted for x in node.targets)
+        )
+    ]
+    assert len(fragment) == 2, [getattr(f, "name", None) or ast.dump(f)[:40] for f in fragment]
+    namespace: dict[str, object] = {"pathlib": pathlib, "_A": runprov._atomic}
+    exec(compile(ast.Module(body=fragment, type_ignores=[]), "<TORN>", "exec"), namespace)  # noqa: S102
+    ours = namespace["_ours"]
+
+    package = pathlib.Path(runprov._atomic.__file__).resolve().parent
+    repo = package.parent
+    table = [
+        (str(package / "run.py"), True),
+        (str(repo / "tests" / "test_runprov.py"), False),
+        (str(repo / "tools" / "torture.py"), False),
+        (str(repo / "ci.py"), False),
+        ("/home/someone/runprov/scratch/user_script.py", False),
+        ("build.py", False),
+        ("<string>", False),
+        ("", False),
+    ]
+    wrong = [(path, want) for path, want in table if ours(path) is not want]
+    assert not wrong, f"the ownership predicate disagrees with the claim on: {wrong}"
+    #: NON-VACUITY: a predicate that answered `False` to everything would satisfy 7 of the 8
+    #: rows above, so at least one `True` is required.
+    assert ours(str(package / "run.py")) is True
+
+
 def test_torture_main_PRINTS_EVERY_FINDING_with_a_reproduce_line(monkeypatch, capsys):
     """A harness that finds something and cannot say what is a harness nobody can act on.
 
@@ -60589,14 +60980,45 @@ def test_torture_main_PRINTS_EVERY_FINDING_with_a_reproduce_line(monkeypatch, ca
     assert "7 case(s), 0 finding(s)" in capsys.readouterr().out
 
 
-def _torture_census(tmp_path, sites):
+def _torture_seams(tmp_path, *, write_text=True):
+    """The seam record `part_a` reads, written where the preload would have left it.
+
+    The preload writes down which of its four seams it actually installed, measured by
+    `is` against the functions it bound, and `part_a` VOIDs on an absent or incomplete
+    record. Every test here fakes `_build`, so the preload never runs and never writes it —
+    the fake has to supply it for the same reason it supplies the census. `write_text=False`
+    drops one seam, which is how the VOID arm is reached deliberately.
+    """
+    record = tmp_path / "seams.json"
+    record.write_text(
+        json.dumps(
+            {
+                "write_text": write_text,
+                "write_bytes": True,
+                "atomic": ["runprov._atomic"],
+                "atomic_bytes": ["runprov._atomic"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return record
+
+
+def _torture_census(tmp_path, sites, *, seams=True):
     """The census `part_a` reads, written where `_build` would have left it.
 
     `(nth, path, size, ours, kind)` -- `ours` truthy, or the site is not this project's and
     the NOT ATOMIC arm below is correctly silent about it.
+
+    AND THE SEAM RECORD BESIDE IT, which `part_a` reads since 2026-11-03: the preload writes
+    down which of its four seams it actually installed, measured by identity, and an absent or
+    incomplete record is VOID. These tests fake `_build`, so the preload never runs and never
+    writes it -- the fake has to supply it for exactly the reason it supplies the census.
+    `seams=False` drops one, which is how the VOID arm is reached.
     """
     census = tmp_path / "census.json"
     census.write_text(json.dumps(sites), encoding="utf-8")
+    _torture_seams(tmp_path, write_text=seams)
     return census
 
 

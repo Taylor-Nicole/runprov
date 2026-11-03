@@ -261,6 +261,34 @@ import runprov, runprov._atomic as _A
 _seen = []
 _nth = os.environ.get("TORTURE_NTH")
 
+# WHOSE WRITE IS THIS? BY RESOLVED PATH, NOT BY A PATH COMPONENT SPELLED `runprov`.
+#
+# Both `Path` seams decided ownership with
+# `os.sep + "runprov" + os.sep in inspect.stack()[1].filename`, which is satisfied by ANY path
+# carrying such a component: a copy, a worktree, a venv's site-packages, an unrelated
+# directory -- and, because this repository's own root directory is named `runprov`, by every
+# file in it including `tests/`, `tools/` and `ci.py`. Measured 2026-11-03: a writer module
+# placed in a directory named `runprov` that is NOT the package was classified as the
+# package's, and `_not_atomic` then reported "written by runprov" about it.
+#
+# The wrong-True direction FABRICATES a finding attributed to this package; the wrong-False
+# direction SUPPRESSES a real one, because `_not_atomic` returns nothing unless `ours`. The
+# second is the false-green direction and the repository's own name is what makes the pair
+# asymmetric. `runprov/run.py`'s script-file walk and `bench.py`'s read-proof plugin both
+# already use resolved-path containment with the `<...>` pseudo-filename guard; this was the
+# only place in either file spelling it as a substring.
+_PKG = pathlib.Path(_A.__file__).resolve().parent
+
+
+def _ours(name):
+    if not name or name.startswith("<"):
+        return False
+    try:
+        here = pathlib.Path(name).resolve()
+    except (OSError, ValueError):
+        return False
+    return here.parent == _PKG or _PKG in here.parents
+
 
 def _census(kind, path, size, mine):
     _seen.append((len(_seen) + 1, str(path), size, mine, kind))
@@ -287,7 +315,7 @@ _real_wt = pathlib.Path.write_text
 
 
 def _wt(self, data, *a, **k):
-    mine = os.sep + "runprov" + os.sep in inspect.stack()[1].filename
+    mine = _ours(inspect.stack()[1].filename)
     if _nth and _census("write_text", self, len(data), mine) == int(_nth):
         _report(self, self.read_bytes() if self.exists() else None, data, _cut(data), False)
         _real_wt(self, data[: _cut(data)], *a, **k)
@@ -301,7 +329,7 @@ _real_wb = pathlib.Path.write_bytes
 
 
 def _wb(self, data, *a, **k):
-    mine = os.sep + "runprov" + os.sep in inspect.stack()[1].filename
+    mine = _ours(inspect.stack()[1].filename)
     if _nth and _census("write_bytes", self, len(data), mine) == int(_nth):
         _report(self, self.read_bytes() if self.exists() else None, data, _cut(data), False)
         _real_wb(self, data[: _cut(data)], *a, **k)
@@ -350,13 +378,46 @@ def _ab(path, data):
 pathlib.Path.write_text = _wt
 pathlib.Path.write_bytes = _wb
 # EVERY MODULE THAT IMPORTED THE NAME, derived from sys.modules rather than listed.
+#
+# `startswith("runprov")` ALSO MATCHED AN UNRELATED TOP-LEVEL MODULE whose name merely begins
+# with those characters -- `runprov_extras`, `runprovtools` -- whose `atomic_write_text` calls
+# would then enter the census carrying this seam's ownership verdict. The package is the module
+# `runprov` and its submodules, and that is two comparisons rather than one prefix.
+_rebound = {"atomic": [], "atomic_bytes": []}
 for _m in list(sys.modules.values()):
-    if not getattr(_m, "__name__", "").startswith("runprov"):
+    _name = getattr(_m, "__name__", "")
+    if _name != "runprov" and not _name.startswith("runprov."):
         continue
     if hasattr(_m, "atomic_write_text"):
         _m.atomic_write_text = _at
+        _rebound["atomic"].append(_name)
     if hasattr(_m, "atomic_write_bytes"):
         _m.atomic_write_bytes = _ab
+        _rebound["atomic_bytes"].append(_name)
+
+# WHICH SEAMS ARE ACTUALLY INSTALLED, MEASURED BY IDENTITY AND WRITTEN DOWN.
+#
+# part A's VOID floor asked only whether ONE owned row had arrived from ANY seam, and 8 of the
+# 8 owned rows come from the two `atomic` seams whose `mine` is the literal `True` -- which the
+# pipeline guarantees by calling the package's own helper. Measured 2026-11-03: with BOTH
+# `pathlib.Path` seams removed from this preload, the census still reported 8 sites, 8 of them
+# runprov's, and the floor stayed green -- an answer identical to an intact run. The floor's
+# claim quantifies over the package's writes; its measurement quantified over one row from any
+# seam. The seventh write site in this package's history was found by READING, precisely
+# because it was spelled `write_bytes` and that seam was unpatched.
+#
+# `is _wt` rather than a constant: a measurement of whether the assignment above took effect,
+# which is the thing the VOID message claims.
+# Written only when asked for, so this preload stays usable on its own; part A VOIDs on an
+# absent record rather than reading its absence as a clean run.
+if os.environ.get("TORTURE_SEAMS"):
+    with open(os.environ["TORTURE_SEAMS"], "w", encoding="utf-8") as fh:
+        json.dump({
+            "write_text": pathlib.Path.write_text is _wt,
+            "write_bytes": pathlib.Path.write_bytes is _wb,
+            "atomic": _rebound["atomic"],
+            "atomic_bytes": _rebound["atomic_bytes"],
+        }, fh)
 """
 
 
@@ -385,20 +446,48 @@ def part_a(
     """
     findings: list[Finding] = []
     census = work / "census.json"
+    seamfile = work / "seams.json"
     os.environ["TORTURE_CENSUS"] = str(census)
+    os.environ["TORTURE_SEAMS"] = str(seamfile)
     os.environ.pop("TORTURE_NTH", None)
     _build(work / "census-tree", TORN)
     sites = json.loads(census.read_text(encoding="utf-8")) if census.is_file() else []
     mine = [s for s in sites if s[3]]
     kinds = ", ".join(sorted({s[4] for s in mine}))
+    seams = json.loads(seamfile.read_text(encoding="utf-8")) if seamfile.is_file() else {}
     print(
         f"  part A: {len(sites)} write site(s) in one clean run, {len(mine)} of them "
         f"runprov's" + (f" ({kinds})" if kinds else "")
     )
+    if seams:
+        shown = ", ".join(f"{name}={'yes' if ok else 'NO'}" for name, ok in sorted(seams.items()))
+        print(f"  part A seams installed: {shown}")
+    else:
+        print("  part A seams installed: NOTHING WAS RECORDED")
     # VOID, NOT GREEN. A run that finds none of the package's writes has lost sight of its
     # subject, and prints what a run that found no problem prints. This is not hypothetical:
     # ADR-0005 moved every site off `Path.write_text` and this harness reported "0 findings"
     # over "0 of them runprov's" until the seam was added.
+    #
+    # AND THE FLOOR IS NOW THE SEAM RECORD AS WELL, which is the repair. `if not mine` is
+    # satisfied by ONE owned row from ANY seam -- and 8 of the 8 owned rows come from the two
+    # `atomic` seams whose ownership verdict is a literal `True`, which the pipeline guarantees
+    # by calling the package's own helper. Measured 2026-11-03: with BOTH `pathlib.Path` seams
+    # deleted from the preload, the census still reported 8 sites, 8 of them runprov's, and
+    # this floor stayed green -- an answer indistinguishable from an intact run. The claim
+    # quantifies over THE PACKAGE'S WRITES; the measurement quantified over one row from any
+    # seam, and the two are different sentences.
+    missing = sorted(name for name, ok in seams.items() if not ok)
+    if not seams or missing:
+        return [
+            Finding(
+                "a:seams",
+                "VOID: A SEAM THIS HARNESS PATCHES IS NOT INSTALLED",
+                f"the preload did not rebind {missing or 'anything it records'}, so a write "
+                f"through that seam is invisible to the census and absent from it with no row "
+                f"of its own — which reads exactly like a seam nothing used",
+            )
+        ], 0
     if not mine:
         return [
             Finding(
@@ -438,7 +527,7 @@ def part_a(
             findings += _read(t, case, expect_one=False)
             shutil.rmtree(t, ignore_errors=True)
         findings += _not_atomic(nth, rel, kind, torn, ours)
-    for k in ("TORTURE_NTH", "TORTURE_FRAC", "TORTURE_TORN"):
+    for k in ("TORTURE_NTH", "TORTURE_FRAC", "TORTURE_TORN", "TORTURE_SEAMS"):
         os.environ.pop(k, None)
     return findings, n
 
@@ -597,11 +686,49 @@ def main(argv: list[str] | None = None) -> int:
     #: three errors under `mypy --strict`, in a path with NO coverage at all. Those three errors
     #: also MASKED a deliberate typo planted here to prove the extended type-check scope works:
     #: the error COUNT was 4 either way and only the attribute NAME in the message differed.
+    #: THE REPRODUCE LINE HAS TO SELECT WHAT THE FINDING IS ABOUT, and two of these ids are
+    #: FAMILY PREFIXES rather than cases: `_not_atomic` emits `a:{nth}` and part B's missing
+    #: target emits `b:{target}`, while a full id is `a:{nth}:{rel}:{frac}` or
+    #: `b:{target}:{op}:{i}`. Selection is `startswith`, so with ten census sites `--case a:1`
+    #: also selects site 10 -- measured 2026-11-03: `a:1` ran 6 cases where `a:1:` runs 3. The
+    #: trailing colon pins the field boundary. And `a:census`/`a:seams` are not cases at all:
+    #: following their reproduce line would have selected nothing and, before the arm above,
+    #: printed what a clean run prints.
     for finding in found:
+        if finding.case.startswith("a:census") or finding.case.startswith("a:seams"):
+            how = "    (no --case reproduces this: the census itself is the subject)"
+        else:
+            family = finding.case.startswith(("a:", "b:")) and finding.case.count(":") < 3
+            pin = finding.case + (":" if family else "")
+            how = f"    reproduce: --case {pin} --seed {args.seed} --keep"
+        print(f"  {finding.what}\n    {finding.detail}\n{how}")
+
+    #: A `--case` THAT SELECTED NOTHING IS VOID, NOT GREEN. `main` returned `1 if found else 0`
+    #: with no reference to `cases`, so a selector matching nothing printed
+    #: `# 0 case(s), 0 finding(s)` and exited 0 -- the same code and the same shape of line as a
+    #: run that tortured everything and found nothing. Measured 2026-11-03:
+    #: `--case definitely-no-such-case` -> rc 0. This file's own docstring already declares
+    #: `2` for *the run is void (a control did not fire)*, and `part_a` applies exactly that
+    #: reasoning a hundred lines earlier: *"a run that finds none of the package's writes has
+    #: lost sight of its subject, and prints what a run that found no problem prints."*
+    #:
+    #: Reachable by one typo -- and reachable by following this harness's OWN printed
+    #: instruction, because the VOID finding's case id is `a:census`, which selects nothing.
+    if args.case and not cases:
         print(
-            f"  {finding.what}\n    {finding.detail}\n"
-            f"    reproduce: --case {finding.case} --seed {args.seed} --keep"
+            f"\nVOID: --case {args.case!r} selected none of the available cases, so this run "
+            f"measured nothing. It is not a clean run."
         )
+        return 2
+
+    #: A VOID FINDING IS A VOID RUN, AND THAT IS EXIT 2 RATHER THAN 1. This file's own header
+    #: declares *"0 nothing found, 1 findings, 2 the run is void (a control did not fire)"*,
+    #: and both of `part_a`'s VOID findings flowed into `found` and came back as 1 -- so a run
+    #: that measured NOTHING reported the exit code for *we found a problem with the package*.
+    #: Found 2026-11-03 by the seam-record repair above: with both `pathlib.Path` seams deleted
+    #: from the preload, the new VOID fired and the harness still answered 1.
+    if any(finding.what.startswith("VOID") for finding in found):
+        return 2
     return 1 if found else 0
 
 

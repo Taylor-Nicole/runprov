@@ -46,6 +46,7 @@ The number is still useful to a human and is reported; it is never matched on.
 from __future__ import annotations
 
 import argparse
+import ast
 import collections
 import dataclasses
 import hashlib
@@ -53,6 +54,7 @@ import inspect
 import json
 import pathlib
 import sys
+import textwrap
 import typing
 
 #: (file, line text, which occurrence of that text, mutation index).
@@ -159,8 +161,54 @@ def locate(lines: typing.Sequence[str], text: str, occurrence: int) -> int | Non
     return None
 
 
+def _rule_source(function: typing.Callable[..., object]) -> str:
+    """One function's CODE, with its docstring removed and its formatting normalised.
+
+    SO THE DIGEST IS OF THE RULE AND NOT OF THE PROSE AROUND IT [T-67]. This digested
+    `inspect.getsource` verbatim, and **81.4% of the 2 784 bytes it hashed were docstring**:
+    `occurrence_of` 1 863 of 2 105 (88.5%), `locate` 404 of 679 (59.5%), and **0 bytes of
+    comment**, so a comment-oriented repair would have changed nothing.
+
+    MEASURED 2026-11-03, three arms over a pristine copy, each one word or one character:
+
+        untouched                              digest da78e1e2…  rc 0  "survivors ok"
+        one word inside a docstring            digest 7bf209f2…  rc 3  "REFUSE: the matching
+                                                                        rule has changed"
+        `seen[line]` -> `seen[line] + 1`       digest 280ddff5…  rc 3  the same message
+
+    The two are **indistinguishable** in verdict, exit code and message, and both reds reach
+    two gates: `ci.py survivors` (through `run()`, which raises on any non-zero) and
+    `test_every_accepted_survivor_still_has_a_subject_in_the_source`. A sha256 over source has
+    no false negatives, so prose did not make this a weak witness — it made it an
+    **unattributing** one, and the harm is second-order and specific: the REFUSE message offers
+    *update the digest* as the remedy, so the cheap response to a false red is to re-stamp the
+    line without re-verifying 28 entries, which turns a false red into a future false green.
+
+    AND THE NEIGHBOUR THIS DIGEST USED TO CITE DOES THE OPPOSITE OF WHAT IT WAS CITED FOR.
+    `tools/claims.py` hashes a sorted-JSON payload of its rule's SEMANTICS, splits detection
+    from bindings, excludes the reasons because *"they are documentation for a reader and change
+    no verdict"*, and says in terms: *"THE CALLABLE IS NOT DIGESTED … digesting the function
+    would make every refactor of it read as a rule change."* Opening the cited neighbour is the
+    whole lesson here.
+
+    `ast.unparse` also normalises layout, so a `ruff format` pass stops reading as a rule change.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            node.body = node.body[1:] or [ast.Pass()]
+    return ast.unparse(tree)
+
+
 def rule_digest() -> str:
-    """A digest of the MATCHING RULE's own source, so a change to it is attributable.
+    """A digest of the MATCHING RULE itself, so a change to it is attributable.
 
     The registry file records this. A ratchet or a declaration whose rule moves silently is a lie
     with a number on it: this project's claims baseline already carries the lesson, where a
@@ -170,10 +218,10 @@ def rule_digest() -> str:
     Here the stakes are the reverse of a count: if the key construction changes, every entry's
     identity changes, and entries that silently stop matching would read as **subject gone** and
     be retired as if the code had moved on. So the digest covers exactly the two functions that
-    construct and resolve a key, and `ci.py survivors` refuses to retire anything when it has
-    moved -- it asks for a re-verification instead.
+    construct and resolve a key -- their CODE, see `_rule_source` -- and `ci.py survivors`
+    refuses to retire anything when it has moved, asking for a re-verification instead.
     """
-    source = inspect.getsource(occurrence_of) + inspect.getsource(locate)
+    source = _rule_source(occurrence_of) + _rule_source(locate)
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 

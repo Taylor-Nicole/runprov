@@ -201,7 +201,25 @@ _KINDS: tuple[tuple[str, str, str], ...] = (
     (
         "reference",
         r"ADR-\d|PEP ?\d|ISO ?\d|10\.5281|zenodo|doi|MSR \d|ISO-8601|SHA-?256|BSD|SPDX|clause \d",
-        "an identifier: a decision record, a standard, a DOI, a licence clause",
+        #: THE SCOPE IS THE LINE AND THE REASON NOW SAYS SO [T-67]. `classify`'s unit is the
+        #: line, so ONE identifier anywhere on it exempts every other number on it. Measured
+        #: 2026-11-03 by blanking the matched token and re-testing: **11 of 22 exempted lines
+        #: carry a number that is no part of any identifier**, among them
+        #: `CONTRIBUTING.md:612` -- *"Zenodo accepts exactly one -- `release:released` returns
+        #: 202"*, a live HTTP status -- and `CONTRIBUTING.md:523`, *"it exits 0 today; it exited
+        #: 1 until ADR-0005 landed"*, whose exit codes get this reason only because `reference`
+        #: precedes `exit-code` in this table.
+        #:
+        #: A RESIDUE RULE WAS BUILT AND THEN WITHDRAWN, and the measurement is why. Applied to
+        #: this kind it moves **14** lines, and reading each one, **roughly half are the
+        #: probe's own artefacts rather than findings**: `[ADR-0015](docs/adr/0015-....md)`
+        #: moves because the filename repeats the identifier the link text already explains,
+        #: and `BSD 3-Clause` moves because `3` survives `BSD`. This bucket feeds a GATED
+        #: baseline, so promoting a predicate with that error rate would make its error rate
+        #: the project's. Declaring the narrow claim and naming the loose examples is the
+        #: honest third option, and it is strictly better than a name no check can deliver.
+        "an identifier somewhere on the line: a decision record, a standard, a DOI, a licence "
+        "clause -- NOT a claim that every number on that line is one",
     ),
     (
         "version",
@@ -213,7 +231,26 @@ _KINDS: tuple[tuple[str, str, str], ...] = (
         #: tool NAME adjacent. `0.N.0` is this project's whole release history and matches
         #: no measurement in any audited document.
         r"|\b0\.\d+\.0\b",
-        "a version of this or another tool -- pinned by `pyproject.toml`, not measured here",
+        #: THE SCOPE IS THE LINE, AND THE `.*` IS WHY [T-67]. The first two branches bridge a
+        #: tool name and a version across up to **91 characters** (measured on README.md:2416),
+        #: so mere co-occurrence on one line is enough -- and `classify`'s unit being the line
+        #: then exempts every other number on it. Measured 2026-11-03: **5 of 24 exempted lines
+        #: carry a number that is no part of any version token**, including
+        #: `README.md:2811` -- *"Machine: 8 cores, 15 GB RAM, CPython 3.12.13, ext4 on an
+        #: external SSD"*, a measurement of THIS HOST exempted as a version -- `README.md:2358`
+        #: (*"conda installed 27 packages"*) and `README.md:2945` (*"a 3-taxon tree"*).
+        #:
+        #: NARROWING THE `.*` IS REFUTED, not merely declined: all three branches match live
+        #: lines, every tool name inside them fires on its own, and 19 of the 24 are correct --
+        #: so a tighter pattern breaks those and risks a dead branch, which is the defect this
+        #: file's own `unexercised_branches` exists to report. The residue rule that would catch
+        #: the 5 moves **11** lines here, and the extra include the whole `pkginfo`
+        #: compatibility table (`| 1.8.0, 1.8.2 | pkginfo >=1.9.4,<2.0 | 1.12.1.2 |`) where
+        #: every number IS a version: the kind's own pattern needs a tool name adjacent and
+        #: there is only one on the line, so blanking it leaves the rest unexplained. See
+        #: `reference` above for why that is not promoted.
+        "a version of this or another tool appears on the line -- pinned by `pyproject.toml`, "
+        "not measured here; NOT a claim that every number on that line is a version",
     ),
     (
         "dated",

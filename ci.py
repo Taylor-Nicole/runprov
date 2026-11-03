@@ -1332,11 +1332,21 @@ def bench() -> None:
     `corpus` below asks whether the FIXTURE is honest rather than whether the package agrees
     with it. `bench.py` decides whether a guard noticed a deliberate break; if it can no longer
     produce one of its three verdicts, every answer it gives afterwards still LOOKS like an
-    answer. So its own six cases run here -- one CAUGHT, one SURVIVED and four VOID, each
-    asserted on the REASON it fired and not merely on the verdict, because two of them passed
-    for the wrong reason while printing `ok` the first time they were written.
+    answer. So every row of `bench._SELFCHECK` runs here, each asserted on the REASON it fired
+    and not merely on the verdict, because two of them passed for the wrong reason while
+    printing `ok` the first time they were written -- and a third did so until 2026-11-03,
+    when the row labelled *control 7* turned out to be keyed to control 4's refusal.
 
-    NOT IN THE DEFAULT GATE. It copies this tree twelve times and runs pytest twelve times.
+    NO COUNT IS STATED HERE, and that is the repair rather than an omission [T-67]. This said
+    *"its own six cases -- one CAUGHT, one SURVIVED and four VOID"* and *"twelve tree copies
+    and twelve pytest runs"*, over a table that held, **measured 2026-11-03, 13 rows: 4
+    CAUGHT, 2 SURVIVED and 7 VOID** -- a dated measurement rather than a live claim, for the
+    same reason. The numbers are what a reader uses to decide whether running this is affordable,
+    and the table grows while prose does not: `len(bench._SELFCHECK)` is importable and a
+    `Counter` over its verdict column gives the split, so a number written here can only rot.
+
+    NOT IN THE DEFAULT GATE. It copies this tree twice per row and runs pytest up to twice
+    per row.
     `RUNPROV_BENCH_ROOT` points the copies at a fast disk; unset, each run gets a temporary
     directory. It must never point inside this repository -- `bench.py`'s control 1 refuses
     that, and the reason is in its docstring.
@@ -1422,7 +1432,8 @@ STEPS: dict[str, abc.Callable[[], None]] = {
     "setup": setup,
     "surface": surface,
     "torture": torture,
-    #: NOT in the default gate: twelve tree copies and twelve pytest runs. See `bench`.
+    #: NOT in the default gate: two tree copies and up to two pytest runs per selfcheck row,
+    #: and the row count is `bench._SELFCHECK`'s rather than a number written here. See `bench`.
     "bench": bench,
     #: NOT in the default gate: a REPORT over a surface that is not closed. See `claims`.
     "survivors": survivors,
