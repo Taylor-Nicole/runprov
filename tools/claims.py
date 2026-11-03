@@ -164,11 +164,29 @@ _KINDS: tuple[tuple[str, str, str], ...] = (
         #: comment in a transcript, and it was never needed: fenced blocks are skipped entirely
         #: and an indented transcript is caught by the four-space alternative. Measured before
         #: removing it -- exactly two lines matched `#` and nothing else, both of them headings.
-        "example",
-        r"^\s*(?:\$|>>>|\||    )",
-        "inside a transcript, a table rule or an indented block -- an illustration, not a claim",
-    ),
-    (
+        #: THE `example` KIND IS GONE, 2026-11-03, AND EVERY ONE OF ITS FOUR ALTERNATIVES IS
+        #: THE REASON. Its pattern was `^\s*(?:\$|>>>|\||    )` and its reason read *"inside a
+        #: transcript, a table rule or an indented block"*. Measured over the 4 529 non-fenced
+        #: lines of the six audited documents:
+        #:
+        #:     `^\s*\$`      0 lines      `^\s*>>>`   0 lines      `^\s*    `  0 lines
+        #:     `^\s*\|`    253 lines, of which 59 carry a number -- and of those 59,
+        #:                  table RULES: 0.  table DATA ROWS: 59.
+        #:
+        #: The three transcript alternatives can never fire, because a fenced block is skipped
+        #: before the kinds loop is reached and these documents put their transcripts in
+        #: fences. And the fourth could never match the thing its reason names: a markdown
+        #: table RULE is `|---|---|`, which carries no digit, and `classify` skips a line with
+        #: no number before it ever consults a kind. So the alternative written for table rules
+        #: matched 58 table ROWS and nothing else -- the opposite population from its reason.
+        #:
+        #: WHAT IT WAS HIDING: 34 of those 58 rows have no other reason at all, among them the
+        #: per-leg CI table (`| windows 3.12 | 1189 | 55 |` and its five siblings) and the
+        #: whole 100 000-run benchmark table. `test_the_ci_sections_legs_are_the_legs_the_`
+        #: `workflow_ACTUALLY_DECLARES` reads that table's leg NAMES and asserts those; the
+        #: passed and skipped columns are outside its scope, and a grep for `1242`, `1241` and
+        #: `1189` finds them nowhere in any check. The one instrument whose job is to find
+        #: figures nothing accounts for was reporting 34 of them as illustrations.
         "ordinal",
         #: `\bstep \d+\b` ADDED 2026-10-09, when the surface grew to every shipped page.
         #: `GETTING-STARTED.md` is built out of `## Step 1` .. `## Step 8` and refers back to them
@@ -345,18 +363,38 @@ def survey() -> tuple[dict[str, list[str]], list[str]]:
     return buckets, notes
 
 
+#: WHAT ENDS ONE CORRECTION NOTE AND STARTS ANOTHER inside a single blockquote. A NAMED
+#: CONSTANT rather than a literal in the loop, because `detection_digest` digests it: the
+#: SCOPE of the superseded exemption is a rule decision exactly like the pattern that declares
+#: one, and it moves the count with no work done. It was NOT in the digest until 2026-11-03,
+#: so narrowing this exemption from the blockquote to the paragraph -- which moved 11 lines out
+#: of `superseded` -- would have changed the residue while the digest said the rule had not
+#: moved, and the fall would have been bankable as work. That is the one thing the digest
+#: exists to prevent, in the half of the rule nobody had put inside it.
+_SUPERSEDED_BREAKS = (">", ">>")
+
+
 def superseded_lines(text: str) -> set[int]:
     """Line numbers inside a blockquote that declares itself a correction.
 
-    Scoped to the BLOCK: a run of `>` lines is one note, and one declaration anywhere in it
-    covers the whole note, because the superseded figures are usually a line or two below the
-    sentence that withdraws them.
+    Scoped to the PARAGRAPH: a run of `>` lines broken by a `>`-only line is one note, and one
+    declaration anywhere in it covers that note, because the superseded figures are usually a
+    line or two below the sentence that withdraws them.
+
+    IT WAS SCOPED TO THE WHOLE BLOCKQUOTE UNTIL 2026-11-03, and a `>`-only line does not end a
+    blockquote -- so one declaration in any paragraph exempted every other paragraph of the
+    same quote. Measured: 8 paragraphs sat inside declaring blocks, 5 declared and 3 did not,
+    and **11 numeric lines were exempted by a declaration in a different paragraph**. Seven of
+    the eleven are the RIGHT-HAND column of a correction table whose own header reads
+    *"re-measured 2026-10-12"* -- the figures that were NOT withdrawn -- printed under the
+    reason *"quoted inside a correction note that withdrew it"*, which asserts the opposite of
+    what the table says. An eighth reads *"the three figures above that still live there"*.
     """
     out: set[int] = set()
     block: list[int] = []
     declared = False
     for n, line in enumerate([*text.split("\n"), ""], 1):
-        if line.lstrip().startswith(">"):
+        if line.lstrip().startswith(">") and line.strip() not in _SUPERSEDED_BREAKS:
             block.append(n)
             declared = declared or bool(_SUPERSEDED_DECLARES.search(line))
             continue
@@ -364,6 +402,63 @@ def superseded_lines(text: str) -> set[int]:
             out.update(block)
         block, declared = [], False
     return out
+
+
+def auditable_lines(text: str) -> list[tuple[int, str]]:
+    """Every line a claim can be MADE on: outside a fence, not withdrawn, not struck through.
+
+    THIS EXISTS SO A *BINDING* RESOLVES AGAINST IT TOO. `bound_claims` and `bound_lines` ran
+    `re.search(pattern, text)` over the WHOLE document until 2026-11-03, fences and correction
+    notes included -- so any copy of the bound sentence anywhere in the file satisfied the
+    binding, and `bound_lines` credited the first line it found whether or not a reader would
+    ever read it as a claim.
+
+    MEASURED, with the shipped README prose rewritten to `9 000` against a live
+    `Run.MAX_STEPS` of 1 000 and a correct copy of the sentence inserted ABOVE it three ways --
+    inside a fence, inside a correction note, and struck through. All three made
+    `registry_verdicts()` print `ok -- README.md says 1,000, live 1,000`, with the population,
+    both rule digests and every committed count bit-identical. **Nothing fired anywhere.** The
+    one verdict this file advertises as able to fail was satisfied by a withdrawn quote, and
+    `README-pypi.md` -- which binds `observe.MAX_CALLS` by the same search -- is frozen into
+    the wheel at upload and can never be replaced on PyPI.
+    """
+    withdrawn = superseded_lines(text)
+    out: list[tuple[int, str]] = []
+    fenced = False
+    for n, line in enumerate(text.split("\n"), 1):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        #: `~~` IS STRIKETHROUGH, and a struck sentence is a withdrawn one by another spelling.
+        if fenced or n in withdrawn or "~~" in line:
+            continue
+        out.append((n, line))
+    return out
+
+
+def _no_auditable_line(pattern: str, text: str) -> str:
+    """Why a binding did not resolve, and the two reasons are NOT the same finding.
+
+    *Gone* means the document stopped making the claim, which makes the binding a decoration.
+    *Withdrawn* means the only copy left is fenced, struck or inside a correction note -- the
+    state that used to read `ok`, and the more dangerous of the two, because the sentence a
+    reader sees may still be there and still be wrong.
+    """
+    if re.search(pattern, text):
+        return (
+            "WITHDRAWN — the only copy of the sentence is fenced, struck through or inside a "
+            "correction note, so no line a reader reads as a claim carries it"
+        )
+    return "VACUOUS — the sentence quoting it is gone"
+
+
+def _first_auditable(pattern: str, text: str) -> tuple[int, re.Match[str]] | None:
+    """The first AUDITABLE line this pattern matches, or `None` -- never a withdrawn one."""
+    for n, line in auditable_lines(text):
+        found = re.search(pattern, line)
+        if found:
+            return n, found
+    return None
 
 
 #: WHY A FIGURE CAN NEVER BE RE-MEASURED. Each category is a general reason; each entry names the
@@ -800,8 +895,11 @@ def bound_lines(text: str) -> tuple[dict[int, str], list[str]]:
     `resolved` is the weak verdict, and over-crediting it is how a gap hides. Such a line stays
     UNACCOUNTED and is named in the second return value instead of being silently absorbed.
     AND THIS SENTENCE SAID *"today all six carry exactly one number; that is checked here
-    rather than assumed"*, WHICH WAS FALSE IN BOTH HALVES. `README.md` line 1396 --
-    *"**60 formats, 0 failures, nothing skipped**"* -- carries two, and has for as long as the
+    rather than assumed"*, WHICH WAS FALSE IN BOTH HALVES. The sentence
+    *"**60 formats, 0 failures, nothing skipped**"* -- cited here as `README.md` line 1396
+    until 2026-11-03, when it was at line 1564; a line number inside an instrument is a claim
+    about the tree and rots like any other, so the sentence is quoted instead -- carries two,
+    and has for as long as the
     `CASES` binding has existed; the registries hold more than six entries now. Nor is it
     checked: this function HANDLES both cases, which is a different thing from asserting one
     of them. The run's own output refutes the sentence every time it prints *"NOT ATTRIBUTED
@@ -809,7 +907,6 @@ def bound_lines(text: str) -> tuple[dict[int, str], list[str]]:
     A present-tense claim about the tree inside an instrument is a check waiting to be
     written, or a sentence that needs its date; this one is now a description of the code.
     """
-    lines = text.split("\n")
     credited: dict[int, str] = {}
     unattributed: list[str] = []
     pairs = [
@@ -817,8 +914,10 @@ def bound_lines(text: str) -> tuple[dict[int, str], list[str]]:
         for pattern, module, attribute, _d in _BOUND
     ]
     pairs += [(pattern, what) for pattern, what, _how, _tol in _DERIVED]
+    #: AUDITABLE LINES ONLY [T-67]: a fenced, withdrawn or struck copy of the sentence may not
+    #: be the line a binding is credited to. See `auditable_lines`.
     for pattern, what in pairs:
-        for n, line in enumerate(lines, 1):
+        for n, line in auditable_lines(text):
             if not re.search(pattern, line):
                 continue
             if len(NUMBER.findall(line)) == 1:
@@ -844,10 +943,11 @@ def bound_claims(text: str) -> list[tuple[str, int | None, int, str]]:
     out: list[tuple[str, int | None, int, str]] = []
     for pattern, module, attribute, divisor in _BOUND:
         live = _live(module, attribute)
-        found = re.search(pattern, text)
+        hit = _first_auditable(pattern, text)
+        found = hit[1] if hit else None
         what = f"{module.removeprefix('runprov.')}.{attribute}"
         if not found:
-            out.append((what, None, live, "VACUOUS — the sentence quoting it is gone"))
+            out.append((what, None, live, _no_auditable_line(pattern, text)))
             continue
         stated = int(found.group(1).replace(",", "").replace("\u202f", "").replace(" ", ""))
         expected = live // divisor
@@ -855,9 +955,10 @@ def bound_claims(text: str) -> list[tuple[str, int | None, int, str]]:
 
     for pattern, what, how, tolerance in _DERIVED:
         live = how()
-        found = re.search(pattern, text)
+        hit = _first_auditable(pattern, text)
+        found = hit[1] if hit else None
         if not found:
-            out.append((what, None, live, "VACUOUS — the sentence quoting it is gone"))
+            out.append((what, None, live, _no_auditable_line(pattern, text)))
             continue
         stated = int(found.group(1).replace(",", "").replace("\u202f", "").replace(" ", ""))
         #: THE SLACK IS AGAINST THE LIVE VALUE, not the stated one: the question a reader asks is
@@ -1103,20 +1204,43 @@ def unexercised_branches() -> list[str]:
         )
 
     out: list[str] = []
+    #: EVERY PATTERN, INCLUDING A ONE-BRANCH ONE. This skipped any pattern whose top-level
+    #: split yielded fewer than two branches, and `pattern_branches` treats `(?:a|b)` as ONE
+    #: branch by design -- so the `example` kind, whose four alternatives all sat inside a
+    #: `(?:...)`, was skipped ENTIRELY. Three of those four matched nothing in any document and
+    #: were not declared, which is precisely the condition this function exists to report, and
+    #: it returned `[]`. The kind holding the single widest exemption in the table had none of
+    #: its alternatives under the guard. A one-branch pattern is still a pattern worth testing.
+    enumerated: set[str] = set()
     for name, pattern, _reason in _KINDS:
-        branches = pattern_branches(pattern)
-        if len(branches) < 2:
-            continue
-        for branch in branches:
-            if branch in _FIRES_NOWHERE_TODAY:
-                continue
+        for branch in pattern_branches(pattern):
+            enumerated.add(branch)
             try:
                 rx = re.compile(branch, re.I)
             except re.error:
                 out.append(f"_KINDS[{name}]: {branch!r} is not a valid pattern on its own")
                 continue
-            if not any(rx.search(line) for line in lines):
+            fires = any(rx.search(line) for line in lines)
+            #: A DECLARED BRANCH IS TESTED ANYWAY, so the declaration can retire itself. This
+            #: `continue`d before testing, so an entry whose branch had STARTED matching could
+            #: sit there forever -- an exemption retires from both ends or from neither.
+            if branch in _FIRES_NOWHERE_TODAY:
+                if fires:
+                    out.append(
+                        f"_KINDS[{name}]: {branch!r} is declared as firing nowhere "
+                        f"({_FIRES_NOWHERE_TODAY[branch]}) and now matches a line — delete "
+                        f"the declaration"
+                    )
+                continue
+            if not fires:
                 out.append(f"_KINDS[{name}]: {branch!r} matches nothing and is not declared")
+    #: AND THE OTHER END OF THE SAME RULE: a declaration naming a branch no pattern spells any
+    #: more is an exemption with no subject, which reads exactly like one that is satisfied.
+    for stale in sorted(set(_FIRES_NOWHERE_TODAY) - enumerated):
+        out.append(
+            f"_FIRES_NOWHERE_TODAY declares {stale!r}, which no `_KINDS` branch spells — the "
+            f"exemption has lost its subject"
+        )
     return out
 
 
@@ -1140,6 +1264,8 @@ def detection_digest() -> str:
         {
             "number": NUMBER.pattern,
             "superseded": _SUPERSEDED_DECLARES.pattern,
+            #: THE EXEMPTION'S SCOPE, NOT ONLY ITS DECLARATION -- see `_SUPERSEDED_BREAKS`.
+            "superseded_breaks": sorted(_SUPERSEDED_BREAKS),
             "kinds": [[name, pattern] for name, pattern, _reason in _KINDS],
             "code_span": _CODE_SPAN.pattern,
             #: THE EXCLUSIONS ARE A RULE DECISION and belong here: excusing a document lowers the
@@ -1246,6 +1372,15 @@ def report() -> int:
     buckets, unattributed = survey()
     for note in unattributed:
         print(f"  NOT ATTRIBUTED TO A LINE — stays unaccounted: {note}")
+    #: AND THE DETECTION RULE IS AUDITED HERE, which is new on 2026-11-03 and is the finding.
+    #: `unexercised_branches` had **zero production call sites**: the only references to it
+    #: outside the tests were a CHANGELOG line describing it as installed, two comments, and
+    #: its own `def`. `report()` did not call it and neither did `ci.py`, and every test
+    #: monkeypatches away both `documents` and `_KINDS`, so nothing had ever pointed it at the
+    #: live registry. Its own docstring says *"an incapable branch -- which by construction
+    #: fires nowhere -- is red on arrival"*; it was not, because it never arrived.
+    for note in unexercised_branches():
+        print(f"  UNEXERCISED DETECTION BRANCH — an exemption nothing can reach: {note}")
     for note in dead_historical_entries():
         print(f"  DEAD HISTORICAL ENTRY — an excuse outliving its subject: {note}")
     print("\n=== CLASSIFIED — a judgement recorded, never verification ===")

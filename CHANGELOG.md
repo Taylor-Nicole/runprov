@@ -9,6 +9,97 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — the claims auditor's own haystacks, including a binding a withdrawn quote could satisfy
+
+**A binding resolved against the whole document, fences and correction notes included.** So any
+copy of the bound sentence anywhere in the file satisfied it. Measured end to end on the real
+registry: with `README.md`'s shipped prose rewritten to **9 000** against a live
+`Run.MAX_STEPS` of **1 000**, and a correct copy inserted above it inside a fence,
+`registry_verdicts()` printed **`ok — README.md says 1,000, live 1,000`** — and the population,
+both rule digests and every committed count came out **bit-identical** to the baseline. Nothing
+fired anywhere. **The one verdict this file advertises as able to fail was satisfied by a quote
+that had been withdrawn**, and the same search binds `observe.MAX_CALLS` in `README-pypi.md`,
+which is frozen into the wheel at upload. A binding now resolves only against lines a reader
+reads as a claim, and *withdrawn* is a separate verdict from *gone*: the document that stopped
+making a claim and the document still making a wrong one are different findings.
+
+**The `example` kind is deleted, and every one of its four alternatives is the reason.** Its
+pattern was `^\s*(?:\$|>>>|\||    )` under the reason *"inside a transcript, a table rule or an
+indented block"*. Measured over the 4 529 non-fenced lines of the six audited documents:
+`^\s*\$` matched **0**, `^\s*>>>` matched **0**, `^\s*    ` matched **0** — transcripts here live
+in fences, which are skipped before the kinds loop — and `^\s*\|` matched 253 lines of which 59
+carry a number, **of those 59: table rules 0, table data rows 59**. A markdown rule is `|---|---|`
+and carries no digit, so the alternative written for table rules could never match one. **34 of
+those rows had no other reason at all**, among them the per-leg CI table —
+`| **windows 3.12** | **1189** | **55** |` and its five siblings — and the whole 100 000-run
+benchmark table. The guard a reader would assume covers that table reads its leg **names**; a
+search for `1242`, `1241` and `1189` finds them in no check at all. **The one instrument whose
+job is to find figures nothing accounts for was reporting 34 of them as illustrations.**
+
+**`unexercised_branches()` had zero production call sites.** The only references outside the tests
+were a CHANGELOG line describing it as installed, two comments and its own `def`; every test
+monkeypatches away both `documents` and `_KINDS`, so **nothing had ever pointed it at the live
+registry**. `report()` now calls it. And it could not have seen the defect above even if it had
+run: it skipped any pattern whose top-level split yields fewer than two branches, and
+`pattern_branches` treats `(?:a|b)` as **one** branch by design — so the kind holding the single
+widest exemption in the table had **none** of its alternatives under the guard, three of them dead
+and undeclared, and the function returned `[]`. It now tests a one-branch pattern like any other,
+**tests a declared branch too so the declaration can retire itself**, and reports a declaration
+whose branch no pattern spells any more.
+
+**A correction note withdrew the whole blockquote rather than its own paragraph.** A `>`-only line
+does not end a blockquote, so a multi-paragraph quote was one block. Measured: 8 paragraphs inside
+declaring blocks, 5 declaring and 3 not, and **11 numeric lines exempted by a declaration in a
+different paragraph**. Seven of the eleven are the *right-hand* column of a correction table whose
+own header reads *"re-measured 2026-10-12"* — the figures that were **not** withdrawn — printed
+under the reason *"quoted inside a correction note that withdrew it"*. An eighth reads *"the three
+figures above that still live there"*.
+
+**And the detection digest could not see that change.** It held `_SUPERSEDED_DECLARES`' pattern but
+not the **scope** that exemption applies over — so narrowing it would have moved the residue while
+the digest reported the rule unmoved, and the fall would have been **bankable as work**. That is
+the one thing the digest exists to prevent, in the half of the rule nobody had put inside it. The
+scope is now a named constant and it is digested.
+
+**Residue, stated as a rule change and not as work:** unaccounted **52 → 94**, superseded
+**26 → 15**, population unchanged at **425**. The detection digest moved, so the report says the
+old figure *"is not comparable"* — which is the correct attribution, and the baseline is
+regenerated under the new rule. **Those 42 lines are not new claims; they are claims that were
+being exempted under a reason that did not describe them.**
+
+**One reported finding was split and half of it refuted.** The `version` kind's `.*`-bridged
+branches: no alternative is dead — all three match live lines, and every tool name inside them
+fires on its own — so the dead-branch half is **refuted**. The over-wide half is real and is
+**filed, not fixed**: 5 of 24 `version` lines carry a number that is no part of any version token,
+including `Machine: 8 cores, 15 GB RAM, CPython 3.12.13` exempted as *"a version of this or
+another tool"*. The general repair is a residue rule — blank the span a kind matched and re-test
+whether a number survives — and measured across all eight kinds it would reclassify **72 to 74**
+lines whose printed reason demonstrably does not describe the number it exempts. That is a change
+to the classifier's unit of exemption rather than a defect repair, and it needs the reclassified
+lines triaged rather than banked, so it is recorded for a decision instead of applied here.
+
+**Also corrected: a stale line citation inside the instrument.** `bound_lines`' docstring cited
+*"`README.md` line 1396"* for a sentence that is at line 1564 — in the paragraph that exists to
+correct an earlier false claim about itself. It now quotes the sentence, because a line number
+inside an instrument is a claim about the tree and rots like any other.
+
+### Tested — five new guards, one of them a void control, and one existing test was pinning the defect
+
+The binding guard carries three withdrawal vectors — a fence, a correction note and
+strikethrough — each with the correct figure placed **above** wrong shipped prose, plus both
+controls: the right figure resolves and the wrong figure is caught, so every arm is the line
+filter rather than a broken comparison. Run against the pre-repair module, five of the six fail
+for the right reason (*"a fence satisfied the binding: ok"*; *"line 3 declares nothing and is in a
+different paragraph, yet it was withdrawn"*). The digest guard **cannot** be a red — the constant
+it reads is the repair — so it is recorded as a **void control**.
+
+**And `test_unexercised_branches_skips_a_FENCED_block_and_a_SINGLE_BRANCH_pattern` was asserting
+the defect.** Its stated reason was that *"a lone branch is the pattern itself and reporting it
+dead would report the whole detection rule dead"* — but a kind that matches nothing **is** the
+finding. The test now asserts the single-branch pattern is tried, and keeps the property its old
+shape was really protecting: the entry after it must still be reached, so a `break` in place of
+either `continue` is caught.
+
 ### Fixed — three more release-path checks, one of them refusing for a reason that was not true
 
 **`release_check` decided "released" by comparing one word.** The predicate was

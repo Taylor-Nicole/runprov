@@ -60095,18 +60095,189 @@ def test_registry_verdicts_marks_an_entry_NO_PAGE_STATES_as_vacuous(monkeypatch)
     assert all(where.startswith("live ") for _what, _verdict, where in rows), rows
 
 
-def test_unexercised_branches_skips_a_FENCED_block_and_a_SINGLE_BRANCH_pattern(monkeypatch):
-    """Two skips this sweep has never taken, and each is tested with a successor that matters.
+def test_a_BINDING_cannot_be_satisfied_by_a_WITHDRAWN_copy_of_its_sentence(monkeypatch):
+    """T-67. `bound_claims` searched the WHOLE document, fences and correction notes included.
+
+    So any copy of the bound sentence anywhere in the file satisfied the binding. Measured
+    2026-11-03 end to end on the real registry: with `README.md`'s shipped prose rewritten to
+    `9 000` against a live `Run.MAX_STEPS` of 1 000 and a correct copy inserted ABOVE it inside
+    a fence, `registry_verdicts()` printed `ok — README.md says 1,000, live 1,000`, and the
+    population, both rule digests and every committed count were **bit-identical** to the
+    baseline. Nothing fired anywhere. The one verdict this file advertises as able to fail was
+    satisfied by a quote that had been withdrawn.
+
+    AND IT REACHES A FROZEN ARTIFACT. `README-pypi.md` binds `observe.MAX_CALLS` by the same
+    search and is baked into the wheel at upload; PyPI never lets a file be replaced.
+    """
+    claims = _claims_module()
+    monkeypatch.setattr(claims, "_DERIVED", ())
+    monkeypatch.setattr(
+        claims,
+        "_BOUND",
+        ((r"capped at ([\d,]+) steps", "runprov.run", "Run.MAX_STEPS", 1),),
+    )
+    live = runprov.run.Run.MAX_STEPS
+    right = f"Steps are capped at {live:,} steps per run."
+    wrong = "Steps are capped at 9,000 steps per run."
+
+    def verdict(page):
+        rows = claims.bound_claims(page)
+        assert len(rows) == 1, rows
+        return rows[0][3]
+
+    #: CONTROLS FIRST, so every arm below is known to be the line filter and not a broken
+    #: comparison: the right figure resolves, the wrong figure is caught.
+    assert verdict(right) == "ok", verdict(right)
+    assert verdict(wrong) == "DRIFTED", verdict(wrong)
+
+    #: THREE WAYS TO WITHDRAW A SENTENCE, each carrying the CORRECT figure, each placed ABOVE
+    #: the shipped prose so it is the copy a whole-document search finds first.
+    for label, withdrawn in (
+        ("a fence", ["```", right, "```"]),
+        ("a correction note", [f"> CORRECTED: this line used to say — {right}"]),
+        ("strikethrough", [f"~~{right}~~"]),
+    ):
+        page = "\n".join([*withdrawn, "", wrong])
+        assert verdict(page) == "DRIFTED", f"{label} satisfied the binding: {verdict(page)}"
+
+    #: AND WHEN THE ONLY COPY LEFT IS WITHDRAWN, that is its own verdict and not `VACUOUS`:
+    #: *gone* means the document stopped making the claim, *withdrawn* means the claim is still
+    #: on the page in a form no reader reads as one. They are different findings.
+    only_fenced = "\n".join(["```", right, "```", "", "nothing else here"])
+    assert "WITHDRAWN" in verdict(only_fenced), verdict(only_fenced)
+    assert "VACUOUS" in verdict("a page that makes no such claim"), verdict("a page")
+
+
+def test_a_correction_note_withdraws_ITS_OWN_PARAGRAPH_and_not_the_whole_blockquote():
+    """T-67. One declaration anywhere in a `>` run exempted every paragraph of that run.
+
+    A `>`-only line does not end a blockquote, so a multi-paragraph quote was ONE block.
+    Measured on the audited documents: 8 paragraphs inside declaring blocks, 5 declaring and 3
+    not, and **11 numeric lines exempted by a declaration in a different paragraph**. Seven of
+    the eleven are the RIGHT-HAND column of a correction table whose own header reads
+    *"re-measured 2026-10-12"* — the figures that were NOT withdrawn — printed under the reason
+    *"quoted inside a correction note that withdrew it"*. An eighth reads *"the three figures
+    above that still live there"*.
+    """
+    claims = _claims_module()
+    page = "\n".join(
+        [
+            "> CORRECTED: this paragraph used to say 1 and now says 2.",
+            ">",
+            "> A second paragraph of the same quote, carrying 3.",
+            "",
+            "ordinary prose",
+        ]
+    )
+    withdrawn = claims.superseded_lines(page)
+    assert 1 in withdrawn, withdrawn
+    assert 3 not in withdrawn, (
+        f"line 3 declares nothing and is in a different paragraph, yet it was withdrawn: "
+        f"{sorted(withdrawn)}"
+    )
+
+    #: POSITIVE CONTROL: within ONE paragraph the declaration still covers the lines below it,
+    #: which is the whole reason the exemption is not per-line. Without this arm, narrowing it
+    #: to the declaring LINE would satisfy the assertion above.
+    together = "> CORRECTED: it used to say 1.\n> The figure was 2.\n\nprose"
+    assert claims.superseded_lines(together) == {1, 2}, claims.superseded_lines(together)
+
+
+def test_the_detection_digest_covers_the_superseded_exemptions_SCOPE_not_only_its_wording():
+    """T-67. The digest held `_SUPERSEDED_DECLARES.pattern` and not the scope it applies over.
+
+    So narrowing that exemption from the blockquote to the paragraph — which moved 11 lines out
+    of `superseded` — would have changed the residue while the digest reported the rule
+    unmoved, and the fall would have been bankable as work. That is the one thing this digest
+    exists to prevent, in the half of the rule nobody had put inside it.
+    """
+    claims = _claims_module()
+    before = claims.detection_digest()
+    #: THE SCOPE IS A NAMED CONSTANT so it can be digested; moving it must move the digest.
+    original = claims._SUPERSEDED_BREAKS
+    try:
+        claims._SUPERSEDED_BREAKS = ()
+        assert claims.detection_digest() != before, (
+            "widening the superseded exemption back to the whole blockquote left the detection "
+            "digest unmoved, so a residue it changes could be banked as work"
+        )
+    finally:
+        claims._SUPERSEDED_BREAKS = original
+    assert claims.detection_digest() == before, "the digest did not come back"
+
+
+def test_the_report_ACTUALLY_RUNS_the_detection_branch_sweep():
+    """T-67. `unexercised_branches()` had ZERO production call sites.
+
+    The only references outside the tests were a CHANGELOG line describing it as installed, two
+    comments and its own `def`: `report()` did not call it and neither did `ci.py`. Every test
+    monkeypatches away both `documents` and `_KINDS`, so nothing had ever pointed it at the live
+    registry — and its own docstring says *"an incapable branch, which by construction fires
+    nowhere, is red on arrival"*. It was not, because it never arrived. **A guard that is
+    uninformed looks exactly like one that is satisfied.**
+
+    Read from the source rather than run, the way `test_build_runs_the_release_check_first`
+    reads its own wiring: deleting the call is the whole regression.
+    """
+    src = (_repo_root() / "tools" / "claims.py").read_text(encoding="utf-8")
+    body = src[src.index("def report()") :]
+    assert "unexercised_branches()" in body, (
+        "`report()` must call `unexercised_branches()`; a detection rule nobody audits is the "
+        "state this function was written to end"
+    )
+    #: AND IT IS POINTED AT THE LIVE REGISTRY HERE, not a monkeypatched one — the sweep must be
+    #: able to run against the real `_KINDS` and the real documents without raising.
+    assert isinstance(_claims_module().unexercised_branches(), list)
+
+
+def test_a_branch_DECLARED_as_firing_nowhere_is_still_tested(monkeypatch):
+    """T-67. The sweep `continue`d on a declared branch BEFORE testing it.
+
+    So an entry whose branch had started matching could sit in `_FIRES_NOWHERE_TODAY` forever.
+    This project's own rule is that an exemption retires itself from BOTH ends, and this one
+    could retire from neither: a declaration for a branch no pattern spells any more is an
+    exemption with no subject, which reads exactly like one that is satisfied.
+    """
+    claims = _claims_module()
+    monkeypatch.setattr(claims, "documents", lambda: {"DOC.md": "\n".join(["alive"] * 150)})
+
+    #: THE DECLARATION IS NOW FALSE, because the branch it excuses does match a line.
+    monkeypatch.setattr(claims, "_KINDS", (("k", r"alive|NOSUCHTEXT", "two branches"),))
+    monkeypatch.setattr(claims, "_FIRES_NOWHERE_TODAY", {"alive": "it used to match nothing"})
+    found = claims.unexercised_branches()
+    assert any("delete the declaration" in note for note in found), found
+    assert any("NOSUCHTEXT" in note for note in found), (
+        f"the undeclared dead branch must still be reported beside it: {found}"
+    )
+
+    #: THE OTHER END: a declaration naming a branch no pattern spells any more.
+    monkeypatch.setattr(claims, "_FIRES_NOWHERE_TODAY", {"GONE_FROM_EVERY_PATTERN": "stale"})
+    stale = claims.unexercised_branches()
+    assert any("lost its subject" in note for note in stale), stale
+
+
+def test_unexercised_branches_skips_a_FENCED_block_and_TESTS_a_single_branch_pattern(monkeypatch):
+    """The fence is skipped; the single-branch pattern is NOT, and that reversed on 2026-11-03.
 
     THE FENCE. A code block is not prose, so a detection branch must not count a line inside
     one. The `continue` after the toggle is in the loop over LINES, so a `break` there stops
     reading the page -- and the sweep's own non-vacuity guard then refuses with *"not reading
     the documents"*, which is why the fenced block is placed EARLY and 120 live lines follow.
 
-    THE SINGLE-BRANCH PATTERN. `len(branches) < 2` skips a pattern with no top-level `|`,
-    because a lone branch is the pattern itself and reporting it dead would report the whole
-    detection rule dead. That `continue` is in the loop over `_KINDS`, so the single-branch
-    entry is placed FIRST and a real two-branch entry follows: a `break` loses the second.
+    THE SINGLE-BRANCH PATTERN USED TO BE SKIPPED, and this test asserted it. The reason given
+    was that *"a lone branch is the pattern itself and reporting it dead would report the whole
+    detection rule dead"* -- but a kind that matches nothing IS the finding, not a thing to be
+    silent about, and `pattern_branches` treats `(?:a|b)` as ONE branch by design.
+
+    MEASURED, which is what settled it: the `example` kind's four alternatives all sat inside a
+    `(?:...)`, so the kind counted as one branch and was skipped ENTIRELY -- and three of those
+    four (`^\\s*\\$`, `^\\s*>>>`, `^\\s*    `) matched **nothing** in any of the 4 529 non-fenced
+    lines and were not declared, which is exactly the condition this function exists to report.
+    `unexercised_branches()` returned `[]`. The kind carrying the widest exemption in the table
+    had none of its alternatives under the guard.
+
+    The successor property is kept: the single-branch entry is placed FIRST and a two-branch
+    entry follows, so a `break` in place of either `continue` loses the second and is caught.
     """
     claims = _claims_module()
     page = "\n".join(
@@ -60119,19 +60290,19 @@ def test_unexercised_branches_skips_a_FENCED_block_and_a_SINGLE_BRANCH_pattern(m
         claims,
         "_KINDS",
         (
-            ("alone", r"NOSUCHTEXTANYWHERE", "one branch, so it is skipped whole"),
+            ("alone", r"NOSUCHTEXTANYWHERE", "one branch, and it is tried like any other"),
             ("pair", r"live|NOSUCHTEXTANYWHERE", "two branches, so both are tried"),
         ),
     )
 
     found = claims.unexercised_branches()
 
-    assert len(found) == 1, f"expected exactly the dead branch of `pair`: {found}"
-    assert found[0].startswith("_KINDS[pair]"), (
-        f"the single-branch entry was reported, or the two-branch entry after it was never "
-        f"reached — which is what a `break` in place of that `continue` looks like: {found}"
+    assert len(found) == 2, f"expected the dead branch of BOTH entries: {found}"
+    assert [note.split(":")[0] for note in found] == ["_KINDS[alone]", "_KINDS[pair]"], (
+        f"the single-branch entry was skipped, or the entry after it was never reached — "
+        f"which is what a `break` in place of either `continue` looks like: {found}"
     )
-    assert "NOSUCHTEXTANYWHERE" in found[0], found
+    assert all("NOSUCHTEXTANYWHERE" in note for note in found), found
     #: THE FENCE DID ITS WORK: the only occurrence of that text outside `_KINDS` is inside the
     #: code block, and the branch is still reported dead. If the fence were read as prose the
     #: branch would match and nothing would be reported at all.
