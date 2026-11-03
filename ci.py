@@ -35,6 +35,9 @@ the output rather than by reading this file.
 
 from __future__ import annotations
 
+import datetime
+import fnmatch
+import importlib
 import json
 import os
 import re
@@ -501,13 +504,90 @@ _RECORD_ONE_RUN = (
 )
 
 
+def _toml_load(path: Path) -> dict[str, object]:
+    """Parse a TOML file, or REFUSE naming the parser it would need.
+
+    ONE TOML READER FOR THIS FILE, RESOLVED AT CALL TIME AND NEVER BY A STATIC IMPORT.
+    `tomllib` entered the standard library in 3.11 and `requires-python` is `>=3.10`, so
+    `import tomllib` at the top of this script passes on every developer machine and fails
+    the 3.10 leg -- which is how a red `main` once went unnoticed for three commits and then
+    failed the `v0.1.0` tag itself. `test_nothing_imports_a_stdlib_module_younger_than_`
+    `requires_python` has THIS FILE first in its population and refuses the static form.
+
+    `tomli` is the same parser under its original name, and the two names are tried in the
+    order `runprov/policy.py` already tries them, for the same reason. A parser exists in
+    every environment this script runs in: every job running `ci.py build` pins 3.12, where
+    `tomllib` is stdlib, and every job running `ci.py test` installs `.[test]`, which carries
+    `tomli>=2.0` under a `python_version < "3.11"` marker.
+
+    AND IT REFUSES RATHER THAN FALLING BACK TO A REGEX. A second way to read the same field
+    is a second definition of where that field lives, and the regex form is precisely the
+    defect this helper exists to remove. *Cannot read it* is not *it is fine*.
+    """
+    for name in ("tomllib", "tomli"):
+        try:
+            parser = importlib.import_module(name)
+        except ModuleNotFoundError:
+            continue
+        try:
+            parsed: dict[str, object] = parser.loads(path.read_text(encoding="utf-8"))
+        except ValueError as exc:  # TOMLDecodeError subclasses ValueError in both parsers
+            raise SystemExit(f"{path.name} is not valid TOML: {exc}") from exc
+        return parsed
+    raise SystemExit(
+        f"reading {path.name} needs a TOML parser and this interpreter has none. `tomllib` "
+        f"is in the standard library from 3.11; on 3.10, `pip install tomli` supplies the "
+        f"same parser and the `test` extra already does."
+    )
+
+
+def _toml_field(path: Path, *keys: str) -> object | None:
+    """One named field of a TOML document, or `None` -- never a neighbouring table's."""
+    node: object = _toml_load(path)
+    for key in keys:
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    return node
+
+
+def _pyproject_version(path: Path) -> str | None:
+    """`[project].version` -- the field the wheel is built from, and no other."""
+    version = _toml_field(path, "project", "version")
+    return version if isinstance(version, str) else None
+
+
+def _line_version(pattern: str) -> abc.Callable[[Path], str | None]:
+    """A reader for a file whose version is a line of text, bound to one anchored pattern."""
+
+    def read(path: Path) -> str | None:
+        m = re.search(pattern, path.read_text(encoding="utf-8"), re.M)
+        return m.group(1) if m else None
+
+    read.__doc__ = f"looked for {pattern!r}"
+    return read
+
+
 #: Every place the version is written. FOUR copies, and until this existed nothing failed
 #: when they drifted -- a mismatch would have been found at release, in the one build that
 #: cannot be re-uploaded, and it makes the citation cite a version that was never published.
-_VERSION_SOURCES = {
-    "pyproject.toml": r'^version = "([^"]+)"',
-    "runprov/__init__.py": r'^__version__ = "([^"]+)"',
-    "CITATION.cff": r"^version: (\S+)",
+#:
+#: EACH SOURCE HAS ITS OWN READER, AND PYPROJECT'S IS STRUCTURAL. It was
+#: `re.search(r'^version = "([^"]+)"', text, re.M)` over the WHOLE FILE until 2026-11-03, so
+#: the version this check compared was the FIRST column-0 `version =` anywhere in the file
+#: rather than `[project]`'s -- and a `[tool.*]` table above `[project]` carrying a `version`
+#: of its own is exactly what tools like `commitizen` and `bumpversion` put there, to keep
+#: version copies in step. MEASURED 2026-11-03: with `[tool.commitizen] version = "0.9.0"`
+#: above `[project] version = "0.10.0"` and tag `v0.9.0`, `release-check` printed
+#: `ok -- 0.9.0, tag v0.9.0`, while the wheel hatchling builds from `[project]` carries
+#: 0.10.0. PyPI freezes a filename at upload, so that is not an upload anyone fixes.
+#:
+#: The shape is a region defined by *somewhere in this file* standing in for a region defined
+#: by *this one place in it*, and it is the same shape as the `]` slice in `build()`.
+_VERSION_SOURCES: dict[str, abc.Callable[[Path], str | None]] = {
+    "pyproject.toml": _pyproject_version,
+    "runprov/__init__.py": _line_version(r'^__version__ = "([^"]+)"'),
+    "CITATION.cff": _line_version(r"^version: (\S+)"),
     # BOTH HEADING SHAPES, because this file uses two. Keep a Changelog puts the version in
     # the BRACKETS and the date after the dash -- `## [0.2.0] — 2026-08-19` -- while the
     # pre-release heading here is `## [Unreleased] — 0.1.0`, with the version after the dash
@@ -519,8 +599,32 @@ _VERSION_SOURCES = {
     # Anchored on a LEADING DIGIT so `## [Unreleased]` with no version, or any other bracketed
     # word, is skipped rather than mistaken for one. Indifferent to the dash character, which
     # differs between the two shapes.
-    "CHANGELOG.md": r"^## \[(?:Unreleased\] — )?(\d[^\]\s]*)",
+    "CHANGELOG.md": _line_version(r"^## \[(?:Unreleased\] — )?(\d[^\]\s]*)"),
 }
+
+
+#: THE TAG PATTERNS THAT FIRE A PUBLISH. Written here AND in `publish.yml`, held together by
+#: `test_the_release_tag_predicate_matches_the_trigger_that_publishes` -- the same
+#: arrangement this project already uses for the pinned tool versions and for the
+#: coverage-floor exemptions, and for the same reason: this script runs on the 3.10 leg and
+#: in a build venv that installs `build`, `twine` and `comrak` only, so it has no YAML
+#: parser, and an sdist does not ship `.github/` at all, so it cannot read the workflow.
+#:
+#: IT WAS `re.fullmatch(r"v\d.*", tag)` UNTIL 2026-11-03, a second definition of *this push
+#: is a release* and the NARROWER of the two. `publish.yml` triggers on `tags: ["v*"]`, so
+#: `v.0.9.0`, `vv0.9.0` and `version-0.9.0` are each accepted by git, each fire the publish,
+#: and each read as `untagged build` here -- so BOTH tag refusals went silent on a push that
+#: uploads, in the gate standing in front of a filename PyPI never releases.
+#:
+#: `fnmatchcase`, NOT `fnmatch`: `fnmatch` folds case on Windows, and a predicate whose
+#: answer depends on which leg asked is not one definition either.
+#:
+#: IT IS DELIBERATELY WIDER THAN THE TRIGGER IN TWO WAYS, both toward refusing. GitHub's `*`
+#: does not cross `/` and `fnmatch`'s does; and `GITHUB_REF_NAME` is the BRANCH on a branch
+#: push, so pushing a branch called `v-next` is read here as a release. Each costs a loud
+#: false refusal naming the version it compared. The opposite error -- reading a tag that
+#: publishes as an untagged build -- is the one that cannot be taken back.
+_RELEASE_TAG_GLOBS = ("v*",)
 
 
 def _gh_json(argv: list[str], about: str) -> object:
@@ -747,18 +851,17 @@ def release_check() -> None:
       year in it.
     """
     found: dict[str, str] = {}
-    for name, pattern in _VERSION_SOURCES.items():
-        text = (ROOT / name).read_text(encoding="utf-8")
-        m = re.search(pattern, text, re.M)
-        if m is None:
-            raise SystemExit(f"no version found in {name} (looked for {pattern!r})")
-        found[name] = m.group(1)
+    for name, read in _VERSION_SOURCES.items():
+        stated = read(ROOT / name)
+        if stated is None:
+            raise SystemExit(f"no version found in {name} ({read.__doc__})")
+        found[name] = stated
     if len(set(found.values())) != 1:
         raise SystemExit(f"the version copies disagree: {found}")
     version = next(iter(found.values()))
 
     tag = os.environ.get("RUNPROV_RELEASE_TAG") or os.environ.get("GITHUB_REF_NAME", "")
-    tagged = bool(re.fullmatch(r"v\d.*", tag))
+    tagged = any(fnmatch.fnmatchcase(tag, glob) for glob in _RELEASE_TAG_GLOBS)
     if tagged and tag != f"v{version}":
         raise SystemExit(
             f"tag {tag} does not match version {version}; PyPI would receive {version} "
@@ -773,13 +876,34 @@ def release_check() -> None:
             f"{tag} is a release tag, but CHANGELOG.md still heads {version} as "
             f"[Unreleased]; date the section before tagging"
         )
-    if not unreleased and not re.search(
-        r"^date-released:", (ROOT / "CITATION.cff").read_text("utf-8"), re.M
-    ):
-        raise SystemExit(
-            f"CHANGELOG.md presents {version} as released, but CITATION.cff has no "
-            f"date-released, so the citation this project ships has no year in it"
+    #: THE VALUE, AND IT MUST BE A DATE. This read `re.search(r"^date-released:", ...)`
+    #: until 2026-11-03 -- the KEY, never what follows it. MEASURED: deleting the line
+    #: refused (rc=1), while `date-released:` with nothing after it and
+    #: `date-released: "TODO before tagging"` both passed (rc=0), under a refusal whose own
+    #: message is *"the citation this project ships has no year in it"*. A citation with an
+    #: empty `date-released:` has no year in it. GitHub's *Cite this repository* parses this
+    #: file and Zenodo reads it at release; this project's Zenodo records are closed, so a
+    #: dateless citation is not something that gets corrected afterwards.
+    #:
+    #: `fromisoformat` AS WELL AS THE SHAPE, because `2026-13-45` is the shape of a date and
+    #: not a date, and the claim is about the year a reader can cite.
+    if not unreleased:
+        released_on = re.search(
+            r'^date-released:[ \t]*"?(\d{4}-\d{2}-\d{2})"?[ \t]*(?:#.*)?$',
+            (ROOT / "CITATION.cff").read_text("utf-8"),
+            re.M,
         )
+        if released_on is not None:
+            try:
+                datetime.date.fromisoformat(released_on.group(1))
+            except ValueError:
+                released_on = None
+        if released_on is None:
+            raise SystemExit(
+                f"CHANGELOG.md presents {version} as released, but CITATION.cff has no "
+                f"`date-released:` carrying a calendar date as YYYY-MM-DD, so the citation "
+                f"this project ships has no year in it"
+            )
     print(f"release-check ok — {version}" + (f", tag {tag}" if tagged else ", untagged build"))
 
 
@@ -919,12 +1043,24 @@ def build() -> None:
         # that adding a file to the list extends this check by itself. It catches the other
         # direction too: an entry that names a path which no longer exists ships nothing and
         # says nothing, which is how a rename quietly empties the tarball.
-        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        block = pyproject[pyproject.index("[tool.hatch.build.targets.sdist]") :]
-        block = block[block.index("include = [") : block.index("]", block.index("include = ["))]
-        named = re.findall(r'"([^"]+)"', block)
-        if not named:
-            raise SystemExit("could not read [tool.hatch.build.targets.sdist] include")
+        #: READ AS TOML, NOT SLICED OUT OF THE FILE'S TEXT. This was
+        #: `block[block.index("include = [") : block.index("]", block.index("include = ["))]`,
+        #: which ends at the FIRST `]` after the key -- so one entry containing a bracket
+        #: truncates the list silently, the loop below then checks the entries before it,
+        #: and the step reports ok. MEASURED 2026-11-03: the slice happens to return all 19
+        #: entries today, so this repairs a mechanism and not a live miscount. The mechanism
+        #: is not hypothetical: the IDENTICAL slice over pyproject's `dev` extra DID truncate
+        #: -- `"runprov[test]"` ends it two entries in -- which
+        #: `test_every_pinned_tool_version_agrees_across_pyproject_and_the_workflows` records
+        #: in its own comment. One rule written twice, bitten in one copy, latent in the other.
+        named = _toml_field(
+            ROOT / "pyproject.toml", "tool", "hatch", "build", "targets", "sdist", "include"
+        )
+        if not isinstance(named, list) or not all(isinstance(e, str) for e in named):
+            raise SystemExit(
+                "could not read [tool.hatch.build.targets.sdist] include as a list of "
+                f"strings; got {named!r}"
+            )
         empty = sorted(
             entry
             for entry in named

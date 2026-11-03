@@ -9,6 +9,78 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — three holes in the gate that stands in front of an irreversible PyPI upload
+
+`release_check` has five refusals and **all five are tested**, which is what made this look held.
+It was the wrong question: a test over a refusal says the refusal fires, not that it fires on its
+own subject. **Three of the five were satisfied for a reason unrelated to what they claim**, and
+every one of them reads the two documents a release freezes.
+
+**The citation-year refusal was satisfied by the KEY, never the value.** It searched
+`^date-released:` and stopped there, under a message that reads *"the citation this project ships
+has no year in it"*. Measured: deleting the line refused, while `date-released:` with nothing
+after it and `date-released: "TODO before tagging"` were both cleared. GitHub's *Cite this
+repository* parses this file and Zenodo reads it at release, and this project's Zenodo records are
+closed, so a dateless citation is not one anybody corrects afterwards. It now requires a calendar
+date, `fromisoformat` and all, because `2026-13-45` is the shape of a date and not a date.
+
+**The tag probe was NARROWER than the trigger that fires the publish.** `publish.yml` uploads on
+`tags: ["v*"]`; the gate decided the same question with `re.fullmatch(r"v\d.*", tag)`. So
+`v.0.9.0`, `vv0.9.0` and `version-0.9.0` are each accepted by git, each fire the publish, and each
+printed `release-check ok — untagged build` — **both tag refusals silent on a push that uploads**.
+One rule, two definitions, the enforcing one narrower. The two copies stay, because `ci.py` runs on
+the 3.10 leg and in a build venv holding `build`, `twine` and `comrak` only, so it has no YAML
+parser, and an sdist ships no `.github/` for it to read; a test now holds them together, the same
+arrangement this project already chose for the pinned tool versions and the coverage floor.
+
+**The pyproject version was the FIRST column-0 `version =` in the file, not `[project]`'s.** A
+`[tool.*]` table above `[project]` carrying a `version` of its own is exactly what `commitizen` and
+`bumpversion` put there — to keep version copies in step — so the table most likely to appear is
+the one whose presence silenced this. Measured: a tool table at 0.9.0 above `[project]` at 0.10.0
+under tag `v0.9.0` printed `ok — 0.9.0, tag v0.9.0`, while the wheel hatchling builds carries
+0.10.0. **PyPI would have received 0.10.0 under `v0.9.0`**, which is the sentence in the check's own
+error message. Each of the four version copies now has its own reader and pyproject's is
+structural; `_toml_load` resolves `tomllib` then `tomli` at call time, never by a static import,
+because `ci.py` is the first entry in
+`test_nothing_imports_a_stdlib_module_younger_than_requires_python`'s own population.
+
+**And one latent instance of the same shape, repaired before it bites.** `build()` read the sdist
+`include` list by slicing pyproject's text to the first `]` after the key. **Measured against
+today's file it returns all 19 entries, identical to what a parser reads — so the audit's reported
+"19 shrank to 2" was wrong about this file**, and the honest finding is a mechanism rather than a
+miscount. The mechanism is not hypothetical either: the identical slice over pyproject's `dev`
+extra *did* truncate: `"runprov[test]"` ends it **inside the first entry**, so `re.findall`
+returns **0 of the 7 pins** rather than a short list — and *"two entries in"* is what that
+site's own comment has always said, a number read off prose rather than off a run, corrected
+here because this repair cites it. Which
+`test_every_pinned_tool_version_agrees_across_pyproject_and_the_workflows` records in a comment of
+its own. One rule written twice, bitten in one copy and latent in the other.
+
+**The shape behind four of the five is one thing**: a region defined by *somewhere in this file*
+standing in for a region defined by *this one place in it* — the first heading rather than the
+newest section, the first `version =` rather than `[project]`'s, the first `]` rather than the
+array's, the key rather than the value.
+
+### Tested — every one of those refusals now has a control, and three of them went red on the old script
+
+Each new guard was run against the pre-repair `ci.py` and **three fail there for exactly the right
+reason**: `vv0.1.0 fires the publish and was cleared`, `the wheel would carry 0.2.0 under v0.1.0`,
+`the key with nothing after it was cleared`. The other two could not be reds at all — their
+subjects, `_RELEASE_TAG_GLOBS` and `_toml_field`, are the repair — so they are recorded as **void
+controls rather than reds**, which is the distinction this project keeps having to make.
+
+Each also carries the arm such an experiment usually lacks. The tag guard clears the tag the
+version really is *and* treats a ref the trigger does not match as an untagged build, so a
+predicate that simply refused everything would not pass it. The pyproject guard re-runs **with the
+plant removed** and must be green, because the first arming of that experiment was VOID — it
+bumped a second copy too, so the arms differed by two things and a red proved nothing. The citation
+guard clears a real date after refusing five ways of not being one.
+
+**The fixture itself was modelling the wrong document.** `_release_tree` wrote a bare
+`version = "0.1.0"` with no table around it — a pyproject the old whole-file regex could read and
+that `hatchling` cannot build a wheel from — so every arm had been exercising the check against a
+file shaped unlike the real one, and the one shape that mattered could not be expressed in it.
+
 ### Tested — the resolution seam had no guard, and the primitive it needs is wider than it looks
 
 `_history` collapsed *the flag when it is given, else the project's own history* into one helper,

@@ -6394,8 +6394,12 @@ def test_every_pinned_tool_version_agrees_across_pyproject_and_the_workflows():
     tests, two spellings, and neither pretends to cover the other's.
     """
     pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
-    # NOT `index("]")`: the list contains `"runprov[test]"`, whose bracket ends the slice two
-    # entries in and leaves nothing to compare. The closing bracket is the one at end of line.
+    # NOT `index("]")`: the list contains `"runprov[test]"`, whose bracket ends the slice
+    # INSIDE THE FIRST ENTRY, leaving an unterminated quote -- so `re.findall` returns 0 of the
+    # 7 pins, not a short list. MEASURED 2026-11-03; this comment said "two entries in" for as
+    # long as it has existed, which is a number read off prose rather than off a run, and the
+    # sweep that retired the same slice in `ci.py` is what caught it. The closing bracket is
+    # the one at end of line.
     block = re.search(r"^dev = \[(.*?)\]\s*$", pyproject, re.M | re.S)
     assert block, "pyproject declares no `dev` extra"
     declared = dict(re.findall(r'"([A-Za-z0-9_.-]+)==([^"]+)"', block.group(1)))
@@ -23220,16 +23224,35 @@ def _platform(label: str) -> str:
 
 
 def _release_tree(
-    tmp_path, *, version="0.1.0", citation_version=None, heading="Unreleased", date_released=False
+    tmp_path,
+    *,
+    version="0.1.0",
+    citation_version=None,
+    heading="Unreleased",
+    date_released=False,
+    tool_version=None,
+    project_version=None,
 ):
     """A four-file tree `ci.py release-check` can read, and nothing else.
 
     `ROOT` is `ci.py`'s own directory, so copying the script beside these fixtures is what
     lets the real check run against a version state this repository does not have.
+
+    A REAL `[project]` TABLE SINCE 2026-11-03, and the omission was not cosmetic. This
+    fixture wrote a bare `version = "0.1.0"` with no table around it at all -- a document
+    the old whole-file regex could read and that `hatchling` cannot build a wheel from -- so
+    every arm below exercised the check against a pyproject shaped unlike the real one, and
+    the one shape that mattered (a `[tool.*]` table holding a version of its own, above
+    `[project]`) could not be expressed here. `tool_version` and `project_version` exist to
+    express it: they are the plant and the thing the wheel actually carries.
     """
     shutil.copy(_repo_root() / "ci.py", tmp_path / "ci.py")
     (tmp_path / "runprov").mkdir()
-    (tmp_path / "pyproject.toml").write_text(f'version = "{version}"\n', encoding="utf-8")
+    pyproject = ""
+    if tool_version is not None:
+        pyproject += f'[tool.commitizen]\nversion = "{tool_version}"\n\n'
+    pyproject += f'[project]\nname = "runprov"\nversion = "{project_version or version}"\n'
+    (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
     (tmp_path / "runprov/__init__.py").write_text(f'__version__ = "{version}"\n', encoding="utf-8")
     cff = f"version: {citation_version or version}\n"
     if date_released:
@@ -23501,6 +23524,181 @@ def test_build_runs_the_release_check_first(tmp_path):
     src = (_repo_root() / "ci.py").read_text(encoding="utf-8")
     assert re.search(r"def build\(\) -> None:\n    release_check\(\)", src), (
         "ci.py build must call release_check() before it builds anything"
+    )
+
+
+def _release_tag_globs_from_publish_yml() -> list[str]:
+    """`publish.yml`'s own `on: push: tags:` list -- the document that decides a release."""
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load((_workflows_dir() / "publish.yml").read_text(encoding="utf-8"))
+    #: `on:` PARSES AS THE BOOLEAN `True`, because YAML 1.1 says so and pyyaml obeys it. So
+    #: `workflow["on"]` raises and `workflow.get("on")` returns None -- which would make the
+    #: comparison below compare two empty lists and pass. Both spellings are read, and the
+    #: result is asserted to exist rather than defaulted to nothing.
+    trigger = workflow.get(True, workflow.get("on"))
+    assert isinstance(trigger, dict), f"publish.yml declares no readable trigger: {trigger!r}"
+    tags = (trigger.get("push") or {}).get("tags")
+    assert tags, f"publish.yml's push trigger names no tags: {trigger!r}"
+    return list(tags)
+
+
+def test_the_release_tag_predicate_matches_the_trigger_that_publishes():
+    """ONE RULE -- "this push is a release" -- WRITTEN TWICE, AND THE ENFORCING COPY WAS NARROWER.
+
+    `publish.yml` triggers on `tags: ["v*"]`. `ci.py` answered the same question with
+    `re.fullmatch(r"v\\d.*", tag)` until 2026-11-03, so `v.0.9.0`, `vv0.9.0` and
+    `version-0.9.0` are each accepted by git, each fire the publish, and each read as an
+    `untagged build` in the gate standing in front of them -- BOTH tag refusals silent on a
+    push that uploads to an index which never releases a filename.
+
+    THE TWO COPIES STAY, and that is a decision rather than a shrug: `ci.py` runs on the 3.10
+    leg and in a build venv that installs `build`, `twine` and `comrak` only, so it has no
+    YAML parser, and an sdist deliberately ships no `.github/` for it to read. The same
+    arrangement, for the same reason, as `test_every_pinned_tool_version_agrees_across_`
+    `pyproject_and_the_workflows` for the tool pins and
+    `test_every_leg_that_cannot_reach_the_floor_says_so` for the coverage floor: the
+    knowledge is in two files and this is what stops them drifting.
+    """
+    declared = list(_ci_module()._RELEASE_TAG_GLOBS)
+    triggers = _release_tag_globs_from_publish_yml()
+    #: NON-VACUITY FIRST: two empty lists are equal and would assert nothing.
+    assert declared, "ci.py declares no release-tag glob at all"
+    assert sorted(declared) == sorted(triggers), (
+        f"ci.py treats {declared} as release tags while publish.yml uploads on {triggers}; "
+        f"the copy that REFUSES may not be the narrower of the two"
+    )
+
+
+def test_release_check_refuses_every_tag_shape_that_would_publish(tmp_path):
+    """T-67. Four tag shapes git accepts and `v*` matches, so four shapes that publish.
+
+    Measured 2026-11-03 against the pre-repair script: `vv0.1.0`, `v.0.1.0` and
+    `version-0.1.0` each printed `release-check ok -- 0.1.0, untagged build` and exited 0.
+    """
+    tree = _release_tree(
+        tmp_path, version="0.1.0", heading="0.1.0 — 2026-08-18", date_released=True
+    )
+    for tag in ("v0.2.0", "vv0.1.0", "v.0.1.0", "version-0.1.0"):
+        r = _release_check(tree, tag=tag)
+        assert r.returncode != 0, f"{tag} fires the publish and was cleared: {r.stdout}"
+        assert "does not match" in r.stdout + r.stderr, f"{tag}: {r.stdout + r.stderr}"
+
+    #: POSITIVE CONTROL: the tag this tree's version really is, cleared -- so the four arms
+    #: above are about the tag SHAPE and not about some unrelated refusal upstream of them.
+    ok = _release_check(tree, tag="v0.1.0")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+
+    #: AND THE CONTROL THAT PROVES THE PREDICATE IS THE GLOB rather than "any non-empty
+    #: ref": a ref the trigger does not match is an untagged build. Without this arm a
+    #: predicate that simply refused every ref would pass every assertion above.
+    untagged = _release_check(tree, tag="main")
+    assert untagged.returncode == 0, untagged.stdout + untagged.stderr
+    assert "untagged" in untagged.stdout, untagged.stdout
+
+
+def test_release_check_reads_the_version_the_WHEEL_carries_not_a_neighbouring_table(tmp_path):
+    """T-67. The version was the FIRST column-0 `version =` in pyproject, not `[project]`'s.
+
+    `[tool.commitizen]`, `[tool.bumpversion]` and friends carry a `version` of their own, and
+    they exist precisely to keep version copies in step -- so the table most likely to appear
+    above `[project]` is the one whose presence silenced this check. Measured 2026-11-03: a
+    tool table at 0.9.0 above `[project]` at 0.10.0, tag `v0.9.0`, printed
+    `release-check ok -- 0.9.0, tag v0.9.0` while the wheel hatchling builds carries 0.10.0.
+    PyPI freezes a filename at upload, so that is not an upload anybody fixes.
+    """
+    tree = _release_tree(
+        tmp_path,
+        version="0.1.0",
+        heading="0.1.0 — 2026-08-18",
+        date_released=True,
+        tool_version="0.1.0",
+        project_version="0.2.0",
+    )
+    r = _release_check(tree, tag="v0.1.0")
+    said = r.stdout + r.stderr
+    assert r.returncode != 0, f"the wheel would carry 0.2.0 under v0.1.0: {said}"
+    assert "disagree" in said and "0.2.0" in said, said
+
+    #: THE CONTROL, RUN WITH THE PLANT REMOVED, which is the arm this kind of experiment
+    #: almost never has. The same tree and the same tag minus that one table is CLEARED, so
+    #: the refusal above is the table's doing. The first arming of this experiment was VOID
+    #: for want of exactly this: it also bumped a second copy, so the arms differed by two
+    #: things and a red proved nothing.
+    (tmp_path / "control").mkdir()
+    plantless = _release_tree(
+        tmp_path / "control",
+        version="0.1.0",
+        heading="0.1.0 — 2026-08-18",
+        date_released=True,
+    )
+    ok = _release_check(plantless, tag="v0.1.0")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+
+
+def test_release_check_requires_a_citation_DATE_and_not_merely_the_KEY(tmp_path):
+    """T-67. The refusal read `re.search(r"^date-released:", ...)` -- the key, never the value.
+
+    Its own message is *"the citation this project ships has no year in it"*, and a citation
+    whose `date-released:` is empty has no year in it. Measured 2026-11-03: deleting the line
+    refused, while the bare key and `date-released: "TODO before tagging"` were both cleared.
+    GitHub's *Cite this repository* parses this file and Zenodo reads it at release; this
+    project's Zenodo records are closed, so a dateless citation is not corrected afterwards.
+    """
+    tree = _release_tree(tmp_path, version="0.1.0", heading="0.1.0 — 2026-08-18")
+    for cff, why in [
+        ("version: 0.1.0\n", "the line deleted"),
+        ("version: 0.1.0\ndate-released:\n", "the key with nothing after it"),
+        ('version: 0.1.0\ndate-released: ""\n', "an empty string"),
+        ('version: 0.1.0\ndate-released: "TODO before tagging"\n', "a placeholder"),
+        ("version: 0.1.0\ndate-released: 2026-13-45\n", "the shape of a date, not a date"),
+    ]:
+        (tree / "CITATION.cff").write_text(cff, encoding="utf-8")
+        r = _release_check(tree)
+        assert r.returncode != 0, f"{why} was cleared: {r.stdout + r.stderr}"
+        assert "date-released" in r.stdout + r.stderr, f"{why}: {r.stdout + r.stderr}"
+
+    #: POSITIVE CONTROL: a real calendar date is cleared, so every arm above is about the
+    #: VALUE rather than about an unrelated refusal reached before it.
+    (tree / "CITATION.cff").write_text(
+        "version: 0.1.0\ndate-released: 2026-08-18\n", encoding="utf-8"
+    )
+    ok = _release_check(tree)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+
+
+def test_the_sdist_include_list_is_read_as_TOML_not_sliced_at_the_first_BRACKET(tmp_path):
+    """T-67. `block.index("]")` ends the list at the first bracket after the key.
+
+    LATENT, NOT LIVE, AND MEASURED BEFORE IT WAS REPAIRED: against today's pyproject the
+    slice returns all 19 entries, identical to what a TOML parser reads, so the audit's
+    reported "19 entries shrank to 2" was WRONG about this file. The mechanism is real and
+    it is not hypothetical either -- the IDENTICAL slice over pyproject's `dev` extra DID
+    truncate -- `"runprov[test]"` ends it INSIDE the first entry, so `re.findall` returns 0 of
+    the 7 pins -- which
+    `test_every_pinned_tool_version_agrees_across_pyproject_and_the_workflows` records in a
+    comment of its own. One rule written twice, bitten in one copy and latent in the other;
+    this retires the latent copy before an entry with a bracket in it arrives.
+    """
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[tool.hatch.build.targets.sdist]\n"
+        'include = ["runprov", "tests[extra]", "docs", "LICENSE"]\n',
+        encoding="utf-8",
+    )
+    named = _ci_module()._toml_field(
+        pyproject, "tool", "hatch", "build", "targets", "sdist", "include"
+    )
+    assert named == ["runprov", "tests[extra]", "docs", "LICENSE"], named
+
+    #: THE CONTROL IS THE RETIRED CODE, RUN HERE, so the repair is demonstrated rather than
+    #: asserted. If this stops truncating, the finding needs re-reading rather than trusting.
+    text = pyproject.read_text(encoding="utf-8")
+    block = text[text.index("[tool.hatch.build.targets.sdist]") :]
+    block = block[block.index("include = [") : block.index("]", block.index("include = ["))]
+    truncated = re.findall(r'"([^"]+)"', block)
+    assert len(truncated) < len(named), (
+        f"the slice this test exists to retire returned {truncated}, which is not a "
+        f"truncation of {named} -- re-read the finding before trusting either"
     )
 
 
