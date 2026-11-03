@@ -1,7 +1,8 @@
 # 16. A history shows whether it has been edited
 
-- **Status:** Accepted — T-32, built 2026-09-17, **rebuilt 2026-09-18 after Audit E**, **amended 2026-09-20 with R-32 after Audit G**, and corrected through 2026-09-23. Ships in 0.6.0.
-- **Applies to:** `runprov/chain.py`, `runprov/sinks.py`, `runprov/__main__.py` (`chain`)
+- **Status:** Accepted — T-32, built 2026-09-17, **rebuilt 2026-09-18 after Audit E**, **amended 2026-09-20 with R-32 after Audit G**, corrected through 2026-09-23, and **amended
+  2026-11-03 with R-33 (T-57)**. R-1..R-32 ship in 0.6.0; R-33 ships in 0.10.0.
+- **Applies to:** `runprov/chain.py`, `runprov/sinks.py`, `runprov/__main__.py` (`chain`), `runprov/run.py` (R-33, `provenance_sha256`)
 
 > **WHAT AUDIT E CHANGED, AND WHY IT IS AN AMENDMENT RATHER THAN A BUGFIX.** The first build
 > satisfied all eighteen requirements below, reached 100 % branch coverage, and passed 17 of 17
@@ -693,3 +694,56 @@ disclosed by name in both renderings, and **never `BROKEN`**. Approved by Taylor
 > it cannot distinguish is honest; naming a cause it CAN exclude from the file in front of the
 > reader is the same defect as an accusation, one register quieter. The conclusion is unchanged,
 > which is why Audit H filed it low — the cost is a reader chasing something the bytes deny.
+
+
+---
+
+**R-33.** **THE RECORD A LINE POINTS AT IS DIGESTED TOO, AND THIS DECISION'S TITLE IS WHY.**
+*A history shows whether it has been edited* — and until 0.10.0 that covered the history's own
+lines and not the record each line names. Measured on a record written by the 0.8.0 wheel: a
+registered input, the pin beside an artifact, the artifact's own body and every history line were
+digested; the `*.prov.json` **record was not**. The line carried `provenance_path`, a path with no
+claim about its content, which `show` reads in four places as a pointer. So `verify` held a pinned
+artifact to its pin, this chain held the history to itself, and **the record in between could be
+edited with nothing able to notice.**
+
+Each history line therefore carries **`provenance_sha256`**: the raw sha256 of the record's bytes
+as written, beside `provenance_path` and not folded into it, because that field's consumers read
+it as a pointer and folding both would break them for no gain.
+
+**IT INHERITS R-12 RATHER THAN NEEDING AN EXEMPTION FROM IT.** `sha256sum one.prov.json` compared
+against the field is the whole recipe — no loop, no `sed`, and no reader inside this package. That
+is the property R-12 states for the chain, and it is the reason this is cheap: a digest over a
+*canonical body* would be a field nobody can check without the software that wrote it, which is
+the argument this project has already recorded against writing one.
+
+**RAW sha256, NOT the content digest.** *Has anyone edited this file* is a different question from
+*is this the same data*, and a record is full of volatile stamps the content digest exists to
+strip. Same reasoning as the pin's body field.
+
+**NO SCHEMA BUMP, SO ABSENCE IS A THIRD ANSWER AND MUST NOT BE READ AS A FOURTH.** Two records may
+legitimately share `runprov.history.v2` and disagree about whether this field exists — the
+precedent is explicit, `imported_code` entered the history the same way. **Absent means *written
+before 0.10.0* or *the sidecar could not be written*, NEVER *mismatch*.** A consumer that compares
+one-sided presence reports a false edit on every pair straddling this release, and the rule here is
+the one R-32 states in its own register: a line that made no claim is not an accusation.
+
+**THREE LIMITS, STATED SO A READER CANNOT OVER-CLAIM PAST THEM.**
+
+1. **The last line of a history is not chained** — no successor's `prev` covers it — so the newest
+   run's record digest is tamper-evident only once another run appends. That is this decision's
+   existing property applied one level out, not a new weakness.
+2. **A second `write()` to the SAME path** rewrites the sidecar without appending a second line,
+   because one run is one line. The line already there then describes the superseded version, and
+   `sha256sum` would contradict it. runprov **says so on stderr, naming the path**: it is not
+   corrected, because correcting means rewriting a line in a file whose whole property is that
+   lines are only appended, and the field is not dropped, because absence already carries two
+   meanings and a third would make every absence unreadable. Writing the record at two *different*
+   paths is silent, the file the history names being untouched.
+3. **The YAML twin gets no digest**, on the authority that the record is the JSON. Documented
+   rather than discovered, because the YAML is the one a person opens beside an artifact.
+
+**OUT OF SCOPE, DELIBERATELY: a `verify` or `chain` integration.** `chain.py` reads exactly one
+file and hashes its own lines. Making it stat and hash external records turns a self-contained
+check into one needing the GONE / moved / unreadable machinery `verify` already carries — a
+command's worth of work, where the one-line recipe above covers the gap.

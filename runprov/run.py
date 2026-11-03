@@ -1175,6 +1175,12 @@ class Run:
         # assertion or in a `finally` was greppable as a SUCCESS.
         self._in_context = False
         self._deferred_history: pathlib.Path | None = None
+        #: THE RECORD'S OWN DIGEST AND THE PATH IT DESCRIBES [T-57]. Paired, because
+        #: `_persist` runs for paths the history never names -- see its own docstring.
+        self._record_digest: tuple[str, str] | None = None
+        #: AND WHAT THE HISTORY LINE ACTUALLY RECORDED, same pairing, so a later rewrite of
+        #: that one path can say the recorded digest no longer describes the file.
+        self._recorded_digest: tuple[str, str] | None = None
         # `_written` means "a sidecar exists". `_history_appended` means "the history has
         # this run". Conflating them appended TWICE for one run -- both lines carrying the
         # same run_id, so any tally over runs.jsonl was silently inflated. They are
@@ -3701,6 +3707,30 @@ class Run:
             # record at two paths) but must NOT append a second history line: one run is
             # one line, or every count taken from the history is wrong.
             summary("  (history already recorded for this run; sidecar rewritten only)")
+            #: AND IF THAT REWRITE MOVED THE RECORD'S DIGEST, SAY SO [T-57]. The history is
+            #: append-only, so the line already recorded still carries the digest of the
+            #: version it was appended for. A reader running `sha256sum` against this file now
+            #: would see a mismatch and attribute it to an editor -- when it is runprov's own
+            #: second write to the same path.
+            #:
+            #: DISCLOSED RATHER THAN CORRECTED, because correcting it means rewriting a line
+            #: in a file whose whole property is that lines are only ever appended; and
+            #: rather than omitting the field, because absence already means *predates the
+            #: field or the sidecar failed*, and a third meaning would make every absence
+            #: unreadable. Writing the record at TWO paths -- the case the branch above
+            #: exists for -- is silent here, because the history names the first path and
+            #: that file is untouched.
+            if (
+                self._recorded_digest is not None
+                and self._record_digest is not None
+                and self._recorded_digest[0] == self._record_digest[0]
+                and self._recorded_digest[1] != self._record_digest[1]
+            ):
+                diagnostic(
+                    f"  WARNING: {p} was rewritten after its history line was appended, so "
+                    f"that line's `provenance_sha256` describes the superseded version. "
+                    f"`sha256sum` against this file will not match it."
+                )
         else:
             self._append_history(p)
 
@@ -3769,6 +3799,24 @@ class Run:
         except OSError as exc:
             diagnostic(f"  WARNING: could not write the provenance sidecar to {p}: {exc}")
             return False
+        #: R-1 [T-57]: THE RECORD'S OWN sha256, taken from the `text` already in hand. No
+        #: re-read of the file; the cost is one hash of a string in memory.
+        #:
+        #: RAW sha256, NOT `content_digest`, and that is the same argument `PIN_BODY_FIELD`
+        #: makes: *has anyone edited this file* is a different question from *is this the
+        #: same data*, and a record is full of the volatile stamps `VOLATILE_JSON` exists to
+        #: strip. A plain sha256 also needs no reader inside this package --
+        #: `sha256sum one.prov.json` reproduces it -- so the field INHERITS ADR-0016 R-12
+        #: (*the chain is verifiable with `sha256sum` and nothing else*) rather than needing
+        #: an exemption from it.
+        #:
+        #: PAIRED WITH THE PATH, which the specification did not ask for and the code
+        #: requires. This method is called for paths the history never names: the seal
+        #: re-persists every previously-written sidecar (`__exit__`'s `for target in
+        #: previously`), and a second `write()` rewrites one deliberately. An unpaired field
+        #: would have carried whichever file was persisted LAST rather than the one the
+        #: history line points at.
+        self._record_digest = (str(p), hashlib.sha256(text.encode("utf-8")).hexdigest())
         self._persist_yaml(p)
         return True
 
@@ -3962,6 +4010,41 @@ class Run:
             # `out/mid.prov.json`, so the sidecar a run points at was unfindable from
             # anywhere that had not been told the platform.
             "provenance_path": _posix(prov_path),
+            # R-2 [T-57]: THE RECORD'S OWN DIGEST, BESIDE ITS PATH AND NOT FOLDED INTO IT.
+            # `verify` holds a pinned artifact to its pin and `chain` holds the history to
+            # itself; the record in between could be edited with nothing able to notice,
+            # because this line carried a path and no claim about its content. Checked with
+            # `sha256sum <record>` against this field -- R-5, and no new command.
+            #
+            # ADDITIVE. `provenance_path`'s four consumers in `show.py` read it as a pointer
+            # and are untouched; folding both into one dict would break them for no gain.
+            #
+            # NO `HISTORY_SCHEMA` BUMP -- R-3. The precedent is explicit: `imported_code`
+            # entered the history without one, and `diff.py` documents the consequence in
+            # its own voice, that two records can legitimately share `runprov.history.v2`
+            # and disagree about whether a field exists.
+            #
+            # ABSENT MEANS *PREDATES THE FIELD* OR *THE SIDECAR WAS NOT WRITTEN*, NEVER
+            # *mismatch*. `_persist` returns False and never raises, so a failed sidecar must
+            # not get the digest of a file that does not exist -- the pairing below is what
+            # makes that absence automatic rather than remembered. A consumer comparing two
+            # records where only one side carries this must BLOCK or NOTE, not compare, or
+            # every pair straddling this release reports a false edit. That is `diff.py`'s
+            # `imported_code` lesson verbatim.
+            #
+            # AND THE LAST LINE OF A HISTORY IS NOT CHAINED -- no successor's `prev` covers
+            # it -- so the newest run's record digest is tamper-evident only once another run
+            # appends. That is the chain's existing documented property, stated here because
+            # the risk is a reader over-claiming past it.
+            #
+            # THE YAML TWIN GETS NO DIGEST, on `_persist_yaml`'s own authority that the
+            # record is the JSON. The asymmetry is documented rather than discovered: the
+            # YAML is the one a person opens beside an artifact.
+            **(
+                {"provenance_sha256": self._record_digest[1]}
+                if self._record_digest is not None and self._record_digest[0] == str(prov_path)
+                else {}
+            ),
             "notes": r.get("notes", {}),
             # The old log's `terminal_log_file`, and more than it: the mechanism is carried
             # alongside the path, so a reader can tell an empty log that saw everything from
@@ -3983,6 +4066,14 @@ class Run:
         if r.get("refused_late_inputs"):
             summary["refused_late_inputs"] = r["refused_late_inputs"]
         self._history_appended = True
+        #: WHAT THIS LINE RECORDED, paired with the path it recorded it FOR [T-57]. Read only
+        #: by `write()`'s second-write branch, to tell a rewrite of THIS path from a write to
+        #: a different one.
+        self._recorded_digest = (
+            (str(prov_path), summary["provenance_sha256"])
+            if "provenance_sha256" in summary
+            else None
+        )
         # DISARMED HERE AND NOWHERE ELSE. Every path that persists anything reaches
         # `_append_history` -- `write()` outside a block appends immediately, and inside one
         # `__exit__` appends the deferred entry -- so a second `discard` beside the sidecar

@@ -1154,6 +1154,7 @@ five years later, with nothing installed on it.
 | read the whole history | `cat provenance/transformation_log.yml` |
 | find every run that touched a file | `grep measurements.tsv provenance/*.yml` |
 | check the inputs still hash the same | `sha256sum -c` |
+| check the RECORD itself has not been edited | `sha256sum one.prov.json`, against the history line's `provenance_sha256` |
 | ask what produced *this* file, holding only the file | read its first lines — the pin is a comment block |
 | all of the above with `runprov` uninstalled | yes |
 

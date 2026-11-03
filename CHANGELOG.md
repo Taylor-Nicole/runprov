@@ -9,6 +9,117 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Added — the record file now carries its own digest in the history, checkable with `sha256sum`
+
+**`verify` holds a pinned artifact to its pin, `chain` holds the history to itself, and the
+record in between could be edited with nothing able to notice.** Measured on a real record
+written by the 0.8.0 wheel: a registered input, the pin beside an artifact, the artifact's own
+body and every history line were all digested — the `*.prov.json` **record was not**, and the
+chained line carried `provenance_path`, a path with no claim about its content. `show.py` reads
+that path in four places as a pointer and never as a claim.
+
+Each history line now carries **`provenance_sha256`** beside `provenance_path`: a raw sha256 of
+the record as written. **Checked with `sha256sum one.prov.json` against the field, and nothing
+else** — no new command, and a row in the README's *what you want / what you need* table says so.
+
+**Raw sha256 and not `content_digest`**, which is the same argument `PIN_BODY_FIELD` makes: *has
+anyone edited this file* is a different question from *is this the same data*, and a record is
+full of the volatile stamps `VOLATILE_JSON` exists to strip. A plain sha256 also needs no reader
+inside this package, so the field **inherits ADR-0016's R-12** — *the chain is verifiable with
+`sha256sum` and nothing else* — rather than needing an exemption from it. It is deliberately not
+the seal of `SPEC-SEAL-AND-SIGNATURE`: a body nobody can reproduce without this package is a
+field nobody can check.
+
+**No `HISTORY_SCHEMA` bump.** The precedent is explicit — `imported_code` entered the history
+without one, and `diff.py` documents the consequence in its own voice: two records can
+legitimately share `runprov.history.v2` and disagree about whether a field exists. **Absence
+therefore means *predates the field* or *the sidecar was not written*, never *mismatch*.** A
+consumer comparing two records where only one side carries it must block or note, not compare, or
+every pair straddling this release reports a false edit. Nothing in the package compares it today
+and a guard holds that: the field is mentioned in one module and emitted in one place.
+
+**One hazard the specification did not name, found by building it.** `_persist` runs for paths
+the history never names — the seal re-persists every previously written sidecar, and a second
+`write()` rewrites one deliberately — so an unpaired field would have carried whichever file was
+persisted **last** rather than the one the history line points at. The digest is therefore
+**paired with its path**, which also makes the failed-sidecar absence automatic rather than
+remembered.
+
+**And one case stays imperfect, so it is disclosed rather than hidden.** A second `write()` to the
+**same** path rewrites the sidecar without appending a second history line — one run is one line —
+so the line already there still describes the superseded version, and `sha256sum` against the file
+would contradict it. runprov now says so on stderr, naming the path. It is not corrected, because
+correcting means rewriting a line in a file whose whole property is that lines are only ever
+appended; and the field is not dropped, because absence already carries two meanings and a third
+would make every absence unreadable. Writing the record at two *different* paths — the case that
+branch exists for — is silent, because the file the history names is untouched.
+
+**The last line of a history is not chained**, no successor's `prev` covering it, so the newest
+run's record digest is tamper-evident only once another run appends. That is the chain's existing
+property, stated here because the risk is a reader over-claiming past it. **The YAML twin gets no
+digest**, on `_persist_yaml`'s own authority that the record is the JSON — documented rather than
+discovered, because the YAML is the one a person opens beside an artifact.
+
+A `verify` or `chain` integration stays out of scope: `chain.py` reads exactly one file and hashes
+its own lines, and making it stat and hash external records turns a self-contained check into one
+needing the GONE / moved / unreadable machinery `verify` already carries.
+
+**ADR-0016 is amended with R-33, and a guard is what forced that.** The field's whole argument is
+that it *inherits* ADR-0016's R-12 — *the chain is verifiable with `sha256sum` and nothing else* —
+so the comment stating it cites ADR-0016. The suite holds a **two-way** check: a module naming
+`ADR-NNNN` is the code's claim about which decision it implements, and the record's `Applies to:`
+is the document's, and the two must agree. `run.py` had never cited ADR-0016 and the decision
+governed only `chain.py`, `sinks.py` and `__main__.py` — so the gate refused, correctly: a reader
+following that citation would have found a requirement saying nothing about the record's digest, a
+dangling authority of exactly the kind found in `survivors.py` this same day. ADR-0016's title is
+*a history shows whether it has been edited*, and R-33 extends it from the history's own lines to
+the record each line names, carrying the three limits above. `docs/adr/` ships in the sdist where
+the audit ledger does not, which is why the absence semantics belong there.
+
+**And the writer-surface census moved 27 → 28**, deliberately: the disclosure above is a new
+`diagnostic` site in `run.py`, and that table exists so a writer call cannot be added without
+someone reading the newline clause beside it. The call passes a single implicitly-concatenated
+argument with no newline of its own, which is what that clause requires.
+
+**And R-33 then had to be bound to a test, which a third guard required.** Every requirement of
+an accepted decision record must be cited by a test, as a bracketed `[ADR-0016 R-33]` — bracketed
+because a bare `R-4` once matched `R-4.4` in an unrelated test and silently satisfied a
+requirement that had no test at all. Each of the four guards now cites it, in the clause it
+actually exercises. **Three separate guards, each refusing a different half-finished piece of the
+same change** — the module/record citation disagreeing, the writer census moving, and a new
+requirement with nothing holding it — and none of them was caught by any targeted selection.
+
+### Tested — four guards, and the expected digest is computed from the bytes rather than restated
+
+The digest is checked against `hashlib.sha256` of the file **on disk**, never against the writer's
+own expression — otherwise the assertion says a line equals itself — and it was additionally
+verified against the real `sha256sum` binary by hand. The record is asserted **not** to contain
+its own digest, because hashing a file whose contents include the hash has no fixed point.
+
+The absence arm makes the sidecar directory unwritable and requires the field to be **gone rather
+than wrong**, with the history line still present (a sidecar failure must not cost the entry) and
+a positive control on a writable directory so the absence is the failure and not the test missing
+the field. The rewrite arm asserts its own premise first — that the second write really moved the
+file — and carries the control that keeps it from crying wolf: writing to a *different* path must
+say nothing. All four go red on the pre-change tree, three with `KeyError: 'provenance_sha256'`
+and the fourth on its own non-vacuity assertion, *"no module mentions it at all; the field has
+gone"*.
+
+**Two of my own mistakes, both caught by the controls rather than by reading.** The ownership
+guard first classified the writer's own bookkeeping as a consumer and reported three false
+readers; it now asserts the property a text sweep can actually decide — which module owns the
+field, and that it is emitted once. And the rewrite arm read `capsys.readouterr()` **twice** and
+added the halves: the first call drains the buffer, so `.err` was always empty and the assertion
+could only ever fail.
+
+**The third guard this change owed turned out to exist already, so no test was invented for it.**
+*A record written before the field must not read as one whose field was cleared* is held by
+`test_every_command_reads_a_history_written_by_a_released_version`, parametrised over **all nine
+corpus versions — every one of which lacks `provenance_sha256`** — asserting that no command
+tracebacks or invents a verdict on them. Writing a second test for the same property would have
+been a restatement, and the honest answer to *what holds this* is the name of the guard that
+does.
+
 ### Fixed — the harnesses' own controls: ownership by substring, a floor satisfied by a constant, a digest of prose
 
 **`torture.py`'s preload decided *is this write the package's* by a path component spelled

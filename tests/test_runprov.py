@@ -9443,7 +9443,11 @@ def test_a_once_per_process_latch_is_declared_UNTRIPPED():
 #: the newline clause below holds. `checked >= 1668` was refused next door for rotting on every
 #: docstring edit; this cannot rot without a writer site moving.
 _WRITER_SURFACE = {
-    "run.py": {"diagnostic": 27, "progress": 2, "summary": 2},
+    #: 27 -> 28 with T-57: the one notice that a SECOND `write()` to the same path has left the
+    #: history line's `provenance_sha256` describing the superseded version. The newline clause
+    #: above was read before adding it, and that call passes a single implicitly-concatenated
+    #: argument with no newline of its own.
+    "run.py": {"diagnostic": 28, "progress": 2, "summary": 2},
     #: 3 -> 7 with T-47: the in-process lock giving up, the two halves of the capability /
     #: contention split, and the two notices `_write_verified` emits on an unlocked write.
     "sinks.py": {"diagnostic": 7},
@@ -30929,6 +30933,189 @@ def _completed(records):
     rather than anywhere the schema matters, so a maintainer works through a wall of
     unrelated red without being pointed at the file that actually doubled."""
     return [r for r in records if r.get("schema") != runprov.run.START_SCHEMA]
+
+
+def test_the_history_carries_the_RECORDS_OWN_DIGEST_and_sha256sum_reproduces_it(tmp_path):
+    """T-57, [ADR-0016 R-33]. `verify` holds a pinned artifact to its pin, `chain` holds the
+    history to itself, and the record in between could be edited with nothing able to notice.
+
+    MEASURED ON A REAL RECORD before this existed: a registered input, a pin beside an
+    artifact, the artifact's own body and every history line were digested; the `*.prov.json`
+    **record was not**, and the chained line carried `provenance_path`, a path with no claim
+    about its content. `show.py` reads that path in four places as a pointer and never as a
+    claim.
+
+    THE EXPECTED VALUE IS COMPUTED HERE, from the bytes on disk, and never from the writer's
+    own expression -- otherwise this asserts that a line equals itself. A raw sha256 is chosen
+    precisely so that it needs no reader inside this package: the field INHERITS ADR-0016's
+    R-12, *the chain is verifiable with `sha256sum` and nothing else*, rather than needing an
+    exemption from it.
+    """
+    record = tmp_path / "one.prov.json"
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    with runprov.Run("smoke", project=_project(tmp_path), provenance=record) as run:
+        run.input(tmp_path / "in.tsv")
+
+    line = _lines(tmp_path / "runs.jsonl")[-1]
+    assert record.is_file(), "the sidecar was not written, so this test proves nothing"
+    expected = hashlib.sha256(record.read_bytes()).hexdigest()
+    assert line["provenance_sha256"] == expected, (
+        f"the history's digest of the record does not match the bytes on disk:\n"
+        f"  recorded {line['provenance_sha256']}\n  on disk  {expected}"
+    )
+    #: AND IT IS A DIGEST OF THE FILE THE LINE POINTS AT, not of some other file.
+    assert line["provenance_path"].endswith("one.prov.json"), line["provenance_path"]
+
+    #: NO SCHEMA BUMP -- R-3. The precedent is explicit: `imported_code` entered the history
+    #: without one, and `diff.py` documents the consequence in its own voice.
+    assert line["schema"] == runprov.HISTORY_SCHEMA
+
+    #: THE RECORD DOES NOT CONTAIN ITS OWN DIGEST, and it cannot: hashing a file whose
+    #: contents include the hash has no fixed point. The field belongs to the history line
+    #: ABOUT the record, which is why this is cheap.
+    assert "provenance_sha256" not in json.loads(record.read_text(encoding="utf-8"))
+
+
+def test_the_records_digest_is_ABSENT_when_the_sidecar_could_not_be_written(tmp_path, capsys):
+    """T-57, [ADR-0016 R-33]'s absence clause. `_persist` returns False and never raises, so a
+    failed sidecar must not get the digest of a file that does not exist.
+
+    ABSENCE MEANS *PREDATES THE FIELD* OR *THE SIDECAR FAILED*, NEVER *mismatch* -- which is
+    `diff.py`'s `imported_code` lesson verbatim: one-sided presence must block or note, not
+    compare, or every pair of records straddling this release reports a false edit. A wrong
+    digest here would be worse than no digest, because it accuses somebody.
+    """
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    record = locked / "nested" / "one.prov.json"
+    os.chmod(locked, 0o500)
+    try:
+        with runprov.Run("smoke", project=_project(tmp_path), provenance=record) as run:
+            run.input(tmp_path / "in.tsv")
+    finally:
+        os.chmod(locked, 0o700)
+
+    captured = capsys.readouterr()
+    said = captured.out + captured.err
+    line = _lines(tmp_path / "runs.jsonl")[-1]
+    assert not record.exists(), f"the sidecar was written after all, so this arm is void: {said}"
+    assert "provenance_sha256" not in line, (
+        f"a digest was recorded for a record never written: {line.get('provenance_sha256')}"
+    )
+    #: THE HISTORY LINE IS STILL THERE. A sidecar failure must not cost the history entry --
+    #: `_persist`'s own docstring is the authority -- so this is not "absent because nothing
+    #: was recorded at all".
+    assert line["provenance_path"].endswith("one.prov.json"), line
+
+    #: POSITIVE CONTROL: the same run shape with a writable directory DOES carry the field, so
+    #: the absence above is the failure and not this test never reaching the field.
+    ok = tmp_path / "fine.prov.json"
+    with runprov.Run("smoke2", project=_project(tmp_path), provenance=ok) as run:
+        run.input(tmp_path / "in.tsv")
+    assert "provenance_sha256" in _lines(tmp_path / "runs.jsonl")[-1]
+
+
+def test_a_SECOND_write_to_the_SAME_path_discloses_that_the_recorded_digest_is_superseded(
+    tmp_path, capsys
+):
+    """T-57 did not name this case, the code requires it, and [ADR-0016 R-33] limit 2 records it.
+
+    A second `write()` rewrites the sidecar deliberately -- *a caller may want the record at
+    two paths* -- and must NOT append a second history line, because one run is one line.
+    The history is append-only, so the line already there still carries the digest of the
+    version it was appended for. A reader running `sha256sum` against the file now sees a
+    mismatch and attributes it to an editor, when it is runprov's own second write.
+
+    DISCLOSED RATHER THAN CORRECTED, because correcting means rewriting a line in a file whose
+    whole property is that lines are only ever appended; and rather than omitting the field,
+    because absence already carries two meanings and a third would make every absence
+    unreadable.
+    """
+    record = tmp_path / "two.prov.json"
+    (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
+    run = runprov.Run("twice", project=_project(tmp_path), provenance=record)
+    run.input(tmp_path / "in.tsv")
+    run.write(record)
+    recorded = _lines(tmp_path / "runs.jsonl")[-1]["provenance_sha256"]
+    capsys.readouterr()
+
+    run.note("changed", "after the history line was appended")
+    run.write(record)
+    captured = capsys.readouterr()
+    said = captured.out + captured.err
+
+    #: THE PREMISE FIRST: the rewrite really did move the file, or there is nothing to disclose
+    #: and this test would pass against a warning that never fires for the right reason.
+    assert hashlib.sha256(record.read_bytes()).hexdigest() != recorded, (
+        "the second write did not change the record, so this arm is void"
+    )
+    assert "provenance_sha256" in said and "superseded" in said, (
+        f"the rewrite was silent, so `sha256sum` against this file now contradicts the "
+        f"history with nothing having said so:\n{said}"
+    )
+    #: AND STILL ONE LINE. The disclosure must not have become a second history entry.
+    assert len(_lines(tmp_path / "runs.jsonl")) == 1
+
+    #: THE CONTROL THAT KEEPS IT FROM CRYING WOLF: writing the record at a SECOND path -- the
+    #: case the branch exists for -- leaves the file the history names untouched, so it must
+    #: say nothing. Without this arm a warning on every second write would pass above.
+    other = tmp_path / "elsewhere.prov.json"
+    capsys.readouterr()
+    run.write(other)
+    after = capsys.readouterr()
+    quiet = after.out + after.err
+    assert "superseded" not in quiet, (
+        f"writing the record to a different path warned about the first one, which is "
+        f"untouched:\n{quiet}"
+    )
+
+
+def test_NOTHING_in_the_package_compares_the_records_digest_as_a_difference():
+    """T-57's hazard 2 and [ADR-0016 R-33]'s absence clause, held as a property not remembered.
+
+    Verification is `sha256sum <record>` against the field -- R-5, and no new command. A
+    `verify` or `chain` integration is deliberately out of scope: `chain.py` reads exactly one
+    file and hashes its own lines, and making it stat and hash external records turns a
+    self-contained check into one needing the GONE / moved / unreadable machinery `verify`
+    already carries.
+
+    SO WHILE NO CONSUMER EXISTS, no consumer may compare it either -- because a one-sided
+    field compared by anything reports a false edit on every pair of records straddling this
+    release. This asserts the field is WRITTEN in exactly one place and READ nowhere, which is
+    what makes the hazard unreachable today rather than merely undocumented.
+    """
+    package = _repo_root() / "runprov"
+    mentions: dict[str, list[int]] = {}
+    emitted = 0
+    for path in sorted(package.glob("*.py")):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if "provenance_sha256" not in line or line.lstrip().startswith("#"):
+                continue
+            mentions.setdefault(path.name, []).append(number)
+            if '"provenance_sha256":' in line:
+                emitted += 1
+
+    #: NON-VACUITY FIRST: if the sweep finds nothing, the field has gone and every assertion
+    #: below is satisfied by its absence.
+    assert mentions, "no module mentions `provenance_sha256` at all; the field has gone"
+
+    #: ONE MODULE OWNS IT, and that module is its writer. A comparer would live in `diff.py`,
+    #: `show.py` or `chain.py` -- so naming the owning module IS the property, and it is one
+    #: a text sweep can actually decide, unlike "nothing compares it".
+    assert set(mentions) == {"run.py"}, (
+        f"a module other than the field's writer now mentions `provenance_sha256`. A "
+        f"one-sided field that is COMPARED reports a false edit for every record written "
+        f"before this release, so a consumer must block or note rather than compare -- and "
+        f"`verify`/`chain` integration is deliberately out of scope: {mentions}"
+    )
+
+    #: AND IT IS EMITTED EXACTLY ONCE, in the history projection. Two spellings of one rule
+    #: can disagree, which is this repository's most repeated defect.
+    assert emitted == 1, (
+        f"`provenance_sha256` is written into a payload in {emitted} places, not one; the "
+        f"history projection is the only place that may emit it"
+    )
 
 
 def _lines(path):
