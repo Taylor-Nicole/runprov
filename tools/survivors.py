@@ -161,6 +161,78 @@ def locate(lines: typing.Sequence[str], text: str, occurrence: int) -> int | Non
     return None
 
 
+#: Everything an AST field can hold that is a VALUE rather than more tree. Any other kind of
+#: field value raises in `_canonical`, because a field silently dropped is a rule change this
+#: digest cannot see -- the failure mode that put `ast.unparse` here in the first place.
+_CANONICAL_SCALARS = (str, int, float, complex, bool, bytes, type(None))
+
+
+def _canonical(node: ast.AST, depth: int = 0) -> str:
+    """One AST node as text THIS PROJECT spells, so no interpreter's formatting reaches a digest.
+
+    `ast.unparse` was the first repair for [T-67] and it shipped broken. It parenthesises a tuple
+    `for` target on 3.10 and not on 3.11+ --
+
+        3.10    for (number, (line, nth)) in enumerate(...)
+        3.11+   for number, (line, nth) in enumerate(...)
+
+    -- and `locate` has exactly that construct, so ONE CHARACTER of CPython's formatting reached
+    the rule digest. `requires-python` includes 3.10, so the hosted matrix went red on the oldest
+    supported Python while four local gates came back green: the local interpreter is 3.12 and a
+    digest cannot disagree with itself.
+
+    WORSE, THE RED WAS UNATTRIBUTING IN THE ONE DIRECTION THAT COSTS. `ci.py survivors` said *the
+    matching rule has changed ... update the digest*, which was false -- the rule was untouched --
+    and the remedy it named would have made 3.10 green and the other three legs red. That is the
+    false-red-becomes-false-green trap `_rule_source` documents, realised.
+
+    MEASURED 2026-11-03 on the two rule functions, four interpreters, and an 18-mutant battery
+    (16 behavioural edits that MUST move the digest, one prose-only and one layout-only arm that
+    must NOT); digests are the first 16 hex of sha256 over both functions:
+
+        normalisation      3.10        3.11        3.12        3.13      battery   values
+        ast.unparse      1f07ac42    cb1bea41    cb1bea41    cb1bea41   18 of 18     2
+        ast.dump         7c825a45    7c825a45    c7681bf9    30b4e6a3   18 of 18     3
+        _canonical       fdfc9e69    fdfc9e69    fdfc9e69    fdfc9e69   18 of 18     1
+
+    `ast.dump` is the repair that comes to mind and it is WORSE, at three values: it prints every
+    field, and 3.12 added `type_params` to a function's fields. So this walks `node._fields` --
+    the grammar's own declaration, never a list written here -- and SKIPS AN EMPTY FIELD, which
+    is what makes a newly-added-but-unused field cost nothing. A version that adds a field and
+    fills it is then a loud red on one leg rather than a silent re-spelling, and no instrument
+    that runs on one interpreter can do better than that; the matrix is the only witness to this
+    class, which is why the registry pins ONE digest for all four legs.
+
+    Layout is absent by construction -- it is not in the tree at all -- so a `ruff format` pass
+    still does not read as a rule change, which was `ast.unparse`'s reason for being here.
+    """
+    pad = "  " * depth
+    out = [f"{pad}{type(node).__name__}"]
+    for field in node._fields:
+        #: A missing optional field and one present-but-None must read alike, or whether the
+        #: attribute happens to be set becomes part of the rule's identity.
+        value = getattr(node, field, None)
+        if isinstance(value, _CANONICAL_SCALARS):
+            out.append(f"{pad}  {field}={value!r}")
+        elif isinstance(value, ast.AST):
+            out.append(f"{pad}  {field}:")
+            out.append(_canonical(value, depth + 2))
+        elif isinstance(value, list):
+            if not value:
+                continue
+            out.append(f"{pad}  {field}[{len(value)}]:")
+            out.extend(
+                _canonical(item, depth + 2) if isinstance(item, ast.AST) else f"{pad}    {item!r}"
+                for item in value
+            )
+        else:  # pragma: no cover - a field kind the grammar does not currently have
+            raise AssertionError(
+                f"{type(node).__name__}.{field} holds {type(value).__name__}, which this "
+                f"normaliser has no spelling for, so it would be dropped from the digest"
+            )
+    return "\n".join(out)
+
+
 def _rule_source(function: typing.Callable[..., object]) -> str:
     """One function's CODE, with its docstring removed and its formatting normalised.
 
@@ -191,9 +263,22 @@ def _rule_source(function: typing.Callable[..., object]) -> str:
     would make every refactor of it read as a rule change."* Opening the cited neighbour is the
     whole lesson here.
 
-    `ast.unparse` also normalises layout, so a `ruff format` pass stops reading as a rule change.
+    AND THE NORMALISED FORM MUST BE SPELLED BY THIS PROJECT, NOT BY THE INTERPRETER.
+    `ast.unparse` was the first repair and it shipped broken -- see `_canonical`, which
+    replaced it, for the measurement and the leg it reddened.
     """
-    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    return _normalise(inspect.getsource(function))
+
+
+def _normalise(source: str) -> str:
+    """One chunk of Python as the canonical text its DECISIONS reduce to.
+
+    Taken on a `str` and not on a function so a test can mutate the source by one character and
+    re-normalise it, which is the only way the rule arm of
+    `test_the_survivor_rule_digest_moves_on_the_RULE_and_not_on_the_PROSE` can be non-void: an
+    arm that edits the normalised output instead would be editing a format, not a rule.
+    """
+    tree = ast.parse(textwrap.dedent(source))
     for node in ast.walk(tree):
         if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
@@ -204,7 +289,7 @@ def _rule_source(function: typing.Callable[..., object]) -> str:
             and isinstance(first.value.value, str)
         ):
             node.body = node.body[1:] or [ast.Pass()]
-    return ast.unparse(tree)
+    return _canonical(tree)
 
 
 def rule_digest() -> str:
@@ -487,7 +572,10 @@ def main(argv: typing.Sequence[str] | None = None) -> int:
         print(
             "REFUSE: the matching rule has changed since this registry was written. Every entry's "
             "identity is derived from that rule, so a mismatch cannot be read as 'the subject "
-            "moved' -- re-verify the registry and update the digest.",
+            "moved' -- re-verify the registry and update the digest. If the rule's own source is "
+            "UNCHANGED, suspect the normaliser instead: a digest that varies by interpreter is "
+            "red on one matrix leg and green on the others, and re-stamping it only moves which "
+            "leg is red.",
             file=sys.stderr,
         )
         return 3

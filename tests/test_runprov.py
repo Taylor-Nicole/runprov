@@ -9447,7 +9447,7 @@ _WRITER_SURFACE = {
     #: history line's `provenance_sha256` describing the superseded version. The newline clause
     #: above was read before adding it, and that call passes a single implicitly-concatenated
     #: argument with no newline of its own.
-    "run.py": {"diagnostic": 28, "progress": 2, "summary": 2},
+    "run.py": {"diagnostic": 29, "progress": 2, "summary": 2},
     #: 3 -> 7 with T-47: the in-process lock giving up, the two halves of the capability /
     #: contention split, and the two notices `_write_verified` emits on an unlocked write.
     "sinks.py": {"diagnostic": 7},
@@ -30985,21 +30985,30 @@ def test_the_records_digest_is_ABSENT_when_the_sidecar_could_not_be_written(tmp_
     compare, or every pair of records straddling this release reports a false edit. A wrong
     digest here would be worse than no digest, because it accuses somebody.
     """
-    locked = tmp_path / "locked"
-    locked.mkdir()
+    #: THE PLANT IS A PARENT THAT IS A FILE, not a directory with its write bit off. `chmod`
+    #: was the first plant and it is POSIX-only: on Windows it toggles a file's read-only bit
+    #: and does essentially nothing to a directory, so `mkdir` succeeded, the sidecar WAS
+    #: written, and this arm went red at 0df05f7 reporting its own voidness -- which is the
+    #: design working, but it measured nothing on that leg. A file where a directory must be
+    #: refuses `mkdir(parents=True)` with an OSError on every platform this ships to.
+    blocking = tmp_path / "locked"
+    blocking.write_text("this is a file, so nothing can be created beneath it\n", encoding="utf-8")
     (tmp_path / "in.tsv").write_text("a\n", encoding="utf-8")
-    record = locked / "nested" / "one.prov.json"
-    os.chmod(locked, 0o500)
-    try:
-        with runprov.Run("smoke", project=_project(tmp_path), provenance=record) as run:
-            run.input(tmp_path / "in.tsv")
-    finally:
-        os.chmod(locked, 0o700)
+    record = blocking / "nested" / "one.prov.json"
+    with runprov.Run("smoke", project=_project(tmp_path), provenance=record) as run:
+        run.input(tmp_path / "in.tsv")
 
     captured = capsys.readouterr()
     said = captured.out + captured.err
     line = _lines(tmp_path / "runs.jsonl")[-1]
-    assert not record.exists(), f"the sidecar was written after all, so this arm is void: {said}"
+    assert not record.exists(), (
+        f"the sidecar was written after all, so this arm is void and proves nothing about the "
+        f"absence clause: {said}"
+    )
+    assert "could not write the provenance sidecar" in said, (
+        f"the sidecar is absent for some reason other than the write failing, so this arm is "
+        f"measuring the wrong thing: {said}"
+    )
     assert "provenance_sha256" not in line, (
         f"a digest was recorded for a record never written: {line.get('provenance_sha256')}"
     )
@@ -31014,6 +31023,68 @@ def test_the_records_digest_is_ABSENT_when_the_sidecar_could_not_be_written(tmp_
     with runprov.Run("smoke2", project=_project(tmp_path), provenance=ok) as run:
         run.input(tmp_path / "in.tsv")
     assert "provenance_sha256" in _lines(tmp_path / "runs.jsonl")[-1]
+
+
+def test_the_records_digest_is_taken_from_the_FILES_BYTES_and_not_from_the_STRING_written():
+    """T-57, [ADR-0016 R-33]. The first implementation hashed the string and shipped wrong.
+
+    NOTHING THAT RUNS ON LINUX CAN SEE THIS BY COMPARING DIGESTS. `atomic_write_text` writes in
+    text mode with `newline=None`, so on POSIX the bytes on disk ARE `text.encode("utf-8")` and
+    the two implementations agree character for character. On Windows that mode translates every
+    `\n` to `\r\n`, so the field described a string that was never on disk and `sha256sum` --
+    the field's whole recipe -- contradicted it. The hosted matrix caught it at 0df05f7:
+    recorded `b14510c54086cecd`, on disk `a0750385230bba1c`.
+
+    SO THIS IS ASSERTED STRUCTURALLY, which is the only form with reach on one platform: the
+    digest's subject must be a READ OF THE FILE. A value comparison here would be green on this
+    machine for both the right and the wrong implementation, which is how the defect shipped.
+    """
+    source = pathlib.Path(_repo_root() / "runprov" / "run.py").read_text(encoding="utf-8")
+    persist = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "_persist"
+    ]
+    assert len(persist) == 1, f"`_persist` is not one method any more: {len(persist)}"
+
+    digests = [
+        node
+        for node in ast.walk(persist[0])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "sha256"
+    ]
+    assert len(digests) == 1, (
+        f"`_persist` takes {len(digests)} sha256 digests where this guard expects exactly one; "
+        f"if the field grew a sibling, this guard is no longer total over them"
+    )
+
+    #: THE SUBJECT MUST COME FROM A READ. Resolved through the local name the digest is given
+    #: rather than matched on a spelling: whatever `sha256(...)` is handed must be bound in this
+    #: method by a `read_bytes()` call.
+    subject = digests[0].args[0]
+    reads = {
+        target.id
+        for node in ast.walk(persist[0])
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "read_bytes"
+    }
+    #: A subject that is not a plain local name fails here too, and with the SAME message: an
+    #: inline `text.encode("utf-8")` is exactly the implementation that shipped wrong, so this
+    #: must read as the finding it is and not as a guard that could not resolve something.
+    named = subject.id if isinstance(subject, ast.Name) else None
+    assert named in reads, (
+        f"`_persist` digests `{ast.unparse(subject)}`, which is not bound by a read of the "
+        f"record. The "
+        f"field claims to be the sha256 of the bytes on disk and `sha256sum` is its only "
+        f"recipe, so digesting the string that was written is wrong wherever the writer "
+        f"translates newlines -- which it does, in text mode, on Windows. Bound by a read "
+        f"here: {sorted(reads) or 'nothing'}"
+    )
 
 
 def test_a_SECOND_write_to_the_SAME_path_discloses_that_the_recorded_digest_is_superseded(
@@ -60884,6 +60955,14 @@ def test_the_survivor_rule_digest_moves_on_the_RULE_and_not_on_the_PROSE():
 
     BOTH ARMS ARE REQUIRED. Green on the prose arm alone would also be satisfied by deleting
     the guard, which is why the rule arm is asserted beside it.
+
+    AND THE FIRST REPAIR SHIPPED BROKEN, caught by the hosted matrix at 0df05f7 and by nothing
+    local. `ast.unparse` normalises layout, which is why it was reached for -- but its output is
+    the INTERPRETER's spelling, and it parenthesises a tuple `for` target on 3.10 and not on
+    3.11+. `locate` has that construct, so the digest disagreed with itself across supported
+    Pythons: red on the 3.10 leg, green on 3.11, 3.12 and 3.13 and green on four local gates.
+    Measured across four interpreters, `ast.unparse` takes 2 values and `ast.dump` -- the repair
+    that comes to mind -- takes 3; see `tools/survivors.py::_canonical`, which takes 1.
     """
     survivors = _survivors_module()
     before = survivors.rule_digest()
@@ -60902,14 +60981,42 @@ def test_the_survivor_rule_digest_moves_on_the_RULE_and_not_on_the_PROSE():
         f"reads as a rule change: {longest!r}"
     )
 
-    #: THE RULE ARM: a behavioural change MUST move it. Asserted by re-digesting a mutated
-    #: copy of the rule's own source rather than by editing the live module.
-    mutated = hashed.replace("out.append(seen[line])", "out.append(seen[line] + 1)")
-    assert mutated != hashed, (
-        "the line this arm mutates is no longer in the digested source; the arm is void and "
+    #: THE RULE ARM: a behavioural change MUST move it. Asserted by mutating the rule's own
+    #: SOURCE by one character and re-normalising -- never by editing the normalised output,
+    #: which is a format, so an arm that edits it proves nothing about a rule.
+    source = inspect.getsource(survivors.occurrence_of)
+    mutated = source.replace("out.append(seen[line])", "out.append(seen[line] + 1)")
+    assert mutated != source, (
+        "the line this arm mutates is no longer in the rule's source; the arm is void and "
         "proves nothing about whether a rule change still moves the digest"
     )
-    assert survivors.hashlib.sha256(mutated.encode("utf-8")).hexdigest() != before
+    assert survivors._normalise(mutated) != survivors._normalise(source)
+
+    #: THE LAYOUT ARM: two spellings of one decision must normalise alike, which refuses a
+    #: regression to digesting raw source -- the defect T-67 originally found.
+    #:
+    #: AND IT DOES NOT WITNESS THE INTERPRETER DEFECT. MEASURED against both plants in a copy:
+    #: a raw-source normaliser is REFUSED here, `ast.unparse` restored PASSES here. `ast.unparse`
+    #: is self-consistent within a version -- it renders both spellings below identically on
+    #: 3.10 and identically on 3.12, it only renders them DIFFERENTLY BETWEEN the two -- so no
+    #: assertion on one interpreter can see it. What caught it at 0df05f7 was the registry
+    #: pinning ONE digest while the matrix ran four interpreters: the last arm of this test,
+    #: whose reach is the matrix and not this process.
+    loose = "def f(xs):\n    for a, (b, c) in xs:\n        return a\n"
+    tight = "def f(xs):\n    for (a, (b, c)) in xs:\n        return a\n"
+    assert loose != tight, "the two spellings are the same text; this arm is void"
+    assert survivors._normalise(loose) == survivors._normalise(tight), (
+        "two spellings of one `for` target normalise differently, so the digest carries this "
+        "interpreter's layout; that is the shape that reddened the 3.10 leg"
+    )
+
+    #: AND THAT INVARIANCE IS ALSO SATISFIED BY A NORMALISER THAT COLLAPSES EVERYTHING, so a
+    #: real difference must still survive it.
+    renamed = tight.replace("return a", "return b")
+    assert survivors._normalise(renamed) != survivors._normalise(tight), (
+        "a renamed result normalises identically, so the arm above is passing because the "
+        "normaliser erases the code rather than because it ignores layout"
+    )
 
     #: AND THE COMMITTED REGISTRY STILL AGREES, so the digest above is the one in force rather
     #: than one nothing compares against.

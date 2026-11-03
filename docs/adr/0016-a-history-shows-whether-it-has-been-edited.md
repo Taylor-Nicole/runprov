@@ -717,6 +717,14 @@ is the property R-12 states for the chain, and it is the reason this is cheap: a
 *canonical body* would be a field nobody can check without the software that wrote it, which is
 the argument this project has already recorded against writing one.
 
+**WHICH MEANS THE DIGEST IS OF THE FILE AS THIS PLATFORM WROTE IT, read back after the write and
+never computed from the string handed to the writer.** The first implementation hashed the string,
+and because records are written in text mode with `newline=None` — stated in `_atomic.py`, which
+keeps that mode deliberately — every record on Windows holds CRLF and the field described bytes
+that were never on disk. It was green on Linux, macOS and four local gates, and red only on the
+Windows leg of the matrix: a field whose one recipe is an external tool is only as true as the
+bytes that tool will read.
+
 **RAW sha256, NOT the content digest.** *Has anyone edited this file* is a different question from
 *is this the same data*, and a record is full of volatile stamps the content digest exists to
 strip. Same reasoning as the pin's body field.
@@ -724,7 +732,9 @@ strip. Same reasoning as the pin's body field.
 **NO SCHEMA BUMP, SO ABSENCE IS A THIRD ANSWER AND MUST NOT BE READ AS A FOURTH.** Two records may
 legitimately share `runprov.history.v2` and disagree about whether this field exists — the
 precedent is explicit, `imported_code` entered the history the same way. **Absent means *written
-before 0.10.0* or *the sidecar could not be written*, NEVER *mismatch*.** A consumer that compares
+before 0.10.0* or *the record could not be written, or could not be read back to measure*, NEVER
+*mismatch*.** Both causes are one category — runprov took no digest — so this is still the two
+meanings limit 2 reasons about, with the second stated at the width the code actually has. A consumer that compares
 one-sided presence reports a false edit on every pair straddling this release, and the rule here is
 the one R-32 states in its own register: a line that made no claim is not an accusation.
 

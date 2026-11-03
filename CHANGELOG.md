@@ -9,6 +9,49 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — two defects the hosted matrix found in the six commits the local gate had cleared
+
+**Both were green on four consecutive local gates and red on a leg.** They are filed together
+because they are one shape: *a value computed from the representation in hand, where the claim is
+about a different representation.*
+
+**The record's digest described a string that was never on disk.** `provenance_sha256` hashed the
+`text` handed to the writer, calling the re-read an avoidable cost. But records are written in
+text mode with `newline=None`, which `_atomic.py` keeps deliberately and states in terms: *"on
+Windows that translates every `\n` to `\r\n`"*. So every record on that platform holds CRLF, and
+`sha256sum one.prov.json` — **the field's entire recipe, and the reason it can inherit ADR-0016's
+R-12 instead of needing an exemption** — contradicted it. Measured on the matrix: recorded
+`b14510c54086cecd`, on disk `a0750385230bba1c`. The digest is now read back from the file, which
+also keeps the newline rule in one place: reproducing `newline=None` here would make the field
+agree with the writer only while two copies of that rule agreed with each other.
+
+**And no value comparison on this machine can see it**, because on POSIX the bytes on disk *are*
+`text.encode("utf-8")` and both implementations agree character for character. A guard therefore
+asserts it **structurally** — whatever `_persist` digests must be bound by a read of the record —
+and it was demonstrated against the shipped implementation, which it names in one sentence.
+
+**The survivor rule digest disagreed with itself across supported Pythons.** The T-67 repair
+normalised the rule with `ast.unparse` so a `ruff format` pass would stop reading as a rule
+change. But that output is the *interpreter's* spelling: it parenthesises a tuple `for` target on
+3.10 and not on 3.11+, and `locate` has exactly that construct, so one character of CPython
+reached the digest. `requires-python` includes 3.10, so the 3.10 leg refused with *the matching
+rule has changed* — **false, and the remedy it named would have made that leg green and the other
+three red.** Measured over the two rule functions on four interpreters, with an 18-mutant battery
+(16 behavioural edits that must move the digest, one prose-only and one layout-only arm that must
+not): `ast.unparse` takes **2** values, `ast.dump` — the repair that comes to mind — takes **3**,
+and the canonical form that replaced them takes **1**, all three scoring 18 of 18 on the battery.
+`ast.dump` is worse because it prints every field and 3.12 added `type_params`; the replacement
+walks `node._fields` and skips an empty field for that reason. Both rule functions are
+byte-identical across the repair, so the re-stamped registry retires nothing: all 28 entries
+still resolve.
+
+**What has reach on each, stated rather than implied.** The layout property is held locally — a
+raw-source normaliser is refused, measured by planting one. The *cross-version* property cannot be
+witnessed by anything running on one interpreter, and the registry pinning **one** digest while
+the matrix runs four is what witnesses it. The `chmod` plant behind the absence arm of
+`provenance_sha256` was POSIX-only for the same class of reason and is now a parent that is a
+file, which refuses on every platform this ships to.
+
 ### Added — the record file now carries its own digest in the history, checkable with `sha256sum`
 
 **`verify` holds a pinned artifact to its pin, `chain` holds the history to itself, and the
@@ -33,7 +76,8 @@ field nobody can check.
 **No `HISTORY_SCHEMA` bump.** The precedent is explicit — `imported_code` entered the history
 without one, and `diff.py` documents the consequence in its own voice: two records can
 legitimately share `runprov.history.v2` and disagree about whether a field exists. **Absence
-therefore means *predates the field* or *the sidecar was not written*, never *mismatch*.** A
+therefore means *predates the field* or *the record was not written, or could not be read back to
+measure it*, never *mismatch*.** A
 consumer comparing two records where only one side carries it must block or note, not compare, or
 every pair straddling this release reports a false edit. Nothing in the package compares it today
 and a guard holds that: the field is mentioned in one module and emitted in one place.

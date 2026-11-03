@@ -3799,8 +3799,23 @@ class Run:
         except OSError as exc:
             diagnostic(f"  WARNING: could not write the provenance sidecar to {p}: {exc}")
             return False
-        #: R-1 [T-57]: THE RECORD'S OWN sha256, taken from the `text` already in hand. No
-        #: re-read of the file; the cost is one hash of a string in memory.
+        #: R-1 [T-57]: THE RECORD'S OWN sha256, READ BACK FROM THE FILE, because the claim is
+        #: about the BYTES ON DISK and `text` is not those bytes on every platform.
+        #:
+        #: THIS SHIPPED WRONG AT 0df05f7 AND THE WINDOWS LEG CAUGHT IT. It hashed the `text`
+        #: already in hand, calling the re-read an avoidable cost -- but `atomic_write_text`
+        #: writes in TEXT MODE with `newline=None`, which `_atomic.py` states in terms: *"on
+        #: Windows that translates every \n to \r\n"*. So every record on that platform
+        #: holds CRLF, the field described a string that was never on disk, and
+        #: `sha256sum one.prov.json` -- the field's ENTIRE recipe, and the reason R-33 can
+        #: inherit R-12 instead of needing an exemption -- contradicted it on one platform.
+        #: Measured on the hosted matrix: recorded b14510c54086cecd, on disk a0750385230bba1c.
+        #:
+        #: NO SECOND DEFINITION OF THE TRANSLATION. Reproducing `newline=None` here --
+        #: `text.replace("\n", os.linesep)` or similar -- would put the rule in two places and
+        #: make this field agree with the writer only while both copies agree with each other.
+        #: Reading the file asks the only question that matters, and the read is of a file
+        #: fsynced one statement ago.
         #:
         #: RAW sha256, NOT `content_digest`, and that is the same argument `PIN_BODY_FIELD`
         #: makes: *has anyone edited this file* is a different question from *is this the
@@ -3816,7 +3831,19 @@ class Run:
         #: previously`), and a second `write()` rewrites one deliberately. An unpaired field
         #: would have carried whichever file was persisted LAST rather than the one the
         #: history line points at.
-        self._record_digest = (str(p), hashlib.sha256(text.encode("utf-8")).hexdigest())
+        try:
+            on_disk = p.read_bytes()
+        except OSError as exc:
+            #: NO DIGEST RATHER THAN A GUESSED ONE. The sidecar is written and stays written --
+            #: `_persist` returning False would be false -- so only the field is withheld, and
+            #: R-33's absence clause covers *could not be written OR READ BACK* for this.
+            diagnostic(
+                f"  WARNING: wrote the provenance sidecar {p} but could not re-read it "
+                f"to digest it, so its history line carries no provenance_sha256: {exc}"
+            )
+            self._record_digest = None
+        else:
+            self._record_digest = (str(p), hashlib.sha256(on_disk).hexdigest())
         self._persist_yaml(p)
         return True
 
