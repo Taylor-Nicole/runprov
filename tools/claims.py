@@ -337,12 +337,70 @@ _SUPERSEDED_REASON = (
 #: the gate on one page and shipped the wrong number on the other, to a file PyPI can never
 #: replace. The scope pattern again: a rule that was right, reaching one of the places it applies.
 _NOT_AUDITED = {
-    "CHANGELOG.md": (
-        "a log of the past -- every figure in it is historical by construction, and its correction "
-        "notes quote superseded ones on purpose"
-    ),
     "CODE_OF_CONDUCT.md": "adopted text (the Contributor Covenant), not this project's claims",
 }
+
+#: A DOCUMENT CAN BE AUDITED IN PART, AND `CHANGELOG.md` IS WHY THE DISTINCTION EXISTS.
+#:
+#: It was excused WHOLE, reasoned *"a log of the past -- every figure in it is historical by
+#: construction, and its correction notes quote superseded ones on purpose."* That sentence is
+#: true of a RELEASED section and false of `[Unreleased]`, which is present tense and states what
+#: HEAD does. Measured [T-70]: eight sentences shipped false inside it, including `_UNRESOLVABLE`
+#: 5 -> 8, *"all three of `run.py`'s resolve guards"*, a count of sites, a count of corpus names
+#: and a count of sampled dicts -- every one a claim about the tree as it stands, in the one
+#: document this instrument was told to skip. **A claim one line outside an instrument's
+#: population reads exactly like a cleared claim**, and here the whole file was outside it.
+#:
+#: SO THE SCOPE IS SPLIT RATHER THAN THE EXEMPTION DELETED. Deleting it outright would pull every
+#: released entry in and produce a flood whose only cheap answer is a tolerance or a list -- the
+#: shape this project has already been burned by. The released sections keep the original reason;
+#: `[Unreleased]` does not get it.
+#:
+#: A RELEASE RETIRES THIS RESIDUE, AND THAT IS A DENOMINATOR MOVE, NOT WORK. Cutting a version
+#: turns `[Unreleased]` into a dated section, which leaves this scope and takes its lines with it
+#: -- measured at the split: 190 of the 284 unaccounted lines are this section's. Nothing was
+#: bound when that happens, so the fall must not read as work. It does not: the ratchet holds the
+#: POPULATION as an equality beside the numerator for exactly this shape, and that assertion fires
+#: first saying *the denominator moved*. Regenerate the baseline and record the move as SCOPE.
+#:
+#: DECLARATIVE, AND DIGESTED, FOR THE REASON `_NOT_AUDITED` IS. Narrowing a document's audited
+#: region lowers the count with NO WORK DONE, exactly like excusing the document or loosening a
+#: pattern, so the heading lives here as DATA and goes into `detection_digest`. A callable here
+#: would hide the narrowing from that digest, which is the defect this file's own history records.
+_AUDITED_SECTION = {
+    "CHANGELOG.md": "## [Unreleased]",
+}
+
+
+def _audited_section(text: str, heading: str) -> str:
+    """`text` with every line OUTSIDE the named section blanked -- not sliced.
+
+    BLANKED SO LINE NUMBERS STAY TRUE TO THE FILE. Every row this module reports is keyed
+    `name:line`, and a slice would renumber them against the slice, making each row a property of
+    the region rather than of the document a reader opens.
+
+    THE TERMINATOR IS DERIVED FROM THE HEADING, not written here: the section runs to the next
+    line sharing the heading's own prefix up to its bracket, so `## [Unreleased]` ends at the next
+    `## [`. A hardcoded terminator would be a second place to keep this rule correct.
+    """
+    lines = text.splitlines()
+    opens = [index for index, line in enumerate(lines) if line.startswith(heading)]
+    #: EXACTLY ONE, ASSERTED. Zero means a release was cut and the fresh section not yet added,
+    #: and auditing nothing would silently restore the whole-file exemption this replaced --
+    #: "cannot determine" is not "zero". Two means the document grew a second one and the range
+    #: below would be the first of them, which is a guess.
+    if len(opens) != 1:
+        raise RuntimeError(
+            f"{heading!r} appears {len(opens)} time(s), so the audited region cannot be "
+            f"determined; add the section back or correct `_AUDITED_SECTION`"
+        )
+    start = opens[0]
+    prefix = heading.split("[")[0] + "["
+    end = next(
+        (index for index in range(start + 1, len(lines)) if lines[index].startswith(prefix)),
+        len(lines),
+    )
+    return "\n".join(line if start <= index < end else "" for index, line in enumerate(lines))
 
 
 def _shipped_markdown() -> list[str]:
@@ -367,11 +425,15 @@ def _shipped_markdown() -> list[str]:
 
 def documents() -> dict[str, str]:
     """Every audited document, name -> text. Derived, so a new page is covered on arrival."""
-    found = {
-        name: (ROOT / name).read_text(encoding="utf-8")
-        for name in sorted(_shipped_markdown())
-        if name not in _NOT_AUDITED and (ROOT / name).is_file()
-    }
+    found = {}
+    for name in sorted(_shipped_markdown()):
+        if name in _NOT_AUDITED or not (ROOT / name).is_file():
+            continue
+        text = (ROOT / name).read_text(encoding="utf-8")
+        #: PART OF A DOCUMENT IS STILL A DOCUMENT. See `_AUDITED_SECTION`.
+        if name in _AUDITED_SECTION:
+            text = _audited_section(text, _AUDITED_SECTION[name])
+        found[name] = text
     #: NOT VACUOUS: a one-document survey is the state this layer was built to end, and an empty
     #: one would make every count below zero and every assertion true.
     if len(found) < 2:
@@ -1312,6 +1374,12 @@ def detection_digest() -> str:
             #: POPULATION assertion -- *"the denominator moved"*, which names what happened -- not
             #: make the gate refuse to compare, which says only that something did.
             "not_audited": sorted(_NOT_AUDITED),
+            #: AND THE PARTIAL SCOPE, FOR THE SAME REASON AND BY THE SAME ARGUMENT: narrowing a
+            #: document's audited region excuses lines with no work done. The HEADING is digested
+            #: and not merely the document name, because moving `## [Unreleased]` to
+            #: `### Fixed` would excuse most of the section while the key set stayed identical --
+            #: the exemption's SCOPE, not only its declaration, as `_SUPERSEDED_BREAKS` has it.
+            "audited_section": sorted(_AUDITED_SECTION.items()),
         }
     )
 
