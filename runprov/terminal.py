@@ -152,7 +152,17 @@ class Capture:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._fh = open(self.path, "wb")
-        except OSError as exc:
+        except Exception as exc:  # guards-ok: the promise above, applied to the statement that
+            # opens the file. `except OSError` left it FALSE: a path the platform cannot encode
+            # raises `UnicodeEncodeError` from `mkdir`, and a NUL in the name raises
+            # `ValueError`, neither of which is an `OSError`. Measured through the public API
+            # [T-71]: `Run(terminal_log=<surrogate path>)` carried the raise out of `start()`
+            # and only one broad handler in the caller kept the run alive.
+            #
+            # AND `_start_fd` BELOW WAS ALREADY WIDENED FOR THIS, citing THIS docstring as its
+            # reason — *"`start()` promises NEVER to raise, and a narrower tuple made that
+            # promise false"*. The same repair was applied to the callee and not to the caller,
+            # so a false sentence was being spent as a premise one function down.
             self.error = f"could not open {self.path}: {exc}"
             diagnostic(f"  WARNING: terminal capture off — {self.error}")
             return

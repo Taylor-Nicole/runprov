@@ -9,6 +9,39 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — a promise not to raise was being spent as a premise one function down
+
+`Capture.start`'s docstring reads *"Begin capturing. NEVER raises — a failure downgrades, then
+gives up quietly."* It guarded the two statements that open the file with `except OSError`, which
+left the sentence false: a path the platform cannot encode raises `UnicodeEncodeError` out of
+`mkdir`, and a NUL in the name raises `ValueError` out of `open`. Measured through the public API
+— `Run(terminal_log=<surrogate path>)` carried the raise out of `start()`, and one broad handler
+in the caller was all that kept the run alive.
+
+**`_start_fd`, immediately below it, had already been widened for exactly this, citing exactly
+this docstring:** *"`start()` promises NEVER to raise, and a narrower tuple made that promise
+false — (OSError, ValueError, AttributeError) let anything else through."* The repair was applied
+to the callee and not to the caller, so the false sentence stood as the stated reason for the
+neighbour's breadth. That is the recurring shape here: a rationale that cites a neighbour, where
+the neighbour does not hold.
+
+The handler is now `except Exception`, as its sibling already was, and the degradation is
+unchanged — the error is recorded and a WARNING is printed, so a capture that did not happen
+still says so.
+
+What the new guard asserts is **the promise, not the exception type.** Which error a hostile name
+produces is the platform's business: POSIX refuses a lone surrogate at `os.fsencode`, Windows
+encodes it with `surrogatepass` and may refuse the name later as an `OSError`, and a filesystem
+could accept it outright. So each case must either capture or degrade, and in neither case raise.
+The NUL case is asserted to degrade specifically, because an embedded NUL is refused by the
+filesystem call on every platform and is therefore the test's non-vacuity leg — without it,
+*"nothing raised"* is also what a `start()` that does nothing at all would report.
+
+Found by a census of the thirty-four functions in this package that promise not to raise. Five
+raise on a type-valid input, and all five break on one of four input classes: a lone high
+surrogate, a NUL byte, a non-`str` mapping key, and an object whose `__str__` raises. The other
+four are not repaired here.
+
 ### Fixed — a verdict named a cause it had inferred from a predicate that conflates three
 
 `inputs_verify` asked `target.exists()` and wrote the answer into a sentence a reader acts on.

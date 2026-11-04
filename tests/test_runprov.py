@@ -2793,6 +2793,73 @@ def test_an_fd_capture_that_fails_AFTER_opening_its_pipes_closes_them(tmp_path, 
         cap.stop()
 
 
+def test_the_capture_promise_survives_A_PATH_THE_PLATFORM_CANNOT_HOLD(tmp_path, capsys):
+    """`start()` says NEVER raises, and `except OSError` made that false [T-71].
+
+    THE TESTS AROUND THIS ONE INJECT FAILURES INTO `_start_fd`, which is reached only AFTER the
+    file is open. The input class nobody covered breaks the two statements BEFORE that: a path
+    the platform cannot encode raises `UnicodeEncodeError` out of `mkdir`, and a NUL in the name
+    raises `ValueError` out of `open` -- neither an `OSError`, so neither was caught. Measured
+    through the public API: `Run(terminal_log=<surrogate path>)` carried the raise out of
+    `start()`, and one broad handler in the caller was all that kept the run alive.
+
+    AND `_start_fd` HAD ALREADY BEEN WIDENED FOR THIS, citing `start()`'s own docstring as the
+    reason -- *"`start()` promises NEVER to raise, and a narrower tuple made that promise
+    false"*. The repair was applied to the callee and not to the caller, so a false sentence was
+    being spent as a premise one function down. That is the shape this suite keeps finding: a
+    rationale that cites a neighbour, where the neighbour does not hold.
+
+    WHAT IS ASSERTED IS THE PROMISE, NOT THE EXCEPTION. Which error a hostile name produces is
+    the platform's business -- POSIX refuses the surrogate at `os.fsencode`, Windows encodes it
+    with `surrogatepass` and may refuse the name later as an `OSError`, and a filesystem could
+    accept it outright. Pinning the exception type would make this a test of this platform. So
+    each case must either CAPTURE or DEGRADE, and in neither case raise; the NUL case is
+    asserted to degrade specifically, because an embedded NUL is refused by the filesystem call
+    on every platform and is therefore this test's non-vacuity leg.
+    """
+    hostile = {
+        "a lone high surrogate": "bad\ud800.log",
+        "an embedded NUL": "bad\x00.log",
+    }
+
+    #: THE CONTROL FIRST. Without it, "nothing raised" is also what a `start()` that does
+    #: nothing at all would report, and the whole table below would be satisfied by a stub.
+    working = runprov.terminal.Capture(tmp_path / "plain.log")
+    working.start()
+    try:
+        assert working.error is None, f"the control itself failed to capture: {working.error}"
+    finally:
+        working.stop()
+
+    degraded = {}
+    for label, name in hostile.items():
+        cap = runprov.terminal.Capture(tmp_path / name)
+        try:
+            cap.start()
+        except Exception as exc:  # pragma: no cover - this IS the defect, so it must not happen
+            raise AssertionError(
+                f"`Capture.start` raised {type(exc).__name__} for {label}, breaking the promise "
+                f"in its own docstring -- and `_start_fd` below it was widened citing that very "
+                f"promise: {exc}"
+            ) from exc
+        try:
+            degraded[label] = cap.error is not None
+        finally:
+            cap.stop()
+
+    assert degraded["an embedded NUL"], (
+        "an embedded NUL is refused by the filesystem call on every platform, so this case must "
+        "have DEGRADED. If it captured, this test reached nothing and its silence means nothing"
+    )
+    #: AND THE DEGRADATION IS DISCLOSED, because a capture that silently does not happen is the
+    #: failure this package exists to prevent. The warning is emitted through `_report`, whose
+    #: own handler is what keeps an unencodable path from breaking the sentence about it.
+    printed = capsys.readouterr()
+    assert "terminal capture off" in printed.out + printed.err, (
+        "the capture degraded without saying so, so a reader would believe the log is complete"
+    )
+
+
 def test_a_failing_os_close_cannot_derail_the_capture_degradation(tmp_path, monkeypatch):
     """`start()` promises never to raise, and the cleanup it runs on failure uses `os.close`.
 
