@@ -24,6 +24,28 @@ that opened by saying a batch was committed and closed, four hundred words later
 headed *what is still yours* produced an instruction to commit the batch again. The long form
 belongs in the audit ledger, which is read when it is wanted. The terminal gets the state.
 
+## Reviewing and verifying
+
+**A reviewer must be a fresh agent, never a fork of you.** A fork inherits your framing, and your
+framing is what a review exists to test. Measured here: the worst defect found this week came from
+a fresh skeptic given one claim to refute, and twice in the same week the sentence that justified a
+repair was itself the defect. A reviewer that starts from your context will return your conclusion
+with more words attached.
+
+**Build at ordinary effort; verify at high.** Writing a repair and attacking one are not the same
+task, and the attack is where being wrong is expensive. Give any agent whose job is to refute,
+audit or verify a high effort level, and say so in its brief. Mechanical work — a sweep, a census,
+a census of a census — does not need it.
+
+**Brief a reviewer with the code and the claim, never with your conclusion.** State what is to be
+refuted, what has already been ruled out, and every operating rule below that its work could
+touch; a rule left out of a brief is a rule the agent will break, and that has happened here.
+
+**After a change large enough to need a reviewer, ask for the three things that outlive it:** what
+the defect's shape was and where else it could occur, which sweep came back empty and over what
+denominator, and which guard would now go red. The first two go in the ledger; the third is the
+only one that survives without a reader.
+
 ## Running things
 
 - Use the virtualenv interpreter, `.venv/bin/python`. Never a bare `python`.
