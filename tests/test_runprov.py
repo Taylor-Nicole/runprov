@@ -7624,11 +7624,100 @@ def test_an_integer_too_long_to_RENDER_does_not_abort_the_step_either(tmp_path):
         sys.set_int_max_str_digits(before)
 
 
+def _canonical_branch_types() -> dict[str, tuple[type, str]]:
+    """Every type `_canonical` branches on, resolved, with HOW each branch is spelled.
+
+    ONE DERIVATION, THREE CONSUMERS -- and it used to be two derivations and a hole. The
+    catch-all control walked `isinstance` calls and then added `NoneType` with
+    `if " is None" in source`, a clause about CODE whose truth value a COMMENT could set: with
+    that substring gone the control went GREEN while `_canonical(None)` was covered by nothing
+    [T-70]. The subclass control walked `isinstance` only. Two controls deriving one population
+    by two rules is how they drift, so the rule lives here once and each consumer declares the
+    SUBSET it wants, with a reason.
+
+    AN IDENTITY BRANCH IS A BRANCH. `value is None`, `value is True` and `value is False`
+    choose a rendering exactly as `isinstance` does -- the `bool` pair arrived precisely
+    BECAUSE `isinstance` turned out to be forgeable. Both operand sides are read and both `Is`
+    and `IsNot` count, because `None is value` and `value is not None` are the same branch
+    written differently, and a rule keyed on one spelling of a symmetric operator is a rule
+    about typing habits.
+
+    WHAT THIS CANNOT SEE, stated here because the consumers' declared COUNTS are the only thing
+    that catches it: a branch spelled `value in (True, False)`, a `match` statement, or a
+    comparison against a module-level sentinel NAME rather than a constant. Each would leave
+    this population silently. So every consumer asserts the count it expects -- the one place
+    in this file where a hand-written number IS the instrument, because its only other source
+    is the code being measured, and deriving it would make the assertion a restatement.
+    """
+    source = textwrap.dedent(inspect.getsource(runprov.hashing._canonical))
+    fn = ast.parse(source).body[0]
+    assert isinstance(fn, ast.FunctionDef), type(fn)
+    #: POSITIONAL-ONLY PARAMETERS TOO. `fn.args.args[0]` was the subject here, and making the
+    #: parameter positional-only (`def _canonical(value, /, depth=0)`) silently moved the
+    #: subject to `depth` -- a sweep that then measured the wrong variable and reported clean.
+    params = fn.args.posonlyargs + fn.args.args
+    assert params, "`_canonical` takes no argument, so there is no subject to branch on"
+    param = params[0].arg
+
+    def _resolve(spelling):
+        parts = spelling.split(".")
+        found = vars(runprov.hashing).get(parts[0], getattr(builtins, parts[0], None))
+        for part in parts[1:]:
+            found = getattr(found, part, None)
+        return found
+
+    def _reads_param(node):
+        return isinstance(node, ast.Name) and node.id == param
+
+    spelled: dict[str, tuple[object, str]] = {}
+    for node in ast.walk(fn):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "isinstance"
+            and len(node.args) == 2
+            and _reads_param(node.args[0])
+        ):
+            declared = node.args[1]
+            for element in declared.elts if isinstance(declared, ast.Tuple) else [declared]:
+                text = ast.unparse(element)
+                spelled[text] = (_resolve(text), "isinstance")
+        if (
+            isinstance(node, ast.Compare)
+            and node.ops
+            and all(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops)
+        ):
+            operands = [node.left, *node.comparators]
+            if not any(_reads_param(operand) for operand in operands):
+                continue
+            for operand in operands:
+                if isinstance(operand, ast.Constant):
+                    spelled[ast.unparse(operand)] = (type(operand.value), "identity")
+
+    #: EVERY SPELLING MUST RESOLVE. A `discard(None)` sat in one consumer and silently dropped
+    #: any spelling the resolver could not handle, and a branch declared through a module-level
+    #: TUPLE CONSTANT was dropped by an `isinstance(k, type)` filter the same way. A skeptic
+    #: landed a forgeable `complex` branch through exactly that hole [T-69 G1].
+    resolved: dict[str, tuple[type, str]] = {}
+    for spelling, (found, how) in sorted(spelled.items()):
+        members = found if isinstance(found, tuple) else (found,)
+        if not members or not all(isinstance(member, type) for member in members):
+            raise AssertionError(
+                f"`_canonical` declares a branch this cannot resolve to a type "
+                f"({spelling!r} -> {found!r}), so the population is not what its name says"
+            )
+        for member in members:
+            label = spelling if len(members) == 1 else f"{spelling}:{member.__name__}"
+            resolved[label] = (member, how)
+    assert resolved, "no branch was found, so every population built on this is empty"
+    return resolved
+
+
 def test_every_canonical_FORM_still_digests_so_the_handler_is_not_a_catch_all():
     """The breadth bought by `except Exception` is also what could hide a real bug.
 
     `_value_digest` now catches `Exception` around both the canonical form AND its encode,
-    on the authority of the `__runprov_digest__` branch twelve lines above it, which decided
+    on the authority of the `__runprov_digest__` branch above it, which decided
     the same question for the same reason. The risk that buys is specific: a genuine fault in
     `_canonical` would read as *this value is undigestible* and record a marker instead of
     crashing. So a representative of EVERY form the docstring promises to digest is asserted
@@ -7651,36 +7740,29 @@ def test_every_canonical_FORM_still_digests_so_the_handler_is_not_a_catch_all():
     #: namespace and builtins, and a representative must `isinstance`-match the resolved TYPE.
     #: An unresolvable spelling fails too, rather than being skipped -- a spelling this cannot
     #: resolve is a branch this cannot cover, and saying so is the whole point.
-    source = textwrap.dedent(inspect.getsource(runprov.hashing._canonical))
-    spellings: set[str] = set()
-    for node in ast.walk(ast.parse(source)):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "isinstance"
-            and len(node.args) == 2
-        ):
-            declared = node.args[1]
-            for element in declared.elts if isinstance(declared, ast.Tuple) else [declared]:
-                spellings.add(ast.unparse(element))
-    assert spellings, "no `isinstance` branch was found, so this control has no population"
-
-    def _resolve(spelling):
-        parts = spelling.split(".")
-        found = vars(runprov.hashing).get(parts[0], getattr(builtins, parts[0], None))
-        for part in parts[1:]:
-            found = getattr(found, part, None)
-        return found
-
-    resolved = {spelling: _resolve(spelling) for spelling in sorted(spellings)}
-    unresolvable = [s for s, found in resolved.items() if not isinstance(found, type)]
-    assert not unresolvable, (
-        f"a branch's type spelling could not be resolved, so this control cannot know whether "
-        f"it is covered: {unresolvable}"
+    #: THE POPULATION IS DERIVED ONCE, for every consumer, by `_canonical_branch_types`.
+    branches = _canonical_branch_types()
+    resolved = {spelling: kind for spelling, (kind, _how) in branches.items()}
+    #: BOTH IDENTITY BRANCHES OVER `bool`, EXPLICITLY -- and this arm exists because of what
+    #: splitting them revealed. While the branch was one statement, `f"b:{'1' if value else
+    #: '0'}"`, this suite reached 100% of `hashing.py` without ever digesting `False`: the
+    #: expression form hid an untested value inside a covered statement, and only turning it
+    #: into two returns made the gap visible as an uncovered line [T-70]. `True` and `False` are
+    #: the entire population of this type, so naming both is exhaustive rather than a sample.
+    assert runprov.hashing._canonical(True) == "b:1"
+    assert runprov.hashing._canonical(False) == "b:0"
+    assert d(False) not in {d(True), d(0), d(None), d("")}, (
+        "`False` records the same digest as another value it merely compares equal to"
     )
-    #: `value is None` is a branch too, spelled as a comparison rather than a call.
-    if " is None" in source:
-        resolved["None"] = type(None)
+
+    #: TEN TYPES OVER ELEVEN SPELLINGS, and the count is on the TYPES because that is what this
+    #: control's own sentence is about: `True` and `False` are two branches rendering one type.
+    assert len(set(resolved.values())) == 10, (
+        f"`_canonical`'s branch population moved to {len(set(resolved.values()))} types "
+        f"({sorted(k.__name__ for k in set(resolved.values()))}), so either a branch was added "
+        f"without a representative below, or one was respelled into a form the derivation "
+        f"cannot see -- see `_canonical_branch_types`"
+    )
 
     representative = [
         None,
@@ -7954,15 +8036,32 @@ def test_every_READ_of_the_canonical_FORMS_argument_goes_through_an_UNFORGEABLE_
     tree = ast.parse(source)
     fn = tree.body[0]
     assert isinstance(fn, ast.FunctionDef), type(fn)
-    param = fn.args.args[0].arg
+    #: POSITIONAL-ONLY PARAMETERS TOO, AND THE SUBJECT IS ASSERTED. `fn.args.args[0]` alone was
+    #: the subject, so making the parameter positional-only (`def _canonical(value, /, depth=0)`)
+    #: moved this whole sweep onto `depth`: it then reported "only 4 reads of 'depth' were found"
+    #: and nothing said it had measured the wrong variable [T-70].
+    params = fn.args.posonlyargs + fn.args.args
+    assert params, "`_canonical` takes no argument, so this sweep has no subject"
+    param = params[0].arg
 
     parent = {}
     for node in ast.walk(fn):
         for child in ast.iter_child_nodes(node):
             parent[child] = node
 
-    def _is_builtin_type(node):
-        return isinstance(node, ast.Name) and isinstance(getattr(builtins, node.id, None), type)
+    #: THE RECEIVER MUST BE ONE OF `_canonical`'S OWN BRANCH TYPES, not merely some builtin
+    #: type. `object` is a builtin type, and `object.__str__(value)`,
+    #: `object.__format__(value, "")` and `object.__getattribute__(value, "__bytes__")()` all
+    #: RE-DISPATCH to the instance -- so each one forged a digest while satisfying the old
+    #: "is it a builtin type" test [T-70]. Deriving the permitted receivers from the branches
+    #: themselves means a new branch widens this set and nothing else does.
+    branch_types = {kind for kind, _how in _canonical_branch_types().values()}
+
+    def _is_branch_type(node):
+        if not isinstance(node, ast.Name):
+            return False
+        found = getattr(builtins, node.id, None)
+        return isinstance(found, type) and found in branch_types
 
     reads, unaccounted = 0, []
     for node in ast.walk(fn):
@@ -7989,7 +8088,7 @@ def test_every_READ_of_the_canonical_FORMS_argument_goes_through_an_UNFORGEABLE_
         if (
             isinstance(up, ast.Call)
             and isinstance(up.func, ast.Attribute)
-            and _is_builtin_type(up.func.value)
+            and _is_branch_type(up.func.value)
             and up.args
             and up.args[0] is node
         ):
@@ -7999,13 +8098,19 @@ def test_every_READ_of_the_canonical_FORMS_argument_goes_through_an_UNFORGEABLE_
             isinstance(op, (ast.Is, ast.IsNot)) for op in up.ops
         ):
             continue
-        #: D. the TRUTH TEST under the `bool` branch. `bool` cannot be subclassed, so there is
-        #: no instance `__bool__` to reach -- asserted here rather than assumed, because that is
-        #: the only thing making this decision safe.
-        if isinstance(up, ast.IfExp) and up.test is node:
-            with pytest.raises(TypeError):
-                type("Impossible", (bool,), {})
-            continue
+        #: THERE IS NO CLAUSE D, AND ITS DELETION IS THE REPAIR. It read: *the truth test
+        #: under the `bool` branch -- `bool` cannot be subclassed, so there is no instance
+        #: `__bool__` to reach*, and it asserted exactly that with
+        #: `pytest.raises(TypeError): type("Impossible", (bool,), {})`. That assertion is TRUE
+        #: and IRRELEVANT: reaching the `bool` branch never needed a bool subclass, only an
+        #: `isinstance` that honours a forged `__class__` -- and ten types then recorded one
+        #: digest while this sweep stayed green [T-70].
+        #:
+        #: WORSE, THE CLAUSE WAS NEVER SCOPED TO THAT BRANCH. Its condition was any `ast.IfExp`
+        #: whose test is a read of the parameter, anywhere in the function, so every future
+        #: truth test inherited the exemption. `_canonical` now renders that branch through two
+        #: identity tests, which clause C accounts for, so a truth test on the parameter has no
+        #: decision at all and lands in `unaccounted` below -- which is where it belongs.
         unaccounted.append(f"line {node.lineno}: {ast.unparse(up)[:72]}")
 
     assert reads >= 10, (
@@ -8036,52 +8141,31 @@ def test_no_SUBCLASS_can_decide_its_own_digest_because_rendering_goes_through_th
 
     THE REPORTED DEFECT WAS THE `str` BRANCH ALONE. Fixing that one would have left four, which
     is why this quantifies over every scalar branch `_canonical` declares rather than over the
-    instances someone found. `bytes` was already right -- `bytes(value).hex()` reconstructs the
-    base type -- and is the pattern the others were missing.
+    instances someone found.
+
+    AND `bytes` WAS NOT THE PATTERN TO COPY, though this docstring said it was. The claim was
+    that `bytes(value).hex()` reconstructs the base type and is therefore unforgeable. It is
+    false: `bytes()` consults `__bytes__`, which `dir(bytearray)` does not list while
+    `bytearray` honours one, so `bytes(BS(b"ab")).hex()` returned `'ffff'` for a forging
+    subclass. No reconstruction closes the class and no enumeration of base members closes it
+    either, which is why every branch now reads through an unbound base-type method and why the
+    DISPATCH control exists beside this one [T-70].
     """
     d = runprov.hashing._value_digest
 
-    #: THE POPULATION IS `_canonical`'S SCALAR BRANCHES, resolved to types the same way
-    #: `test_every_canonical_FORM_still_digests...` does, so a branch added tomorrow is covered
-    #: or this test says it is not.
-    source = textwrap.dedent(inspect.getsource(runprov.hashing._canonical))
-    spelled: set[str] = set()
-    for node in ast.walk(ast.parse(source)):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "isinstance"
-            and len(node.args) == 2
-        ):
-            declared = node.args[1]
-            for element in declared.elts if isinstance(declared, ast.Tuple) else [declared]:
-                spelled.add(ast.unparse(element))
-
-    def _resolve(spelling):
-        parts = spelling.split(".")
-        found = vars(runprov.hashing).get(parts[0], getattr(builtins, parts[0], None))
-        for part in parts[1:]:
-            found = getattr(found, part, None)
-        return found
-
-    #: EVERY SPELLING MUST RESOLVE. A `kinds.discard(None)` sat here and silently dropped any
-    #: spelling `_resolve` could not handle, so the exhaustiveness arm below never saw it -- and
-    #: a branch declared through a module-level tuple constant was dropped by the
-    #: `isinstance(k, type)` filter the same way. A skeptic landed a forgeable `complex` branch
-    #: through exactly that hole and this test stayed green [T-69 G1].
-    resolved = {s: _resolve(s) for s in spelled}
-    kinds: set[type] = set()
-    for spelling, found in sorted(resolved.items()):
-        if isinstance(found, type):
-            kinds.add(found)
-        elif isinstance(found, tuple) and found and all(isinstance(m, type) for m in found):
-            kinds.update(found)  # a branch declared through a tuple constant
-        else:
-            raise AssertionError(
-                f"`_canonical` declares a branch this test cannot resolve to a type "
-                f"({spelling!r} -> {found!r}), so the population is not what its name says"
-            )
-    assert kinds, "no branch was found, so this test has no population"
+    #: THE POPULATION COMES FROM `_canonical_branch_types`, NARROWED TO THE `isinstance`
+    #: BRANCHES -- because this control's subject is what a SUBCLASS can decide, and the
+    #: identity branches (`None`, `True`, `False`) are over types that cannot be subclassed at
+    #: all. The narrowing is declared here rather than performed by a second walk of
+    #: `_canonical`: two controls deriving one population by two rules is how they drift, and
+    #: this one's own rule used to be the narrower of the two.
+    branches = _canonical_branch_types()
+    kinds: set[type] = {kind for kind, how in branches.values() if how == "isinstance"}
+    assert len(kinds) == 8, (
+        f"the `isinstance` branch population moved to "
+        f"{sorted(k.__name__ for k in kinds)}: a branch added there needs a forge below, and "
+        f"one respelled as an identity test belongs to the DISPATCH control instead"
+    )
 
     #: ONE SUBCLASS PER BRANCH, EACH OVERRIDING EVERY RENDERING DUNDER AT ONCE. Overriding only
     #: the one the current implementation happens to use makes this a test of that
@@ -8113,18 +8197,17 @@ def test_no_SUBCLASS_can_decide_its_own_digest_because_rendering_goes_through_th
         dict: (_forge(dict, length=99), {"a": 1}),
     }
     scalars = kinds
-    #: `bool` CANNOT be subclassed, so it is exempt by the language rather than by this table's
-    #: judgement -- asserted, not assumed. `type(None)` was in this tuple and is NOT in the
-    #: population at all, because `None` is tested with `is` and not `isinstance`: a declared,
-    #: correct decision behind a walk that cannot reach it, which is a hole with a label on it.
-    assert type(None) not in kinds, (
-        "`_canonical` now reaches NoneType through `isinstance`, so it needs a decision here "
-        "rather than the `is None` branch's"
+    #: NEITHER `bool` NOR `NoneType` CAN REACH THIS TABLE, and that is now a consequence of
+    #: the narrowing above rather than a judgement made in this body. An `if bool in scalars:`
+    #: arm used to sit here and discard it, justified by `pytest.raises(TypeError)` on
+    #: `type("Impossible", (bool,), {})` -- true, and irrelevant: reaching the `bool` branch
+    #: never required a bool subclass, it required a forged `__class__`, which subverts the
+    #: DISPATCH and is the subject of its own control now [T-70]. An exemption whose assertion
+    #: does not discharge its obligation reads exactly like one that does.
+    assert not ({bool, type(None)} & kinds), (
+        f"`_canonical` now reaches {sorted(k.__name__ for k in {bool, type(None)} & kinds)} "
+        f"through `isinstance`, so each needs a decision here rather than an identity branch's"
     )
-    if bool in scalars:
-        with pytest.raises(TypeError):
-            type("Impossible", (bool,), {})
-        scalars.discard(bool)
 
     uncovered = sorted(k.__name__ for k in scalars if k not in forged)
     assert not uncovered, (
@@ -8167,6 +8250,129 @@ def test_no_SUBCLASS_can_decide_its_own_digest_because_rendering_goes_through_th
     rendered = runprov.hashing._canonical(forged[str][0]("fasta"))
     stated, _, payload = rendered[len("s:") :].partition(":")
     assert int(stated) == len(payload), f"the prefix and the payload disagree: {rendered!r}"
+
+
+def test_no_value_can_claim_a_TYPE_IT_IS_NOT_because_the_BRANCH_IS_CHOSEN_BY_DISPATCH():
+    """`isinstance` does not read the type slot, so the BRANCH ITSELF was forgeable.
+
+    THE DEFECT THIS EXISTS FOR [T-70]. CPython's `isinstance` falls back to the instance's
+    `__class__`, so a one-line property chose which branch `_canonical` took::
+
+        class S(str):
+            @property
+            def __class__(self):
+                return bool
+
+        _canonical(S("hello"))  ->  "b:1"
+
+    Ten types collided on one digest, `unittest.mock.Mock(spec=bool)` did it with no custom
+    dunder at all, and it reached a written record and the signature built over it.
+
+    TWO CONTROLS WERE GREEN OVER IT, and that is the part worth keeping. The unforgeable-route
+    sweep EXEMPTED the one read involved; the subclass control DISCARDED `bool` on the same
+    reasoning. Both quantify over RENDERINGS -- a table of dunders, or a table of routes to the
+    value -- and a forged `__class__` is not a rendering. It subverts the DISPATCH, one level
+    above anything either table can reach, which is why widening either of them would not have
+    found this and will not find the next one.
+
+    SO THIS QUANTIFIES OVER THE DISPATCH. For every ordered pair of branch types, a subclass of
+    the first claims to be the second, and `_canonical` must either REFUSE it or render it
+    exactly as the plain value of what it actually is. Nothing here is enumerated: the pairs are
+    the cross product of the population `_canonical_branch_types` derives, a type with no sample
+    FAILS rather than being skipped, and the unsubclassable types are found by trying rather
+    than by being named.
+    """
+    branches = _canonical_branch_types()
+    kinds = sorted({kind for kind, _how in branches.values()}, key=lambda k: k.__name__)
+    assert len(kinds) == 10, (
+        f"`_canonical`'s branch population moved to {[k.__name__ for k in kinds]}, so this "
+        f"cross product no longer covers what it claims -- see `_canonical_branch_types`"
+    )
+
+    sample = {
+        str: "fasta",
+        int: 7,
+        float: 1.5,
+        bytes: b"ab",
+        bytearray: bytearray(b"ab"),
+        list: [1, "a"],
+        tuple: (1, "a"),
+        dict: {"a": 1},
+        bool: True,
+        type(None): None,
+    }
+    missing = sorted(kind.__name__ for kind in kinds if kind not in sample)
+    assert not missing, (
+        f"`_canonical` branches on a type this control holds no sample for, so the cross "
+        f"product below cannot cover it: {missing}"
+    )
+
+    #: WHICH TYPES CAN ONLY EVER BE THE CLAIM IS MEASURED, NOT DECLARED. `bool` and `NoneType`
+    #: cannot be subclassed, so they have no actual side -- and that is a fact of the language
+    #: found by trying it here, rather than a name written into a list that would go stale the
+    #: day the language changed.
+    unsubclassable = set()
+    for kind in kinds:
+        try:
+            type(f"Probe{kind.__name__}", (kind,), {})
+        except TypeError:
+            unsubclassable.add(kind)
+    assert unsubclassable == {bool, type(None)}, (
+        f"the set of unsubclassable branch types moved to "
+        f"{sorted(k.__name__ for k in unsubclassable)}, so the pair count below means "
+        f"something different from what this control says it does"
+    )
+
+    pairs, forged, refused = 0, [], []
+    for actual in kinds:
+        if actual in unsubclassable:
+            continue
+        honest = runprov.hashing._canonical(sample[actual])
+        for claimed in kinds:
+            if claimed is actual:
+                continue
+            pairs += 1
+            liar = type(
+                f"{actual.__name__.title()}Claiming{claimed.__name__.title()}",
+                (actual,),
+                {"__class__": property(lambda self, _c=claimed: _c)},
+            )
+            instance = liar(sample[actual])
+            #: A REFUSAL IS HONEST, AND IT IS RECORDED RATHER THAN SKIPPED. `_value_digest`
+            #: turns any raise into `UNDIGESTIBLE:<type>`, which says no digest was taken --
+            #: the one outcome ADR-0022 permits besides a true one. What may never happen is a
+            #: DIFFERENT value being rendered as though it were this one. The refusals are
+            #: counted because "nothing was forged" and "nothing was tried" look identical
+            #: otherwise, and the assertion below is the only thing separating them.
+            try:
+                rendered = runprov.hashing._canonical(instance)
+            except Exception as exc:
+                refused.append(f"{actual.__name__}/{claimed.__name__}: {type(exc).__name__}")
+                continue
+            if rendered != honest:
+                forged.append(
+                    f"{actual.__name__} claiming {claimed.__name__}: {rendered!r} "
+                    f"instead of {honest!r}"
+                )
+
+    expected = (len(kinds) - len(unsubclassable)) * (len(kinds) - 1)
+    assert pairs == expected, (
+        f"{pairs} pairs were tried where the population implies {expected}, so this cross "
+        f"product skipped part of itself"
+    )
+    assert not forged, (
+        f"a value chose its own branch by lying about its `__class__`, so the recorded digest "
+        f"is a property of the CLAIM and not of the value: {forged}"
+    )
+    #: AND THE CROSS PRODUCT REALLY REACHED `_canonical`. Every assertion above is satisfied by
+    #: a loop that renders nothing, so the refusals are the proof that the forgeries were
+    #: actually attempted: a lying `__class__` sends a value into a branch whose unbound
+    #: base-type call does not accept it, and the `TypeError` from that call IS the mechanism
+    #: this control relies on.
+    assert refused, (
+        "no pair raised, so every forged value rendered successfully -- this control cannot "
+        "distinguish a package that refuses forgeries from one it never reached"
+    )
 
 
 def test_value_digest_refuses_rather_than_guesses():

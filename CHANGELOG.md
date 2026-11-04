@@ -9,6 +9,65 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — a caller could still choose which branch decided a digest
+
+`isinstance` does not read the type slot. CPython falls back to the instance's `__class__`, so a
+one-line property chose which branch `_canonical` took:
+
+```python
+class S(str):
+    @property
+    def __class__(self):
+        return bool
+
+
+_canonical(S("hello"))  # -> "b:1"
+```
+
+`"hello"`, `"goodbye"`, `{"a": 1}` and `True` all recorded `34340f0e82d75a34`, and
+`unittest.mock.Mock(spec=bool)` did it with no custom dunder at all. **Eight of the nine other
+branch types forge into the `bool` branch**, and the forged value reaches a written record.
+
+**The guard built to make this impossible exempted exactly the read involved.** Its clause for the
+truth test under the `bool` branch asserted that `bool` cannot be subclassed — true, and
+irrelevant, because reaching that branch never required a subclass, only an `isinstance` that
+honours a forged `__class__`. The clause was also never scoped to that branch: its condition was
+any truth test on the parameter anywhere in the function, so every future one inherited the
+exemption.
+
+The branch is now `value is True` and `value is False`. `bool` cannot be subclassed, so those are
+its only two instances and the read is unforgeable by construction. `int.__bool__(value)` would
+**not** have repaired it: it is true for `7`, so the collision with `True` would have survived.
+
+And the controls changed SHAPE rather than growing a case, because a forged `__class__` is not a
+rendering — it subverts the dispatch, one level above anything a table of dunders can reach:
+
+| before | after |
+|---|---|
+| a table of rendering dunders, one forge per branch | the **cross product of (actual, claimed) branch types** — a subclass of each whose `__class__` lies, required either to refuse or to render as what it actually is |
+| `NoneType` entering the population via `if " is None" in source` | identity branches derived from `ast.Compare`, **both operand sides**, `Is` and `IsNot` |
+| two controls walking `_canonical` by two different rules | **one derivation, three consumers**, each declaring the subset it wants and why |
+
+The old population clause was a check about CODE whose truth value a COMMENT could set: with that
+substring absent the control went green while `_canonical(None)` was covered by nothing.
+
+Measured on the pre-repair product, with the new controls in place: the dispatch control names all
+eight pairs together with the rendering each should have had; the route sweep names
+`'1' if value else '0'` as unaccounted; the subclass control reds on a population of 9 where it
+declares 8. Measured after: all three green, `True` and `False` still render `b:1` and `b:0`, and
+`1` no longer digests as `True`.
+
+**And splitting the branch found an untested value.** While the rendering was one statement,
+`f"b:{'1' if value else '0'}"`, the suite reached 100% of `hashing.py` without ever digesting
+`False` — the expression form hid it inside a covered statement, and turning it into two returns
+made the gap appear as an uncovered line. Both branches are now pinned, along with `False` not
+colliding with `True`, `0`, `None` or `""`. A statement can be covered while a value it decides
+has never been tried.
+
+Two figures in the entry below remain unverified and are not repaired here: *81 ASCII corpus names*
+and *2 000 random plain-key dicts*, the second of which the code states as 400. Neither is measured
+by anything, because `CHANGELOG.md` is exempt from this project's own claims auditor by name.
+
 ### Fixed — two recorded digests were properties of the environment, not of the value
 
 **This is a repair, not a one-time break, and the distinction is measurable.** A break presumes a
@@ -60,9 +119,13 @@ subclass method is reached."* `bytes()` consults `__bytes__`: `bytes(BS(b"ab")).
 all five interpreters. `bytearray` has no `__bytes__` in `dir()` and honours one anyway — **so no
 enumeration of base members closes this class**, and the guard over it had to stop being a list.
 It now quantifies over every syntactic READ of `_canonical`'s own parameter, giving each a decision
-(a type test, an unbound base-type call, an identity test, or the truth test under the `bool`
-branch, which is safe only because `bool` cannot be subclassed — asserted, not assumed) and
-refusing anything left over. On the pre-repair tree it names five routes; after, none.
+(a type test, an unbound base-type call, or an identity test) and refusing anything left over. On
+the pre-repair tree it names **eleven** routes.
+
+Two sentences here were wrong and are corrected below rather than deleted. This entry said *five*
+routes, and said that none survived the repair. **One did** — behind a fourth decision this entry
+used to list, the truth test under the `bool` branch, excused because `bool` cannot be subclassed.
+That fact is true and it was irrelevant.
 
 Measured throughout: no plain value's rendering moves, `sorted()` agrees with the base-typed key
 over 2 000 random plain-key dicts, and `namedtuple`, `os.stat_result`, `OrderedDict`,

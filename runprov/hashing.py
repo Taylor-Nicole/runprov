@@ -923,8 +923,22 @@ def _canonical(value: typing.Any, depth: int = 0) -> str:  # noqa: ANN401 - any 
     # obvious ordering digests `True` as the integer 1.
     if value is None:
         return "n:"
-    if isinstance(value, bool):
-        return f"b:{'1' if value else '0'}"
+    #: IDENTITY, NOT `isinstance` -- AND NOT AN UNBOUND READ EITHER. `isinstance` is not a read
+    #: of the type slot: CPython falls back to the instance's `__class__`, so a one-line property
+    #: routed a `str`, a `dict`, a `list` -- any of the eight branches below -- into THIS one and
+    #: recorded `b:1` for it. Ten types collided on one digest, and `Mock(spec=bool)` did it with
+    #: no custom dunder at all [T-70]. `int.__bool__(value)` would NOT repair it: it is true for
+    #: `7`, so the collision with `True` would survive the rewrite.
+    #:
+    #: `bool` CANNOT BE SUBCLASSED, so `True` and `False` are its only two instances and an
+    #: identity test is TOTAL for this branch while being unforgeable by construction -- there is
+    #: no rendering here for a caller to reach. That is also why the guard over this function
+    #: quantifies over the DISPATCH and not over a table of rendering dunders: a forged
+    #: `__class__` is not a rendering, so no such table can see it.
+    if value is True:
+        return "b:1"
+    if value is False:
+        return "b:0"
     if isinstance(value, int):
         return f"i:{int.__repr__(value)}"
     if isinstance(value, float):
