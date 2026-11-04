@@ -16,7 +16,21 @@ when the work is separable. Prefer one comprehensive pass to several partial one
 **When you have named the next action, take it.** Do not end a turn with a recommendation and a
 request for permission; that converts your own conclusion into another prompt. Ask only when
 proceeding under any assumption would be unsafe, or would waste the work if the assumption is
-wrong. Pushing this repository is the exception: that is always the maintainer's explicit call.
+wrong.
+
+**Pushing is NOT an exception to that, and stating it as one was a mistake measured in a single
+sitting.** The maintainer's gate on a push is a PERMISSION RULE in the project settings, which
+surfaces every `git push` for a decision and does not depend on an assistant remembering anything.
+Carrying a stop-and-report instruction *as well* bought no safety and cost the maintainer the same
+instruction on five consecutive turns, each time for work already committed and already
+gate-green. Where a mechanism and an instruction cover one risk, the instruction is the one to
+delete.
+
+So push gate-green work on `main`, and let the permission prompt be the gate. Ask, separately and
+every time, before a force-push — never do one — before pushing a tree that is dirty or that no
+gate has run on, before a tag or a release, and before pushing to any other branch or remote.
+Those are the irreversible ones: a trailer that reaches a branch with a pull request cannot be
+removed afterwards, whatever the default branch says later.
 
 **Report STATE first, in two or three lines, then reasoning.** Lead with what is done, what is
 blocked and on whom, each with its commit or its exit code. Narrative buries the outcome: a report
