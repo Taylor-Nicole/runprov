@@ -38,6 +38,30 @@ that opened by saying a batch was committed and closed, four hundred words later
 headed *what is still yours* produced an instruction to commit the batch again. The long form
 belongs in the audit ledger, which is read when it is wanted. The terminal gets the state.
 
+## Continuity — the task comes from the graph, not from the prompt
+
+**Before asking what to do next, read the frontier.** The audit repository holds a prompt graph: a
+node is any file there carrying a `## Next action`, and its generator prints the FRONTIER — the
+nodes whose next action nothing has started from. That frontier *is* the scope. Run the generator
+and read the standing prompt it belongs to, in the audit repository beside this one:
+
+    python3 tools/prompt-graph.py
+    sed -n '/^## The standing prompt/,$p' HANDOFF-PROMPT.md
+
+Read them, never recall them. The hand-off and the emitted prompt drifted by six lessons once
+already, which is why the generator exists and why the prose is read from the file.
+
+**And feed it before calling a session done.** Findings go in the audit ledger; the next action
+goes in a dated node. **The ledger is NOT a node**, so findings written only there leave the
+frontier unchanged — measured: the graph lapsed for eleven days exactly that way, while the
+maintainer asked for it to be used fourteen times in one session. `tools/graph-is-fed.py` refuses
+that state now; run it before reporting the session finished.
+
+The rule this instance teaches, and it is the one worth keeping: **when something put in place
+fails, or the same problem recurs, the lesson is not to try harder — it is to find the mechanism
+that would have made the lapse red.** An instruction that can be forgotten silently is not yet a
+mechanism, however carefully it is written down.
+
 ## Reviewing and verifying
 
 **A reviewer must be a fresh agent, never a fork of you.** A fork inherits your framing, and your
