@@ -9,6 +9,52 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — two repairs were held by nothing, and one of them was the headline of its own commit
+
+**`sha256_tree`'s byte key was asserted in the callee and never at the call.** `8a5a770`'s stated
+property is that a tree digest is a function of the filenames' bytes. Its guard read
+`_BYTE_PARTS`'s own body through `inspect.getsource` and refused a hardcoded codec — the right
+check for half the claim. Nothing asserted that `describe` *passes* it. Reverting
+`_tree_stream(pairs, _BYTE_PARTS)` to `_PARTS` is one token, and it left the whole suite green,
+including every committed digest pin.
+
+The pin cannot see that swap and no better fixture would help: UTF-8 is order-preserving over code
+points, so a `str` key and a byte key order every valid-UTF-8 name set identically, and none of the
+corpus's names is non-ASCII. A fixture that *would* discriminate needs a surrogate name, which
+decides its own portability. So the instrument is not a digest — it is reading the call. The new
+control resolves the key argument by **runtime identity** against `_BYTE_PARTS`, keyed on the
+assignment to `rec["sha256_tree"]` because that field name is part of the frozen record format, and
+separately refuses `_BYTE_PARTS` from ever becoming the case-folded ordering key, which is
+deliberately left on the decoded `str` and could not do its job over bytes.
+
+Demonstrated: with the call site reverted, the new control is red and names
+`<function _PARTS>` where `_BYTE_PARTS` belongs; the existing guard **passes**.
+
+**`941bd16` shipped no guard, and the guard for its rule could not see it.** That commit repaired a
+fixture that wrote with `write_text` and then pinned a digest over the bytes — `4ccaf035` on POSIX,
+`230ac746` on Windows, over four files whose *names* were what the test was about. The guard added
+hours earlier for exactly this rule has a population of `runprov/*.py`, the product package, and a
+primitive of `atomic_write_text`; the defect was `pathlib.Path.write_text` in `tests/`. The
+project's rule says *product or fixture*. This was the fourth instance of the class.
+
+The new control's population is the **comparison, not the function**: every `ast.Compare` with a
+16- or 64-hex literal on one side is a pin, the names on the other side are its subjects, and an
+offence is a text-mode write whose receiver mentions one of them. A function-scoped version was
+built first and rejected by measurement — recall 4 of 4 and **red at HEAD on nine legitimate
+lines**, six of them a fixture helper carrying a canned `0123456789abcdef` that pins nothing. A
+shape that cannot pass is worse than one that cannot fail.
+
+The mode is derived rather than matched against writer names — a write flag with no `b` — and an
+`open` whose mode is not a literal is **reported rather than skipped**, so the check asks for a
+decision instead of going quietly blind. What it cannot reach is stated at the check: a file that
+is a call's result rather than a path, a write in a different function from the pin, and a library
+that opens a path itself. It misses; it does not accuse. Demonstrated red on the reverted fixture,
+naming all four lines, and on four independent plants deliberately unlike it; silent on three
+negatives, including the same local written with `"wb"`.
+
+Both guards are structural and execute no write, so neither depends on the platform that produced
+the defect.
+
 ### Fixed — a caller could still choose which branch decided a digest
 
 `isinstance` does not read the type slot. CPython falls back to the instance's `__class__`, so a
@@ -64,9 +110,10 @@ made the gap appear as an uncovered line. Both branches are now pinned, along wi
 colliding with `True`, `0`, `None` or `""`. A statement can be covered while a value it decides
 has never been tried.
 
-Two figures in the entry below remain unverified and are not repaired here: *81 ASCII corpus names*
-and *2 000 random plain-key dicts*, the second of which the code states as 400. Neither is measured
-by anything, because `CHANGELOG.md` is exempt from this project's own claims auditor by name.
+Both unverified figures in the entry below are repaired here, and neither by correcting a number:
+one was reproducible under no rule, and the other was stated twice with two values. Nothing
+measured either, because `CHANGELOG.md` is exempt from this project's own claims auditor by
+name — a reason that holds for a released section and not for this one.
 
 ### Fixed — two recorded digests were properties of the environment, not of the value
 
@@ -87,7 +134,7 @@ locale-independent**. Their old digests were perfectly reproducible — they wer
 the class instead of about the value, which is a different complaint and the one that matters.
 
 **`_canonical` rendered through the INSTANCE's dunders where the claim is about the value.** The
-module's own rule sits four lines above it — *"Never a `repr`: it is unstable across runs and
+module states the rule in `_value_digest`'s docstring — *"Never a `repr`: it is unstable across runs and
 across versions, and recording it would present an unstable value as a stable one"* — and three of
 its branches reached the instance's rendering anyway, one of them with a literal `!r`. Measured on
 3.10 and 3.12, six cases, two distinct failures:
@@ -104,8 +151,11 @@ admits both. **The fourth is not instability at all — it is a digest a caller 
 independently of the value it claims to describe.** Only the `str` row was reported; fixing it
 alone would have left four.
 
-**Then two more adversarial passes found nine sites in total, and the third pass found that the
-exemplar was wrong.** Fixing the three scalar branches left four in the containers — `list`,
+**Then two more adversarial passes found more sites, and the third pass found that the exemplar
+was wrong.** Counted by the guard's own rule rather than by hand, the pre-repair tree names
+**eleven** unaccounted routes under that guard as `8a5a770` shipped it and **twelve** under the
+guard as it stands today — the twelfth being the read its `bool` exemption hid, which is the
+defect the entry above repairs. An earlier version of this sentence said nine. Fixing the three scalar branches left four in the containers — `list`,
 `tuple` and `dict` took their length from the instance, and `dict` took its ORDER from its keys'
 `__lt__`, so two mappings that compare EQUAL, whose rendered keys are identical, rendered in
 different orders and digested differently. Fixing *those* left five more: `list.__iter__`,
@@ -128,7 +178,8 @@ used to list, the truth test under the `bool` branch, excused because `bool` can
 That fact is true and it was irrelevant.
 
 Measured throughout: no plain value's rendering moves, `sorted()` agrees with the base-typed key
-over 2 000 random plain-key dicts, and `namedtuple`, `os.stat_result`, `OrderedDict`,
+for ordinary keys over the sample stated once in `hashing.py` beside that line — this entry and
+that comment gave two different counts for one measurement — and `namedtuple`, `os.stat_result`, `OrderedDict`,
 `defaultdict`, `Counter`, NFC/NFD keys, non-BMP keys and a 10 000-key dict are all unmoved.
 
 A `str`-subclass enum now digests as its text, so `Kind.FASTA` and `"fasta"` agree — deliberately:
@@ -136,17 +187,23 @@ they are the same string value. That is **not** the `bool`-before-`int` question
 `1` are different values that compare equal. It does mean `d(Kind.FASTA) == d("fasta")`, a real
 collision, accepted because 3.10 already behaved this way — the repair standardises on the older
 of the two renderings rather than inventing a third. Tagging by subclass name was the alternative
-and it is refused because a class name moves on a rename while the value does not; the sharper
-objection, that a class name is "as unstable as a `repr`", is dropped, since this module already
-writes `UNDIGESTIBLE:<type>` into records. The length prefix now agrees with its own payload, which
+and it is refused because a class name moves on a rename while the value does not. An earlier version of this paragraph said the
+sharper objection — that a class name is *"as unstable as a `repr`"* — had been **dropped**,
+because this module already writes `UNDIGESTIBLE:<type>` into records. It is not dropped:
+`hashing.py` refuses the alternative on exactly that rule, so the two statements contradicted
+each other inside one commit. That marker is a REFUSAL and not a digest input, so writing it
+licenses nothing into a digested form. The length prefix now agrees with its own payload, which
 is what `s:5:SKind.A` — five, over a seven-character payload — was telling us.
 
 **`sha256_tree` was a function of `LC_CTYPE`.** `_tree_stream` did `name.encode()` on a name
 `os.listdir` had decoded with the locale-dependent filesystem encoding, and that does not
 round-trip. One untouched directory holding `caf\xc3\xa9.fa` digested `079f8797b593ac01` under a
 UTF-8 locale and `540c2def05141e53` under ISO-8859-1 — **this is C-03, the finding the
-cross-version corpus was built after**, and the corpus cannot see it because all 81 of its names
-are ASCII, for which the two encodings agree byte for byte. A name the encoding could not
+cross-version corpus was built after**, and the corpus cannot see it because **none of its names
+is non-ASCII** — 0 non-ASCII components among 50 distinct components across 200 tracked files,
+measured 2026-11-04 from `git ls-files tests/corpus` with `str.isascii`, checked against a
+planted name. An earlier version stated 81, which no derived rule reproduces. For ASCII the two
+encodings agree byte for byte. A name the encoding could not
 represent **raised**, so `run.input()` on a directory died on one undecodable filename inside it.
 `os.fsencode` returns the original bytes, which is what the sort key and the NUL separator were
 always about, and the docstring above that line already reasoned entirely in bytes.
@@ -161,9 +218,14 @@ interpreter was on. What carries the rejection is the second clause: it would ke
 interpreter-conditional rendering path in the package forever, and make a record's own Python
 version load-bearing for verifying a digest.
 
-For the **tree** digest there is a true impossibility, and it is not the locale: the old value
-could not be computed even at record time, because `.encode()` **raised** for exactly the
-undecodable-name population such a field would exist to describe.
+For the **tree** digest one half is genuinely impossible and the other is not, and an earlier
+version of this paragraph claimed the whole field was. `.encode()` **raised** for an undecodable
+name, so no released version ever recorded a value for one and none can be reconstructed. The
+LOCALE half is computable at record time and was wrongly swept in with it: the `café.fa`
+directory above digests `079f8797b593ac01` under a UTF-8 locale and `540c2def05141e53` under
+ISO-8859-1, and either is obtainable with no raise. So for that half the rejection rests on
+**cost**, exactly as it does for the step digest two paragraphs up — the correction made there
+had not been carried down to here.
 
 **Nor is an encoding field being added to `environment`.** It was proposed to make a future
 divergence attributable — but the repair removes the dependence rather than disclosing it, and a
@@ -222,9 +284,11 @@ measured here, because `UnicodeEncodeError` is a `ValueError`. **All three** of 
 guards now share it, including a pre-existing one with the same gap, so that module can no longer
 disagree with itself; `prune.py` is the only one left that does.
 
-The ratchet movement, decomposed: **13 guard sites unchanged, three moved from a divergent
-spelling onto the shared constant** — `_UNRESOLVABLE` 5 → 8, `(OSError, RuntimeError)` 4 → 1. No
-rule changed; three sites of work.
+The ratchet movement, decomposed: **10 guard sites unchanged and three moved from a divergent
+spelling onto the shared constant, in a population of 13 across six modules** — `_UNRESOLVABLE` 5 → 8, `(OSError, RuntimeError)` 4 → 1. No
+rule changed; three sites of work. An earlier version read *13 unchanged, three moved*, which
+implies a population of 16; the population is 13 on both trees, by the derivation
+`_resolve_guards()` itself uses.
 
 Measured consequence before: `run.write()` on such a path **aborted the caller** — the statement
 after it never ran. After: the warning names the path, the record at the usable path is intact,

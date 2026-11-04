@@ -8017,6 +8017,104 @@ def test_a_tree_digest_is_a_function_of_the_filenames_BYTES_and_not_of_their_DEC
     )
 
 
+def test_the_tree_digest_IS_PASSED_the_byte_key_AT_ITS_CALL_SITE_and_not_merely_beside_it():
+    """`sha256_tree` must be computed WITH `_BYTE_PARTS`, asserted where the key is PASSED.
+
+    WHAT WAS HELD, AND WHAT WAS NOT [T-70]. The repair that made a tree digest a function of the
+    filenames' bytes has two halves: `_BYTE_PARTS` must encode each part through `os.fsencode`,
+    and `describe` must actually PASS it for `sha256_tree`. The sibling guard above holds the
+    first half -- it reads `_BYTE_PARTS`'s own body through `inspect.getsource` and refuses a
+    hardcoded codec. **Nothing held the second.** Every mention of `_BYTE_PARTS` outside the
+    product was inside that one guard, so reverting the call site to `_PARTS` -- one token --
+    left the entire suite green and silently restored the defect the commit was named for.
+
+    THE PIN CANNOT SEE THE SWAP, which is why this needs its own control rather than a better
+    fixture. UTF-8 is order-preserving over code points, so a `str` key and a byte key order
+    every valid-UTF-8 name set identically. Only a name that is not valid UTF-8 separates them,
+    and the committed corpus holds none: the pinned digest, the corpus records and the ordering
+    fixtures all agree under either key. A fixture that WOULD discriminate needs a surrogate
+    name, which decides its portability for you -- so the honest instrument is not a digest at
+    all, it is reading the call.
+
+    RESOLVED BY RUNTIME IDENTITY, NOT BY SPELLING. `ast.unparse(...) == "_BYTE_PARTS"` would be
+    a test of a name, and would pass over an alias, a rebind, or a shadowing local that happens
+    to be spelled the same. `is` against the real function object answers the question the claim
+    asks: *which callable computed this field*.
+    """
+    source = textwrap.dedent(inspect.getsource(runprov.hashing.describe))
+    fn = ast.parse(source).body[0]
+    assert isinstance(fn, ast.FunctionDef), type(fn)
+
+    missing = object()
+
+    def _key_of(call):
+        """The callable `_tree_stream` is handed, as an OBJECT where that is knowable."""
+        assert len(call.args) >= 2, (
+            f"`_tree_stream` is called with fewer than two positional arguments, so this "
+            f"control cannot tell which key computed the field: {ast.unparse(call)[:80]}"
+        )
+        key = call.args[1]
+        if isinstance(key, ast.Name):
+            return vars(runprov.hashing).get(key.id, missing)
+        if isinstance(key, ast.Lambda):
+            return "a lambda"
+        raise AssertionError(
+            f"`_tree_stream`'s key argument is spelled in a form this control cannot resolve "
+            f"to a callable ({ast.unparse(key)[:60]}), so it cannot say which one ran"
+        )
+
+    #: WHICH CALL COMPUTES THE FIELD IS READ FROM THE ASSIGNMENT, not from its position. The
+    #: field name is part of the frozen `runprov.gate.v1` record format, so keying on it is
+    #: keying on the claim's own subject rather than on this function's current shape.
+    pinned, others = [], []
+    for node in ast.walk(fn):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_tree_stream"
+        ):
+            continue
+        feeds_pinned = False
+        for assign in ast.walk(fn):
+            if not (isinstance(assign, ast.Assign) and assign.value is node):
+                continue
+            for target in assign.targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.value, ast.Name)
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == "sha256_tree"
+                ):
+                    feeds_pinned = True
+        (pinned if feeds_pinned else others).append(_key_of(node))
+
+    #: TWO CALLS, DECLARED. A third would be a field this control has no opinion about, and the
+    #: count is the only thing that notices one arriving -- its other source is the code here.
+    assert len(pinned) + len(others) == 2, (
+        f"`describe` now makes {len(pinned) + len(others)} `_tree_stream` calls rather than two, "
+        f"so a field may be computed by a key nothing here checks"
+    )
+    assert len(pinned) == 1, (
+        f"the assignment to `rec['sha256_tree']` is no longer one `_tree_stream` call "
+        f"({len(pinned)} found), so this control cannot locate the pinned field's key"
+    )
+    assert pinned[0] is runprov.hashing._BYTE_PARTS, (
+        f"`rec['sha256_tree']` is computed with {pinned[0]!r}, not with `_BYTE_PARTS`, so the "
+        f"digest is a function of the filenames' DECODING again. Reverting this one argument "
+        f"passes every digest pin in this suite, because UTF-8 is order-preserving and no "
+        f"committed name is invalid UTF-8 -- reading the call is the only check that sees it"
+    )
+    #: AND THE FOLDED KEY MUST NOT BE THE BYTE ONE. It is deliberately left on the decoded
+    #: `str`, because it exists to reproduce the order the released versions used on Windows,
+    #: where `PurePath.__lt__` compared a case-folded key over DECODED parts. A later reader
+    #: "unifying these for symmetry" is the failure this arm refuses, and a byte fold could not
+    #: do the job anyway: it is ASCII-only, where reproducing `str.lower()` is the whole point.
+    assert others and all(other is not runprov.hashing._BYTE_PARTS for other in others), (
+        f"the case-folded ordering key is now `_BYTE_PARTS` ({others!r}), which cannot reproduce "
+        f"the Unicode fold it exists for"
+    )
+
+
 def test_every_READ_of_the_canonical_FORMS_argument_goes_through_an_UNFORGEABLE_route():
     """[T-69 env-1] The total form of the guard below it, because a dunder list is not total.
 
@@ -32155,6 +32253,199 @@ def test_no_digest_is_taken_from_a_STRING_THE_TEXT_MODE_WRITER_WAS_HANDED():
         f"that are not on disk wherever newlines are translated. This is A-15 and C-11 again; "
         f"the remedy is to digest a read of the file, or to hand the writer bytes as "
         f"`environment.py` does: {offences}"
+    )
+
+
+def test_no_PINNED_HEX_DIGEST_describes_a_file_a_TEXT_MODE_WRITER_created():
+    """941bd16, the FOURTH instance of one class and the first to land in a FIXTURE.
+
+    `pathlib.Path.write_text` opens with `newline=None`, so on Windows every `"\\n"` handed to
+    it becomes `"\\r\\n"` on disk. A test that writes a tree that way and then pins a digest over
+    it is pinning a value that only holds where the newline is one byte. Measured on the matrix
+    leg at 8a5a770: `4ccaf035` here, `230ac746` there, over four files whose names -- the thing
+    that test is actually about -- never changed. Seven of eight legs green, the whole local
+    gate green, and nothing in this repository could see it.
+
+    WHY THE SIBLING GUARD WAS GREEN OVER IT.
+    `test_no_digest_is_taken_from_a_STRING_THE_TEXT_MODE_WRITER_WAS_HANDED` holds the same rule
+    and could not fire here, because its population is `runprov/*.py` -- the product package --
+    and its primitive is the name `atomic_write_text`. The project's own rule reads *any
+    assertion about a text-mode-written file's bytes, size or digest, PRODUCT OR FIXTURE*, and
+    941bd16 shipped the repair with no guard at all. The two are complements, not duplicates:
+    the sibling links a digest to the STRING a writer was handed, this links a pinned digest to
+    the FILE a writer created. Neither subsumes the other.
+
+    THE POPULATION IS THE COMPARISON, NOT THE FUNCTION. A first version took every function
+    containing a 16- or 64-hex literal and refused every text-mode write in it. Recall was 4 of
+    4 and it is RED AT HEAD with nine offences -- six in `_report_fixtures()`, which carries a
+    canned `0123456789abcdef` that pins nothing, two in the very test the reach leg below
+    names, writing an unpinned local, and one beside an `in` test for a `0000...` placeholder.
+    A function is a proxy for the claim; a shape that cannot
+    pass is worse than one that cannot fail, so it is not what is here. Instead: every
+    `ast.Compare` with a hex literal on one side is a pin, the `ast.Name`s on its OTHER side are
+    that pin's subjects, and an offence is a text-mode write whose RECEIVER expression mentions
+    one of them. Measured over `tests/`, `runprov/` and `tools/`: population 3, offences 0 at
+    this commit, and offences 4 naming `whole` against the fixture 941bd16 replaced.
+
+    WHAT COUNTS AS A TEXT-MODE WRITE HERE, AND WHAT DOES NOT. The mode is DERIVED where there is
+    a mode to read -- a write flag and no `b` -- rather than matched against a list of writer
+    names, but the list has not been deleted entirely and the part that remains is this:
+
+      covered   `X.write_text(...)`, always text (739 calls in the swept tree);
+                `atomic_write_text(X, ...)`, this package's own text writer (20 calls);
+                any `open`-family call -- builtin, `io`, `codecs`, `Path.open` -- with a
+                string-literal mode holding `w`/`x`/`a`/`+` and no `b` (106 calls);
+                and TRANSITIVELY every writer fed by such a handle -- `print(file=h)`,
+                `json.dump(o, h)`, `csv.writer(h)`, `h.write(...)` -- because the mode is
+                decided at the `open`, where the path expression still is.
+      refused    an `open` whose mode is not a literal: reported, not skipped, so the check
+                goes RED and asks for a decision instead of going quietly blind. Zero in the
+                population today; five exist in the swept tree, all `os.open` with integer
+                flags, all outside it.
+      OUTSIDE   `tempfile.NamedTemporaryFile(mode="w")`, `TemporaryFile`, `os.fdopen` -- the
+                file is the call's RESULT, so there is no path expression to link to a name.
+                A write in a DIFFERENT function from the pin, because the link is a local name
+                inside one body and this is not a dataflow pass. A receiver carrying no name at
+                all (`pathlib.Path("/lit").write_text(...)`), or a subject that is an attribute
+                or a subscript rather than a local. A library that opens a path itself
+                (`to_csv`, `yaml.safe_dump`), and anything written by a subprocess.
+
+    That is narrower than the rule, deliberately and in one direction: it misses, it does not
+    accuse. The remedy the rule actually wants is the one 941bd16 applied -- `write_bytes` for
+    any fixture whose bytes are asserted -- which makes the whole class unreachable rather than
+    merely watched.
+    """
+    hex_pin = re.compile(r"\A(?:[0-9a-f]{16}|[0-9a-f]{64})\Z")
+    mode_like = re.compile(r"\A[rwxab+tU]+\Z")
+
+    def names_in(node):
+        return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+    def pins_hex(node):
+        #: OVER THE AST, NOT THE TEXT, for the reason the tree-digest guard records: the first
+        #: version of that one was satisfied by a comment three lines above the fix. The hex
+        #: digests quoted in the docstring above are `ast.Constant`s in no `Compare`, so this
+        #: guard's own explanation can neither satisfy it nor defeat it -- asserted below.
+        return any(
+            isinstance(n, ast.Constant) and isinstance(n.value, str) and hex_pin.match(n.value)
+            for n in ast.walk(node)
+        )
+
+    def text_writes(func):
+        """Every text-mode write in `func` whose FILE is named by an expression at the call."""
+        found, unreadable = [], []
+        for node in ast.walk(func):
+            if not isinstance(node, ast.Call):
+                continue
+            called = node.func
+            if isinstance(called, ast.Attribute) and called.attr == "write_text":
+                found.append((node.lineno, called.value, ".write_text()"))
+            elif isinstance(called, ast.Name) and called.id == "atomic_write_text" and node.args:
+                found.append((node.lineno, node.args[0], "atomic_write_text()"))
+            elif (isinstance(called, ast.Name) and called.id == "open") or (
+                isinstance(called, ast.Attribute) and called.attr == "open"
+            ):
+                #: THE MODE IS DERIVED, AND THE RECEIVER IS OVER-INCLUSIVE ON PURPOSE.
+                #: `open(p, "w")` puts the path first and `p.open("w")` puts it in the
+                #: attribute's value, and nothing static tells those two apart -- so every
+                #: argument that is not the mode literal, plus the attribute's own value, is
+                #: treated as a candidate receiver. That can only make this stricter.
+                keyword = [k.value for k in node.keywords if k.arg == "mode"]
+                literal = [
+                    arg
+                    for arg in (*node.args, *keyword)
+                    if isinstance(arg, ast.Constant)
+                    and isinstance(arg.value, str)
+                    and mode_like.match(arg.value)
+                ]
+                opaque = [
+                    arg for arg in (*node.args[1:], *keyword) if not isinstance(arg, ast.Constant)
+                ]
+                if opaque:
+                    unreadable.append(f"{node.lineno}: {ast.unparse(node)[:90]}")
+                elif literal:
+                    #: NO MODE AT ALL IS NOT A HOLE: the default is `"r"`, so a mode-less
+                    #: `open` is a READ and belongs outside this list by its own semantics.
+                    mode = "".join(arg.value for arg in literal)
+                    if "b" not in mode and any(flag in mode for flag in "wxa+"):
+                        receivers = [arg for arg in node.args if arg not in literal]
+                        if isinstance(called, ast.Attribute):
+                            receivers.append(called.value)
+                        found += [(node.lineno, recv, f"open(mode={mode!r})") for recv in receivers]
+        return found, unreadable
+
+    here = pathlib.Path(__file__).resolve().relative_to(_repo_root()).as_posix()
+    target = "test_a_tree_digest_is_a_function_of_the_filenames_BYTES_and_not_of_their_DECODING"
+    own = test_no_PINNED_HEX_DIGEST_describes_a_file_a_TEXT_MODE_WRITER_created.__name__
+
+    population, offences, undecided, swept = {}, [], [], {}
+    for folder in ("tests", "runprov", "tools"):
+        paths = sorted((_repo_root() / folder).rglob("*.py"))
+        swept[folder] = len(paths)
+        for path in paths:
+            rel = path.relative_to(_repo_root()).as_posix()
+            for func in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                subjects = set()
+                for compare in ast.walk(func):
+                    if not isinstance(compare, ast.Compare):
+                        continue
+                    sides = [compare.left, *compare.comparators]
+                    #: BY IDENTITY, not by `in`: two sides of one comparison can be equal
+                    #: expressions, and the pinned side must not be read as a subject.
+                    pinned = {id(side) for side in sides if pins_hex(side)}
+                    if not pinned:
+                        continue
+                    for side in sides:
+                        if id(side) not in pinned:
+                            subjects |= names_in(side)
+                if not subjects:
+                    continue
+                population[f"{rel}::{func.name}"] = sorted(subjects)
+                writes, opaque_modes = text_writes(func)
+                undecided += [f"{rel}:{entry}" for entry in opaque_modes]
+                for lineno, receiver, form in writes:
+                    if hit := names_in(receiver) & subjects:
+                        offences.append(
+                            f"{rel}:{lineno} {form} writes `{ast.unparse(receiver)}` in "
+                            f"{func.name}(), and {sorted(hit)} is pinned against a hex "
+                            f"literal in that same function"
+                        )
+
+    #: THE NAMED DEFECT COMES FIRST, so a planted violation reports ITSELF rather than tripping
+    #: one of the census assertions below and accusing the sweep. A void sweep leaves this list
+    #: empty and therefore silent, which is exactly what the reach leg after it is for.
+    assert not offences, (
+        f"a pinned hex digest describes a file created by a text-mode writer, so the pin holds "
+        f"only where a newline is one byte -- 941bd16's defect, and Windows is where it fails. "
+        f'The remedy is `write_bytes` with a `b"..."` literal, which is what that commit did: '
+        f"{offences}"
+    )
+    assert f"{here}::{target}" in population, (
+        f"the test whose fixture 941bd16 repaired is NOT in this guard's population, so the "
+        f"sweep has stopped reaching the tree it exists for and its silence means nothing. "
+        f"Either that test was renamed -- then rename it here -- or it no longer pins a digest "
+        f"at all, in which case this reach leg needs a new subject. Population: "
+        f"{sorted(population)}"
+    )
+    assert not undecided, (
+        f"an `open`-family call inside a function that pins a hex digest has a mode this guard "
+        f"cannot read, so it can say nothing about whether that write is text mode. THIS IS NOT "
+        f"A DEFECT REPORT: decide it by hand, and either spell the mode as a literal or record "
+        f"here why the call is out of scope: {undecided}"
+    )
+    assert all(swept.values()), (
+        f"a swept folder yielded no Python file at all, so this guard's population is missing a "
+        f"whole directory and the count above is not what it reads as: {swept}"
+    )
+    #: AND THIS GUARD'S OWN BODY IS A LIVE NEGATIVE CONTROL. Its docstring quotes the digests
+    #: and the writer names it refuses, and `hex_pin` spells a 64-hex pattern; none of that is
+    #: a `Compare` against a hex constant, so it must NOT be in the population. A version of
+    #: this check that matched prose would report itself here instead of asserting it.
+    assert f"{here}::{own}" not in population, (
+        "this guard has reported itself, which means it is matching its own explanation rather "
+        "than code -- a guard about CODE defeated by PROSE, in the guard written to hold it"
     )
 
 

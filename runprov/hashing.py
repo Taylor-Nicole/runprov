@@ -616,7 +616,7 @@ def describe(path: str | pathlib.Path, *, digest: bool = True) -> dict[str, typi
         # ~80 % of trees whose names do not mix case the two orders coincide and no field is
         # added at all, so the record does not carry a migration aid it has no use for — and
         # where it IS present it states something true about the tree rather than about this
-        # package's history. `verify` is its only reader.
+        # package's history.
         #: AND THIS KEY IS DELIBERATELY LEFT ON THE DECODED `str`. It exists to reproduce the
         #: order the RELEASED versions used on Windows, where `PurePath.__lt__` compared a
         #: case-folded key -- a comparison over DECODED parts. `verify` recomputes this from a
