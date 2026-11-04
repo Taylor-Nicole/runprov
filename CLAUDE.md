@@ -18,6 +18,12 @@ request for permission; that converts your own conclusion into another prompt. A
 proceeding under any assumption would be unsafe, or would waste the work if the assumption is
 wrong. Pushing this repository is the exception: that is always the maintainer's explicit call.
 
+**Report STATE first, in two or three lines, then reasoning.** Lead with what is done, what is
+blocked and on whom, each with its commit or its exit code. Narrative buries the outcome: a report
+that opened by saying a batch was committed and closed, four hundred words later, with a section
+headed *what is still yours* produced an instruction to commit the batch again. The long form
+belongs in the audit ledger, which is read when it is wanted. The terminal gets the state.
+
 ## Running things
 
 - Use the virtualenv interpreter, `.venv/bin/python`. Never a bare `python`.
