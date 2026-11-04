@@ -1705,7 +1705,19 @@ class Run:
                 + "\n",
                 encoding="utf-8",
             )
-        except OSError as exc:  # guards-ok: provenance must not be what ends the run
+        except Exception as exc:  # guards-ok: provenance must not be what ends the run --
+            # which is this handler's OWN stated reason, and `except OSError` let the run end
+            # anyway. `d.mkdir()` above raises `UnicodeEncodeError` for a history path the
+            # platform cannot encode and `ValueError` for a NUL in it, neither an `OSError`,
+            # and this runs from `__enter__`, so the `with` body NEVER BEGINS and nothing at
+            # all is recorded. Measured through the public API [T-71]:
+            #
+            #   Project(run_log=root / "bad\ud800" / "runs.jsonl")
+            #     -> UnicodeEncodeError out of run.py:1673, run aborted, nothing recorded
+            #
+            # The history append beside it already degraded correctly, so the record path was
+            # not the gap -- the MARKER was, and it is the one thing that runs before anything
+            # else can speak for the run.
             self._in_flight = None
             diagnostic(f"  WARNING: could not mark this run as in flight: {exc}")
 

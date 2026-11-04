@@ -9,6 +9,37 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — marking a run in flight could be what ended it
+
+`_mark_in_flight`'s docstring says *"NEVER RAISES, like everything else that describes a run
+rather than doing the work"*, and its handler carries its own reason: `# guards-ok: provenance
+must not be what ends the run`. The tuple was `except OSError`, so **the handler's stated purpose
+was the property it failed to hold.**
+
+It runs from `__enter__`, before anything else can speak for the run. `d.mkdir()` raises
+`UnicodeEncodeError` for a history path the platform cannot encode and `ValueError` for a NUL in
+it, neither an `OSError`. Nothing above it caught either. Measured through the public API:
+
+```python
+Project(run_log=root / "bad\ud800" / "runs.jsonl")
+# -> UnicodeEncodeError from _mark_in_flight, raised through __enter__
+```
+
+**The `with` body never began, the step never ran, and no record was written at all** — the one
+outcome this package exists to prevent. The history append beside it already degraded correctly,
+so the record path was not the gap; the marker was, and it is the first thing a run does.
+
+The handler is now broad. Measured after: all three cases complete **and the record is still
+written**, so the degradation is confined to the marker, which is what degrading means here.
+
+The guard asserts both halves, because a repair that swallowed the error and then lost the record
+would satisfy *"does not raise"* while destroying the thing the raise was protecting.
+
+This is the third place today where a guard's own written reason named the property it violated,
+and the first where nothing above it caught the fall. Found by the census of the thirty-four
+functions here that promise not to raise, which flagged this one UNTESTED and declined to call it
+clean — the probe it asked for is what found the abort.
+
 ### Fixed — a promise not to raise was being spent as a premise one function down
 
 `Capture.start`'s docstring reads *"Begin capturing. NEVER raises — a failure downgrades, then

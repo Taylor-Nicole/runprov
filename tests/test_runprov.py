@@ -9218,6 +9218,76 @@ def test_an_unrecorded_run_writes_no_marker_while_it_is_still_running(tmp_path, 
         run.__exit__(None, None, None)
 
 
+def test_marking_a_run_IN_FLIGHT_cannot_be_what_ends_it(tmp_path):
+    """`_mark_in_flight` says NEVER RAISES and its handler says why — and it raised [T-71].
+
+    THE HANDLER'S OWN REASON IS THE PROPERTY IT FAILED TO HOLD: `# guards-ok: provenance must
+    not be what ends the run`, over `except OSError`. The marker is written from `__enter__`,
+    before anything else can speak for the run, and `d.mkdir()` raises `UnicodeEncodeError` for
+    a history path the platform cannot encode and `ValueError` for a NUL in it. Neither is an
+    `OSError`, so neither was caught, and NOTHING above it caught them either.
+
+    MEASURED THROUGH THE PUBLIC API, which is the only reason the severity was clear:
+
+        Project(run_log=root / "bad\\ud800" / "runs.jsonl")
+          -> UnicodeEncodeError out of run.py in `_mark_in_flight`, raised through `__enter__`
+
+    The `with` body never began, the step never ran, and no record was written at all. That is
+    the one outcome this package exists to prevent, and it came from the marker rather than from
+    the record: the history append beside it already degraded correctly. A guard that fails on
+    the FIRST thing a run does is worse than one that fails on the last.
+
+    WHAT IS ASSERTED IS BOTH HALVES. The run must complete, and the RECORD MUST STILL BE
+    WRITTEN -- because a repair that swallowed the error and then lost the record would satisfy
+    "does not raise" while destroying the thing the raise was protecting. The marker itself is
+    allowed to be missing; that is what degrading means.
+    """
+    hostile = {
+        "a lone high surrogate": "bad\ud800/runs.jsonl",
+        "an embedded NUL": "bad\x00/runs.jsonl",
+    }
+
+    #: THE CONTROL, so that "the run completed" is not also what a project whose history path is
+    #: never touched would report.
+    good = tmp_path / "good"
+    good.mkdir()
+    plain = runprov.Project(
+        root=good,
+        run_log=good / "provenance" / "runs.jsonl",
+        write_yaml_sidecar=False,
+        write_transformation_log=False,
+    )
+    control_record = good / "p.json"
+    with runprov.Run("control", project=plain, provenance=control_record) as run:
+        run.step("ran")
+    assert control_record.is_file(), "the control wrote no record, so this test compares nothing"
+
+    for label, rel in hostile.items():
+        where = tmp_path / label.replace(" ", "-")
+        where.mkdir()
+        project = runprov.Project(
+            root=where,
+            run_log=where / rel,
+            write_yaml_sidecar=False,
+            write_transformation_log=False,
+        )
+        record = where / "p.json"
+        try:
+            with runprov.Run("probe", project=project, provenance=record) as run:
+                run.step("ran")
+        except Exception as exc:  # pragma: no cover - this IS the defect, so it must not happen
+            raise AssertionError(
+                f"marking the run in flight ended the run for {label}: {type(exc).__name__}. "
+                f"The handler's own reason is that provenance must not be what ends the run, and "
+                f"it is written from `__enter__`, so the body never begins and nothing is "
+                f"recorded: {exc}"
+            ) from exc
+        assert record.is_file(), (
+            f"the run survived {label} but no record was written, so the repair traded an abort "
+            f"for a silent loss -- which is the same defect with a quieter failure mode"
+        )
+
+
 def test_a_recorded_run_still_marks_itself_in_flight(tmp_path, monkeypatch):
     """The other half of A-15's guard, and the reason it is a guard and not a deletion. The
     marker is an INDEX over recorded runs that have no ending yet; `provenance=` is what
