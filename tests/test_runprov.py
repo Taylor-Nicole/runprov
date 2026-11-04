@@ -4563,6 +4563,67 @@ def test_an_unwritable_stderr_does_not_destroy_the_run(tmp_path, monkeypatch):
     assert run.record["status"] == "ok"
 
 
+def test_an_stderr_whose_ATTRIBUTE_ACCESS_raises_does_not_destroy_the_run(monkeypatch, capsys):
+    """The third shape of a hostile stderr, and `_write`'s probe for it was outside the guard.
+
+    ITS TWO SIBLINGS ABOVE COVER *cannot be written to* and *cannot encode*. This covers
+    *cannot be asked*. `_write` decided whether to use the stream with
+    `hasattr(stream, "write")`, which sits outside every handler, and `hasattr` suppresses
+    only `AttributeError` -- so a stream whose `__getattr__` raises anything else came back
+    out of `_write` [T-71].
+
+    WHY THIS FUNCTION AND NOT ANOTHER. `_write` is this package's single stderr emission
+    point, and about twenty functions that promise never to raise discharge their failures
+    through it: `_persist`, `_persist_yaml`, `_begin_capture`, `_append_start`,
+    `_mark_in_flight`, `Capture.start`, `Capture.stop`, `prune.apply`. A break here converts
+    every one of those degradations into the abort it was written to prevent, so the cost of
+    this one is not its own.
+
+    THE TWO NEGATIVE CONTROLS ARE THE POINT. A stream merely LACKING `.write`, and a stream
+    that is `None`, must both still degrade silently -- those are the states the code was
+    written for, and if they stopped degrading this test would be reporting a repair that
+    broke the thing it was guarding. So the defect is attribute ACCESS, not absence, and
+    these rows are what separate the two.
+    """
+
+    class CannotBeAsked:
+        """Raises on any attribute lookup, which `hasattr` does not suppress."""
+
+        def __getattr__(self, name):
+            raise RuntimeError(f"this stream refuses to be asked about {name!r}")
+
+    class LacksWrite:
+        """Has no `write`, which is the state the surrounding code was written for."""
+
+    #: THE CONTROL FIRST: a usable stream must actually emit, or "nothing raised" below is
+    #: also what a `_write` that returned immediately would report.
+    runprov._report._write("a visible diagnostic")
+    assert "a visible diagnostic" in capsys.readouterr().err, (
+        "the control emitted nothing, so the rows below cannot distinguish a degradation "
+        "from a function that does nothing at all"
+    )
+
+    for label, replacement in (
+        ("attribute access raises", CannotBeAsked()),
+        ("no `write` attribute", LacksWrite()),
+        ("stderr is None", None),
+    ):
+        monkeypatch.setattr(runprov._report.sys, "stderr", replacement)
+        try:
+            runprov._report._write("a diagnostic nobody can receive")
+        except Exception as exc:  # pragma: no cover - this IS the defect, so it must not happen
+            raise AssertionError(
+                f"`_write` raised {type(exc).__name__} for an stderr whose {label}, and it is "
+                f"the one place every other never-raises promise in this package sends its "
+                f"failures: {exc}"
+            ) from exc
+        monkeypatch.undo()
+
+    #: AND THE MESSAGE IS DROPPED, NOT REDIRECTED. The surrounding docstring's own rule is
+    #: that no stderr is not a reason to use stdout, so the data channel must stay clean.
+    assert capsys.readouterr().out == "", "a diagnostic reached the caller's data channel"
+
+
 def test_a_stderr_that_cannot_encode_still_degrades_rather_than_dying(tmp_path, monkeypatch):
     """The pre-existing guard, kept honest: its fallback re-encodes and writes AGAIN, and
     that second write can fail exactly like the first. Both paths must end in silence rather

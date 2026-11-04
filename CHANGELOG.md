@@ -9,6 +9,36 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — the one place every other never-raises promise discharges into could itself raise
+
+`_report._write` decided whether to use the stream with `hasattr(stream, "write")`, outside every
+handler. `hasattr` suppresses only `AttributeError`, so a stream whose `__getattr__` raises
+anything else came straight back out. Measured, with both negative controls, because they are what
+separate the defect from the design:
+
+| stderr | before | after |
+|---|---|---|
+| normal (control) | emits | emits |
+| lacking `.write` | degrades | degrades |
+| `__getattr__` raises | **RAISED `RuntimeError`** | degrades |
+| `None` | degrades | degrades |
+
+So the defect is attribute **access**, not absence — a stream merely lacking `.write` was always
+handled correctly, which is the state the surrounding code was written for.
+
+**The cost of this one is not its own.** `_write` is this package's single stderr emission point,
+and about twenty functions that promise never to raise send their failures through it — `_persist`,
+`_persist_yaml`, `_begin_capture`, `_append_start`, `_mark_in_flight`, `Capture.start`,
+`Capture.stop`, `prune.apply`. A break here converts every one of those degradations into the
+abort it was written to prevent. Its two siblings already cover *cannot be written to* (ENOSPC) and
+*cannot encode* (cp932); this is *cannot be asked*.
+
+**The escaping above the guard stays outside it, deliberately.** The `UnicodeEncodeError` arm
+writes `line`, so if the escaping were inside and raised, the fallback would write the UNESCAPED
+string — reintroducing the `\r` and `\x1b` hole this function is the last defence for. A repair
+that converts one failure into a quieter one is not a repair. It was probed for a break and none
+was found.
+
 ### Fixed — marking a run in flight could be what ended it
 
 `_mark_in_flight`'s docstring says *"NEVER RAISES, like everything else that describes a run

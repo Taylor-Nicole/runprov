@@ -210,9 +210,21 @@ def _write(line: str) -> None:
     # channel and 0 into stderr -- the exact defect the docstring above opens with, arriving
     # through the fallback rather than through a bare `print`. Silence is the correct
     # degradation: the record is still written to disk, and the only thing lost is a message.
-    if stream is None or not hasattr(stream, "write"):
-        return
     try:
+        #: THE PROBE IS INSIDE THE GUARD, AND IT WAS NOT [T-71]. `hasattr` suppresses only
+        #: `AttributeError`, so an stderr whose `__getattr__` raises anything else came back
+        #: out of this function -- the one function about twenty other never-raises promises
+        #: discharge their failures into, which is what makes a break here cost more than its
+        #: own caller. Measured: a stream merely LACKING `.write` degrades correctly and one
+        #: that is `None` degrades correctly, so the defect is attribute ACCESS, not absence.
+        #:
+        #: THE ESCAPING ABOVE STAYS OUTSIDE THIS TRY, deliberately. The `UnicodeEncodeError`
+        #: arm below writes `line`, so if the escaping were in here and raised, the fallback
+        #: would write the UNESCAPED string -- reintroducing the `\r` and `\x1b` hole this
+        #: function is the last defence for. A guard that converts one failure into a quieter
+        #: one is not a repair. Probed for a break and none was found.
+        if stream is None or not hasattr(stream, "write"):
+            return
         with _WRITE_LOCK:
             print(line, file=stream, flush=True)
     except UnicodeEncodeError:
