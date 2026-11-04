@@ -9,6 +9,42 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — a verdict named a cause it had inferred from a predicate that conflates three
+
+`inputs_verify` asked `target.exists()` and wrote the answer into a sentence a reader acts on.
+CPython's own documentation for that method says *"`False` if the path is invalid, inaccessible or
+missing. Use `Path.stat()` to distinguish between these cases."* Inferring a CAUSE from that
+boolean put a false sentence into a record nobody can amend.
+
+Measured on Python 3.12, before any future version comes into it:
+
+| recorded path | `exists()` | `stat()` | the sentence it produced |
+|---|---|---|---|
+| a NUL in the name | `False` | raises `ValueError` | *"is no longer on disk"* — **false**, it never was and cannot be |
+| a symlink loop | `False` | raises `OSError` ELOOP | *"is no longer on disk"* — **false**, it could not be followed |
+| genuinely missing | `False` | raises `FileNotFoundError` | *"is no longer on disk"* — true |
+
+The sentence is now a function of what the operating system said. `FileNotFoundError` and
+`NotADirectoryError` keep the absence wording deliberately — a component that is not a directory
+means the declared file is not where the run left it, which is what a reader goes and looks at,
+and it is also what the suppressing predicate reported, so **no verdict moves**. A name the
+platform cannot hold gets its own sentence. Everything else is unreadable and says so.
+
+**And this answers the `requires-python` ceiling question rather than deferring it.** Python 3.14
+makes these predicates return `False` for *any* `OSError`, where earlier versions — in the
+documentation's words — *"raise some kinds of `OSError` exception, and others suppressed"*. So the
+arm that happened to be correct here was correct by accident of which errors propagated. **A
+ceiling was refused:** it would have frozen that accident, forfeited every later version, and made
+no sentence true. `stat()` raises on every version, so the fix needs no ceiling to stay correct.
+
+Two guards, each demonstrated red against the predicate form and green after. The first asserts
+that the module which turns a filesystem state into prose contains **no suppressing predicate at
+all** — the population is every such call in it, the expected count is zero, and there is no list
+to extend. The second asserts only the contract this code depends on: that `stat()` raises, and
+which exception for which cause. It deliberately does **not** assert the predicates' own
+behaviour, because that is what a future version is allowed to change and this one did; a guard
+pinning both would go red on an upgrade that broke nothing here.
+
 ### Fixed — two repairs were held by nothing, and one of them was the headline of its own commit
 
 **`sha256_tree`'s byte key was asserted in the callee and never at the call.** `8a5a770`'s stated

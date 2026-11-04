@@ -703,20 +703,58 @@ def _input_still_matches(
     if seen is not None and cached in seen:
         now = seen[cached]
     else:
+
+        def unreadable(exc: BaseException) -> Verdict:
+            return Verdict(
+                CANNOT_CHECK, f"{raw} could not be read: {getattr(exc, 'strerror', None) or exc}"
+            )
+
         try:
             #: THE ADR'S OWN CASE, AND IT IS AN INABILITY RATHER THAN A VIOLATION. R-9's
             #: clarification says so in those words: a declared input that is gone is a
             #: `CANNOT_CHECK` naming the path. The alternative accuses a run of changing a file
             #: that may simply have been archived, in a record nobody can amend.
-            if not target.exists():
-                return Verdict(
-                    CANNOT_CHECK,
-                    f"{raw} is no longer on disk, so what it holds now cannot be compared with "
-                    "what the run recorded",
-                )
+            #:
+            #: ASKED WITH `stat`, NOT WITH A PREDICATE, AND THE STDLIB PRESCRIBES THIS. `exists()`
+            #: answers one question with three meanings -- CPython's own words are *"`False` if
+            #: the path is invalid, inaccessible or missing. Use `Path.stat()` to distinguish
+            #: between these cases."* Inferring a CAUSE from that boolean put a false sentence in
+            #: a record nobody can amend: a declared path carrying a NUL digests as *no longer on
+            #: disk* on 3.12 today, because the `ValueError` is suppressed and the name was never
+            #: on disk at all. A symlink loop said the same thing, where the truth is that the
+            #: path could not be followed.
+            #:
+            #: AND IT IS WHY NO CEILING ON `requires-python` IS THE ANSWER [T-71]. Python 3.14
+            #: makes these predicates return `False` for ANY `OSError` where earlier versions
+            #: *"raise some kinds and suppress others"*, so today's correctness here was an
+            #: accident of which errors happened to propagate. `stat` raises on every version:
+            #: the sentence is now a function of what the operating system said, not of a
+            #: convenience method's exception policy. A pin would have frozen the accident.
+            #:
+            #: `NotADirectoryError` KEEPS THE ABSENCE SENTENCE, deliberately: a component of the
+            #: path is not a directory, so the declared file is not where the run left it, and
+            #: that is what the reader needs to go and look at. It is also what the suppressing
+            #: predicate used to report, so no verdict moves.
+            target.stat()
             now = how(target)
+        except (FileNotFoundError, NotADirectoryError):
+            return Verdict(
+                CANNOT_CHECK,
+                f"{raw} is no longer on disk, so what it holds now cannot be compared with "
+                "what the run recorded",
+            )
+        except ValueError as exc:
+            #: NOT AN ABSENCE AND NOT AN UNREADABLE FILE. A recorded spelling the platform
+            #: cannot hold -- an embedded NUL, a name no filesystem call will accept -- is a
+            #: statement about the RECORD, and sending the reader to look for a missing file
+            #: would be the false sentence this arm exists to stop.
+            return Verdict(
+                CANNOT_CHECK,
+                f"{raw} is not a name this system can hold, so what the run recorded cannot be "
+                f"looked for: {exc}",
+            )
         except OSError as exc:
-            return Verdict(CANNOT_CHECK, f"{raw} could not be read: {exc.strerror or exc}")
+            return unreadable(exc)
         if seen is not None:
             seen[cached] = now
     if now is None:

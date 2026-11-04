@@ -52339,6 +52339,125 @@ def test_inputs_verify_answers_for_each_declared_entry_and_names_which(tmp_path)
     )
 
 
+def test_a_CANNOT_CHECK_SENTENCE_NAMES_THE_REASON_THE_OS_GAVE_and_not_a_predicates_guess(tmp_path):
+    """`exists()` answers one question with three meanings, so it cannot name a cause.
+
+    CPython's own words for `Path.exists()`: *"`False` if the path is invalid, inaccessible or
+    missing. Use `Path.stat()` to distinguish between these cases."* `inputs_verify` inferred a
+    CAUSE from that boolean and wrote the answer into a verdict a reader acts on, so two
+    different inabilities were reported as a third thing that was not true.
+
+    MEASURED ON 3.12, BEFORE ANY FUTURE VERSION COMES INTO IT [T-71]:
+
+      | recorded path        | `exists()` | `stat()`                | the old sentence  |
+      |----------------------|------------|-------------------------|-------------------|
+      | a NUL in the name    | `False`    | raises `ValueError`     | *no longer on disk* |
+      | a symlink loop       | `False`    | raises `OSError` ELOOP  | *no longer on disk* |
+      | genuinely missing    | `False`    | raises `FileNotFound`   | *no longer on disk* |
+
+    Only the third was true. The first was never on disk and cannot be -- the reader was sent to
+    look for a file that no filesystem call will accept -- and the second is a path that could not
+    be FOLLOWED, which is a different thing a reader fixes differently.
+
+    AND THIS IS WHY NO CEILING ON `requires-python` WAS THE ANSWER. Python 3.14 makes those
+    predicates return `False` for ANY `OSError`, where earlier versions *"raise some kinds and
+    suppress others"* -- so the arm that happened to be correct here was correct by accident of
+    which errors propagated. A ceiling would have frozen the accident and bought nothing; asking
+    `stat` makes the sentence a function of what the operating system said, on every version.
+    """
+    unknown = runprov.policy.CANNOT_CHECK
+
+    def judged(path):
+        return runprov.policy.rules()["inputs_verify"].judge(
+            {"inputs": [{"path": str(path), "content_sha256": "0" * 64}]},
+            runprov.policy.Context(),
+        )
+
+    #: A NAME THE PLATFORM CANNOT HOLD, and it is portable: an embedded NUL is refused by the
+    #: filesystem call on every platform, so this arm runs on every leg rather than skipping.
+    nul = judged("data\x00m.tsv")
+    assert nul.outcome == unknown, nul
+    assert "is not a name this system can hold" in (nul.reason or ""), nul.reason
+    assert "no longer on disk" not in (nul.reason or ""), (
+        f"a recorded spelling the platform refuses is reported as a MISSING FILE, which sends the "
+        f"reader to look for something that was never there: {nul.reason}"
+    )
+
+    #: AND A GENUINE ABSENCE STILL SAYS SO -- the arm whose sentence must NOT move, asserted
+    #: beside the ones that did, because a repair that fixes two sentences by breaking a third
+    #: is how this class recurs.
+    gone = judged(tmp_path / "gone.tsv")
+    assert gone.outcome == unknown and "no longer on disk" in (gone.reason or ""), gone.reason
+
+    #: A PATH THAT CANNOT BE FOLLOWED IS NOT AN ABSENCE. POSIX-only, and SKIPPED LOUDLY rather
+    #: than silently: a `symlink` needs a privilege on Windows that this suite does not assume,
+    #: and a silent skip is how a guard reports green on a platform it never ran on.
+    loop = tmp_path / "loop.tsv"
+    try:
+        loop.symlink_to(loop)
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover - POSIX makes this loop
+        pytest.skip(f"this platform will not make a symlink loop: {exc}")
+    looped = judged(loop)
+    assert looped.outcome == unknown, looped
+    assert "could not be read" in (looped.reason or ""), looped.reason
+    assert "no longer on disk" not in (looped.reason or ""), (
+        f"a path that could not be FOLLOWED is reported as a missing file: {looped.reason}"
+    )
+
+
+def test_the_VERDICT_MODULE_asks_the_OS_and_never_a_PREDICATE_THAT_SUPPRESSES_THE_ANSWER():
+    """The guard, and it is total for this module rather than a list of known sites.
+
+    THE RULE: a module that writes a sentence attributing a CAUSE may not decide it from
+    `exists()`, `is_file()`, `is_dir()` or their siblings, because each returns `False` for
+    *invalid*, *inaccessible* and *missing* alike. `policy.py` is where this project turns a
+    filesystem state into prose a reader acts on, so the population is every such call in it and
+    the expected count is ZERO -- no exemption list, nothing to extend.
+
+    WHY A COUNT OF ZERO IS WORTH ASSERTING RATHER THAN OBSERVING. The defect arrived as ONE call
+    that read naturally and had been correct for every version anyone had run. The next one will
+    too, and it will be written by somebody adding a branch to a judge function.
+    """
+    source = pathlib.Path(runprov.policy.__file__).read_text(encoding="utf-8")
+    suppressing = {
+        "exists",
+        "is_file",
+        "is_dir",
+        "is_symlink",
+        "is_mount",
+        "is_block_device",
+        "is_char_device",
+        "is_fifo",
+        "is_socket",
+    }
+    found = [
+        f"line {node.lineno}: {ast.unparse(node)[:70]}"
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in suppressing
+    ]
+    assert not found, (
+        f"`policy.py` decides a verdict from a predicate that returns False for *invalid*, "
+        f"*inaccessible* and *missing* alike, so the sentence it writes cannot name the cause. "
+        f"Ask `stat()` and branch on the error: {found}"
+    )
+
+    #: AND THE STDLIB CONTRACT THIS MODULE NOW RELIES ON, ASSERTED -- the version-proofing half.
+    #: What is checked is only what the code DEPENDS on: that `stat` RAISES, and which exception
+    #: it raises for which cause. The predicates' behaviour is deliberately NOT asserted, because
+    #: that is the thing a future version is allowed to change and 3.14 did change it. A guard
+    #: that pinned both would go red on an upgrade that broke nothing here.
+    with pytest.raises(ValueError):
+        pathlib.Path("data\x00m.tsv").stat()
+    with pytest.raises(FileNotFoundError):
+        (pathlib.Path(tempfile.gettempdir()) / "runprov-no-such-file-ever").stat()
+    assert issubclass(FileNotFoundError, OSError) and issubclass(NotADirectoryError, OSError), (
+        "the absence arm is ordered before the general `OSError` arm on the assumption that both "
+        "are subclasses of it; if that stops holding, the arms silently swap"
+    )
+
+
 def test_inputs_verify_anchors_a_recorded_path_on_the_runs_own_cwd_and_not_the_gates(
     tmp_path, monkeypatch
 ):
