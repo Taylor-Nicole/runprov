@@ -122,6 +122,17 @@ only one that survives without a reader.
   behind is a memory leak on a host that is usually short of memory.
 - The gate is `ci.py lint test build`, plus `surface torture claims corpus` before a commit.
 - `ci.py matrix-check` refuses to run on a dirty tree, so commit before polling it.
+- **Do not edit the tree while a check runs over it**, and `ci.py` no longer relies on you
+  remembering: it digests the tracked worktree before and after every run and refuses when a file
+  moved that no requested step may write. The failure it prevents is not a crash but a number —
+  a coverage figure and a pass count printed for a tree that no longer exists, which reads as a
+  pass and is unattributable afterwards. Work in the other repository while a gate runs here.
+- **A live task carries a budget.** `tools/node-contract.py` requires a `## Limit` on every
+  frontier node, in units something can measure, and refuses when it is spent. Write the
+  threshold, not the verdict: *revisit at ten* is a rule a later reader can apply, *not worth it
+  yet* is only ever true on the day it was typed. Going over is not a failure — it means close
+  the task, split it, or raise the budget deliberately and say why, which is the decision that
+  otherwise gets made every day by nobody.
 - `--cov` cannot measure `ci.py`: it is spec-loaded, so its module name is never imported. Use
   `coverage run --include=`, which measures by path.
 - Device names are not stable. Read the mount source live; never reuse one written in a note.
