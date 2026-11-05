@@ -1425,17 +1425,27 @@ def corpus() -> None:
 #: value type joined a `lambda` with ten plain functions and came out untyped, which made
 #: `STEPS[name]()` the one error `mypy --strict` found in this file -- so a step that took
 #: an argument, or returned something the dispatch ignores, was unnoticeable here.
-def _tree_state() -> dict[str, str]:
-    """Every tracked file's CURRENT WORKTREE content, as git's own object id.
+def _tree_state() -> dict[str, str] | None:
+    """Every tracked file's CURRENT WORKTREE content, as git's own object id, or None.
+
+    NONE MEANS "COULD NOT ASK", AND THAT IS NOT THE SAME AS "NOTHING MOVED". `ci.py` is copied
+    into a bare directory and run there by the release-check tests, deliberately, so git has no
+    repository to answer about -- and `git ls-files` exits 128. Raising there broke eleven tests
+    that have nothing to do with this guard; passing silently would be worse, because every later
+    run in such a tree would report a clean subject it never examined. So the caller is told it
+    could not be checked, and says so out loud.
 
     One `git ls-files` and one batched `git hash-object --stdin-paths`: 307 files in a quarter of
     a second, measured, which is why this can bracket every run rather than being a step somebody
     remembers to invoke. A file git tracks but the worktree no longer holds records as `(absent)`
     rather than raising, because a deletion mid-run is exactly the drift this reports.
     """
-    listed = subprocess.run(
-        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
-    ).stdout
+    probe = subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=False
+    )
+    if probe.returncode != 0:
+        return None
+    listed = probe.stdout
     names = [n for n in listed.split("\n") if n]
     present = [n for n in names if (ROOT / n).is_file()]
     state: dict[str, str] = {n: "(absent)" for n in names if n not in set(present)}
@@ -1461,8 +1471,16 @@ def _tree_state() -> dict[str, str]:
     return state
 
 
-def _tree_drift(before: dict[str, str], after: dict[str, str], wanted: list[str]) -> list[str]:
-    """Tracked paths whose content moved during the run and that no requested step may write."""
+def _tree_drift(
+    before: dict[str, str] | None, after: dict[str, str] | None, wanted: list[str]
+) -> list[str]:
+    """Tracked paths whose content moved during the run and that no requested step may write.
+
+    With either side None the question was never asked; see `_tree_state`. The CALLER reports that,
+    because an empty list here means "nothing moved" and the two must not be confused.
+    """
+    if before is None or after is None:
+        return []
     allowed = {path for step in wanted for path in _TRACKED_WRITES.get(step, ())}
     moved = sorted({p for p in set(before) | set(after) if before.get(p) != after.get(p)})
     return [p for p in moved if p not in allowed]
@@ -1551,7 +1569,15 @@ if __name__ == "__main__":
         print(f"\n=== {name} ===")
         STEPS[name]()
     #: THE SUBJECT MUST STILL BE THE TREE THIS RUN STARTED OVER. See `_TRACKED_WRITES`.
-    _drift = _tree_drift(_tree_before, _tree_state(), wanted)
+    _tree_after = _tree_state()
+    if _tree_before is None or _tree_after is None:
+        #: SAID OUT LOUD. An unchecked property reported as silence reads as a pass to every later
+        #: reader, which is the rule this project installed the same week.
+        print(
+            "\nnote: the tracked tree could not be digested (git answered nothing here), so "
+            "whether it moved during this run is UNRESOLVED, not verified"
+        )
+    _drift = _tree_drift(_tree_before, _tree_after, wanted)
     if _drift:
         print(
             f"\nREFUSE: {len(_drift)} tracked file(s) changed WHILE these steps ran, and no "

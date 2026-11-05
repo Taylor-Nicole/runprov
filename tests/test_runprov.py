@@ -65185,7 +65185,9 @@ def test_the_CONTENDED_errno_set_excludes_ENOLCK_and_says_why():
     )
 
 
-def test_a_GATES_NUMBER_DESCRIBES_THE_TREE_IT_RAN_OVER_and_ci_refuses_when_that_moved():
+def test_a_GATES_NUMBER_DESCRIBES_THE_TREE_IT_RAN_OVER_and_ci_refuses_when_that_moved(
+    tmp_path, monkeypatch
+):
     """`ci.py` brackets every run with a tracked-tree digest and refuses if the subject moved.
 
     WHY THIS EXISTS. Twice in one week this repository's working tree was edited WHILE a check was
@@ -65267,3 +65269,19 @@ def test_a_GATES_NUMBER_DESCRIBES_THE_TREE_IT_RAN_OVER_and_ci_refuses_when_that_
         assert ci._tree_drift(before, moved_unrelated, steps) == [unrelated], (
             f"{unrelated} moved under {steps} and nothing reported it"
         )
+
+    #: 4. OUTSIDE A GIT REPOSITORY IT SAYS SO, AND IT DOES NOT RAISE. `ci.py` is copied into a
+    #: bare directory and run there by the release-check tests on purpose, where `git ls-files`
+    #: exits 128. The first version of this guard raised and took eleven unrelated tests with it.
+    #:
+    #: AND THE REPAIR MUST NOT BE SILENCE. Returning an empty mapping would make every run in
+    #: such a tree report a clean subject it never examined -- the unchecked-reported-as-passing
+    #: shape. `None` means the question could not be asked, `_tree_drift` declines to answer, and
+    #: the caller prints that it is unresolved.
+    monkeypatch.setattr(ci, "ROOT", tmp_path)
+    assert ci._tree_state() is None, (
+        "outside a git repository the tree digest must report that it could not ask, not an "
+        "empty mapping -- an empty mapping compares equal to itself and reads as 'nothing moved'"
+    )
+    assert ci._tree_drift(None, before, ["lint"]) == [], "an unasked question answered"
+    assert ci._tree_drift(before, None, ["lint"]) == [], "an unasked question answered"

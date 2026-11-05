@@ -30,6 +30,13 @@ step added without one is refused at import, and the guard asserts that each dec
 still a file git tracks, because an exemption naming a vanished file covers nothing while reading
 as though it covers something.
 
+Outside a git repository the digest reports that it could not ask, rather than raising or
+returning an empty mapping. `ci.py` is copied into a bare directory and run there by the
+release-check tests on purpose, where `git ls-files` has nothing to answer about; raising took
+those tests down, and an empty mapping would have been worse, because it compares equal to itself
+and so reads as *nothing moved* for every later run in such a tree. The run says the question is
+unresolved instead.
+
 A re-run is not a mechanism. *"Do not edit the tree during a gate"* is an instruction that can be
 forgotten silently, which is the shape this project has repeatedly measured as insufficient.
 
