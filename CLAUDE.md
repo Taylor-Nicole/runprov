@@ -13,6 +13,15 @@ future-proofing and end-to-end integration **before** applying it, and if it doe
 propose a different solution rather than a narrower version of the failed one. Fan out agents
 when the work is separable. Prefer one comprehensive pass to several partial ones.
 
+**A step with exactly one correct answer is CODE, never an estimate.** A count, a diff, a merge,
+a dedupe, a comparison — write the command and read its output. Judgement is what you are for;
+arithmetic is not, and an estimate is indistinguishable from a measurement once it has been written
+down. Measured here: a subagent brief said *"roughly twelve narrow handlers across the package"*
+when twelve was the count inside one promising subset and the package-wide figure was more than ten
+times it. A census scheduled off that number would have reported itself complete with the great
+majority never examined. The brief is where this costs most, because the agent cannot check a
+number you supplied.
+
 **When you have named the next action, take it.** Do not end a turn with a recommendation and a
 request for permission; that converts your own conclusion into another prompt. Ask only when
 proceeding under any assumption would be unsafe, or would waste the work if the assumption is
@@ -26,7 +35,10 @@ instruction on five consecutive turns, each time for work already committed and 
 gate-green. Where a mechanism and an instruction cover one risk, the instruction is the one to
 delete.
 
-So push gate-green work on `main`, and let the permission prompt be the gate. Ask, separately and
+So push gate-green work on `main`, and let the permission prompt be the gate. **Push it before
+starting the next thing, not at the end of the session** — a gate-green commit once sat unpushed
+while the next task was begun, and the drive holding it dropped out from under the session an hour
+later. Nothing was lost, and nothing about that was by design. Ask, separately and
 every time, before a force-push — never do one — before pushing a tree that is dirty or that no
 gate has run on, before a tag or a release, and before pushing to any other branch or remote.
 Those are the irreversible ones: a trailer that reaches a branch with a pull request cannot be
@@ -37,6 +49,10 @@ blocked and on whom, each with its commit or its exit code. Narrative buries the
 that opened by saying a batch was committed and closed, four hundred words later, with a section
 headed *what is still yours* produced an instruction to commit the batch again. The long form
 belongs in the audit ledger, which is read when it is wanted. The terminal gets the state.
+
+**And `unresolved` is a verdict.** A requirement you could not check is reported as unresolved,
+naming the evidence that is missing — never omitted, and never folded in with the passes because
+nothing contradicted it. Silence reads as a pass to every later reader, including you.
 
 ## Continuity — the task comes from the graph, not from the prompt
 
@@ -50,6 +66,12 @@ and read the standing prompt it belongs to, in the audit repository beside this 
 
 Read them, never recall them. The hand-off and the emitted prompt drifted by six lessons once
 already, which is why the generator exists and why the prose is read from the file.
+
+**A frontier node also says how it will be checked.** `tools/node-contract.py` refuses a live
+node carrying `## Next action` and no `## Done when`, and refuses a contract item naming nothing
+that resolves. Write the contract BEFORE the work, not after seeing the result: a standard chosen
+once the answer is known is not a standard. Every node in the graph said what to do next and none
+said what done would look like, which is the mechanism behind tasks that stop rather than finish.
 
 **And feed it before calling a session done.** Findings go in the audit ledger; the next action
 goes in a dated node. **The ledger is NOT a node**, so findings written only there leave the
@@ -78,6 +100,12 @@ a census of a census — does not need it.
 **Brief a reviewer with the code and the claim, never with your conclusion.** State what is to be
 refuted, what has already been ruled out, and every operating rule below that its work could
 touch; a rule left out of a brief is a rule the agent will break, and that has happened here.
+
+**A refuted repair goes back with the reason, the evidence and a scope of one — and not more
+than three times.** After that the node is the problem rather than the attempt: stop and say so.
+Never repeat an approach that failed without naming what is different this time. Measured here: a
+remedy refuted for restoring a *count* rather than a *check* was re-attempted in a narrower form,
+which is the same failure wearing less surface.
 
 **After a change large enough to need a reviewer, ask for the three things that outlive it:** what
 the defect's shape was and where else it could occur, which sweep came back empty and over what
