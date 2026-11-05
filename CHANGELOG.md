@@ -9,6 +9,24 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — the audited-section rule refused the one state a release passes through
+
+`tools/claims.py` audits only `CHANGELOG.md`'s `## [Unreleased]` section, and asserted that the
+heading appears exactly once. The reason given was sound as far as it went: auditing nothing would
+silently restore the whole-file exemption the section split replaced, and *"cannot determine" is
+not "zero"*.
+
+**It was half right, and the half it got wrong stops a release.** The release commit dates the
+unreleased section and the fresh one is not added until the post-release commit, so between the
+two there genuinely is no unreleased section — and auditing nothing is then the TRUTH rather than
+an exemption. Found by cutting a release, not by reading the code.
+
+The two cases are distinguishable without guessing: a release state has a **dated** newest
+section, a renamed heading does not. Zero is accepted only when the newest section carries a
+release date and refused otherwise, which keeps the original reason intact for the case it was
+actually about. Validated in both directions — present once audits, absent-and-dated blanks,
+absent-and-undated raises, a second heading still raises.
+
 ### Added — `ROADMAP.md`, the first document in this repository that is generated rather than written
 
 A hand-written roadmap goes stale on the day its release ships, and this project has the evidence:

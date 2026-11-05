@@ -392,6 +392,15 @@ _AUDITED_SECTION = {
 }
 
 
+#: A SECTION THAT HAS BEEN RELEASED, as `ci.py release_check` reads one: a version in brackets
+#: followed by a calendar date. The dash is written as escapes because an em dash, an en dash and
+#: a hyphen are three characters nobody can tell apart in a regex, and this changelog uses two of
+#: them -- the same reason `ci.py` gives beside its own copy of this shape.
+_RELEASED_HEADING = re.compile(
+    "^#+ \\[\\d+\\.\\d+\\.\\d+\\][ \\t]*[-\u2013\u2014][ \\t]*\\d{4}-\\d{2}-\\d{2}"
+)
+
+
 def _audited_section(text: str, heading: str) -> str:
     """`text` with every line OUTSIDE the named section blanked -- not sliced.
 
@@ -405,17 +414,37 @@ def _audited_section(text: str, heading: str) -> str:
     """
     lines = text.splitlines()
     opens = [index for index, line in enumerate(lines) if line.startswith(heading)]
-    #: EXACTLY ONE, ASSERTED. Zero means a release was cut and the fresh section not yet added,
-    #: and auditing nothing would silently restore the whole-file exemption this replaced --
-    #: "cannot determine" is not "zero". Two means the document grew a second one and the range
-    #: below would be the first of them, which is a guess.
+    prefix = heading.split("[")[0] + "["
+
+    #: ZERO IS THE TRUTH AT EXACTLY ONE MOMENT, AND A LIE AT EVERY OTHER.
+    #:
+    #: This asserted `len(opens) == 1` outright, with the reason that auditing nothing would
+    #: silently restore the whole-file exemption the section split replaced -- *"cannot determine"
+    #: is not "zero"*. Half right, and the half it got wrong stopped a release: the release commit
+    #: DATES the unreleased section and the fresh one is not added until the post-release commit,
+    #: so between them there genuinely is no unreleased section and auditing nothing is the
+    #: TRUTH rather than an exemption. Found by cutting a release, not by reading this.
+    #:
+    #: The two cases are distinguishable without guessing. A release state has a DATED newest
+    #: section; a heading somebody renamed does not. So zero is accepted only when the newest
+    #: section carries a release date, and refused otherwise -- which keeps the original reason
+    #: intact for the case it was actually about.
+    if not opens:
+        newest = next((line for line in lines if line.startswith(prefix)), "")
+        if _RELEASED_HEADING.match(newest):
+            return "\n".join("" for _ in lines)
+        raise RuntimeError(
+            f"{heading!r} appears 0 time(s) and the newest section ({newest.strip() or 'none'}) "
+            f"carries no release date, so this is a renamed heading rather than a release that "
+            f"has not had its fresh section added yet. Add the section back or correct "
+            f"`_AUDITED_SECTION`."
+        )
     if len(opens) != 1:
         raise RuntimeError(
             f"{heading!r} appears {len(opens)} time(s), so the audited region cannot be "
-            f"determined; add the section back or correct `_AUDITED_SECTION`"
+            f"determined; the range below would be the first of them, which is a guess"
         )
     start = opens[0]
-    prefix = heading.split("[")[0] + "["
     end = next(
         (index for index in range(start + 1, len(lines)) if lines[index].startswith(prefix)),
         len(lines),

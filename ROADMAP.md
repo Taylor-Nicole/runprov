@@ -16,13 +16,14 @@ citation guards and the gate.
 - Current version: **0.9.0**
 - Last release: **0.9.0** on 2026-10-22
 - Released versions on record: 9
-- Sections awaiting the next release: **49**
+- Sections awaiting the next release: **50**
 
 ## In the next release
 
 Dated sections of `CHANGELOG.md` are the per-release record; these are the entries that
 have landed and are not yet in one.
 
+- Fixed — the audited-section rule refused the one state a release passes through
 - Added — `ROADMAP.md`, the first document in this repository that is generated rather than written
 - Changed — the claims auditor now says what its population cannot see (a declared RULE move)
 - Fixed — two promises of totality that were true of less than they said
