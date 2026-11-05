@@ -177,6 +177,16 @@ only one that survives without a reader.
   test written to hold that very rule.
 - A local gate is not the matrix. Several repairs here passed every local check and failed on a
   platform leg; a platform name is not the property, and a version is not a platform either.
+- **The suite runs in TWO contexts, and the first cannot see what it assumes.** `ci.py build`
+  installs the artifact into a temporary directory and runs the whole suite again from there,
+  which is **not a git working tree**. So anything that reads git, resolves a path relative to the
+  repository root, or opens a file that lives beside the sources rather than inside the package
+  must say what it does in the second context — the convention already in use is
+  `pytest.skip("installed artifact: ...")`. Ask the environment (`git rev-parse
+  --is-inside-work-tree`) rather than inferring it from a path. Measured: a new guard and then,
+  after a repair aimed at the site instead of the seam, its own test, both green in the repository
+  and both red in the second run of the same commit. And after adding a skip, check the test still
+  RUNS where it matters — a skip guard that fires everywhere is a test that executes nowhere.
 
 ## Where the durable record goes
 
