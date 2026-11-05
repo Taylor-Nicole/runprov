@@ -125,6 +125,16 @@ only one that survives without a reader.
 - `--cov` cannot measure `ci.py`: it is spec-loaded, so its module name is never imported. Use
   `coverage run --include=`, which measures by path.
 - Device names are not stable. Read the mount source live; never reuse one written in a note.
+- **Nothing should hold a working directory on the removable mount, least of all an editor
+  window.** A process whose cwd is on a filesystem that then detaches does not die: the kernel
+  keeps the dead superblock alive for it, and every `sh`, `which` and process-enumeration helper
+  it spawns takes an EIO retry walking that directory. That is the workstation fork storm, twice
+  mistaken here for the drive failing again, and the load comes from the RETRIES rather than from
+  the process count -- which is why counting helpers under-reads it and why a threshold is the
+  wrong instrument. `tools/nothing-is-stranded.py` in the audit repository refuses the condition
+  and reports what would strand next. Launch the editor from a directory on the internal disk and
+  open the project as a folder: a shell can `cd` out, a window cannot be moved afterwards.
+  Killing the helper's parent is relief and not a cure, because the stranded cwd survives it.
 
 ## Never
 
