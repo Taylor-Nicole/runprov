@@ -12858,6 +12858,212 @@ def _rec(uid, script, started, finished=_SAME_AS_STARTED, ins=(), outs=()):
     return record
 
 
+def test_impact_takes_its_CONNECTIVITY_FROM_THE_LINEAGE_WALK_and_not_from_a_second_one():
+    """`impact.py` states this invariant in prose and nothing held it [T-71].
+
+    ITS OWN WORDS: *"CONNECTIVITY COMES FROM `_lineage`, NOT FROM A SECOND WALK. The digest
+    rule (index on ... two different keys and invents orphans) and the address rule both live
+    there, nested. Rather than copy either, `_lineage` fills two out-parameters during the
+    passes it already makes."*
+
+    WHY A SECOND WALK WOULD BE WORSE THAN A SLOW ONE. The join is on the DIGEST, not the path.
+    Measured on a real 2,453-record history, joining on the path gave **3,271 ambiguous** edges
+    and invented producers; joining on the digest gives **0 ambiguous, by construction**. A
+    second traversal that drifted to the path rule would not fail — it would answer, with edges
+    that were never there, and `impact` is the command a reader uses to decide what is safe to
+    overwrite.
+
+    SO THIS ASSERTS THE CALL, NOT THE CALLEE. `test_lineage_joins_on_the_digest_not_the_path`
+    below holds the rule inside `_lineage`; nothing held that `impact` is handed its output.
+    That is the same gap as a tree digest whose byte key was asserted in the callee's body and
+    never at the call that passes it: one argument of distance, invisible to every value-based
+    test, because a second walk over the same history agrees with the first until it does not.
+
+    THE MAPPING IS DERIVED FROM BOTH SIGNATURES, not written here. The shared parameter names
+    are the intersection of `_lineage`'s and `impact.walk`'s, so a parameter renamed or
+    reordered in either moves this check with it rather than past it.
+
+    AND IT IS DELIBERATELY STRICT ABOUT THE EXPRESSION, which is worth knowing before it fires
+    on you. The arguments are compared as the SOURCE that produced them, so `dict(consumers)`
+    reds where `consumers` passes -- demonstrated with that exact plant. A copy is semantically
+    harmless and the invariant still refuses it, because the docstring's claim is *"rather than
+    COPY either"*: once a copy is allowed, so is a copy that was built differently, and nothing
+    downstream can tell those apart. If a wrapper is ever genuinely wanted, change this control
+    deliberately rather than loosening it to a comparison that would also accept a second walk.
+    """
+    package = sorted(pathlib.Path(runprov.__file__).parent.glob("*.py"))
+    definitions = [
+        (path.name, node)
+        for path in package
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.FunctionDef) and node.name == "_lineage"
+    ]
+    assert len(definitions) == 1, (
+        f"the connectivity walk is defined in more than one place, so two traversals of one "
+        f"history can disagree about what is connected: {[w for w, _ in definitions]}"
+    )
+    lineage_params = [a.arg for a in definitions[0][1].args.args]
+    walk_params = [
+        a.arg
+        for a in ast.parse(textwrap.dedent(inspect.getsource(runprov.impact.walk)))
+        .body[0]
+        .args.args
+    ]
+    shared = [name for name in walk_params if name in lineage_params]
+    assert shared, (
+        f"`impact.walk` and `_lineage` share no parameter name, so this control cannot say "
+        f"whether one is handed the other's work: {walk_params} vs {lineage_params}"
+    )
+
+    cli_tree = ast.parse(pathlib.Path(cli.__file__).read_text(encoding="utf-8"))
+
+    def _calls(node, predicate):
+        return [n for n in ast.walk(node) if isinstance(n, ast.Call) and predicate(n)]
+
+    def _is_walk(call):
+        return isinstance(call.func, ast.Attribute) and call.func.attr == "walk"
+
+    def _is_lineage(call):
+        return isinstance(call.func, ast.Name) and call.func.id == "_lineage"
+
+    hosts = [
+        node
+        for node in ast.walk(cli_tree)
+        if isinstance(node, ast.FunctionDef) and _calls(node, _is_walk)
+    ]
+    assert len(hosts) == 1, (
+        f"this control expects exactly one command to walk the impact graph; it found "
+        f"{[h.name for h in hosts]}"
+    )
+    host = hosts[0]
+    walk_call = _calls(host, _is_walk)[0]
+    lineage_calls = _calls(host, _is_lineage)
+    assert len(lineage_calls) == 1, (
+        f"`{host.name}` makes {len(lineage_calls)} `_lineage` call(s). Connectivity must come "
+        f"from one walk, so two calls is two answers and none is a second walk by hand"
+    )
+    lineage_call = lineage_calls[0]
+
+    #: THE ARGUMENTS ARE COMPARED BY THE EXPRESSION THAT PRODUCED THEM. Both calls are
+    #: positional, so each signature names its own slots and the shared names line up.
+    #: `strict=False` AND AN EXPLICIT PRESENCE CHECK, not `strict=True`. Either call may one
+    #: day rely on a default and pass fewer positionals, and `strict=True` would answer that
+    #: with a `ValueError` from inside a zip -- a confusing failure where the useful one names
+    #: the parameter that stopped being passed. A short zip would otherwise map a missing name
+    #: to `None` on both sides and compare equal, which is a hole rather than a verdict.
+    handed = dict(zip(lineage_params, (ast.unparse(a) for a in lineage_call.args), strict=False))
+    taken = dict(zip(walk_params, (ast.unparse(a) for a in walk_call.args), strict=False))
+    unpassed = [name for name in shared if name not in handed or name not in taken]
+    assert not unpassed, (
+        f"these shared parameters are no longer passed positionally by both calls, so this "
+        f"control cannot compare them: {unpassed}"
+    )
+    divergent = {
+        name: (handed.get(name), taken.get(name))
+        for name in shared
+        if handed.get(name) != taken.get(name)
+    }
+    assert not divergent, (
+        f"`impact` is walking connectivity it did not get from `_lineage` -- for each name the "
+        f"pair is (passed to `_lineage`, passed to `walk`): {divergent}. Two traversals of one "
+        f"history that disagree about what is connected is the defect this guards"
+    )
+
+    #: AND THE EDGES THEMSELVES COME FROM THE RETURN, which is the half a shared out-parameter
+    #: cannot express: `edges` is not an out-parameter, so it must be read off the graph.
+    assert "edges" in walk_params and "edges" not in lineage_params, (
+        "`edges` has become an out-parameter too; this arm no longer describes the call"
+    )
+    assigned = [
+        target.id
+        for node in ast.walk(host)
+        if isinstance(node, ast.Assign) and node.value is lineage_call
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    ]
+    assert len(assigned) == 1, f"`_lineage`'s return is not bound to one name: {assigned}"
+    assert taken["edges"].startswith(f"{assigned[0]}["), (
+        f"`impact.walk` is given edges from {taken['edges']!r} rather than from "
+        f"`{assigned[0]}`, the graph `_lineage` just returned"
+    )
+
+
+def test_every_DECLARED_INPUT_lands_in_exactly_one_CONNECTIVITY_BUCKET(tmp_path):
+    """`resolvable + ambiguous + orphan` must equal the inputs the walk was given.
+
+    THE NUMERATOR HAD NO DENOMINATOR. `lineage` reports how many declared inputs it could join
+    to a producing run, and the README is careful that an orphan is not a failure — a corpus
+    fetched outside the history is legitimately one. What nothing checked is that **every**
+    declared input is counted somewhere. An input silently dropped lowers `orphan` and leaves
+    `resolvable` alone, so the graph reads MORE connected than it is, which is the direction
+    that produces a false clean: a reader deciding what is safe to overwrite sees fewer
+    unexplained artifacts than exist.
+
+    `ambiguous` IS ZERO BY CONSTRUCTION AND IS STILL ASSERTED. The join is on the digest; a
+    path join measured 3,271 ambiguous on a real history. A count that can only be zero is one
+    nobody should trust without seeing it, and if it ever moves, the join key has drifted back
+    to the path.
+
+    THE FIXTURE MUST REACH EVERY BUCKET IT ASSERTS OVER. Three rows: one run produces bytes a
+    later run consumes (resolvable), one run consumes bytes nothing in the history produced
+    (orphan), and the equality is over the declared total. Without the per-bucket floor below,
+    a walk that classified nothing would satisfy the sum trivially at zero.
+    """
+    rows = [
+        {
+            "run_uid": "a",
+            "started_utc": "2026-01-01T00:00:00Z",
+            "finished_utc": "2026-01-01T00:01:00Z",
+            "script": "one.py",
+            "inputs": [],
+            "outputs": [{"path": "x.tsv", "sha256": "d" * 64}],
+        },
+        {
+            "run_uid": "b",
+            "started_utc": "2026-01-02T00:00:00Z",
+            "finished_utc": "2026-01-02T00:01:00Z",
+            "script": "two.py",
+            "inputs": [{"path": "x.tsv", "sha256": "d" * 64}],
+            "outputs": [],
+        },
+        {
+            "run_uid": "c",
+            "started_utc": "2026-01-03T00:00:00Z",
+            "finished_utc": "2026-01-03T00:01:00Z",
+            "script": "three.py",
+            "inputs": [{"path": "ext.tsv", "sha256": "e" * 64}],
+            "outputs": [],
+        },
+    ]
+    declared = sum(len(row["inputs"]) for row in rows)
+    graph = cli._lineage(
+        [json.loads(line) for line in _hist(tmp_path, rows).read_text().splitlines()]
+    )
+
+    buckets = {name: graph[name] for name in ("resolvable", "ambiguous", "orphan")}
+    assert sum(buckets.values()) == declared, (
+        f"the history declares {declared} input(s) and the walk accounts for "
+        f"{sum(buckets.values())} ({buckets}). An input counted in no bucket makes the graph "
+        f"read more connected than it is, which is the direction a reader cannot detect"
+    )
+    assert buckets["ambiguous"] == 0, (
+        f"`ambiguous` is {buckets['ambiguous']} where the digest join makes it zero by "
+        f"construction; a non-zero value means the join has drifted back to the path, which "
+        f"measured 3,271 ambiguous and invented producers on a real history"
+    )
+    #: THE PER-BUCKET FLOOR, so the equality above is not satisfied at zero by a walk that
+    #: classified nothing. Each named bucket must be REACHED by this fixture.
+    assert buckets["resolvable"] >= 1 and buckets["orphan"] >= 1, (
+        f"this fixture no longer reaches both a joined and an unjoined input, so the sum it "
+        f"asserts is vacuous: {buckets}"
+    )
+    #: AND THE EDGE EXISTS, because a `resolvable` count with no edge would mean the join
+    #: happened and the graph did not record it -- `impact` walks the edges, not the count.
+    assert ("a", "b") in graph["edges"], (
+        f"the joined input produced no edge, so `impact` would walk nothing: {graph['edges']}"
+    )
+
+
 def test_lineage_joins_on_the_digest_not_the_path(tmp_path):
     """L1. Matching a consumer's input to a producer's output BY PATH is a heuristic: the
     same path is rewritten by many runs over a project's life, so every read has as many

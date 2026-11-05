@@ -9,6 +9,43 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Added — the connectivity gate: one walk, and every declared input accounted for
+
+`impact.py` has stated this invariant in prose since it was written and nothing held it:
+
+> *"CONNECTIVITY COMES FROM `_lineage`, NOT FROM A SECOND WALK. The digest rule … and the
+> address rule both live there, nested. Rather than copy either, `_lineage` fills two
+> out-parameters during the passes it already makes."*
+
+**Why a second walk would be worse than a slow one.** The join is on the DIGEST, not the path.
+Measured on a real 2,453-record history, the path join gave **3,271 ambiguous** edges and invented
+producers; the digest join gives **0 ambiguous, by construction**. A second traversal that drifted
+to the path rule would not fail — it would answer, with edges that were never there, and `impact`
+is the command a reader uses to decide what is safe to overwrite.
+
+So the first arm asserts **the call, not the callee.** The rule inside `_lineage` was already
+tested; nothing held that `impact` is handed its output. The shared parameter names are derived as
+the intersection of `_lineage`'s and `impact.walk`'s signatures, so a rename in either moves the
+check with it. Demonstrated red by passing `dict(consumers)` instead of `consumers` — strict about
+the expression on purpose, because the claim is *"rather than copy either"*.
+
+The second arm closes a numerator that had no denominator: **`resolvable + ambiguous + orphan` must
+equal the declared inputs the walk was given.** An orphan is not a failure — a corpus fetched
+outside the history is legitimately one — but an input counted in NO bucket lowers `orphan` and
+leaves `resolvable` alone, so the graph reads **more connected than it is**. That is the direction a
+reader cannot detect: fewer unexplained artifacts than exist. Demonstrated red by removing the
+orphan increment:
+
+```
+the history declares 2 input(s) and the walk accounts for 1
+({'resolvable': 1, 'ambiguous': 0, 'orphan': 0})
+```
+
+`ambiguous == 0` is asserted even though it is zero by construction, because a count that can only
+be zero is one nobody should trust without seeing it — and if it moves, the join key has drifted
+back to the path. A per-bucket floor keeps the sum from being satisfied at zero by a walk that
+classified nothing.
+
 ### Fixed — the one place every other never-raises promise discharges into could itself raise
 
 `_report._write` decided whether to use the stream with `hasattr(stream, "write")`, outside every
