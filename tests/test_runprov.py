@@ -44350,6 +44350,12 @@ _PKGSET_BASELINE = {
     "0.7.0": "3685dc3fab845ea4",
     "0.8.0": "cf624fbdab762df9",
     "0.9.0": "14fefa37dd2cd3fb",
+    #: 0.10.0, computed once from the snapshot its own released wheel wrote and committed here.
+    #: Two tests went red when the corpus gained it and NEITHER was about this value: the key-set
+    #: equality below, and the canonicaliser test that indexes this table by the newest corpus
+    #: version. That is the completeness assertion working as designed -- capturing a release
+    #: FORCES a row rather than letting the freeze narrow to the versions somebody remembered.
+    "0.10.0": "9319bd7e5b90bd90",
 }
 
 

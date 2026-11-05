@@ -1,0 +1,9 @@
+# provenance — this artifact and what produced it
+#   script     : summarise
+#   generation : (default)
+#   commit     : NONE — no commit to name (yet)
+#   body       : 04f6cc74f9048cd6
+#   inputs (1), content digest:
+#     ec083d6cbf379cfd  out/genotype.tsv
+stage	rows
+summarise	1
