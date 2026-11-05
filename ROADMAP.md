@@ -16,6 +16,15 @@ citation guards and the gate.
 - Current version: **0.10.0**
 - Last release: **0.10.0** on 2026-11-05
 - Released versions on record: 10
+- Sections awaiting the next release: **2**
+
+## In the next release
+
+Dated sections of `CHANGELOG.md` are the per-release record; these are the entries that
+have landed and are not yet in one.
+
+- Added — the build is verified reproducible, a property this project was selling unmeasured
+- Added — every deriving step declares what it READS, and the declaration is observed
 
 ## Features, by the state their decision record declares
 

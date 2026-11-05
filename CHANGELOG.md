@@ -7,6 +7,45 @@ taking precedence over the Python API while this is `0.x`.
 Entries state what was **measured**, not what was improved. A fix with no number beside it
 is a fix nobody checked.
 
+## [Unreleased]
+
+### Added — the build is verified reproducible, a property this project was selling unmeasured
+
+`pyproject.toml` lists *reproducibility* among this project's keywords and the package's whole
+subject is provenance, yet nothing checked that building the same tree twice produces the same
+artifact. `ci.py build` now builds a second time into a temporary directory and refuses if any
+artifact's bytes differ.
+
+**It was already true when the check was written**, which is why it could go straight into the
+default gate: both the wheel and the sdist were byte-identical across two independent builds. A
+gate that is red the day it arrives is one people learn to scroll past; this one is green on
+arrival and goes red only if the property is lost. It costs one rebuild — four seconds against a
+gate that runs for four minutes — and that cheapness is the argument for checking every time
+rather than only before a release, because a property verified only at release can rot between
+releases and the rot is first met by whoever is trying to publish.
+
+### Added — every deriving step declares what it READS, and the declaration is observed
+
+`_TRACKED_WRITES` has declared what each step **writes** since this release. Nothing declared what
+one **reads**, so nothing could answer *what must be regenerated when `docs/adr/` changes*, and
+nothing noticed a step depending on a file nobody named.
+
+`_DERIVED_INPUTS` now declares both the pure derivation and the paths it may read, and a guard
+**verifies the declaration by observation rather than trusting it**: each derivation runs in a
+fresh process under `sys.addaudithook` — the same primitive `runprov.watch` uses, and for the same
+reason, since this package's subject is precisely the difference between what an author believed a
+step read and what it actually read. **The tool is finally pointed at its own build.**
+
+Both directions are asserted: an observed read under no declared prefix is refused by name, and a
+declared prefix that nothing opens is refused as a declaration whose subject has gone. The module
+is imported *before* the hook is installed, so reading its own source and imports does not count —
+what is measured is what the derivation opens when it runs.
+
+`surface` declares nothing, and that is a measurement rather than an omission: it introspects the
+already-imported package in memory, so there is no file open at call time. The guard asserts that
+an empty declaration means an empty observation and vice versa, so a later version that started
+reading a file would go red.
+
 ## [0.10.0] — 2026-11-05
 
 ### Fixed — the audited-section rule refused the one state a release passes through

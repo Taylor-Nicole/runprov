@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import datetime
 import fnmatch
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -1027,11 +1028,71 @@ def release_check() -> None:
     print(f"release-check ok — {version}" + (f", tag {tag}" if tagged else ", untagged build"))
 
 
+def _artifact_digests(directory: Path) -> dict[str, str]:
+    """Every built file in `directory`, by name, as a sha256 of its bytes."""
+    return {
+        p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(directory.iterdir())
+        if p.is_file()
+    }
+
+
+def _refuse_a_build_that_is_not_reproducible(first: dict[str, str]) -> None:
+    """Build the same tree a second time and refuse if the bytes differ.
+
+    WHY THIS EXISTS. `pyproject.toml` lists *reproducibility* among this project's keywords and
+    the package's whole subject is provenance, yet nothing checked that building the same tree
+    twice produces the same artifact. A project that sells a property it does not verify about
+    itself is making a claim nobody has measured, which is the one thing this repository's own
+    changelog rule forbids of a sentence.
+
+    IT WAS ALREADY TRUE WHEN THIS WAS WRITTEN, and that is why it could be added to the default
+    gate rather than to a backlog: measured 2026-11-05, both the wheel and the sdist were byte
+    identical across two independent builds. A gate that is red the day it arrives is a gate
+    people learn to scroll past; this one is green on arrival and goes red only if the property
+    is lost.
+
+    IT COSTS ONE REBUILD, measured at four seconds against a gate that runs for four minutes. The
+    cheapness is the argument for checking it every time instead of only before a release: a
+    property verified only at release can rot between releases, and the rot would first be
+    noticed by whoever is trying to publish.
+    """
+    if not first:
+        raise SystemExit(
+            "REFUSE: the first build produced no artifact at all, so comparing a second build "
+            "with it would compare nothing and pass"
+        )
+    with tempfile.TemporaryDirectory() as tmp:
+        run(PY, "-m", "build", "--outdir", tmp)
+        second = _artifact_digests(Path(tmp))
+
+    if set(first) != set(second):
+        raise SystemExit(
+            f"REFUSE: the two builds produced different FILES, not merely different bytes. "
+            f"First: {sorted(first)}. Second: {sorted(second)}."
+        )
+    differing = sorted(name for name in first if first[name] != second[name])
+    if differing:
+        raise SystemExit(
+            "REFUSE: building this tree twice produced different bytes, so the artifact is not "
+            "reproducible and a digest published for it describes one build rather than this "
+            "source:\n"
+            + "\n".join(
+                f"          {n}\n            {first[n]}\n            {second[n]}" for n in differing
+            )
+            + "\n        A timestamp, a filesystem order or an environment value has reached "
+            "the artifact. This project's subject is provenance; an irreproducible build is the "
+            "thing it exists to make visible."
+        )
+    print(f"reproducible ok — {len(first)} artifact(s) byte-identical across two builds")
+
+
 def build() -> None:
     release_check()
     if (ROOT / "dist").is_dir():
         shutil.rmtree(ROOT / "dist")  # never check a stale artifact
     run(PY, "-m", "build")
+    _refuse_a_build_that_is_not_reproducible(_artifact_digests(ROOT / "dist"))
 
     # `twine check --strict` PASSES WITHOUT CHECKING THE DESCRIPTION when readme_renderer has
     # no markdown backend installed: it validates the metadata, finds it cannot render
@@ -1569,6 +1630,60 @@ _TRACKED_WRITES: dict[str, tuple[str, ...]] = {
     "matrix-check": (),
     "check-commit-msg": (),
 }
+
+#: WHAT EACH DERIVING STEP READS, AND HOW TO OBSERVE IT.
+#:
+#: `_TRACKED_WRITES` above declares what a step WRITES. Nothing declared what one READS, and the
+#: asymmetry had consequences: nothing could answer *what must be regenerated when `docs/adr/`
+#: changes*, and nothing noticed a step quietly depending on a file nobody named.
+#:
+#: DECLARED AND THEN VERIFIED BY OBSERVATION, never trusted. The suite runs each derivation in a
+#: fresh process under `sys.addaudithook`, which fires on every file the process opens -- the
+#: same primitive `runprov.watch` uses, because this package's whole subject is the difference
+#: between what an author believed a step read and what it actually read. A declaration nobody
+#: checks is the registry shape this repository keeps repairing.
+#:
+#: THE DERIVATION, NOT THE STEP. The step writes its output; the derivation only reads. Observing
+#: the step would move a tracked file while the suite ran over it, which `ci.py` now refuses --
+#: so the entry names the pure function that produces the content.
+#:
+#: `surface` DECLARES NOTHING, AND THAT IS A MEASUREMENT RATHER THAN AN OMISSION. It introspects
+#: the already-imported package in memory, so there is no file open at call time to observe: its
+#: input is the importable package, and the `()` says the observation is expected to be empty.
+#: A later version that started reading a file would go red here, which is the point.
+_DERIVED_INPUTS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "roadmap": (
+        "tools/roadmap.py::render",
+        ("pyproject.toml", "CHANGELOG.md", "docs/adr/"),
+    ),
+    "claims-baseline": (
+        "tools/claims.py::survey",
+        (
+            "CHANGELOG.md",
+            "CONTRIBUTING.md",
+            "GETTING-STARTED.md",
+            "README-pypi.md",
+            "README.md",
+            "SECURITY.md",
+            "WHY.md",
+        ),
+    ),
+    "surface": ("ci.py::public_surface", ()),
+}
+
+#: EVERY DECLARED READER MUST BE A STEP, and a step that writes a tracked file must declare what
+#: it reads. The second half is the one with teeth: a new generator added to `_TRACKED_WRITES`
+#: without an entry here would ship with its inputs undeclared, which is exactly the state this
+#: pair of tables exists to end.
+_writers = {step for step, paths in _TRACKED_WRITES.items() if paths}
+_unknown_reader = sorted(set(_DERIVED_INPUTS) - set(STEPS))
+_undeclared_reads = sorted(_writers - set(_DERIVED_INPUTS))
+if _unknown_reader or _undeclared_reads:
+    raise SystemExit(
+        f"REFUSE: `_DERIVED_INPUTS` must name only real steps and must cover every step that "
+        f"writes a tracked file. Naming a missing step: {_unknown_reader or 'none'}. Writing a "
+        f"tracked file with no declared inputs: {_undeclared_reads or 'none'}."
+    )
 
 _undecided = sorted(set(STEPS) - set(_TRACKED_WRITES))
 _orphaned = sorted(set(_TRACKED_WRITES) - set(STEPS))

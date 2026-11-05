@@ -65551,3 +65551,108 @@ def test_the_ROADMAP_is_what_REGENERATING_IT_PRODUCES_and_not_what_somebody_last
         f"the derived roadmap is {len(derived.splitlines())} line(s); it is agreeing with the "
         f"committed file about almost nothing"
     )
+
+
+#: THE OBSERVER, RUN IN A FRESH PROCESS PER DERIVATION. `sys.addaudithook` cannot be removed once
+#: installed -- the interpreter offers no API for it -- so each derivation is observed in its own
+#: interpreter rather than leaving a hook in the test process for everything after it.
+_IO_PROBE = """
+import importlib.util, json, os, pathlib, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+rel, func = sys.argv[2].split("::")
+seen = set()
+def _hook(event, args):
+    if event != "open" or not args or not isinstance(args[0], (str, bytes, os.PathLike)):
+        return
+    try:
+        resolved = pathlib.Path(os.fsdecode(args[0])).resolve()
+        inside = resolved.relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return
+    seen.add(inside)
+sys.path.insert(0, str(root))
+spec = importlib.util.spec_from_file_location("_probed", root / rel)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)           # import BEFORE the hook: imports are not inputs
+sys.addaudithook(_hook)
+getattr(module, func)()
+print(json.dumps(sorted(
+    p for p in seen
+    if not p.startswith((".venv/", ".git/", "dist/", "build/"))
+    and "__pycache__/" not in p
+)))
+"""
+
+
+def test_every_DERIVING_STEP_declares_what_it_READS_and_the_declaration_is_OBSERVED(tmp_path):
+    """`ci.py` declares each deriving step's inputs, and this watches them actually happen.
+
+    WHY BOTH HALVES. `_TRACKED_WRITES` has declared what every step WRITES since 2026-11-03.
+    Nothing declared what one READS, so nothing could answer *what must be regenerated when
+    `docs/adr/` changes*, and nothing noticed a step depending on a file nobody named.
+
+    A DECLARATION NOBODY CHECKS IS THE REGISTRY SHAPE THIS REPOSITORY KEEPS REPAIRING, so this
+    does not read the table and agree with it. It runs each derivation under `sys.addaudithook` --
+    the same primitive `runprov.watch` uses, and for the same reason: the package's whole subject
+    is the difference between what an author believed a step read and what it actually read. The
+    tool is finally pointed at its own build.
+
+    TWO DIRECTIONS, AND THE SECOND IS THE ONE THAT ROTS:
+
+      * every observed read must fall under some declared prefix -- an undeclared dependency is
+        refused by name;
+      * every declared prefix must match some observed read -- a prefix for a file nothing opens
+        any more covers nothing while reading exactly like one doing its job.
+
+    THE IMPORT IS NOT AN INPUT. The hook is installed AFTER the module is loaded, so reading the
+    module's own source, its bytecode and whatever it imports does not count. What is measured is
+    what the derivation opens when it runs.
+    """
+    ci = _ci_module()
+    root = _repo_root()
+    probe = tmp_path / "io_probe.py"
+    probe.write_text(_IO_PROBE, encoding="utf-8")
+
+    assert ci._DERIVED_INPUTS, "nothing declares its inputs, so this guard has no subject"
+    observed_anything = False
+
+    for step, (target, declared) in sorted(ci._DERIVED_INPUTS.items()):
+        done = subprocess.run(
+            [sys.executable, str(probe), str(root), target],
+            capture_output=True,
+            text=True,
+            cwd=str(root),
+        )
+        assert done.returncode == 0, (
+            f"the observer could not run {target} for step {step!r}; a guard that cannot run is "
+            f"an absent guard wearing a name.\n{done.stderr[-1200:]}"
+        )
+        reads = json.loads(done.stdout)
+
+        undeclared = sorted(r for r in reads if not any(r.startswith(d) for d in declared))
+        assert not undeclared, (
+            f"step {step!r} reads {len(undeclared)} path(s) its `_DERIVED_INPUTS` entry does not "
+            f"declare: {undeclared[:8]}. Either add them -- and then say what regenerating this "
+            f"step depends on -- or stop reading them. An undeclared input is a staleness nobody "
+            f"can compute."
+        )
+        dead = sorted(d for d in declared if not any(r.startswith(d) for r in reads))
+        assert not dead, (
+            f"step {step!r} declares {dead} and opened nothing under it. A declaration whose "
+            f"subject has gone covers nothing and reads exactly like one that is working; remove "
+            f"it, or find out why that input stopped being read."
+        )
+        if reads:
+            observed_anything = True
+        #: `surface` LEGITIMATELY OBSERVES NOTHING -- it introspects the imported package in
+        #: memory. The assertion is that its declaration SAYS so, not that it is skipped.
+        assert bool(reads) == bool(declared), (
+            f"step {step!r} declares {len(declared)} input prefix(es) and was observed opening "
+            f"{len(reads)} path(s); an empty declaration must mean an empty observation and vice "
+            f"versa, or one of the two is describing a different function"
+        )
+
+    assert observed_anything, (
+        "no derivation opened a single file, so the observer saw nothing and every assertion "
+        "above passed vacuously -- the audit hook is not firing"
+    )
