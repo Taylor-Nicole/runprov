@@ -13,66 +13,9 @@ citation guards and the gate.
 
 ## Where the package is
 
-- Current version: **0.9.0**
-- Last release: **0.9.0** on 2026-10-22
-- Released versions on record: 9
-- Sections awaiting the next release: **50**
-
-## In the next release
-
-Dated sections of `CHANGELOG.md` are the per-release record; these are the entries that
-have landed and are not yet in one.
-
-- Fixed — the audited-section rule refused the one state a release passes through
-- Added — `ROADMAP.md`, the first document in this repository that is generated rather than written
-- Changed — the claims auditor now says what its population cannot see (a declared RULE move)
-- Fixed — two promises of totality that were true of less than they said
-- Added — a gate's number describes the tree it ran over, and `ci.py` now refuses when that moved
-- Added — the connectivity gate: one walk, and every declared input accounted for
-- Fixed — the one place every other never-raises promise discharges into could itself raise
-- Fixed — marking a run in flight could be what ended it
-- Fixed — a promise not to raise was being spent as a premise one function down
-- Fixed — a verdict named a cause it had inferred from a predicate that conflates three
-- Fixed — two repairs were held by nothing, and one of them was the headline of its own commit
-- Fixed — a caller could still choose which branch decided a digest
-- Fixed — two recorded digests were properties of the environment, not of the value
-- Fixed — provenance could abort the program it observes, and a run could finish while lying
-- Fixed — two defects the hosted matrix found in the six commits the local gate had cleared
-- Added — the record file now carries its own digest in the history, checkable with `sha256sum`
-- Tested — four guards, and the expected digest is computed from the bytes rather than restated
-- Fixed — the harnesses' own controls: ownership by substring, a floor satisfied by a constant, a digest of prose
-- Tested — eight guards, two of them recorded as void controls
-- Fixed — the corpus's leak control could not fail, and the artifacts it calls untouchable were not
-- Tested — three guards, each red on the pre-repair module for its own reason
-- Fixed — the claims auditor's own haystacks, including a binding a withdrawn quote could satisfy
-- Tested — five new guards, one of them a void control, and one existing test was pinning the defect
-- Fixed — three more release-path checks, one of them refusing for a reason that was not true
-- Tested — and one of the five controls is recorded as VOID rather than red
-- Fixed — three holes in the gate that stands in front of an irreversible PyPI upload
-- Tested — every one of those refusals now has a control, and three of them went red on the old script
-- Tested — the resolution seam had no guard, and the primitive it needs is wider than it looks
-- Changed — ADR-0020 and ADR-0024 are Accepted, over code built on 2026-10-23
-- Tested — every requirement of ADR-0020 and ADR-0024 is now cited, and the last one got a guard
-- Added — a guard for "no command emits a container recipe", which had none
-- Fixed — six requirements across three decision records that no longer described the build
-- Tested — two guards that could not fail, and what each one's control had to prove
-- Fixed — `lineage` could report "produced by no recorded run" when a clock disagreed
-- Changed — one definition for "which history does this command read"
-- Tested — the CI section's job total was asserted by a check that could not fail
-- Added — `env --can-check` answers in JSON, which it had never done
-- Fixed — a refusal answered in the wrong shape in two of `env`'s four modes
-- Tested — the refusal-shape rule now has a guard, over all four modes instead of one
-- Changed — the hosted matrix no longer runs on a label that can move without a commit
-- Tested — an `include` whose label drifts from the axis ADDS a leg instead of modifying one
-- Fixed
-- Added
-- Fixed
-- Added
-- Changed
-- Fixed
-- Added
-- Fixed
-- Tested — W-1's narrowing of the conda matcher, which nothing in the suite could see undone
+- Current version: **0.10.0**
+- Last release: **0.10.0** on 2026-11-05
+- Released versions on record: 10
 
 ## Features, by the state their decision record declares
 

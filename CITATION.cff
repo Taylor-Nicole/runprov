@@ -42,11 +42,11 @@ abstract: >-
   hashed at the moment they are opened, the resulting pin is written into the artifact
   itself rather than only into a sidecar, and the pin is deterministic so that a changed
   header means changed inputs. Zero runtime dependencies.
-version: 0.9.0
+version: 0.10.0
 # REQUIRED BY `ci.py release_check` ONCE THE CHANGELOG STOPS SAYING [Unreleased]: a citation
 # for a released version with no date has no year in it, which is the one field every
 # citation style needs. The check refuses the tag rather than shipping a dateless citation.
-date-released: "2026-10-22"
+date-released: "2026-11-05"
 # SET TO THE TAG DATE, YYYY-MM-DD, and set in the SAME commit that dates the CHANGELOG
 # section -- `python ci.py release-check` (which `build` runs, and which ships beside this
 # file) refuses a release whose CHANGELOG says released while this field is missing, and
@@ -60,6 +60,19 @@ repository-code: "https://github.com/Taylor-Nicole/runprov"
 # in a thesis or a paper should survive the next release, so `doi` is the concept one and both
 # are listed below with which is which. Minted 2026-09-14 from the GitHub release.
 doi: 10.5281/zenodo.22745568
+# A VERSION DOI IS ADDED AFTER ITS RELEASE, NEVER WITH IT, AND NEVER BY RELABELLING THE ONE
+# ABOVE. Zenodo mints a version DOI when the release is PUBLISHED, so at the moment the release
+# commit is written the new one does not exist yet. Add it in the post-release commit, beneath
+# the concept DOI, alongside the fresh `[Unreleased]` section and that version's corpus entry.
+#
+# MEASURED ON 2026-11-05, while cutting 0.10.0: the newest entry's description was relabelled
+# from 0.9.0 to 0.10.0 as part of the version bump. That would have paired
+# `10.5281/zenodo.23565084` -- which resolves to 0.9.0, permanently -- with the string
+# "version 0.10.0". These records are CLOSED; it is not a thing that gets corrected afterwards.
+#
+# What caught it was `test_the_readme_doi_example_names_the_VERSION_citation_cff_declares`,
+# comparing the README's example against the newest version this file pairs with a DOI. It fired
+# during the release rather than after, which is the whole reason that check sits in the gate.
 identifiers:
   - type: doi
     value: 10.5281/zenodo.22745568
