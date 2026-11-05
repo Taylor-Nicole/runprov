@@ -337,7 +337,10 @@ def _q(value: object) -> str:
     the values its author happened to think of.
 
     JSON strings are valid YAML scalars (YAML 1.2 is a JSON superset), so quoting
-    unconditionally is both simpler and total.
+    unconditionally is both simpler and total **over values that can be stringified**. This one
+    does not take `default=str` at all: it calls `str(value)` first, so its boundary is not
+    `_structure`'s mapping-key hole but an object whose `__str__` raises. Named here because the
+    three renderers on this page had three different boundaries and one shared word for them.
 
     `ensure_ascii=False`, AND IT IS THE ONLY THING ON THIS PAGE THAT WAS A WRONG RECORD
     [Audit M, escape-6]. At the default `ensure_ascii=True`, `json.dumps` renders a character
@@ -369,9 +372,22 @@ def _structure(value: object) -> str:
     writing an indenter — a second hand-rolled serialiser, in the function whose
     docstring above explains why the first one broke the file it replaces.
 
-    This is total for the same reason `_q()` is. Every value here arrived via
-    `json.loads` of a history line, so `json.dumps` of it cannot raise; `default=str`
-    is belt-and-braces for a caller passing hand-built rows (the tests do).
+    TOTAL WITHIN A SCOPE, AND THE SCOPE IS THE SENTENCE THAT MATTERS. Every value here arrived
+    via `json.loads` of a history line, and `json.dumps` of such a value cannot raise — a JSON
+    document can only contain string keys and JSON-expressible values, so the round trip is
+    closed. That is the claim, and it holds.
+
+    `default=str` IS NOT WHAT MAKES IT HOLD, and calling it belt-and-braces for hand-built rows
+    overstated it. **`default` is consulted for unserialisable VALUES and never for mapping
+    KEYS**, measured: `json.dumps({(1, 2): "x"}, default=str)` raises `TypeError: keys must be
+    str, int, float, bool or None, not tuple`, nested occurrences included. So a hand-built row
+    carrying a non-string key is outside this function's claim rather than covered by it, and
+    `str` can itself raise for an object whose `__str__` does.
+
+    Outside the scope this raises, deliberately. The sidecar path that renders a live record
+    normalises with `_jsonable` first, and its call site catches `Exception` because a view is
+    never the reason a record is lost. The boundary is asserted in the suite rather than left to
+    this paragraph.
     """
     return json.dumps(value, default=str, ensure_ascii=False)
 
@@ -1430,7 +1446,18 @@ def render_yaml(obj: object, indent: int = 0) -> str:
 
 
 def _scalar(v: object) -> str:
-    """`json.dumps` unconditionally. JSON scalars are valid YAML, so this is total.
+    """`json.dumps` unconditionally. JSON scalars are valid YAML, so this is total **over what a
+    history line can hold** — and that qualifier is the repair, not decoration.
+
+    IT USED TO SAY "TOTAL" WITH NO SCOPE, while `_structure` beside it named one and rested on
+    the same `default=str`. Two sentences about one property, one of them unconditional, is how a
+    caller comes to believe a guarantee nobody made: the dict/list arm below inherits exactly the
+    hole documented in `_structure` — `default` is consulted for unserialisable VALUES and never
+    for mapping KEYS, so a non-string key raises `TypeError` — and the final arm calls `str(v)`,
+    which raises for an object whose `__str__` does.
+
+    Values that came from `json.loads` have neither property, which is why the scope is the whole
+    claim and why the suite asserts the boundary rather than this paragraph asserting it.
 
     `ensure_ascii=False` ON EVERY ARM [Audit M, escape-6], for the reason `_q` states: a
     surrogate escape is legal JSON and ILLEGAL YAML, so the ASCII-safe rendering is the one

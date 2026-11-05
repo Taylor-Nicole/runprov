@@ -65301,3 +65301,167 @@ def test_a_GATES_NUMBER_DESCRIBES_THE_TREE_IT_RAN_OVER_and_ci_refuses_when_that_
     )
     assert ci._tree_drift(None, before, ["lint"]) == [], "an unasked question answered"
     assert ci._tree_drift(before, None, ["lint"]) == [], "an unasked question answered"
+
+
+#: THE HOSTILE CORPUS `chain.verify`'s docstring names. Each member is here because it reaches a
+#: DIFFERENT arm, and the test below asserts that rather than trusting the comment: JSON that is
+#: not an object reaches `claimed_by`'s `AttributeError`, text that is not JSON reaches its
+#: `ValueError`, and the fragment variant additionally reaches `_RAW_CLAIM`.
+_VERIFY_HOSTILE: dict[str, bytes] = {
+    "json array, not an object": b"[1,2,3]",
+    "json string, not an object": b'"hello"',
+    "json number, not an object": b"42",
+    "json null, not an object": b"null",
+    "not json at all": b"this is not json",
+    "not json, but carries a prev fragment": b'{"prev": "' + b"a" * 64 + b'", trunc',
+    "prev is a number": b'{"prev": 5, "run_id": "x"}',
+    "prev is a list": b'{"prev": [1], "run_id": "x"}',
+    "prev is null": b'{"prev": null}',
+    "empty object": b"{}",
+    "binary garbage": bytes(range(256)),
+    "embedded NULs": b'{"prev": "\x00\x00"}',
+    "a line longer than any real record": b'{"prev": "' + b"a" * 100_000 + b'"}',
+    "a translated terminator": b'{"prev": "x"}\r',
+}
+
+
+def test_verify_ANSWERS_WITH_A_REPORT_for_hostile_CONTENT_and_not_only_for_a_missing_FILE(tmp_path):
+    """`chain.verify` names this corpus, so the corpus has to exist and has to be reached.
+
+    WHY IT EXISTS. `verify`'s docstring promised not to raise **for a missing or unreadable
+    file**. One function down, `claimed_by` justified its `except AttributeError` by citing that
+    docstring as *"promises it never raises"* -- a promise about a FILE, spent on a line that was
+    read perfectly well and merely was not an object. The arm was load-bearing and the sentence
+    holding it up was false, which is this project's most-repeated defect shape: **a reason
+    written beside a guard is checked by nothing.**
+
+    The repair is not a wider promise. *"Never raises for any input"* is a universal and no corpus
+    can establish one. What a corpus CAN establish is that the named causes answer, so the
+    docstring now names the causes and this names the members, and a later reader can see the
+    edge of what was actually tried instead of inheriting a claim.
+
+    DEMONSTRATED RED: deleting `claimed_by`'s `AttributeError` arm makes the first four members
+    raise rather than answer.
+    """
+    assert _VERIFY_HOSTILE, "the corpus is empty, so this guard agrees with every implementation"
+
+    #: EVERY MEMBER ANSWERS. The assertion is on the TYPE of the answer, not merely on the
+    #: absence of an exception -- a function that returned `None` would also "not raise", and a
+    #: caller reading `.cannot_check` off it would fail somewhere else entirely.
+    path = tmp_path / "history.jsonl"
+    for name, payload in _VERIFY_HOSTILE.items():
+        #: `write_bytes`, NEVER `write_text`. These fixtures are asserted on as bytes and one of
+        #: them is a bare `\r`; text mode translates line endings per platform and has turned a
+        #: committed digest red on the Windows leg more than once.
+        path.write_bytes(payload + b"\n")
+        try:
+            report = runprov.chain.verify(path)
+        except Exception as exc:
+            raise AssertionError(
+                f"`chain.verify` raised {type(exc).__name__} on hostile content ({name}). Its "
+                f"docstring says content of this kind answers with a Report; either the handler "
+                f"that made that true has gone, or the claim must be narrowed to exclude this "
+                f"member rather than left standing over it"
+            ) from exc
+        assert isinstance(report, runprov.chain.Report), (
+            f"{name} produced {type(report).__name__}, not a Report; 'does not raise' is not the "
+            f"same property as 'answers', and a caller reads fields off this"
+        )
+
+    #: NON-VACUITY, BY BEHAVIOUR RATHER THAN BY SPELLING. Each of `claimed_by`'s three outcomes
+    #: must be reached by some member, or the corpus could be fourteen copies of one case while
+    #: reading as broad coverage. Keyed on what the function RETURNS, so renaming an arm or
+    #: restructuring the try/except moves this check with it.
+    claimed = {name: runprov.chain.claimed_by(p) for name, p in _VERIFY_HOSTILE.items()}
+    assert claimed["json array, not an object"] is None, (
+        "the AttributeError arm is what makes a non-object line say nothing; if this stops "
+        "being None the arm has gone and the first four members will raise"
+    )
+    assert claimed["not json at all"] is None, "the ValueError arm, with no recoverable fragment"
+    fragment = claimed["not json, but carries a prev fragment"]
+    assert fragment == "a" * 64, (
+        f"R-20's anchored retry on raw bytes returned {fragment!r}. A torn line's claim about its "
+        f"predecessor is still evidence, and this is the only member that reaches `_RAW_CLAIM`"
+    )
+
+
+def test_the_YAML_RENDERERS_are_total_over_A_HISTORY_LINE_and_their_LIMITS_are_real():
+    """Three renderers on one page said "total"; they had three different boundaries.
+
+    `_q`, `_structure` and `_scalar` each claimed totality. `_structure` named a scope -- values
+    that arrived via `json.loads` -- and the other two did not, while resting on what looked like
+    the same mechanism. They do not:
+
+      * `_structure` and `_scalar`'s dict/list arm pass `default=str`, and **`default` is
+        consulted for unserialisable VALUES, never for mapping KEYS**. A non-string key raises
+        `TypeError`, nested occurrences included.
+      * `_q` and `_scalar`'s final arm call `str()` first, so their boundary is an object whose
+        `__str__` raises -- a different hole entirely, under the same word.
+
+    TWO HALVES, AND THE SECOND IS THE ONE THAT ROTS. The first asserts they are total within the
+    scope the docstrings now name. The second asserts the named limits ARE limits: an exemption
+    whose subject stops existing covers nothing while reading exactly like one doing its job, so
+    if someone later makes these total, this goes red and asks for the docstrings to be updated
+    rather than letting them stay pessimistic and wrong.
+
+    THE IN-SCOPE CORPUS IS DERIVED, not listed. Its definition IS "what `json.loads` can produce",
+    so it is produced that way; a hand-written list would be a second, narrower definition of the
+    scope than the sentence it is checking.
+    """
+    show = runprov.show
+
+    #: DERIVED FROM THE SCOPE'S OWN DEFINITION. Every value below is whatever `json.loads`
+    #: returns for a document a history line could be -- including a non-BMP character, which is
+    #: the one `ensure_ascii` case this page has been wrong about before.
+    documents = [
+        '{"a": 1, "b": null, "c": true, "d": 1.5, "e": "x"}',
+        '{"nested": {"deep": [1, [2, [3, {"k": "v"}]]]}}',
+        '{"unicode": "caf\\u00e9 \\ud83e\\uddac"}',
+        '{"empty_obj": {}, "empty_list": [], "empty_str": ""}',
+        '{"big": 123456789012345678901234567890}',
+        "[]",
+        "{}",
+        '"a bare string"',
+        "42",
+        "null",
+    ]
+    in_scope = [json.loads(doc) for doc in documents]
+    assert len(in_scope) == len(documents), "the corpus lost a member on the way in"
+
+    for value in in_scope:
+        for name, fn in (
+            ("_q", show._q),
+            ("_structure", show._structure),
+            ("_scalar", show._scalar),
+        ):
+            try:
+                rendered = fn(value)
+            except Exception as exc:
+                raise AssertionError(
+                    f"`show.{name}` raised {type(exc).__name__} on {value!r}, which came straight "
+                    f"out of `json.loads`. That is inside the scope its docstring names, so either "
+                    f"the renderer broke or the scope sentence must be narrowed to exclude this"
+                ) from exc
+            assert isinstance(rendered, str), (
+                f"`show.{name}` returned {type(rendered).__name__} for {value!r}; these feed a "
+                f"text writer and 'did not raise' is not the same property as 'rendered'"
+            )
+
+    #: THE LIMITS, ASSERTED. Each is keyed on the MECHANISM the docstring names, so the two
+    #: different holes cannot be conflated back into one sentence.
+    class _StrRaises:
+        def __str__(self) -> str:
+            raise RuntimeError("this object cannot be stringified")
+
+    with pytest.raises(TypeError, match="keys must be str"):
+        show._structure({(1, 2): "x"})
+    with pytest.raises(TypeError, match="keys must be str"):
+        show._scalar({"outer": {(1, 2): "x"}})
+    assert show._structure({"a": object()}), (
+        "`default=str` must still cover an unserialisable VALUE; if this raises, the two holes "
+        "have been conflated and the docstrings' distinction is no longer true"
+    )
+    with pytest.raises(RuntimeError, match="cannot be stringified"):
+        show._q(_StrRaises())
+    with pytest.raises(RuntimeError, match="cannot be stringified"):
+        show._scalar(_StrRaises())

@@ -9,6 +9,39 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — two promises of totality that were true of less than they said
+
+**`chain.verify`'s promise was quoted one function down with its scope removed.** The docstring
+said it never raises *for a missing or unreadable file*; `claimed_by` justified its
+`except AttributeError` by citing that as *"promises it never raises"* — a promise about a FILE,
+spent on a line that was read perfectly well and merely was not a JSON object. The arm is
+load-bearing (deleting it makes `verify` raise on a one-line history of `[1,2,3]`, measured) and
+the sentence holding it up was false, which is this project's most-repeated shape: a reason
+written beside a guard is checked by nothing.
+
+The repair is not a wider promise. *"Never raises for any input"* is a universal no corpus can
+establish. `verify`'s docstring now states the two parts separately, because they are held by
+different code — the file half by its own `except OSError`, the content half by the arms below
+it — and a hostile corpus asserts the content half over JSON that is not an object, text that is
+not JSON, binary, NULs, a line far longer than any record, and a translated terminator. The
+docstring names the corpus and the corpus names its members, so a later reader sees the edge of
+what was tried instead of inheriting a claim.
+
+**Three renderers in `show` said "total" and had three different boundaries.** `_structure` named
+a scope — values that arrived via `json.loads` — while `_q` and `_scalar` claimed totality
+unconditionally, and all three looked like they rested on the same mechanism. They do not:
+`default=str` is consulted for unserialisable VALUES and never for mapping KEYS, so
+`json.dumps({(1, 2): "x"}, default=str)` raises `TypeError`, nested occurrences included; while
+`_q` and `_scalar`'s final arm call `str()` first and so break instead on an object whose
+`__str__` raises. One word covered two unrelated holes.
+
+Each now names its own scope and its own boundary, and a guard asserts both halves: total over a
+corpus derived from `json.loads` rather than hand-listed, and the named limits asserted to BE
+limits — so a later change that makes them total goes red and asks for the docstring to be
+updated, instead of leaving a pessimistic sentence standing over code that outgrew it. No
+behaviour changed; the live sidecar path already normalises first and its call site already
+catches `Exception`, because a view is never the reason a record is lost.
+
 ### Added — a gate's number describes the tree it ran over, and `ci.py` now refuses when that moved
 
 Twice in one week this repository's working tree was edited while a check was running — once under

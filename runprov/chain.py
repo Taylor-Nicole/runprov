@@ -211,7 +211,15 @@ def claimed_by(line: bytes) -> str | None:
 
     R-24: a line that is valid JSON but NOT an object says nothing — `json.loads(b"[1,2,3]")`
     succeeds and has no `.get`. That arm is the only thing between a hand-edited history and an
-    uncaught exception, and `verify`'s docstring promises it never raises.
+    uncaught exception, and the measurement is in the suite: deleting it makes `verify` raise
+    `AttributeError` on a one-line history of `[1,2,3]`.
+
+    THE REASON USED TO BE A CITATION, AND THE CITATION WAS WRONG. It read *"`verify`'s docstring
+    promises it never raises"*. That docstring promises no such thing: it promises not to raise
+    **for a missing or unreadable file**, which is a different cause and does not reach a line
+    that was read successfully and is simply not an object. The arm was load-bearing and the
+    sentence justifying it was false — a reason written beside a guard is checked by nothing, so
+    this one now names the experiment that holds it instead of a promise made elsewhere.
 
     R-20: when the parser refuses the line entirely, ONE anchored attempt is made on the raw
     bytes. `prev` is the first field (R-19), so a fragment left by a crash usually still carries
@@ -683,7 +691,25 @@ def _writer_of(record: dict[str, typing.Any] | None, by_run: dict[str, str]) -> 
 
 
 def verify(path: str | pathlib.Path) -> Report:
-    """Walk the edges. Never raises for a missing or unreadable file — that is `CANNOT_CHECK`."""
+    """Walk the edges, and answer with a `Report` rather than an exception.
+
+    THE PROMISE IS IN TWO PARTS BECAUSE THEY ARE HELD BY DIFFERENT THINGS, and collapsing them
+    into *"never raises"* is what let a caller one function down cite this docstring as the
+    rationale for its own breadth — a promise about a MISSING FILE, spent on a line that was read
+    perfectly well and merely was not an object.
+
+      * **A missing or unreadable file is `CANNOT_CHECK`, never an exception.** That is this
+        function's `except OSError` below and it is the part the name `CANNOT_CHECK` refers to.
+      * **A file that reads but whose CONTENT is hostile also answers.** That is held by the arms
+        in `claimed_by` and the parse loop here, not by the handler above, and it is checked by a
+        corpus rather than asserted: see the hostile-corpus guard in the suite, which feeds this
+        function JSON that is not an object, JSON that is not a line, binary, NULs, a line far
+        longer than any real record, and a translated terminator.
+
+    NEITHER PART IS A UNIVERSAL AND THIS DOCSTRING DOES NOT CLAIM ONE. "Never raises for any
+    input" cannot be established by a corpus; what the corpus establishes is that these causes
+    answer, and the guard names them so a later reader can see the edge of what was tried.
+    """
     p = pathlib.Path(path)
     try:
         raw = p.read_bytes()
