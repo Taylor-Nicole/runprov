@@ -65209,6 +65209,22 @@ def test_a_GATES_NUMBER_DESCRIBES_THE_TREE_IT_RAN_OVER_and_ci_refuses_when_that_
     ci = _ci_module()
     root = _repo_root()
 
+    #: OUTSIDE A WORKING TREE THERE IS NOTHING TO ASSERT. `ci.py build` installs the artifact into
+    #: a temporary directory and runs this suite again from there, which is not a git repository --
+    #: the same context that broke the release-check tests, met a second time by the TEST rather
+    #: than by the guard. The condition is asked of git rather than inferred from a path, and leg 4
+    #: below is what proves the guard itself behaves correctly here.
+    inside = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        pytest.skip(
+            "installed artifact: no git working tree, so there is no tracked tree to digest"
+        )
+
     #: 1. EVERY STEP HAS A DECISION, AND NOTHING IS LEFT OVER. `ci.py` refuses this at import, so
     #: reaching this line already proves it; the assertion is here so the FAILURE is legible as a
     #: test rather than as an import error from somewhere in the harness.
