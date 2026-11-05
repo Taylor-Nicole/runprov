@@ -65183,3 +65183,87 @@ def test_the_CONTENDED_errno_set_excludes_ENOLCK_and_says_why():
     assert runprov.sinks._contended(errno.EAGAIN) == errno.EAGAIN, (
         "a lock that would have blocked is contention too, not a filesystem that cannot lock"
     )
+
+
+def test_a_GATES_NUMBER_DESCRIBES_THE_TREE_IT_RAN_OVER_and_ci_refuses_when_that_moved():
+    """`ci.py` brackets every run with a tracked-tree digest and refuses if the subject moved.
+
+    WHY THIS EXISTS. Twice in one week this repository's working tree was edited WHILE a check was
+    running -- once under a `matrix-check` poll, once under a full gate. Neither run noticed, and
+    the second printed a coverage figure and a pass count for a tree that no longer existed by the
+    time anybody read them. That is worse than a failure: a correct-looking number carrying a
+    passing verdict, over a subject that changed underneath it.
+
+    A RE-RUN IS NOT A MECHANISM. The lesson this project keeps relearning is that an instruction
+    which can be forgotten silently -- *"do not edit the tree during a gate"* -- is not yet a
+    guard. The digest costs a quarter of a second over three hundred-odd tracked files, measured,
+    which is why it can bracket EVERY run instead of being a step somebody remembers.
+
+    WHAT IS ASSERTED HERE, and the third leg is the one that rots. The partition must cover every
+    step, the comparison must distinguish an allowed write from an unexpected one, and **every
+    declared path must still be a tracked file** -- an entry naming a file that has moved or gone
+    covers nothing while reading exactly like an entry doing its job.
+    """
+    ci = _ci_module()
+    root = _repo_root()
+
+    #: 1. EVERY STEP HAS A DECISION, AND NOTHING IS LEFT OVER. `ci.py` refuses this at import, so
+    #: reaching this line already proves it; the assertion is here so the FAILURE is legible as a
+    #: test rather than as an import error from somewhere in the harness.
+    assert set(ci.STEPS) == set(ci._TRACKED_WRITES), (
+        f"`_TRACKED_WRITES` and `STEPS` disagree. Undecided steps: "
+        f"{sorted(set(ci.STEPS) - set(ci._TRACKED_WRITES))}; entries naming no step: "
+        f"{sorted(set(ci._TRACKED_WRITES) - set(ci.STEPS))}. A step with no decision would "
+        f"silently inherit 'writes nothing tracked' and make this guard lie about it"
+    )
+
+    #: 2. THE EXEMPTIONS HAVE SUBJECTS. Measured rather than assumed when this was written:
+    #: `surface` writes `docs/public-surface.txt` and `claims-baseline` writes the baseline, while
+    #: `build` and `test` touch only `dist/` and `.coverage-scale.json`, neither of them tracked.
+    #: That is the opposite of what reading "does this function call write_text" suggests.
+    tracked = set(
+        subprocess.run(
+            ["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True
+        ).stdout.split()
+    )
+    declared = {path for paths in ci._TRACKED_WRITES.values() for path in paths}
+    assert declared, "no step declares a tracked write, so leg 3 below cannot discriminate"
+    for path in sorted(declared):
+        assert path in tracked, (
+            f"`_TRACKED_WRITES` permits a step to write {path}, which git does not track. The "
+            f"exemption covers nothing and reads as though it covers something"
+        )
+
+    #: 3. THE COMPARISON DISCRIMINATES. A guard that reported every change would be defeated by
+    #: the first step that legitimately writes, and one that reported none is inert.
+    before = ci._tree_state()
+    assert len(before) > 100, (
+        f"digested {len(before)} tracked file(s); this instrument read ~nothing"
+    )
+    assert ci._tree_drift(before, before, ["lint", "test", "build"]) == [], (
+        "an unchanged tree reported drift, so every gate run would refuse"
+    )
+
+    writer, allowed_path = next(
+        (step, paths[0]) for step, paths in ci._TRACKED_WRITES.items() if paths
+    )
+    moved_allowed = dict(before)
+    moved_allowed[allowed_path] = "0" * 40
+    assert ci._tree_drift(before, moved_allowed, [writer]) == [], (
+        f"{writer} writing its own declared output {allowed_path} was reported as drift"
+    )
+    assert ci._tree_drift(before, moved_allowed, ["lint"]) == [allowed_path], (
+        f"{allowed_path} moved during a run that may not write it and was not reported"
+    )
+
+    #: AND A PATH NOBODY MAY WRITE IS REPORTED WHATEVER RAN -- the actual incident's shape, where
+    #: the file that moved was one no step touches at all.
+    unrelated = "CHANGELOG.md"
+    assert unrelated in tracked, "the control below needs a tracked file no step declares"
+    assert unrelated not in declared, f"{unrelated} is declared writable; pick another control"
+    moved_unrelated = dict(before)
+    moved_unrelated[unrelated] = "0" * 40
+    for steps in (["lint"], ["lint", "test", "build"], sorted(ci.STEPS)):
+        assert ci._tree_drift(before, moved_unrelated, steps) == [unrelated], (
+            f"{unrelated} moved under {steps} and nothing reported it"
+        )

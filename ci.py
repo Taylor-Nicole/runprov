@@ -1425,6 +1425,49 @@ def corpus() -> None:
 #: value type joined a `lambda` with ten plain functions and came out untyped, which made
 #: `STEPS[name]()` the one error `mypy --strict` found in this file -- so a step that took
 #: an argument, or returned something the dispatch ignores, was unnoticeable here.
+def _tree_state() -> dict[str, str]:
+    """Every tracked file's CURRENT WORKTREE content, as git's own object id.
+
+    One `git ls-files` and one batched `git hash-object --stdin-paths`: 307 files in a quarter of
+    a second, measured, which is why this can bracket every run rather than being a step somebody
+    remembers to invoke. A file git tracks but the worktree no longer holds records as `(absent)`
+    rather than raising, because a deletion mid-run is exactly the drift this reports.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout
+    names = [n for n in listed.split("\n") if n]
+    present = [n for n in names if (ROOT / n).is_file()]
+    state: dict[str, str] = {n: "(absent)" for n in names if n not in set(present)}
+    if present:
+        done = subprocess.run(
+            ["git", "hash-object", "--stdin-paths"],
+            cwd=ROOT,
+            input="\n".join(present) + "\n",
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        ids = done.stdout.split()
+        #: A COUNT MISMATCH IS A BROKEN INSTRUMENT, NOT A QUIET TRUNCATION. Zipping two lists of
+        #: different lengths silently drops the tail, and a tree digest missing its tail reports
+        #: "nothing moved" for every file it stopped reading.
+        if len(ids) != len(present):
+            raise SystemExit(
+                f"REFUSE: hashed {len(ids)} of {len(present)} tracked file(s); the tree digest "
+                f"cannot be trusted and so neither can any step's verdict about the tree"
+            )
+        state.update(zip(present, ids, strict=True))
+    return state
+
+
+def _tree_drift(before: dict[str, str], after: dict[str, str], wanted: list[str]) -> list[str]:
+    """Tracked paths whose content moved during the run and that no requested step may write."""
+    allowed = {path for step in wanted for path in _TRACKED_WRITES.get(step, ())}
+    moved = sorted({p for p in set(before) | set(after) if before.get(p) != after.get(p)})
+    return [p for p in moved if p not in allowed]
+
+
 STEPS: dict[str, abc.Callable[[], None]] = {
     "lint": lint,
     "test": test,
@@ -1449,6 +1492,48 @@ STEPS: dict[str, abc.Callable[[], None]] = {
     "check-commit-msg": lambda: check_commit_msg(sys.argv[2:]),
 }
 
+#: WHICH STEPS MAY MOVE A TRACKED FILE, AND EVERY STEP HAS A DECISION.
+#:
+#: WHY THIS EXISTS. A gate's number describes the tree it ran over, and twice in one week this
+#: repository's tree was edited WHILE a gate was running -- once under a `matrix-check` poll,
+#: once under a full gate. Neither run noticed. The second reported a figure for a tree that no
+#: longer existed by the time the figure was read, which is worse than a failure: a wrong number
+#: wearing a passing verdict.
+#:
+#: DERIVED BY READING THE CODE, NOT BY ASSUMING. `surface` writes `docs/public-surface.txt` and
+#: `claims-baseline` writes the baseline; both are tracked. `build` only clears `dist/` and
+#: `test` only unlinks `.coverage-scale.json`, and neither is tracked -- which is the opposite
+#: of what a glance at "does this function write" suggests, and why the pair above is measured.
+#:
+#: NOTHING IS LEFT OVER. A step added to `STEPS` without an entry here is refused at import, so
+#: a new step cannot quietly inherit "writes nothing" and make this guard lie about it.
+_TRACKED_WRITES: dict[str, tuple[str, ...]] = {
+    "lint": (),
+    "test": (),
+    "build": (),
+    "setup": (),
+    "surface": ("docs/public-surface.txt",),
+    "torture": (),
+    "bench": (),
+    "survivors": (),
+    "claims": (),
+    "claims-baseline": ("docs/claims-baseline.txt",),
+    "corpus": (),
+    "release-check": (),
+    "matrix-check": (),
+    "check-commit-msg": (),
+}
+
+_undecided = sorted(set(STEPS) - set(_TRACKED_WRITES))
+_orphaned = sorted(set(_TRACKED_WRITES) - set(STEPS))
+if _undecided or _orphaned:
+    raise SystemExit(
+        f"REFUSE: `_TRACKED_WRITES` must give every step a decision and name no step that does "
+        f"not exist. Undecided: {_undecided or 'none'}. Naming a missing step: "
+        f"{_orphaned or 'none'}. Say which tracked files the step may write, or `()` for none."
+    )
+
+
 if __name__ == "__main__":
     wanted = sys.argv[1:] or ["lint", "test", "build"]
     #: ONE STEP TAKES AN ARGUMENT, and it is handled before the loop rather than inside it.
@@ -1461,7 +1546,22 @@ if __name__ == "__main__":
     for name in wanted:
         if name not in STEPS:
             raise SystemExit(f"unknown step {name!r}; choose from {', '.join(STEPS)}")
+    _tree_before = _tree_state()
     for name in wanted:
         print(f"\n=== {name} ===")
         STEPS[name]()
+    #: THE SUBJECT MUST STILL BE THE TREE THIS RUN STARTED OVER. See `_TRACKED_WRITES`.
+    _drift = _tree_drift(_tree_before, _tree_state(), wanted)
+    if _drift:
+        print(
+            f"\nREFUSE: {len(_drift)} tracked file(s) changed WHILE these steps ran, and no "
+            f"step requested may write them:"
+        )
+        for _path in _drift:
+            print(f"          {_path}")
+        raise SystemExit(
+            "        Every number printed above describes a tree that no longer exists. Nothing "
+            "here failed; the subject moved. Re-run on a tree that is not being edited -- and if "
+            "a step legitimately writes one of these, give it an entry in `_TRACKED_WRITES`."
+        )
     print("\nOK — every step passed.")

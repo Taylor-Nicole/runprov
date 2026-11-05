@@ -9,6 +9,30 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Added — a gate's number describes the tree it ran over, and `ci.py` now refuses when that moved
+
+Twice in one week this repository's working tree was edited while a check was running — once under
+a `matrix-check` poll, once under a full gate. Neither run noticed. The second printed a coverage
+figure and a pass count for a tree that no longer existed by the time they were read, which is
+worse than a failure: a correct-looking number carrying a passing verdict over a subject that
+changed underneath it.
+
+`ci.py` now brackets every run with a digest of the tracked worktree — one `git ls-files` and one
+batched `git hash-object --stdin-paths`, measured at a quarter of a second over 307 files, which
+is why it can bracket **every** run rather than being a step somebody remembers to invoke.
+
+**Which steps may legitimately move a tracked file was derived by reading them, not assumed, and
+the answer is the opposite of the obvious one.** `surface` writes `docs/public-surface.txt` and
+`claims-baseline` writes the baseline; both are tracked. `build` only clears `dist/` and `test`
+only unlinks `.coverage-scale.json`, and neither of those is tracked — so the two steps that look
+like writers are not, and one that does not look like a writer is. Every step carries an entry, a
+step added without one is refused at import, and the guard asserts that each declared path is
+still a file git tracks, because an exemption naming a vanished file covers nothing while reading
+as though it covers something.
+
+A re-run is not a mechanism. *"Do not edit the tree during a gate"* is an instruction that can be
+forgotten silently, which is the shape this project has repeatedly measured as insufficient.
+
 ### Added — the connectivity gate: one walk, and every declared input accounted for
 
 `impact.py` has stated this invariant in prose since it was written and nothing held it:
