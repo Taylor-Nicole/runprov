@@ -102,9 +102,15 @@ _PACKAGE_MODULES = 26
 #: inside the repository satisfies it with 128 files that are not sources at all. The equality
 #: has something to say in both directions, which is why both sides read this now.
 #:
-#: 2 in `tests/`, `ci.py`, 7 in `tools/`, 2 in `examples/`. Re-read it when a file is added
+#: 2 in `tests/`, `ci.py`, 8 in `tools/`, 2 in `examples/`. Re-read it when a file is added
 #: outside `runprov/`; `_PACKAGE_MODULES` is the one number for a file added inside it.
-_NON_PACKAGE_SOURCES = 12
+#:
+#: 12 -> 13 on 2026-11-05 for `tools/roadmap.py`. Worth recording that this equality, the
+#: instrument registry and the figure registry ALL went red on the same commit for the same new
+#: file, and that is the system working: a new tool arrives carrying no obligations, and three
+#: different guards say which ones it owes rather than one of them noticing and the others
+#: quietly covering nothing.
+_NON_PACKAGE_SOURCES = 13
 
 #: THE OBSERVER'S DECLARED CEILINGS AND ITS VENDORED NAMES, WRITTEN BY HAND, and the reason is
 #: the one `_PACKAGE_MODULES` above gives: the constant IS the instrument. A first version of
@@ -58481,6 +58487,7 @@ _INSTRUMENT_FILES = (
     "tools/claims.py",
     "tools/corpus.py",
     "tools/corpus_scenario.py",
+    "tools/roadmap.py",
     "tools/survivors.py",
     "tools/torture.py",
 )
@@ -58671,7 +58678,15 @@ def test_the_instrument_file_derivation_AGREES_WITH_GIT_wherever_git_is_present(
     )
 
 
-_FIGURE_INSTRUMENTS = ("tests/test_runprov.py", "ci.py", "tools/claims.py")
+#: `tools/roadmap.py` joined on 2026-11-05. It binds figures in a shipped document more tightly
+#: than anything else here: `ROADMAP.md` is regenerated and compared byte for byte, so every
+#: number in it is pinned to the derivation rather than to a registry entry.
+_FIGURE_INSTRUMENTS = (
+    "tests/test_runprov.py",
+    "ci.py",
+    "tools/claims.py",
+    "tools/roadmap.py",
+)
 
 #: A DOCUMENT LINE MATCHED BY TWO INSTRUMENTS, DECLARED, WITH THE QUANTITY THEY SHARE.
 #:
@@ -65465,3 +65480,74 @@ def test_the_YAML_RENDERERS_are_total_over_A_HISTORY_LINE_and_their_LIMITS_are_r
         show._q(_StrRaises())
     with pytest.raises(RuntimeError, match="cannot be stringified"):
         show._scalar(_StrRaises())
+
+
+def test_the_ROADMAP_is_what_REGENERATING_IT_PRODUCES_and_not_what_somebody_last_typed():
+    """`ROADMAP.md` is derived, so the committed bytes must equal the derivation's output.
+
+    WHY A GENERATED ROADMAP AT ALL. The hand-written one died the way hand-written ones do: it
+    planned a version, that version shipped, and it was stale from that day onward while still
+    reading like a plan. A feature's state is already recorded in three places that are updated as
+    part of DOING the work -- a `Status:` line in its decision record, a dated changelog section,
+    and a tag -- so a fourth copy is a fourth thing to forget rather than a summary of the other
+    three.
+
+    THIS IS THE WHOLE ENFORCEMENT, and it is the strongest binding this repository has. The claims
+    registry binds a number in prose to a value somebody registered; this binds EVERY BYTE of the
+    document to the derivation that produced it. That is also why `ROADMAP.md` is outside the
+    claims population: a figure in it cannot be unaccounted-for, because regenerating is what the
+    file is.
+
+    IT RENDERS AND COMPARES; IT DOES NOT WRITE. A test that regenerated the file on disk would
+    move a tracked file while the gate was running over it, which `ci.py` now refuses -- the
+    guard would catch this test, and it would be right to.
+    """
+    root = _repo_root()
+    committed = root / "ROADMAP.md"
+    assert committed.is_file(), (
+        "ROADMAP.md is missing. It is generated -- run `python ci.py roadmap` -- and nothing "
+        "reads anything back out of it, so regenerating is always safe"
+    )
+
+    spec = importlib.util.spec_from_file_location("_roadmap_guard", root / "tools" / "roadmap.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    derived = module.render()
+    assert derived.strip(), "the generator produced nothing; this comparison would be vacuous"
+
+    #: THE MARKER IS ASSERTED ON THE DERIVED TEXT, not only on the file. A generator that stopped
+    #: emitting it would leave an editable-looking document that this test still called correct,
+    #: because the two sides would agree with each other about the wrong thing.
+    assert "DO NOT EDIT" in derived, (
+        "the generated roadmap no longer tells a reader not to edit it, so the next person to "
+        "improve a sentence in it will have their work silently reverted by the next regeneration"
+    )
+
+    actual = committed.read_text(encoding="utf-8")
+    if actual != derived:
+        import difflib
+
+        diff = "\n".join(
+            list(
+                difflib.unified_diff(
+                    actual.splitlines(),
+                    derived.splitlines(),
+                    fromfile="ROADMAP.md (committed)",
+                    tofile="ROADMAP.md (derived now)",
+                    lineterm="",
+                )
+            )[:40]
+        )
+        raise AssertionError(
+            "ROADMAP.md is not what regenerating it produces. Either a decision record, the "
+            "changelog or the version moved and the roadmap was not rebuilt, or somebody edited "
+            "the roadmap by hand. Run `python ci.py roadmap`.\n\n" + diff
+        )
+
+    #: NON-VACUITY. An empty or near-empty derivation would compare equal to an empty committed
+    #: file and this test would pass over a roadmap that says nothing.
+    assert len(derived.splitlines()) > 20, (
+        f"the derived roadmap is {len(derived.splitlines())} line(s); it is agreeing with the "
+        f"committed file about almost nothing"
+    )

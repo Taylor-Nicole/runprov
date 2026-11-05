@@ -38,6 +38,7 @@ from __future__ import annotations
 import datetime
 import fnmatch
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -1486,6 +1487,29 @@ def _tree_drift(
     return [p for p in moved if p not in allowed]
 
 
+def roadmap() -> None:
+    """Rewrite `ROADMAP.md` from the decision records, the changelog and the version.
+
+    THE PROJECT'S FIRST GENERATED DOCUMENT, and it exists because the hand-written one died the
+    way hand-written ones do: `ROADMAP-0.9.0.md` planned a version that shipped, and was stale
+    from that day. A feature's state is already recorded in three places that are updated as part
+    of doing the work — a `Status:` line in its decision record, a dated changelog section, and a
+    tag — so a fourth copy is a fourth thing to forget rather than a summary.
+
+    THE COMMAND IS HERE AND THE ENFORCEMENT IS IN THE SUITE, the same arrangement as `surface`:
+    this regenerates, and a test refuses a committed file that differs from what regenerating
+    produces. Deleting `ROADMAP.md` is a recoverable mistake, because nothing is read back out of
+    it.
+    """
+    spec = importlib.util.spec_from_file_location("_roadmap", ROOT / "tools" / "roadmap.py")
+    if spec is None or spec.loader is None:
+        raise SystemExit("REFUSE: tools/roadmap.py could not be loaded, so nothing derived it")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if module.main() != 0:
+        raise SystemExit("REFUSE: the roadmap could not be derived")
+
+
 STEPS: dict[str, abc.Callable[[], None]] = {
     "lint": lint,
     "test": test,
@@ -1502,6 +1526,9 @@ STEPS: dict[str, abc.Callable[[], None]] = {
     #: NOT in the default gate: it WRITES the baseline the gate reads. See `claims_baseline`.
     "claims-baseline": claims_baseline,
     "corpus": corpus,
+    #: NOT in the default gate: it WRITES a tracked document, like `surface` and
+    #: `claims-baseline`. The suite is what refuses a stale one.
+    "roadmap": roadmap,
     "release-check": release_check,
     #: NOT in the default `lint test build`: it needs the network and `gh`. Run before a tag.
     "matrix-check": matrix_check,
@@ -1537,6 +1564,7 @@ _TRACKED_WRITES: dict[str, tuple[str, ...]] = {
     "claims": (),
     "claims-baseline": ("docs/claims-baseline.txt",),
     "corpus": (),
+    "roadmap": ("ROADMAP.md",),
     "release-check": (),
     "matrix-check": (),
     "check-commit-msg": (),

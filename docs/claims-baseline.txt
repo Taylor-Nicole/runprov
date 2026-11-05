@@ -23,7 +23,7 @@
 # and a ratchet that never tightens is not a ratchet. Going DOWN is as red as going up, and the
 # failure message says which -- down means regenerate this file, up means a claim arrived that
 # nothing accounts for.
-detection 745929ccd0758bf6
+detection 21c7fc5d225a6624
 bindings 2bb0b04b387daad8
 population 770
 unaccounted 287

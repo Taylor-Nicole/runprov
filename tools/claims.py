@@ -348,6 +348,16 @@ _NOT_AUDITED = {
     #: `documents()` sits on: README, the changelog, getting-started, WHY, security, contributing.
     #: An instruction file for an assistant is not a claim this project makes to anybody.
     "CLAUDE.md": "agent instructions; its figures are dated incident citations, not live claims",
+    #: GENERATED, AND BOUND MORE TIGHTLY THAN ANYTHING THIS REGISTRY COULD DO. `ROADMAP.md` is
+    #: rebuilt by `ci.py roadmap` from the decision records, the changelog and the version, and
+    #: `test_the_ROADMAP_is_what_REGENERATING_IT_PRODUCES...` refuses a committed file that
+    #: differs from the derivation by a single byte.
+    #:
+    #: So a figure in it cannot be unaccounted-for: it is not a claim somebody typed, it is the
+    #: output of a function over sources this gate already holds. Auditing it would ask whether
+    #: somebody had registered a number that a byte-for-byte comparison already pins -- the
+    #: tautology shape, one document up.
+    "ROADMAP.md": "generated; every byte is pinned to its derivation by a regeneration guard",
 }
 
 #: A DOCUMENT CAN BE AUDITED IN PART, AND `CHANGELOG.md` IS WHY THE DISTINCTION EXISTS.

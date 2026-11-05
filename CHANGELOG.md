@@ -9,6 +9,31 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Added — `ROADMAP.md`, the first document in this repository that is generated rather than written
+
+A hand-written roadmap goes stale on the day its release ships, and this project has the evidence:
+the audit repository's `ROADMAP-0.9.0.md` planned a version, that version shipped, and it stayed
+on disk reading like a plan. A feature's state is already recorded in three places that are
+updated as part of *doing* the work — a `Status:` line in its decision record, a dated section
+here, and a tag — so a fourth copy is a fourth thing to forget rather than a summary of the other
+three.
+
+`python ci.py roadmap` rebuilds `ROADMAP.md` from exactly those three sources. There is no list to
+maintain, because there is no list.
+
+**The enforcement is a byte-for-byte comparison, which is the strongest binding in this
+repository.** The claims registry binds a number in prose to a value somebody registered; this
+binds every byte of the document to the derivation that produced it, and a guard refuses a
+committed file that differs. That is also why `ROADMAP.md` is outside the claims population — a
+figure in it cannot be unaccounted-for, because regenerating *is* what the file is, and auditing
+it would ask whether somebody registered a number that a byte comparison already pins.
+
+The file says what it cannot know, rather than implying a tidier picture than exists: it reports
+what the records *claim*, it says how many records name the release that shipped them so
+*accepted* is not misread as *released*, and a record it cannot parse is **named in the file**
+rather than dropped — a roadmap that silently omits what it cannot read is how a roadmap comes to
+look complete.
+
 ### Changed — the claims auditor now says what its population cannot see (a declared RULE move)
 
 The population is *an audited line carrying a **digit***. A figure whose author happened to spell
