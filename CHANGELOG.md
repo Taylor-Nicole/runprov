@@ -9,6 +9,39 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Changed — the claims auditor now says what its population cannot see (a declared RULE move)
+
+The population is *an audited line carrying a **digit***. A figure whose author happened to spell
+it is outside that population entirely, and nothing said so — a reader of the residue count would
+reasonably conclude the documents had been triaged.
+
+Found the hard way, one repository over: a guard written specifically to refuse the sentence
+*"roughly twelve narrow handlers"* keyed on `\d` and **accepted that exact sentence**, because it
+contains no digit. The same rule was sitting in this auditor.
+
+**The rule is not widened, and a measurement is the reason.** The excluded set — audited lines
+carrying a spelled numeral and no digit — is of the same order as the whole population, and a hand
+sample of it is overwhelmingly ordinary prose (*"two smaller limits"*, *"one definition"*, *"two
+lines earlier"*). Widening would swamp the denominator with false positives and leave the residue
+meaningless, which is a worse instrument than one with a stated edge.
+
+So the edge is **reported** instead: `ci.py claims` now prints the excluded count and a sample on
+every run. No figure for it is written here, deliberately — it moves whenever a document does, and
+a number restated in prose is one the next edit makes false. The run prints the current one; an
+instrument that shows what it excluded can be argued with, one that shows only what it found
+cannot.
+
+`CLAUDE.md` leaves the audited set in the same change, and for a reason that is not about the
+number: every figure in it is a dated incident citation — *the graph lapsed for eleven days*, *the
+same instruction on five consecutive turns* — true on the day written and history since, which is
+the category error the audit repository's own HELD/HISTORICAL split exists to avoid. It is also
+not a document a user receives, which is the line every other audited file sits on.
+
+**The detection digest moves and no count does.** That is the two-digest design reporting
+honestly: this change altered what the instrument claims to cover and made no figure look better,
+so the ratchet refused to compare across it and the baseline was regenerated with the move
+declared rather than slipped in beside work.
+
 ### Fixed — two promises of totality that were true of less than they said
 
 **`chain.verify`'s promise was quoted one function down with its scope removed.** The docstring

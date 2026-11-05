@@ -142,8 +142,10 @@ only one that survives without a reader.
   it spawns takes an EIO retry walking that directory. That is the workstation fork storm, twice
   mistaken here for the drive failing again, and the load comes from the RETRIES rather than from
   the process count -- which is why counting helpers under-reads it and why a threshold is the
-  wrong instrument. `tools/nothing-is-stranded.py` in the audit repository refuses the condition
-  and reports what would strand next. Launch the editor from a directory on the internal disk and
+  wrong instrument. `~/host-tools/nothing-is-stranded.py` refuses the condition and names the
+  editor windows that would strand next. **It lives on `$HOME`, not in either repository here,
+  because a tool for a drive failure must not live on the drive** — written in the audit
+  repository, it was unreachable during the failure it was written for. Launch the editor from a directory on the internal disk and
   open the project as a folder: a shell can `cd` out, a window cannot be moved afterwards.
   Killing the helper's parent is relief and not a cure, because the stranded cwd survives it.
 

@@ -338,6 +338,16 @@ _SUPERSEDED_REASON = (
 #: replace. The scope pattern again: a rule that was right, reaching one of the places it applies.
 _NOT_AUDITED = {
     "CODE_OF_CONDUCT.md": "adopted text (the Contributor Covenant), not this project's claims",
+    #: AGENT INSTRUCTIONS, AND EVERY FIGURE IN THEM IS A DATED INCIDENT CITATION. `CLAUDE.md`
+    #: records why each rule exists -- *the graph lapsed for eleven days*, *the same instruction
+    #: on five consecutive turns* -- and those were true on the day they were written and are
+    #: history now. Holding them to today's tree is the category error the audit repository's
+    #: `continuity-check.sh` splits HELD from HISTORICAL to avoid.
+    #:
+    #: IT IS ALSO NOT A DOCUMENT A USER RECEIVES, which is the line every other entry in
+    #: `documents()` sits on: README, the changelog, getting-started, WHY, security, contributing.
+    #: An instruction file for an assistant is not a claim this project makes to anybody.
+    "CLAUDE.md": "agent instructions; its figures are dated incident citations, not live claims",
 }
 
 #: A DOCUMENT CAN BE AUDITED IN PART, AND `CHANGELOG.md` IS WHY THE DISTINCTION EXISTS.
@@ -1402,6 +1412,52 @@ def bindings_digest() -> str:
     )
 
 
+#: WHAT THE POPULATION CANNOT SEE, SO THAT NOBODY MISTAKES IT FOR THE DOCUMENT.
+#:
+#: The population is "an audited line carrying a DIGIT". A figure its author happened to SPELL is
+#: outside it entirely, and nothing said so -- a reader of the residue count would conclude the
+#: documents had been triaged. Found 2026-11-05 the hard way, one repository over: a guard written
+#: to refuse the sentence *"roughly twelve narrow handlers"* keyed on `\d` and accepted that exact
+#: sentence, because it contains no digit.
+#:
+#: THE RULE IS NOT WIDENED, AND THE MEASUREMENT IS WHY. Over the audited documents: 6 661 non-blank
+#: lines, 1 295 carrying a digit, and **1 071 carrying a spelled numeral and no digit** -- 83% the
+#: size of the entire population. A hand sample of those is overwhelmingly ordinary prose: *"two
+#: smaller limits"*, *"one definition"*, *"two lines earlier"*. Widening would nearly double the
+#: denominator with almost all false positives and leave the residue meaningless, which is a worse
+#: instrument than one with a stated edge.
+#:
+#: So the edge is REPORTED instead, with a count and a sample, every run. An instrument that prints
+#: what it excluded can be argued with; one that prints only what it found cannot.
+_SPELLED = re.compile(
+    r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|"
+    r"fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|"
+    r"eighty|ninety|hundred|thousand|dozen)\b",
+    re.IGNORECASE,
+)
+
+
+def excluded_by_spelling() -> tuple[int, int, list[str]]:
+    """(lines seen, lines carrying a spelled numeral and no digit, a small sample).
+
+    NOT A FINDING AND NOT GATED. It is the shape of the hole, printed beside the number that has
+    the hole in it. `promote-a-measurement`'s rule applies: a predicate good enough to report a
+    split is not thereby good enough to enforce one, and this one is not -- see the comment above.
+    """
+    seen, hits = 0, 0
+    sample: list[str] = []
+    for name, text in sorted(documents().items()):
+        for index, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            seen += 1
+            if _SPELLED.search(line) and not re.search(r"\d", line):
+                hits += 1
+                if len(sample) < 3:
+                    sample.append(f"{name}:{index}: {line.strip()[:88]}")
+    return seen, hits, sample
+
+
 def counts() -> tuple[int, int, int]:
     """(population, unaccounted, historical). One call, so the report and the test agree.
 
@@ -1594,6 +1650,18 @@ def report() -> int:
                     f"baseline {BASELINE.name}: residue {live_unaccounted + live_known} of "
                     f"{live_population}, measured now and equal to what is recorded"
                 )
+
+    #: PRINTED ON EVERY RUN, PASS OR FAIL. The residue is a count OF the population, and a reader
+    #: who is not told what the population excludes will read it as a count of the documents.
+    seen, spelled, sample = excluded_by_spelling()
+    print(
+        f"excluded by the population rule: {spelled} of {seen} audited line(s) carry a SPELLED "
+        f"numeral and no digit, so no figure on them is audited by anything here. Not widened "
+        f"deliberately -- a hand sample is overwhelmingly prose, and widening would swamp the "
+        f"residue. Sample:"
+    )
+    for line in sample:
+        print(f"  {line}")
     return 0
 
 
