@@ -9,6 +9,23 @@ is a fix nobody checked.
 
 ## [Unreleased]
 
+### Fixed — the decimal-versus-binary megabyte error is 4.9 %, not 4.8 %
+
+`(2**20 - 10**6) / 10**6` is **4.8576**, which rounds to **4.9**; the other base,
+`(2**20 - 10**6) / 2**20`, gives 4.6326. No rounding of either yields 4.8, so the figure was a
+truncation and it was wrong in five live places at once: the comment in `resources.py`, ADR-0013's
+two statements of it, and two sites in the test suite. Corrected in all five, and in the
+manuscript that quotes ADR-0013 — the number lives in the decision record and the article cites
+it, so moving one without the other would have desynchronised them.
+
+**The `[0.4.0]` entry below still reads 4.8 % and is deliberately left alone.** Its copy ships
+inside the released 0.4.0 sdist and wheel, so rewriting a released section would make this file
+disagree with the artifact it describes. Disclosure here is the correction; the history stays as
+published.
+
+Found by a fresh reviewer auditing the article that quotes the figure, not by any check here —
+nothing in this repository can tell a rounded number from a truncated one.
+
 ### Added — the build is verified reproducible, a property this project was selling unmeasured
 
 `pyproject.toml` lists *reproducibility* among this project's keywords and the package's whole

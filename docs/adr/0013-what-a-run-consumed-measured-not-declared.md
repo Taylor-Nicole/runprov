@@ -156,7 +156,7 @@ target, because the targets disagree in ways that silently corrupt a number:
 
 * **Slurm** takes `--mem` in MiB by default, `--time` as walltime, `--cpus-per-task` as a count.
 * **Kubernetes** takes `memory` in binary units (`Mi`, `Gi`) — and `M`/`G` mean *decimal*, a
-  4.8 % error that looks like a typo — while **CPU is a rate in millicores**, so `cpu: "500m"`
+  4.9 % error that looks like a typo — while **CPU is a rate in millicores**, so `cpu: "500m"`
   is half a core over time, not a core count. Its `requests` schedule and its `limits` kill;
   exceeding a CPU limit **throttles** rather than killing, which memory does not.
 
@@ -251,7 +251,7 @@ side expects rather than assuming it matches.
 **R-14.** `--format slurm` and `--format k8s` render the canonical figures into each target's
 syntax, and the two disagree in ways that corrupt a number silently: Slurm takes `--mem` in
 **MiB** and `--cpus-per-task` as a **count**; Kubernetes takes memory in **binary** units
-(`Mi`/`Gi` — plain `M` is decimal, a 4.8 % error that reads like a typo) and CPU as a **rate in
+(`Mi`/`Gi` — plain `M` is decimal, a 4.9 % error that reads like a typo) and CPU as a **rate in
 millicores**, where `500m` is half a core over time.
 
 **R-15.** Every rendered request is presented as a **floor plus a stated margin**, never as a

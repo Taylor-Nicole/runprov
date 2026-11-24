@@ -18251,7 +18251,7 @@ def test_resources_tsv_drops_a_vms_that_describes_a_different_process(tmp_path):
 def test_resources_render_each_target_in_its_own_units(tmp_path):
     """[ADR-0013 R-14]. Slurm takes `--mem` in MiB and `--cpus-per-task` as a COUNT; Kubernetes
     takes
-    binary `Mi` (plain `M` is decimal — a 4.8% error that reads like a typo) and CPU as a RATE
+    binary `Mi` (plain `M` is decimal — a 4.9% error that reads like a typo) and CPU as a RATE
     in millicores. One number emitted into both syntaxes is wrong in at least one."""
     m = runprov.resources.Measurement(
         wall_seconds=100.0,
@@ -18269,7 +18269,7 @@ def test_resources_render_each_target_in_its_own_units(tmp_path):
     assert "--cpus-per-task=2" in slurm, "200 cpu-seconds over 100 wall = 2 cores, a COUNT"
 
     k8s = "\n".join(runprov.resources.render_k8s(m, margin=1.0))
-    assert "memory: 100Mi" in k8s, "binary units; plain M would be decimal and 4.8% wrong"
+    assert "memory: 100Mi" in k8s, "binary units; plain M would be decimal and 4.9% wrong"
     assert 'cpu: "2000m"' in k8s, "a RATE in millicores, not a count"
     assert k8s.count("memory: 100Mi") == 2, "requests AND limits, which the first version broke"
 

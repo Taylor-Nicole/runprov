@@ -456,7 +456,7 @@ def render_slurm(m: Measurement, margin: float = 1.5) -> list[str]:
 def render_k8s(m: Measurement, margin: float = 1.5) -> list[str]:
     """Kubernetes' syntax, which disagrees with Slurm's in two ways that corrupt a number.
 
-    Memory is BINARY here — `Mi`, not `M`, because plain `M` is decimal and the 4.8 %
+    Memory is BINARY here — `Mi`, not `M`, because plain `M` is decimal and the 4.9 %
     difference reads like a typo rather than an error. And CPU is a RATE in millicores, so
     `500m` is half a core over time, not a count of cores. R-14.
     """
