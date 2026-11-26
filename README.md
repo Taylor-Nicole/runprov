@@ -1476,7 +1476,7 @@ the same rule as the command: until 2026-10-31 it ended `(line $((n-1)) changed)
 deleted first line printed `line 0` and over two swapped lines accused three untouched ones.
 
 **It reports by output and never by status**, so the loop exits 0 whether or not it found a
-break and `sh check.sh || abort` is a gate that cannot fail. Six lines of shell are a second
+break and `sh check.sh || abort` is a gate that cannot fail. Seven lines of shell are a second
 opinion to read, not a check to wire into a pipeline; `runprov chain` is the one with an exit
 code.
 

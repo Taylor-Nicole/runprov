@@ -65662,3 +65662,176 @@ def test_every_DERIVING_STEP_declares_what_it_READS_and_the_declaration_is_OBSER
         "no derivation opened a single file, so the observer saw nothing and every assertion "
         "above passed vacuously -- the audit hook is not firing"
     )
+
+
+def test_a_prose_line_count_matches_the_block_it_describes():
+    r"""A prose claim counting the lines of a code block is bound to that block.
+
+    THE DEFECT. Measured 2026-11-26 by a fresh lens on the article that cites this package. ONE
+    seven-line shell loop was counted THREE different ways in artifacts that ship:
+
+        the fenced block in README.md   fence at 1461 and 1469, body SEVEN lines, all non-blank
+        README.md:1479                  "Six lines of shell"
+        README-pypi.md:116              "nine lines of shell"
+        the CiSE manuscript             "seven lines" -- the only one that was right
+
+    AND ONE OF THE WRONG ONES IS PERMANENT. `README-pypi.md` is the PyPI long description, so
+    "nine lines of shell" is frozen in the published `runprov-0.10.0` wheel's `METADATA`, which
+    `pyproject.toml:42-43` records cannot be replaced after upload. A reader who installs 0.10.0
+    and reads its description on PyPI gets the wrong number forever. That is what makes this worth
+    a guard rather than an edit: the cost of the next one is unbounded.
+
+        claim_re           a prose claim counting the lines of a code block agrees with that block
+        QUANTIFICATION  for every tracked `.md`, every match of `<number> lines of <language>` is
+                        bound to the nearest preceding fenced block within 25 lines, and the
+                        block's non-blank body line count equals the number -- or the site is
+                        named in unbound with a reason, and that site must still exist
+
+    THE POPULATION IS KEYED ON A LANGUAGE NAME, AND THAT IS THE MEASUREMENT RATHER THAN A GUESS.
+    `<number> lines of <word>` over the tracked Markdown matches 7 sites, and the noun splits them
+    cleanly: `shell` twice -- a block's length -- against `TSV` three times, which is a quantity of
+    DATA and has no block to agree with, plus `which` and `gate`, which are prose. A guard keyed on
+    the phrase alone would fire on "500 lines of TSV" and be wrong. The two populations are
+    different questions and only one of them is answerable from a fenced block.
+
+    AND IT IS NOT KEYED ON THE FENCE'S LANGUAGE TAG, because that is a formatting choice. The
+    block README.md's claim describes is ```bash; every fence near README-pypi.md's claim is
+    untagged. Binding on the tag would have made this guard blind to exactly the file whose wrong
+    number shipped irreversibly.
+    """
+    import re as _re
+
+    root = _repo_root()
+    #: THE PROJECT'S ONE DEFINITION, not a ninth spelling of it. `_is_the_repository()`'s own
+    #: docstring records that eight sites had each written their own `pytest.skip` for this and
+    #: that the next site must not add another -- and the first version of this test did exactly
+    #: that, with a `git rev-parse --is-inside-work-tree` subprocess. `ci.py build` runs this
+    #: suite from the installed artifact, where `__file__` is outside any checkout, so this is
+    #: the branch that keeps the sweep from asserting over a tree that is not there.
+    if not _is_the_repository():  # pragma: no cover - an unpacked sdist
+        pytest.skip("installed artifact: no checkout, so there are no tracked .md files to sweep")
+
+    #: THE POPULATION COMES FROM GIT, so a new document is in scope on the day it is tracked.
+    tracked = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "*.md"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert tracked, "git listed no tracked .md files, so this sweep ran over nothing"
+
+    words = {
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+        "eleven": 11,
+        "twelve": 12,
+    }
+    #: LANGUAGE NAMES ONLY -- see the docstring. A noun that is not a language is a different
+    #: claim, and the five such sites in this repository are quantities of data or prose.
+    langs = {"shell", "sh", "bash", "python", "code", "yaml", "json"}
+    #: WHAT A FENCE MAY BE TAGGED when a claim names a language. "shell" is written ```bash here;
+    #: an empty tag is deliberately NOT accepted, because an untagged block is not identifiable.
+    alias = {
+        "shell": {"bash", "sh", "shell", "console"},
+        "sh": {"bash", "sh", "shell", "console"},
+        "bash": {"bash", "sh", "shell", "console"},
+        "python": {"python", "py"},
+        "yaml": {"yaml", "yml"},
+        "json": {"json"},
+        "code": {"bash", "sh", "shell", "python", "py", "yaml", "yml", "json", "text"},
+    }
+    claim_re = _re.compile(
+        r"(?i)\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)"
+        r"[- ]lines? of (\w+)"
+    )
+    #: A SITE WITH NO BLOCK TO BIND TO, keyed to the site and carrying its reason. The liveness of
+    #: each entry is asserted below, so an exemption cannot outlive its subject.
+    unbound = {
+        (
+            "README-pypi.md",
+            "shell",
+        ): "the PyPI long description describes the chain-check loop that README.md SHOWS; PyPI "
+        "renders only this file, so the count is here and the block is not. The number must "
+        "be changed in both files together, which is the mistake this guard exists for",
+    }
+
+    checked: list[str] = []
+    unbound_seen: set = set()
+    bad: list[str] = []
+
+    for rel in sorted(tracked):
+        lines = (root / rel).read_text(encoding="utf-8").splitlines()
+        fences = [i for i, ln in enumerate(lines) if ln.lstrip().startswith("```")]
+        for i, line in enumerate(lines):
+            for m in claim_re.finditer(line):
+                raw, noun = m.group(1), m.group(2).lower()
+                if noun not in langs:
+                    continue
+                want = words.get(raw.lower(), None)
+                if want is None:
+                    want = int(raw)
+                #: THE BLOCK MUST DECLARE THE LANGUAGE CLAIMED, and that is not pedantry --
+                #: it is the only evidence available that the block is the one the claim is
+                #: about. A first version bound a claim to the nearest preceding fence within
+                #: 25 lines, and it bound README-pypi.md's shell claim to an unrelated
+                #: `runprov verify` OUTPUT block eight lines above it, which would have been
+                #: compared and could have passed for the wrong reason. A fence with no tag is
+                #: not identifiable as code of any language, so such a claim is unbound and
+                #: must carry a reason.
+                opens = [
+                    f
+                    for f in fences
+                    if f < i
+                    and i - f <= 25
+                    and lines[f].strip().lstrip("`").strip().lower() in alias.get(noun, set())
+                ]
+                pair = None
+                for o in reversed(opens):
+                    close = next((c for c in fences if c > o), None)
+                    if close is not None and close <= i:
+                        pair = (o, close)
+                        break
+                key = (rel, noun)
+                if pair is None:
+                    assert key in unbound, (
+                        f"{rel}:{i + 1} claims {want} lines of {noun} and no fenced block TAGGED "
+                        f"as {sorted(alias.get(noun, set()))} closes within 25 lines above it, so "
+                        f"nothing here can hold the number. Either show the block, tag the fence, "
+                        f"or add {key!r} to unbound with the reason"
+                    )
+                    unbound_seen.add(key)
+                    continue
+                o, close = pair
+                body = [x for x in lines[o + 1 : close] if x.strip()]
+                checked.append(f"{rel}:{i + 1} {want} vs {len(body)} (fence {o + 1}-{close + 1})")
+                if len(body) != want:
+                    bad.append(
+                        f"{rel}:{i + 1} says {raw!r} lines of {noun}, and the block at "
+                        f"{o + 1}-{close + 1} has {len(body)} non-blank line(s). ONE loop was "
+                        f"counted three ways in shipped artifacts on 2026-11-26 and the wrong "
+                        f"count in the PyPI description is frozen in a published wheel"
+                    )
+
+    #: THE EXEMPTION'S SUBJECT MUST STILL EXIST, or it has started covering nothing -- or
+    #: something else.
+    stale = sorted(set(unbound) - unbound_seen)
+    assert not stale, (
+        f"unbound names {stale}, which no longer matches any claim in the tracked tree. Delete "
+        f"the entry: an exemption whose subject is gone is a hole with a label on it"
+    )
+
+    #: THE NON-ZERO CONTROL. A sweep that bound nothing agrees with everything, and this guard
+    #: exists because three documents agreed with each other and with nothing else.
+    assert checked, (
+        "no line-count claim was bound to a block, so this sweep asserted nothing. Either the "
+        "population regex stopped matching or langs no longer covers the nouns in use"
+    )
+    assert not bad, "\n".join(bad)

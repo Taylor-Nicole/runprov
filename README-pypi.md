@@ -113,7 +113,7 @@ STALE   results/summary.tsv
 since it was written?** Each line carries the digest of the one before it, so an edit — or a
 deletion or reordering anywhere but the very end — breaks the link that vouches for it, and
 the report says plainly what it could not cover. Tamper-**evident**, not tamper-proof, and
-checkable with `sha256sum` and nine lines of shell with this package uninstalled.
+checkable with `sha256sum` and seven lines of shell with this package uninstalled.
 
 Also available:
 `runprov log` (the run history as YAML or a table), `runprov show` (what one run did),
