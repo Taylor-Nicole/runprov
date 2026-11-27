@@ -22,6 +22,27 @@ times it. A census scheduled off that number would have reported itself complete
 majority never examined. The brief is where this costs most, because the agent cannot check a
 number you supplied.
 
+**SCOPE A SEARCH BY WHERE THE ANSWER COULD LIVE, NOT BY WHERE THE SUBJECT'S NAME APPEARS.**
+Measured five times on 2026-11-27, each costing between one day and eighteen:
+
+* a JavaScript page was declared unreadable after four routes, while `tools/render-figure.py` had
+  driven **headless Chromium** in this repository since October -- the question never asked was
+  *what can this host already render*;
+* CiSE's own author page was read five times and **IEEE's Magazine Authors pages never once**,
+  though the rules that bind a magazine are published by its publisher;
+* five policy pages could not settle whether the venue hosts supplements, and **two PDFs on the
+  maintainer's disk** answered it in one command, because a published article says so about
+  itself;
+* a correction to a sentence about laboratory practice sat in a source **cited eight words later
+  in the same paragraph**;
+* a paragraph that argued the opposite of its own point had the intended claim written in the
+  **story table that placed its figure**.
+
+Before concluding something cannot be found, name the three places an answer of that KIND lives --
+a capability this repository already uses, the publisher or parent of the named thing, and the
+corpus of what it has already produced -- and say which you checked. A search scoped by the
+subject's name finds what has been labelled, which is the opposite of what is missing.
+
 **When you have named the next action, take it.** Do not end a turn with a recommendation and a
 request for permission; that converts your own conclusion into another prompt. Ask only when
 proceeding under any assumption would be unsafe, or would waste the work if the assumption is
